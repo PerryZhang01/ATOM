@@ -557,3 +557,11 @@ record under a law fitted on the others, per decode rung and prefill token band.
 `scripts/compass/laws/qwen3.8-27b-tp1-mi308x-hjbog18.json` is the `history` form
 fitted on the five stage-2 calibration cells (concurrency 1, 4, 16, 64 and 256)
 on node 18; a stage-2 run file holds it under `law`.
+
+## Cost accuracy on a real run's own steps — `validate.cost`
+
+`python -m atom.compass.validate.cost RECORD LAW` prices each step of a real
+cell's record (`OUT_DIR/steps` of a `REAL=1 cctraces_sim.sh` run) with a law
+file as `coarse_fit` writes it, and prints the error per kind, per decode rung
+and per prefill token band. The module's docstring states what each figure is.
+Grade a law only on cells whose traces its calibration cells do not replay.
