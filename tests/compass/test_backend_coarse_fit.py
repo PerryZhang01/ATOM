@@ -190,8 +190,10 @@ def test_three_forms_are_scored_on_a_record_held_out_of_their_fit(tmp_path):
     slopes = {v["coefficients"]["context"] for v in shared["decode"].values()}
     assert len(slopes) == 1
     CoarseBackend(CoarseLaw(shared)).estimate(_view([(1, 900, True)], 2))
-    with pytest.raises(ValueError, match="coefficients for"):
-        CoarseLaw(fit(records, "history"))
+    rows, _, seconds = _steps(3, history=2e-7)[4]
+    cost = CoarseBackend(CoarseLaw(fit(records, "history"))).estimate(_view(rows))
+    assert cost.seconds == pytest.approx(seconds, rel=1e-6)
+    assert cost.terms[-1].name == "prefill.history"
 
 
 def test_the_command_writes_a_law_a_run_file_can_carry(tmp_path, capsys):
@@ -215,3 +217,20 @@ def test_a_rung_too_thin_to_fit_is_named_and_its_steps_refused(tmp_path):
     assert "4" not in law["decode"]
     with pytest.raises(CostRefused, match="no decode vector for rung 4"):
         CoarseBackend(CoarseLaw(law)).estimate(_view([(1, 900, True)], 4))
+
+
+def test_the_outlier_scale_is_read_over_every_step_so_it_does_not_shrink(tmp_path):
+    # Half the prefill steps scatter by 1%, half by 15%. A scale read over the
+    # kept steps alone shrinks each pass toward the 1% half and drops 40%.
+    steps = _steps(9, n=400)
+    rng = np.random.default_rng(9)
+    noise = {
+        i: 1 + rng.uniform(-0.15, 0.15) if i % 4 else 1 + rng.uniform(-0.01, 0.01)
+        for i in range(400)
+    }
+    law = fit([_record(tmp_path / "dp0.jsonl", steps, stretch=noise)])
+
+    fitted = law["prefill"]["fit"]
+    assert (
+        fitted["dropped"] + fitted["warm"] < (fitted["samples"] + fitted["dropped"]) / 3
+    )

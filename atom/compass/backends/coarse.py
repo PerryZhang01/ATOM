@@ -9,6 +9,10 @@ decode one per capture rung, each over the features `ShapeStubBackend` reads:
     prefill:        [1, tokens, Sum N_Q^2, Sum N_Q.(N_KV - N_Q)]
     decode, rung r: [1, Sum N_KV, r.max N_KV - Sum N_KV]
 
+A prefill vector may add `history`, Sum (N_KV - N_Q): the KV a chunk reads
+on its cached history, which a short chunk on a deep history pays apart from
+its attention arithmetic.
+
 A decode step that replays no graph (an eager runner, or a batch wider than
 the widest captured size) is the rung named `eager`, whose padding is zero.
 
@@ -52,6 +56,7 @@ from atom.compass.backends.shape import (
 )
 
 PREFILL = ("step", "tokens", "query_square", "query_cached")
+HISTORY = PREFILL + ("history",)
 DECODE = ("step", "context", "graph_padding")
 EAGER = "eager"
 SOURCE = "coarse-law"
@@ -118,7 +123,9 @@ class CoarseLaw:
         self.provenance = str(law.get("provenance", "")).strip()
         if not self.provenance:
             raise ValueError("a law states what it was fitted on, under provenance")
-        self.prefill = _Vector("prefill", PREFILL, law["prefill"])
+        prefill = law["prefill"]
+        features = HISTORY if "history" in prefill["coefficients"] else PREFILL
+        self.prefill = _Vector("prefill", features, prefill)
         self.decode = {
             None if rung == EAGER else int(rung): _Vector(
                 f"decode rung {rung}", DECODE, spec
@@ -160,6 +167,8 @@ class CoarseBackend(CostBackend):
                 sum_query_square(prefill),
                 sum_query_cached(prefill),
             )
+            if len(vector.features) == len(HISTORY):
+                counts += (sum_context(prefill) - sum_tokens(prefill),)
         else:
             rung, kind = batch_view.capture_rung, "decode"
             vector = self.law.decode.get(rung)

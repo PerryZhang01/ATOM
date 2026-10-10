@@ -25,10 +25,10 @@ the convex hull of its fitted steps, which `CoarseLaw` reads. A vector with
 no more fitted steps than coefficients, or whose steps span no hull, is left
 out and named under `unfitted`; `CoarseBackend` refuses its steps.
 
-Forms (`FORMS`): `law`, the features `CoarseLaw` prices; `history`, prefill
-plus `Sum (N_KV - N_Q)`, the KV a short chunk reads on a deep history, which
-`CoarseLaw` does not read; `shared`, decode with the context and padding
-slopes shared by every rung and an intercept per rung.
+Forms (`FORMS`): `law`, the features `CoarseLaw` always prices; `history`,
+prefill plus `Sum (N_KV - N_Q)`, the KV a short chunk reads on a deep history;
+`shared`, decode with the context and padding slopes shared by every rung and
+an intercept per rung.
 
 With two or more records it also prints, per form, the error on each record of
 a law fitted on the others, warm steps left out: per kind and rung, or prefill
@@ -45,7 +45,7 @@ from pathlib import Path
 
 import numpy as np
 
-from atom.compass.backends.coarse import DECODE, EAGER, PREFILL
+from atom.compass.backends.coarse import DECODE, EAGER, HISTORY, PREFILL
 from atom.compass.backends.shape import (
     BatchView,
     RequestShape,
@@ -56,7 +56,6 @@ from atom.compass.backends.shape import (
 )
 
 FORMS = ("law", "history", "shared")
-HISTORY = PREFILL + ("history",)
 MAD_K = 3.5
 #: A relative residual this small is never an outlier, however tight the rest.
 MAD_FLOOR = 0.01
@@ -128,8 +127,8 @@ def _solve(x: np.ndarray, y: np.ndarray, names: list[str]) -> dict:
         coef = np.zeros(x.shape[1])
         coef[vary] = nnls(cols / norms, np.ones(int(keep.sum())))[0] / norms
         residual = a @ coef - 1.0
-        centre = np.median(residual[keep])
-        mad = 1.4826 * np.median(np.abs(residual[keep] - centre))
+        centre = np.median(residual)
+        mad = 1.4826 * np.median(np.abs(residual - centre))
         moved = np.abs(residual - centre) <= max(MAD_K * mad, MAD_FLOOR)
         if (moved == keep).all() or passes == MAD_PASSES:
             break
@@ -168,11 +167,7 @@ def _hull(points: np.ndarray, names: tuple[str, ...]) -> dict:
 
 
 def fit(records, form: str = "law") -> dict:
-    """The law over `records`, as the mapping `CoarseLaw` reads.
-
-    The `history` form's prefill vector has a feature `CoarseLaw` does not
-    price, so only its held-out error can be read.
-    """
+    """The law over `records`, as the mapping `CoarseLaw` reads."""
     from scipy.spatial import QhullError
 
     if form not in FORMS:
@@ -314,7 +309,7 @@ def main(argv=None) -> None:
     parser.add_argument("--form", choices=FORMS, default="law")
     args = parser.parse_args(argv)
     law = fit(args.records, args.form)
-    Path(args.out).write_text(json.dumps(law, indent=1))
+    Path(args.out).write_text(json.dumps(law) + "\n")
     print(f"cut: {json.dumps(law['cut'])}")
     for name, vector in [("prefill", law.get("prefill"))] + list(law["decode"].items()):
         if vector:
