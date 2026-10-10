@@ -537,3 +537,19 @@ Against the server log of the paired real run, with the same deployment flags,
 `python -m atom.compass.memory.check OUT_DIR/memory-dp0.json REAL_SERVER_LOG`
 prints the per-term comparison of the non-KV memory and the graph pool. It takes
 the log of one rank.
+
+## Tier a's law from real cells — `coarse_fit`
+
+`python -m atom.compass.backends.coarse_fit RECORD... --out LAW [--form FORM]`
+fits the law a run file's `law` key holds (`atom/compass/backends/coarse.py`) from
+the step records of real cells, `OUT_DIR/steps/dp0.jsonl` of `REAL=1
+cctraces_sim.sh` runs. The module's docstring states the label, what is cut and
+how outliers are dropped; the written law also carries, per vector, its samples,
+warm and dropped counts and condition number, and names any vector it could not
+fit under `unfitted`.
+
+Calibration cells replay traces the graded cells do not: `FIRST_SESSION=256
+SESSIONS=137` against graded traces 0 to 255, by the
+[owner's ruling on #627](https://github.com/jgong5/ATOM/issues/627#issuecomment-6096543740).
+Given two or more records, the command also prints each form's error on every
+record under a law fitted on the others, per decode rung and prefill token band.
