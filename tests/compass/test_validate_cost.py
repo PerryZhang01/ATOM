@@ -96,6 +96,10 @@ def test_the_step_that_moves_the_total_is_held_out_and_the_spread_reported(tmp_p
     assert decode["steps"] == 9 and set(decode["bands"]) == {"decode rung 1"}
     assert decode["measured_s"] == pytest.approx(decode["priced_s"], rel=1e-9)
 
+    # Two under-priced steps: step 5 is short by the most seconds, step 0 by the largest ratio.
+    record = _record(tmp_path / "under", _steps(), stretch={0: 2.2, 5: 1.5})
+    assert cost_accuracy(record, LAW)["fitted"]["prefill"]["held_out_step"] == 5
+
 
 def test_extrapolated_and_refused_steps_are_reported_apart(tmp_path):
     steps = _steps()
