@@ -150,8 +150,9 @@ def test_a_feature_with_no_variance_returns_zero_named(tmp_path):
 def test_warm_steps_and_the_period_holding_an_idle_gap_are_not_fitted(tmp_path):
     steps = _steps(2)
     # Two leading compiles, then a gap after step 50: its period is cut, step 51's
-    # starts after the gap and is fitted. A later compile (step 90) is dropped, not warm.
-    stretch = {0: 40.0, 1: 30.0, 50: 9.0, 90: 20.0}
+    # starts after the gap and is fitted. A later compile (step 90) is warm too;
+    # a later step at four times its price (step 120) is dropped, not warm.
+    stretch = {0: 40.0, 1: 30.0, 50: 9.0, 90: 20.0, 120: 4.0}
     record = _record(tmp_path / "dp0.jsonl", steps, {50}, stretch)
     rows, cut = samples(record)
 
@@ -160,11 +161,11 @@ def test_warm_steps_and_the_period_holding_an_idle_gap_are_not_fitted(tmp_path):
         (51, pytest.approx(steps[51][2], rel=1e-6))
     ]
     law = fit([record])
-    assert law["warm_steps"] == [[0, 1]]
-    assert law["cut"]["warm"] == 2 and law["cut"]["warm_s"] == pytest.approx(
-        40 * steps[0][2] + 30 * steps[1][2], rel=1e-6
+    assert law["warm_steps"] == [[0, 90, 1]]
+    assert law["cut"]["warm"] == 3 and law["cut"]["warm_s"] == pytest.approx(
+        40 * steps[0][2] + 30 * steps[1][2] + 20 * steps[90][2], rel=1e-6
     )
-    assert (law["prefill"]["fit"]["warm"], law["prefill"]["fit"]["dropped"]) == (1, 1)
+    assert (law["prefill"]["fit"]["warm"], law["prefill"]["fit"]["dropped"]) == (2, 1)
     assert law["decode"]["2"]["fit"]["warm"] == 1
     assert law["prefill"]["coefficients"] == pytest.approx(PREFILL, rel=1e-6)
 

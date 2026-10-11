@@ -135,3 +135,30 @@ def test_the_command_prints_the_report_and_refuses_two_ranks(tmp_path, capsys):
     (record / "dp1.jsonl").write_text((record / "dp0.jsonl").read_text())
     with pytest.raises(ValueError, match="2 DP ranks"):
         cost_accuracy(record, LAW)
+
+
+def test_a_one_off_slow_step_is_named_warm_mid_record_and_enters_no_total(
+    tmp_path, capsys
+):
+    # Step 5 ran at 40 times its price, a first touch; step 6 at 4 times is scatter.
+    steps = _steps()
+    record = _record(tmp_path / "steps", steps, stretch={5: 40.0, 6: 4.0})
+    report = cost_accuracy(record, LAW)
+
+    assert report["warm"] == [
+        {
+            "step": 5,
+            "band": "prefill tokens 512-2048",
+            "measured_s": pytest.approx(40 * _price(steps[5][0]), rel=1e-6),
+            "priced_s": pytest.approx(_price(steps[5][0]), rel=1e-9),
+        }
+    ]
+    prefill = report["fitted"]["prefill"]
+    assert prefill["steps"] == 9 and prefill["held_out_step"] == 6
+    assert prefill["held_out"] == pytest.approx(0.0, abs=1e-9)
+    assert report["extrapolated"] == {}
+
+    law = tmp_path / "law.json"
+    law.write_text(json.dumps(LAW))
+    main([str(record), str(law)])
+    assert "warm step 5 (prefill tokens 512-2048)" in capsys.readouterr().out
