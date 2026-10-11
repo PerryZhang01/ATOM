@@ -67,7 +67,6 @@ def bundle(mode, points, output=(), no_output=(), unit="us"):
         "graph_mode": mode,
         "scope": "forward",
         "unit": unit,
-        "margin": 0.25,
         "prefill": {
             "nodes": PREFILL_NODES,
             "output": list(output),
@@ -375,6 +374,14 @@ def _edited(edit, mode="eager"):
             ),
             "is on rung 16, which has no B nodes",
         ),
+        (
+            _edited(lambda m: m["decode"]["nodes"].update(B=EAGER_B), mode="replay"),
+            "under graph mode replay the decode B nodes are one list per rung, not a list",
+        ),
+        (
+            _edited(lambda m: m["decode"]["nodes"].update(B=REPLAY_B)),
+            "under graph mode eager the decode B nodes are one list, not a dict",
+        ),
     ],
     ids=[
         "mode",
@@ -387,6 +394,8 @@ def _edited(edit, mode="eager"):
         "repeats",
         "statistic",
         "rung",
+        "replay-b-list",
+        "eager-b-per-rung",
     ],
 )
 def test_a_bundle_that_cannot_be_read_fails_loading(mapping, match):

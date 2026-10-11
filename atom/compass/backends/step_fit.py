@@ -32,7 +32,7 @@ width, since the measurement already holds the collectives. Its species is
 The grid is a mapping, as a bundle holds it:
 
     {"graph_mode": "replay" | "eager", "scope": <timing scope>,
-     "unit": "s" | "ms" | "us", "margin": <planning margin>,
+     "unit": "s" | "ms" | "us",
      "prefill": {"nodes": {"B": [...], "N_Q": [...], "c": [...]},
                  "output": [POINT, ...], "no_output": [POINT, ...]},
      "decode": {"nodes": {"B": B_NODES, "c": [...]}, "points": [POINT, ...]}}
@@ -175,7 +175,7 @@ class StepFitGrid:
         if bundle["unit"] not in UNITS:
             raise ValueError(f"unit {bundle['unit']!r} is not one of {list(UNITS)}")
         self.unit = UNITS[bundle["unit"]]
-        self.scope, self.margin = bundle["scope"], bundle["margin"]
+        self.scope = bundle["scope"]
         prefill = bundle["prefill"]
         axes = ("B", "N_Q", "c")
         nodes = [prefill["nodes"][axis] for axis in axes]
@@ -185,7 +185,14 @@ class StepFitGrid:
         }
         decode = bundle["decode"]
         b_nodes, c_nodes = decode["nodes"]["B"], decode["nodes"]["c"]
-        if self.graph_mode == "eager":
+        replay = self.graph_mode == "replay"
+        if isinstance(b_nodes, Mapping) != replay:
+            raise ValueError(
+                f"under graph mode {self.graph_mode} the decode B nodes are "
+                f"{'one list per rung' if replay else 'one list'}, not a "
+                f"{type(b_nodes).__name__}"
+            )
+        if not replay:
             self.decode = _Cells(
                 "decode", ("B", "c"), [b_nodes, c_nodes], decode["points"]
             )
