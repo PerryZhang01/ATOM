@@ -213,6 +213,7 @@ def fit(records, form: str = "law") -> dict:
             r for r in rows if r[1] == key or (key is None and r[1] != "prefill")
         ]
         if not members:
+            law["unfitted"][key] = f"0 steps for {len(names)} coefficients"
             continue
         counts = np.array([r[2] for r in members], dtype=np.float64)
         x = counts

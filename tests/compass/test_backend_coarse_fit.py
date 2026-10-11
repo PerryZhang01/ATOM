@@ -237,3 +237,28 @@ def test_the_outlier_scale_is_read_over_every_step_so_it_does_not_shrink(tmp_pat
     assert (
         fitted["dropped"] + fitted["warm"] < (fitted["samples"] + fitted["dropped"]) / 3
     )
+
+
+@pytest.mark.parametrize("kept", [3, 0])
+def test_a_law_with_prefill_too_thin_to_fit_loads_and_refuses_prefill(tmp_path, kept):
+    steps = _steps(10)
+    prefill = [i for i, s in enumerate(steps) if s[1] is None and not s[0][0][2]]
+    steps = [s for i, s in enumerate(steps) if i not in prefill[kept:]]
+    law = fit([_record(tmp_path / "dp0.jsonl", steps)])
+
+    assert law["unfitted"] == {"prefill": f"{kept} steps for 4 coefficients"}
+    backend = CoarseBackend(CoarseLaw(law))
+    with pytest.raises(CostRefused, match="no prefill vector"):
+        backend.estimate(_view([(100, 100, False)]))
+    assert backend.estimate(_view([(1, 900, True)], 2)).seconds > 0
+
+
+def test_a_step_mixing_prefill_and_decode_is_cut_not_fitted(tmp_path):
+    steps = _steps(11)
+    steps[20] = ([(100, 100, False), (1, 900, True)], None, 1.0)
+    rows, cut = samples(_record(tmp_path / "dp0.jsonl", steps))
+
+    assert cut == {"idle": 0, "mixed": 1, "last": 1}
+    assert 20 not in [r[3] for r in rows]
+    law = fit([tmp_path / "dp0.jsonl"])
+    assert law["prefill"]["coefficients"] == pytest.approx(PREFILL, rel=1e-6)

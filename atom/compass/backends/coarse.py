@@ -19,9 +19,10 @@ the widest captured size) is the rung named `eager`, whose padding is zero.
 Each vector carries the convex hull of the features it was fitted on. A step
 outside it is priced by the same vector and its terms are `extrapolated`, with
 a detail naming the hull; it is not refused. A step the law has no vector for
-is refused: a decode rung with none, or a step mixing prefill and decode rows.
+is refused: prefill when the law has no prefill vector, a decode rung with
+none, or a step mixing prefill and decode rows.
 
-The law is a mapping, as a run file holds it:
+The law is a mapping, as a run file holds it, `prefill` optional:
 
     {"provenance": "<what it was fitted on>",
      "prefill": VECTOR,
@@ -123,9 +124,11 @@ class CoarseLaw:
         self.provenance = str(law.get("provenance", "")).strip()
         if not self.provenance:
             raise ValueError("a law states what it was fitted on, under provenance")
-        prefill = law["prefill"]
-        features = HISTORY if "history" in prefill["coefficients"] else PREFILL
-        self.prefill = _Vector("prefill", features, prefill)
+        self.prefill = None
+        if "prefill" in law:
+            prefill = law["prefill"]
+            features = HISTORY if "history" in prefill["coefficients"] else PREFILL
+            self.prefill = _Vector("prefill", features, prefill)
         self.decode = {
             None if rung == EAGER else int(rung): _Vector(
                 f"decode rung {rung}", DECODE, spec
@@ -161,6 +164,8 @@ class CoarseBackend(CostBackend):
             )
         if prefill:
             vector, kind = self.law.prefill, "prefill"
+            if vector is None:
+                raise self._refuse(batch_view, "no prefill vector")
             counts = (
                 1,
                 sum_tokens(prefill),
