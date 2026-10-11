@@ -6,7 +6,8 @@ law), `p97/` (at 0.97 of its prefill price) and two or more `real*/`. Rows:
 `validate.runs`' grades, TTFT p50 per band of uncached prompt tokens graded alike,
 `validate.cost` (with the steps it leaves out) and `memory.check` per real run,
 and each simulated run's refusals by source, shares and speed. Any refusal makes
-the cell a coverage report; the shares grade nothing.
+the cell a coverage report; the shares grade nothing, and neither do the counts
+but preemptions and prefill tokens.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from atom.compass.validate import cost, runs
 
 BANDS = {0: "0-512", 512: "512-2048", 2048: "2048-8192", 8192: "8192+"}
 HULL = {"fitted": ("in hull", "-"), "extrapolated": ("outside hull", "not gated")}
+GATED_COUNTS = {"preemptions", "prefill tokens"}
 
 
 def _ttft(run: Path) -> dict[str, float]:
@@ -41,6 +43,8 @@ def _graded(family: str, name: str, g: dict) -> tuple:
     result = " ".join(f"{r:.4g}" for r in g["result"])
     value = f"spread {g['spread']:.4g}; result {result}; moved {g['moved']:.4g}"
     verdict = f"{g['verdict']}, {'' if g['admissible'] else 'in'}admissible"
+    if family == "counts" and name not in GATED_COUNTS:
+        verdict += ", not gated"
     return family, name, value, verdict
 
 

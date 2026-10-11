@@ -21,12 +21,23 @@ TERM = {"basis": "spec", "source": "planted"}
 SPECIES = {"steps": 3, "fraction_of_predicted_seconds": 0.4}
 
 
-def _run(d, ttft, *, refusals=(), non_torch=1.0, speed=True, workload=1, stretch=None):
+def _run(
+    d,
+    ttft,
+    *,
+    refusals=(),
+    non_torch=1.0,
+    speed=True,
+    workload=1,
+    stretch=None,
+    steps=None,
+    idle_after=(),
+):
     """One run. `ttft` is (uncached, cached, ms) per profiling request; a warmup
     request with 9000 uncached tokens precedes them. `refusals` None makes the
     run real, a list of (source, count) makes it simulated with those refusals."""
     d.mkdir(parents=True)
-    _record(d / "steps", _steps(), stretch=stretch)
+    _record(d / "steps", steps or _steps(), stretch=stretch, idle_after=idle_after)
     (d / "artifacts").mkdir()
     export = json.loads(json.dumps(EXPORT))
     export["time_to_first_token"]["avg"] = ttft[0][2]
@@ -87,9 +98,9 @@ def _run(d, ttft, *, refusals=(), non_torch=1.0, speed=True, workload=1, stretch
     (d / "summary.json").write_text(json.dumps(summary))
 
 
-def _rows(capsys, tmp_path, law=(), **p97):
+def _rows(capsys, tmp_path, law=(), law_run=None, **p97):
     """The cell's rows; real0's step 5 ran ten times its price, `law` is that run's
-    refusals and `p97` sets that run."""
+    refusals, `law_run` sets that run's other arguments and `p97` sets that run."""
     for i, (ms, non_torch) in enumerate(((100, 1.0), (110, 1.5), (105, 1.0))):
         _run(
             tmp_path / "c4" / f"real{i}",
@@ -98,7 +109,7 @@ def _rows(capsys, tmp_path, law=(), **p97):
             non_torch=non_torch,
             stretch={5: 10.0} if i == 0 else None,
         )
-    _run(tmp_path / "c4" / "law", [(100, 1000, 120.0)], refusals=law)
+    _run(tmp_path / "c4" / "law", [(100, 1000, 120.0)], refusals=law, **(law_run or {}))
     _run(tmp_path / "c4" / "p97", [(100, 1000, 118.0)], **p97)
     main([str(tmp_path / "c4")])
     out = capsys.readouterr().out.splitlines()
@@ -171,3 +182,18 @@ def test_a_cost_refusal_in_the_law_run_alone_makes_the_cell_a_coverage_report(
         '2 {"cost": 2}; cost refused 10.0% of 20 steps',
         "coverage report",
     ]
+
+
+def test_counts_but_preemptions_and_prefill_tokens_are_not_gated(capsys, tmp_path):
+    # A decode step of another request splits the law run's prefill chunks: one
+    # prefill streak and one decode token more than every real run.
+    steps = _steps()
+    steps.insert(5, ([(1, 2000, True)], 1))
+    rows = _rows(capsys, tmp_path, law_run={"steps": steps, "idle_after": {4, 5}})
+    assert rows["counts", "prefill streaks"] == [
+        "spread 0; result 1 1 1; moved 1",
+        "outside, admissible, not gated",
+    ]
+    assert rows["counts", "decode tokens"][1] == "outside, admissible, not gated"
+    assert rows["counts", "prefill tokens"][1] == "exact, inadmissible"
+    assert rows["counts", "preemptions"][1] == "exact, inadmissible"
