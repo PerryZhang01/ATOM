@@ -235,6 +235,14 @@ class GDNStateMixin:
             dtype=torch.int32,
             device=self.device,
         )
+        # Pinned staging for causal_conv1d's program map, one entry per chunk.
+        # Kept in forward_vars so the pipeline ring gives each in-flight slot
+        # its own. A chunk holds at least one token, so the token budget bounds
+        # the count.
+        for name in ("gdn_batch_ptr", "gdn_token_chunk_offset_ptr"):
+            model_runner.forward_vars[name] = CpuGpuBuffer(
+                self.max_num_batched_tokens, dtype=torch.int32, device=self.device
+            )
         self.spec_sequence_masks = torch.ones(
             (self.max_bs,),
             dtype=torch.bool,
@@ -1096,8 +1104,14 @@ class GDNStateMixin:
                 if cached is not None
                 else torch.zeros(num_prefills, dtype=torch.bool, device=self.device)
             )
+            # The host copy `prepare_prefill` staged the device one from.
+            var = self.model_runner.forward_vars
             nums_dict, batch_ptr, token_chunk_offset_ptr = (
-                compute_causal_conv1d_metadata(non_spec_query_start_loc)
+                compute_causal_conv1d_metadata(
+                    var["cu_seqlens_q"].np[: non_spec_query_start_loc.numel()],
+                    var["gdn_batch_ptr"],
+                    var["gdn_token_chunk_offset_ptr"],
+                )
             )
         else:
             has_initial_state = None
@@ -1533,13 +1547,19 @@ class GDNAttentionMetadataBuilder(GDNStateMixin, AiterAttentionMetadataBuilder):
 PAD_SLOT_ID = -1
 
 
-def compute_causal_conv1d_metadata(query_start_loc_p: torch.Tensor):
-    # Needed for causal_conv1d
-    seqlens = query_start_loc_p.diff().to("cpu")
+def compute_causal_conv1d_metadata(
+    cu_seqlens, batch_buf=None, token_chunk_offset_buf=None
+):
+    # Needed for causal_conv1d. With staging buffers, `cu_seqlens` is the host
+    # copy and the program map goes over by pinned non-blocking copies, so
+    # preparing a prefill never waits for the device. Without them (the SGLang
+    # and RTP-LLM plugins), `cu_seqlens` is a device tensor and the map goes to
+    # new tensors on its device.
+    if batch_buf is None:
+        seqlens = cu_seqlens.diff().to("cpu")
+    else:
+        seqlens = torch.from_numpy(np.diff(cu_seqlens))
     nums_dict = {}  # type: ignore
-    batch_ptr = None
-    token_chunk_offset_ptr = None
-    device = query_start_loc_p.device
     for BLOCK_M in [8]:  # cover all BLOCK_M values
         nums = -(-seqlens // BLOCK_M)
         nums_dict[BLOCK_M] = {}
@@ -1549,30 +1569,20 @@ def compute_causal_conv1d_metadata(query_start_loc_p: torch.Tensor):
         nums_dict[BLOCK_M]["mlist"] = mlist
         mlist_len = len(nums_dict[BLOCK_M]["mlist"])
         nums_dict[BLOCK_M]["mlist_len"] = mlist_len
-        MAX_NUM_PROGRAMS = max(1024, mlist_len) * 2
         offsetlist = []  # type: ignore
         for idx, num in enumerate(nums):
             offsetlist.extend(range(num))
         offsetlist = torch.tensor(offsetlist, dtype=torch.int32)
         nums_dict[BLOCK_M]["offsetlist"] = offsetlist
 
-        if batch_ptr is None:
-            # Update default value after class definition
-            batch_ptr = torch.full(
-                (MAX_NUM_PROGRAMS,), PAD_SLOT_ID, dtype=torch.int32, device=device
-            )
-            token_chunk_offset_ptr = torch.full(
-                (MAX_NUM_PROGRAMS,), PAD_SLOT_ID, dtype=torch.int32, device=device
-            )
+        if batch_buf is None:
+            batch_ptr = mlist.to(cu_seqlens.device, torch.int32)
+            token_chunk_offset_ptr = offsetlist.to(cu_seqlens.device)
         else:
-            if batch_ptr.nelement() < MAX_NUM_PROGRAMS:
-                batch_ptr.resize_(MAX_NUM_PROGRAMS).fill_(PAD_SLOT_ID)
-                token_chunk_offset_ptr.resize_(MAX_NUM_PROGRAMS).fill_(  # type: ignore
-                    PAD_SLOT_ID
-                )
-
-        batch_ptr[0:mlist_len].copy_(mlist)
-        token_chunk_offset_ptr[0:mlist_len].copy_(offsetlist)  # type: ignore
+            batch_buf.np[:mlist_len] = mlist
+            token_chunk_offset_buf.np[:mlist_len] = offsetlist
+            batch_ptr = batch_buf.copy_to_gpu(mlist_len)
+            token_chunk_offset_ptr = token_chunk_offset_buf.copy_to_gpu(mlist_len)
         nums_dict[BLOCK_M]["batch_ptr"] = batch_ptr
         nums_dict[BLOCK_M]["token_chunk_offset_ptr"] = token_chunk_offset_ptr  # type: ignore
 
