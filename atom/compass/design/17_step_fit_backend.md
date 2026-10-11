@@ -1,9 +1,10 @@
 # ATOM Compass — Design Topic 17: Step Fit Backend (Tier a)
 
-**Status:** draft under review on PR #626; not yet approved. Drafted by an AI assistant
-from the design PR #626 proposed and the owner's rulings on
-[#696](https://github.com/jgong5/ATOM/issues/696) (2026-10-09 and 2026-10-10). No code has
-been written against it yet; implementation follows the execution plan in `16`.
+**Status:** reviewed and approved, 2026-10-11. Drafted by an AI assistant from the design
+PR #626 proposed and the owner's rulings on
+[#696](https://github.com/jgong5/ATOM/issues/696) (2026-10-09 and 2026-10-10), and
+reviewed by jgong5 on PR #626. No code has been written against it yet; implementation
+follows the execution plan in `16`.
 
 **Depends on:** `02` (the backend interface, the forward's interval, the provenance
 species), `07` (the tiers, the bench, artifact identity and invalidation), `08` (stage 2's
@@ -14,19 +15,21 @@ validation), `13` (the flag surface), `14` (the cost form), `15` (DP and PP).
 of measured whole-forward times, looked up for each batch, plus a residual fitted on
 replayed batches that carries what the grid's coordinates cannot see. It is a candidate
 backend for [#627](https://github.com/jgong5/ATOM/issues/627)'s stage 2 and gets one
-non-graded evaluation on DeepSeek-V4-Pro. It does not cover tier b, the tier-a law of `09`
-D54 (DP-attention's tier a, [#529](https://github.com/jgong5/ATOM/issues/529)), or KV
-transfer (`01` D6).
+non-graded evaluation on DeepSeek-V4-Pro. It does not cover tier b; the tier-a law of `09`
+D54, which stage 2 prices with ([#738](https://github.com/jgong5/ATOM/issues/738)) and
+whose DP-attention form is [#529](https://github.com/jgong5/ATOM/issues/529)'s in stage 3;
+or KV transfer (`01` D6).
 
-**Deliberate departures**, each by owner ruling on #696. Every other conflict
-between #626 and the decided design is resolved in the decided design's favour, and the
-decision that adopts it says which.
+**Deliberate departures**, by owner ruling on #696 unless the row says otherwise. Every
+other conflict between #626 and the decided design is resolved in the decided design's
+favour, and the decision that adopts it says which.
 
 | Departs from | How | Decision |
 |---|---|---|
 | `07` D36: tier b is what acceptance cells use | a tier-a backend is graded as a stage-2 candidate | D96 |
 | `07` D39: step measurements come from replayed batches | the baseline grid is synthetic and homogeneous; the residual is fitted on replayed batches | D98 |
 | `08` D50.1 items 1, 3 and 4, and `13` D80's default that follows them: a refusal marks and continues | a refusal aborts the run, and a graded run is refusal-free by coverage | D102 |
+| `13` D79: no Compass config file | step fit is selected by a run-file key, as the code selects every backend; not ruled on #696, and open until the owner settles the run file (T96) | D103 |
 
 ---
 

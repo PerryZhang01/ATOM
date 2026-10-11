@@ -1,7 +1,7 @@
 # ATOM Compass — Design
 
 **Status: reviewed and approved, 2026-09-20. Design only — no code has been written
-against it yet.** Every document carries a matching header; `17` is a draft under review.
+against it yet.** Every document carries a matching header.
 **Decisions D0–D105, with no gaps, and their sub-decisions** are indexed at the end of this
 file. The TODOs are registered in **`12_open_items.md`**, with the load-bearing assumptions
 and the cross-cutting issues. Implementation follows the execution plan in `16`.
@@ -514,7 +514,7 @@ The documents use these precisely; a reader will bounce off without them.
 | [`03`](03_memory_and_kv_model.md) | Memory Model and the KV Pool | **Do not simulate the KV pool** — ATOM's real one is pure arithmetic. Substitute the five device readings, never the arithmetic. How a prefix-cache hit reaches the cost model. Validate per term, never as a sum. |
 | [`04`](04_model_capture_and_cost_ir.md) | Model Capture and the Cost IR | Capture with `TorchDispatchMode` + `FakeTensorMode` + `ShapeEnv`. A hierarchical, symbolic, stream-annotated IR whose `Repeat` nests and tolerates non-contiguous layer patterns. **Opaque leaves** are priced, not decomposed. |
 | [`10`](10_analytic_laws.md) | Analytic Laws (Tier 0) | Cost and memory from device parameters and model geometry, with no measurement of the subject. Three classes: exact from geometry, device-parameterised, policy-determined. Declared accuracy goals with **ranking** as the primary gate. **The most speculative document here.** |
-| [`17`](17_step_fit_backend.md) | Step Fit Backend (Tier a) | A measured grid of whole forwards, answered only from complete cells, plus a residual fitted on replayed batches. A stage-2 candidate, graded by stage 2's protocol and off the stage-2 path for now (#627); a refusal aborts the run. Draft under review. |
+| [`17`](17_step_fit_backend.md) | Step Fit Backend (Tier a) | A measured grid of whole forwards, answered only from complete cells, plus a residual fitted on replayed batches. A stage-2 candidate, graded by stage 2's protocol and off the stage-2 path for now (#627); a refusal aborts the run. |
 
 ### Part III — How the data is made
 
