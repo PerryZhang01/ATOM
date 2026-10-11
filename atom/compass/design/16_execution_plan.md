@@ -4,9 +4,9 @@
 interview and reviewed by jgong5 across two review rounds on PR #3. No code has been
 written against it yet; implementation follows the execution plan in `16`.
 
-**Depends on:** all of `01`–`15`. This document turns those topics' decisions, and the
-register of open items in [`12_open_items.md`](12_open_items.md), into work that can be
-allocated. Neither is counted here. The register is owned by `12`, restated once on
+**Depends on:** all of `01`–`15`, and `17`. This document turns those topics' decisions,
+and the register of open items in [`12_open_items.md`](12_open_items.md), into work that
+can be allocated. Neither is counted here. The register is owned by `12`, restated once on
 `README.md`'s front page, and it moves as tasks land; a third copy in a document that does
 not own it has been stale before, and "open items" and "registered items" are two different
 numbers that a single figure here cannot distinguish.
@@ -494,6 +494,25 @@ Detailed now, because M2 overlaps M1: calibration and tier 0 run alongside Waves
 their own hardware, and a coarse wave cannot be claimed as an issue. Every row that Phase
 0b can reshape says so.
 
+### Stage 2 — Qwen3.8-27B TP1 on MI308X, M2's first gate
+
+#627's stage 2 (D95): paired real and simulated cc-traces, graded by `08`. S2.1, the real
+side, serves any candidate backend. #627 ruled on 2026-10-10 that stage 2 prices with
+`09` D54's tier-a law, whose tasks #627 files, and that step fit stays off the stage-2 path
+for now. The rows after S2.1 are step fit's stage-2 evaluation (`17` D96), off stage 2's
+critical path: no stage-2 issue waits on them, their MI308X measurements run only when node
+18 is idle from that path, S2.4 builds on the tier-a backend #738 delivered (#759), and none
+of them depends on or edits #741's or #742's code.
+
+| ID | Task | Module | Effort | Depends on |
+|---|---|---|---|---|
+| **S2.1** | The real side: Qwen3.8-27B TP1 on MI308X, aggregated, driven by cc-traces at `08` D50's stage-2 client counts; three or more spaced runs per client count (`08` D45), with per-request records and per-step tables, each forward's batch and unprofiled seconds (`08` D49 item 1). Filed under #627's stage-2 plan; step fit reads #743's registered runs read only, or, if they do not exist when it is ready, runs its own under the same rules, named apart from stage 2's (`17` D96) | `scripts/compass/` | 150–300 | GPU queue |
+| **S2.2** | Step fit's grid: a grid definition with its margin, planned from Phase 0 on the registered case set, then from the shapes of S2.1's step tables, any trace's shapes and never its timings; the cells the planned shapes fall in measured on MI308X per point while node 18 is idle from the critical path, then topped up in the cells real batches fall in (`17` D98) | calibration, `cli/` | 300–500 | W4.1, S2.1, T27, GPU queue |
+| **S2.3** | Step fit's residual, fitted on replayed batches of traces 256 to 392 (`17` D100) | `backends/`, calibration | 250–400 | S2.2 |
+| **S2.4** | `StepFitBackend` with its production wiring, built on the tier-a backend #738 delivered (#759): lookup, residual, bundle and startup checks, abort-only refusal, the run record and the `step_fit` run-file key (`17` D99–D104) | `backends/`, wiring | 500–800 | W2.4, S2.3 |
+| **S2.5** | `09` D59's validation of the residual: data held out from the fit within traces 256 to 392, three or more candidate families, a second axis (`17` D96) | calibration | 150–250 | S2.3 |
+| **S2.6** | Grading step fit by stage 2's protocol: `08` D44's three results on traces 0 to 255 of S2.1's real runs, no ranking gate; any refusal voids the run (`17` D102) | `cli/` | 150–250 | S2.4, S2.5 |
+
 ### Wave 4 — DeepSeek-V4-Pro on MI355X
 
 | ID | Task | Module | Effort | Depends on |
@@ -510,6 +529,7 @@ their own hardware, and a coarse wave cannot be claimed as an issue. Every row t
 | **W4.10** | M2's EP8 step: `exclusive` occupancy honoured in the IR; group membership per P0.6; MORI dispatch/combine carried as the group's collective in W4.6's step, in place of the gather, and priced from W4.12 by a routing model (#501) | `ir/`, `backends/` | 350–600 | **P0.6**, **P0b.2**, W4.6, W4.12 |
 | **W4.11** | The EP8 real side: W4.3's DP-attention cells re-run with `--enable-expert-parallel` on the MI355X pair, with the same records and repeat, since no nightly cell passes it | `scripts/compass/` | 50–100 | W4.3, GPU queue |
 | **W4.12** | MORI dispatch/combine within a node on MI355X, measured and fitted (`09`) for W4.10's routing model | `backends/`, calibration | 150–300 | W4.1, W4.2, GPU queue |
+| **W4.13** | Step fit evaluated on DeepSeek-V4-Pro, not graded (`17` D105): a workload-planned grid and fit on the nightly TP cell (TP8, no DP-attention, no MTP, expert parallelism off) on MI355X, prefill node and decode node, compared with W4.3's per-step tables and with tier b where available, reported per `08` D47. Competes with W4.4 and W4.12 for MI355X | calibration, `cli/` | 200–350 | S2.2–S2.6, W4.1, W4.3, GPU queue |
 
 ### Wave 5 — MI455 by roofline
 
@@ -543,6 +563,8 @@ Listed so it is not mistaken for an omission; each is re-planned when v1 lands.
 - EP beyond one node, and the multi-node rank mapping of T85.
 - GLM-5.2, Kimi-K3 and other models; MXFP4 beyond DeepSeek-V4-Pro's own experts.
 - DCP (decode context parallelism).
+- Step fit for Kimi-K3 with DCP: a grid and fit for that target, with DCP's correction as
+  an optional recipe (`17` D100).
 - Width transfer (T21) as a claim.
 - The upstream RFC for ATOM-core edits.
 
@@ -552,7 +574,9 @@ Listed so it is not mistaken for an omission; each is re-planned when v1 lands.
 
 **M2's hardware, by D95.** An RDMA-connected MI355X pair for the paired runs of W4.3 and W4.11, and a
 third MI355X node for W4.4 and W4.12, so that calibration does not queue behind the pairs; an MI308X
-node for development, the CPU-and-GPU gates and W5.5's MI308X side. Until dedicated nodes
+node for development, the CPU-and-GPU gates, W5.5's MI308X side, stage 2's real side
+(S2.1), and step fit's grid measurement (S2.2) while it is idle from stage 2's critical
+path. Until dedicated nodes
 exist, the shared pools below serve, with the pre-flight gate as written.
 
 GPU is the scarce resource; almost everything else is CPU-only by design principle 2.

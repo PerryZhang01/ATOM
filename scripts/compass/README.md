@@ -557,3 +557,20 @@ record under a law fitted on the others, per decode rung and prefill token band.
 `scripts/compass/laws/qwen3.8-27b-tp1-mi308x-hjbog18.json` is the `history` form
 fitted on the five stage-2 calibration cells (concurrency 1, 4, 16, 64 and 256)
 on node 18; a stage-2 run file holds it under `law`.
+
+## Cost accuracy on a real run's own steps — `validate.cost`
+
+`python -m atom.compass.validate.cost RECORD LAW` prices each step of a real
+cell's record (`OUT_DIR/steps` of a `REAL=1 cctraces_sim.sh` run) with a law
+file as `coarse_fit` writes it, and prints the error per kind, per decode rung
+and per prefill token band. The module's docstring states what each figure is.
+Grade a law only on cells whose traces its calibration cells do not replay.
+
+## Schedule and end-to-end grades — `validate.runs`
+
+`python -m atom.compass.validate.runs SIMULATED PERTURBED REAL...` grades a
+simulated `cctraces_sim.sh` cell against two or more spaced real runs of it
+(`REAL=1`), each metric against the real runs' own spread, and names a metric
+inadmissible when the cell PERTURBED, simulated at 0.97 of the law's prefill
+price, moves it no further than that spread. The module's docstring lists the
+metrics, their distances and the verdicts.

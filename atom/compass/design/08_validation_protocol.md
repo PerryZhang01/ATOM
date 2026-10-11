@@ -462,6 +462,9 @@ admissibility threshold.** Concretely:
    next. The number is declared, not derived, and should be revisited after one campaign.
 4. **`--compass-on-refusal abort` exists** (`13` D80) for the case where a refusal is a
    bug being chased. It is not the default and is not valid in an acceptance run.
+   **One departure, by ruling:** topic `17`'s step fit runs with `abort` only, and departs
+   from items 1, 3 and 4. Its graded runs are refusal-free by a pre-run coverage check,
+   and any refusal voids the run (`17` D102).
 
 **Why not abort by default.** Refusals are the design's main *diagnostic* output — the
 whole point of `compass plan` is that a refusal tells you what to measure. Aborting makes
