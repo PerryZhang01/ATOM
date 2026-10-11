@@ -39,6 +39,9 @@ Run file keys: ``clock_endpoint``, ``bound_s`` (finite), ``admission_path``,
 `ShapeStubBackend`) or ``law`` (a `CoarseLaw` mapping, priced by `CoarseBackend`),
 ``roofline_floor_s`` (optional: a tier-0 `Roofline` with this host floor prices
 the steps the backend refuses),
+``on_refusal`` (optional: ``mark``, the default, prices a step no cost source
+answers at 0 s, hands in its ``cost:`` reason and continues; ``abort`` ends
+the run there, which still writes the summary),
 ``machine`` (a machine spec mapping), ``parameter_count``, and ``out_dir``,
 where the step table, the run summary and each server LP's hand-in go, one
 file written as the LP leaves its loop. It holds the LP's refusals: an
@@ -128,6 +131,11 @@ def spec() -> dict | None:
         raise ValueError(
             f"{path}: bound_s is {bound!r}; a run needs a finite simulated-time "
             "bound, or a timer nobody declared daemon keeps it alive forever"
+        )
+    if run.get("on_refusal", "mark") not in ("mark", "abort"):
+        raise ValueError(
+            f"{path}: on_refusal is {run['on_refusal']!r}; a step no cost source "
+            "answers is marked and the run continues (mark), or ends it (abort)"
         )
     run["clock_endpoint"] = os.environ.get(CLOCK_ENV, run.get("clock_endpoint"))
     return run
@@ -444,6 +452,7 @@ def runner(model_runner) -> None:
         )
         backend = Tiered(backend, roofline)
     install_cost_backend(model_runner, backend)
+    model_runner.compass_abort = run.get("on_refusal") == "abort"
     reserved, captured = _graph_pool(model_runner, machine, model)
     readings = device_readings(
         machine, tp_width=tp, model=model, cudagraph_overhead=reserved

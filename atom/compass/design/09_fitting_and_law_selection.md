@@ -110,6 +110,7 @@ DP and EP with a **per-rank** law: it prices one rank's step, and the group's st
 
 ```
 prefill:  [ 1,  tokens,  Σ_req N_Q²,  Σ_req N_Q·(ctx − N_Q) ]
+          + history: Σ_req (ctx − N_Q), in coarse_fit's `history` form
 decode:   [ 1,  batch,   Σ ctx ]
 per rung: [ 1,  Σ ctx,   rung·max(ctx) − Σ ctx ]
 ```

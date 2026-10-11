@@ -468,9 +468,6 @@ continues, and any refusal makes the run a coverage report** (owner ruling on
 4. **`--compass-on-refusal abort` exists** (`13` D80) for the case where a refusal is a
    bug being chased. It stops the run at the first refusal, and the run summary is still
    written. It is not the default.
-   **One departure, by ruling:** topic `17`'s step fit runs with `abort` only, departing
-   from item 1's continue and D80's default. Its graded runs are refusal-free by a
-   pre-run coverage check (`17` D102).
 
 **Why not abort by default.** Refusals are the design's main *diagnostic* output — the
 whole point of `compass plan` is that a refusal tells you what to measure. Aborting makes

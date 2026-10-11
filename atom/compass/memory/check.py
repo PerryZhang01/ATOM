@@ -140,8 +140,8 @@ def recorded(log: Path) -> tuple[Recorded, Term | None]:
     return run, pool
 
 
-def check(predicted_file: Path, log: Path) -> str:
-    """The per-term table, the predicted readings' own terms, and the graph pool."""
+def parts(predicted_file: Path, log: Path) -> list:
+    """The per-term comparison, the predicted readings, and the graph pool's."""
     if not (saved := json.loads(predicted_file.read_text()).get("memory")):
         what = f"{predicted_file} has no memory section"
         raise MemoryRefusal(what, "pass an engine's hand-in, lp-engine*.json")
@@ -153,8 +153,8 @@ def check(predicted_file: Path, log: Path) -> str:
         at_shape=SHAPED,
     )
     run, pool = recorded(log)
-    out = [compare(predicted, run).table()]
-    out += [readings[name].table() for name in COMPARED]
+    out = [compare(predicted, run)]
+    out += [readings[name] for name in COMPARED]
     if pool is None or saved["predicts"] is None:
         out.append(
             "graph pool not compared: the simulated run captures "
@@ -164,10 +164,14 @@ def check(predicted_file: Path, log: Path) -> str:
     else:
         reserves = readings[graph_pool.RESERVES]
         predicts = _reading(graph_pool.PREDICTS, saved["predicts"])
-        out.append(
-            compare_graph_pool(pool, reserves=reserves, predicts=predicts).table()
-        )
-    return "\n".join(out)
+        out.append(compare_graph_pool(pool, reserves=reserves, predicts=predicts))
+    return out
+
+
+def check(predicted_file: Path, log: Path) -> str:
+    """The per-term table, the predicted readings' own terms, and the graph pool."""
+    out = parts(predicted_file, log)
+    return "\n".join(p if isinstance(p, str) else p.table() for p in out)
 
 
 def main(argv: list[str] | None = None) -> None:

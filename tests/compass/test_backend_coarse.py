@@ -217,8 +217,11 @@ def test_the_runner_prices_a_replayed_rung_from_its_own_vector():
     priced = graphed(backend(**{"1": EAGER_HULL})).dummy_execution().predicted_s
 
     assert priced == STAGE1.decode_step + STAGE1.decode_context
-    with pytest.raises(CostRefused, match="no decode vector for rung 1"):
-        graphed(backend()).dummy_execution()
+    refused = graphed(backend())
+    assert refused.dummy_execution().predicted_s == 0.0
+    assert refused.refused_commands() == (
+        "cost:coarse-law: no decode vector for rung 1",
+    )
 
 
 def _without_coefficients(out, **keys):
