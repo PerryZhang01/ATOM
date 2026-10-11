@@ -225,9 +225,7 @@ class StepFitBackend(CostBackend):
     """Prices a step as the grid's value at its equivalent shape, times the
     residual; `bundle` names the artifact both came from, for `describe`."""
 
-    def __init__(
-        self, grid: StepFitGrid, residual: Residual, bundle: str | None = None
-    ) -> None:
+    def __init__(self, grid: StepFitGrid, residual: Residual, bundle: str) -> None:
         self.grid, self.residual, self.bundle = grid, residual, bundle
 
     @property
@@ -298,8 +296,7 @@ class StepFitBackend(CostBackend):
         return StepCost([CostTerm("forward", lookup * factor, fitted)])
 
     def describe(self) -> str:
-        bundle = f", bundle {self.bundle}" if self.bundle else ""
         return (
-            f"tier-a step fit{bundle}; {self.grid.graph_mode} decode grid, "
-            f"timing scope {self.grid.scope}; {self.residual.describe()}"
+            f"tier-a step fit, bundle {self.bundle}; {self.grid.graph_mode} "
+            f"decode grid, timing scope {self.grid.scope}; {self.residual.describe()}"
         )

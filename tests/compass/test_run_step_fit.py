@@ -277,6 +277,16 @@ def test_a_deployment_off_the_bundles_keyed_conditions_refuses_naming_them(
     assert named in str(refused.value)
 
 
+def test_a_capture_size_past_max_num_seqs_is_not_on_the_ladder(monkeypatch, tmp_path):
+    publish(tmp_path, deployment(tmp_path))
+    run_file(tmp_path, monkeypatch)
+    r = deployment(tmp_path, capture_sizes=LADDER + [64])
+
+    compass_run.runner(r)
+
+    assert isinstance(r.compass_backend, StepFitBackend)
+
+
 def test_a_timing_scope_narrower_than_the_forward_refuses(monkeypatch, tmp_path):
     r = deployment(tmp_path)
     narrow = copy.deepcopy(BUNDLE)

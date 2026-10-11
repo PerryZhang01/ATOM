@@ -22,7 +22,7 @@ width. Loading refuses, naming what differs:
 - a run at data-parallel width above one, since every bundle is measured at one;
 - a keyed condition, the grid's graph mode, or a timing scope other than the
   whole ``ModelRunner.forward``;
-- the gates, or any of the six readings, through `ArtifactStore.load`;
+- the gates, or any reading, through `ArtifactStore.load`;
 - a rung of the ladder between the grid's lowest and highest measured rungs
   that was not measured;
 - a configured bound above the one the grid was planned for.
@@ -51,6 +51,7 @@ from atom.compass.artifacts import (
 )
 from atom.compass.backends.step_fit import StepFitBackend, StepFitGrid
 from atom.compass.backends.step_fit_residual import Residual
+from atom.compass.runner.overrides import schedulable_ladder
 from atom.compass.spec.fields import PINNED
 
 #: The bundle's one member: a group's step has a single writer.
@@ -62,11 +63,8 @@ BOUNDS = ("max_num_seqs", "max_num_batched_tokens", "max_model_len")
 
 def keyed(config) -> dict:
     """The conditions a bundle is measured under, as the resolved config holds them."""
-    # The ladder `CompassModelRunner.capture_cudagraph` leaves the runner.
-    bound = min(config.max_num_seqs, config.max_num_batched_tokens)
-    ladder = sorted(s for s in config.capture_sizes if s <= bound)
     return {
-        "ladder": [] if config.enforce_eager else ladder,
+        "ladder": [] if config.enforce_eager else schedulable_ladder(config),
         "kv_cache_block_size": config.kv_cache_block_size,
         "kv_cache_dtype": config.kv_cache_dtype,
         "quantization": config.quant_config.compute_hash(),
@@ -75,7 +73,7 @@ def keyed(config) -> dict:
 
 
 def conditions(config, machine) -> Conditions:
-    """This run's six readings: the stack and device the machine spec states,
+    """This run's readings: the stack and device the machine spec states,
     this process's torch and ATOM tree, the served config.json and `keyed`."""
     from atom.compass.run import _file_digest
 

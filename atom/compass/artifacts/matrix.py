@@ -83,10 +83,10 @@ class Row(enum.Enum):
 class Cell:
     """One cell of the table: the mark, and the parenthesis beside it.
 
-    The note is carried rather than dropped because three of the seven rows
-    have one and each says something the mark alone does not -- which part of
-    the engine config an `op_graph` turns on, why a `price_list` is free of
-    the model, and which reading of "model" a tokenizer term follows.
+    The note is carried rather than dropped because each row that has one
+    says something the mark alone does not -- which part of the engine config
+    an `op_graph` turns on, why a `price_list` is free of the model, and which
+    reading of "model" a tokenizer term follows.
     """
 
     depends: bool
