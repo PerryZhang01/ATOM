@@ -11,7 +11,8 @@ exit predicted for the one before, so only the waits and device times move it.
 
 Per kind (decode, output prefill, middle chunk, and idle: sharing no request
 with the forward before), p10 and p90 of charge over measured exit-to-exit
-period, less one, lie within `STEP_BAND`, the run total within `TOTAL_BAND`.
+period, less one, in percent, lie within `STEP_BAND`, the run total within
+`TOTAL_BAND`.
 A failing kind's steps outside the band are named with their residual, the
 device work queued at their launch, and their R1 release less the measured.
 """
@@ -24,7 +25,7 @@ import numpy as np
 from atom.compass.parity import read
 from atom.compass.runner.overrides import FORWARD_KINDS, HostDeviceRecurrence
 
-STEP_BAND, TOTAL_BAND, SHOWN = 0.02, 0.005, 10
+STEP_BAND, TOTAL_BAND, SHOWN = 2, 0.5, 10  # bands in percent
 KINDS = ("decode", "prefill", "middle", "idle")
 
 
@@ -63,7 +64,7 @@ def check(steps: list[dict]) -> dict:
         r1_ms = (charge - (post + r1 - last) * 1e-9) * 1e3 if "t_recv_ns" in s else None
         res, queued = (charge - period) * 1e3, max(queued, 0.0) * 1e3
         rows.append(
-            (s["step"], _kind(s, prev), charge / period - 1, res, queued, r1_ms)
+            (s["step"], _kind(s, prev), 100 * (charge / period - 1), res, queued, r1_ms)
         )
         now, prev = now + charge, s
     kinds = {}
@@ -73,7 +74,8 @@ def check(steps: list[dict]) -> dict:
             p10, p50, p90 = np.percentile(err, (10, 50, 90))
             ok = bool(-STEP_BAND <= p10 and p90 <= STEP_BAND)
             kinds[k] = (len(err), p10, p50, p90, np.median(r1) if r1 else None, ok)
-    total = now / ((steps[-1]["t_exit_ns"] - steps[0]["t_enter_ns"]) * 1e-9) - 1
+    span = (steps[-1]["t_exit_ns"] - steps[0]["t_enter_ns"]) * 1e-9
+    total = 100 * (now / span - 1)
     return {
         "kinds": kinds,
         "total": total,
@@ -92,9 +94,11 @@ def main(record: str) -> int:
         for k, (n, p10, p50, p90, r1, good) in report["kinds"].items():
             r1 = "-" if r1 is None else f"{r1:.3f}"
             gate = "pass" if good else "FAIL"
-            print(f"    {k:8} {n:6} {p10:+.2%} {p50:+.2%} {p90:+.2%} {r1:>9}  {gate}")
+            print(
+                f"    {k:8} {n:6} {p10:+.2f}% {p50:+.2f}% {p90:+.2f}% {r1:>9}  {gate}"
+            )
         gate = "pass" if abs(report["total"]) <= TOTAL_BAND else "FAIL"
-        print(f"    total {report['total']:+.3%} {gate}")
+        print(f"    total {report['total']:+.3f}% {gate}")
         bad = sorted(report["failures"], key=lambda r: -abs(r[2]))
         for k in KINDS:
             if mine := [r for r in bad if r[1] == k]:
@@ -102,7 +106,7 @@ def main(record: str) -> int:
             for step, _, err, res, queued, r1 in mine[:SHOWN]:
                 r1 = "-" if r1 is None else f"{r1:+.3f}"
                 print(
-                    f"      step {step}: {err:+.2%}, residual {res:+.3f} ms, "
+                    f"      step {step}: {err:+.2f}%, residual {res:+.3f} ms, "
                     f"queued {queued:.3f} ms, R1 {r1} ms"
                 )
     return 0 if ok else 1

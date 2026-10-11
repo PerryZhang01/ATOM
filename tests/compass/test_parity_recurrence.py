@@ -60,11 +60,11 @@ def test_a_late_r1_release_fails_its_kind_and_names_the_step():
     report = recurrence.check(record(r1=45))
     assert not report["kinds"]["decode"][-1]
     assert report["kinds"]["prefill"][-1]
-    assert report["total"] == pytest.approx(42 / 46 - 1)
+    assert report["total"] == pytest.approx(100 * (42 / 46 - 1))
     assert not report["pass"]
     # step 4 launches at 34 behind step 3's device work, which ends at 41
     [(step, _, err, residual, queued, r1)] = report["failures"]
-    assert (step, err) == (4, pytest.approx(10 / 14 - 1))
+    assert (step, err) == (4, pytest.approx(100 * (10 / 14 - 1)))
     assert (residual, queued, r1) == pytest.approx((-4, 7, -4))
 
 
