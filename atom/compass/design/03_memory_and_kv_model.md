@@ -439,7 +439,7 @@ source per term; the bullets below say why each is what it is.
 |---|---|---|
 | weights | a meta build in the simulated runner's `_build_and_load_model`: the model class under `torch.device("meta")` with ATOM's own quantisation config and groups at the deployment's widths, bytes summed over unique storages, a tied `lm_head` added; the tree is dropped after counting | [#699](https://github.com/jgong5/ATOM/issues/699) |
 | buffers | the declared formula over fields the model's `config.json` states, labelled declared, until a recording exists | [#701](https://github.com/jgong5/ATOM/issues/701) |
-| activations | one coefficient per model and width, from a machine-spec entry keyed by architecture and width: a real run's `peak - current` after warmup over the warmup tokens, times the deployment's warmup tokens. A model with no entry takes a geometry form, labelled declared. The liveness walk replaces both once capture lands | [#704](https://github.com/jgong5/ATOM/issues/704), [#705](https://github.com/jgong5/ATOM/issues/705) |
+| activations | one coefficient per model and width, from a machine-spec entry keyed by architecture, `config.json` sha256 and tensor-parallel width: a real run's `peak - current` after warmup over the warmup tokens, times the deployment's warmup tokens. A model with no entry takes a geometry form, labelled declared. The liveness walk replaces both once capture lands | [#704](https://github.com/jgong5/ATOM/issues/704), [#705](https://github.com/jgong5/ATOM/issues/705) |
 | invisible scratch | inside the activation coefficient; a term of its own only under the liveness walk (`04` T4) | [#704](https://github.com/jgong5/ATOM/issues/704) |
 | persistent | the spec constant `persistent_forward_buffer_bytes` | — |
 | load residue, `non_torch` | the spec's width tables; the width under DP-attention is open (D15) | [#702](https://github.com/jgong5/ATOM/issues/702) |
@@ -466,8 +466,10 @@ term against the same term of a recorded real run, wired for stage 2's paired ru
   [#701](https://github.com/jgong5/ATOM/issues/701)). The label is there because the
   first formula, which matched the 0.6B exactly, was 4x wrong on the 27B (partial rotary).
 - **Activations** — until capture lands, the coefficient measured on a real run (the
-  table above): the scaling in tokens is validated (`10` D67), and the reading is the one
-  ATOM's `_estimate_cudagraph_overhead` takes, so the scratch is inside it. After that, a
+  table above), keyed by architecture, `config.json` sha256 and tensor-parallel width,
+  since one architecture class serves every size of a model family: the scaling in
+  tokens is validated (`10` D67), and the reading is the one ATOM's
+  `_estimate_cudagraph_overhead` takes, so the scratch is inside it. After that, a
   def-use liveness walk over a traced op graph, **not** a footprint sum, which depends on
   topic `04` (model capture). Four faults had
   to be fixed before the walk worked, and they are worth restating because each is a trap:
@@ -533,4 +535,4 @@ for the model — which is the per-term rule above, not the aggregate.
 | D13 | Do not simulate the KV pool. Stub `allocate_kv_cache`; ATOM's real `BlockManager`, `BlockPool`, prefix index and `plan_pools` run unmodified. | 2026-09-18 |
 | D14 | Substitute the five device readings, reuse ATOM's budget arithmetic and `plan_pools`. Compass models a dedicated device; that is a declared scope boundary. | 2026-09-18 |
 | D15 | The device specification is an input artifact authored outside Compass, carrying capacity, compute, bandwidth, interconnect, runtime memory constants and derate factors. It is echoed into every run artifact. | 2026-09-18 |
-| D16 | Validate every non-KV memory term individually, never as a sum. Keep ATOM's graph-pool estimator and the measured one as two separate functions. Revised: one source per term. Weights come from a meta build in the simulated runner at the deployment's group widths. Activations come from a coefficient measured per model and width, with the scratch inside it and a geometry form as fallback, until the liveness walk lands. The graph pool reserves for the deployment's own capture mode, and the per-term check is wired. | 2026-09-18; revised 2026-10-10 |
+| D16 | Validate every non-KV memory term individually, never as a sum. Keep ATOM's graph-pool estimator and the measured one as two separate functions. Revised: one source per term. Weights come from a meta build in the simulated runner at the deployment's group widths. Activations come from a coefficient keyed by architecture, `config.json` sha256 and tensor-parallel width, with the scratch inside it and a geometry form as fallback, until the liveness walk lands. The graph pool reserves for the deployment's own capture mode, and the per-term check is wired. | 2026-09-18; revised 2026-10-10 |
