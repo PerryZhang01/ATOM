@@ -96,8 +96,9 @@ def test_the_step_that_moves_the_total_is_held_out_and_the_spread_reported(tmp_p
     assert decode["steps"] == 9 and set(decode["bands"]) == {"decode rung 1"}
     assert decode["measured_s"] == pytest.approx(decode["priced_s"], rel=1e-9)
 
-    # Two under-priced steps: step 5 is short by the most seconds, step 0 by the largest ratio.
-    record = _record(tmp_path / "under", _steps(), stretch={0: 2.2, 5: 1.5})
+    # Two under-priced steps after one at its price, so neither leads: step 5
+    # is short by the most seconds, step 1 by the largest ratio.
+    record = _record(tmp_path / "under", _steps(), stretch={1: 2.2, 5: 1.8})
     assert cost_accuracy(record, LAW)["fitted"]["prefill"]["held_out_step"] == 5
 
 
@@ -180,3 +181,8 @@ def test_a_leading_slow_step_under_the_factor_is_warm_and_mid_record_is_not(tmp_
     assert prefill["held_out"] == pytest.approx(0.0, abs=1e-9)
     assert decode["steps"] == 8
     assert decode["measured_s"] == pytest.approx(decode["priced_s"], rel=1e-9)
+
+    # A leading step that ran in half its price is fast, not warm: it stays in the totals.
+    report = cost_accuracy(_record(tmp_path / "fast", steps, {10: 0.5}), LAW)
+    assert report["warm"] == []
+    assert report["fitted"]["decode"]["steps"] == 9
