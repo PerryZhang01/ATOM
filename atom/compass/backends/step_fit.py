@@ -132,10 +132,11 @@ class _Cells:
                 )
             self.points[at] = Fraction(time)
 
-    def lookup(
+    def corners(
         self, view: BatchView, at: tuple[Fraction, ...]
-    ) -> tuple[Fraction, bool, str]:
-        """The value at `at`, whether it is a node, and the cell; or a refusal."""
+    ) -> list[tuple[tuple[Fraction, ...], Fraction]]:
+        """The corners of the cell holding `at`, each with its weight, one when
+        `at` is on a node; or a refusal outside the nodes."""
         sides = []
         for axis, nodes, x in zip(self.axes, self.nodes, at):
             if x in nodes:
@@ -151,10 +152,16 @@ class _Cells:
             low, high = nodes[i - 1], nodes[i]
             weight = (x - low) / (high - low)
             sides.append(((low, 1 - weight), (high, weight)))
-        corners = [
+        return [
             (tuple(n for n, _ in c), math.prod(w for _, w in c))
             for c in itertools.product(*sides)
         ]
+
+    def lookup(
+        self, view: BatchView, at: tuple[Fraction, ...]
+    ) -> tuple[Fraction, bool, str]:
+        """The value at `at`, whether it is a node, and the cell; or a refusal."""
+        corners = self.corners(view, at)
         missing = [corner for corner, _ in corners if corner not in self.points]
         if missing:
             raise _refused(
@@ -164,8 +171,8 @@ class _Cells:
             )
         value = sum(self.points[corner] * weight for corner, weight in corners)
         cell = ", ".join(
-            f"{axis}={s[0][0]}" if len(s) == 1 else f"{axis} {s[0][0]}..{s[1][0]}"
-            for axis, s in zip(self.axes, sides)
+            f"{axis}={low}" if low == high else f"{axis} {low}..{high}"
+            for axis, low, high in zip(self.axes, corners[0][0], corners[-1][0])
         )
         return value, len(corners) == 1, cell
 
@@ -220,24 +227,9 @@ class StepFitGrid:
             for rung, nodes in b_nodes.items()
         }
 
-
-class StepFitBackend(CostBackend):
-    """Prices a step as the grid's value at its equivalent shape, times the
-    residual; `bundle` names the artifact both came from, for `describe`."""
-
-    def __init__(self, grid: StepFitGrid, residual: Residual, bundle: str) -> None:
-        self.grid, self.residual, self.bundle = grid, residual, bundle
-
-    @property
-    def tier(self) -> Tier:
-        return Tier.COARSE
-
-    def estimate(self, batch_view: BatchView) -> StepCost:
-        if not isinstance(batch_view, BatchView):
-            raise TypeError(
-                f"this backend prices a BatchView, not {type(batch_view).__name__}"
-            )
-        view, rows = batch_view, batch_view.requests
+    def locate(self, view: BatchView) -> tuple[_Cells, tuple[Fraction, ...]]:
+        """The grid a step is read in and its coordinates there; or a refusal."""
+        rows = view.requests
         prefill, decode = view.prefill, view.decode
         if prefill and decode:
             raise _refused(
@@ -261,7 +253,7 @@ class StepFitBackend(CostBackend):
                     "a prefill step that does not say whether it produces "
                     "output, which picks its grid",
                 )
-            cells, at = self.grid.prefill[view.produces_output], (rows_n, query, cached)
+            cells, at = self.prefill[view.produces_output], (rows_n, query, cached)
         else:
             widest = max(row.query_tokens for row in decode)
             if widest > 1:
@@ -271,8 +263,8 @@ class StepFitBackend(CostBackend):
                     "no N_Q axis",
                 )
             at = (rows_n, cached)
-            if self.grid.graph_mode == "eager":
-                cells = self.grid.decode
+            if self.graph_mode == "eager":
+                cells = self.decode
             elif view.capture_rung is None:
                 raise _refused(
                     view,
@@ -280,9 +272,30 @@ class StepFitBackend(CostBackend):
                     "and a replay bundle has no eager decode",
                 )
             else:
-                cells = self.grid.decode.get(view.capture_rung)
+                cells = self.decode.get(view.capture_rung)
                 if cells is None:
                     raise _refused(view, f"no decode rung {view.capture_rung}")
+        return cells, at
+
+
+class StepFitBackend(CostBackend):
+    """Prices a step as the grid's value at its equivalent shape, times the
+    residual; `bundle` names the artifact both came from, for `describe`."""
+
+    def __init__(self, grid: StepFitGrid, residual: Residual, bundle: str) -> None:
+        self.grid, self.residual, self.bundle = grid, residual, bundle
+
+    @property
+    def tier(self) -> Tier:
+        return Tier.COARSE
+
+    def estimate(self, batch_view: BatchView) -> StepCost:
+        if not isinstance(batch_view, BatchView):
+            raise TypeError(
+                f"this backend prices a BatchView, not {type(batch_view).__name__}"
+            )
+        view, rows = batch_view, batch_view.requests
+        cells, at = self.grid.locate(view)
         value, on_node, cell = cells.lookup(view, at)
         homogeneous = len({(r.query_tokens, r.context_tokens) for r in rows}) == 1
         species = Species.MEASURED if on_node and homogeneous else Species.INTERPOLATED
