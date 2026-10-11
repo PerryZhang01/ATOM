@@ -61,10 +61,8 @@ class Sampler(nn.Module):
         Args:
             logits: Raw logits from model (num_tokens, vocab_size)
             temperatures: Temperature for each token (num_tokens,), pre-clamped to eps
-            top_ks: Top-k value per token, -1 means disabled (num_tokens,),
-                or one host int shared by every token
-            top_ps: Top-p value per token, 1.0 means disabled (num_tokens,),
-                or one host float shared by every token
+            top_ks: Top-k value per token, -1 means disabled (num_tokens,)
+            top_ps: Top-p value per token, 1.0 means disabled (num_tokens,)
             all_greedy: True if all requests use greedy sampling (checked on CPU)
             needs_independent_noise: True when the batch contains fan-out
                 siblings (SamplingParams.n>1). Forces fresh per-row random
@@ -137,8 +135,8 @@ class Sampler(nn.Module):
         self,
         logits: torch.Tensor,
         temperatures: torch.Tensor,
-        top_ks: torch.Tensor | int | None,
-        top_ps: torch.Tensor | float | None,
+        top_ks: torch.Tensor | None,
+        top_ps: torch.Tensor | None,
         all_greedy: bool,
         needs_independent_noise: bool = False,
     ) -> torch.Tensor:
@@ -157,9 +155,8 @@ class Sampler(nn.Module):
             return logits.argmax(dim=-1).to(torch.int)
 
         # Apply temperature scaling
-        # Temperatures are pre-clamped to eps in model_runner.prepare_sample(), so
-        # a temperature-0 row in a mixed batch has a one-hot softmax and samples
-        # its argmax with no separate greedy pass.
+        # Temperatures are pre-clamped to eps in model_runner.prepare_sample(), so a
+        # greedy row has a one-hot softmax and samples its argmax with no extra pass
         scaled_logits = logits / temperatures.unsqueeze(-1)
         probs = scaled_logits.softmax(dim=-1, dtype=torch.float32).contiguous()
 
@@ -172,8 +169,8 @@ class Sampler(nn.Module):
         else:
             return self._native_sample(probs, top_ks, top_ps)
 
-    def _to_tensor_scalar(self, x: torch.Tensor | float | None):
-        """Convert to the (tensor, scalar) pair aiter ops take.
+    def _to_tensor_scalar(self, x: torch.Tensor):
+        """Convert to (tensor, scalar) tuple for aiter ops.
 
         A uniform value arrives as a host scalar from model_runner and is
         passed as the scalar, with no read from the device.
@@ -187,8 +184,8 @@ class Sampler(nn.Module):
     def _aiter_sample(
         self,
         probs: torch.Tensor,
-        top_ks: torch.Tensor | int | None,
-        top_ps: torch.Tensor | float | None,
+        top_ks: torch.Tensor,
+        top_ps: torch.Tensor,
         has_topk: bool,
         has_topp: bool,
     ) -> torch.Tensor:
@@ -226,8 +223,8 @@ class Sampler(nn.Module):
     def _native_sample(
         self,
         probs: torch.Tensor,
-        top_ks: torch.Tensor | int | None,
-        top_ps: torch.Tensor | float | None,
+        top_ks: torch.Tensor,
+        top_ps: torch.Tensor,
     ) -> torch.Tensor:
         """
         EXPERIMENTAL: Native PyTorch fallback for top-k/top-p sampling.
@@ -257,9 +254,8 @@ class Sampler(nn.Module):
         # The mask keeps tokens where cumsum - current_prob <= top_p
         # (i.e., before we exceed the threshold)
         if top_ps is not None:
-            topp_mask = (cumsum_probs - sorted_probs) <= torch.as_tensor(
-                top_ps, device=device
-            ).unsqueeze(-1)
+            top_ps = torch.as_tensor(top_ps, device=device)
+            topp_mask = (cumsum_probs - sorted_probs) <= top_ps.unsqueeze(-1)
         else:
             topp_mask = torch.ones_like(sorted_probs, dtype=torch.bool)
 
