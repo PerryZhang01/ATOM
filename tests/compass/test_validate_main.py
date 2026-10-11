@@ -14,6 +14,7 @@ from test_memory_check import GIB, _log
 from test_validate_cost import LAW, _record, _steps
 from test_validate_runs import EXPORT
 
+from atom.compass.run import LP_FILE
 from atom.compass.validate.__main__ import main
 
 TERM = {"basis": "spec", "source": "planted"}
@@ -60,7 +61,8 @@ def _run(d, ttft, *, refusals=(), non_torch=1.0, speed=True, workload=1, stretch
         "readings": {k: [TERM | {"name": k, "nbytes": v}] for k, v in readings.items()},
         "predicts": None,
     }
-    (d / "memory-dp0.json").write_text(json.dumps(memory))
+    hand_in = {"refusals": [], "priced": {}, "memory": memory}
+    (d / LP_FILE.format("engine")).write_text(json.dumps(hand_in))
     summary = {
         "coverage_report": bool(refusals),
         "cost": {

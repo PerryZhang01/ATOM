@@ -17,6 +17,7 @@ from pathlib import Path
 from statistics import median
 
 from atom.compass.memory.check import parts
+from atom.compass.run import LP_FILE
 from atom.compass.validate import cost, runs
 
 BANDS = {0: "0-512", 512: "512-2048", 2048: "2048-8192", 8192: "8192+"}
@@ -79,7 +80,7 @@ def _cost(run: Path, law: dict):
 
 
 def _memory(law: Path, real: Path):
-    comparison, *_, graph = parts(law / "memory-dp0.json", real / "server.log")
+    comparison, *_, graph = parts(law / LP_FILE.format("engine"), real / "server.log")
     where = f"memory {real.name}"
     for t in comparison.compared:
         yield where, t.name, f"{t.relative:+.2%} ({t.delta_bytes:+,} B)", str(t.verdict)
