@@ -16,12 +16,13 @@ import pytest
 from test_dp_step_max import runner
 from test_run_step_fit import B37, decode, deployment, publish, run_file
 from test_runner_step_semantics import _drive
+from test_validate_runs import _cell, _schedule
 
 from atom.compass import run as compass_run
 from atom.compass.backends.shape import ShapeStubBackend
 from atom.compass.runner import overrides
 from atom.compass.runner.overrides import HOST_SEGMENTS, HostDeviceRecurrence
-from atom.compass.validate.__main__ import rows
+from atom.compass.validate import runs
 
 BACKEND = ShapeStubBackend()
 
@@ -136,10 +137,8 @@ def test_a_host_entry_the_runner_would_not_read_is_refused(tmp_path, monkeypatch
         compass_run.spec()
 
 
-def test_the_grader_refuses_a_what_if_run(tmp_path):
-    for name in ("real1", "real2", "law", "p97"):
-        (tmp_path / name).mkdir()
-        run = {"workload": 1, "host": {"skip": ["E"]} if name == "law" else {}}
-        (tmp_path / name / "run.json").write_text(json.dumps(run))
-    with pytest.raises(ValueError, match=r"\['law'\] skip host segments"):
-        rows(tmp_path)
+def test_grading_refuses_a_what_if_run(tmp_path):
+    cells = [str(_cell(tmp_path / f"c{i}", _schedule(), {})) for i in range(4)]
+    (tmp_path / "c0" / "run.json").write_text(json.dumps({"host": {"skip": ["E"]}}))
+    with pytest.raises(ValueError, match="c0 skips host segments"):
+        runs.main(cells)
