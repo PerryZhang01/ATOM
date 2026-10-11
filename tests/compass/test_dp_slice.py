@@ -246,6 +246,27 @@ def test_the_authority_joins_the_ranks_and_releases_each_its_own_channels(tmp_pa
     ]
 
 
+# Each rank's own `priced_steps` reply; no field is equal across the ranks.
+PRICED = [
+    {
+        "steps": 2,
+        "seconds": 1.0,
+        "analytical_steps": 0,
+        "analytical_seconds": 0.0,
+        "extrapolated_steps": 1,
+        "extrapolated_seconds": 0.25,
+    },
+    {
+        "steps": 3,
+        "seconds": 3.0,
+        "analytical_steps": 1,
+        "analytical_seconds": 0.5,
+        "extrapolated_steps": 2,
+        "extrapolated_seconds": 0.75,
+    },
+]
+
+
 def _finish(monkeypatch, tmp_path, ranks):
     """`engine_done` on each of `ranks` of a two-rank run, then `frontend_done`."""
     run = json.loads(_run_file(tmp_path, data_parallel_size=2).read_text())
@@ -258,12 +279,11 @@ def _finish(monkeypatch, tmp_path, ranks):
     monkeypatch.setattr(clock, "_installed", engine)
     for rank in ranks:
         monkeypatch.setattr(compass_run, "_member", f"dp{rank}")
-        refused = (f"command:on dp{rank}",)
-        worker = SimpleNamespace(
-            call_func=lambda name, wait_out, r=refused: (
-                r if name == "refused_commands" else {}
-            )
-        )
+        replies = {
+            "refused_commands": (f"command:on dp{rank}",),
+            "priced_steps": PRICED[rank],
+        }
+        worker = SimpleNamespace(call_func=lambda name, wait_out, r=replies: r[name])
         compass_run.engine_done(SimpleNamespace(runner_mgr=worker))
 
     authority.started = authority.finished = time.monotonic()
@@ -287,6 +307,22 @@ def test_every_ranks_refusals_reach_the_run_summary(monkeypatch, tmp_path):
         ["command:on dp0", 1],
         ["command:on dp1", 1],
     ]
+
+
+def test_the_run_summary_sums_every_ranks_priced_steps(monkeypatch, tmp_path):
+    assert _finish(monkeypatch, tmp_path, (0, 1))
+
+    schedule = json.loads((tmp_path / compass_run.SUMMARY_FILE).read_text())["schedule"]
+    assert schedule["refusals"]["steps"] == 5
+    assert schedule["predicted_seconds"] == 4.0
+    assert schedule["analytical"] == {
+        "steps": 1,
+        "fraction_of_predicted_seconds": 0.125,
+    }
+    assert schedule["extrapolated"] == {
+        "steps": 3,
+        "fraction_of_predicted_seconds": 0.25,
+    }
 
 
 def test_a_rank_that_wrote_no_refusal_record_fails_the_summary(monkeypatch, tmp_path):

@@ -281,7 +281,7 @@ def test_both_filters_in_the_derivation_drop_nothing():
     tripwire -- an f-string call site, or a compass-side broadcast, fails here
     and has to be accounted for rather than vanishing.
 
-    Two compass-side broadcasts are accounted for: the run bootstrap reads the
+    The compass-side broadcasts accounted for: the run bootstrap reads the
     Compass runner's refusal tally, `refused_commands`, and what its steps
     cost, `priced_steps`. No ATOM site sends either, so no `ModelRunner` is
     ever asked for them.
