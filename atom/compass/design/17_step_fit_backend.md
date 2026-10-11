@@ -8,7 +8,7 @@ follows the execution plan in `16`.
 
 **Depends on:** `02` (the backend interface, the forward's interval, the provenance
 species), `07` (the tiers, the bench, artifact identity and invalidation), `08` (stage 2's
-protocol and the refusal rule this topic departs from), `09` (the hull and law
+protocol and the refusal rule), `09` (the hull and law
 validation), `13` (the flag surface), `14` (the cost form), `15` (DP and PP).
 
 **Scope.** One tier-a cost backend, `StepFitBackend` (config id `step_fit`): a sparse grid
@@ -28,7 +28,6 @@ favour, and the decision that adopts it says which.
 |---|---|---|
 | `07` D36: tier b is what acceptance cells use | a tier-a backend is graded as a stage-2 candidate | D96 |
 | `07` D39: step measurements come from replayed batches | the baseline grid is synthetic and homogeneous; the residual is fitted on replayed batches | D98 |
-| `08` D50.1 item 1, and `13` D80's default that follows it: a refused step costs 0 s and the run continues | a refusal aborts the run, and a graded run is refusal-free by coverage | D102 |
 | `13` D79: no Compass config file | step fit is selected by a run-file key, as the code selects every backend; not ruled on #696, and open until the owner settles the run file (T96) | D103 |
 
 ---
@@ -409,42 +408,30 @@ still fall in a hole; the pre-run coverage check (D99) and D102 handle that.
 
 ---
 
-## D102. Refusal aborts the run
+## D102. Refusal follows `08` D50.1
 
 ### Decision
 
-**`--compass-on-refusal abort` only.** With step fit selected, `abort` is the default and
-`mark` refuses at startup, by name. A graded run is refusal-free by coverage, checked
-before it starts (D99), and any refusal voids that run.
+Step fit follows `08` D50.1's refusal rule as the owner
+[ruled on #765](https://github.com/jgong5/ATOM/pull/765#issuecomment-6104630073), with no
+departure and no default of its own:
 
-### The departure from `08` D50.1
-
-D50.1 has a refused step cost 0 s while the run continues (item 1), and `13` D80's
-default `mark` follows it. Step fit departs from both. T92 records supporting `mark`
-once a tier-0 law exists for the target.
+- **When step fit cannot answer a step** (D97, D99, D100), it declines: the step goes to
+  the next rung, and is refused only when no rung answers.
+- **A refused step costs 0 s and the run continues** under `13` D80's default `mark`;
+  `abort` stops the run at the first one. `mark` needs no lower rung, since a refused step
+  is not priced.
+- **Any refusal makes the run a coverage report**, with no 5% gate. That is why a graded
+  run is checked for coverage before it starts (D99).
 
 ### Against the tier-a law's rule
 
 #627's [ruling 3](https://github.com/jgong5/ATOM/issues/627#issuecomment-6096543740)
-has the tier-a law that stage 2 prices with extrapolate an out-of-hull
-step rather than refuse it, never aborting a cell, and reported apart (`08` D50.1). Step fit keeps its stricter rule: it answers only inside complete cells (D99),
-aborts on a refusal, and a refusal voids the run. T95 records a later trial of the law's
-rule for step fit, decided only once step fit's stage-2 evaluation shows how often steps
-fall outside complete cells.
-
-### What a refusal leaves
-
-Contracts, not mechanism:
-
-- **The refused batch gets no forward, no output processing and no forward time**, and
-  the clock is not rolled back. ATOM's scheduler has already changed request and KV state
-  for that batch, which is why there is no rollback and no skip.
-- **The run ends as failed**, not with a fabricated final grant. A failure end is
-  distinct from a normal end, and every participant (engines, workers, the clock) stops
-  waiting.
-- **The first refusal's reason, its batch and the bundle key are kept**, the run record
-  is flushed before the run ends (D104), and `01` D3.5's run summary is written and names
-  the refusal.
+has the tier-a law that stage 2 prices with extrapolate an out-of-hull step rather than
+refuse it, reported apart. Step fit answers only inside complete cells (D99), so it
+declines a step the law would extrapolate: the two differ in what answers, not in what a
+refusal does to the run. T95 records a later trial of the law's rule for step fit, decided
+only once step fit's stage-2 evaluation shows how often steps fall outside complete cells.
 
 ---
 
@@ -454,8 +441,7 @@ Contracts, not mechanism:
   `step_fit`, exclusive with `law` and `coefficients`
   (`atom/compass/run/__init__.py::runner`). A run file naming more than one, or none,
   refuses, as it does today. No new Compass flag.
-- **The bundle is found by its key** (D101) in the artifact store. Under step fit a
-  refusal aborts (D102).
+- **The bundle is found by its key** (D101) in the artifact store.
 - **The run file is not yet in `13`.** `13` D79 rejects a Compass config file and D80's
   flags select no backend, while the code reads a run file named by `--compass-run`.
   T96 records reconciling the two; this decision follows the code.
@@ -469,7 +455,7 @@ Contracts, not mechanism:
 - **#626's per-step run record stays, with no `off` level.** Its summary level is D3.5's
   run summary, always written. Its full level is the per-step detail of D3.5's timeline
   log, which is off by default (D3.5 rule 1).
-- **Written incrementally**, and flushed before the run ends on a refusal (D102).
+- **Written incrementally**, and flushed before the run ends, an end under `abort` included (D102).
 - **Per step:** the phase, the bundle key and digest, the recipe, the lookup's species and
   the cell it used, the residual, the optional recipes applied or skipped, and the final
   seconds.
@@ -516,11 +502,10 @@ After stage 2, step fit gets one evaluation on DeepSeek-V4-Pro (`16` W4.13):
   the kernels it ran (D99). Until then the residual's held-out error is the only detector,
   so a band that the replayed batches never straddle is not caught before grading.
   Recorded as **T94**.
-- **Supporting `mark`** needs a lower rung for the target. Recorded as **T92**.
 - **Whether the scheduler's CPU segments add serially to the forward or overlap it** is
   unmeasured in ATOM, and gates the `fitted` mode. Recorded as **T93**.
 - **Whether step fit should extrapolate out-of-cell steps** as the tier-a law does under
-  #627's ruling 3 is untried (D102). Recorded as **T95**.
+  #627's ruling 3 is untried; today it declines them (D102). Recorded as **T95**.
 - **`13` does not describe the run file** that selects a backend (D103). Recorded as
   **T96**.
 
@@ -536,9 +521,9 @@ After stage 2, step fit gets one evaluation on DeepSeek-V4-Pro (`16` W4.13):
 | D99 | An answer only from a complete cell, by exact hit or interpolation; otherwise refuse, naming the missing corners. No extrapolation, clamp, recovery or fallback. A pre-run coverage check over cells and the residual hull; deterministic lookups; `02` D11 species. | 2026-10-10 (#696) |
 | D100 | The residual is in the first version, fitted on replayed batches of traces 256 to 392 in `14` D85's form plus order and raggedness, graded on traces 0 to 255, refusing outside its hull; grid definitions compared on traces 256 to 392 only, each one tried recorded. Members are bundle data; each output checked. Recipes are fixed functions with injected geometry and hardware constants, versioned only when a function changes; optional recipes, DCP's first. | 2026-10-10 (#696); grid comparison 2026-10-11 (#626) |
 | D101 | A bundle is a `07` D41 key plus a digest, immutable, with a row in `07` D43 invalidated by every column. Keyed conditions refuse; derived values go to provenance; #626's asserted and record-only grades are dropped. Conditions come from the resolved ATOM config. At startup, unmeasured rungs and bounds beyond the planned grid refuse. | 2026-10-10 (#696) |
-| D102 | Refusal aborts: `abort` only and by default under step fit, departing from `08` D50.1 item 1. A graded run is refusal-free by coverage; any refusal voids it. The refused batch gets no forward and no time, the run ends as failed, and the first reason is kept. Stricter than the tier-a law's extrapolation under #627's ruling 3; T95 records trying that rule later. | 2026-10-10 (#696); ruling 3 contrast 2026-10-11 (#626); `08` D50.1 departure restated 2026-10-11 (#765) |
+| D102 | Refusal follows `08` D50.1 as ruled on #765, with no departure: when step fit cannot answer a step, the step goes to the next rung and is refused only when none answers; a refused step costs 0 s and the run continues under `13` D80's default `mark`; any refusal makes the run a coverage report. Where the tier-a law extrapolates under #627's ruling 3, step fit declines; T95 records trying that rule later. | 2026-10-10 (#696); ruling 3 contrast 2026-10-11 (#626); revised 2026-10-11 (#765) |
 | D103 | Selected as the code selects a backend: a `step_fit` run-file key, exclusive with `law` and `coefficients`; no new Compass flag. The bundle is found by its key in the artifact store. `13` does not yet describe the run file (T96). | 2026-10-10 (#696); revised 2026-10-11 (#626) |
-| D104 | The run record lives inside `01` D3.5's outputs with no `off` level, written incrementally and flushed on refusal, per step from each `estimate()` return. The scheduler's CPU segments: no `measured` mode, default `off`, `fitted` from `host.*` once T93 is settled. | 2026-10-10 (#696) |
+| D104 | The run record lives inside `01` D3.5's outputs with no `off` level, written incrementally and flushed before the run ends, per step from each `estimate()` return. The scheduler's CPU segments: no `measured` mode, default `off`, `fitted` from `host.*` once T93 is settled. | 2026-10-10 (#696) |
 | D105 | One non-graded evaluation on DeepSeek-V4-Pro's nightly TP cell on MI355X, against W4.3's step tables and tier b, reported per `08` D47; not a stage-3 backend. | 2026-10-10 (#696) |
 
 ---
@@ -550,8 +535,7 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 
 | # | Item | Why deferred |
 |---|---|---|
-| T92 | Support `--compass-on-refusal mark` under step fit once a tier-0 law exists for the target | no row of `16` authors a Qwen tier-0 law |
 | T93 | Measure in ATOM whether the scheduler's CPU segments add serially to the forward or overlap it, before `fitted` is usable | needs a real run with per-segment timing |
 | T94 | Record the kernels each grid point ran, and treat a cell whose corners ran different kernels as crossing a dispatch band (`09` D60): refused or split | needs the grid measurement (`16` S2.2) to record kernel identity |
-| T95 | Trial, not this design: extrapolate an out-of-cell step as #627's ruling 3 has the tier-a law do, by one method only, extending the nearest complete cell's interpolation, tagged `extrapolated` with the distance, reported apart, never aborting. It would replace the abort-only rule and the `08` D50.1 departure (D102) | decide after step fit's stage-2 evaluation shows how often steps fall outside complete cells |
+| T95 | Trial, not this design: extrapolate an out-of-cell step as #627's ruling 3 has the tier-a law do, by one method only, extending the nearest complete cell's interpolation, tagged `extrapolated` with the distance and reported apart, which is not a refusal. It would answer out-of-cell steps, which step fit now declines (D102) | decide after step fit's stage-2 evaluation shows how often steps fall outside complete cells |
 | T96 | Reconcile `13` D79 and D80 with the run file the code selects a backend by (`--compass-run`, `atom/compass/run/__init__.py::runner`): `13` rejects a Compass config file, the code reads one | needs an owner choice between describing the run file in `13` and moving selection to flags |

@@ -197,10 +197,9 @@ M-f `14`; M-g `01` D3.5.
 
 | # | Item |
 |---|---|
-| T92 | Support `--compass-on-refusal mark` under step fit once a tier-0 law exists for the target; no row of `16` authors a Qwen tier-0 law (`17` D102) |
 | T93 | Measure in ATOM whether the scheduler's CPU segments add serially to the forward or overlap it; step fit's `fitted` CPU mode waits on it (`17` D104) |
 | T94 | Record the kernels each step fit grid point ran, and treat a cell whose corners ran different kernels as crossing a dispatch band (`09` D60): refused or split (`17` D99) |
-| T95 | A later trial, not this design: extrapolate step fit's out-of-cell steps as #627's ruling 3 has the tier-a law do, by one method only (extending the nearest complete cell's interpolation), tagged `extrapolated` with the distance, reported apart, never aborting. It would replace the abort-only rule and the `08` D50.1 departure; decided after step fit's stage-2 evaluation shows how often steps fall outside complete cells (`17` D102) |
+| T95 | A later trial, not this design: extrapolate step fit's out-of-cell steps as #627's ruling 3 has the tier-a law do, by one method only (extending the nearest complete cell's interpolation), tagged `extrapolated` with the distance and reported apart, which is not a refusal. It would answer out-of-cell steps, which step fit now declines; decided after step fit's stage-2 evaluation shows how often steps fall outside complete cells (`17` D102) |
 
 ### Topics 02, 01 — gaps now closed
 
