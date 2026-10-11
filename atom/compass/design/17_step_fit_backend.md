@@ -412,9 +412,9 @@ still fall in a hole; the pre-run coverage check (D99) and D102 handle that.
 
 ### Decision
 
-Step fit follows the refusal rule as the owner
-[ruled on #765](https://github.com/jgong5/ATOM/pull/765#issuecomment-6104630073), which
-#785 writes into `08` D50.1, with no departure and no default of its own:
+Step fit follows `08` D50.1's refusal rule as the owner
+[ruled on #765](https://github.com/jgong5/ATOM/pull/765#issuecomment-6104630073), with no
+departure and no default of its own:
 
 - **When step fit cannot answer a step** (D97, D99, D100), it declines: the step goes to
   the next rung, and is refused only when no rung answers.
