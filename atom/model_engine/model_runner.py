@@ -2572,8 +2572,7 @@ class ModelRunner:
         if needs_topk:
             top_k_buffer = self.forward_vars["top_ks"]
             top_k_buffer.np[:bs] = batch.top_ks
-            # A uniform k reaches the sampler as a host scalar, so the sampler
-            # never reads it back from the device.
+            # A uniform k goes to the sampler as a host scalar: no device read.
             if (batch.top_ks == batch.top_ks[0]).all():
                 top_ks = int(top_k_buffer.np[0])
             else:
