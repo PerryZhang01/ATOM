@@ -8,8 +8,16 @@ because a real forward rewrites some batch fields in place. Each line carries
 the batch as the `BatchView` a simulated runner prices it from (`rows`, `rung`);
 a real runner's line also carries `t_enter_ns` and `t_exit_ns`, the worker's
 monotonic clock around its forward, and is written once the forward returns.
-`compare` reads two records and names, per DP rank, the first step where they
-part; timestamps are not part of a step's decision.
+Inside the forward it carries `[enter, exit]` on that clock around the staging
+gate (`t_gate_ns`), the launch (`t_launch_ns`) and the wait for the previous
+output's token copy (`t_r1_ns`, only on a forward that reaches it). Its device
+window is `d_busy_ns`, from an event recorded at the launch's entry to one
+recorded at the forward's exit, and `d_gap_ns`, from the previous forward's
+exit event to this launch's entry event, absent on the first line; summed in
+order they lay every forward on one device timeline. The events are polled,
+never waited on, so a line is written once its exit event has completed, and
+`exit` writes the rest. `compare` reads two records and names, per DP rank,
+the first step where they part; timestamps are not part of a step's decision.
 
 Setting `ATOM_COMPASS_PARITY_RECORD` to a directory turns recording on: TP rank 0
 of each DP rank writes `dp<rank>.jsonl` there, replacing any earlier file.
@@ -28,10 +36,13 @@ run with one prompt could not be told apart in either record, so the second is
 refused.
 """
 
+import collections
+import functools
 import hashlib
 import json
 import os
 import pathlib
+import time
 from itertools import zip_longest
 
 import numpy as np
@@ -39,7 +50,18 @@ import numpy as np
 ENV = "ATOM_COMPASS_PARITY_RECORD"
 RUNNER = "atom.compass.parity.runner.RecordingModelRunner"
 #: Line keys that time a step rather than describe its decision.
-TIMESTAMPS = ("t_enter_ns", "t_exit_ns")
+TIMESTAMPS = (
+    "t_enter_ns",
+    "t_exit_ns",
+    "t_gate_ns",
+    "t_launch_ns",
+    "t_r1_ns",
+    "d_busy_ns",
+    "d_gap_ns",
+)
+#: A line's key, until it is written, for its device window: a callable taking
+#: `wait` and returning the window's fields, or None while it is still open.
+PENDING = "_pending"
 
 
 class StepRecord:
@@ -54,6 +76,7 @@ class StepRecord:
         self.keys: dict[int, str] = {}  # request id -> key
         self.owners: dict[str, int] = {}  # key -> request id
         self.prompts: dict[int, tuple] = {}  # request id -> (digest, next position)
+        self.pending: collections.deque[dict] = collections.deque()
 
     def add(self, batch, runner, forward=None):
         """Append `batch`'s line; with `forward`, run it inside the line's timestamps.
@@ -68,8 +91,10 @@ class StepRecord:
 
         The line is built before `forward` runs, since a real forward rewrites
         batch fields in place, and written after it returns, with `t_enter_ns`
-        and `t_exit_ns` read off `runner.step_clock_ns()` around it. Returns
-        `forward`'s reply, or None without one.
+        and `t_exit_ns` read off `runner.step_clock_ns()` around it and
+        `runner.step_stamps()` added; a line with a device window waits in
+        `pending` until the window closes. Returns `forward`'s reply, or None
+        without one.
         """
         from atom.compass.runner.projection import batch_view, forward_mode
 
@@ -125,10 +150,28 @@ class StepRecord:
             line["t_enter_ns"] = runner.step_clock_ns()
             reply = forward(batch)
             line["t_exit_ns"] = runner.step_clock_ns()
-        with self.path.open("a") as f:
-            f.write(json.dumps(line) + "\n")
+            line.update(runner.step_stamps())
+        self.pending.append(line)
+        self.flush()
         self.step += 1
         return reply
+
+    def flush(self, wait: bool = False) -> None:
+        """Write the lines whose device windows have closed, in step order.
+
+        A line stops the writing while its window is open, unless `wait`.
+        """
+        with self.path.open("a") as f:
+            while self.pending:
+                line = self.pending[0]
+                if PENDING in line:
+                    window = line[PENDING](wait)
+                    if window is None:
+                        return
+                    del line[PENDING]
+                    line.update(window)
+                f.write(json.dumps(line) + "\n")
+                self.pending.popleft()
 
 
 def record_step(runner, batch, forward=None):
@@ -161,19 +204,76 @@ class StepRecording:
     ATOM's `ModelRunner.__init__` warms up with a forward over a fabricated
     batch, which the simulated runner declines, so recording starts once
     construction returns. The class it is composed into supplies
-    `step_clock_ns`, the clock its lines are timed by.
+    `step_clock_ns`, the clock its lines are timed by, and `device_event`,
+    which records a timing event on the current stream and returns it.
+
+    A recorded forward is also stamped inside: around `_gate_staging_reuse`,
+    `run_model` and the instance's `tokenID_processor.recv_async_output`, with
+    device events at `run_model` entry and at the forward's exit.
     """
 
     _recording = False
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self._stamps: dict = {}
+        self._last_exit = None
+        processor = getattr(self, "tokenID_processor", None)
+        if processor is not None:
+            recv = processor.recv_async_output
+            processor.recv_async_output = functools.partial(
+                self._stamped, "t_r1_ns", recv
+            )
         self._recording = True
 
     def forward(self, batch):
         if self._recording:
             return record_step(self, batch, super().forward)
         return super().forward(batch)
+
+    def _stamped(self, key, call, *args):
+        """`call(*args)`, stamped under `key` when this forward is recorded."""
+        if getattr(self, "_parity_record", None) is None:
+            return call(*args)
+        enter = self.step_clock_ns()
+        reply = call(*args)
+        self._stamps[key] = [enter, self.step_clock_ns()]
+        return reply
+
+    def _gate_staging_reuse(self):
+        return self._stamped("t_gate_ns", super()._gate_staging_reuse)
+
+    def run_model(self, *args):
+        if getattr(self, "_parity_record", None) is not None:
+            self._stamps["launch_event"] = self.device_event()
+        return self._stamped("t_launch_ns", super().run_model, *args)
+
+    def step_stamps(self) -> dict:
+        """At a recorded forward's exit: its stamps, with its device window pending."""
+        stamps, self._stamps = self._stamps, {}
+        launch = stamps.pop("launch_event", None)
+        if launch is not None:
+            done, previous = self.device_event(), self._last_exit
+            self._last_exit = done
+            stamps[PENDING] = functools.partial(_window, previous, launch, done)
+        return stamps
+
+    def exit(self):
+        if getattr(self, "_parity_record", None) is not None:
+            self._parity_record.flush(wait=True)
+        return super().exit()
+
+
+def _window(previous, launch, done, wait: bool):
+    """The device window's fields once `done` has completed, polled, else None."""
+    while not done.query():
+        if not wait:
+            return None
+        time.sleep(1e-3)
+    fields = {"d_busy_ns": round(launch.elapsed_time(done) * 1e6)}
+    if previous is not None:
+        fields["d_gap_ns"] = round(previous.elapsed_time(launch) * 1e6)
+    return fields
 
 
 def read(directory) -> dict[int, list[dict]]:
