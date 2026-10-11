@@ -650,11 +650,9 @@ class NonAllocatingRunner(RefusedControlCommands):
         runs at all. Replacing it anyway is the point: a runner must not depend
         on a caller-side flag to stay off the device.
         """
-        from atom.model_engine.model_runner import max_schedulable_decode_bs
-
-        bound = max_schedulable_decode_bs(
-            self.config.max_num_seqs, self.config.max_num_batched_tokens, 1
-        )
+        # `max_schedulable_decode_bs` at one token per sequence; importing it
+        # would pull the engine, and its kernels, into a driver-free process.
+        bound = min(self.config.max_num_seqs, self.config.max_num_batched_tokens)
         self.capture_sizes = sorted(s for s in self.config.capture_sizes if s <= bound)
         self.capture_sizes_np = np.asarray(self.capture_sizes, dtype=np.int32)
         logger.info(
