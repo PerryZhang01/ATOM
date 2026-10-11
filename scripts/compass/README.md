@@ -574,3 +574,9 @@ simulated `cctraces_sim.sh` cell against two or more spaced real runs of it
 inadmissible when the cell PERTURBED, simulated at 0.97 of the law's prefill
 price, moves it no further than that spread. The module's docstring lists the
 metrics, their distances and the verdicts.
+
+## A cell graded from every source — `python -m atom.compass.validate`
+
+`python -m atom.compass.validate CELL...` joins the commands above and the run
+summaries into one table per cell directory: `law/`, `p97/` and two or more
+`real*/` runs of one workload. Its docstring lists the rows.
