@@ -416,9 +416,9 @@ Each of these voided real percentages before.
 6. **Coverage is a hull, not a bounding box**, and **leave-one-out does not validate a
    family**. Both are doc `09` D58/D59 — the geometry of coverage and the choice of a
    functional form are fitting questions and are argued there, with the measurements.
-   Named here because both are *refusals a validation run applies*: a step outside the
-   hull is reported as refused rather than predicted, and a law whose family was chosen
-   by LOO alone is not admissible evidence.
+   Named here because a validation run applies both: a step outside the hull is priced
+   `extrapolated` and reported apart (D50.1), not refused, and a law whose family was
+   chosen by LOO alone is not admissible evidence.
 7. **A speculative acceptance cell run at declared acceptance is not acceptance
    evidence.** It is exploration. Acceptance cells use the *measured* per-position
    distribution from the paired real run (`14` D84 tier 1); the artifact names the tier.
@@ -429,10 +429,11 @@ Each of these voided real percentages before.
 
 ### Problem
 
-Seven documents emit refusals — an unpriced leaf, a step outside the hull, a missing
-runtime constant, an unmatched tokenizer, a guard domain no binding satisfies — and until
-now none of them said what happens next. Abort the run? Continue and mark the step? The
-answer changes what a result *is*, so it belongs here rather than in any of the seven.
+Several documents emit refusals — an unpriced leaf, a missing runtime constant, an
+unmatched tokenizer, a guard domain no binding satisfies, a refused control command — and
+none of them says what happens next. Abort the run? Continue and mark the step? And which
+declines are refusals at all, when a lower rung of the resolver ladder can still answer?
+The answer changes what a result *is*, so it belongs here rather than in any one of them.
 
 ### Options
 
@@ -441,40 +442,48 @@ answer changes what a result *is*, so it belongs here rather than in any of the 
 | Bring-up usability | **poor** — one unforeseen shape kills a 300 s run | good | good |
 | Diagnostic value | names one refusal | **names all of them, with counts** | names all of them |
 | Risk of a partial result being read as complete | none | **real** | real |
-| Schedule fidelity | n/a | a refused step still has to consume *some* time, or the schedule diverges from that point on | same |
+| Schedule fidelity | n/a | a refused step costs 0 s, so the schedule after it is not the real one | same |
 
 ### Decision
 
-**Mark and continue, with the refused fraction as a reported result and a declared
-admissibility threshold.** Concretely:
+**A step is refused only when no rung answers. A refused step costs 0 s and the run
+continues, and any refusal makes the run a coverage report** (owner ruling on
+[#765](https://github.com/jgong5/ATOM/pull/765#issuecomment-6104630073), 2026-10-11). Concretely:
 
-1. **A refused step is priced by the next rung of the resolver ladder that can answer**,
-   down to tier 0, and tagged `provenance=refused(<reason>)` naming the rung that actually
-   answered. It is never priced at zero and never skipped — a skipped step changes the
-   schedule from that point forward, which would corrupt every number after it, not just
-   the refused one.
-2. **The run artifact carries the refused count, the refused fraction of steps, the
-   refused fraction of predicted *seconds*, and the distinct reasons with counts.** The
-   seconds fraction matters more than the step fraction: 2% of steps can be 40% of the
-   time.
-3. **Admissibility gate: a run with more than 5% of predicted seconds refused is not
-   acceptance evidence.** It is a coverage report, and it names exactly what to measure
-   next. The number is declared, not derived, and should be revisited after one campaign.
+1. **Refused means no rung of the resolver ladder answered.** A rung that declines while
+   a lower one answers is a fall-through, not a refusal, and the step carries the
+   provenance of the rung that answered. An `analytical` answer (tier 0, where one
+   exists) and an `extrapolated` one (outside the hull, `09` D58) are not refusals
+   either. A refused step costs 0 s and the run continues; it is not skipped, since
+   ATOM's scheduler has already applied the batch, and the clock simply does not advance
+   for it.
+2. **The run artifact carries the refused count and the distinct reasons with counts,
+   and reports analytic and extrapolated steps apart from them**, each with its step
+   count and share of predicted seconds. Refusals carry no seconds: a refused step has
+   none.
+3. **Any refusal, of any source, makes the run a coverage report** (`coverage_report` in
+   the run summary, `01` D3.5), not acceptance evidence. It names exactly what to
+   measure next. There is no threshold. An extrapolated step does not invalidate a run;
+   the analytic share is bounded by D52's cap.
 4. **`--compass-on-refusal abort` exists** (`13` D80) for the case where a refusal is a
-   bug being chased. It is not the default and is not valid in an acceptance run.
-   **One departure, by ruling:** topic `17`'s step fit runs with `abort` only, and departs
-   from items 1, 3 and 4. Its graded runs are refusal-free by a pre-run coverage check,
-   and any refusal voids the run (`17` D102).
+   bug being chased. It stops the run at the first refusal, and the run summary is still
+   written. It is not the default.
+   **One departure, by ruling:** topic `17`'s step fit runs with `abort` only, departing
+   from item 1's continue and D80's default. Its graded runs are refusal-free by a
+   pre-run coverage check (`17` D102).
 
 **Why not abort by default.** Refusals are the design's main *diagnostic* output — the
 whole point of `compass plan` is that a refusal tells you what to measure. Aborting makes
 that one refusal per run instead of a complete list, which turns a single coverage gap
 into as many iterations as there are gaps.
 
-**Why the fraction is a gate rather than a note.** Without one, "mark and continue"
-degrades into a run that is 30% tier-0 fallback and reports a tidy latency number. The
-gate is what keeps the refusal from becoming a silent fallback — which is the exact
-failure the *refuse rather than fall back* principle exists to prevent.
+**Why any refusal makes a coverage report, with no threshold.** A refused step costs
+0 s, so a run with refusals understates its time by an amount nothing measured; a
+threshold on refused seconds would gate on a number that is zero by construction.
+Analytic and extrapolated steps are priced, so their shares of seconds are real, and
+each is reported apart so neither reads as measured. D52's cap on the analytic share
+is what keeps tier 0 from becoming a silent fallback — the exact failure the *refuse
+rather than fall back* principle exists to prevent.
 
 ---
 
@@ -641,14 +650,13 @@ Fail closed. Each of these has a prior incident behind it.
 
 | Condition | Why |
 |---|---|
-| a **coverage hull violation** on any acceptance step | the step was priced outside what was measured |
 | **machine contamination** before or after | a tenant compute-bound in 0.7 GB was caught by a health check and would have passed any free-memory test |
 | a **`--measure` flag** on an acceptance run | the instrument changes what it measures — ~11 ms of TTFT on the 27B |
 | **analytic fraction** above the declared threshold | doc 07 D36's resolver ladder rung 4 is a permission, not a fallback |
 | an **artifact fingerprint mismatch** | doc 07 D43 |
 | a **gate state** in the artifact disagreeing with the declared configuration | *"a dead gate is worse than no gate"* — a `PRICE_KERNELS` gate read `WORLD_SIZE`, which the engine never sets, so it was false in every worker and the proof was in the artifact: breakdowns present for 164 of 237 entries |
 | **saturation** where scheduling fidelity is being claimed | see below |
-| any **refusal** raised by the cost model | it refused for a reason; name it |
+| any **refusal**, of any source | the run is a coverage report (D50.1); name every reason |
 
 ### Saturation deserves its own note
 
@@ -680,11 +688,11 @@ claims there are not.
 | D47 | Cost accuracy on the real run's own step sequence; report totals, held-out-worst, and median per step together. | 2026-09-18 |
 | D48 | Memory per term, never as a sum. The gate is whether the top-1 configuration choice survives, not the byte error. | 2026-09-18 |
 | D49 | Seven hygiene refusals, each with a prior incident behind it. | 2026-09-18 |
-| D50.1 | A refusal marks and continues: priced by the next answerable rung, tagged `refused(reason)`, never zero and never skipped. Refused fraction of **seconds** is a reported result; **>5% refused seconds is not acceptance evidence**. | 2026-09-19 |
+| D50.1 | A step is refused only when no rung answers; a fall-through, an `analytical` answer and an `extrapolated` one are not refusals, and the last two are reported apart with their steps and share of predicted seconds. A refused step costs 0 s and the run continues; `--compass-on-refusal abort` stops at the first, and the summary is written either way. Any refusal, of any source, makes the run a coverage report: no refused-seconds fraction, no threshold, and an out-of-hull step does not invalidate a run. | 2026-09-19; revised 2026-10-11 (#765) |
 | D50 | Everything registered and hashed before evaluation; the case set never shrinks. One simulated run plus a reproducibility assertion; N≥3 spaced real runs. The cells are stage 2's Qwen3.8-27B TP1 on MI308X and M2's four nightly P/D configurations of DeepSeek-V4-Pro on MI355X at their concurrencies, then the DPA two at EP8. M2's ranking gate: the same best configuration as hardware at each concurrency, and rank correlation across all cells, per end-to-end metric, each inside its real-vs-real spread, with Spearman's ρ also at least 0.9. DP mechanism tests run on a CPU fake-model DP2. | 2026-09-18; revised 2026-10-01, 2026-10-09, 2026-10-10 |
 | D50.2 | The MI455 projection is sound, not graded: the roofline at the spec's peaks, derates at 1, no host floor, composed by the step's own joins and never summed across concurrent work, is a lower bound on every measured MI355X step; every MI455 input is sourced or marked assumed; the method's error is measured by projecting Qwen3.8-27B from MI308X to MI355X. | 2026-10-09 |
 | D51 | Measure a saturated cell early. Account cold costs once; report the simulator's own per-step CPU cost alongside the ratio. | 2026-09-18 |
-| D52 | Eight fail-closed invalidation conditions. Scheduling claims require slack; throughput claims at saturation are fine. | 2026-09-18 |
+| D52 | Fail-closed invalidation conditions; any refusal is one, an out-of-hull step is not (D50.1). Scheduling claims require slack; throughput claims at saturation are fine. | 2026-09-18; revised 2026-10-11 |
 
 ---
 
