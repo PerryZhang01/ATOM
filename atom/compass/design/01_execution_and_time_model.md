@@ -1003,6 +1003,8 @@ refusal, an engine that raises) included, and carried in the run artifact:
 
 | Field | Why |
 |---|---|
+| `schema_version` | two summaries are compared only at one format |
+| `source_root`: ATOM's tree, or a snapshot's stamped commit, read when the authority is built | two summaries from different code are not one result; a tree with neither `.git` nor a stamp is refused before the run |
 | grants issued, per LP | the protocol's own cost; the number that says whether PP degree is affordable |
 | wall seconds vs simulated seconds | the speed result (`08`), and the only place the ≥5x target is measured |
 | lazy traces: count and wall seconds | `02` — they consume real time inside a simulated run and must not silently degrade the speed result |
