@@ -16,9 +16,9 @@ from types import SimpleNamespace
 import pytest
 import torch
 from conftest import MockConfig
-from test_backend_coarse import law
+from test_backend_coarse import backend, law
 from test_dp_slice import _deployment
-from test_dp_step_max import BLOCK, runner
+from test_dp_step_max import BLOCK, dp2, runner  # noqa: F401  the dp2 fixture
 from test_run_graph_pool import _reserved
 from test_runner_control_refusals import Worker
 
@@ -159,6 +159,20 @@ def test_under_abort_the_refused_step_ends_the_run_and_the_summary_is_written(
     [[reason, count]] = out["schedule"]["refusals"]["reasons"]
     assert (reason.startswith("ended:engine raised CostRefused("), count) == (True, 1)
     assert out["coverage_report"] is True
+
+
+def test_a_refused_rank_still_joins_the_group_max(dp2):  # noqa: F811
+    ranks = [
+        runner(no_eager_rung(), dp_size=2, dp_rank=0),
+        runner(backend(), dp_size=2, dp_rank=1),
+    ]
+
+    refused, priced = dp2(ranks[0].dummy_execution, ranks[1].dummy_execution)
+
+    assert priced.predicted_s > 0
+    assert refused.predicted_s == priced.predicted_s
+    assert ranks[0].refused_commands() == (REFUSED,)
+    assert ranks[1].refused_commands() == ()
 
 
 @pytest.mark.parametrize(
