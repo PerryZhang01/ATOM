@@ -163,6 +163,14 @@ def test_a_log_of_two_ranks_is_refused(monkeypatch, tmp_path):
         main([str(tmp_path / compass_run.LP_FILE.format("engine")), str(log)])
 
 
+def test_a_hand_in_with_no_memory_section_is_refused_by_name(tmp_path):
+    compass_run._hand_in({"out_dir": str(tmp_path)}, "frontend", [])
+    frontend = tmp_path / compass_run.LP_FILE.format("frontend")
+    log = _log(tmp_path / "real.log", peak=GIB, non_torch=GIB)
+    with pytest.raises(MemoryRefusal, match=f"{frontend} has no memory section"):
+        main([str(frontend), str(log)])
+
+
 def test_the_authority_removes_an_earlier_runs_hand_in(tmp_path):
     stale = tmp_path / compass_run.LP_FILE.format("engine-P")
     stale.write_text("{}")
