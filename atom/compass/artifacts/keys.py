@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""What names an artifact: the six artifact keys, as tuples that cannot be paths.
+"""What names an artifact: the artifact keys, as tuples that cannot be paths.
 
 The table below is the whole of artifact identity. An entry is addressed by the
 values that decide what it contains and by nothing else -- not by where someone
@@ -48,14 +48,13 @@ class Kind(enum.Enum):
     REGION_TERMS = "region_terms"
     MEMORY_READINGS = "memory_readings"
     COVERAGE_HULL = "coverage_hull"
+    STEP_FIT_BUNDLE = "step_fit_bundle"
 
     def __str__(self) -> str:
         return self.value
 
 
-#: What keys each artifact, in the order a key reads. The design's table,
-#: verbatim -- a test parses it back out of the document and compares this
-#: mapping row by row.
+#: What keys each artifact, in the order a key reads.
 KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
     Kind.MACHINE_SPEC: ("device", "software_stack"),
     Kind.SHAPE_POPULATION: ("model", "workload", "engine_config"),
@@ -72,6 +71,16 @@ KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
         "block_size",
     ),
     Kind.COVERAGE_HULL: ("price_list",),
+    # `engine_config` names the one the grid was planned for; `grid` names
+    # the grid definition with its margin.
+    Kind.STEP_FIT_BUNDLE: (
+        "model",
+        "device",
+        "parallel",
+        "engine_config",
+        "grid",
+        "source_root",
+    ),
 }
 
 #: The incident each kind's refusal quotes, where there is one to quote.

@@ -35,8 +35,11 @@ member, the frontend's included, connects to.
   what has been handed in.
 
 Run file keys: ``clock_endpoint``, ``bound_s`` (finite), ``admission_path``,
-``ipc_s``, ``stream_s``, ``coefficients`` (a `Coefficients` mapping, priced by
-`ShapeStubBackend`) or ``law`` (a `CoarseLaw` mapping, priced by `CoarseBackend`),
+``ipc_s``, ``stream_s``, one of ``coefficients`` (a `Coefficients` mapping,
+priced by `ShapeStubBackend`), ``law`` (a `CoarseLaw` mapping, priced by
+`CoarseBackend`) and ``step_fit`` (an artifact store's root and a bundle's key,
+priced by `StepFitBackend`; see `step_fit`, whose bundle key, digest and
+``describe()`` line the run summary carries),
 ``roofline_floor_s`` (optional: a tier-0 `Roofline` with this host floor prices
 the steps the backend refuses),
 ``on_refusal`` (optional: ``mark``, the default, prices a step no cost source
@@ -104,13 +107,13 @@ FRONTEND, ENGINE, TRAFFIC = LpId("frontend"), LpId("engine"), LpId("traffic")
 ATOM_RUNNER = "atom.model_engine.model_runner.ModelRunner"
 #: Keys that differ between two runs of one configuration, kept out of its name.
 PER_RUN = ("clock_endpoint", "out_dir")
-COMMANDS_FILE, MEMORY_FILE, PRICED_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
+COMMANDS_FILE, MEMORY_FILE, PRICED_FILE, STEP_FIT_FILE = (
     "commands-{}.json",  # by LP name, or <lp>.<member> for a member
     "memory-{}.json",  # by DP rank, after P or D on a prefill-decode side
     "priced-{}.json",  # by engine LP name, or <lp>.<member> for a member
-    "step_table.txt",
-    "summary.json",
+    "step-fit-{}.json",  # named as the memory file is
 )
+STEP_TABLE_FILE, SUMMARY_FILE = "step_table.txt", "summary.json"
 #: Wall seconds the summary's writer waits for the server LPs' refusals.
 HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field changes meaning or goes.
@@ -246,6 +249,7 @@ class _RecordingAuthority(ClockAuthority):
             COMMANDS_FILE,
             MEMORY_FILE,
             PRICED_FILE,
+            STEP_FIT_FILE,
             STEP_TABLE_FILE,
             SUMMARY_FILE,
         ):
@@ -406,11 +410,11 @@ def runner(model_runner) -> None:
 
     config = model_runner.config
     tp = config.tensor_parallel_size
-    keys = [k for k in ("coefficients", "law") if k in run]
+    keys = [k for k in ("coefficients", "law", "step_fit") if k in run]
     if len(keys) != 1:
         raise ValueError(
-            "a run file prices its steps from one of coefficients and law, and "
-            f"this one has {' and '.join(keys) or 'neither'}"
+            "a run file prices its steps from one of coefficients, law and "
+            f"step_fit, and this one has {' and '.join(keys) or 'none'}"
         )
     if "law" in run:
         if tp != 1:
@@ -419,13 +423,18 @@ def runner(model_runner) -> None:
                 f"run has tensor_parallel_size {tp}"
             )
         backend = CoarseBackend(CoarseLaw(run["law"]))
-    else:
+    elif "coefficients" in run:
         backend = ShapeStubBackend(
             Coefficients(**run["coefficients"]),
             Parallelism(tp_size=tp),
             stack_layers=config.hf_config.num_hidden_layers,
         )
     machine = MachineSpec.from_mapping(_width_keys(run["machine"]))
+    bundle = None
+    if "step_fit" in run:
+        from atom.compass.run.step_fit import load
+
+        backend, bundle = load(run["step_fit"], config, machine)
     config_json = PretrainedConfig.get_config_dict(config.model)[0]
     model = ModelTerms.from_declared_config(
         config.hf_config,
@@ -473,6 +482,11 @@ def runner(model_runner) -> None:
         Path(run["out_dir"]) / MEMORY_FILE.format(name),
         json.dumps(record(readings, tokens=config.max_num_batched_tokens, pool=pool)),
     )
+    if bundle is not None:
+        bundle["describe"] = backend.describe()
+        _write_whole(
+            Path(run["out_dir"]) / STEP_FIT_FILE.format(name), json.dumps(bundle)
+        )
 
 
 def _graph_pool(model_runner, machine, model):
@@ -570,7 +584,9 @@ def _width_keys(node):
 def _write_whole(path: Path, text: str) -> None:
     """Write `path` whole or not at all, so a reader that polls for it never
     reads it part-written."""
-    part = path.with_name(path.name + ".part")
+    # Named per process: each TP rank's worker writes the same memory and step
+    # fit files, and two renames of one part file race.
+    part = path.with_name(f"{path.name}.{os.getpid()}.part")
     part.write_text(text)
     part.replace(path)
 
@@ -692,6 +708,12 @@ def _write_summary(run: dict, a: _RecordingAuthority, ended: bool = False) -> No
     # Any refusal, of any source, leaves part of the run unsimulated; a run
     # that ended early handed in why.
     summary["coverage_report"] = bool(reasons)
+    fits = sorted(out.glob(STEP_FIT_FILE.format("*")))
+    if fits:
+        # By the name each worker wrote under, as its memory file is.
+        summary["step_fit"] = {
+            f.stem.removeprefix("step-fit-"): json.loads(f.read_text()) for f in fits
+        }
     _write_whole(out / SUMMARY_FILE, json.dumps(summary, sort_keys=True, indent=1))
 
 
