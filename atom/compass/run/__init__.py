@@ -219,7 +219,11 @@ class _RecordingAuthority(ClockAuthority):
         self._joining = set(_servers(run))
         # A rerun into the same out_dir starts from none of the last run's files.
         out = Path(run["out_dir"])
-        for name in (LP_FILE, STEP_TABLE_FILE, SUMMARY_FILE):
+        for name in (
+            LP_FILE,
+            STEP_TABLE_FILE,
+            SUMMARY_FILE,
+        ):
             for f in out.glob(name.format("*")):
                 f.unlink()
         table = channel_table(run)

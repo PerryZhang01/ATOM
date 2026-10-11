@@ -142,12 +142,9 @@ def recorded(log: Path) -> tuple[Recorded, Term | None]:
 
 def check(predicted_file: Path, log: Path) -> str:
     """The per-term table, the predicted readings' own terms, and the graph pool."""
-    saved = json.loads(predicted_file.read_text()).get("memory")
-    if not saved:
-        raise MemoryRefusal(
-            f"{predicted_file} has no memory section",
-            "pass an engine's hand-in, lp-engine*.json",
-        )
+    if not (saved := json.loads(predicted_file.read_text()).get("memory")):
+        what = f"{predicted_file} has no memory section"
+        raise MemoryRefusal(what, "pass an engine's hand-in, lp-engine*.json")
     readings = {name: _reading(name, rows) for name, rows in saved["readings"].items()}
     predicted = Predicted(
         saved["label"],
