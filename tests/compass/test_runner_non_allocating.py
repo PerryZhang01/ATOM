@@ -338,12 +338,20 @@ def test_the_overrides_bind_no_attribute_that_could_hold_a_tensor():
     deferral bookkeeping `forward` builds on first use, and `kv_pool_sizing`
     is a `SizedKVPool` -- a count, a name-to-count table and the readings --
     built in a package whose whole import closure `test_kv_budget.py` holds
-    free of any tensor library. Anything else appearing here is a tensor this
+    free of any tensor library. `capture_sizes` and `capture_sizes_np` are the
+    base's own ladder, rebound to a list of ints and a host int32 array as
+    ATOM's capture rebinds them. Anything else appearing here is a tensor this
     class put on a device, which is the thing it exists not to do.
     """
     overrides = _classes(PACKAGE / "overrides.py")["NonAllocatingRunner"]
     bound = {n for n, _ in _self_assigned(overrides)}
-    assert bound == {"model", "_token_stream", "kv_pool_sizing"}
+    assert bound == {
+        "model",
+        "_token_stream",
+        "kv_pool_sizing",
+        "capture_sizes",
+        "capture_sizes_np",
+    }
 
 
 # --- warmup drives a forward, which is why it is skipped ---------------------

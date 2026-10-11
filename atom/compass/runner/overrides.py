@@ -96,6 +96,7 @@ import logging
 import os
 from typing import Any
 
+import numpy as np
 import torch
 
 from atom.compass.backends.base import CostBackend
@@ -635,20 +636,32 @@ class NonAllocatingRunner(RefusedControlCommands):
         failure over there: the worker dies on the unpack, or never replies, and
         the caller waits for the rest of its life either way.
 
-        `capture_sizes` and `capture_sizes_np` are deliberately left at the
-        eager-fallback values the base set during construction, because the
-        attention metadata builder reads them on every step. The reply
-        deliberately disagrees with the attribute it preserves: the base sends
-        `self.capture_sizes` -- the same `[0]` -- as the second element
-        (`ModelRunner.capture_cudagraph`), and this sends `[]`. Both are only
-        ever formatted into a log line, and `[]` is the truthful one.
+        `capture_sizes` and `capture_sizes_np` are set to the ladder the base
+        leaves behind: the declared `config.capture_sizes` narrowed to what
+        the scheduler can produce, ascending. `ForwardMode.decide` reads the
+        rung of every step off `capture_sizes_np`, so leaving the
+        construction-time `[0]` would price every decode step as eager. The
+        bound charges one token per sequence because this runner never has a
+        drafter. The reply still sends `[]` for the batch sizes, since no
+        graph exists; the caller only formats it into a log line.
 
         `EngineCore.__init__` reaches this method only when `not enforce_eager
         and not disagg_is_decode`, so on an eager deployment the override never
         runs at all. Replacing it anyway is the point: a runner must not depend
         on a caller-side flag to stay off the device.
         """
-        logger.info("no cudagraph captured: there are no weights to trace.")
+        from atom.model_engine.model_runner import max_schedulable_decode_bs
+
+        bound = max_schedulable_decode_bs(
+            self.config.max_num_seqs, self.config.max_num_batched_tokens, 1
+        )
+        self.capture_sizes = sorted(s for s in self.config.capture_sizes if s <= bound)
+        self.capture_sizes_np = np.asarray(self.capture_sizes, dtype=np.int32)
+        logger.info(
+            "no cudagraph captured: there are no weights to trace; steps "
+            "dispatch on the ladder %s.",
+            self.capture_sizes,
+        )
         return 0.0, [], 0
 
     @torch.inference_mode()
