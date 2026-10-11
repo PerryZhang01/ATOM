@@ -210,15 +210,15 @@ def fit_host(records) -> tuple[dict, dict]:
     """The host laws over `records`, as a run file's `host` entry, and their report."""
     from scipy.spatial import QhullError
 
-    keys = {json.dumps(_key(r), sort_keys=True) for r in records}
+    keys = sorted({json.dumps(_key(r), sort_keys=True) for r in records})
     if len(keys) != 1:
         raise ValueError(
-            f"the records carry {len(keys)} host keys ({' / '.join(sorted(keys))}); "
+            f"the records carry {len(keys)} host keys ({' / '.join(keys)}); "
             "host laws are fitted under one"
         )
     got = [host_samples(r) for r in records]
     rows = [row for r, _ in got for row in r]
-    host = {"key": json.loads(keys.pop()), "laws": {}}
+    host = {"key": json.loads(keys[0]), "laws": {}}
     report = {"cut": {"idle": sum(n for _, n in got)}, "unfitted": {}}
     for kind in HOST_KINDS:
         for segment in HOST_SEGMENTS[: 3 if kind == "middle" else 4]:

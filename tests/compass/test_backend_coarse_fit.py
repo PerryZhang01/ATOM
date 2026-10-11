@@ -440,7 +440,7 @@ def test_the_host_key_reads_atom_outside_compass_and_the_real_runner_writes_it(
     from test_parity_record import ENV, _config, _drive, _Runner
 
     import atom
-    from atom.compass.backends.coarse import host_key
+    from atom.compass.parity import host_key
 
     tree = tmp_path / "atom"
     (tree / "compass").mkdir(parents=True)
