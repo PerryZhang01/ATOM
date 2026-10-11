@@ -50,8 +50,10 @@ client counts of `08` D50's stage-2 row, by `08` D44's three results alone. Stag
 one configuration, so there is no ranking gate.
 
 This does not make step fit the backend every stage-2 run, or any other work, must use.
-Which backend stage 2 is passed with stays #627's ruling; the other candidate is #529's
-`09` D54 law.
+Which backend stage 2 is passed with is #627's ruling, and on 2026-10-10 it ruled that
+stage 2 prices with `09` D54's tier-a law and that step fit stays off the stage-2 path for
+now. Grading step fit by stage 2's protocol (`16` S2.2 to S2.6) is therefore not on stage
+2's critical path.
 
 **A use beyond `07` D36.** D36's "used for" column gives tier a structure discovery,
 sweeps and plumbing, and gives tier b the acceptance cells. Grading a tier-a backend on
@@ -143,11 +145,32 @@ whether a cell is complete (D99) is something the plan can guarantee, which repl
 batches cannot. D39's two hazards are carried by the residual, fitted on replayed batches
 in the first version (D100), so row order and raggedness are covered before grading.
 
-### Planning: from shapes, never timings
+### The grid definition is a calibration input
 
-- **Sparse, and placed from shapes.** First `07` Phase 0's population on the registered
-  case set, then the real runs' step tables. Never from timings: a node placed where an
-  error looked large is a node chosen by the answer.
+- **An input to the compass toolchain, never code and never a silent default** (`13` D79
+  rule 1): one list of node coordinates per axis, and the planning margin. A grid run
+  without either refuses, naming it.
+- **Recorded in the bundle and part of its identity** (`07` D41, and D101's key), so
+  another grid is another bundle, never a code change.
+- **A cell is the box between adjacent nodes on every axis.** That rule stays in code,
+  with the coordinate mapping, the complete-cell rule and the interpolation inside a cell
+  (D99); the backend reads the cells, and which of them are complete, from the bundle.
+- **What a point's measurement means is code, not input.** Warm-up, repeat count and the
+  statistic taken over the repeats are fixed in the toolchain and recorded with each
+  point; none is configurable.
+- **Measurements are stored per point**, keyed by the point's shape and the `07` D43
+  fingerprint, as `07` D41 keys every entry. A grid definition selects points, so a new
+  definition measures only the points not yet measured.
+
+### Planning: nodes from shapes, cells from the planned population
+
+- **Sparse, and placed from shapes.** A definition's nodes come first from `07` Phase 0's
+  population on the registered case set, then from the real runs' step tables. Never from
+  timings: a node placed where an error looked large is a node chosen by the answer.
+  Choosing among definitions already written is D100's, on the development sessions only.
+- **Only the cells the planned shapes fall in are measured, plus the declared margin**
+  around them, `07` D38's "over-cover with a declared margin". A cell outside both is not
+  measured, stays incomplete, and refuses the step that needs it (D99).
 - **The feasible region's boundary is in the grid.** Its boundary nodes, the KV capacity
   and the token budget, are grid nodes. The bundle records the configuration bounds its
   grid was planned for (D101 checks them).
@@ -212,7 +235,8 @@ the raggedness and the order of the rows, is the residual's job (D100).
 
 - **An answer is an exact hit, or an interpolation inside a cell, only when every corner
   of the enclosing cell was measured.** Otherwise the step refuses, naming the missing
-  corners.
+  corners. A cell is the box between adjacent nodes of the bundle's grid definition on
+  every axis (D98).
 - **Nothing else answers.** No extrapolation, clamp, missing-point recovery, completion
   from another axis, calibrated model or constant fallback (`09` D58; principle 6).
 - **A hole does not fail loading.** The bundle records which cells are complete; a hole
@@ -236,10 +260,12 @@ Nothing is `extrapolated`, because nothing answers outside a complete cell.
 D60 found interpolation between step measurements unsafe (prefill: median 12.2%, worst
 32.1%, against 2.1% for a measured ladder) and makes laws piecewise over dispatch bands read
 from a leaf's recorded kernel identity. A whole-step measurement records no kernel
-identity, as for `09` D54's tier-a law, so step fit cannot see a band inside a cell. That is
-why a lookup is never an answer alone: the residual, fitted on replayed batches that fall
-inside the cells, carries what interpolation misses, and `09` D59's validation and the
-held-out grading measure whether it does.
+identity today, as for `09` D54's tier-a law, so step fit cannot yet see a band inside a
+cell. That is why a lookup is never an answer alone: the residual, fitted on replayed
+batches that fall inside the cells, carries what interpolation misses, and `09` D59's
+validation and the held-out grading measure whether it does. T94 closes the gap: each grid
+point records the kernels it ran, and a cell whose corners ran different kernels crosses a
+dispatch band and is refused or split.
 
 ---
 
@@ -253,6 +279,9 @@ held-out grading measure whether it does.
 - **Development and held-out by `08` D50's session split.** The residual is fitted only on
   replayed batches of the development sessions, and grading uses only the held-out
   sessions. Both are registered before evaluation, with the bundle digest (`07` D41).
+- **Grid definitions are compared on the development sessions only**, and every
+  definition tried is recorded with its errors, so the one a bundle carries was not chosen
+  on the sessions grading holds out (`08` D50).
 - **Features in `14` D85's form**: tokens, `Σ N_Q²` and `Σ N_Q·N_KV` over requests, the
   aggregates `ScheduledBatch` carries; one form for prefill and decode, a decode step being
   its `N_Q = 1` case. Plus the row order and raggedness that `07` D39 and `09` D61 name as
@@ -312,7 +341,7 @@ such recipe and comes after v1; it reads DCP's state as ATOM's own DCP helper re
 - **A bundle is an artifact in `07` D41's sense**, beside the artifacts that table lists:
   a key tuple plus a content digest, the path only a location (D41 rule 1). The key is
   (model, device, parallel configuration, the engine configuration the grid was planned
-  for, source-root digest).
+  for, the grid definition and its margin (D98), source-root digest).
 - **Immutable once handed off** (D41 rule 4). A changed coefficient is a new bundle, and
   accuracy reports are not inherited.
 - **#626's manifest** (digests, dependencies, a five-step load) is a proposal for `07`
@@ -458,9 +487,10 @@ After stage 2, step fit gets one evaluation on DeepSeek-V4-Pro (`16` W4.13):
 
 ## Open issues
 
-- **A dispatch band inside a cell is invisible to step fit** (D99). The residual's
-  held-out error is the only detector, so a band that the replayed batches never straddle
-  is not caught before grading.
+- **A dispatch band inside a cell is invisible to step fit** until each grid point records
+  the kernels it ran (D99). Until then the residual's held-out error is the only detector,
+  so a band that the replayed batches never straddle is not caught before grading.
+  Recorded as **T94**.
 - **Supporting `mark`** needs a lower rung for the target. Recorded as **T92**.
 - **Whether the scheduler's CPU segments add serially to the forward or overlap it** is
   unmeasured in ATOM, and gates the `fitted` mode. Recorded as **T93**.
@@ -471,11 +501,11 @@ After stage 2, step fit gets one evaluation on DeepSeek-V4-Pro (`16` W4.13):
 
 | # | Decision | Date |
 |---|---|---|
-| D96 | Step fit (`StepFitBackend`, `step_fit`) is a tier-a `CostBackend`: grid lookup plus a residual. A candidate for #627's stage 2, graded by stage 2's protocol after `09` D59's validation, a use beyond `07` D36 by ruling; which backend passes stage 2 stays #627's ruling. Not a stage-3 backend, not the source of the per-family MI308X tables; Kimi-K3 and DCP after v1. | 2026-10-10 (#696) |
+| D96 | Step fit (`StepFitBackend`, `step_fit`) is a tier-a `CostBackend`: grid lookup plus a residual. A candidate for #627's stage 2, graded by stage 2's protocol after `09` D59's validation, a use beyond `07` D36 by ruling; which backend passes stage 2 is #627's ruling, which chose `09` D54's law and keeps step fit off the stage-2 path for now. Not a stage-3 backend, not the source of the per-family MI308X tables; Kimi-K3 and DCP after v1. | 2026-10-10 (#696); #627's ruling noted 2026-10-11 |
 | D97 | One term per step over the forward's whole interval, priced once per logical forward by the runner and charged by the engine. Rows in order; mixed phases and speculative decode refuse; a DP run refuses by key and a PP stage refuses. The backend imports nothing from ATOM. | 2026-10-10 (#696) |
-| D98 | A synthetic homogeneous grid, departing from `07` D39 for the baseline only; sparse and planned from shapes, its boundary nodes at the feasible region's edge. Decode in replay on the target's own ladder, per rung at `B = R` and `B = previous rung + 1`; prefill eager on `(B, N_Q, c)` by whether a chunk produces output. `02` D10's interval, `07` D42's timing; a narrower declared scope refuses. | 2026-10-10 (#696) |
+| D98 | A synthetic homogeneous grid, departing from `07` D39 for the baseline only. Its definition (a node list per axis and the planning margin) is a calibration input recorded in the bundle's identity; a cell is the box between adjacent nodes; warm-up, repeats and statistic are fixed in code; measurements are stored per point. Nodes are placed from shapes, and only the cells the planned shapes fall in, plus the margin, are measured; boundary nodes sit at the feasible region's edge. Decode in replay on the target's own ladder, per rung at `B = R` and `B = previous rung + 1`; prefill eager on `(B, N_Q, c)` by whether a chunk produces output. `02` D10's interval, `07` D42's timing; a narrower declared scope refuses. | 2026-10-10 (#696); grid definition 2026-10-11 (#626) |
 | D99 | An answer only from a complete cell, by exact hit or interpolation; otherwise refuse, naming the missing corners. No extrapolation, clamp, recovery or fallback. A pre-run coverage check over cells and the residual hull; deterministic lookups; `02` D11 species. | 2026-10-10 (#696) |
-| D100 | The residual is in the first version, fitted on replayed batches of the development sessions in `14` D85's form plus order and raggedness, held out by `08` D50's session split, refusing outside its hull. Members are bundle data; each output checked. Recipes are fixed functions with injected geometry and hardware constants, versioned only when a function changes; optional recipes, DCP's first. | 2026-10-10 (#696) |
+| D100 | The residual is in the first version, fitted on replayed batches of the development sessions in `14` D85's form plus order and raggedness, held out by `08` D50's session split, refusing outside its hull; grid definitions compared on the development sessions only, each one tried recorded. Members are bundle data; each output checked. Recipes are fixed functions with injected geometry and hardware constants, versioned only when a function changes; optional recipes, DCP's first. | 2026-10-10 (#696); grid comparison 2026-10-11 (#626) |
 | D101 | A bundle is a `07` D41 key plus a digest, immutable, with a row in `07` D43 invalidated by every column. Keyed conditions refuse; derived values go to provenance; #626's asserted and record-only grades are dropped. Conditions come from the resolved ATOM config. At startup, unmeasured rungs and bounds beyond the planned grid refuse. | 2026-10-10 (#696) |
 | D102 | Refusal aborts: `abort` only and by default under step fit, departing from `08` D50.1 items 1, 3 and 4. A graded run is refusal-free by coverage; any refusal voids it. The refused batch gets no forward and no time, the run ends as failed, and the first reason is kept. | 2026-10-10 (#696) |
 | D103 | Selected by one new Compass flag, `--compass-backend step_fit`, with `--compass-tier a`; otherwise `13` D80's flags and the artifact store, no config file. | 2026-10-10 (#696) |
@@ -493,3 +523,4 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 |---|---|---|
 | T92 | Support `--compass-on-refusal mark` under step fit once a tier-0 law exists for the target | no row of `16` authors a Qwen tier-0 law |
 | T93 | Measure in ATOM whether the scheduler's CPU segments add serially to the forward or overlap it, before `fitted` is usable | needs a real run with per-segment timing |
+| T94 | Record the kernels each grid point ran, and treat a cell whose corners ran different kernels as crossing a dispatch band (`09` D60): refused or split | needs the grid measurement (`16` S2.2) to record kernel identity |

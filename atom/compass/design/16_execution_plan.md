@@ -497,13 +497,15 @@ their own hardware, and a coarse wave cannot be claimed as an issue. Every row t
 ### Stage 2 — Qwen3.8-27B TP1 on MI308X, M2's first gate
 
 #627's stage 2 (D95): paired real and simulated cc-traces, graded by `08`. S2.1, the real
-side, serves any candidate backend; which backend stage 2 is passed with is #627's ruling.
-The rows after it are the step fit candidate's (`17`).
+side, serves any candidate backend. #627 ruled on 2026-10-10 that stage 2 prices with
+`09` D54's tier-a law, whose tasks #627 files, and that step fit stays off the stage-2 path
+for now. The rows after S2.1 are the step fit candidate's (`17`), off stage 2's critical
+path.
 
 | ID | Task | Module | Effort | Depends on |
 |---|---|---|---|---|
-| **S2.1** | The real side: Qwen3.8-27B TP1 on MI308X, aggregated, driven by cc-traces at `08` D50's stage-2 client counts; three or more spaced runs per client count (`08` D45), with per-request records and per-step tables, each forward's batch and unprofiled seconds (`08` D49 item 1). Its owner per #627's open ruling | `scripts/compass/` | 150–300 | GPU queue |
-| **S2.2** | Step fit's grid: planned from Phase 0 on the registered case set, then from S2.1's step tables; measured on MI308X, then topped up in the cells real batches fall in (`17` D98) | calibration, `cli/` | 300–500 | W4.1, S2.1, T27, GPU queue |
+| **S2.1** | The real side: Qwen3.8-27B TP1 on MI308X, aggregated, driven by cc-traces at `08` D50's stage-2 client counts; three or more spaced runs per client count (`08` D45), with per-request records and per-step tables, each forward's batch and unprofiled seconds (`08` D49 item 1). Filed under #627's stage-2 plan | `scripts/compass/` | 150–300 | GPU queue |
+| **S2.2** | Step fit's grid: a grid definition with its margin, planned from Phase 0 on the registered case set, then from S2.1's step tables; the cells the planned shapes fall in measured on MI308X per point, then topped up in the cells real batches fall in (`17` D98) | calibration, `cli/` | 300–500 | W4.1, S2.1, T27, GPU queue |
 | **S2.3** | Step fit's residual, fitted on replayed batches of the development sessions (`17` D100) | `backends/`, calibration | 250–400 | S2.2 |
 | **S2.4** | `StepFitBackend` with its production wiring: lookup, residual, bundle and startup checks, abort-only refusal, the run record and `--compass-backend` (`17` D99–D104) | `backends/`, wiring | 500–800 | W2.4, S2.3 |
 | **S2.5** | `09` D59's validation of the residual: data held out from the fit within the development sessions, three or more candidate families, a second axis (`17` D96) | calibration | 150–250 | S2.3 |

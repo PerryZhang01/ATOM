@@ -198,6 +198,7 @@ M-f `14`; M-g `01` D3.5.
 |---|---|
 | T92 | Support `--compass-on-refusal mark` under step fit once a tier-0 law exists for the target; no row of `16` authors a Qwen tier-0 law (`17` D102) |
 | T93 | Measure in ATOM whether the scheduler's CPU segments add serially to the forward or overlap it; step fit's `fitted` CPU mode waits on it (`17` D104) |
+| T94 | Record the kernels each step fit grid point ran, and treat a cell whose corners ran different kernels as crossing a dispatch band (`09` D60): refused or split (`17` D99) |
 
 ### Topics 02, 01 — gaps now closed
 
