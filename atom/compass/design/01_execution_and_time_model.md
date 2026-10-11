@@ -998,7 +998,8 @@ frame whose send was never registered sits when no later drain runs the straggle
 None of these aborts. This is what makes a hang
 diagnosable rather than merely silent.
 
-**3. The run summary**, written once at the end and carried in the run artifact:
+**3. The run summary**, written once at the end of every run, an early end (an abort on
+refusal, an engine that raises) included, and carried in the run artifact:
 
 | Field | Why |
 |---|---|
@@ -1006,16 +1007,21 @@ diagnosable rather than merely silent.
 | wall seconds vs simulated seconds | the speed result (`08`), and the only place the ≥5x target is measured |
 | lazy traces: count and wall seconds | `02` — they consume real time inside a simulated run and must not silently degrade the speed result |
 | causality detector state | straggler count (must be 0), stall diagnostics printed, clock-lint status |
-| refusals: count, fraction of steps, **fraction of predicted seconds**, distinct reasons | `08` D50.1's admissibility gate reads this |
+| refusals: count and distinct reasons; analytic and extrapolated steps apart, each with its count and share of predicted seconds; `coverage_report` | `08` D50.1: any refusal makes the run a coverage report, and D52 caps the analytic share |
 
-### Two rules
+### Rules
 
 1. **The timeline log is off by default and costs nothing when off.** It is a debugging
    and evidence artifact, not a per-step tax; at millions of grants it would dominate a
-   fast run. The *summary* is always written — it is small and it is what the acceptance
-   gate reads.
+   fast run. The *summary* is always written, an early end included — it is small and it
+   is what the acceptance gate reads.
 2. **The summary is part of the run artifact, not a log line.** `13` D81's rule applies:
    recorded by value, so a result can be audited without the machine that produced it.
+3. **Each quantity is counted in one place.** The summary, the step table and the
+   timeline read it and do not count it again. The refusal denominator once counted the
+   engine's clock rows while the refusals were counted per priced step.
+4. **The summary does not copy the simulated system's latency and throughput.** TTFT,
+   ITL and request counts stay in the benchmark's own output and ATOM's metrics (`11`).
 
 ### Open issue
 
@@ -1388,9 +1394,9 @@ A command is refused by the **simulated runner**, in the worker method it reache
 reply naming that method (`command:<method>`), not an exception, and is counted in the run
 summary's refusals (D3.5). An exception would end the engine for a command a client sent
 while serving; the reply goes back through ATOM's handler, and the run continues. Any
-`command:` refusal makes the run a coverage report, not acceptance evidence, whatever the
-refused fraction of seconds that `08` D50.1 gates: ATOM's handler still applies its own
-half of the command (it marks the profiler active, or the engine asleep), so what runs
+`command:` refusal makes the run a coverage report, not acceptance evidence, as every
+refusal does (`08` D50.1), and for a reason of its own: ATOM's handler still applies its
+own half of the command (it marks the profiler active, or the engine asleep), so what runs
 after it is no longer the deployment being simulated.
 ATOM's handlers are unchanged, the command travels its real channel, and a refusal is
 visible rather than a silent zero.
@@ -1928,7 +1934,7 @@ Ordered by how much they could cost.
 | D3.2 | Always-on causality detectors: a straggler check against the receiver's last drain (fails the run); a stall the CA cannot see prints one diagnostic after 30 wall seconds and keeps waiting, never aborting; clock-source CI lint | 2026-09-19; revised 2026-09-28 |
 | D3.3 | CA deploys two ways from one implementation: co-hosted in the API-server process by default, standalone server via `--compass-clock-endpoint` for multi-container runs (1P+1D in M1 and M2) | 2026-09-19 |
 | D3.4 | Wall-clock interleaving may vary between runs; the `(LP, virtual time, event)` sequence may not. Thread scheduling inside an LP is irrelevant only under in-transit counting and TSO delivery; ties break by **(time, LP id, channel, sequence number), never arrival order**; the cost backend is a pure function of its batch view; **no `set` iteration on the simulated path** - string ids are hashed under `PYTHONHASHSEED` randomisation, so a set of request ids iterates differently in every process. Test is a byte-diff of two step tables, CPU-only, in CI. | 2026-09-20; revised 2026-09-28 |
-| D3.5 | The CA owns three outputs: an opt-in timeline log, a stall diagnostic (a stall the CA can see is resolved by deadlock detection and recovery; one it cannot see gets a diagnostic, never an abort), and an always-written run summary carrying grants, speed ratio, lazy-trace cost, detector state and the refusal fractions `08` D50.1 gates on. | 2026-09-20; revised 2026-09-28 |
+| D3.5 | The CA owns three outputs: an opt-in timeline log, a stall diagnostic (a stall the CA can see is resolved by deadlock detection and recovery; one it cannot see gets a diagnostic, never an abort), and a run summary written always, an early end included, carrying grants, speed ratio, lazy-trace cost, detector state, the refusals with their reasons, the analytic and extrapolated shares apart, and `coverage_report` (`08` D50.1). Each quantity is counted in one place, which the summary, the step table and the timeline read; the simulated system's latency and throughput (TTFT, ITL, request counts) stay in the benchmark's output and ATOM's metrics, not the summary. | 2026-09-20; revised 2026-09-28 and 2026-10-11 |
 | D4 | Every synchronization site maps to one of the PDES mechanisms K1-K9, none undecided; the boundary is the LP, not the process; a DP step is one TAR costing the `max` over ranks, exchanged inside the forward by a K6 wait with no cost, and the lockstep `all_reduce` is K1 for its own cost; handler threads stay and TSO delivery runs them at their message's timestamp | 2026-09-18; revised 2026-09-28 and 2026-10-01 |
 | D5 | Every timer and clock read the CA can reach runs on the LP clock; only what it cannot reach is configured or left real; metric cadence is virtual time (revising `11` D72); the profiler and RL control commands are refused by the simulated runner with a reply, counted, and make the run a coverage report | 2026-09-18; revised 2026-09-28, 2026-10-09 |
 | D5.1 | The simulated run uses stdlib asyncio, not uvloop: only a Python event loop can host virtual time | 2026-09-28 |

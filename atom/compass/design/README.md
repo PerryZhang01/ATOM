@@ -1,11 +1,10 @@
 # ATOM Compass — Design
 
 **Status: reviewed and approved, 2026-09-20. Design only — no code has been written
-against it yet.** Every document carries a matching header. **Decisions D0–D95,
-with no gaps, and their sub-decisions** are indexed at the end of this file. The TODOs are
-registered in **`12_open_items.md`**, with the load-bearing assumptions and the cross-cutting
-issues. Implementation follows the execution
-plan in `16`.
+against it yet.** Every document carries a matching header.
+**Decisions D0–D105, with no gaps, and their sub-decisions** are indexed at the end of this
+file. The TODOs are registered in **`12_open_items.md`**, with the load-bearing assumptions
+and the cross-cutting issues. Implementation follows the execution plan in `16`.
 
 ---
 
@@ -172,7 +171,7 @@ document that owns it. Nothing in `01`–`11` is outside this diagram.
   |                       fitting, law selection, hull guard            |
   |                       spec-decode: draft/verify structures,         |
   |                       declared acceptance, draft KV                 |
-  |                                          docs 02,03,04,09,10,14     |
+  |                                       docs 02,03,04,09,10,14,17     |
   +=====================================================================+
   |  L2  EXECUTION        CompassModelRunner (the seam)                 |
   |                       simulated KV connector                        |
@@ -217,6 +216,7 @@ document that owns it. Nothing in `01`–`11` is outside this diagram.
 | L3 | Model capture, Cost IR | [`04_model_capture_and_cost_ir.md`](04_model_capture_and_cost_ir.md) | D17–D23 (+ D18.1) |
 | L3 | Fitting, law selection, hull guard | [`09_fitting_and_law_selection.md`](09_fitting_and_law_selection.md) | D53–D62 |
 | L3 | Analytic laws (tier 0) | [`10_analytic_laws.md`](10_analytic_laws.md) | D63–D70 |
+| L3 | Step fit backend (tier a), a stage-2 candidate | [`17_step_fit_backend.md`](17_step_fit_backend.md) | D96–D105 |
 | L4 | Harness contract, wire fields, adapter | [`06_workload_harness_contract.md`](06_workload_harness_contract.md) | D27–D35 |
 | L5 | `compass plan` and the calibration phases | [`07_calibration_toolchain.md`](07_calibration_toolchain.md) | D36–D43 |
 | L5 | Machine spec schema and probes | [`05_machine_spec_and_probes.md`](05_machine_spec_and_probes.md) | D24–D26 |
@@ -307,6 +307,9 @@ rather than answering from stale data.
 
 Orthogonal to the tier, every individual answer carries its **provenance** — measured,
 fitted, interpolated, extrapolated or analytical — and a step reports the mixture.
+
+One tier-a backend goes beyond its "used for" line by ruling: `17`'s step fit is graded as
+a candidate for #627's stage 2 (`17` D96, `07` D36).
 
 ---
 
@@ -459,7 +462,11 @@ The documents use these precisely; a reader will bounce off without them.
 | **structure** | a distinct operator list, independent of shape. Prefill has two (chunked, unchunked); decode has one across all CUDA-graph rungs. Traces are cached per structure, not per shape. |
 | **treatment** | a factor that moves cost and is invisible to every feature in the model. Decode **row order** is one, worth 1.77× at a fixed context multiset. |
 | **tier** | which cost model was asked (0 analytic / a coarse / b op-level). Orthogonal to provenance. |
-| **refusal** | a declined answer with a named reason. Refusals are results, not errors, and are preferred to fallbacks everywhere. |
+| **refusal** | a declined answer with a named reason. Refusals are results, not errors, and are preferred to fallbacks everywhere. A **refused step** is one no rung of the resolver ladder answered: it costs 0 s, the run continues, and any refusal makes the run a coverage report (`08` D50.1). A rung that declines while a lower one answers is a fall-through, and an analytic or extrapolated answer is reported apart; neither is a refusal. |
+| **step fit** | the tier-a backend of `17`: a grid of step measurements looked up per batch, plus a residual, fitted on replayed batches, for what the grid's coordinates cannot see (row order, raggedness). |
+| **complete cell** | a cell of step fit's grid whose every corner was measured. Step fit answers only inside one, by exact hit or interpolation; anywhere else it refuses. |
+| **recipe** | step fit's feature functions and the constants frozen with them. Configuration supplies geometry and hardware values, a fit supplies coefficients, and a recipe's version changes only when a function does. |
+| **bundle** | step fit's artifact: a grid, a recipe and the residual fitted with them, identified by a `07` D41 key and a digest, never by a path. |
 
 ---
 
@@ -507,6 +514,7 @@ The documents use these precisely; a reader will bounce off without them.
 | [`03`](03_memory_and_kv_model.md) | Memory Model and the KV Pool | **Do not simulate the KV pool** — ATOM's real one is pure arithmetic. Substitute the five device readings, never the arithmetic. How a prefix-cache hit reaches the cost model. Validate per term, never as a sum. |
 | [`04`](04_model_capture_and_cost_ir.md) | Model Capture and the Cost IR | Capture with `TorchDispatchMode` + `FakeTensorMode` + `ShapeEnv`. A hierarchical, symbolic, stream-annotated IR whose `Repeat` nests and tolerates non-contiguous layer patterns. **Opaque leaves** are priced, not decomposed. |
 | [`10`](10_analytic_laws.md) | Analytic Laws (Tier 0) | Cost and memory from device parameters and model geometry, with no measurement of the subject. Three classes: exact from geometry, device-parameterised, policy-determined. Declared accuracy goals with **ranking** as the primary gate. **The most speculative document here.** |
+| [`17`](17_step_fit_backend.md) | Step Fit Backend (Tier a) | A measured grid of whole forwards, answered only from complete cells, plus a residual fitted on replayed batches. A stage-2 candidate, graded by stage 2's protocol and off the stage-2 path for now (#627); a refusal aborts the run. |
 
 ### Part III — How the data is made
 
@@ -527,7 +535,7 @@ The documents use these precisely; a reader will bounce off without them.
 
 | Doc | Title | What it settles |
 |---|---|---|
-| [`13`](13_configuration_surface.md) | The Configuration Surface | Three homes for a setting, and the test that assigns them. Precedence is CLI > env > artifact > **refuse**. Eight engine-side flags, one `compass` executable, and an audit of what is deliberately *not* a flag. |
+| [`13`](13_configuration_surface.md) | The Configuration Surface | Three homes for a setting, and the test that assigns them. Precedence is CLI > env > artifact > **refuse**. The engine-side flags, one `compass` executable, and an audit of what is deliberately *not* a flag. |
 | [`14`](14_speculative_decoding.md) | Speculative Decoding and MTP | Three of the four changes are routine. Acceptance is a **declared input** through ATOM's existing flags, fed the *measured per-position distribution* rather than a mean. No new cost form — decode becomes the `N_Q = 1` case of the general one. |
 | [`15`](15_parallelism_support.md) | Parallelism Support | One frame of four questions per strategy. **Only PP adds logical processes** - TP, DP and EP each sit behind a barrier ATOM already has. DP is the one that couples *scheduling decisions*, through a per-forward collective that rewrites the batch; both its collectives run for real, because both reduce over scheduling metadata rather than model outputs. Explicit M1/M2 split; PP after v1. |
 
@@ -564,6 +572,7 @@ The documents use these precisely; a reader will bounce off without them.
 | D82 – D87 | `14` Speculative Decoding and MTP |
 | D88 – D94 | `15` Parallelism Support (TP, DP, PP, EP) |
 | D95 | `16` The Execution Plan |
+| D96 – D105 | `17` Step Fit Backend (Tier a) |
 
 ### Headline decisions
 

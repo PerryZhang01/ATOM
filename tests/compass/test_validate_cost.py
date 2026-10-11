@@ -80,7 +80,7 @@ def test_the_step_that_moves_the_total_is_held_out_and_the_spread_reported(tmp_p
     record = _record(tmp_path / "steps", _steps(), stretch={4: 0.2})
     report = cost_accuracy(record, LAW)
 
-    assert report["cut"] == {"idle": 0, "after_idle": 0, "mixed": 0, "last": 1}
+    assert report["cut"] == {"idle": 0, "mixed": 0, "last": 1}
     assert report["extrapolated"] == {} and report["refused"] == {}
     prefill = report["fitted"]["prefill"]
     assert prefill["steps"] == 10
@@ -110,14 +110,14 @@ def test_extrapolated_and_refused_steps_are_reported_apart(tmp_path):
     record = _record(tmp_path / "steps", steps, stretch={3: 2.0}, idle_after={8})
     report = cost_accuracy(record, LAW)
 
-    assert report["cut"] == {"idle": 1, "after_idle": 1, "mixed": 0, "last": 1}
+    assert report["cut"] == {"idle": 1, "mixed": 0, "last": 1}
     (extrapolated,) = report["extrapolated"].values()
     assert extrapolated["steps"] == 1
     assert extrapolated["measured_s"] == pytest.approx(2 * _price(wide[0]), rel=1e-9)
     assert extrapolated["on_totals"] == pytest.approx(-0.5, rel=1e-9)
     assert extrapolated["bands"]["prefill tokens 2048-8192"]["within_10pct"] == 0.0
     fitted = report["fitted"]["prefill"]
-    assert fitted["steps"] == 8
+    assert fitted["steps"] == 9  # step 9, after the idle gap, is fitted
     assert fitted["on_totals"] == pytest.approx(0.0, abs=1e-9)
     assert report["refused"] == {
         "decode rung 2": {"steps": 1, "measured_s": pytest.approx(_price(rung2[0]))}

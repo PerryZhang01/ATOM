@@ -36,10 +36,14 @@ member, the frontend's included, connects to.
 Run file keys: ``clock_endpoint``, ``bound_s`` (finite), ``admission_path``,
 ``ipc_s``, ``stream_s``, ``coefficients`` (a `Coefficients` mapping, priced by
 `ShapeStubBackend`) or ``law`` (a `CoarseLaw` mapping, priced by `CoarseBackend`),
+``roofline_floor_s`` (optional: a tier-0 `Roofline` with this host floor prices
+the steps the backend refuses),
 ``machine`` (a machine spec mapping), ``parameter_count``, and ``out_dir``,
 where the step table, the run summary and each server LP's refusals go: an
 engine's are the worker's refused commands and the engine's refused clock
 calls, a frontend's its executor's refused jobs and its refused clock calls.
+Each engine also writes there what its worker's steps cost, for the summary's
+predicted seconds and its analytical and extrapolated shares.
 Each engine's worker writes the memory it predicts there too, for
 ``python -m atom.compass.memory.check``. The authority removes an earlier
 run's files there as it starts. An optional ``data_parallel_size``, 1 when
@@ -95,9 +99,10 @@ FRONTEND, ENGINE, TRAFFIC = LpId("frontend"), LpId("engine"), LpId("traffic")
 ATOM_RUNNER = "atom.model_engine.model_runner.ModelRunner"
 #: Keys that differ between two runs of one configuration, kept out of its name.
 PER_RUN = ("clock_endpoint", "out_dir")
-COMMANDS_FILE, MEMORY_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
+COMMANDS_FILE, MEMORY_FILE, PRICED_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
     "commands-{}.json",  # by LP name, or <lp>.<member> for a member
     "memory-{}.json",  # by DP rank, after P or D on a prefill-decode side
+    "priced-{}.json",  # by engine LP name, or <lp>.<member> for a member
     "step_table.txt",
     "summary.json",
 )
@@ -220,7 +225,13 @@ class _RecordingAuthority(ClockAuthority):
         self._joining = set(_servers(run))
         # A rerun into the same out_dir starts from none of the last run's files.
         out = Path(run["out_dir"])
-        for name in (COMMANDS_FILE, MEMORY_FILE, STEP_TABLE_FILE, SUMMARY_FILE):
+        for name in (
+            COMMANDS_FILE,
+            MEMORY_FILE,
+            PRICED_FILE,
+            STEP_TABLE_FILE,
+            SUMMARY_FILE,
+        ):
             for f in out.glob(name.format("*")):
                 f.unlink()
         table = channel_table(run)
@@ -364,8 +375,9 @@ def runner(model_runner) -> None:
         return
     from transformers import PretrainedConfig
 
+    from atom.compass.backends.analytic import Roofline, Tiered
     from atom.compass.backends.coarse import CoarseBackend, CoarseLaw
-    from atom.compass.backends.geometry import Parallelism
+    from atom.compass.backends.geometry import KvGeometry, Parallelism
     from atom.compass.backends.shape import Coefficients, ShapeStubBackend
     from atom.compass.memory import ModelTerms, device_readings, predicts
     from atom.compass.memory.check import record
@@ -396,7 +408,6 @@ def runner(model_runner) -> None:
             Parallelism(tp_size=tp),
             stack_layers=config.hf_config.num_hidden_layers,
         )
-    install_cost_backend(model_runner, backend)
     machine = MachineSpec.from_mapping(_width_keys(run["machine"]))
     config_json = PretrainedConfig.get_config_dict(config.model)[0]
     model = ModelTerms.from_declared_config(
@@ -411,6 +422,22 @@ def runner(model_runner) -> None:
             tp,
         ),
     )
+    if "roofline_floor_s" in run:
+        kv = KvGeometry.from_hf_config(
+            config.hf_config,
+            block_size=config.kv_cache_block_size,
+            parallelism=Parallelism(tp_size=tp),
+            kv_dtype=config.kv_cache_dtype,
+        )
+        roofline = Roofline(
+            machine,
+            parameters=run["parameter_count"] // tp,
+            weight_bytes=model.weights.nbytes,
+            kv_token_bytes=kv.layers * kv.bytes_per_token_per_layer,
+            host_floor_s=run["roofline_floor_s"],
+        )
+        backend = Tiered(backend, roofline)
+    install_cost_backend(model_runner, backend)
     reserved, captured = _graph_pool(model_runner, machine, model)
     readings = device_readings(
         machine, tp_width=tp, model=model, cudagraph_overhead=reserved
@@ -536,14 +563,18 @@ def _hand_in(run: dict, lp: str, reasons: list) -> None:
 
 
 def engine_done(engine_core) -> None:
-    """After the engine's loop: leave the clock and hand in the worker's command
-    refusals and the engine's refused clock calls."""
+    """After the engine's loop: leave the clock and hand in what the worker's
+    steps cost, then its command refusals and the engine's refused clock
+    calls."""
     clock.close()
     run = spec()
     if run is not None:
-        refused = engine_core.runner_mgr.call_func("refused_commands", wait_out=True)
+        workers = engine_core.runner_mgr
+        refused = workers.call_func("refused_commands", wait_out=True)
+        priced = dict(workers.call_func("priced_steps", wait_out=True))
         rt = clock.installed()
         lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
+        _write_whole(Path(run["out_dir"]) / PRICED_FILE.format(lp), json.dumps(priced))
         _hand_in(run, lp, list(refused) + rt.refusals)
 
 
@@ -612,15 +643,34 @@ def _write_summary(run: dict, a: _RecordingAuthority, ended: bool = False) -> No
             )
         time.sleep(0.1)
     reasons = [r for f in files if f.exists() for r in json.loads(f.read_text())]
-    steps = sum(r.lp.startswith(ENGINE.name) and r.event == "TAR" for r in a.steps.rows)
+    # Each engine's priced steps, written before its refusals.
+    priced = [
+        json.loads(f.read_text())
+        for n in _hand_ins(run)
+        if (f := out / PRICED_FILE.format(n)).exists()
+    ]
+
+    def total(key):
+        return sum(p.get(key, 0) for p in priced)
+
+    seconds = total("seconds")
+    tally = RefusalTally.of(reasons, total("steps"))
     end = a.finished or time.monotonic()
-    summary = RunSummary.of(
-        a, end - (a.started or end), refusals=RefusalTally.of(reasons, steps)
-    ).as_record()
+    summary = RunSummary.of(a, end - (a.started or end), refusals=tally).as_record()
+    schedule = summary["schedule"]
+    schedule["predicted_seconds"] = seconds
+    # Answers no measurement backs: diagnostics, never refusals.
+    for species in ("analytical", "extrapolated"):
+        schedule[species] = {
+            "steps": total(f"{species}_steps"),
+            "fraction_of_predicted_seconds": (
+                total(f"{species}_seconds") / seconds if seconds else 0.0
+            ),
+        }
     summary["configuration"] = configuration(run)
-    # A refused command leaves ATOM's half of it applied, so what ran after it
-    # was not the deployment simulated; a run that ended early simulated part.
-    summary["coverage_report"] = ended or any(r.startswith("command:") for r in reasons)
+    # Any refusal, of any source, leaves part of the run unsimulated; a run
+    # that ended early simulated part of it.
+    summary["coverage_report"] = ended or bool(reasons)
     _write_whole(out / SUMMARY_FILE, json.dumps(summary, sort_keys=True, indent=1))
 
 

@@ -40,6 +40,10 @@ Two orthogonal axes: **which tier was asked**, and **how each answer inside it w
 obtained** (the provenance ladder of doc 02 D11, extended). This document covers what tier
 b (and the empirical half of tier a) needs to exist.
 
+**One use beyond the table, by ruling.** Topic `17`'s step fit, a tier-a backend, is graded
+as a candidate for #627's stage 2 by the owner's ruling on #696 (`17` D96). The
+"used for" column is otherwise unchanged.
+
 Scope boundary, stated once: **Compass models a device it has been measured on.**
 Configurability — dialling the capacity, bandwidth or interconnect of a measured device —
 stays in scope. Predicting an unmeasured architecture is tier 0's job. Accordingly, doc 05
@@ -193,9 +197,10 @@ TP>1**. If it turns out to need a live process group, this phase stops being sch
 on a CPU box and the campaign's shape changes — which is why both are gating tasks.
 
 **What it does not produce.** A graph is a structure, not a price. Every leaf in it is
-unpriced until Phase 1b. A run with complete Phase 1a coverage and no Phase 1b refuses
-every step, by name, which is the intended behaviour and a useful diagnostic rather than
-a failure.
+unpriced until Phase 1b. A run with complete Phase 1a coverage and no Phase 1b has no
+tier-b answer for any step: each falls to tier 0 where one exists and is refused, by
+name, where none does (`08` D50.1). That is the intended behaviour and a useful
+diagnostic rather than a failure.
 
 ### Phase 1b — op pricing, and why it cannot leave the worker
 
@@ -345,6 +350,10 @@ wrong in ways that matter:
 | region term | **required** | no |
 
 Op pricing on synthetic shapes is what keeps cc-traces off a GPU during calibration.
+
+**One departure, by ruling.** Topic `17`'s step fit measures its baseline grid on synthetic
+homogeneous shapes, and fits the residual that carries row order and raggedness on
+replayed batches (`17` D98, D100). The rule above holds for every other step measurement.
 
 ### The bench does not change D38's phases — it is where three of them run
 
@@ -675,6 +684,7 @@ mismatch **refuses** (warn only under an explicit flag).
 | `op_graph` | - | **X** | **X** | **X** | - | X (level, cudagraph mode) |
 | `price_list` | **X** | **X** | X | - *(shape-parametric)* | **X** | - |
 | `region_terms` | X | X | **X** | X | X | X |
+| step fit bundle (`17` D101) | X | X | X | X | X | X |
 | `memory_readings` | **X** | X | X | X | **X** | **X** |
 | `machine_spec`: capacity | - | - | - | - | **X** | - |
 | `machine_spec`: runtime constants | **X** | - | - | - | **X** | - |

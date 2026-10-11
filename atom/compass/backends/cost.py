@@ -219,6 +219,7 @@ class ProvenanceMix:
         self.refused_steps = 0
         self.refused_seconds = 0.0
         self._species_seconds: dict[Species, float] = {}
+        self._species_steps: dict[Species, int] = {}
         self._reasons: dict[tuple[str, str], int] = {}
 
     def record(self, step: StepCost) -> None:
@@ -231,6 +232,7 @@ class ProvenanceMix:
             self._species_seconds[species] = fold_step(
                 self._species_seconds.get(species, 0.0), seconds
             )
+            self._species_steps[species] = self._species_steps.get(species, 0) + 1
         for refusal in step.refusals:
             key = (refusal.source, refusal.reason)
             self._reasons[key] = self._reasons.get(key, 0) + 1
@@ -260,6 +262,10 @@ class ProvenanceMix:
 
     def seconds_by_species(self) -> Mapping[Species, float]:
         return dict(self._species_seconds)
+
+    def steps_by_species(self) -> Mapping[Species, int]:
+        """Steps with at least one term of each species."""
+        return dict(self._species_steps)
 
     def reasons(self) -> Mapping[tuple[str, str], int]:
         """Distinct (source, reason) pairs with the number of terms each hit."""

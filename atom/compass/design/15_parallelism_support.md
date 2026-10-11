@@ -790,7 +790,8 @@ CPU-only path (`08` D43.1).
 - Nothing here covers **PCP / DCP** (`pcp_size`, `dcp_world_size`), which appear in the
   topology and in `03`'s note that `hash_block_size = block_size × dcp_world_size`. They
   are out of scope for v1 (`16` D95 lists DCP after it), and recorded so they are not
-  discovered late.
+  discovered late. `17` D100 describes DCP's correction as an optional recipe of the step
+  fit backend, also after v1.
 
 ---
 
