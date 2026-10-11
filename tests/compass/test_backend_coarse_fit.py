@@ -440,7 +440,7 @@ def test_the_host_key_reads_atom_outside_compass_and_the_real_runner_writes_it(
     from test_parity_record import ENV, _config, _drive, _Runner
 
     import atom
-    from atom.compass.parity import host_key
+    from atom.compass.run import host_key
 
     tree = tmp_path / "atom"
     (tree / "compass").mkdir(parents=True)
@@ -471,3 +471,27 @@ def test_the_host_key_reads_atom_outside_compass_and_the_real_runner_writes_it(
     runner.host_key = key
     runner.forward(batches[0])
     assert json.loads((tmp_path / "out" / "dp0.key.json").read_text()) == key
+
+
+def test_a_run_refuses_host_laws_fitted_under_another_key(tmp_path, monkeypatch):
+    from test_run_step_fit import deployment, publish, run_file
+
+    from atom.compass import run as compass_run
+
+    laws = {"decode": {"E": [1e-4, 0.0, 0.0]}}
+    for name, other in (("same", {}), ("other", {"host_cpu": "another cpu"})):
+        (tmp_path / name).mkdir()
+        r = deployment(tmp_path / name)
+        publish(tmp_path / name, r)
+        key = dict(compass_run.host_key(r.config), **other)
+        run = run_file(tmp_path / name, monkeypatch, host={"key": key, "laws": laws})
+        monkeypatch.setenv(compass_run.NOW_ENV, str(tmp_path / name / "now.bin"))
+        compass_run._PublishedClock(
+            compass_run.ENGINE, compass_run.channel_table(run), None
+        )
+        if other:
+            with pytest.raises(ValueError, match=r"another \['host_cpu'\]"):
+                compass_run.runner(r)
+        else:
+            compass_run.runner(r)
+            assert r.compass_host.laws == laws

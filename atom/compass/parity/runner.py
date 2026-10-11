@@ -9,7 +9,8 @@ import time
 
 import torch
 
-from atom.compass.parity import StepRecording, host_key
+from atom.compass.parity import StepRecording
+from atom.compass.run import host_key
 from atom.model_engine.model_runner import ModelRunner
 
 
