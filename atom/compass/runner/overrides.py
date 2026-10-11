@@ -398,7 +398,8 @@ class RefusedControlCommands:
     configure_hidden_states = _refused("configure_hidden_states")
 
     def refused_commands(self) -> tuple[str, ...]:
-        """Every refusal this runner answered, in order, for the run summary.
+        """Every refusal this runner answered, in order, for the run summary:
+        each refused command, and each step no cost source priced.
 
         A method rather than an attribute so the engine can read it over the
         same RPC the commands came in on; a tuple, so the caller gets a copy
@@ -822,6 +823,11 @@ def _group_step_seconds(runner: Any, batch: Any, backend: CostBackend) -> float:
 
     A pipeline stage is refused: it runs only its own layers, and a backend
     prices the whole step, so every stage would charge the whole model.
+
+    A step no cost source answers costs 0 s on this rank and still counts as
+    a priced step; its reason, ``cost:`` and what each source said, joins the
+    refusals the summary reads. With `compass_abort` set it raises instead,
+    which ends the worker.
     """
     from atom.compass.runner.projection import batch_view, dp_group, forward_mode
 
@@ -832,11 +838,23 @@ def _group_step_seconds(runner: Any, batch: Any, backend: CostBackend) -> float:
             "stage the whole model would count it once per stage"
         )
     from atom.compass.backends.cost import ProvenanceMix
+    from atom.compass.backends.ladder import CostRefused
 
     mode = forward_mode(batch, runner)
-    cost = backend.estimate(batch_view(batch, mode, runner))
-    vars(runner).setdefault("_priced", ProvenanceMix()).record(cost)
-    seconds = cost.seconds
+    mix = vars(runner).setdefault("_priced", ProvenanceMix())
+    try:
+        cost = backend.estimate(batch_view(batch, mode, runner))
+    except CostRefused as refused:
+        if getattr(runner, "compass_abort", False):
+            raise
+        mix.steps += 1
+        said = "; ".join(f"{r.source}: {r.reason}" for r in refused.declined)
+        said = said or "no cost source was consulted"
+        vars(runner).setdefault("_refused_commands", []).append(f"cost:{said}")
+        seconds = 0.0
+    else:
+        mix.record(cost)
+        seconds = cost.seconds
     if mode.sync is None:
         return seconds
     group_max = torch.tensor([seconds], dtype=torch.float64)
