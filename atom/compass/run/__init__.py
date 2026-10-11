@@ -80,6 +80,7 @@ import threading
 import time
 from pathlib import Path
 
+from atom.compass.artifacts import provenance
 from atom.compass.clock import (
     ClockAuthority,
     LpId,
@@ -108,6 +109,8 @@ COMMANDS_FILE, MEMORY_FILE, PRICED_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
 )
 #: Wall seconds the summary's writer waits for the server LPs' refusals.
 HAND_IN_WAIT_S = 300.0
+#: The format of the run summary; raise it when a field changes meaning or goes.
+SUMMARY_SCHEMA_VERSION = 1
 
 _authority: "_RecordingAuthority | None" = None
 #: This engine process's member name in the engine LP, None at DP width one.
@@ -219,6 +222,11 @@ class _RecordingAuthority(ClockAuthority):
     starts its own; otherwise it starts once every server LP has asked once."""
 
     def __init__(self, run: dict) -> None:
+        # The tree that runs, read before the run so an unidentifiable one is
+        # refused before it costs anything.
+        self.source_root = provenance.git_tree_root(
+            "atom", provenance.module_root("atom")
+        )
         self.steps = StepTable(json.dumps(configuration(run), sort_keys=True))
         self.started = self.finished = None
         self.done = threading.Event()
@@ -668,6 +676,8 @@ def _write_summary(run: dict, a: _RecordingAuthority, ended: bool = False) -> No
             ),
         }
     summary["configuration"] = configuration(run)
+    summary["schema_version"] = SUMMARY_SCHEMA_VERSION
+    summary["source_root"] = a.source_root.as_json()
     # Any refusal, of any source, leaves part of the run unsimulated; a run
     # that ended early simulated part of it.
     summary["coverage_report"] = ended or bool(reasons)
