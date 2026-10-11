@@ -33,7 +33,9 @@ from test_backend_step_fit import (
     linear,
     point,
 )
+from test_dp_slice import _deployment
 from test_memory_readings import CONFIG_JSON, DOCUMENT
+from test_refused_step_continues import drive
 from test_runner_control_refusals import Worker
 from test_vertical_slice import _run_file
 from transformers import PretrainedConfig
@@ -51,6 +53,7 @@ from atom.compass.artifacts import (
 )
 from atom.compass.backends import StepFitBackend
 from atom.compass.backends.analytic import Tiered
+from atom.compass.backends.ladder import CostRefused
 from atom.compass.run import step_fit
 from atom.compass.spec import MachineSpec
 from atom.utils import clock
@@ -135,7 +138,8 @@ def summary(monkeypatch, run, r):
     engine = LPRuntime(compass_run.ENGINE, table, None)
     engine.now = math.inf
     monkeypatch.setattr(clock, "_installed", engine)
-    compass_run.engine_done(SimpleNamespace(runner_mgr=Worker(r)))
+    with compass_run.engine_loop(SimpleNamespace(runner_mgr=Worker(r))):
+        pass
     monkeypatch.setattr(compass_run, "_authority", authority)
     frontend = LPRuntime(compass_run.FRONTEND, table, None)
     frontend.now = math.inf
@@ -170,6 +174,41 @@ def test_a_run_file_bundle_prices_the_runs_steps_and_the_summary_names_it(
     }
     assert out["schedule"]["predicted_seconds"] == 8897.5e-6
     assert out["coverage_report"] is False
+
+
+def test_a_run_ended_by_abort_still_names_its_bundle(monkeypatch, tmp_path):
+    """The grid has no prefill point, so under ``on_refusal: abort`` the first
+    step ends the run, and the summary written at that early end names the
+    bundle."""
+    monkeypatch.setattr(torch.distributed, "all_reduce", None)
+    r = deployment(tmp_path)
+    entry = publish(tmp_path, r)
+    run = run_file(
+        tmp_path, monkeypatch, on_refusal="abort", clock_endpoint=f"inproc:{tmp_path}"
+    )
+    for module, name in [(compass_run, "_authority"), (clock, "_installed")]:
+        monkeypatch.setattr(module, name, None)
+    with compass_run.frontend(_deployment()):
+        pass
+    compass_run.runner(r)
+    engine = LPRuntime(compass_run.ENGINE, compass_run.channel_table(run), None)
+    monkeypatch.setattr(clock, "_installed", engine)
+
+    with (
+        pytest.raises(CostRefused),
+        compass_run.engine_loop(SimpleNamespace(runner_mgr=Worker(r))),
+    ):
+        drive(r)
+
+    path = Path(run["out_dir"]) / compass_run.SUMMARY_FILE
+    deadline = time.monotonic() + 10
+    while not path.exists():
+        assert time.monotonic() < deadline, "no summary.json in 10 wall seconds"
+        time.sleep(0.05)
+    out = json.loads(path.read_text())
+    assert out["step_fit"]["engine"]["digest"] == entry.digest
+    [[reason, _]] = out["schedule"]["refusals"]["reasons"]
+    assert reason.startswith("ended:engine raised CostRefused(")
 
 
 def test_a_roofline_floor_still_prices_below_step_fit(monkeypatch, tmp_path):

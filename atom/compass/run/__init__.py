@@ -27,9 +27,10 @@ member, the frontend's included, connects to.
 - `engine_done(engine)` and `frontend_done(engine)` close each side after the
   finish, each handing in its LP's refusals; the frontend's, when it co-hosts
   the authority, then writes the step table and the run summary.
-- `engine_loop(engine)` wraps the engine's loop: `engine_done` after it, and
-  if either raises, the engine hands in the exception as an ``ended:``
-  reason; `engine_done` raises for a loop that left before the finish. A
+- `engine_loop(engine)` wraps the engine's loop: under ``step_fit`` it asks the
+  workers for the bundle before it, `engine_done` after it, and if either
+  raises, the engine hands in the exception as an ``ended:`` reason, with the
+  bundle; `engine_done` raises for a loop that left before the finish. A
   hand-in before the finish is an early end: the authority's host writes the
   step table and the run summary at once, each LP's clock as it stands, from
   what has been handed in.
@@ -584,10 +585,10 @@ def _hand_in(run: dict, lp: str, reasons: list, **sections) -> None:
     _write_whole(out, json.dumps({"refusals": reasons, **sections}))
 
 
-def engine_done(engine_core) -> None:
+def engine_done(engine_core, **sections) -> None:
     """After the engine's loop: leave the clock and hand in what the worker's
-    steps cost, the memory it predicts and, under ``step_fit``, its bundle,
-    with its command refusals and the engine's refused clock calls."""
+    steps cost and the memory it predicts, with `sections`, its command
+    refusals and the engine's refused clock calls."""
     clock.close()
     run = spec()
     if run is not None:
@@ -595,12 +596,16 @@ def engine_done(engine_core) -> None:
         refused = workers.call_func("refused_commands", wait_out=True)
         priced = dict(workers.call_func("priced_steps", wait_out=True))
         memory = workers.call_func("predicted_memory", wait_out=True)
-        sections = {"priced": priced, "memory": memory}
-        if "step_fit" in run:
-            sections["step_fit"] = workers.call_func("step_fit_bundle", wait_out=True)
         rt = clock.installed()
         lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
-        _hand_in(run, lp, list(refused) + rt.refusals, **sections)
+        _hand_in(
+            run,
+            lp,
+            list(refused) + rt.refusals,
+            priced=priced,
+            memory=memory,
+            **sections,
+        )
 
 
 @contextlib.contextmanager
@@ -608,16 +613,20 @@ def engine_loop(engine_core):
     """Around the engine's loop: `engine_done` once it leaves, which raises if
     that was before the finish. If either raises in a run, hand in the engine's
     refused clock calls and the exception, without asking the workers, which
-    may be what died."""
+    may be what died. Under ``step_fit`` the workers are asked for the bundle
+    before the loop, so a run that ends early still hands it in."""
+    run, sections = spec(), {}
+    if run is not None and "step_fit" in run:
+        workers = engine_core.runner_mgr
+        sections["step_fit"] = workers.call_func("step_fit_bundle", wait_out=True)
     try:
         yield
-        engine_done(engine_core)
+        engine_done(engine_core, **sections)
     except BaseException as e:
-        run = spec()
         if run is not None:
             rt = clock.installed()
             lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
-            _hand_in(run, lp, rt.refusals + [f"ended:{lp} raised {e!r}"])
+            _hand_in(run, lp, rt.refusals + [f"ended:{lp} raised {e!r}"], **sections)
         raise
 
 
