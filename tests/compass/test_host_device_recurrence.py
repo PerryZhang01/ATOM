@@ -70,10 +70,16 @@ def test_with_no_host_time_output_forwards_charge_the_one_before(streak):
     assert charges(decodes) == pytest.approx([0, *prices(decodes)[:-1]])
 
 
+def test_with_no_host_time_middle_chunks_charge_the_one_two_before(streak):
+    middles = [b for b in streak if not b.produces_output()][:4]
+    assert charges(middles) == pytest.approx([0, 0, *prices(middles)[:2]])
+
+
 def test_a_host_bound_forward_charges_host_time(streak):
     decodes = [b for b in streak if not b.total_seqs_num_prefill]
     host = 10 * max(prices(decodes))
     assert charges(decodes, law("decode", host)) == pytest.approx([host] * len(decodes))
+    assert charges(decodes, law("decode", host), HOST_SEGMENTS) == charges(decodes)
 
 
 def test_a_device_bound_forward_charges_device_time(streak):
