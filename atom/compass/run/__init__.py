@@ -579,7 +579,6 @@ def _until_end(run: dict, a: "_RecordingAuthority") -> bool:
 
 def _write_on_early_end(run: dict, a: "_RecordingAuthority") -> None:
     if _until_end(run, a):
-        _write_whole(Path(run["out_dir"]) / STEP_TABLE_FILE, a.steps.text())
         _write_summary(run, a, ended=True)
 
 
@@ -594,16 +593,15 @@ def frontend_done(llm_engine) -> bool:
     run = spec()
     _hand_in(run, rt.me.name, rt.loop.executor.refusals + rt.refusals)
     if _authority is not None:
-        out = Path(run["out_dir"])
-        _write_whole(out / STEP_TABLE_FILE, _authority.steps.text())
         _write_summary(run, _authority)
     return True
 
 
 def _write_summary(run: dict, a: _RecordingAuthority, ended: bool = False) -> None:
-    """Write the run summary once every server LP has handed in its refusals,
-    or after an early end, from those handed in so far."""
+    """Write the step table, then the run summary once every server LP has
+    handed in its refusals, or after an early end, from those handed in so far."""
     out = Path(run["out_dir"])
+    _write_whole(out / STEP_TABLE_FILE, a.steps.text())
     files = [out / COMMANDS_FILE.format(n) for n in _hand_ins(run)]
     deadline = time.monotonic() + HAND_IN_WAIT_S
     while not ended and (missing := [f.name for f in files if not f.exists()]):
@@ -633,6 +631,4 @@ def authority(endpoint: str) -> None:
     run = spec()
     a = _RecordingAuthority(run)
     serve(a, endpoint)
-    ended = _until_end(run, a)
-    _write_whole(Path(run["out_dir"]) / STEP_TABLE_FILE, a.steps.text())
-    _write_summary(run, a, ended)
+    _write_summary(run, a, _until_end(run, a))

@@ -2,7 +2,8 @@
 """A run whose engine raises mid-run still writes its summary.
 
 ATOM's `EngineCore.run_engine` runs an engine whose loop takes one step and
-then raises, before the finish grant. The authority's host, co-hosted in the
+then raises, before the finish grant: an exception, or the `SystemExit` a dead
+worker raises. The authority's host, co-hosted in the
 frontend or standalone, then writes ``summary.json`` with each LP's clock as
 it stands, the exception named, and the run marked a coverage report.
 """
@@ -21,9 +22,18 @@ from atom.utils import clock
 from atom.utils.distributed import utils
 
 
+@pytest.mark.parametrize(
+    "error, reason",
+    [
+        (RuntimeError("the step raised"), "RuntimeError('the step raised')"),
+        # How `call_func` reports a dead worker.
+        (SystemExit(), "SystemExit()"),
+    ],
+    ids=["exception", "dead worker"],
+)
 @pytest.mark.parametrize("host", ["co-hosted", "standalone"])
 def test_an_engine_that_raises_mid_run_leaves_a_summary_naming_it(
-    monkeypatch, tmp_path, host
+    monkeypatch, tmp_path, host, error, reason
 ):
     run = {
         "admission_path": "serving",
@@ -68,14 +78,14 @@ def test_an_engine_that_raises_mid_run_leaves_a_summary_naming_it(
         def busy_loop(self) -> None:
             # Below the frontend's lookahead, so granted while it runs at 0.
             clock.installed().advance_to(run["ipc_s"] / 2)
-            raise RuntimeError("the step raised")
+            raise error
 
         def exit(self) -> None:
             pass
 
     run_engine = engine_core.EngineCore.run_engine
     monkeypatch.setattr(engine_core, "EngineCore", RaisingEngine)
-    with pytest.raises(RuntimeError, match="the step raised"):
+    with pytest.raises(type(error)):
         run_engine(_deployment(), "", "")
 
     path = tmp_path / compass_run.SUMMARY_FILE
@@ -86,9 +96,7 @@ def test_an_engine_that_raises_mid_run_leaves_a_summary_naming_it(
     summary = json.loads(path.read_text())
     schedule = summary["schedule"]
     print("summary:", json.dumps(schedule))
-    assert schedule["refusals"]["reasons"] == [
-        ["ended:engine raised RuntimeError('the step raised')", 1]
-    ]
+    assert schedule["refusals"]["reasons"] == [[f"ended:engine raised {reason}", 1]]
     assert dict(schedule["final_clocks"])["engine"] == run["ipc_s"] / 2
     assert summary["coverage_report"] is True
     assert (tmp_path / compass_run.STEP_TABLE_FILE).exists()
