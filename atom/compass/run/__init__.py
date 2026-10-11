@@ -27,6 +27,11 @@ member, the frontend's included, connects to.
 - `engine_done(engine)` and `frontend_done(engine)` close each side after the
   finish, each handing in its LP's refusals; the frontend's, when it co-hosts
   the authority, then writes the step table and the run summary.
+- `engine_loop(engine)` wraps the engine's loop: `engine_done` after it, and
+  if the loop raises, the engine hands in the exception as an ``ended:``
+  reason. A hand-in before the finish is an early end: the authority's host
+  writes the step table and the run summary at once, each LP's clock as it
+  stands, from what has been handed in.
 
 Run file keys: ``clock_endpoint``, ``bound_s`` (finite), ``admission_path``,
 ``ipc_s``, ``stream_s``, ``coefficients`` (a `Coefficients` mapping, priced by
@@ -322,6 +327,11 @@ def frontend(config):
         return _start_on_leaving(_runtime(lp, run))
     _authority = _RecordingAuthority(run)
     serve(_authority, run["clock_endpoint"])
+    # Not a daemon: the API server's main thread may die of the early end
+    # before this thread has written the summary.
+    threading.Thread(
+        target=_write_on_early_end, args=(run, _authority), name="compass early end"
+    ).start()
     return _start_on_leaving(_runtime(lp, run), _authority)
 
 
@@ -537,6 +547,42 @@ def engine_done(engine_core) -> None:
         _hand_in(run, lp, list(refused) + rt.refusals)
 
 
+@contextlib.contextmanager
+def engine_loop(engine_core):
+    """Around the engine's loop: `engine_done` once it leaves. If it raises in
+    a run, hand in the engine's refused clock calls and the exception, without
+    asking the workers, which may be what died."""
+    try:
+        yield
+    except BaseException as e:
+        run = spec()
+        if run is not None:
+            rt = clock.installed()
+            lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
+            _hand_in(run, lp, rt.refusals + [f"ended:{lp} raised {e!r}"])
+        raise
+    engine_done(engine_core)
+
+
+def _until_end(run: dict, a: "_RecordingAuthority") -> bool:
+    """Wait for the finish, or for an LP to hand in before it; True for the
+    latter, an early end. Gives up, False, once this process's main thread ends."""
+    out = Path(run["out_dir"])
+    while not a.done.wait(0.1):
+        # Every LP hands in after the finish sets `done`, so read it second.
+        if any(out.glob(COMMANDS_FILE.format("*"))) and not a.done.is_set():
+            return True
+        if not threading.main_thread().is_alive():
+            return False
+    return False
+
+
+def _write_on_early_end(run: dict, a: "_RecordingAuthority") -> None:
+    if _until_end(run, a):
+        _write_whole(Path(run["out_dir"]) / STEP_TABLE_FILE, a.steps.text())
+        _write_summary(run, a, ended=True)
+
+
 def frontend_done(llm_engine) -> bool:
     """Whether the stopped server was a simulated run's finish. If it was, stop
     the engines, hand in the frontend's refusals and, with the authority
@@ -554,36 +600,39 @@ def frontend_done(llm_engine) -> bool:
     return True
 
 
-def _write_summary(run: dict, a: _RecordingAuthority) -> None:
-    """Write the run summary once every server LP has handed in its refusals."""
+def _write_summary(run: dict, a: _RecordingAuthority, ended: bool = False) -> None:
+    """Write the run summary once every server LP has handed in its refusals,
+    or after an early end, from those handed in so far."""
     out = Path(run["out_dir"])
     files = [out / COMMANDS_FILE.format(n) for n in _hand_ins(run)]
     deadline = time.monotonic() + HAND_IN_WAIT_S
-    while missing := [f.name for f in files if not f.exists()]:
+    while not ended and (missing := [f.name for f in files if not f.exists()]):
         if time.monotonic() > deadline:
             raise TimeoutError(
                 f"no {', '.join(missing)} in {out} after {HAND_IN_WAIT_S} wall "
                 "seconds, so the run summary would miss those LPs' refusals"
             )
         time.sleep(0.1)
-    reasons = [r for f in files for r in json.loads(f.read_text())]
+    reasons = [r for f in files if f.exists() for r in json.loads(f.read_text())]
     steps = sum(r.lp.startswith(ENGINE.name) and r.event == "TAR" for r in a.steps.rows)
+    end = a.finished or time.monotonic()
     summary = RunSummary.of(
-        a, a.finished - a.started, refusals=RefusalTally.of(reasons, steps)
+        a, end - (a.started or end), refusals=RefusalTally.of(reasons, steps)
     ).as_record()
     summary["configuration"] = configuration(run)
     # A refused command leaves ATOM's half of it applied, so what ran after it
-    # was not the deployment simulated.
-    summary["coverage_report"] = any(r.startswith("command:") for r in reasons)
+    # was not the deployment simulated; a run that ended early simulated part.
+    summary["coverage_report"] = ended or any(r.startswith("command:") for r in reasons)
     _write_whole(out / SUMMARY_FILE, json.dumps(summary, sort_keys=True, indent=1))
 
 
 def authority(endpoint: str) -> None:
-    """Serve the run file's authority at `endpoint` until the finish, then write
-    its step table, and the run summary once the server LPs have handed in."""
+    """Serve the run file's authority at `endpoint` until the finish or an early
+    end, then write its step table, and the run summary once the server LPs
+    have handed in."""
     run = spec()
     a = _RecordingAuthority(run)
     serve(a, endpoint)
-    a.done.wait()
+    ended = _until_end(run, a)
     _write_whole(Path(run["out_dir"]) / STEP_TABLE_FILE, a.steps.text())
-    _write_summary(run, a)
+    _write_summary(run, a, ended)
