@@ -10,6 +10,7 @@ Each is priced by `ShapeStubBackend` through the runner's `_group_step_seconds`;
 
 import json
 import random
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -142,3 +143,43 @@ def test_grading_refuses_a_what_if_run(tmp_path):
     (tmp_path / "c0" / "run.json").write_text(json.dumps({"host": {"skip": ["E"]}}))
     with pytest.raises(ValueError, match="c0 skips host segments"):
         runs.main(cells)
+
+
+def test_each_kind_takes_its_own_law_on_tokens_and_seqs():
+    """A final chunk, a middle chunk and two decodes, exits worked by hand."""
+    laws = {
+        "prefill": {
+            "E": [1, 0, 0],
+            "W_pre": [0, 0.01, 0],
+            "W_launch": [0, 0, 1],
+            "W_post": [1, 0, 0],
+        },
+        "middle": {"E": [2, 0, 0], "W_pre": [0, 0.005, 0], "W_launch": [1, 0, 0]},
+        "decode": {
+            "E": [0.5, 0, 0],
+            "W_pre": [0, 0, 0.25],
+            "W_launch": [1, 0, 0],
+            "W_post": [0, 0, 0.5],
+        },
+    }
+
+    def batch(prefill_seqs, tokens, seqs, output):
+        return SimpleNamespace(
+            total_seqs_num_prefill=prefill_seqs,
+            total_tokens_num=tokens,
+            total_seqs_num=seqs,
+            produces_output=lambda: output,
+        )
+
+    clock = [0.0]
+    host = HostDeviceRecurrence(laws, (), lambda: clock[0])
+    exits = []
+    for b, device in [
+        (batch(1, 100, 2, True), 10),  # launch 0+1+1 to 4, device to 12; exit 4+1
+        (batch(1, 200, 1, False), 10),  # launch 5+2+1 to 9, device 12 to 22
+        (batch(0, 4, 4, True), 3),  # R4: entry 12, launch 13 to 14, exit 14+2
+        (batch(0, 4, 4, True), 3),  # R4: entry 22, launch 23 to 24, R1 25, exit 25+2
+    ]:
+        clock[0] += host.charge(b, device)
+        exits.append(clock[0])
+    assert exits == pytest.approx([5, 9, 16, 27])

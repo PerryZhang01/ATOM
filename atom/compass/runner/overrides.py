@@ -258,22 +258,17 @@ class HostDeviceRecurrence:
             for s in HOST_SEGMENTS
         ]
 
-    def exit(self, now: float, output: bool, segments, device_s: float) -> float:
-        """When a forward called at `now` exits; advances the device state."""
-        e, pre, launch, post = segments
+    def charge(self, batch: Any, device_s: float) -> float:
+        """The forward's exit less `now`; advances the device state."""
+        now, (e, pre, launch, post) = self.now(), self.segments(batch)
         host = max(now + e, self.ends[0]) + pre
         launch_end = host + launch
         device_end = max(self.ends[1], host) + device_s
         self.ends = (self.ends[1], max(device_end, launch_end))
         released = launch_end
-        if output:
+        if batch.produces_output():
             released, self.output_end = max(launch_end, self.output_end), device_end
-        return released + post
-
-    def charge(self, batch: Any, device_s: float) -> float:
-        now = self.now()
-        out = batch.produces_output()
-        return self.exit(now, out, self.segments(batch), device_s) - now
+        return released + post - now
 
 
 def schedulable_ladder(config: Any) -> list[int]:
