@@ -28,7 +28,7 @@ Verified on `feature/atomcompass_new`:
 
 | | |
 |---|---|
-| metric families | **10 `GaugeMetricFamily`, 10 `CounterMetricFamily`** |
+| metric families | **`GaugeMetricFamily` and `CounterMetricFamily` only**, most built in loops; the inventory is `metrics.py::_AtomMetricsCollector.collect` |
 | histograms / summaries | **none today** |
 | `.observe()` call sites | **none** (the `buckets=` hits in the tree are CUDA-graph query buckets, unrelated) |
 | API style | collector-style `prometheus_client.core.*MetricFamily` (`metrics.py::_AtomMetricsCollector.collect`) |
@@ -153,7 +153,7 @@ source.
 | **native** histogram (Prometheus 2.40+) | one sample carrying a sparse exponential encoding | **no** — cannot be expressed in OpenMetrics text at all |
 
 `prometheus_client`'s `HistogramMetricFamily` emits **classic**, so if the new histograms go
-through the same collector-style API as the existing twenty, D74's backfill route survives
+through the same collector-style API as the existing metrics, D74's backfill route survives
 untouched. If ATOM ever adopts **native** histograms, that route stops working and the only
 option is remote-write into a looser TSDB (VictoriaMetrics, Mimir).
 
@@ -386,9 +386,13 @@ attach to where the number came from, not to how it is exposed.
 | **T — timestamp** | an instant exported as a value: `process_start_time_seconds`, `_created`, exemplar timestamps; `_last_refresh`, which stamps simulated time (D72) | **must declare its clock.** Usually real, because it describes the *process*; virtual if it describes the *run*. Never left implicit. |
 | **X — external** | measured outside the engine: GPU telemetry, host stats, the `server_metrics/` scraper | **invalid under simulation.** Refuse. |
 
-ATOM's current twenty metrics are all **S** or **E**, which is why D72's "valid by
-construction" holds today. The classes exist so that the next metric is classified rather
-than assumed.
+ATOM's current metrics (`_AtomMetricsCollector.collect`) are **S** or **E**, which is why
+D72's "valid by construction" holds today, except two frontend clock reads, both on the LP
+clock under simulation. `atom:metrics_last_refresh_timestamp_seconds` is **T**: it exports
+`_last_refresh`, a simulated instant (D72). `atom:stream_longest_silence_seconds` is **D**:
+`longest_silence_seconds` (`atom/entrypoints/openai/streaming_dispatch.py`) subtracts two
+`clock.now(time.monotonic)` reads, so it is a simulated duration (`01` D5). The classes
+exist so that the next metric is classified rather than assumed.
 
 ### How the Prometheus types map — note that one type spans several classes
 
@@ -407,8 +411,8 @@ than assumed.
 
 Convention and code review will not hold across future additions. The mechanism:
 
-1. **Every metric family declares its class where it is constructed** — ~20 tags today in
-   `metrics.py`, one per metric thereafter.
+1. **Every metric family declares its class where it is constructed** — one tag per family
+   in `metrics.py`, today's and every one added after.
 2. **An unclassified metric refuses to export under simulation.** On a real run it is
    unaffected, so the cost of the rule falls only where correctness depends on it.
 3. `01` D9's AST test covers the other half — any `observe()` whose argument derives from a
@@ -485,5 +489,5 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 | T42 | Measure `collect_metrics()` cost per step on the **real** side; decide whether decimation by a declared K is needed | `get_statistics()` and the cache/pool reads are not verified O(1) |
 | T43 | Verify the backfill end to end — produce one block, load it, see the series in Grafana | the documented gotchas are silent ones (epoch-dated blocks, retention) |
 | T44 | Sanity-check histogram bucket ranges against simulated latencies | a quantile pinned to `+Inf` is worth catching once rather than discovering |
-| T45 | Tag ATOM's existing twenty metrics with their D77 class | ~20 tags; mechanical, but it is the gate for everything after |
+| T45 | Tag ATOM's existing metrics with their D77 class | one tag per family in `_AtomMetricsCollector.collect`; mechanical, but it is the gate for everything after |
 | T46 | Decide the DP-aggregation rule per class, and refuse summaries there | `llm_engine.py::LLMEngine.get_metrics_statistics` merges per-rank snapshots; quantiles do not average |

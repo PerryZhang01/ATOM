@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
 """Importing `atom.compass.kv` loads no device runtime, measured by running it.
 
-The package says that it, the engine's connector interface and factory it
-implements, and the sequence state its scheduler half reads pull in no device
-runtime, so a transfer can still be priced where no driver exists. This test
+The package says that it, and the engine's connector interface and factory it
+implements, pull in no device runtime, so a transfer can still be priced where
+no driver exists. This test
 process cannot check that: the suite has imported torch long before it gets
 here. So each import runs in a fresh interpreter, which reports what the import
 added to `sys.modules`.
@@ -15,11 +15,7 @@ The import is run rather than read. A scan of this package's source sees an
 What counts as a device runtime is stated as its complement: the packages from
 outside this repository and the standard library that the import may add are
 exactly `ALLOWED`, and anything else fails. Listing the runtimes instead --
-torch, triton, aiter, a HIP binding -- passes the one nobody listed. numpy is
-the one allowance: the sequence module imports it, and it is an array library
-that runs on the host and opens no device. The comparison is equality, so the
-allowance goes when numpy does, and numpy being counted is what shows an
-installed package is counted at all.
+torch, triton, aiter, a HIP binding -- passes the one nobody listed.
 
 The standard library is told apart by where a module was loaded from, not by
 name. `sys.stdlib_module_names` misses modules the standard library creates
@@ -39,7 +35,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 PACKAGE = REPO / "atom" / "compass" / "kv"
 
-ALLOWED = {"numpy"}
+ALLOWED = set()
 
 # What the package docstring names on each side of the boundary. Asserting these
 # were loaded is what stops the checks below passing on an import that did
@@ -51,7 +47,6 @@ BOUNDARY = {
     "atom.kv_transfer.disaggregation.base",
     "atom.kv_transfer.disaggregation.factory",
     "atom.kv_transfer.disaggregation.types",
-    "atom.model_engine.sequence",
 }
 
 CHILD = """

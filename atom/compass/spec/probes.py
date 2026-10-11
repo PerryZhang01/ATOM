@@ -7,9 +7,9 @@ no probe supplies. The reading that makes two fragments comparable comes first.
 
 A probe measures part of a machine and emits a fragment: the fields it measured
 plus the stanza saying which machine they are for, by whom, when and how. What
-is here is the composing half of the tier that needs no device -- the tokenizer
-rates arrive as an argument, from whoever measured them -- and a tokenizer
-sweep needs no device, so it is the measurement most likely to be taken
+is here is the tier that needs no device: `tokenizer_sweep` times a loaded
+tokenizer, `tokenizer_fragment` composes whatever rates it is handed -- and a
+tokenizer sweep needs no device, so it is the measurement most likely to be taken
 somewhere other than the machine it is authored for -- a laptop, a build agent,
 the login node in front of a cluster. That is not an abuse of it. Tokenization
 is single-threaded, cache-resident integer work, so the rates transfer across
@@ -97,6 +97,12 @@ rather than answered with the probe that happens to sit on the other side of
 the width-one test. That test is the only place a width reaches this module
 from a caller instead of from a document, where the schema has already refused
 it.
+
+**The sweep fits `fixed + tokens / rate` on relative error and refuses a fit
+it cannot stand behind.** A rate is charged on every call, short and long, so
+a fit that is good in absolute seconds and 40% off on a one-token call is not
+a rate. The bound is the caller's, and the refusal names the length that
+broke it.
 """
 
 import pathlib
@@ -231,3 +237,92 @@ def tokenizer_fragment(
         "host": {"cpu": cpu_counts(processors), "tokenizers": list(entries)},
     }
     return Fragment.from_mapping(document, source)
+
+
+def _fit(what: str, points: Sequence[tuple[int, float]], bound: float):
+    """`fixed + tokens / rate` fitted to `points` on relative error, or a refusal.
+
+    Each point is weighted by its own time, so a long call does not drown the
+    fixed cost a one-token call is made of.
+    """
+    uu = uv = vv = u1 = v1 = 0.0
+    for tokens, seconds in points:
+        u, v = 1.0 / seconds, tokens / seconds
+        uu, uv, vv, u1, v1 = uu + u * u, uv + u * v, vv + v * v, u1 + u, v1 + v
+    det = uu * vv - uv * uv
+    fixed = (u1 * vv - v1 * uv) / det
+    per_token = (uu * v1 - uv * u1) / det
+    if fixed <= 0 or per_token <= 0:
+        raise SpecRefusal(
+            Rule.MEASURED,
+            f"{what} fits a fixed cost of {fixed!r} s and {per_token!r} s per "
+            f"token over {[tokens for tokens, _ in points]} tokens",
+            "both are positive on a tokenizer that does work per call and per "
+            "token; sweep lengths that reach below and above the point where "
+            "the two costs are equal, on a quiet host",
+        )
+    tokens, seconds = max(
+        points, key=lambda p: abs((fixed + p[0] * per_token) / p[1] - 1)
+    )
+    worst = (fixed + tokens * per_token) / seconds - 1
+    if abs(worst) > bound:
+        raise SpecRefusal(
+            Rule.MEASURED,
+            f"{what} at {tokens} tokens took {seconds!r} s and the fit says "
+            f"{fixed + tokens * per_token!r} s, {worst:+.1%} against a bound "
+            f"of {bound:.1%}",
+            "the cost is not fixed plus linear over this sweep, so no rate "
+            "describes it; sweep a range where it is, or find what makes that "
+            "length different before writing a rate down",
+        )
+    return fixed, 1.0 / per_token
+
+
+def tokenizer_sweep(
+    tokenizer,
+    text: str,
+    lengths: Sequence[int],
+    *,
+    bound: float,
+    clock,
+    repeats: int = 5,
+) -> dict[str, float]:
+    """The four rates of a tokenizer entry, swept through a loaded tokenizer.
+
+    Each length is a prefix of `text`'s tokens, timed `repeats` times through
+    `encode` and `decode` with the fastest kept. Encode is fitted against the
+    token count `encode` returns, since that is what a run charges for. A fit
+    whose worst relative residual exceeds `bound` is refused, naming the
+    length. `clock` reads seconds, such as `time.perf_counter`.
+    """
+    ids = tokenizer.encode(text)
+    if len(ids) < max(lengths):
+        raise SpecRefusal(
+            Rule.MEASURED,
+            f"the sweep text is {len(ids)} tokens and the sweep asks for "
+            f"{max(lengths)}",
+            "give a text at least as long as the longest length swept",
+        )
+
+    def fastest(call, argument) -> float:
+        times = []
+        for _ in range(repeats):
+            start = clock()
+            call(argument)
+            times.append(clock() - start)
+        return min(times)
+
+    encoded, decoded = [], []
+    for n in lengths:
+        piece = tokenizer.decode(ids[:n])
+        count = len(tokenizer.encode(piece))
+        encoded.append((count, fastest(tokenizer.encode, piece)))
+        decoded.append((n, fastest(tokenizer.decode, ids[:n])))
+    encode_fixed, encode_rate = _fit("encode", encoded, bound)
+    decode_fixed, decode_rate = _fit("decode", decoded, bound)
+    return {
+        "encode_fixed_s": encode_fixed,
+        "encode_tokens_per_s": encode_rate,
+        "decode_fixed_s": decode_fixed,
+        "decode_tokens_per_s": decode_rate,
+    }

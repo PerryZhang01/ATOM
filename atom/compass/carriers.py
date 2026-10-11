@@ -1,14 +1,18 @@
 # SPDX-License-Identifier: MIT
-"""The two carriers of a simulated timestamp across HTTP: request and stream.
+"""The three carriers of a simulated timestamp across HTTP: request, relay and stream.
 
 A request carries its ``(arrival, seq)`` as a ``compass`` entry of the W3C
 ``tracestate`` header, ``compass=a:<arrival>;s:<seq>``, written after any
 entries already there. A streamed response carries one comment line before
 each SSE event, ``: compass a=<arrival> s=<seq>``; SSE clients skip lines that
 start with a colon. Both pass a router that forwards headers and the stream
-unchanged. The arrival is written as ``repr(float)``, so it parses back exactly.
+unchanged. A prefill response the router relays to decode carries its stamp as
+the ``compass`` field of its ``kv_transfer_params``, ``a:<arrival>;s:<seq>``,
+which the router copies onto the decode request. The arrival is written as
+``repr(float)``, so it parses back exactly.
 """
 
+import json
 import re
 
 _NUM = r"(inf|\d[\d.e+-]*)"
@@ -74,3 +78,33 @@ def sse_stamp(line: str) -> tuple[float, int] | None:
     if not line.startswith(": compass "):
         return None
     return _parse(_COMMENT, line, "SSE comment")
+
+
+def _relayed(body: bytes) -> dict | None:
+    """`body` parsed, when it is a JSON object whose ``kv_transfer_params`` is one."""
+    try:
+        doc = json.loads(body)
+    except ValueError:
+        return None
+    if isinstance(doc, dict) and isinstance(doc.get("kv_transfer_params"), dict):
+        return doc
+    return None
+
+
+def relay_stamp(body: bytes) -> tuple[float, int] | None:
+    """The ``(arrival, seq)`` a JSON request body's ``kv_transfer_params`` carries;
+    None without one."""
+    doc = _relayed(body)
+    value = None if doc is None else doc["kv_transfer_params"].get("compass")
+    return None if value is None else _parse(_ENTRY, value, "kv_transfer_params entry")
+
+
+def with_relay_stamp(body: bytes, stamp) -> bytes:
+    """`body` with ``stamp()``'s ``(arrival, seq)`` in its ``kv_transfer_params``;
+    `body` itself, and `stamp` not called, when it has no such object."""
+    doc = _relayed(body)
+    if doc is None:
+        return body
+    arrival, seq = stamp()
+    doc["kv_transfer_params"]["compass"] = f"a:{arrival!r};s:{seq}"
+    return json.dumps(doc).encode()

@@ -474,11 +474,19 @@ class EngineCore:
         self._poll_kv_transfer_progress()
 
     def _idle_deadline(self) -> float:
-        """When an idle loop next acts on its own: it polls pending KV work every
-        idle drain interval, and otherwise waits for input."""
+        """When an idle loop next acts on its own: at once when a transfer
+        reported after this pass's `schedule()` left a parked request ready, every
+        idle drain interval while KV work is pending, and otherwise on input."""
+        s, now = self.scheduler, clock.now(time.monotonic)
+        done = {
+            *getattr(s, "finished_recving_kv_req_ids", ()),
+            *getattr(s, "failed_recving_kv_req_ids", ()),
+        }
+        if any(seq.id in done for seq in getattr(s, "waiting", ())):
+            return now
         if not self.has_pending_kv_work():
             return float("inf")
-        return clock.now(time.monotonic) + KV_IDLE_DRAIN_INTERVAL_S
+        return now + KV_IDLE_DRAIN_INTERVAL_S
 
     def _drain_kv_work_at_exit(self) -> None:
         """Give in-flight KV transfers a bounded window to report back.

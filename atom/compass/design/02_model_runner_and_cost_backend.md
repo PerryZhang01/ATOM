@@ -256,8 +256,8 @@ one of `16`'s named escalation points — not a silent substitution.
 
 | Need | Path | Device touched |
 |---|---|---|
-| **geometry only** — M1's fake model, the weight-bytes term, configuration sweeps | **HF config, no module tree at all.** Weight bytes are Class A, exact from declared geometry: measured **-0.00 / +0.00 / -0.02 / +0.01%** at TP 1/2/4/8 (`10` D63). | none |
-| **a module tree, no tracing** - parameter enumeration, a structural walk | **`torch.device("meta")` context** with `--load_dummy empty`. ATOM already has this shape at `models/utils.py::no_init_weights`. | none |
+| **geometry only** — M1's fake model, configuration sweeps | **HF config, no module tree at all.** | none |
+| **a module tree, no tracing** - parameter enumeration, the weight-bytes term, a structural walk | **`torch.device("meta")` context** with `--load_dummy empty`. ATOM already has this shape at `models/utils.py::no_init_weights`. Weight bytes are Class A, exact from a meta build deduped by storage: measured **-0.00 / +0.00 / -0.02 / +0.01%** at TP 1/2/4/8 (`10` D63); the build runs in the simulated runner (`03` D16, revised 2026-10-10). | none |
 | **a module tree for tracing** - tier b, the liveness walk, structure discovery | **Construct the model inside `FakeTensorMode`**, with `--load_dummy empty` so no checkpoint is read. | none |
 
 The second is not an addition to `04` D18 — it *is* D18, stated from the construction side.

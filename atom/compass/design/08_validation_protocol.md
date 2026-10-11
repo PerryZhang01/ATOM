@@ -592,9 +592,8 @@ fails the first two, or ships without the third's measurement, is not M2's resul
    time has no per-family split, so a family's efficiency is its leaves' roofline time over
    their measured time in `16` W4.4's MI355X calibration tables. `16` W5.3 runs this check.
 2. **Every MI455 input is sourced or marked assumed.** A machine-spec field's source is the
-   provenance of the fragment that supplied it, as `05` D26's `merge` records; a field
-   marked assumed comes from a fragment whose provenance method is `assumed`, a method the
-   spec task (`16` W5.1) adds to `05` D25. The projection artifact lists the assumed
+   provenance of the fragment that supplied it, as `05` D26's `merge` records; which fields
+   are assumed is rule 5 of `05` D25's schema rules. The projection artifact lists the assumed
    fields a tier-0 law reads. A field no fragment supplies is refused (principle 6). `16`
    W5.1 and W5.4 carry it.
 3. **The method's error is measured where both sides exist.** The same method —

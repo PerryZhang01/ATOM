@@ -3,16 +3,20 @@
 
 A simulated run reuses ATOM's scheduler, so it should build the batches a real
 run builds. This records them where both runs can be read the same way, at the
-model runner's `forward`: one JSON line per call, written before the call runs,
-because a real forward rewrites some batch fields in place. `compare` reads two
-records and names, per DP rank, the first step where they part.
+model runner's `forward`: one JSON line per call, built before the call runs,
+because a real forward rewrites some batch fields in place. Each line carries
+the batch as the `BatchView` a simulated runner prices it from (`rows`, `rung`);
+a real runner's line also carries `t_enter_ns` and `t_exit_ns`, the worker's
+monotonic clock around its forward, and is written once the forward returns.
+`compare` reads two records and names, per DP rank, the first step where they
+part; timestamps are not part of a step's decision.
 
 Setting `ATOM_COMPASS_PARITY_RECORD` to a directory turns recording on: TP rank 0
 of each DP rank writes `dp<rank>.jsonl` there, replacing any earlier file.
 Unset, nothing is recorded. The simulated runner records from
 `NonAllocatingRunner.forward`; a real one records through `StepRecording`,
-composed into `atom.compass.parity.runner.RecordingModelRunner`, which
-`Config.runner_qualname` names.
+composed into `RUNNER`, which the frontend names on a real run with the
+variable set.
 
 A request is named by its key, because request ids are numbered per run: a
 digest of its whole prompt as its prefill windows carry it, taken when its final
@@ -33,6 +37,9 @@ from itertools import zip_longest
 import numpy as np
 
 ENV = "ATOM_COMPASS_PARITY_RECORD"
+RUNNER = "atom.compass.parity.runner.RecordingModelRunner"
+#: Line keys that time a step rather than describe its decision.
+TIMESTAMPS = ("t_enter_ns", "t_exit_ns")
 
 
 class StepRecord:
@@ -48,14 +55,25 @@ class StepRecord:
         self.owners: dict[str, int] = {}  # key -> request id
         self.prompts: dict[int, tuple] = {}  # request id -> (digest, next position)
 
-    def add(self, batch) -> None:
-        """Append `batch` as (request id, scheduled tokens, context length) per request.
+    def add(self, batch, runner, forward=None):
+        """Append `batch`'s line; with `forward`, run it inside the line's timestamps.
 
-        Each prefill window is added to its request's digest; the line holding
-        a request's final chunk names it under `named`. A dummy batch is
-        fabricated for DP synchronisation and names no request, so it is
-        recorded with an empty batch.
+        `batch` is recorded as (request id, scheduled tokens, context length)
+        per request, and as the `BatchView` `runner` prices it from: `rows`
+        (query tokens, context tokens, decode) and `rung`, the graph width the
+        step replays or None. Each prefill window is added to its request's
+        digest; the line holding a request's final chunk names it under
+        `named`. A dummy batch is fabricated for DP synchronisation and names
+        no request, so its `batch` is empty; its `rows` are what it runs.
+
+        The line is built before `forward` runs, since a real forward rewrites
+        batch fields in place, and written after it returns, with `t_enter_ns`
+        and `t_exit_ns` read off `runner.step_clock_ns()` around it. Returns
+        `forward`'s reply, or None without one.
         """
+        from atom.compass.runner.projection import batch_view, forward_mode
+
+        view = batch_view(batch, forward_mode(batch, runner), runner)
         rows, named = [], []
         if not batch.is_dummy_run:
             ends = np.cumsum(batch.num_scheduled_tokens)
@@ -97,14 +115,28 @@ class StepRecord:
             "produces_output": bool(batch.produces_output()),
             "batch": rows,
             "named": named,
+            "rows": [
+                [r.query_tokens, r.context_tokens, r.decode] for r in view.requests
+            ],
+            "rung": view.capture_rung,
         }
+        reply = None
+        if forward is not None:
+            line["t_enter_ns"] = runner.step_clock_ns()
+            reply = forward(batch)
+            line["t_exit_ns"] = runner.step_clock_ns()
         with self.path.open("a") as f:
             f.write(json.dumps(line) + "\n")
         self.step += 1
+        return reply
 
 
-def record_step(runner, batch) -> None:
-    """Record `batch` if `ENV` names a directory and `runner` is TP rank 0."""
+def record_step(runner, batch, forward=None):
+    """Record `batch` if `ENV` names a directory and `runner` is TP rank 0.
+
+    With `forward`, it runs on `batch` whether or not the step is recorded,
+    inside the line's timestamps when it is, and its reply is returned.
+    """
     if not hasattr(runner, "_parity_record"):
         directory = os.environ.get(ENV)
         record = None
@@ -119,7 +151,8 @@ def record_step(runner, batch) -> None:
             record = StepRecord(directory, dp_rank)
         runner._parity_record = record
     if runner._parity_record is not None:
-        runner._parity_record.add(batch)
+        return runner._parity_record.add(batch, runner, forward)
+    return None if forward is None else forward(batch)
 
 
 class StepRecording:
@@ -127,7 +160,8 @@ class StepRecording:
 
     ATOM's `ModelRunner.__init__` warms up with a forward over a fabricated
     batch, which the simulated runner declines, so recording starts once
-    construction returns.
+    construction returns. The class it is composed into supplies
+    `step_clock_ns`, the clock its lines are timed by.
     """
 
     _recording = False
@@ -138,7 +172,7 @@ class StepRecording:
 
     def forward(self, batch):
         if self._recording:
-            record_step(self, batch)
+            return record_step(self, batch, super().forward)
         return super().forward(batch)
 
 
@@ -180,12 +214,16 @@ def compare(real, simulated) -> dict:
     A rank's entry is None where its steps all agree, else the step index and
     both steps, None for a record that has already ended. A record with no
     steps is refused: two runs that scheduled nothing agree, and that means
-    nothing.
+    nothing. Steps are compared and reported without their timestamps.
     """
     records = {"real": read(real), "simulated": read(simulated)}
     for name, record in records.items():
         if not any(record.values()):
             raise ValueError(f"the {name} record has no steps to compare.")
+        for steps in record.values():
+            for step in steps:
+                for key in TIMESTAMPS:
+                    step.pop(key, None)
     first = {}
     for rank in sorted(records["real"].keys() | records["simulated"].keys()):
         pairs = zip_longest(

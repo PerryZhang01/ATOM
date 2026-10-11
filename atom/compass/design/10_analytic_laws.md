@@ -187,21 +187,29 @@ This is where tier 0 is strongest, because most terms are Class A.
 |---|---|---|---|
 | **weights** | A | ask a meta build, dedupe by storage | **exact at every width** — the existence proof |
 | **KV bytes/token** | A | layers × kv_heads/TP × head_dim × 2 × dtype | arithmetic |
-| **buffers** | A-ish | **recorded, not formula'd** | the formula matched the 0.6B and was **4× wrong** on the 27B |
-| **activations** | B | `k_model × tokens`, k from geometry | linear scaling is **validated** — a 3,494-token trace scaled to an independently measured 4,096-token peak at **+0.0% at TP=1/2/4**. Whether `k` itself is derivable from geometry is **untested**. |
-| **invisible scratch** | **C** | — | kernel-internal. **0.1 KB/token on the 0.6B, 39.6 KB/token on the 27B** — worth the difference between −35.0% and +3.4% held out |
+| **buffers** | A-ish | the declared formula over stated `config.json` fields, labelled declared, until a recording exists ([`03` D16's source table](03_memory_and_kv_model.md#the-source-of-each-term)) | the first formula matched the 0.6B and was **4× wrong** on the 27B |
+| **activations** | B | `k_model × tokens`, k measured on one real run per model and width; from geometry where no run exists | linear scaling is **validated** — a 3,494-token trace scaled to an independently measured 4,096-token peak at **+0.0% at TP=1/2/4**. Whether `k` itself is derivable from geometry is **untested**. |
+| **invisible scratch** | **C** | inside the measured `k` | kernel-internal. **0.1 KB/token on the 0.6B, 39.6 KB/token on the 27B** — worth the difference between −35.0% and +3.4% held out |
 | **`non_torch`, load residue** | **C** | — | no form fits; declared per width in the spec |
 | **graph pool** | C | — | measured line at W=1, flat 104 MiB above |
 
 So an analytic memory model gets weights and KV **exactly**, activations **approximately**,
 and needs Class-C constants from the machine spec for the rest — which is precisely the
 arrangement docs 03 and 05 already describe. Tier 0 memory is therefore *not* a new design;
-it is the existing memory model with the activation coefficient derived rather than walked.
+it is the existing memory model (`03` D16) with the activation coefficient measured or
+derived rather than walked.
+
+**Revised 2026-10-10: the measured coefficient comes first.** `k_model` is one real
+run's `peak - current` after warmup over the warmup tokens, per model and width, so the
+scratch is inside it ([#704](https://github.com/jgong5/ATOM/issues/704)). A geometry form
+is the fallback for a model nobody has run, the MI455 projection included.
 
 **The one thing to test:** whether `k_model` can be derived from geometry (hidden,
-intermediate, dtype, layer types, TP) rather than measured from a liveness walk. If yes,
-memory sizing needs no graph at all. If no, tier 0 memory needs one graph per (model,
-width) — cheap, but not zero.
+intermediate, dtype, layer types, width, and under DP-attention the DP group's gathered MoE
+rows) within the ≤25% goal of D67.1. If yes, a model nobody has run needs no run for its
+activation term. If no, it needs one real run per (model, width) — cheap, but not zero.
+T34; [#705](https://github.com/jgong5/ATOM/issues/705) tests it on Qwen3.8-27B TP1 and on
+DeepSeek-V4-Pro at the nightly DPA cell.
 
 ---
 
@@ -236,7 +244,7 @@ Declared in advance, per quantity, because they are not equally hard:
 |---|---|---|
 | **Memory: KV capacity, block count** | **≤5%**, same as empirical | Class A — exact from geometry. There is no modelling here to be wrong about; a miss is a bug. |
 | **Memory: weights** | **≤5%**, *tighter* than empirical's ≤10% | Class A — exact from geometry, so a miss is a bug rather than modelling error. Weights is a non-KV memory term, and the acceptance table gates those at ≤10%; tier 0 keeps its own goal at that level anyway, because a looser bound on an exact quantity would not catch the bug the row exists to catch. Tighter than the empirical gate, not the same as it. |
-| **Memory: each non-KV term except weights** | **≤25%** | activations are approximate (`k_model` derived rather than walked) and invisible scratch is Class C. The spread that sets the number: scratch is 0.1 KB/token on the 0.6B and **39.6 KB/token** on the 27B. |
+| **Memory: each non-KV term except weights** | **≤25%** | activations are approximate (`k_model` derived from geometry where no run measured it) and invisible scratch is Class C. The spread that sets the number: scratch is 0.1 KB/token on the 0.6B and **39.6 KB/token** on the 27B. |
 | **Step time (prefill and decode, separately)** | **≤30%** | roofline plus a declared derate, against the four known wrongnesses of D66. Anything tighter would be claiming the corrections are unnecessary. |
 | **End-to-end TTFT / TPOT / throughput** | **≤40%** | step error compounds through a scheduler with discontinuities (doc `08` D44). Reported, not gated on tighter. |
 | **Configuration ranking** | **top-1 must survive; top-3 set must survive** | **this is the primary gate.** The others are diagnostics for it. |
@@ -389,7 +397,7 @@ what tier b exists for.
 | D65 | Tier 0 is a smooth model and says so: it reports a band where a known discontinuity lies in range, and is not promoted for such leaves without a measured band table. | 2026-09-19 |
 | D66 | Two-regime collective model with the algorithm named in the spec. Textbook ring/log models are refuted on this fabric. | 2026-09-19 |
 | D67.1 | Tier-0 accuracy goals declared per quantity: ≤5% on weights and on KV capacity/block count (the empirical gate for KV, tighter than it for weights), ≤25% each other non-KV memory term, ≤30% step time, ≤40% end-to-end. **Configuration ranking (top-1 and top-3 set) is the primary gate**; no false "fits". Checked against the empirical campaign at no extra GPU cost. | 2026-09-19 |
-| D67 | Analytic memory is the existing memory model with the activation coefficient derived rather than walked. Weights and KV exact; scratch, `non_torch` and load residue stay declared constants. | 2026-09-19 |
+| D67 | Analytic memory is the existing memory model with the activation coefficient derived rather than walked. Weights and KV exact; scratch, `non_torch` and load residue stay declared constants. Revised: the coefficient is measured on one real run per model and width, with the scratch inside it rather than a declared constant; a geometry form is the fallback for a model nobody has run (T34). | 2026-09-19; revised 2026-10-10 |
 | D68 | Tier 0's laws are authored **during** the empirical campaign, because that campaign is their only validation set. Promotion to rung 4 is per leaf, requires tracking the measured price within ~2%, and is revocable. Revised for `16` D95: the laws for DeepSeek-V4-Pro's operator families are on M2's critical path, for the MI455 projection. | 2026-09-19; revised 2026-10-10 |
 | D69 | On an unmeasured device, tier 0 is derate-dominated. Report the derate and a ±20% sensitivity band; prefer ranking claims to absolute ones. | 2026-09-19 |
 | D70 | Expected accuracy is declared in advance, per use. Single-digit latency error is not a tier-0 target. | 2026-09-19 |
@@ -403,7 +411,7 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 
 | # | Item | Why deferred |
 |---|---|---|
-| T34 | Test whether the activation coefficient `k_model` is derivable from geometry | decides whether tier-0 memory needs a graph at all |
+| T34 | Test whether the activation coefficient `k_model` is derivable from geometry, against the measured coefficient ([#705](https://github.com/jgong5/ATOM/issues/705)) | decides whether a model nobody has run needs a real run for its activation term |
 | T35 | Derive FLOPs and bytes-moved expressions for the ~20 opaque leaves | Class A is free from the IR for aten ops, but an opaque leaf's internal work must be described by hand (doc 04 D20's parameter extractor, extended) |
 | T36 | Name the collective algorithm per code path in the machine spec schema | doc 05 D25 has no field for it yet |
 | T37 | Decide whether `h` (the host floor) is derivable or stays a per-model measured constant | 40% apart between two models; it is the largest single Class-C term |

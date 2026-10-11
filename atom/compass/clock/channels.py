@@ -155,19 +155,24 @@ def _table(lps: tuple[str, ...], rows: list) -> ChannelTable:
     return table
 
 
-def _frontend_engine(frontend: str, engine: str, ipc_s: float) -> list:
-    """Request and control in, output back, for data-parallel rank 0 only."""
+def _frontend_engine(frontend: str, engine: str, ipc_s: float, dp: int = 1) -> list:
+    """Request and control in, output back, for each of `dp` data-parallel ranks."""
     return [
-        (frontend, engine, "request#dp0", ipc_s, "thread"),
-        (frontend, engine, "control#dp0", ipc_s, "thread"),
-        (engine, frontend, "output#dp0", ipc_s, "thread"),
+        row
+        for r in range(dp)
+        for row in (
+            (frontend, engine, f"request#dp{r}", ipc_s, "thread"),
+            (frontend, engine, f"control#dp{r}", ipc_s, "thread"),
+            (engine, frontend, f"output#dp{r}", ipc_s, "thread"),
+        )
     ]
 
 
 def single_engine_table(
-    *, admission_path: str, ipc_s: float, stream_s: float
+    *, admission_path: str, ipc_s: float, stream_s: float, dp: int = 1
 ) -> ChannelTable:
-    """Traffic, one frontend, one engine, and the channels of data-parallel rank 0.
+    """Traffic, one frontend, one engine, and the channels of each of its `dp`
+    data-parallel ranks, ``#dp<rank>``.
 
     The request channel's lookahead is the measured admission delay of
     `admission_path` (``serving`` or ``offline_batch``). The other lookaheads
@@ -185,7 +190,7 @@ def single_engine_table(
             ),
             ("frontend", "traffic", "stream", stream_s, "inline"),
         ]
-        + _frontend_engine("frontend", "engine", ipc_s),
+        + _frontend_engine("frontend", "engine", ipc_s, dp),
     )
 
 

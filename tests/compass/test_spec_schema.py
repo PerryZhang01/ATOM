@@ -388,6 +388,21 @@ BREAKAGES = {
     "a tokenizer entry that is not a mapping": lambda: written(
         "host.tokenizers", ["not an entry"]
     ),
+    "an activation entry missing a field": lambda: written(
+        "device.activations", [{"id": "m", "applies_to": ["A"]}]
+    ),
+    "two activation entries for one model": lambda: written(
+        "device.activations",
+        [
+            {
+                "id": i,
+                "fingerprint": "f",
+                "applies_to": ["A"],
+                "bytes_per_token": {1: 1},
+            }
+            for i in ("m", "n")
+        ],
+    ),
     "a value the schema cannot hold": lambda: written(
         "device.memory.capacity_bytes", "lots"
     ),

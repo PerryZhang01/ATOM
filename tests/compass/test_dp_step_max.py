@@ -131,6 +131,9 @@ def dp2(monkeypatch):
     monkeypatch.setattr(
         dist_utils, "_get_default_timeout", lambda _: timedelta(seconds=5)
     )
+    # Gloo binds the address the hostname resolves to, one DNS lookup per rank;
+    # a stalled lookup outlasts the timeout above. Loopback needs no lookup.
+    monkeypatch.setenv("GLOO_SOCKET_IFNAME", "lo")
     local = threading.local()
     monkeypatch.setitem(
         sys.modules,

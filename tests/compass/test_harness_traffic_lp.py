@@ -62,7 +62,13 @@ from compass_harness.traffic_lp import (
 from compass_harness.transport import addresses, credit_key
 
 from atom.compass import clock_transport
-from atom.compass.clock import NER, ClockAuthority, LpId, single_engine_table
+from atom.compass.clock import (
+    NER,
+    ClockAuthority,
+    LpId,
+    prefill_decode_table,
+    single_engine_table,
+)
 from atom.compass.run import ENV as RUN_ENV
 from atom.utils.clock import LPRuntime
 from compass_harness import ADDRESS_ENV, fingerprint
@@ -248,9 +254,9 @@ class ScriptedRuntime:
     releases; a clock call whose target comes first is granted the target.
     """
 
-    def __init__(self, script) -> None:
+    def __init__(self, script, stream=STREAM) -> None:
         self.now, self.script, self.seq = 0.0, list(script), 0
-        self.released = {STREAM: set()}
+        self.stream, self.released = stream, {stream: set()}
         self.calls = []
 
     def stamp_send(self, ch):
@@ -264,7 +270,7 @@ class ScriptedRuntime:
         self.calls.append(t)
         if self.script and self.script[0][0] <= t:
             self.now, seqs = self.script.pop(0)
-            self.released[STREAM] |= seqs
+            self.released[self.stream] |= seqs
         else:
             self.now = t
         return self.now
@@ -391,6 +397,91 @@ def test_a_request_failing_mid_stream_fails_the_hold_by_name(tmp_path, monkeypat
     )
 
 
+def test_a_slow_report_with_no_errored_request_keeps_the_hold_waiting(
+    tmp_path, monkeypatch
+):
+    """Credit 0's worker reports its released final, seq 0, six ``DIAG_S``
+    periods late and its request did not error: the hold waits for it."""
+    monkeypatch.setattr("compass_harness.traffic_lp.DIAG_S", 0.05)
+
+    async def main():
+        rt = ScriptedRuntime([(1.0, {0})])
+        traffic = TrafficLP(rt, str(tmp_path / "lp"))
+        passed = []
+
+        async def on_return(worker_id, ret):
+            passed.append(ret.error)
+
+        held = traffic.hold(on_return)
+        push = zmq.Context.instance().socket(zmq.PUSH)
+        push.connect(addresses(str(tmp_path / "lp"))[1])
+        traffic.send(_key(0))
+        await asyncio.sleep(0.3)
+        push.send_pyobj((_key(0), 0, 1.0, True))
+        await held("worker_0", SimpleNamespace(credit=_credit(0), error=None))
+        traffic.finish()
+        try:
+            await asyncio.wait_for(traffic.done, 5)
+        finally:
+            push.close(linger=0)
+        return passed, rt.calls
+
+    passed, calls = _run(main())
+    assert passed == [None] and calls[-1] == INF
+
+
+class ScriptedConn:
+    """A Clock Authority connection whose grants are scripted: grant ``k``
+    releases stream seq ``k`` at ``k + 1``, then ``+inf`` ends the run. Each
+    clock call records how many released stream seqs the runtime still holds."""
+
+    def __init__(self, grants: int) -> None:
+        self.rt, self.grants, self.k, self.held_at_call = None, grants, 0, []
+
+    def send(self, msg) -> None:
+        self.held_at_call.append(len(self.rt.released[STREAM]))
+
+    def recv(self):
+        if self.k == self.grants:
+            return INF, {}
+        self.k += 1
+        return float(self.k), {STREAM: [(self.k - 1, float(self.k))]}
+
+
+def test_a_pass_scans_only_the_open_stream_events(tmp_path):
+    """Many requests, each with one final stream event, run through a real
+    runtime's grants: at every clock call the runtime holds no released event
+    the traffic LP has already handled."""
+    n = 200
+
+    async def main():
+        conn = ScriptedConn(n)
+        conn.rt = rt = LPRuntime(LpId("traffic"), TABLE, conn)
+        traffic = TrafficLP(rt, str(tmp_path / "lp"))
+        passed = []
+
+        async def on_return(worker_id, ret):
+            passed.append(ret.credit.id)
+
+        held = traffic.hold(on_return)
+        push = zmq.Context.instance().socket(zmq.PUSH)
+        push.connect(addresses(str(tmp_path / "lp"))[1])
+        for num in range(n):
+            traffic.send(_key(num))
+            await held("worker_0", SimpleNamespace(credit=_credit(num), error=None))
+            push.send_pyobj((_key(num), num, float(num + 1), True))
+        traffic.finish()
+        try:
+            await asyncio.wait_for(traffic.done, 10)
+        finally:
+            push.close(linger=0)
+        return passed, conn.held_at_call, rt
+
+    passed, held_at_call, rt = _run(main())
+    assert passed == list(range(n)) and rt.now == INF
+    assert held_at_call == [0] * (n + 1)
+
+
 def test_a_raising_return_callback_does_not_stop_later_returns(tmp_path, caplog):
     async def main():
         traffic = TrafficLP(ScriptedRuntime([]), str(tmp_path / "lp"))
@@ -431,3 +522,71 @@ def test_the_timing_manager_builds_the_compass_router():
     from aiperf.timing import manager
 
     assert manager.StickyCreditRouter is CompassCreditRouter
+
+
+def test_a_1p1d_run_file_sends_to_frontend_p_and_reads_from_frontend_d(
+    tmp_path, monkeypatch
+):
+    """Behind a prefill-decode router, requests enter at frontend-P and the
+    stream comes back from frontend-D, over the channels the run file's table
+    declares."""
+    pd = {"router_s": 2.0**-12, "kv_write_req_s": 2.0**-10}
+    endpoint = f"inproc:test-traffic-lp-{uuid.uuid4().hex}"
+    table = prefill_decode_table(**RUN, **pd)
+    server = clock_transport.serve(ClockAuthority(table), endpoint)
+    run_file = tmp_path / "run.json"
+    run_file.write_text(
+        json.dumps({"clock_endpoint": endpoint, "bound_s": 1e6, **RUN, **pd})
+    )
+    monkeypatch.setenv(RUN_ENV, str(run_file))
+    monkeypatch.setenv(ADDRESS_ENV, str(tmp_path / "lp"))
+
+    async def main():
+        traffic = TrafficLP.from_env()
+        try:
+            traffic.send(_key(0))
+            traffic.rt.check_arrival("frontend-D->traffic:stream", 1.0, 0)
+            return traffic.rt.send_log, traffic.rt.unreleased
+        finally:
+            for task in (*traffic._tasks, traffic.done):
+                task.cancel()
+            traffic._pub.close(linger=0)
+            traffic._pull.close(linger=0)
+
+    try:
+        sent, unreleased = _run(main())
+    finally:
+        server.close()
+    http = "traffic->frontend-P:http"
+    assert sent == [(http, 0, table.lookahead(http))]
+    assert unreleased == {("frontend-D->traffic:stream", 0): 1.0}
+
+
+def test_a_1p1d_hold_settles_the_frontend_d_stream(tmp_path):
+    """Behind a prefill-decode router the hold reads frontend-D's stream: the
+    released final is reported, its return passed, and the run finishes."""
+    stream = "frontend-D->traffic:stream"
+
+    async def main():
+        rt = ScriptedRuntime([(1.0, {0})], stream)
+        traffic = TrafficLP(rt, str(tmp_path / "lp"), stream=stream)
+        passed = []
+
+        async def on_return(worker_id, ret):
+            passed.append(ret.credit.id)
+
+        held = traffic.hold(on_return)
+        push = zmq.Context.instance().socket(zmq.PUSH)
+        push.connect(addresses(str(tmp_path / "lp"))[1])
+        traffic.send(_key(0))
+        push.send_pyobj((_key(0), 0, 1.0, True))
+        await held("worker_0", SimpleNamespace(credit=_credit(0), error=None))
+        traffic.finish()
+        try:
+            await asyncio.wait_for(traffic.done, 5)
+        finally:
+            push.close(linger=0)
+        return passed, rt.released
+
+    passed, released = _run(main())
+    assert passed == [0] and released == {stream: set()}

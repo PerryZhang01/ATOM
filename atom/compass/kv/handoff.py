@@ -6,7 +6,7 @@ The HTTP router does not interpret it -- it copies it onto the decode request
 verbatim -- but it does refuse a prefill response that carries none, so the
 blob is not optional decoration: without it there is no decode leg at all.
 
-**The field set is not a choice.** It is re-derived from the pull backend's own
+**The field set is not a choice.** It is re-derived from Mooncake's own
 `request_finished`, which is the shape the router and the consumer were built
 against, and the test beside this module parses that source rather than
 trusting a copy of the list, so a field added there turns this red instead of
@@ -48,10 +48,12 @@ SIMULATED_PORT = 0
 SIMULATED_ENGINE_ID = "compass-simulated"
 
 
-def transfer_params(seq: Any, *, tp_size: int, dp_rank: int) -> dict[str, Any]:
+def transfer_params(
+    seq: Any, *, tp_size: int, dp_rank: int, pp_size: int, hash_block_size: int
+) -> dict[str, Any]:
     """The blob the router relays for *seq*, as a simulated producer sees it.
 
-    `tp_size` and `dp_rank` describe the deployment rather than the request,
+    The widths and `hash_block_size` describe the deployment rather than the request,
     so they are passed in from the config the connector was built with, which
     has already put each through `whole_number`. They go out as given. They
     must be `int` because the router takes `dp_rank` only if it is a number,
@@ -64,19 +66,24 @@ def transfer_params(seq: Any, *, tp_size: int, dp_rank: int) -> dict[str, Any]:
     draft_token_ids = (
         [int(token) for token in drafts] if drafts is not None and len(drafts) else []
     )
+    slot = getattr(seq, "state_slot", -1)
     return {
         "do_remote_prefill": True,
         "do_remote_decode": False,
         "remote_block_ids": list(seq.block_table),
+        "remote_swa_block_ids": [int(slot)] if slot is not None and slot >= 0 else [],
         "remote_engine_id": SIMULATED_ENGINE_ID,
         "remote_host": SIMULATED_HOST,
         "remote_port": SIMULATED_PORT,
         "remote_handshake_port": SIMULATED_PORT,
         "tp_size": tp_size,
         "dp_rank": dp_rank,
+        "remote_pp_size": pp_size,
+        "hash_block_size": hash_block_size,
         "transfer_id": seq.id,
         "first_token_id": seq.output_tokens[0] if seq.output_tokens else None,
         "draft_token_ids": draft_token_ids,
+        "local_slot_index": slot,
         "prefix_cache_hit_tokens": getattr(seq, "prefix_cache_hit_tokens", 0),
     }
 

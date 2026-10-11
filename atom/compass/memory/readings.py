@@ -42,9 +42,8 @@ tree, which needs the engine, which this tier does not import; and there is no
 recording of a card nobody has run. So `ModelTerms` takes those two terms rather
 than deriving them, with no default -- the same shape as the spec's "a runtime
 constant has no default" rule, and for the same reason. `from_declared_config`
-fills all three with declared formulas and labels every one of them. For the
-activation term a declared formula is the only answer while no op graph
-exists; this module gives the other two the same treatment, visibly.
+fills all three with declared formulas and labels every one of them, unless a
+real run measured the activation term's bytes per token in the machine spec.
 """
 
 from __future__ import annotations
@@ -69,15 +68,31 @@ class MemoryRefusal(Exception):
         super().__init__(f"{what}. {remedy}")
 
 
-def _geometry(config, name: str):
-    """One field off a HF config, refusing by name rather than defaulting."""
+def _stated(config, file, name: str):
+    """One field off a HF config, or None when the model does not state it.
+
+    A model's config class fills in its own default for a field the
+    checkpoint's config.json leaves out, and the object cannot tell the two
+    apart, so a field the class has a default for counts only when `file`,
+    the keys of that config.json, names it. DeepSeek-V4 loads through
+    `DeepseekV3Config`, whose `intermediate_size` default is not V4's geometry.
+    """
     text = getattr(config, "text_config", config)
     value = getattr(text, name, None)
+    if value is not None and hasattr(type(text), name) and name not in file:
+        return None
+    return value
+
+
+def _geometry(config, file, name: str):
+    """One stated field off a HF config, refusing by name rather than defaulting."""
+    value = _stated(config, file, name)
     if value is None:
         raise MemoryRefusal(
             f"this config states no `{name}`, and the memory model reads it",
-            "build the config through ATOM's own config classes, which fill it "
-            "in, or name the model whose geometry this is",
+            "state it in the model's config.json, and build the config through "
+            "ATOM's own config classes with that file beside it; a config class "
+            "default is not the model's geometry",
         )
     return value
 
@@ -118,8 +133,16 @@ class ModelTerms:
         tp_size: int,
         warmup_tokens: int,
         dtype_bytes: int | None = None,
+        config_json: dict | None = None,
+        measured_activations: tuple[str, float] | None = None,
     ) -> ModelTerms:
         """All three from geometry and declared coefficients, each labelled.
+
+        `config_json` is the model's config.json as loaded; without it, a
+        field `config`'s class has a default for is refused, since the
+        default cannot be told from a stated value. An MoE model, one that
+        states `moe_intermediate_size`, takes its live intermediate from its
+        expert fields.
 
         With fake models, a declared formula suffices and must say so.
         Every term below is `Basis.DECLARED` and every one names its
@@ -131,25 +154,73 @@ class ModelTerms:
         is 0.1 KB/token on the 0.6B against 39.6 KB/token on the 27B, the
         difference between -35.0% and +3.4% held out. A formula does not
         stand in for that on a real model.
+
+        `measured_activations`, what `MachineSpec.activations_for` returns,
+        replaces the activation formula with that entry's bytes per token
+        times `warmup_tokens`; the scratch is inside it.
         """
         if tp_size < 1:
             raise ValueError(f"tensor-parallel width is at least 1: {tp_size}")
-        text = getattr(config, "text_config", config)
-        hidden = int(_geometry(config, "hidden_size"))
-        intermediate = int(_geometry(config, "intermediate_size"))
-        head_dim = int(_geometry(config, "head_dim"))
-        positions = int(_geometry(config, "max_position_embeddings"))
+        file = config_json or {}
+        file = file.get("text_config", file)
+        hidden = int(_geometry(config, file, "hidden_size"))
+        positions = int(_geometry(config, file, "max_position_embeddings"))
         if dtype_bytes is None:
             dtype_bytes = element_bytes(_dtype(config))
-        # 1.0 is the right reading for a model with full rotary, so an absent
-        # field is not refused here. But a config that states 1.0 and one that
-        # states nothing must not render the same row: the second is the
-        # absence the recorded 4x came from, and an assumption that
-        # does not appear in the table is not an assumption a reader can see.
-        stated = getattr(text, "partial_rotary_factor", None)
-        partial = 1.0 if stated is None else float(stated)
-        assumed = "" if stated is not None else " (absent from config, assumed)"
-        rotary_dim = int(head_dim * partial)
+        rope = _stated(config, file, "qk_rope_head_dim")
+        if rope is not None:
+            # An MLA model rotates only this slice of each head.
+            rotary_dim = int(rope)
+            rotary = f"{rotary_dim} qk_rope_head_dim"
+        else:
+            head_dim = int(_geometry(config, file, "head_dim"))
+            # 1.0 is the right reading for a model with full rotary, so an
+            # absent field is not refused here. But a config that states 1.0
+            # and one that states nothing must not render the same row: the
+            # second is the absence the recorded 4x came from, and an
+            # assumption that does not appear in the table is not an
+            # assumption a reader can see.
+            stated = _stated(config, file, "partial_rotary_factor")
+            partial = 1.0 if stated is None else float(stated)
+            assumed = "" if stated is not None else " (absent from config, assumed)"
+            rotary_dim = int(head_dim * partial)
+            rotary = (
+                f"int({head_dim} head_dim x {partial} "
+                f"partial_rotary_factor{assumed})"
+            )
+        experts = _stated(config, file, "moe_intermediate_size")
+        if experts is None:
+            intermediate = int(_geometry(config, file, "intermediate_size"))
+            live = f"{intermediate} intermediate"
+        else:
+            # Each token's routed experts and the shared ones are live at once.
+            routed = int(_geometry(config, file, "num_experts_per_tok"))
+            text = getattr(config, "text_config", config)
+            klass = type(text)
+            named = sorted(k for k in vars(text) if "shared" in k)
+            shared, why = _stated(config, file, "n_shared_experts"), ""
+            if shared is None:
+                if named:
+                    raise MemoryRefusal(
+                        "this config states no `n_shared_experts`, and the "
+                        "memory model reads it",
+                        "state it in the model's config.json; this config "
+                        f"names a shared expert as {', '.join(named)}, which "
+                        "the memory model does not read as a count",
+                    )
+                if not klass.model_type:
+                    # A bare PretrainedConfig names no architecture.
+                    _geometry(config, file, "n_shared_experts")
+                # An architecture's own config class that names no shared
+                # expert, in its fields or in config.json (Qwen3MoeConfig),
+                # has none: 0 is its geometry.
+                shared, why = 0, f" ({klass.__name__} has none)"
+            shared = int(shared)
+            intermediate = (routed + shared) * int(experts)
+            live = (
+                f"({routed} num_experts_per_tok + {shared} n_shared_experts{why}) "
+                f"x {experts} moe_intermediate_size"
+            )
         weights = Term(
             "weights",
             parameter_count * dtype_bytes // tp_size,
@@ -163,8 +234,7 @@ class ModelTerms:
             "buffers",
             positions * rotary_dim * dtype_bytes,
             Basis.DECLARED,
-            f"{positions} positions x int({head_dim} head_dim x {partial} "
-            f"partial_rotary_factor{assumed}) x {dtype_bytes} B",
+            f"{positions} positions x {rotary} x {dtype_bytes} B",
             "a recording off a card replaces this; this is "
             "not a recording -- it is derived from ATOM's own rotary source "
             "and validated against no card. cos and sin together are "
@@ -188,13 +258,23 @@ class ModelTerms:
             Basis.DECLARED,
             f"{warmup_tokens} warmup tokens x {dtype_bytes} B x "
             f"({graph_pool.LIVE_TENSORS_PER_LAYER} x {hidden} hidden + "
-            f"{_LIVE_INTERMEDIATE} x {intermediate} intermediate)",
-            "a liveness walk over a traced op graph, plus the per-leaf "
+            f"{_LIVE_INTERMEDIATE} x {live})",
+            "a device.activations entry, or a liveness walk over a traced op "
+            "graph plus the per-leaf "
             "invisible-scratch constants, replace this; the per-layer "
             "coefficient is ATOM's own "
             "(ModelRunner._piecewise_per_token_bytes), over one live "
             "layer rather than all of them",
         )
+        if measured_activations is not None:
+            entry, per_token = measured_activations
+            activations = Term(
+                "activations",
+                int(warmup_tokens * per_token),
+                Basis.SPEC,
+                f"{warmup_tokens} warmup tokens x {per_token} B/token, "
+                f"device.activations[{entry}].bytes_per_token[{tp_size}]",
+            )
         return cls(weights, buffers, activations)
 
 

@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
 """`atom.compass.clock.observability` over the Clock Authority's real replies.
 
-* **The timeline**: off by default, the same replies on and off, cheaper off,
-  one record per reply in issue order, and the recovery marker on exactly the
-  replies the recovery branch issued.
+* **The timeline**: off by default, the same replies on and off, no log call
+  when off, one record per reply in issue order, and the recovery marker on
+  exactly the replies the recovery branch issued.
 * **The dump** renders `lp_table()` and nothing else, with the binding term
   marked, and no term marked when none is finite.
 * **The summary**: the schedule half is identical under every submit order, a
@@ -14,7 +14,6 @@
 import json
 import math
 import re
-import time
 
 import pytest
 
@@ -106,21 +105,24 @@ def test_an_ner_reply_is_recorded_as_ner():
     assert ca.timeline.lines()[0] == "a 0.0 1.0 NER -"
 
 
-def _per_reply_seconds(timeline, rounds=2000):
+def _two_lps_ask(timeline):
     ca = ClockAuthority(_two_way(0.5), timeline)
-    started = time.perf_counter()
-    for k in range(1, rounds + 1):
+    for k in range(1, 21):
         ca.on_request(A, TAR, float(k), [])
         ca.on_request(B, TAR, float(k), [])
-    return (time.perf_counter() - started) / sum(ca.grants.values())
+    ca.on_request(A, NER, INF, [])
+    ca.on_request(B, NER, INF, [])
 
 
-def test_the_log_costs_less_when_off_than_when_on():
-    # Best of five: a shared host adds time and never removes it. The paired
-    # figure against a build without the log call is recorded with the PR.
-    off = min(_per_reply_seconds(None) for _ in range(5))
-    on = min(_per_reply_seconds(TimelineLog([].append)) for _ in range(5))
-    assert off < on, f"off {off * 1e6:.3f} us/reply, on {on * 1e6:.3f} us/reply"
+def test_a_run_with_the_log_off_never_calls_it(monkeypatch):
+    # A count, not a timing: the call costs about a microsecond a reply, less
+    # than a loaded host adds to any wall-clock comparison.
+    calls = []
+    monkeypatch.setattr(TimelineLog, "record", lambda self, *args: calls.append(args))
+    _two_lps_ask(None)
+    assert calls == []
+    _two_lps_ask(TimelineLog())
+    assert calls
 
 
 def test_a_record_is_five_columns_and_names_the_lp_verbatim():

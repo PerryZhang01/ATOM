@@ -12,7 +12,8 @@ however it ends, the thread tells the loop, which ends the run.
 
 ``connect(lp, "tcp://host:port")`` returns the in-process carrier's connection
 with a socket in place of the loop: the same ``send``, ``recv`` and ``close``,
-and the same frames, each preceded by its length as four big-endian bytes. A
+and the same frames, each preceded by its length as four big-endian bytes, plus
+``fileno`` to wait for a reply alongside other sockets. A
 connection that ends inside a frame is a `MalformedMessage`. A frame the loop
 will not queue, such as a reply kind sent as a request, is refused at ``recv``
 here and at ``send`` in-process, with the same reason, and reaches no authority.
@@ -141,6 +142,10 @@ class _Remote:
 
 
 class _StreamConnection(_Connection):
+    def fileno(self) -> int:
+        """The socket's, readable once a reply is on its way."""
+        return self._server._sock.fileno()
+
     def close(self) -> None:
         """End the socket."""
         self._server.close()

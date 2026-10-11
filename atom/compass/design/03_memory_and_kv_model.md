@@ -219,8 +219,8 @@ Where each reading comes from:
 | Reading | Source under the device model |
 |---|---|
 | `total` | the device spec's HBM capacity |
-| `peak_torch` | weights + buffers + load residue + persistent + activations, from model geometry and the spec |
-| `non_torch` | a spec constant per topology |
+| `peak_torch` | weights + buffers + load residue + persistent + activations, each from the source D16 names |
+| `non_torch` | a spec constant per width (D15) |
 | `cudagraph_overhead` | mirror ATOM's own `_estimate_cudagraph_overhead`, because that is the number that actually reserves |
 | `free` | derived as a **clean box**: `total - peak_torch - non_torch` |
 
@@ -304,6 +304,8 @@ rather than importing it.
   harmless, since block ids must be valid on every stage's KV tensor. Whether a simulated
   PP run has a live group is `01` D1's question about topology and is left there; the
   divergence without one is not a question, and is recorded here.
+- **Which width keys `non_torch` under DP-attention is open** (2026-10-10, D15): it waits
+  on [#702](https://github.com/jgong5/ATOM/issues/702).
 - `gpu_memory_utilization` here is a fraction of **total**, with the non-KV footprint
   subtracted afterwards — the vLLM convention, **not** TRT-LLM's. Comparing the resulting
   block count against a number produced under the other convention is wrong.
@@ -325,10 +327,10 @@ not own cannot measure any of them.
 | Term | Prior measurement | Depends on |
 |---|---|---|
 | `total` | — | the card. A spec number. |
-| weights | exact via a meta build, −0.00/+0.00/−0.02/+0.01% at TP1/2/4/8 | model geometry + TP |
+| weights | exact via a meta build, −0.00/+0.00/−0.02/+0.01% at TP1/2/4/8 | model geometry + quantisation + the group widths it shards over |
 | buffers (rotary tables) | recorded exactly; a formula matched the 0.6B and was **4x wrong on the 27B** (partial rotary) | model config |
-| activations | liveness walk; held out at the warmup shape to **+0.0% at TP=1/2/4** | model + shape + TP. **Requires an op graph — see topic `04`.** |
-| invisible scratch | 0.1 KB/token on the 0.6B, **39.6 KB/token on the 27B** | model. One fitted number, deliberately not per-operator. |
+| activations | liveness walk; held out at the warmup shape to **+0.0% at TP=1/2/4** | model + shape + width. Sourced as D16 says; the walk needs an op graph (topic `04`). |
+| invisible scratch | 0.1 KB/token on the 0.6B, **39.6 KB/token on the 27B** | model. One fitted number, deliberately not per-operator; inside the measured activation coefficient (D16). |
 | persistent | 118 MiB, flat in width | model |
 | load residue | 1.1 MiB at TP1, **2069 MiB flat at TP2/4/8** | AITER `CustomAllreduce` 1 GiB pool + the two-stage kernel's. A *software* constant. |
 | `non_torch` | 926 / 6906 / 7266 / 10704 MiB at width 1/2/4/8, +266 MiB model-dependent | HIP context + libraries + RCCL buffers. **"A table, not a law"** — no fixed-plus-per-peer form fits 5980/6340/9138 at widths 2/4/8. |
@@ -382,6 +384,14 @@ KV gate, a spec that cannot be recovered from the artifact makes an error unattr
   default (`check_stack`) and refuses under `validate(strict=True)`, and moving constants
   across stacks, by a transfer or a merge, always refuses. Still untested across dies;
   recorded as **T50** and cheap to settle with one startup on a second card type.
+- **`non_torch` and the load residue under DP-attention: which width keys them is open**
+  (2026-10-10). Both tables are keyed by `tensor_parallel_size`, which `CoreManager`
+  rewrites to 1 under DP-attention, yet every rank there sits in DP-wide and EP-wide
+  groups whose device communicators aiter builds (`15` D90, Q4). At the nightly DeepSeek-V4-Pro
+  DPA cell the two candidate keys differ by 10 GB per rank:
+  `driver_and_collective_reserve_bytes` is 0.97 GB at width 1 and 11.2 GB at width 8
+  ([#545](https://github.com/jgong5/ATOM/issues/545)). The answer waits on the spike
+  [#702](https://github.com/jgong5/ATOM/issues/702).
 - Three topologies of one model is interpolation, not a law. The prior work said so
   explicitly and could not get a third model because the box was offline.
 - **The graph-pool width scaling rests on one point above W=1.** Context, since the line
@@ -417,6 +427,28 @@ non-subtractive readings: `parameter_bytes`, `weights_torch`, `current_torch`.
 Validation costs no GPU time, because every hardware run already prints the real
 breakdown.
 
+### The source of each term
+
+**Revised 2026-10-10** after the owner's rulings on
+[#545](https://github.com/jgong5/ATOM/issues/545#issuecomment-6094838221) and
+[#620](https://github.com/jgong5/ATOM/issues/620#issuecomment-6094839293) and in
+[#704](https://github.com/jgong5/ATOM/issues/704), for `16` D95's stages 2 and 3. One
+source per term; the bullets below say why each is what it is.
+
+| Term | Source | Issue |
+|---|---|---|
+| weights | a meta build in the simulated runner's `_build_and_load_model`: the model class under `torch.device("meta")` with ATOM's own quantisation config and groups at the deployment's widths, bytes summed over unique storages, a tied `lm_head` added; the tree is dropped after counting | [#699](https://github.com/jgong5/ATOM/issues/699) |
+| buffers | the declared formula over fields the model's `config.json` states, labelled declared, until a recording exists | [#701](https://github.com/jgong5/ATOM/issues/701) |
+| activations | one coefficient per model and width, from a machine-spec entry keyed by architecture and width: a real run's `peak - current` after warmup over the warmup tokens, times the deployment's warmup tokens. A model with no entry takes a geometry form, labelled declared. The liveness walk replaces both once capture lands | [#704](https://github.com/jgong5/ATOM/issues/704), [#705](https://github.com/jgong5/ATOM/issues/705) |
+| invisible scratch | inside the activation coefficient; a term of its own only under the liveness walk (`04` T4) | [#704](https://github.com/jgong5/ATOM/issues/704) |
+| persistent | the spec constant `persistent_forward_buffer_bytes` | — |
+| load residue, `non_torch` | the spec's width tables; the width under DP-attention is open (D15) | [#702](https://github.com/jgong5/ATOM/issues/702) |
+| graph pool | `graph_pool.reserves()` for the deployment's own `enforce_eager`; when it captures, the runner's `_piecewise_cg_active()` picks the branch, whole-graph from the activations term, piecewise from `piecewise_per_token_bytes` and `capture_token_shapes` over the deployment's ladder | [#700](https://github.com/jgong5/ATOM/issues/700) |
+
+**The per-term check** is `memory/compare.py` with `graph_pool.predicts`: each predicted
+term against the same term of a recorded real run, wired for stage 2's paired runs
+([#620](https://github.com/jgong5/ATOM/issues/620)).
+
 ### Term-by-term approach
 
 - **Weights** — ask a meta build, deduped by storage. Exact at every width on both models
@@ -424,12 +456,21 @@ breakdown.
   the model holds; and the width must be *simulated*, or asking for a world of two from
   one process hangs. One known correction: a meta-built model has not been through the
   loader, so a **tied `lm_head` is invisible** — worth one embedding, 0.290 GiB on the
-  0.6B, which was the whole of a gap once.
-- **Buffers** — recorded, not formula'd. The formula that matched the 0.6B exactly was 4x
-  wrong on the 27B. Tested on a second model, failed, did not ship.
-- **Activations** — a def-use liveness walk over a traced op graph, **not** a footprint
-  sum. This term has a hard dependency on topic `04` (model capture). Four faults had
-  to be fixed before it worked, and they are worth restating because each is a trap:
+  0.6B, which was the whole of a gap once. A declared `parameter_count × dtype / TP`
+  is not a substitute: one dtype cannot state FP4 experts with e8m0 scales beside FP8
+  and bf16 parameters, and under DP-attention TP is 1 while the experts shard over the
+  DP group, so at the nightly DeepSeek-V4-Pro DPA cell it was refused at 10.76x the card
+  (#545).
+- **Buffers** — the declared formula over fields `config.json` states, labelled declared,
+  until a recording exists (`ModelTerms.from_declared_config`,
+  [#701](https://github.com/jgong5/ATOM/issues/701)). The label is there because the
+  first formula, which matched the 0.6B exactly, was 4x wrong on the 27B (partial rotary).
+- **Activations** — until capture lands, the coefficient measured on a real run (the
+  table above): the scaling in tokens is validated (`10` D67), and the reading is the one
+  ATOM's `_estimate_cudagraph_overhead` takes, so the scratch is inside it. After that, a
+  def-use liveness walk over a traced op graph, **not** a footprint sum, which depends on
+  topic `04` (model capture). Four faults had
+  to be fixed before the walk worked, and they are worth restating because each is a trap:
   deaths inferred from the last read are the wrong event (a residual held across a block
   outlives every read of it — use `weakref.finalize` on the allocator); an operator's
   outputs need not share a life (fused add-and-norm returns one tensor that dies into the
@@ -438,7 +479,8 @@ breakdown.
   the allocator hands a freed address straight back; and `torch.empty` inside a custom
   operator never reaches a dispatch tracer, yet the MLP's silu destination is **13.6 MB a
   layer at TP=1 and is exactly where the high-water mark sits**.
-- **Invisible scratch** — one fitted number of bytes per token, clamped at zero. Explicitly
+- **Invisible scratch** — inside the measured activation coefficient; under the walk, one
+  fitted number of bytes per token, clamped at zero. Explicitly
   *not* per-operator: a per-operator correction reproduces the traced curve exactly, is
   worth nothing at any other shape, and is a recording dressed as a model. On the 27B this
   term is the difference between −35.0% and +3.4% held out.
@@ -449,7 +491,10 @@ breakdown.
   ladders while the estimate does not move at all. Under-reserving is not an OOM: the
   capture loop re-checks free memory per bucket and silently skips what will not fit, so
   the price is **dropped buckets and a decode cliff at those batch sizes**. On a 192 GB
-  card nothing was ever dropped, which is why this went unnoticed.
+  card nothing was ever dropped, which is why this went unnoticed. The mirror reserves
+  for the deployment's own capture mode: installing the eager reading for every
+  deployment refuses one that captures, and `--enforce-eager` around that overstates the
+  KV pool against a real run that captures (#545, #700).
 
 ### The gate that actually matters
 
@@ -459,9 +504,10 @@ for the model — which is the per-term rule above, not the aggregate.
 
 ### Open issues
 
-- Activations are blocked on topic `04` until an op graph exists. For M1 with fake
-  models a declared formula suffices, and must be labelled as such. **Cross-check against
-  `04`:** the liveness walk this term needs is `04` D22, which resolves observationally
+- Activations are not blocked on topic `04`: until an op graph exists they come from the
+  measured coefficient, and a model with no entry takes a labelled geometry form, whose
+  error against the coefficient is what #705 measures (`10` T34). **Cross-check against
+  `04`, for when the walk lands:** the liveness walk is `04` D22, which resolves observationally
   under fake tensors and treats an opaque leaf's internal scratch as a *declared per-leaf
   constant* rather than a walked one. So this term is not simply "blocked on a graph" —
   it is blocked on a graph **plus** the scratch constants of `04` T4, and the second is
@@ -471,7 +517,9 @@ for the model — which is the per-term rule above, not the aggregate.
   scratch table does not discharge the ≤10% gate on this term.
 - The model generalises to a shape the trace was not taken at, but **not to a model that
   was never traced** — a hybrid needs a real graph. So "size a configuration nobody has
-  run" holds for shape and width, not for architecture.
+  run" holds for shape and width, not for architecture. The measured coefficient narrows
+  that further: it holds for shape, not for a model or a width with no run, which take
+  the geometry form.
 - A tracing run must reset the allocator's high-water mark around the step it writes a
   graph for, or `peak_torch` belongs to the warmup prefill, whose shape is nobody's
   choice (−14.7% on one configuration).
@@ -485,4 +533,4 @@ for the model — which is the per-term rule above, not the aggregate.
 | D13 | Do not simulate the KV pool. Stub `allocate_kv_cache`; ATOM's real `BlockManager`, `BlockPool`, prefix index and `plan_pools` run unmodified. | 2026-09-18 |
 | D14 | Substitute the five device readings, reuse ATOM's budget arithmetic and `plan_pools`. Compass models a dedicated device; that is a declared scope boundary. | 2026-09-18 |
 | D15 | The device specification is an input artifact authored outside Compass, carrying capacity, compute, bandwidth, interconnect, runtime memory constants and derate factors. It is echoed into every run artifact. | 2026-09-18 |
-| D16 | Validate every non-KV memory term individually, never as a sum. Keep ATOM's graph-pool estimator and the measured one as two separate functions. | 2026-09-18 |
+| D16 | Validate every non-KV memory term individually, never as a sum. Keep ATOM's graph-pool estimator and the measured one as two separate functions. Revised: one source per term. Weights come from a meta build in the simulated runner at the deployment's group widths. Activations come from a coefficient measured per model and width, with the scratch inside it and a geometry form as fallback, until the liveness walk lands. The graph pool reserves for the deployment's own capture mode, and the per-term check is wired. | 2026-09-18; revised 2026-10-10 |

@@ -197,6 +197,8 @@ def test_no_budget_arithmetic_is_written_anywhere_in_this_package():
     module, `setattr`, `getattr` and `__dict__` spellings count), none carries
     `gpu_memory_utilization` the same way except `spec/rules.py`, as the
     string-constant key of a dict display it holds to word a refusal, and
+    inside a `budget_bytes=` argument, the utilisation budget ATOM's piecewise
+    graph-pool estimate caps its buckets against, and
     none writes the coefficient of ATOM's safety margin -- read off ATOM's
     own line, so it follows ATOM -- or its complement as a literal. What is
     not: the `min(budget, free)` clamp, which has no name to find, a margin
@@ -226,6 +228,11 @@ def test_no_budget_arithmetic_is_written_anywhere_in_this_package():
             if isinstance(n, ast.Dict)
             for k in n.keys
             if isinstance(k, ast.Constant) and module == COMPASS / "spec" / "rules.py"
+        } | {
+            id(a)
+            for n in ast.walk(tree)
+            if isinstance(n, ast.keyword) and n.arg == "budget_bytes"
+            for a in ast.walk(n.value)
         }
         named = [
             (id(n), s)
@@ -241,7 +248,10 @@ def test_no_budget_arithmetic_is_written_anywhere_in_this_package():
         ), f"{module} names ATOM's budget reserve override point"
         assert "gpu_memory_utilization" not in {
             s for n, s in named if n not in keys
-        }, f"{module} names gpu_memory_utilization outside rules.py's string dict keys"
+        }, (
+            f"{module} names gpu_memory_utilization outside rules.py's string "
+            "dict keys and a budget_bytes argument"
+        )
         literals = {
             round(n.value, 12)
             for n in ast.walk(tree)

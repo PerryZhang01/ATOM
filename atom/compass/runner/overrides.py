@@ -265,25 +265,26 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
     half, which is a driver allocation. Both are replaced for the life of the
     worker process, which hosts this runner and nothing else.
 
-    The groups are the ones ATOM's own call builds at one rank, on gloo, where
-    aiter builds no device communicator. A wider start is refused: aiter would
-    build one on the device, and a simulated TP width needs
-    `apply_simulated_tp` on a device group.
+    The groups are the ones ATOM's own call builds, on gloo. At one rank
+    aiter builds no device communicator. At data-parallel width the DP and EP
+    groups span the DP ranks, so they are built with an empty custom group
+    configuration, under which aiter builds no device communicator for any
+    group. A start wider within one engine is refused: a TP, PCP or PP group
+    would need one, and a simulated TP width needs `apply_simulated_tp` on a
+    device group.
     """
     pc = config.parallel_config
     ranks = (
         config.tensor_parallel_size
         * config.prefill_context_parallel_size
-        * pc.data_parallel_size
         * config.pipeline_parallel_size
     )
     if ranks != 1:
         raise RunnerRefusal(
-            f"this start is {ranks} ranks wide; a runner starts on the host "
-            "only at one rank, because aiter builds a wider group's device "
-            "communicators on the device."
+            f"this start is {ranks} ranks wide within its engine; a runner "
+            "starts on the host only at one rank per engine, because aiter "
+            "builds a TP, PCP or PP group's device communicators on the device."
         )
-    from aiter import init_dist_env
     from aiter.dist.utils import get_distributed_init_method
 
     from atom.utils import CpuGpuBuffer
@@ -298,14 +299,32 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
     runner.device = torch.device("cpu")
     os.environ["MASTER_ADDR"] = config.master_addr
     os.environ["MASTER_PORT"] = str(config.port)
-    init_dist_env(
-        1,
-        rankID=rank,
+    method = get_distributed_init_method(
+        pc.data_parallel_master_ip, pc.data_parallel_base_port
+    )
+    if pc.data_parallel_size == 1:
+        from aiter import init_dist_env
+
+        init_dist_env(
+            1, rankID=rank, backend="gloo", distributed_init_method=method, local_rank=0
+        )
+        return
+    from aiter.dist.parallel_state import (
+        init_distributed_environment,
+        initialize_model_parallel,
+    )
+
+    init_distributed_environment(
+        world_size=1,
+        rank=rank,
+        distributed_init_method=method,
         backend="gloo",
-        distributed_init_method=get_distributed_init_method(
-            pc.data_parallel_master_ip, pc.data_parallel_base_port
-        ),
         local_rank=0,
+        data_parallel_size=pc.data_parallel_size,
+        data_parallel_rank=pc.data_parallel_rank,
+    )
+    initialize_model_parallel(
+        1, 1, data_parallel_size=pc.data_parallel_size, custom_group_config={}
     )
 
 
@@ -577,8 +596,8 @@ class NonAllocatingRunner(RefusedControlCommands):
         recorded here. Only the tensors behind the blocks are absent.
 
         An empty registry still goes through ATOM's `set_kv_cache_data`: it is
-        the one call that builds the worker-side KV connector, without which no
-        transfer the scheduler announces ever starts or finishes.
+        the one call that builds the worker-side KV connector, which the engine
+        polls for transfer completions.
         """
         from atom.kv_transfer.disaggregation.factory import KVConnectorFactory
         from atom.utils.forward_context import set_kv_cache_data

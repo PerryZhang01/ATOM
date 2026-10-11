@@ -60,6 +60,7 @@ from aiperf.metrics.metric_dicts import MetricRecordDict
 from aiperf.metrics.types.request_latency_metric import RequestLatencyMetric
 from aiperf.metrics.types.ttft_metric import TTFTMetric
 from aiperf.workers.inference_client import InferenceClient
+from compass_harness.timesource import EPOCH_NS
 from compass_harness.transport import (
     ADDRESS_ENV,
     CompassTransport,
@@ -205,7 +206,7 @@ def _run(coro):
 
 
 def _ns(seconds: float) -> int:
-    return round(seconds * 1e9)
+    return round(seconds * 1e9) + EPOCH_NS
 
 
 def test_the_http_transport_is_compass_transport():
@@ -240,6 +241,7 @@ def test_aiperf_ttft_and_latency_are_the_stamped_differences(tmp_path, monkeypat
         assert latency == _ns(finish) - _ns(sent)
         assert record.credit_drop_latency is None
         assert record.request_info.credit_issued_ns is None
+        assert record.trace_data is None  # no wall timing of the real socket
         assert record.timestamp_ns == _ns(sent)  # the run duration's anchor
     print("\ncredit  sent  first  finish  aiperf TTFT  aiperf latency")
     for row in rows:

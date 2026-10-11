@@ -535,13 +535,33 @@ runs concurrently. So the tracer records `torch.cuda.current_stream()` as a fiel
 node and hooks `Event.record` / `wait_event` / `wait_stream` for the edges. `Par` is then
 **derived** from stream ids rather than declared.
 
-**Staging.** For M1-M4 every node carries one stream id and `Par` never materialises:
-Qwen3.8-27B is dense-MLP (no `num_experts`, no `shared_expert`) so dual-stream MoE cannot
-fire; it is not MLA so there is no metadata `prep_stream`; TBO defaults off and needs
-`--enable-tbo` plus `--enable-dp-attention` plus >=2 GPUs; and PP asserts `enforce_eager`
-so it cannot coexist with CUDA graphs. From M5, Kimi-K3 forks shared-expert against routed
-expert on an `alt_stream` whenever tokens <= 1024 — i.e. **every decode step, by default,
-baked into the replayed graph**. So `Par` is defined now and populated at M5.
+**Staging.** In M1 and in M2's first gate every node carries one stream id and `Par`
+never materialises: Qwen3.8-27B is dense-MLP (no `num_experts`, no `shared_expert`) so
+dual-stream MoE cannot fire; it is not MLA so there is no metadata `prep_stream`; TBO
+defaults off and needs `--enable-tbo` plus `--enable-dp-attention` plus >=2 GPUs; and PP
+asserts `enforce_eager` so it cannot coexist with CUDA graphs. **DeepSeek-V4-Pro populates
+`Par` in M2**, on both nodes of each nightly 1P+1D cell in `recipes/mesh/DeepSeek-V4.md`.
+Only the DPA cells pass `--enable-dp-attention`, and only their prefill node adds
+`--enable-tbo`.
+
+- **Decode, in every cell, runs without TBO.** Inside the replayed graph,
+  `DeepseekV4Attention.maybe_compressors_async` forks the compressors onto `alt_stream`
+  and `indexer_stream`, and `MoE` runs the shared expert on `alt_stream` against the
+  routed experts whenever this rank's tokens <= `ATOM_DUAL_STREAM_MOE_TOKEN_THRESHOLD`
+  (1024 by default) — i.e. **every decode step** at the cells' concurrencies. The shared
+  expert stays unfused because it is FP8 and the routed experts FP4.
+- **Prefill never forks the compressors**: it runs eager, and the compressor fork needs
+  `fc.in_hipgraph`, which only decode graph capture sets. A prefill step is one of:
+  - **a TBO step** (DPA cells only), taken when some DP rank reaches
+    `ATOM_TBO_PREFILL_MIN_TOKENS` (8192 by default) and every rank can split
+    (`local_tbo_precompute`, `atom/utils/tbo/ubatching.py`): two microbatches alternate
+    between a compute and a comm stream joined by events, and `tbo_active()` keeps the
+    shared-expert fork off;
+  - **any other step with at most 1024 tokens on this rank**: `maybe_dual_stream_forward`
+    forks the shared expert in eager mode, a `Par` on the prefill node;
+  - **any other step**: one stream.
+
+So `Par` is defined now and populated at M2, from its first DeepSeek-V4-Pro step.
 
 ### Symbolic shapes — what they buy
 
@@ -684,8 +704,17 @@ constant the pricing ignores will fail to group, costing compression but never
 correctness. That is the right way round.
 
 **Recorded as T51:** enumerate the actual layer-pattern shapes for the two target models
-(Qwen3.8-27B, Kimi-K3) and confirm the detector reaches the nested form on both. Kimi-K3
-is the one that matters — a dense-then-MoE schedule with shared experts is exactly Way 2.
+(Qwen3.8-27B, DeepSeek-V4-Pro) and confirm the detector reaches the nested form on both.
+DeepSeek-V4-Pro is the one that matters. In `atom/models/deepseek_v4.py` every layer is the
+same `Block` with an `MoE` and one shared expert, so its shape comes from per-layer
+switches: `MoE` routes by hash on layers below `n_hash_layers`,
+`DeepseekV4Attention` picks CSA or HCA from `compress_ratios[layer_id]`, and `Block` runs
+layer 0's mHC unfused (`enable_fused_hc` is false on layer 0 only, so `Block.fuse_hc` calls
+`mhc_post_pre` there and `mhc_fused_post_pre` on every later layer). The DeepSeek-V4-Pro
+checkpoint's `config.json` makes the hash-routed layers HCA, HCA, CSA, then alternates HCA and CSA to
+the last layer. With the unfused layer 0, no two hash-routed layers are the same
+block: a prologue (Way 1) before a period-2 interleave (Way 2), in which a flat
+run-length scan finds nothing to group.
 
 ### Open issues
 
@@ -885,7 +914,8 @@ and a decode step is ~30x shorter.
 
 ### Problem
 
-`03_memory_and_kv_model.md` D16 requires a def-use liveness walk for the activation term.
+`03_memory_and_kv_model.md` D16 makes a def-use liveness walk the activation term's source
+once capture lands.
 The prior implementation was **observational** — `weakref.finalize` firing when the CUDA
 allocator reclaimed — and there is no allocator device-free.
 
@@ -981,9 +1011,18 @@ Deliberately **not** per-operator attribution from a recorded curve: that reprod
 traced curve exactly, is worth nothing at any other shape, and is a recording dressed as a
 model.
 
+**Revised 2026-10-10: the walk is not the activation term's first source.** Until capture
+lands, the term is one coefficient per model and width measured on a real run
+(`03` D16, [#704](https://github.com/jgong5/ATOM/issues/704)), and the scratch is inside
+that reading, so neither this walk nor the per-leaf constants gate stages 2 and 3. The
+walk replaces the coefficient when it lands, and the per-leaf constants are needed from
+then (T4). A model with no measured coefficient takes a geometry form, which
+[#705](https://github.com/jgong5/ATOM/issues/705) tests (`10` T34).
+
 ### Open issues
 
-- Nothing establishes the scratch constants for Qwen3.8-27B under this design yet.
+- Nothing establishes the scratch constants for Qwen3.8-27B under this design yet; they
+  are needed once the walk replaces the measured coefficient.
 - The fault-4 case that is *not* an opaque leaf — the MLP's silu destination, **13.6 MB a
   layer at TP=1 and exactly where the high-water mark sits** — was handled by an
   out-variant rule: an operator returning no tensor is an out-variant, and what it produces
@@ -1124,7 +1163,7 @@ Deferred to future work by decision on 2026-09-18.
 | D19 | Hierarchical, symbolic, stream-annotated IR: `Seq` / `Repeat` / `Par`. No branches in the IR — applicability is a discrete key plus an evaluated guard domain | 2026-09-18 |
 | D20 | Opaque leaves are priced, not decomposed. Each carries a declared parameter extractor. FlyDSL and MORI need no IR node. | 2026-09-18 |
 | D21 | Declared nodes over chased coverage; refuse and record `unpriced` reasons; a failed forward writes no graph | 2026-09-18 |
-| D22 | Liveness stays observational under fake tensors; internal scratch of an opaque leaf is a declared per-leaf constant | 2026-09-18 |
+| D22 | Liveness stays observational under fake tensors; internal scratch of an opaque leaf is a declared per-leaf constant. Revised: until capture lands the activation term is a coefficient measured on a real run, scratch inside it, and the walk replaces it after | 2026-09-18; revised 2026-10-10 |
 | D23 | Trace eager, price with the regime constant of the real step. The inductor fusion gap (~4.8% decode) is a documented **TODO**, not a decision. | 2026-09-18 |
 
 ---
@@ -1139,9 +1178,9 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 | T1 | Inductor fusion correction (D23) | ~4.8% of a decode step; three candidate treatments, none chosen |
 | T2 | Enumerate the structure set for Qwen3.8-27B | needs tier (a) running against the real scheduler |
 | T3 | Build the per-leaf parameter-extractor table (~20 entries) | the main hand-written asset; needs the leaf list frozen first |
-| T4 | Establish scratch constants per leaf for the 27B | unobservable device-free; needs a source or one measurement |
+| T4 | Establish scratch constants per leaf for the 27B | needed once the liveness walk replaces the measured activation coefficient (D22); unobservable device-free, so it needs a source or one measurement |
 | T5 | Verify ATOM's model classes trace cleanly under FakeTensorMode at TP>1 | needs a non-wedged node |
 | T6 | Validate that `Repeat` grouping reproduces the flat prices term by term | needs a first trace |
-| T7 | Validate `Par` reconstruction from stream ids | not exercised until M5 (Kimi-K3) |
+| T7 | Validate `Par` reconstruction from stream ids | not exercised until M2 (DeepSeek-V4-Pro) |
 | T8 | Decide whether tier (a) is fitted independently or derived from tier (b) | tier (b) does not exist yet |
 | T9 | Declare a row-ordering treatment for decode attention | 1.77x effect, invisible to every current feature |

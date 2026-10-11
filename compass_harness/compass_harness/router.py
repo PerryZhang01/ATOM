@@ -39,6 +39,7 @@ class CompassCreditRouter(StickyCreditRouter):
 
     def _on_finish(self, done: asyncio.Future) -> None:
         if not done.cancelled() and done.exception() is not None:
-            # The run is over at the +inf grant; stopping the loop fails this service.
+            # The traffic LP failed: a request was open at the +inf grant, or one
+            # failed mid-stream before it. Stopping the loop fails this service.
             self.exception(f"traffic LP: {done.exception()!r}")
             asyncio.get_running_loop().stop()

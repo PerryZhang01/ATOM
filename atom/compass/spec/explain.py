@@ -73,6 +73,7 @@ QUANTITIES: Mapping[str, tuple[str, ...]] = {
         "device.runtime_constants.cudagraph_pool.w1_base_bytes",
         "device.runtime_constants.cudagraph_pool.w1_bytes_per_captured_token",
         "device.runtime_constants.cudagraph_pool.w_gt1_flat_bytes",
+        "device.activations",
     ),
     "admission": (
         "host.admission_fixed_s",

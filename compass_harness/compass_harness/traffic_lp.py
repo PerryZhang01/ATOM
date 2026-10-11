@@ -10,10 +10,12 @@ Before each clock call it holds until aiperf has caught up with the clock:
 every stream event the Clock Authority released has been reported by a worker,
 every credit whose final event is released has had its return passed to
 aiperf (a return that comes before its final event's release waits for it, so
-the next turn is scheduled from the final arrival either way), and every task
-on the loop is waiting on something. It asks for time only while a request is
-open, a pacing timer is pending or the run is finishing; between phases aiperf
-works on the wall clock and the simulation waits for it.
+the next turn is scheduled from the final arrival either way), no return is
+still inside aiperf's callback, and every task on the loop is waiting on
+something. It asks for time only while a request is open, a clock wait (a
+pacing timer, a phase deadline, the idle watchdog) is pending or the run is
+finishing; between phases aiperf works on the wall clock and the simulation
+waits for it.
 
 A request that errors mid-stream never reports the events after its last read.
 When released events stay unreported for ``DIAG_S`` wall seconds while an
@@ -35,6 +37,7 @@ from atom.utils.clock import DIAG_S, LPRuntime
 from compass_harness import ADDRESS_ENV
 from compass_harness.transport import addresses, credit_key
 
+# The single-engine run's two channels; a run file names its own (`from_env`).
 HTTP = "traffic->frontend:http"
 STREAM = "frontend->traffic:stream"
 TRAFFIC = LpId("traffic")
@@ -49,8 +52,10 @@ class UnansweredRequests(RuntimeError):
 
 
 class TrafficLP:
-    def __init__(self, rt: LPRuntime, prefix: str) -> None:
-        self.rt = rt
+    def __init__(
+        self, rt: LPRuntime, prefix: str, http: str = HTTP, stream: str = STREAM
+    ) -> None:
+        self.rt, self.http, self.stream = rt, http, stream
         stamps, reports = addresses(prefix)
         ctx = zmq.asyncio.Context.instance()
         self._pub = ctx.socket(zmq.XPUB)
@@ -61,11 +66,11 @@ class TrafficLP:
         self._subscribers = 0
         self.open: dict[tuple, None] = {}  # sent, return not yet passed to aiperf
         self._reports: dict[int, tuple] = {}  # stream seq -> (key, final)
-        self._handled: set[int] = set()
         # key -> its return, for aiperf; None once passed
         self._held: dict[tuple, object] = {}
         self._returns: asyncio.Queue = asyncio.Queue()  # passed in order, as upstream
         self._waiters: list[tuple[float, asyncio.Future]] = []
+        self._passing = False  # a return is inside aiperf's callback
         self._finishing = False
         self._changed = asyncio.Event()
         self._tasks = [
@@ -85,9 +90,15 @@ class TrafficLP:
                 "the Clock Authority and the channel table."
             )
         conn = clock_transport.connect(TRAFFIC, run["clock_endpoint"])
+        table = compass_run.channel_table(run)
+        # One channel each way: into the frontend (frontend-P behind a PD
+        # router) and back from the one that streams (frontend-D).
+        (http,), (stream,) = table.channels_from(TRAFFIC), table.channels_into(TRAFFIC)
         return cls(
-            LPRuntime(TRAFFIC, compass_run.channel_table(run), conn),
+            LPRuntime(TRAFFIC, table, conn),
             os.environ[ADDRESS_ENV],
+            http.name,
+            stream.name,
         )
 
     # ---- the clock ClockPacedLoopScheduler paces on ----
@@ -97,16 +108,27 @@ class TrafficLP:
 
     async def advance_to(self, t: float) -> None:
         """Return at the next grant; the scheduler then reads its timers again."""
+        await self.wait(t)
+
+    def wait(self, t: float) -> asyncio.Future:
+        """A clock wait for ``t``, resolved at the next grant or by ``withdraw``."""
         fut = asyncio.get_running_loop().create_future()
         self._waiters.append((t, fut))
         self._changed.set()
-        await fut
+        return fut
+
+    def withdraw(self, fut: asyncio.Future) -> None:
+        """Drop a wait, so it asks the clock for nothing, and resolve it now."""
+        self._waiters = [w for w in self._waiters if w[1] is not fut]
+        if not fut.done():
+            fut.set_result(None)
+        self._changed.set()
 
     # ---- the router's side ----
 
     def send(self, key: tuple) -> None:
         """Stamp one request on the HTTP channel and publish the stamp."""
-        arrival, seq = self.rt.stamp_send(HTTP)
+        arrival, seq = self.rt.stamp_send(self.http)
         self.open[key] = None
         self._pub.send_pyobj((key, arrival, seq))
         self._changed.set()
@@ -144,17 +166,21 @@ class TrafficLP:
     async def _read_reports(self) -> None:
         while True:
             key, seq, arrival, final = await self._pull.recv_pyobj()
-            self.rt.check_arrival(STREAM, arrival, seq)
+            self.rt.check_arrival(self.stream, arrival, seq)
             self._reports[seq] = (key, final)
             self._changed.set()
 
     async def _pass_returns(self) -> None:
         while True:
             ret = await self._returns.get()
+            self._passing = True
             try:
                 await ret()
             except Exception:  # upstream loses that one return, not the rest
                 logger.exception("traffic: a return callback raised")
+            finally:
+                self._passing = False
+                self._changed.set()
 
     async def _own(self) -> None:
         while True:
@@ -176,7 +202,9 @@ class TrafficLP:
         spins = 0
         while True:
             unreported, unreturned = [], []
-            for seq in sorted(self.rt.released[STREAM] - self._handled):
+            # A handled seq leaves the runtime's released set, so a pass scans
+            # only the open events, not every event of the run.
+            for seq in sorted(self.rt.released[self.stream]):
                 if seq not in self._reports:
                     unreported.append(seq)
                     continue
@@ -184,12 +212,12 @@ class TrafficLP:
                 if final and key not in self._held:
                     unreturned.append(key)
                     continue
-                self._handled.add(seq)
+                self.rt.released[self.stream].discard(seq)
                 if final:
                     self.open.pop(key, None)
                     if (ret := self._held.pop(key)) is not None:
                         self._returns.put_nowait(ret)
-            if unreported or unreturned:
+            if unreported or unreturned or self._passing:
                 self._changed.clear()
                 try:
                     await asyncio.wait_for(self._changed.wait(), DIAG_S)

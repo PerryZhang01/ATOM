@@ -29,6 +29,8 @@ numbers.
 
 import copy
 import importlib.util
+import json
+import pathlib
 import sys
 
 import pytest
@@ -48,6 +50,7 @@ from atom.compass.spec import (
     non_torch_across_ranks,
     probe_for,
     tokenizer_fragment,
+    tokenizer_sweep,
     validate,
 )
 from atom.compass.spec import fields as schema_module
@@ -1109,6 +1112,22 @@ def test_a_quantity_names_the_fields_it_is_built_out_of():
     assert len(paths) == len(set(paths))
 
 
+def test_a_measured_activation_entry_is_part_of_the_kv_blocks_basis():
+    entry = {
+        "id": "m",
+        "fingerprint": "sha256:f",
+        "applies_to": ["A"],
+        "bytes_per_token": {1: 180480},
+    }
+    document = copy.deepcopy(merged().document)
+    document["device"]["activations"] = [entry]
+    basis = explain(MachineSpec.from_mapping(document), "kv_blocks", tp_width=1)
+    rows = {row.path: row.value for row in basis.contributions}
+    assert list(rows["device.activations"]) == [entry]
+    without = explain(resolved(), "kv_blocks", tp_width=1)
+    assert "device.activations" not in [row.path for row in without.contributions]
+
+
 def test_a_quantity_names_the_fragment_each_field_came_from():
     combination = merged()
     spec = MachineSpec.from_mapping(combination.document)
@@ -2093,3 +2112,139 @@ def test_the_probe_question_says_it_could_not_be_asked_when_its_table_is_gone():
 def test_the_probe_table_is_reachable_by_name():
     assert "probe_for" in spec_package.__all__
     assert spec_package.probe_for is probe_for
+
+
+# --- the tokenizer sweep, and the node-18 spec built over it ------------------
+
+
+class Clocked:
+    """A tokenizer whose every call costs `fixed + tokens / rate` on its own
+    clock, and three times the per-token cost at `slow_at` tokens."""
+
+    def __init__(self, fixed, rate, slow_at=None):
+        self.now, self.fixed, self.rate, self.slow_at = 0.0, fixed, rate, slow_at
+        self.is_fast = True
+
+    def clock(self):
+        return self.now
+
+    def _spend(self, tokens):
+        scale = 3 if tokens == self.slow_at else 1
+        self.now += self.fixed + scale * tokens / self.rate
+
+    def encode(self, text):
+        ids = [0] * len(text.split())
+        self._spend(len(ids))
+        return ids
+
+    def decode(self, ids):
+        self._spend(len(ids))
+        return " ".join("w" for _ in ids)
+
+
+SWEPT = tuple(4**k for k in range(7))
+SWEEP_TEXT = "w " * SWEPT[-1]
+
+
+def test_the_sweep_recovers_the_fixed_cost_and_the_rate_it_ran_over():
+    tok = Clocked(3.0e-5, 2.0e6)
+    rates = tokenizer_sweep(tok, SWEEP_TEXT, SWEPT, bound=0.01, clock=tok.clock)
+    for side in ("encode", "decode"):
+        assert rates[f"{side}_fixed_s"] == pytest.approx(3.0e-5)
+        assert rates[f"{side}_tokens_per_s"] == pytest.approx(2.0e6)
+
+
+def test_a_length_the_fit_does_not_hold_at_is_refused_by_name():
+    tok = Clocked(3.0e-5, 2.0e6, slow_at=1024)
+    with pytest.raises(SpecRefusal) as refused:
+        tokenizer_sweep(tok, SWEEP_TEXT, SWEPT, bound=0.10, clock=tok.clock)
+    assert refused.value.rule is Rule.MEASURED
+    assert "encode at 1024 tokens" in str(refused.value)
+    assert "bound of 10.0%" in str(refused.value)
+
+
+def test_a_sweep_text_shorter_than_the_longest_length_is_refused():
+    tok = Clocked(3.0e-5, 2.0e6)
+    with pytest.raises(SpecRefusal, match="the sweep text is 2 tokens"):
+        tokenizer_sweep(tok, "w w", SWEPT, bound=0.10, clock=tok.clock)
+
+
+SPEC_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+
+def _node18_script():
+    path = SPEC_ROOT / "scripts" / "compass" / "mi308x_spec.py"
+    loaded = importlib.util.spec_from_file_location("mi308x_spec", path)
+    module = importlib.util.module_from_spec(loaded)
+    loaded.loader.exec_module(module)
+    return module
+
+
+def _swept_on(script, tmp_path, cores_physical, **entry):
+    tok = Clocked(3.0e-5, 2.0e6)
+    rates = tokenizer_sweep(tok, SWEEP_TEXT, SWEPT, bound=0.01, clock=tok.clock)
+    return tokenizer_fragment(
+        [dict(TOKENIZER, **rates, derate=1.0, **entry)],
+        machine=script.NAME,
+        authored_by="ana",
+        date="2026-10-11",
+        method="probed",
+        source="tokenizer",
+        processors=published_topology(
+            tmp_path, cores_physical=cores_physical, packages=2
+        ),
+    )
+
+
+def test_the_node_18_fragments_validate_and_explain_splits_measured_from_declared(
+    tmp_path,
+):
+    script = _node18_script()
+    merged = merge([_swept_on(script, tmp_path, 112), *script.device_fragments()])
+    assert validate(merged, tp_widths=(1,)).ok
+    measured, declared = script.report(merged, {"tokenizer", "device"}).split(
+        "declared:"
+    )
+    for field in (
+        "device.memory.capacity_bytes",
+        "driver_and_collective_reserve_bytes[1]",
+        "allocator_retained_after_load_bytes[1]",
+        "device.runtime_constants.persistent_forward_buffer_bytes",
+        "device.activations",
+        "encode_tokens_per_s",
+    ):
+        assert field in measured and field not in declared.split("kv_blocks")[0]
+    for field in ("host.ipc.zmq_roundtrip_s", "host.admission_fixed_s", "w1_base"):
+        assert field in declared and field not in measured
+
+
+def test_a_tokenizer_swept_off_node_18_is_refused_by_the_merge(tmp_path):
+    script = _node18_script()
+    with pytest.raises(SpecRefusal) as refused:
+        merge([_swept_on(script, tmp_path, 8), *script.device_fragments()])
+    assert refused.value.rule is Rule.ONE_MACHINE
+    assert "`host.cpu.cores_physical` is 8 in 'tokenizer'" in str(refused.value)
+    assert "and 112 in 'device'" in str(refused.value)
+
+
+def test_a_tokenizer_with_no_tokenizer_json_is_refused_before_the_merge(tmp_path):
+    # `_fingerprint` gives None for a slow tokenizer, which has no such file.
+    script = _node18_script()
+    with pytest.raises(SpecRefusal, match="fingerprint"):
+        _swept_on(script, tmp_path, 112, fingerprint=None)
+
+
+def test_the_checked_in_node_18_spec_validates_and_prices_its_activations():
+    from atom.compass.run import _width_keys
+
+    script = _node18_script()
+    path = SPEC_ROOT / "scripts" / "compass" / "machines" / f"{script.NAME}.json"
+    document = _width_keys(json.loads(path.read_text()))
+    spec = validate(document, tp_widths=(1,)).raise_first()
+    for fragment in script.device_fragments():
+        for path, value in fragment.values.items():
+            if not path.startswith("provenance.") and path != "name":
+                assert spec.values[path] == value, path
+    assert spec.activations_for(
+        "Qwen3_5ForConditionalGeneration", script.CONFIG_JSON, 1
+    ) == ("qwen3.8-27b", 180480.0)

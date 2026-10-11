@@ -17,6 +17,8 @@ on, because until 2026-09-20 it was not — see "Which tree a script acts on" be
 | `regen_cpu_gate_exclude.sh` | CPU container | Regenerate the **GENERATED** section of the exclusion list by iterating `--collect-only` to a fixed point (three passes at `83daf636d`: 37 errors, 1, clean). Preserves the MANUAL section verbatim. |
 | `regen_gpu_gate_triggers.sh` | CPU container | Re-derive `gpu_gate_triggers.txt` from the exclusion list and the tree. Run after **any** change to `cpu_gate_exclude.txt` — the two files are derived from the same tree and are wrong separately. Writes the whole file, **header counts included**; nothing in it is maintained by hand. |
 | `snapshot.sh` | either | Build the `git archive` tarball a gate runs against (never `rsync`). Stamps `.compass-commit` (so output names its tree, and a `COMPASS_GPU_GATE_DONE` attestation can be checked) and `.compass-changed` (so the blind-spot question is answerable without `.git`). Refuses a dirty tree. |
+| `pd_sim.sh` | GPU container | A simulated 1P1D run: the standalone clock authority (`python -m atom.compass.run`), a prefill and a decode API server on the simulated KV connector, and `atomesh` in PD mode between them. `tests/compass/test_pd_slice.py` drives one request through it. Its variables are in its header. |
+| `mi308x_spec.py` | GPU container, node 18 | `python3 scripts/compass/mi308x_spec.py`: rebuild `machines/mi308x-hjbog18.json`, the node-18 MI308X machine spec, by sweeping Qwen3.8-27B's tokenizer on this host and merging it with the device readings of one real engine start recorded in the script. Prints `validate`'s verdict and `explain`'s fields split into measured and declared. |
 | `cpu_gate_exclude.txt` | — | **29** excluded test files in two marked sections: **28 GENERATED** (`# BEGIN GENERATED`, driver-dependent at *collection* time; never hand-edit — `regen_cpu_gate_exclude.sh` rewrites it wholesale) + **1 MANUAL** (`# BEGIN MANUAL`, collects cleanly then fails on a driver call, so the regenerator cannot see it). The MANUAL section **is** hand-edited; every entry must carry its observed failure above it. |
 | `gpu_gate_triggers.txt` | — | **30** source paths that no *running* CPU-tier test names. Generated, not hand-written; matched by `gate_cpu.sh`. A trailing `/` matches a subtree. |
 | `gpu_gate_known_failures.txt` | — | The known-failing GPU node-ids at `gate_gpu.sh`'s `BASE_COMMIT`, verbatim. Its line count and `BASE_FAILED` are two statements of one fact; `gate_gpu.sh` refuses to run if they disagree. |
@@ -147,6 +149,28 @@ differs between `fe9ea043c` and the integration base `83daf636d` — the only de
 under `atom/` is markdown documentation, which no test imports. Cite the delta;
 do not claim green.
 
+## The compass_harness tests need an agentx-harness wheel
+
+`tests/compass/test_harness_*.py` skip when `compass-harness` or `aiperf` does not
+import. On a tree that carries `compass_harness/`, `gate_cpu.sh` installs the tree's
+own `compass_harness` into a run-local directory, with `--no-build-isolation`, so
+`setuptools` must be installed. `aiperf` comes from the wheel `COMPASS_AGENTX_HARNESS` names, or
+from the environment when that is unset. When the tests' skip condition still holds,
+the gate exits 96 before pytest and names the reason.
+
+The gate installs with `--no-index`, so it runs offline (inside `unshare -rn` too).
+Build the wheel once, where `pip` can fetch `hatchling`, and stage it beside the
+snapshot:
+
+```
+git -C <agentx-harness> archive 56a0cf70 | tar -x -C <src>
+python3 -m pip wheel --no-deps -w <dir> <src>       # aiperf-0.12.0-py3-none-any.whl
+COMPASS_AGENTX_HARNESS=<dir>/aiperf-0.12.0-py3-none-any.whl scripts/compass/gate_cpu.sh
+```
+
+`compass_harness` checks the installed `aiperf` source against its pinned
+functions on import, so a wheel from another commit fails the same way.
+
 ## A red CPU gate that may not be your diff — one flaky test in ATOM's suite
 
 `tests/entrypoints/test_stream_marker_properties.py::TestTheRegionIsNotCopiedPerChunk`
@@ -228,6 +252,15 @@ test moved from passed to skipped. That is the skip-variant's signature. The gat
 prints no skip *reasons* (and refuses a caller's `-r`, which is how you would ask
 for them), so that run did not name the test; the counts and the conserved total
 are what was observed.
+
+**Gloo timeouts in `tests/compass/test_dp_step_max.py`,
+`tests/compass/test_moe_gather_rows.py` and `tests/compass/test_process_group_lp.py`
+were DNS, not load.** Their gloo groups
+used to resolve the hostname once per rank to pick an address, and node 18's
+hostname is not in `/etc/hosts`. One stalled lookup outlasted the group timeout,
+and the others failed with `wait timeout after 5000ms`, `Connect timeout` or
+`Connection refused` (#726). The fixtures now set `GLOO_SOCKET_IFNAME=lo`, so no
+lookup happens; a red in those files is a real failure.
 
 ## Which tree a script acts on
 
@@ -440,3 +473,95 @@ sets `PYTHONPATH` to the tree and **nothing else** — inherited entries are the
 hazard, not a convenience — then asserts the resolved path is under it, and exits
 92 if not. The probe runs from `/` on purpose: run in place, Python puts the cwd at
 the head of `sys.path` and the assertion passes whatever `PYTHONPATH` says.
+
+## A cc-traces cell on a simulated TP1 run — `cctraces_sim.sh`
+
+`cctraces_sim.sh RUN_FILE OUT_DIR` runs one cell in the GPU container: ATOM's API
+server with `--compass-run`, driven by `aiperf profile --scenario
+inferencex-agentx-mvp` through compass-harness, on the first `SESSIONS` traces of a
+cc-traces `traces.jsonl`. The cell ends when the scenario's `--benchmark-duration`
+has passed on the simulated clock; nothing is computed or allocated on the device.
+The header of the script lists its environment; `MODEL`, `TRACES` and
+`HARNESS_PYTHON` are required.
+
+- `RUN_FILE` is a run file as `atom/compass/run/__init__.py` describes it. The
+  script replaces its `out_dir` and `clock_endpoint` and adds a `workload` entry:
+  the sha256 of `TRACES` and of each replayed trace, the aiperf arguments and the
+  pinned benchmark id. The step table's configuration line and the run summary
+  carry it.
+- Since the served tokenizer is charged, a tokenizer entry of the run file's
+  machine spec must name the model's architecture
+  (`Qwen3_5ForConditionalGeneration` for a Qwen3.8-27B `config.json`), or the
+  server refuses to start.
+- `HARNESS_PYTHON` is a Python with agentx-harness 56a0cf70 and compass-harness
+  installed; the script puts this tree's `compass_harness` first on `PYTHONPATH`
+  and refuses (exit 92) when it resolves elsewhere.
+- Each cell writes its aiperf memory-mapped dataset under `OUT_DIR`, so cells run
+  side by side.
+
+The last line printed is the cell's result: aiperf's request count and errors,
+simulated and wall seconds from the run summary, both prefix-cache hit rates
+(`cache_read_pct` is the engine's, `theoretical_hit_pct` is aiperf's oracle), TTFT,
+ITL and request throughput in simulated time, and the run's refusals. A
+`coverage_report=True` cell is a coverage report, not a result.
+
+A run file with `router_s` and `kv_write_req_s` makes the cell 1P1D: `pd_sim.sh`
+deploys it, taking `DECODE_EXEC` and `ATOMESH` from the environment, and aiperf
+drives the atomesh router. The traffic LP sends to `frontend-P` and reads the
+stream from `frontend-D`, as the run file's channel table names them. The result
+line adds `kv_transfers` and `kv_transfer_mean_s`, from the line the prefill
+engine logs per KV transfer.
+
+`REAL=1` runs the same TP1 cell on a real server, on the GPU and the wall clock,
+so a real and a simulated cell at one seed, concurrency and traces hash send the
+same requests and warm up on the same ones. The server runs ATOM's own runner
+(no `--compass-run`), and aiperf runs as shipped: `HARNESS_PYTHON` must have
+agentx-harness without compass-harness (exit 92 otherwise), and the script pins
+the benchmark id as compass-harness does. The result line reads aiperf's export
+alone and adds `contaminated`, true when `rocm-smi` lists any process on the
+cell's GPU before or after it, with each one's pid and VRAM bytes. Both modes
+write the TP1 step record to `steps/dp0.jsonl` (`atom/compass/parity`);
+`RECORD=0` turns it off. `FIRST_SESSION` skips that many traces, so calibration
+and graded cells can replay disjoint ones.
+
+Two runs of a cell with different `PYTHONHASHSEED` must give byte-identical step
+tables and step records: `cmp A/step_table.txt B/step_table.txt`.
+`tests/compass/test_cctraces_sim_smoke.py` runs that pair on one session for 60
+simulated seconds when `ATOM_COMPASS_SLICE_MODEL`, `ATOM_COMPASS_CCTRACES` and
+`COMPASS_HARNESS_PYTHON` are set, and with `COMPASS_AIPERF_PYTHON` (no
+compass-harness) a real cell on zero dummy weights beside it.
+
+The cell's `OUT_DIR` also holds `memory-dp0.json` (`memory-P.dp0.json` and
+`memory-D.dp0.json` for 1P1D): the readings the simulated KV pool was sized from.
+Against the server log of the paired real run, with the same deployment flags,
+`python -m atom.compass.memory.check OUT_DIR/memory-dp0.json REAL_SERVER_LOG`
+prints the per-term comparison of the non-KV memory and the graph pool. It takes
+the log of one rank.
+
+## Tier a's law from real cells — `coarse_fit`
+
+`python -m atom.compass.backends.coarse_fit RECORD... --out LAW [--form FORM]`
+fits the law a run file's `law` key holds (`atom/compass/backends/coarse.py`) from
+the step records of real cells, `OUT_DIR/steps/dp0.jsonl` of `REAL=1
+cctraces_sim.sh` runs. The module's docstring states the label, what is cut and
+how outliers are dropped; the written law also carries, per vector, its samples,
+warm and dropped counts and condition number, and names any vector it could not
+fit under `unfitted`.
+
+Calibration cells replay traces the graded cells do not: `FIRST_SESSION=256
+SESSIONS=137` against graded traces 0 to 255, by the
+[owner's ruling on #627](https://github.com/jgong5/ATOM/issues/627#issuecomment-6096543740).
+Given two or more records, the command also prints each form's error on every
+record under a law fitted on the others, per decode rung and prefill token band.
+
+`scripts/compass/laws/qwen3.8-27b-tp1-mi308x-hjbog18.json` is the `history` form
+fitted on the five stage-2 calibration cells (concurrency 1, 4, 16, 64 and 256)
+on node 18; a stage-2 run file holds it under `law`.
+
+## Cost accuracy on a real run's own steps — `validate.cost`
+
+`python -m atom.compass.validate.cost RECORD LAW` prices each step of a real
+cell's record (`OUT_DIR/steps` of a `REAL=1 cctraces_sim.sh` run) with a law
+file as `coarse_fit` writes it, and prints the error per kind, per decode rung
+and per prefill token band. The module's docstring states what each figure is.
+Grade a law only on cells whose traces its calibration cells do not replay.

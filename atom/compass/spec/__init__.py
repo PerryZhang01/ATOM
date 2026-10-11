@@ -43,7 +43,8 @@ them against the table a tokenizer entry has, and emits them together with the
 core counts of the processor it read here -- which is what makes a fragment
 composed somewhere other than its target contradict the target rather than
 merge quietly into it. How the rates were obtained is the caller's to state,
-because nothing in this package measured them. `probe_for` answers which probe
+because `tokenizer_fragment` did not measure them; `tokenizer_sweep` is one
+way to, timing a loaded tokenizer over a length sweep. `probe_for` answers which probe
 fills a runtime constant at a width, and refuses for the one entry no probe
 fills rather than naming a probe that would not produce it.
 
@@ -63,7 +64,7 @@ from .fields import DECLARED, SCHEMA, SCHEMA_VERSION, Field, Kind
 from .machine import MachineSpec
 from .memory import ABSOLUTE_LIMIT, DeviceMemory, non_torch_across_ranks
 from .merge import Fragment, Merge, merge
-from .probes import probe_for, tokenizer_fragment
+from .probes import probe_for, tokenizer_fragment, tokenizer_sweep
 from .ranks import SPREAD_LIMIT, RankSpread, across_ranks
 from .rules import (
     DEPLOYMENT_OWNED,
@@ -107,5 +108,6 @@ __all__ = [
     "non_torch_across_ranks",
     "probe_for",
     "tokenizer_fragment",
+    "tokenizer_sweep",
     "validate",
 ]

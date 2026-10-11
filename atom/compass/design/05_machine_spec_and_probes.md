@@ -128,6 +128,12 @@ device:
       w1_base_bytes:                   95.5e6
       w1_bytes_per_captured_token:     0.318e6
       w_gt1_flat_bytes:                109.0e6
+  activations:                 # optional: per model, keyed by architecture and config.json
+    - id: qwen3.8-27b
+      applies_to: [Qwen3_5ForConditionalGeneration]
+      fingerprint: sha256:<config.json>
+      # warmup `peak - current` over the warmup tokens, by TP width
+      bytes_per_token: {1: 180480}
   software_pinned_to:          # these constants belong to the stack as much as the silicon
     rocm:  "7.2.4"
     aiter: "<commit>"
@@ -159,7 +165,8 @@ mapping so a reader can follow the term into ATOM's code without guessing.
 | `runtime_constants.driver_and_collective_reserve_bytes` | `get_num_blocks` → `non_torch` | 926 / 6906 / 7266 / 10704 MiB at widths 1/2/4/8. **No fixed-plus-per-peer form fits** 5980 / 6340 / 9138. A table, not a law. Note ATOM's `non_torch` is a **device-wide** reading, so on a shared box it includes neighbours — see D14's dedicated-device scope boundary. |
 | `runtime_constants.allocator_retained_after_load_bytes` | `peak_torch` | AITER `CustomAllreduce` 1 GiB pool plus the two-stage kernel's: 1.1 MiB at TP1, **2069 MiB flat** at TP2/4/8 |
 | `runtime_constants.persistent_forward_buffer_bytes` | `peak_torch` | `allocate_forward_vars` + attention metadata; ~118 MiB, flat in width, differs only by model |
-| `runtime_constants.cudagraph_pool` | `cudagraph_overhead` | measured `91.1 MiB + 0.3033 MiB per captured token` at W=1; flat **104 MiB** above W=1, where the allocated delta was byte-identical (79,692,800) across three widths and three ladders |
+| `runtime_constants.cudagraph_pool` | `graph_pool.predicts`, the per-term check of the pool's real cost; not `cudagraph_overhead`, which mirrors ATOM's estimator (`03` D16) | measured `91.1 MiB + 0.3033 MiB per captured token` at W=1; flat **104 MiB** above W=1, where the allocated delta was byte-identical (79,692,800) across three widths and three ladders |
+| `activations[].bytes_per_token` | `peak_torch`, `cudagraph_overhead` | Qwen3.8-27B TP1 on MI308X: **180,480 B/token** fitted at 16384 warmup tokens predicts the held-out 8192 at **+0.000%**; the declared geometry form gives 98,304 (-45.5%). A model, config or width with no entry keeps the declared form |
 | `tokenizers[].*` | admission queue | cc-traces p50 input is **88,768 tokens**; at 2 M tok/s that is ~44 ms, **3x take2's entire admission constant**, and it scales with prompt length while a constant does not |
 | `ipc.*`, `interconnect.*_latency_s` | **Clock Authority lookahead floors** (doc 01 D3) | a zero lookahead serializes the whole simulation |
 | `compute.fp4_flops` | tier-0 roofline (`10` D64) for an FP4 leaf | DeepSeek-V4-Pro's routed experts are FP4 (`16` D95), and MI455X's dense FP4 peak is twice its FP8 peak ([#504](https://github.com/jgong5/ATOM/issues/504#issuecomment-6080974531)); priced at the FP8 rate they would read twice as slow |

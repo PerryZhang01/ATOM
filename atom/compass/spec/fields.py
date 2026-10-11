@@ -39,8 +39,9 @@ division in a cost term into an infinity or a negative duration far from here.
 Everything in the table is required. A machine has an interconnect whether or
 not a particular run drives it, and the value of refusing a missing term is that
 the refusal happens while a person is authoring the document rather than in the
-middle of a simulated run. The two exceptions are the provenance fields `merge`
-fills in later.
+middle of a simulated run. The exceptions are the provenance fields `merge`
+fills in later, and the activation entries, whose absence falls back to a
+declared form.
 """
 
 import enum
@@ -60,6 +61,7 @@ class Kind(enum.Enum):
     WIDTH_TABLE = "width_table"
     NAMES = "names"
     TOKENIZERS = "tokenizers"
+    ACTIVATIONS = "activations"
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +126,7 @@ DECLARED = (
         Kind.QUANTITY,
     ),
     Field("device.runtime_constants.cudagraph_pool.w_gt1_flat_bytes", Kind.QUANTITY),
+    Field("device.activations", Kind.ACTIVATIONS, required=False),
     Field("device.software_pinned_to.rocm", Kind.TEXT),
     Field("device.software_pinned_to.aiter", Kind.TEXT),
     Field("device.software_pinned_to.rccl", Kind.TEXT),
@@ -222,5 +225,5 @@ def check(field: Field, value: object, path: str) -> object:
             check(Field(f"{path}.{width}", Kind.QUANTITY), measured, f"{path}[{width}]")
         return dict(value)
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        _refuse(path, "a list of tokenizer entries", value)
+        _refuse(path, f"a list of {kind.value} entries", value)
     return tuple(_detached(entry) for entry in value)

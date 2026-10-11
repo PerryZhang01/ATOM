@@ -56,6 +56,7 @@ from atom.compass.memory import (
     reserves,
 )
 from atom.compass.spec import MachineSpec, SpecRefusal
+from atom.config import get_hf_config
 
 # The package as the suite actually imported it, never as a walk up from this
 # file: if `atom` ever resolves from another root -- a PYTHONPATH ahead of the
@@ -535,6 +536,56 @@ def test_the_graph_pool_reservation_follows_the_element_size(resident):
     assert reserved(config, 288.0e9).total == GRAPH_POOL_BY_DTYPE[name]
 
 
+#: A `device.activations` entry: one real run's `peak - current` after warmup
+#: over its warmup tokens, for this model at TP1.
+ACTIVATIONS = {
+    "id": "qwen3.8-27b",
+    "fingerprint": "sha256:" + "b" * 64,
+    "applies_to": ["Qwen3_5ForConditionalGeneration"],
+    "bytes_per_token": {1: 180_480},
+}
+
+
+def test_a_measured_entry_prices_the_activations_only_for_its_model_and_width(qwen):
+    document = copy.deepcopy(DOCUMENT)
+    document["device"]["activations"] = [ACTIVATIONS]
+    measured_spec = MachineSpec.from_mapping(document)
+    arch, digest = ACTIVATIONS["applies_to"][0], ACTIVATIONS["fingerprint"]
+
+    def activations(architecture, fingerprint, tp_width):
+        return ModelTerms.from_declared_config(
+            qwen,
+            parameter_count=PARAMETERS,
+            tp_size=tp_width,
+            warmup_tokens=WARMUP_TOKENS,
+            measured_activations=measured_spec.activations_for(
+                architecture, fingerprint, tp_width
+            ),
+        ).activations
+
+    term = activations(arch, digest, 1)
+    assert term.basis is Basis.SPEC
+    assert term.nbytes == WARMUP_TOKENS * 180_480
+    assert "device.activations[qwen3.8-27b].bytes_per_token[1]" in term.source
+    # Another size of the same architecture, an unmeasured width, and another
+    # architecture keep the declared form.
+    for key in (
+        (arch, "sha256:" + "c" * 64, 1),
+        (arch, digest, 2),
+        ("Qwen3ForCausalLM", digest, 1),
+    ):
+        fallback = activations(*key)
+        assert fallback.basis is Basis.DECLARED, key
+        assert fallback.nbytes == MODEL_TERMS_BY_DTYPE["bfloat16"]["activations"]
+
+
+def test_two_activation_entries_for_one_model_are_refused_where_the_spec_is_read():
+    document = copy.deepcopy(DOCUMENT)
+    document["device"]["activations"] = [ACTIVATIONS, dict(ACTIVATIONS, id="again")]
+    with pytest.raises(SpecRefusal, match="resolves to two entries"):
+        MachineSpec.from_mapping(document)
+
+
 def test_a_config_with_no_dtype_refuses_rather_than_assuming_one(qwen):
     nameless = copy.deepcopy(qwen)
     del nameless.dtype
@@ -592,6 +643,168 @@ def test_a_deployment_flag_is_not_labelled_geometry():
     # than to the machine or the model.
     assert reserves(enforce_eager=True).terms[0].basis is Basis.DEPLOYMENT
     assert not hasattr(Basis, "GEOMETRY")
+
+
+# --- fields the model's config.json does not state ---------------------------
+
+#: DeepSeek-V4-Pro's config.json: the fields the model terms read, and the
+#: model type that routes it through `DeepseekV3Config`. It states no
+#: `intermediate_size`, which that class defaults to 18432.
+V4_PRO = {
+    "architectures": ["DeepseekV4ForCausalLM"],
+    "model_type": "deepseek_v4",
+    "hidden_size": 7168,
+    "head_dim": 512,
+    "qk_rope_head_dim": 64,
+    "max_position_embeddings": 1048576,
+    "moe_intermediate_size": 3072,
+    "num_experts_per_tok": 6,
+    "n_shared_experts": 1,
+    "n_routed_experts": 384,
+    "num_hidden_layers": 61,
+    "torch_dtype": "bfloat16",
+}
+
+
+def loaded(tmp_path, raw):
+    """`raw` written as a model's config.json and loaded as `run.runner` sees
+    it: ATOM's own config, and the file it came from."""
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    return (
+        get_hf_config(str(tmp_path)),
+        PretrainedConfig.get_config_dict(str(tmp_path))[0],
+    )
+
+
+def terms_of(config, config_json):
+    return ModelTerms.from_declared_config(
+        config,
+        parameter_count=PARAMETERS,
+        tp_size=1,
+        warmup_tokens=WARMUP_TOKENS,
+        config_json=config_json,
+    )
+
+
+def test_v4_pro_terms_name_only_fields_its_config_json_states(tmp_path):
+    config, config_json = loaded(tmp_path, V4_PRO)
+    assert type(config).__name__ == "DeepseekV3Config"
+    assert config.intermediate_size == 18432  # the class default, still there
+    terms = terms_of(config, config_json)
+    assert terms.buffers.nbytes == 1_048_576 * 64 * 2
+    assert terms.buffers.source == "1048576 positions x 64 qk_rope_head_dim x 2 B"
+    assert terms.activations.nbytes == int(
+        WARMUP_TOKENS * 2 * (2.8 * 7168 + 2 * (6 + 1) * 3072)
+    )
+    assert terms.activations.source == (
+        "8192 warmup tokens x 2 B x (2.8 x 7168 hidden + 2 x (6 num_experts_per_tok"
+        " + 1 n_shared_experts) x 3072 moe_intermediate_size)"
+    )
+
+
+@pytest.mark.parametrize(
+    "dropped,named",
+    [
+        ("hidden_size", "hidden_size"),
+        ("max_position_embeddings", "max_position_embeddings"),
+        ("num_experts_per_tok", "num_experts_per_tok"),
+        ("n_shared_experts", "n_shared_experts"),
+        # Not an MoE model any more, so the dense field is read: unstated too.
+        ("moe_intermediate_size", "intermediate_size"),
+    ],
+)
+def test_a_field_only_the_config_class_supplies_is_refused_by_name(
+    tmp_path, dropped, named
+):
+    config, config_json = loaded(
+        tmp_path, {k: v for k, v in V4_PRO.items() if k != dropped}
+    )
+    assert getattr(config, named) is not None  # the class filled it in
+    with pytest.raises(MemoryRefusal) as refusal:
+        terms_of(config, config_json)
+    assert refusal.value.what == (
+        f"this config states no `{named}`, and the memory model reads it"
+    )
+
+
+def test_without_its_config_json_a_class_default_cannot_count_as_stated(tmp_path):
+    config, _ = loaded(tmp_path, V4_PRO)
+    with pytest.raises(MemoryRefusal, match="states no `hidden_size`"):
+        terms_of(config, None)
+
+
+#: Qwen3-30B-A3B's config.json, the fields the model terms read. The
+#: architecture has no shared expert, so neither the file nor `Qwen3MoeConfig`
+#: names one.
+QWEN3_30B_A3B = {
+    "architectures": ["Qwen3MoeForCausalLM"],
+    "model_type": "qwen3_moe",
+    "hidden_size": 2048,
+    "head_dim": 128,
+    "intermediate_size": 6144,
+    "max_position_embeddings": 40960,
+    "moe_intermediate_size": 768,
+    "num_experts": 128,
+    "num_experts_per_tok": 8,
+    "num_hidden_layers": 48,
+    "torch_dtype": "bfloat16",
+}
+
+
+def test_an_moe_class_with_no_shared_expert_field_reads_zero(tmp_path):
+    config, config_json = loaded(tmp_path, QWEN3_30B_A3B)
+    assert type(config).__name__ == "Qwen3MoeConfig"
+    terms = terms_of(config, config_json)
+    # 8 x 768 is the dense 6144: the expert form changes no number here.
+    assert terms.activations.nbytes == int(WARMUP_TOKENS * 2 * (2.8 * 2048 + 2 * 6144))
+    assert terms.activations.source == (
+        "8192 warmup tokens x 2 B x (2.8 x 2048 hidden + 2 x (8 num_experts_per_tok"
+        " + 0 n_shared_experts (Qwen3MoeConfig has none)) x 768 moe_intermediate_size)"
+    )
+
+
+def test_a_bare_config_with_no_shared_expert_count_is_refused():
+    raw = {k: v for k, v in QWEN3_30B_A3B.items() if k != "model_type"}
+    config = PretrainedConfig.from_dict({**raw, "dtype": "bfloat16"})
+    with pytest.raises(MemoryRefusal, match="states no `n_shared_experts`"):
+        terms_of(config, raw)
+
+
+@pytest.mark.parametrize(
+    "extra,klass,named",
+    [
+        # A class that sizes its shared expert by width, not by count.
+        (
+            {"model_type": "qwen2_moe"},
+            "Qwen2MoeConfig",
+            "shared_expert_intermediate_size",
+        ),
+        # A class that counts its shared experts under another name.
+        ({"model_type": "exaone_moe"}, "ExaoneMoeConfig", "num_shared_experts"),
+        # A class with no shared-expert field, and a config.json that names one.
+        (
+            {"shared_expert_intermediate_size": 768},
+            "Qwen3MoeConfig",
+            "shared_expert_intermediate_size",
+        ),
+    ],
+)
+def test_a_config_naming_a_shared_expert_otherwise_is_refused(
+    tmp_path, extra, klass, named
+):
+    config, config_json = loaded(tmp_path, {**QWEN3_30B_A3B, **extra})
+    assert type(config).__name__ == klass
+    with pytest.raises(MemoryRefusal, match="states no `n_shared_experts`") as refusal:
+        terms_of(config, config_json)
+    assert named in refusal.value.remedy
+
+
+def test_a_dense_model_through_atoms_loader_keeps_its_terms(tmp_path, qwen):
+    # Qwen3.8-27B loads as a text config class that has a default for every
+    # field read here; its config.json states them all, under `text_config`.
+    config, config_json = loaded(tmp_path, json.loads(CONFIG_JSON.read_text()))
+    assert type(config).__name__ != "PretrainedConfig"
+    assert terms_of(config, config_json) == terms_of(qwen, None)
 
 
 # --- no device, structurally -------------------------------------------------

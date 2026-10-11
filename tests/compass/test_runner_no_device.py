@@ -95,7 +95,7 @@ def test_a_stream_built_after_it_is_a_host_stand_in_that_cannot_queue_work(start
         stream.synchronize()
 
 
-@pytest.mark.parametrize("width", [{"tp": 2}, {"dp": 2}, {"simulated_tp": 2}])
+@pytest.mark.parametrize("width", [{"tp": 2}, {"simulated_tp": 2}])
 def test_a_start_wider_than_one_rank_is_refused_before_anything_is_replaced(
     started, width
 ):

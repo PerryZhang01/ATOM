@@ -130,6 +130,11 @@ def _stamp(scope):
     return None
 
 
+async def _no_body():
+    """An ASGI ``receive`` for a request with an empty body."""
+    return {"type": "http.request", "body": b"", "more_body": False}
+
+
 def test_a_60_second_sleep_ends_at_lp_60_with_no_wall_wait(run):
     _idle_traffic(run)
     loop = CompassEventLoop()
@@ -304,13 +309,77 @@ def test_a_request_read_before_its_release_is_held_until_it(run):
     }
     loop = CompassEventLoop()
     try:
-        loop.run_until_complete(HttpChannel(app, _stamp)(scope, None, None))
+        loop.run_until_complete(HttpChannel(app, _stamp)(scope, _no_body, None))
         loop.run_forever()
     finally:
         traffic.join(10)
     loop.close()
     assert handled == [arrival]
     assert run.conn.grants == [arrival, INF] and run.conn.unread == []
+
+
+def test_a_body_that_arrives_after_the_next_timer_is_handed_on_at_its_release(run):
+    stamps, handled = queue.Queue(), []
+    traffic = _traffic(
+        run, stamps, before_ner=lambda: _until(lambda: run.rt.arrived[HTTP])
+    )
+    arrival, seq = stamps.get(timeout=10)
+    loop = CompassEventLoop()
+    rest = loop.create_future()  # the body's last part, sent late
+    parts = [
+        {"type": "http.request", "body": b"a", "more_body": True},
+        {"type": "http.request", "body": b"b", "more_body": False},
+    ]
+
+    async def receive():
+        if len(parts) == 1:
+            await rest
+        return parts.pop(0) if parts else {"type": "http.disconnect"}
+
+    async def app(scope, receive, send):
+        got = [await receive()]
+        while got[-1]["more_body"]:
+            got.append(await receive())
+        handled.append((loop.time(), b"".join(m["body"] for m in got)))
+        assert (await receive())["type"] == "http.disconnect"
+
+    def deliver():
+        # The rest of the body comes once the clock passes the arrival, or
+        # after 0.3 wall seconds with the clock standing at it.
+        def released():
+            with run.rt.lock:
+                return run.rt.is_released(HTTP, seq)
+
+        _until(released)
+        end = time.monotonic() + 0.3
+        while run.rt.now <= arrival and time.monotonic() < end:
+            time.sleep(0.001)
+        loop.call_soon_threadsafe(rest.set_result, None)
+
+    async def go():
+        async def tick():  # the frontend's next timers, as its 0.1 s tick
+            while not handled:
+                await asyncio.sleep(0.1)
+
+        ticker = asyncio.ensure_future(tick())
+        scope = {
+            "type": "http",
+            "headers": [(b"x-test-stamp", f"{arrival!r} {seq}".encode())],
+        }
+        await HttpChannel(app, _stamp)(scope, receive, None)
+        await ticker
+
+    thread = threading.Thread(target=deliver, name="body", daemon=True)
+    thread.start()
+    try:
+        loop.run_until_complete(go())
+        loop.run_forever()
+    finally:
+        thread.join(10)
+        traffic.join(10)
+    loop.close()
+    assert handled == [(arrival, b"ab")]
+    assert run.conn.unread == []
 
 
 def test_requests_with_one_arrival_are_handed_over_in_seq_order(run):
@@ -327,7 +396,7 @@ def test_requests_with_one_arrival_are_handed_over_in_seq_order(run):
             "type": "http",
             "headers": [(b"x-test-stamp", b"%r %d" % (arrival, seq))],
         }
-        return HttpChannel(app, _stamp)(scope, None, None)
+        return HttpChannel(app, _stamp)(scope, _no_body, None)
 
     async def go():
         await asyncio.sleep(arrival)  # both are released, neither is read yet
@@ -344,6 +413,45 @@ def test_requests_with_one_arrival_are_handed_over_in_seq_order(run):
         traffic.join(10)
     loop.close()
     assert handled == [0, 1]
+    assert run.conn.grants == [arrival, INF] and run.conn.unread == []
+
+
+def test_requests_with_one_arrival_reach_the_app_in_seq_order_whatever_body_ends_first(
+    run,
+):
+    stamps, entered = queue.Queue(), []
+    traffic = _traffic(run, stamps, before_ner=lambda: None, n=2)
+    (arrival, _), (again, _) = stamps.get(timeout=10), stamps.get(timeout=10)
+    assert arrival == again
+
+    async def app(scope, receive, send):
+        entered.append(_stamp(scope)[1])
+
+    def read(seq):
+        async def receive():  # seq 0's body takes more socket reads than seq 1's
+            for _ in range(3 if seq == 0 else 0):
+                await asyncio.sleep(0)
+            return {"type": "http.request", "body": b"x", "more_body": False}
+
+        scope = {
+            "type": "http",
+            "headers": [(b"x-test-stamp", b"%r %d" % (arrival, seq))],
+        }
+        return HttpChannel(app, _stamp)(scope, receive, None)
+
+    async def go():
+        await asyncio.sleep(arrival)
+        await asyncio.gather(read(0), read(1))
+
+    loop = CompassEventLoop()
+    try:
+        loop.run_until_complete(go())
+        loop.run_forever()
+    finally:
+        traffic.join(10)
+    loop.close()
+    print(f"\n  app entered in seq order {entered}")
+    assert entered == [0, 1]
     assert run.conn.grants == [arrival, INF] and run.conn.unread == []
 
 
@@ -365,7 +473,7 @@ def test_a_stamp_split_over_two_tracestate_lines_holds_the_served_app(
     scope = {"type": "http", "headers": [(b"tracestate", v) for v in lines[::order]]}
     loop = CompassEventLoop()
     try:
-        loop.run_until_complete(api_server._served_app()(scope, None, None))
+        loop.run_until_complete(api_server._served_app()(scope, _no_body, None))
         assert handled == [arrival]
         loop.run_forever()
     finally:

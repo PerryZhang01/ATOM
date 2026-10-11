@@ -18,6 +18,7 @@ import torch
 import torch.distributed as dist
 
 from atom.distributed.simulated_tp import _patch_group, reject_simulated_tp
+from atom.utils import get_open_port
 
 LOGICAL = 4
 PHYSICAL = 1
@@ -36,7 +37,7 @@ def group():
     if created:
         dist.init_process_group(
             backend="gloo",
-            init_method="tcp://127.0.0.1:29591",
+            init_method=f"tcp://127.0.0.1:{get_open_port()}",
             world_size=1,
             rank=0,
         )

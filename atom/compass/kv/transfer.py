@@ -35,7 +35,7 @@ symmetric that this model cannot check.
 Nothing in this module imports the engine or a tensor library. Reaching it
 through the package around it is not the same import: `atom.compass.kv` loads
 the connector beside it, and that brings the engine's connector interface, its
-factory, the sequence state the connector reads, and whatever those pull in.
+factory, and whatever those pull in.
 None of it is a tensor library and none of it is a device runtime, so the
 arithmetic still runs where no driver does -- which is the property worth
 having, and it is not a bare import of this file.

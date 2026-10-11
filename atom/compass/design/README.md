@@ -126,7 +126,7 @@ Four views. **A** shows where Compass sits inside ATOM; **A2** is Compass alone,
            :  :   +-----------------------v-----------------------+       :
            :..:   |  Clock Authority                              |       :
    TAR/NER    :   |  grants virtual time to every logical process |       :
-   requests,  :   |  co-hosted by default; standalone for M4/M6   |       :
+   requests,  :   |  co-hosted by default; standalone for 1P+1D   |       :
    TAG grants :   +-----------------------------------------------+       :
               :                                                           :
               :   +-----------------------------------------------+       :
@@ -140,7 +140,7 @@ Four views. **A** shows where Compass sits inside ATOM; **A2** is Compass alone,
 **Yes, the Clock Authority is a Compass component.** It ships in Compass, it is started by
 Compass, and it has no meaning in a real ATOM run. It deploys two ways from one
 implementation — co-hosted in the API-server process by default, standalone for the
-multi-container M4/M6 cases (`01` D3.3).
+multi-container 1P+1D runs of M1 and M2 (`01` D3.3).
 
 The seam needs **no ATOM change**: `Config.runner_qualname` already exists and already has
 two in-tree users.
@@ -537,7 +537,7 @@ The documents use these precisely; a reader will bounce off without them.
 |---|---|---|
 | [`13`](13_configuration_surface.md) | The Configuration Surface | Three homes for a setting, and the test that assigns them. Precedence is CLI > env > artifact > **refuse**. The engine-side flags, one `compass` executable, and an audit of what is deliberately *not* a flag. |
 | [`14`](14_speculative_decoding.md) | Speculative Decoding and MTP | Three of the four changes are routine. Acceptance is a **declared input** through ATOM's existing flags, fed the *measured per-position distribution* rather than a mean. No new cost form — decode becomes the `N_Q = 1` case of the general one. |
-| [`15`](15_parallelism_support.md) | Parallelism Support | One frame of four questions per strategy. **Only PP adds logical processes** - TP, DP and EP each sit behind a barrier ATOM already has. DP is the one that couples *scheduling decisions*, through a per-forward collective that rewrites the batch; both its collectives run for real, because both reduce over scheduling metadata rather than model outputs. Explicit M1/M7 split. |
+| [`15`](15_parallelism_support.md) | Parallelism Support | One frame of four questions per strategy. **Only PP adds logical processes** - TP, DP and EP each sit behind a barrier ATOM already has. DP is the one that couples *scheduling decisions*, through a per-forward collective that rewrites the batch; both its collectives run for real, because both reduce over scheduling metadata rather than model outputs. Explicit M1/M2 split; PP after v1. |
 
 ### Part VI — What is not settled
 

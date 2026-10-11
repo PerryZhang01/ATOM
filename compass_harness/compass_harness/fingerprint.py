@@ -44,6 +44,20 @@ PINNED = {
     "aiperf.credit.issuer:CreditIssuer._issue_credit_internal": "11e0184be4fc3af1ef5b4e5d71035f97623c05f0c8d1e9047e67967efdd13964",
     "aiperf.timing.phase_orchestrator:PhaseOrchestrator._start_orchestrator": "2f84c93d885c6e68b77d0de540043dc84e62ff996e5b587f39c8722b350b8b30",
     "aiperf.timing.manager:TimingManager.__init__": "fb1667460f69c2f48a8c04a0610cd64c59cf3ff48aba734f183f8c0d5885548a",
+    # The time source: what reads the rebound ``time`` and ``uuid4``, the idle
+    # watchdog the strategy moves onto the clock, the deadline wait
+    # ClockPhaseRunner overrides, and the orchestrator that builds the runner.
+    "aiperf.timing.phase.lifecycle:PhaseLifecycle.start": "019b5bfaa18a7e0cb59bd53867dbc6169c2601d0e052f4d59b56d819d7d2b254",
+    "aiperf.timing.phase.lifecycle:PhaseLifecycle.mark_sending_complete": "b231e566784164c635580f796f650f800c0307430247a29e2a2640f60ae383a3",
+    "aiperf.timing.phase.lifecycle:PhaseLifecycle.mark_complete": "4a3f74cbfddc4290b67c2bc05f3fd8844cb0655bee9dd228c5d02dc89f0e2b31",
+    "aiperf.timing.phase.lifecycle:PhaseLifecycle.time_left_in_seconds": "7dfd8c609c21c196a12bbe322e86e0bf495a4f1f409262fd764c363e2fa54337",
+    "aiperf.timing.strategies.agentic_replay:AgenticReplayStrategy.enforce_system_idle_cap": "410f76de8a195bb73cc6b1f920c27a48f8fb42f9c38e6ad7f6c45e20772ff22b",
+    "aiperf.timing.strategies.agentic_replay:AgenticReplayStrategy._arm_system_idle_watchdog": "a63e64ba62d956ae784fa2aefb480f25dffec6d6cae10599b1157399d8e3f785",
+    "aiperf.timing.strategies.agentic_replay:AgenticReplayStrategy._run_system_idle_watchdog": "be75be66b6069177145e672f4ffa7aa26252b95895bfd2c99faf8e49a11b7939",
+    "aiperf.timing.strategies.agentic_replay:AgenticReplayStrategy._cancel_system_idle_watchdog": "272b852cce3db18c82e8a85d01588bb280ad9633fa0e88b68f180fc9fef53160",
+    "aiperf.timing.phase.runner:PhaseRunner._wait_for_event_with_timeout": "02074d907a91cc440a678e5e8648f17d9a89c8cdad83f80e683204de8867c55b",
+    "aiperf.timing.phase_orchestrator:PhaseOrchestrator._execute_phases": "7181bf33a2d4e6c440c2291390feb96a8c31f76bab258e9a3df633006f125abd",
+    "aiperf.cli_runner:_make_benchmark_run": "f804f11878e985466855f13604390f7b68143da9f8fccb9f22255d67b884f1cc",
 }
 
 #: Call sites the router relies on being the only ones: every credit leaves
@@ -55,6 +69,8 @@ SCANS = {".send_credit(": 1, "._on_return_callback(": 1}
 def _digest(root: Path, name: str) -> str | None:
     module, _, qualname = name.partition(":")
     path = root.joinpath(*module.split(".")).with_suffix(".py")
+    if not path.is_file():  # a package
+        path = path.with_suffix("") / "__init__.py"
     if not path.is_file():
         return None
     text = path.read_text()

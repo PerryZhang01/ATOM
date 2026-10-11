@@ -32,6 +32,8 @@ def test_a_clock_call_refused_on_an_engine_thread_is_a_summary_refusal(
     (tmp_path / "run.json").write_text(json.dumps(run))
     monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
     table = compass_run.channel_table(run)
+    authority = compass_run._RecordingAuthority(run)
+    authority.started = authority.finished = time.monotonic()
 
     # The engine's runtime after the +inf grant; a thread that is not its clock
     # owner asks to advance, and the caller drops the exception.
@@ -50,8 +52,6 @@ def test_a_clock_call_refused_on_an_engine_thread_is_a_summary_refusal(
     compass_run.engine_done(SimpleNamespace(runner_mgr=worker))
 
     # The frontend's side: no refusals of its own.
-    authority = compass_run._RecordingAuthority(run)
-    authority.started = authority.finished = time.monotonic()
     monkeypatch.setattr(compass_run, "_authority", authority)
     frontend = LPRuntime(compass_run.FRONTEND, table, None)
     frontend.now = math.inf

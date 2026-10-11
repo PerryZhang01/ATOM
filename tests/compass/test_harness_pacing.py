@@ -200,7 +200,7 @@ async def _system_idle_cap(s, o, b, sched):
     s._system_idle_gap_cap_seconds = 5.0
     s._arm_system_idle_watchdog = (
         lambda delay: None
-    )  # an event-loop timer; refused in stage 1
+    )  # a clock timer: test_harness_timesource.py
     s.enforce_system_idle_cap(0)
     return 5.0
 
@@ -495,7 +495,6 @@ def test_a_timer_due_before_the_driver_wait_starts_at_its_own_time(
     [
         ({"seamless": True}, "seamless"),
         ({"trace_cap": 30.0}, "trace_idle_gap_cap_seconds"),
-        ({"system_cap": 10.0}, "system_idle_gap_cap_seconds"),
         ({"metrics_off": False}, "server metrics"),
         ({"gpu_off": False}, "GPU telemetry"),
         ({"prefill_concurrency": 2}, "prefill concurrency (--prefill-concurrency)"),

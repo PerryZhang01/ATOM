@@ -82,10 +82,13 @@ class Traffic:
 
     The owner stamps every send and takes each stream event the authority
     releases; threads only carry bytes. An event is checked against the clock
-    as it is read, and taken once released.
+    as it is read, and taken once released. Requests go to `port` and scrapes
+    to `scrape_port`, by default the same.
     """
 
-    def __init__(self, run: dict, port: int, server) -> None:
+    http, stream = HTTP, STREAM
+
+    def __init__(self, run: dict, port: int, server, scrape_port=None) -> None:
         bound = run["bound_s"]
         if not math.isfinite(bound):
             raise ValueError(
@@ -93,6 +96,7 @@ class Traffic:
             )
         self.bound = (bound, "run file bound_s")
         self.port, self.server = port, server
+        self.scrape_port = scrape_port or port
         endpoint = run["clock_endpoint"]
         conn = _retry("clock", server, lambda: connect(TRAFFIC, endpoint))
         self.rt = LPRuntime(TRAFFIC, compass_run.channel_table(run), conn)
@@ -105,7 +109,7 @@ class Traffic:
     def run(self) -> None:
         rt = self.rt
         rt.start_run()
-        self.sent, seq = rt.stamp_send(HTTP)
+        self.sent, seq = rt.stamp_send(self.http)
         self.open.add(0)
         body = {
             "model": MODEL,
@@ -114,7 +118,11 @@ class Traffic:
             "stream": True,
         }
         self._carry(
-            "POST", "/v1/completions", body, tracestate_with(None, self.sent, seq)
+            "POST",
+            "/v1/completions",
+            body,
+            tracestate_with(None, self.sent, seq),
+            self.port,
         )
         next_scrape, scraped = SCRAPE_S, False
         while rt.next_event(math.inf, next_scrape) != math.inf:
@@ -133,17 +141,25 @@ class Traffic:
             )
 
     def _scrape(self) -> None:
-        arrival, seq = self.rt.stamp_send(HTTP)
-        self._carry("GET", "/metrics", None, tracestate_with(None, arrival, seq))
+        arrival, seq = self.rt.stamp_send(self.http)
+        self._carry(
+            "GET",
+            "/metrics",
+            None,
+            tracestate_with(None, arrival, seq),
+            self.scrape_port,
+        )
 
-    def _carry(self, method, path, body, tracestate) -> None:
+    def _carry(self, method, path, body, tracestate, port) -> None:
         threading.Thread(
-            target=self._read, args=(method, path, body, tracestate), daemon=True
+            target=self._read,
+            args=(method, path, body, tracestate, port),
+            daemon=True,
         ).start()
 
-    def _read(self, method, path, body, tracestate) -> None:
+    def _read(self, method, path, body, tracestate, port) -> None:
         try:
-            conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=WALL_S)
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=WALL_S)
             _retry("HTTP listener", self.server, conn.connect)
             headers = {"tracestate": tracestate, "content-type": "application/json"}
             conn.request(method, path, body and json.dumps(body), headers)
@@ -153,7 +169,7 @@ class Traffic:
                 stamp = sse_stamp(line) or stamp
                 if line.startswith("data:") and stamp is not None:
                     arrival, seq = stamp
-                    self.rt.check_arrival(STREAM, arrival, seq)
+                    self.rt.check_arrival(self.stream, arrival, seq)
                     with self.cv:
                         self.frames[seq] = (arrival, line)
                         self.cv.notify_all()
@@ -166,7 +182,7 @@ class Traffic:
     def _take(self) -> None:
         """Take every released stream event, waiting for any not read yet."""
         with self.rt.lock:
-            due = sorted(self.rt.released[STREAM] - self.rt.handled[STREAM])
+            due = sorted(self.rt.released[self.stream] - self.rt.handled[self.stream])
         for seq in due:
             with self.cv:
                 arrived = self.cv.wait_for(
@@ -179,7 +195,7 @@ class Traffic:
             if self.events[-1][1] == "data: [DONE]":
                 self.open.discard(0)
             with self.rt.lock:
-                self.rt.count_done_locked(STREAM, seq)
+                self.rt.count_done_locked(self.stream, seq)
 
 
 def _run_file(out: Path, **overrides) -> Path:
@@ -342,7 +358,6 @@ def test_a_run_with_no_finite_bound_is_refused(monkeypatch, tmp_path):
 @pytest.mark.parametrize(
     "config, refusal",
     [
-        (_config(dp=2), r"got \(dp, pp\)=\(2, 1\)"),
         (_config(pp=2), r"got \(dp, pp\)=\(1, 2\)"),
         (_config(runner="my.Runner"), "runner 'my.Runner' is named"),
     ],

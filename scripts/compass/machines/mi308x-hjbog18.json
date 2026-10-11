@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "name": "mi308x-hjbog18",
+  "provenance": {
+    "authored_by": "compass agent for jgong5",
+    "date": "2026-10-11",
+    "method": "mixed",
+    "fragments": [
+      "tokenizer",
+      "device",
+      "declared"
+    ],
+    "notes": "one Qwen3.8-27B TP1 start at 983e42973 | no probe fills these"
+  },
+  "host": {
+    "cpu": {
+      "cores_physical": 112,
+      "cores_logical": 224
+    },
+    "tokenizers": [
+      {
+        "id": "qwen3.8-27b",
+        "backend": "fast",
+        "vocab_size": 248077,
+        "fingerprint": "sha256:0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+        "applies_to": [
+          "Qwen3_5ForConditionalGeneration"
+        ],
+        "encode_fixed_s": 1.689333055611554e-05,
+        "encode_tokens_per_s": 639202.9754772106,
+        "decode_fixed_s": 2.0346084907035295e-06,
+        "decode_tokens_per_s": 4240022.748591989,
+        "derate": 1.0
+      }
+    ],
+    "ipc": {
+      "zmq_roundtrip_s": 5e-05,
+      "shm_broadcast_s": 2e-05
+    },
+    "admission_fixed_s": 0.009
+  },
+  "device": {
+    "name": "MI308X",
+    "arch": "gfx942",
+    "count_per_node": 8,
+    "memory": {
+      "capacity_bytes": 206141652992,
+      "bandwidth_bytes_per_s": 5300000000000.0,
+      "derate": 0.85
+    },
+    "compute": {
+      "bf16_flops": 344000000000000.0,
+      "fp8_flops": 688000000000000.0,
+      "derate": 0.7
+    },
+    "runtime_constants": {
+      "driver_and_collective_reserve_bytes": {
+        "1": 1249902592
+      },
+      "allocator_retained_after_load_bytes": {
+        "1": 14924832
+      },
+      "persistent_forward_buffer_bytes": 315351040,
+      "cudagraph_pool": {
+        "w1_base_bytes": 95500000.0,
+        "w1_bytes_per_captured_token": 318000.0,
+        "w_gt1_flat_bytes": 109000000.0
+      }
+    },
+    "activations": [
+      {
+        "id": "qwen3.8-27b",
+        "applies_to": [
+          "Qwen3_5ForConditionalGeneration"
+        ],
+        "fingerprint": "sha256:191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
+        "bytes_per_token": {
+          "1": 180480.0
+        }
+      }
+    ],
+    "software_pinned_to": {
+      "rocm": "7.2.4",
+      "aiter": "f4e7c7509",
+      "rccl": "2.27.7"
+    }
+  },
+  "interconnect": {
+    "intra_node": {
+      "topology": "fully_connected",
+      "link_bandwidth_bytes_per_s": 64000000000.0,
+      "link_latency_s": 2e-06,
+      "derate": 0.8
+    },
+    "inter_node": {
+      "link_bandwidth_bytes_per_s": 50000000000.0,
+      "link_latency_s": 5e-06,
+      "derate": 0.8
+    },
+    "router_relay_s": 0.0015
+  }
+}

@@ -2539,9 +2539,18 @@ def main():
         default=None,
         help=f"Compass run file: serve a simulated run (sets {compass_run.ENV})",
     )
+    parser.add_argument(
+        "--compass-clock-endpoint",
+        type=str,
+        default=None,
+        help="tcp://host:port of a standalone Compass clock authority; absent, "
+        f"this server co-hosts it (sets {compass_run.CLOCK_ENV})",
+    )
     args = parser.parse_args()
     if args.compass_run:
         os.environ[compass_run.ENV] = args.compass_run
+    if args.compass_clock_endpoint:
+        os.environ[compass_run.CLOCK_ENV] = args.compass_clock_endpoint
 
     if args.request_log:
         _request_logger = logging.getLogger("atom.request_log")

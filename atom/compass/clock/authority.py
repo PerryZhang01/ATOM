@@ -98,11 +98,15 @@ class BackdatedEvent(ClockAbort):
     """A request that would put a message or a clock into some LP's past."""
 
 
-def _seconds(value, what: str, finite: bool) -> float:
+def _seconds(value, finite: bool, what: str, *args) -> float:
+    """`value` as seconds; `what.format(*args)` names it in the refusal, and is
+    only formatted for one."""
     seconds = float(value)
     if math.isnan(seconds) or seconds == -math.inf or (finite and seconds == math.inf):
         kind = "a finite number" if finite else "a number"
-        raise ValueError(f"{what} must be {kind} of seconds, got {value!r}")
+        raise ValueError(
+            f"{what.format(*args)} must be {kind} of seconds, got {value!r}"
+        )
     return seconds
 
 
@@ -126,7 +130,7 @@ class ClockAuthority:
         bound_s: float = math.inf,
     ) -> None:
         self._channels = channels
-        self._bound = _seconds(bound_s, "the simulated-time bound", finite=False)
+        self._bound = _seconds(bound_s, False, "the simulated-time bound")
         self._ids = channels.registry.ids()
         self._now = dict.fromkeys(self._ids, 0.0)
         self._state = dict.fromkeys(self._ids, RUNNING)
@@ -142,6 +146,15 @@ class ClockAuthority:
             name: {} for names in self._into.values() for name in names
         }
         self._next_seq = dict.fromkeys(self._undelivered, 0)
+        # N[j] of every LP, kept current by each call that changes one of its
+        # inputs, and D(j->i) of every pair: a grant scan reads both, never
+        # recomputing them.
+        self._nv = dict.fromkeys(self._ids, 0.0)
+        self._lp = {i: i for i in self._ids}
+        self._from = {
+            i: tuple((j, channels.distance(j, i)) for j in self._ids if j != i)
+            for i in self._ids
+        }
         self.timeline = timeline
         self.grants = {i.name: 0 for i in self._ids}
         self.final_clocks = None
@@ -199,7 +212,9 @@ class ClockAuthority:
         """
         if self.final_clocks is not None:
             return []
-        self._channels.registry.require(lp)
+        # The registered object itself: every lookup below then matches by
+        # identity rather than by calling LpId.__eq__.
+        lp = self._lp.get(lp) or self._channels.registry.require(lp)
         members = self._members.get(lp, ())
         if member not in (members or (None,)):
             raise KeyError(
@@ -214,21 +229,19 @@ class ClockAuthority:
             )
         if kind not in (TAR, NER):
             raise ValueError(f"{kind!r} is not one of {TAR}, {NER}")
-        t = _seconds(t, f"the {kind} target of {lp}", finite=kind == TAR)
-        daemon = _seconds(t_daemon, f"the daemon deadline of {lp}", finite=False)
+        t = _seconds(t, kind == TAR, "the {} target of {}", kind, lp)
+        daemon = _seconds(t_daemon, False, "the daemon deadline of {}", lp)
         if kind == TAR and daemon != math.inf:
             raise ValueError(
                 f"{lp} sent TAR with daemon deadline {daemon}; only NER has one"
             )
-        for asked, value in (
-            (f"{kind}({t})", t),
-            (f"daemon deadline {daemon}", daemon),
-        ):
-            if value < self._now[lp]:
-                raise BackdatedEvent(
-                    f"{lp} asked for {asked} behind its own clock at {self._now[lp]}",
-                    self.lp_table(),
-                )
+        now = self._now[lp]
+        if t < now or daemon < now:
+            asked = f"{kind}({t})" if t < now else f"daemon deadline {daemon}"
+            raise BackdatedEvent(
+                f"{lp} asked for {asked} behind its own clock at {now}",
+                self.lp_table(),
+            )
         if members:
             self._refuse_unjoinable(lp, member, kind, t)
         for name, seq, arrival in log:
@@ -244,6 +257,7 @@ class ClockAuthority:
         if t < math.inf:
             self._horizon = max(self._horizon, t)
         self._state[lp], self._target[lp], self._daemon[lp] = kind, t, daemon
+        self._nv[lp] = t if kind == TAR else self._n(lp)
         return self._address(self._grant_due())
 
     def _refuse_unjoinable(self, lp: LpId, member: str, kind: str, t: float) -> None:
@@ -306,7 +320,7 @@ class ClockAuthority:
         self, lp: LpId, name: str, seq: int, arrival: float, member: str | None
     ) -> None:
         channel = self._channels.channel(name)
-        a = _seconds(arrival, f"the arrival of {name} seq {seq}", finite=True)
+        a = _seconds(arrival, True, "the arrival of {} seq {}", name, seq)
         expected = self._next_seq[name]
         floor = self._now[lp] + channel.lookahead_s
         if channel.source != lp:
@@ -335,6 +349,8 @@ class ClockAuthority:
             self._undelivered[name][seq] = a
             self._horizon = max(self._horizon, a)
             self._next_seq[name] = seq + 1
+            if self._state[channel.target] == NER:
+                self._nv[channel.target] = self._n(channel.target)
             return
         raise BackdatedEvent(refusal, self.lp_table())
 
@@ -350,23 +366,28 @@ class ClockAuthority:
             return self._now[j]
         if self._state[j] == TAR:
             return self._target[j]
-        return min(
-            [self._target[j], self._daemon[j]] + [a for _, _, a in self._pending(j)]
-        )
+        n = min(self._target[j], self._daemon[j])
+        for name in self._into[j]:
+            for a in self._undelivered[name].values():
+                n = min(n, a)
+        return n
 
     def _row(self, i: LpId) -> tuple[tuple[LpId, float], ...]:
-        return tuple(
-            (j, self._n(j) + self._channels.distance(j, i)) for j in self._ids if j != i
-        )
+        nv = self._nv
+        return tuple((j, nv[j] + d) for j, d in self._from[i])
 
     def _lbts(self, i: LpId) -> float:
         return min((term for _, term in self._row(i)), default=math.inf)
 
     def _grant_due(self) -> list:
         replies = []
+        state, nv = self._state, self._nv
         while True:
+            # `state` iterates in name order and the sort is stable, so equal
+            # N stay in name order without comparing two LpIds.
             waiting = sorted(
-                (self._n(i), i) for i in self._ids if self._state[i] != RUNNING
+                ((nv[i], i) for i, s in state.items() if s != RUNNING),
+                key=lambda waiter: waiter[0],
             )
             grantable = [(n, i) for n, i in waiting if n <= self._horizon]
             due = next(((i, n) for n, i in grantable if n < self._lbts(i)), None)
@@ -401,6 +422,7 @@ class ClockAuthority:
         if self.timeline is not None:
             self.timeline.record(i, self._now[i], g, self._state[i], recovered)
         self.grants[i.name] += 1
+        # g is N[i], so N[i] is unchanged: a running LP's N is its clock.
         self._now[i], self._state[i], self._target[i] = g, RUNNING, None
         return (i, g, released)
 
@@ -410,4 +432,5 @@ class ClockAuthority:
             if self.timeline is not None:
                 self.timeline.record(i, self._now[i], math.inf, self._state[i], False)
             self._now[i], self._state[i], self._target[i] = math.inf, RUNNING, None
+            self._nv[i] = math.inf
         return [(i, math.inf, {name: [] for name in self._into[i]}) for i in self._ids]

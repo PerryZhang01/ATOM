@@ -203,6 +203,28 @@ printf '\n'
 # cannot name.
 HEAD_SHA=$(compass_head_sha "$ROOT") || HEAD_SHA=UNKNOWN
 
+# The compass_harness tests skip by name when compass-harness, or the aiperf it
+# adapts, does not import, and the CPU container has neither. So this gate
+# installs the tree's own compass_harness into a run-local directory every run,
+# beside the aiperf wheel COMPASS_AGENTX_HARNESS names, and refuses to run when
+# the tests' own skip condition still holds.
+if [ -r "$ROOT/compass_harness/pyproject.toml" ]; then
+    HARNESS=$(mktemp -d) || finish 96 "mktemp failed; nothing was run"
+    trap 'rm -rf "$HARNESS"' EXIT
+    # A copy, because setuptools writes build/ and *.egg-info into the source.
+    cp -r "$ROOT/compass_harness" "$HARNESS/src" || finish 96 "cannot copy compass_harness; nothing was run"
+    python -m pip install -q --no-deps --no-build-isolation --no-index --target "$HARNESS/site" \
+        "$HARNESS/src" ${COMPASS_AGENTX_HARNESS:+"$COMPASS_AGENTX_HARNESS"} >&2 ||
+        finish 96 "pip could not install compass_harness${COMPASS_AGENTX_HARNESS:+ and $COMPASS_AGENTX_HARNESS}; nothing was run"
+    export PYTHONPATH=$PYTHONPATH:$HARNESS/site
+    WHY=$(cd / && python -c 'from importlib import metadata; metadata.version("compass-harness")
+import compass_harness, aiperf; print(aiperf.__file__, compass_harness.__file__)' 2>&1) || {
+        WHY=${WHY##*$'\n'}
+        finish 96 "the compass_harness tests would skip ($WHY); set COMPASS_AGENTX_HARNESS to an agentx-harness 56a0cf70 wheel, see scripts/compass/README.md; nothing was run"
+    }
+    printf 'harness: %s\n' "$WHY"
+fi
+
 # pytest's own status, captured directly. Piping it into `tail` discards the
 # exit code and a failing suite reports success.
 python -m pytest tests/ "${IGN[@]}" -q --no-header -p no:cacheprovider "$@" -rf

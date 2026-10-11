@@ -24,6 +24,9 @@ def short_rendezvous(monkeypatch):
     monkeypatch.setattr(
         dist_utils, "_get_default_timeout", lambda _: timedelta(seconds=2)
     )
+    # Gloo binds the address the hostname resolves to, one DNS lookup per rank;
+    # a stalled lookup outlasts the timeout above. Loopback needs no lookup.
+    monkeypatch.setenv("GLOO_SOCKET_IFNAME", "lo")
 
 
 def test_a_group_over_two_lps_is_refused_naming_both(monkeypatch):

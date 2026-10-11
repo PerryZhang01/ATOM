@@ -563,3 +563,42 @@ def test_each_lps_replies_do_not_depend_on_the_order_running_lps_submit():
         runs = [_drive(seed, pick)[0] for pick in PICKS.values()]
         runs += [_drive(seed, PICKS["shuffled"], shuffle=s)[0] for s in range(1, 9)]
         assert all(run == runs[0] for run in runs), seed
+
+
+def _rule_n(ca, row):
+    """N of `row`'s LP from its state alone, as the rule defines it."""
+    if row.state == authority_module.RUNNING:
+        return row.now
+    if row.state == TAR:
+        return row.target
+    return min([row.target, ca._daemon[row.lp]] + [a for _, _, a in row.undelivered])
+
+
+class _FromScratch(_Recorded):
+    """Recomputes every LP's N from the LP table before each grant scan, and
+    counts the scans at which the authority's own N had drifted from it."""
+
+    drifted = 0
+
+    def _grant_due(self):
+        rule = {row.lp: _rule_n(self, row) for row in self.lp_table()}
+        self.drifted += self._nv != rule
+        self._nv.update(rule)
+        return super()._grant_due()
+
+
+def test_the_kept_n_grants_what_n_recomputed_at_every_request_grants():
+    for seed in SEEDS:
+        for pick in PICKS.values():
+            kept, _, finished = _drive(seed, pick)
+            recomputed, _, ca = _drive(seed, pick, cls=_FromScratch)
+            assert ca.drifted == 0, seed
+            assert kept == recomputed, seed
+            # The table a run ends with reads every N from the state too.
+            table = finished.lp_table()
+            n = {row.lp: _rule_n(finished, row) for row in table}
+            for row in table:
+                d = finished._channels.distance
+                assert row.row == tuple(
+                    (j, n[j] + d(j, row.lp)) for j in n if j != row.lp
+                ), seed

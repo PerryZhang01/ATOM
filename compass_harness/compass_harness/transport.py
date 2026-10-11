@@ -24,6 +24,7 @@ from aiperf.transports.aiohttp_transport import AioHttpTransport
 
 from atom.compass.carriers import sse_stamp, tracestate_with
 from compass_harness import ADDRESS_ENV
+from compass_harness.timesource import sim_ns as _ns
 
 
 def addresses(prefix: str) -> tuple[str, str]:
@@ -34,10 +35,6 @@ def addresses(prefix: str) -> tuple[str, str]:
 def credit_key(phase, phase_index, num) -> tuple:
     """A credit's key: credit numbers restart in each phase."""
     return str(phase), phase_index, num
-
-
-def _ns(seconds: float) -> int:
-    return round(seconds * 1e9)
 
 
 class CompassTransport(AioHttpTransport):
@@ -164,4 +161,6 @@ class CompassTransport(AioHttpTransport):
         record.end_perf_ns = stamped[-1].perf_ns if stamped else record.start_perf_ns
         record.recv_start_perf_ns = request_info.drop_perf_ns = None
         request_info.credit_issued_ns = None
+        # aiperf's http_req_* metrics would time the real localhost socket.
+        record.trace_data = None
         return record

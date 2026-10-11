@@ -6,14 +6,18 @@ is still initialising, so nothing here imports aiperf at module level: an
 import error escaping from here makes discovery drop the whole plugin with one
 WARNING line.
 
-Importing the package installs an import hook that rebinds a module global of
+Importing the package installs an import hook that rebinds module globals of
 each aiperf module in ``REBIND`` once that module has executed. The runner's
 ``LoopScheduler`` becomes ``ClockPacedLoopScheduler``, so every phase runner's
 scheduler, and the branch orchestrator and replay barrier it is handed to, pace
 on the Compass clock; the hook then refuses the run unless this package's
 strategy is the registered ``agentic_replay``. The timing manager's
 ``StickyCreditRouter`` becomes ``CompassCreditRouter``, which binds that clock
-to the traffic LP.
+to the traffic LP. The orchestrator's ``PhaseRunner`` becomes
+``ClockPhaseRunner``, whose phase deadlines wait on that clock. ``time`` in the
+phase lifecycle, the credit issuer and the strategy reads the clock, so phase
+stamps and windows, ``issued_at_ns`` and the system idle cap are simulated; the
+CLI's ``uuid4`` is fixed, so prompt token counts repeat from run to run.
 """
 
 import importlib
@@ -27,13 +31,20 @@ RUNNER = "aiperf.timing.phase.runner"
 STRATEGY = "compass_harness.strategy:CompassAgenticReplay"
 #: The path prefix of the adapter's two sockets, shared by every aiperf process.
 ADDRESS_ENV = "COMPASS_HARNESS_IPC"
-#: aiperf module -> (its global to rebind, the replacement as module:qualname).
+SIM_TIME = (("time", "compass_harness.timesource:SimTime"),)
+#: aiperf module -> ((a global to rebind, the replacement as module:qualname), ...).
 REBIND = {
-    RUNNER: ("LoopScheduler", "compass_harness.scheduler:ClockPacedLoopScheduler"),
+    RUNNER: (("LoopScheduler", "compass_harness.scheduler:ClockPacedLoopScheduler"),),
     "aiperf.timing.manager": (
-        "StickyCreditRouter",
-        "compass_harness.router:CompassCreditRouter",
+        ("StickyCreditRouter", "compass_harness.router:CompassCreditRouter"),
     ),
+    "aiperf.timing.phase_orchestrator": (
+        ("PhaseRunner", "compass_harness.strategy:ClockPhaseRunner"),
+    ),
+    "aiperf.timing.phase.lifecycle": SIM_TIME,
+    "aiperf.credit.issuer": SIM_TIME,
+    "aiperf.timing.strategies.agentic_replay": SIM_TIME,
+    "aiperf.cli_runner": (("uuid4", "compass_harness.timesource:fixed_uuid4"),),
 }
 
 
@@ -59,7 +70,7 @@ class _RebindHook:
     def find_spec(self, name, path=None, target=None):
         if name not in self.pending:
             return None
-        attr, replacement = self.pending.pop(name)
+        rebinds = self.pending.pop(name)
         if not self.pending:
             sys.meta_path.remove(self)
         spec = importlib.util.find_spec(name)
@@ -67,8 +78,9 @@ class _RebindHook:
 
         def exec_module(module):
             execute(module)
-            path, _, qualname = replacement.partition(":")
-            setattr(module, attr, getattr(importlib.import_module(path), qualname))
+            for attr, replacement in rebinds:
+                path, _, qualname = replacement.partition(":")
+                setattr(module, attr, getattr(importlib.import_module(path), qualname))
             if name == RUNNER:
                 check_registered()
 

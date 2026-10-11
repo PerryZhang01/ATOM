@@ -25,6 +25,9 @@ The pieces, and the rule each exists to make structural rather than customary:
   coefficients into a step's shapes, so a longer chunk costs longer and the
   scheduler can be caught reacting to the price. Every number it emits says it
   was declared rather than obtained, in the record and not only in the source.
+- `CoarseLaw` / `CoarseBackend` -- tier a: a fitted prefill vector and a decode
+  vector per capture rung, each with the convex hull it was fitted on; a step
+  outside its hull is priced and its terms say `extrapolated`.
 - `ProvenanceMix` -- the run-level mixture, and refusals counted by number, by
   fraction of steps and by fraction of predicted seconds. A run with nothing in
   it has no fractions and says so, rather than reporting a reassuring zero.
@@ -36,6 +39,7 @@ The pieces, and the rule each exists to make structural rather than customary:
 """
 
 from atom.compass.backends.base import CostBackend, Tier
+from atom.compass.backends.coarse import CoarseBackend, CoarseLaw
 from atom.compass.backends.cost import (
     CostTerm,
     ProvenanceMix,
@@ -66,6 +70,8 @@ from atom.compass.backends.shape import (
 
 __all__ = [
     "BatchView",
+    "CoarseBackend",
+    "CoarseLaw",
     "Coefficients",
     "CostBackend",
     "CostRefused",

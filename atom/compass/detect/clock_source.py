@@ -88,6 +88,10 @@ DEFAULT_ALLOW_LIST: dict[str, str] = {
         "the run summary's wall seconds, from the run's start to its finish: "
         "the speed result, which no simulated time reads"
     ),
+    "atom/compass/parity/runner.py": (
+        "a real runner's step timestamps; a simulated run runs its own runner "
+        "and never imports this module"
+    ),
 }
 
 #: Packages under `atom/` a simulated run never executes, or that keep their

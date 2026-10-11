@@ -183,8 +183,18 @@ class LPRuntime:
         A daemon deadline is a housekeeping timer that does not keep the run
         alive: it fires only once essential work reaches it.
         """
+        self.ask_next_event(t, t_daemon)
+        return self.take_grant()
+
+    def ask_next_event(self, t: float, t_daemon: float = float("inf")) -> None:
+        """Send `next_event`'s request; `take_grant` waits for its grant. The LP
+        clock stands still between the two."""
         self._require_open("next_event")
-        G, released = self._ca_call("NER", t, t_daemon)
+        self._ca_send("NER", t, t_daemon)
+
+    def take_grant(self) -> float:
+        """Wait for the grant of the request `ask_next_event` sent; returns it."""
+        G, released = self.conn.recv()
         self._step_through(G, released)
         if G == float("inf"):
             self.end_run()
@@ -213,11 +223,14 @@ class LPRuntime:
             raise RuntimeError(f"{what} from {self.me} after the +inf grant")
 
     def _ca_call(self, kind: str, t: float, t_daemon: float = float("inf")):
+        self._ca_send(kind, t, t_daemon)
+        return self.conn.recv()
+
+    def _ca_send(self, kind: str, t: float, t_daemon: float) -> None:
         with self.lock:
             log, self.send_log = self.send_log, []
         self.calls += 1
         self.conn.send((kind, t, log, t_daemon))
-        return self.conn.recv()
 
     def _step_through(self, G: float, released: dict) -> None:
         order = sorted((a, ch, seq) for ch, msgs in released.items() for seq, a in msgs)

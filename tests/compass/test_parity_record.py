@@ -9,15 +9,19 @@ with every prompt distinct.
 import hashlib
 import json
 import queue
+import runpy
 import shutil
+import sys
+import time
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from conftest import MockConfig
 
+from atom.compass import run
 from atom.compass.backends.shape import ShapeStubBackend
-from atom.compass.parity import ENV, StepRecording, compare, read
+from atom.compass.parity import ENV, RUNNER, StepRecording, compare, read
 from atom.compass.runner import overrides
 from atom.compass.runner.overrides import NonAllocatingRunner, install_cost_backend
 from atom.compass.runner.step_output import DeferredTokenStream
@@ -25,8 +29,11 @@ from atom.model_engine.prefill_delayer import PrefillDelayer
 from atom.model_engine.scheduler import ScheduledBatch, Scheduler
 from atom.model_engine.sequence import Sequence, SequenceType
 from atom.sampling_params import SamplingParams
+from atom.utils import clock
 
 PROMPT, BUDGET, BLOCK = 200, 64, 16
+#: The capture ladder every runner here replays decode steps from.
+LADDER = [1, 2, 4, 8]
 
 
 def _prompt(i):
@@ -46,7 +53,9 @@ def _config(dp_rank=0, pipeline_parallel_size=1, budget=BUDGET, blocks=4096):
         max_model_len=2048,
         max_num_batched_tokens=budget,
         pipeline_parallel_size=pipeline_parallel_size,
-        parallel_config=SimpleNamespace(data_parallel_rank=dp_rank),
+        parallel_config=SimpleNamespace(
+            data_parallel_rank=dp_rank, data_parallel_size=1
+        ),
     )
 
 
@@ -56,6 +65,7 @@ class _Runner(NonAllocatingRunner):
     def __init__(self, config, rank=0):
         self.config, self.rank = config, rank
         install_cost_backend(self, ShapeStubBackend())
+        self.capture_sizes_np, self.enforce_eager = np.array(LADDER), False
         self._token_stream = DeferredTokenStream([0])
 
 
@@ -133,14 +143,18 @@ def test_the_record_is_the_batches_the_scheduler_built(
     batches, sequences, runner = built[0]
     keys, expected, opened_at = {}, [], []
     for step, batch in enumerate(batches):
-        rows = []
+        rows, shapes = [], []
         for i, req_id in enumerate(batch.req_ids):
             if req_id not in keys:
                 opened_at.append(i)
             key = keys.setdefault(req_id, _key(sequences[req_id].prompt_token_ids))
-            rows.append(
-                [key, int(batch.num_scheduled_tokens[i]), int(batch.context_lens[i])]
+            num, context = int(batch.num_scheduled_tokens[i]), int(
+                batch.context_lens[i]
             )
+            rows.append([key, num, context])
+            # Every prefill chunk here is 8 tokens or more; a decode is 1.
+            shapes.append([num, context, num == 1])
+        decoding = all(decode for *_, decode in shapes)
         expected.append(
             {
                 "step": step,
@@ -148,10 +162,14 @@ def test_the_record_is_the_batches_the_scheduler_built(
                 "is_dummy_run": False,
                 "produces_output": batch.produces_output(),
                 "batch": rows,
+                "rows": shapes,
+                # A decode step replays the narrowest graph that holds it.
+                "rung": min(w for w in LADDER if w >= len(rows)) if decoding else None,
             }
         )
     assert len(set(keys.values())) == 2 and opened_at == first_rows
     assert any(not step["produces_output"] for step in expected) == (length == PROMPT)
+    assert {step["rung"] for step in expected} == {None, 2}
     assert read(tmp_path) == {0: expected}
 
     # The dummy batch `ModelRunner.dummy_execution` builds for DP synchronisation.
@@ -174,6 +192,8 @@ def test_the_record_is_the_batches_the_scheduler_built(
         "is_dummy_run": True,
         "produces_output": True,
         "batch": [],
+        "rows": [[1, 1, True]],
+        "rung": 1,
     }
 
 
@@ -345,6 +365,22 @@ def test_only_tp_rank_0_records_and_only_when_asked(tmp_path, monkeypatch, env, 
     else:
         monkeypatch.setenv(ENV, str(tmp_path / env))
     _Runner(_config(), rank).forward(batches[0])
+
+    class _Base:
+        def __init__(self, config, rank):
+            self.config, self.rank, self.ran = config, rank, []
+
+        def forward(self, batch):
+            self.ran.append(batch)
+            return "ran"
+
+    class _Recorded(StepRecording, _Base):
+        step_clock_ns = staticmethod(time.monotonic_ns)
+
+    # A real runner that does not record still runs its forward.
+    recorded = _Recorded(_config(), rank)
+    assert recorded.forward(batches[0]) == "ran"
+    assert recorded.ran == [batches[0]]
     assert not (tmp_path / "out").exists()
 
 
@@ -365,16 +401,88 @@ def test_the_mixin_records_from_the_first_forward_after_construction(
 
         def __init__(self, rank, config):
             self.rank, self.config = rank, config
+            self.capture_sizes_np, self.enforce_eager = np.array(LADDER), False
             self.forward(batches[1])
 
         def forward(self, batch):
             return "ran"
 
     class _Recorded(StepRecording, _Base):
-        pass
+        step_clock_ns = staticmethod(time.monotonic_ns)
 
     monkeypatch.setenv(ENV, str(tmp_path / "out"))
     runner = _Recorded(0, _config())
     assert not (tmp_path / "out").exists()
     assert runner.forward(batches[0]) == "ran"
     assert [s["step"] for s in read(tmp_path / "out")[0]] == [0]
+
+
+def test_a_real_runner_records_the_batch_it_was_handed_and_times_its_forward(
+    tmp_path, monkeypatch, capsys
+):
+    batches = _drive(tmp_path / "simulated", monkeypatch, {0: [0, 1]})[0][0]
+    record = tmp_path / "real" / "dp0.jsonl"
+
+    class _Base:
+        """A forward that rewrites the batch it runs, as ATOM's does."""
+
+        def __init__(self, rank, config):
+            self.rank, self.config = rank, config
+            self.capture_sizes_np, self.enforce_eager = np.array(LADDER), False
+            self.inside = []
+
+        def forward(self, batch):
+            # The line is written once this returns, not before.
+            assert len(record.read_text().splitlines()) == len(self.inside)
+            self.inside.append(time.monotonic_ns())
+            batch.num_scheduled_tokens[:] = 0
+            batch.context_lens[:] = 0
+            return "ran"
+
+    class _Recorded(StepRecording, _Base):
+        step_clock_ns = staticmethod(time.monotonic_ns)
+
+    monkeypatch.setenv(ENV, str(tmp_path / "real"))
+    runner = _Recorded(0, _config())
+    assert [runner.forward(b) for b in batches] == ["ran"] * len(batches)
+    real, simulated = read(tmp_path / "real")[0], read(tmp_path / "simulated")[0]
+    for step, inside in zip(real, runner.inside, strict=True):
+        assert step.pop("t_enter_ns") <= inside <= step.pop("t_exit_ns")
+    assert real == simulated
+    report = compare(tmp_path / "real", tmp_path / "simulated")
+    assert report["first_divergence"] == {0: None}
+
+    # The documented invocation prints the same report.
+    argv = ["python -m atom.compass.parity", str(tmp_path / "real")]
+    monkeypatch.setattr(sys, "argv", [*argv, str(tmp_path / "simulated")])
+    runpy.run_module("atom.compass.parity", run_name="__main__")
+    assert json.loads(capsys.readouterr().out) == json.loads(json.dumps(report))
+
+
+@pytest.mark.parametrize(
+    "record, named, runs",
+    [
+        (None, run.ATOM_RUNNER, run.ATOM_RUNNER),
+        (None, "x.RapidServeModelRunner", "x.RapidServeModelRunner"),
+        ("record", run.ATOM_RUNNER, RUNNER),
+    ],
+)
+def test_a_real_run_records_through_the_recording_runner_only_when_asked(
+    tmp_path, monkeypatch, record, named, runs
+):
+    monkeypatch.delenv(run.ENV, raising=False)
+    monkeypatch.delenv(ENV, raising=False)
+    if record:
+        monkeypatch.setenv(ENV, str(tmp_path / record))
+    config = SimpleNamespace(runner_qualname=named)
+    with run.frontend(config):
+        pass
+    assert config.runner_qualname == runs
+    assert clock.installed() is None
+
+
+def test_a_real_run_asked_to_record_refuses_a_runner_that_cannot(tmp_path, monkeypatch):
+    monkeypatch.delenv(run.ENV, raising=False)
+    monkeypatch.setenv(ENV, str(tmp_path))
+    with pytest.raises(ValueError, match="only .* has a recording runner"):
+        run.frontend(SimpleNamespace(runner_qualname="x.RapidServeModelRunner"))

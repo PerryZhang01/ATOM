@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: MIT
 """The `compass-labels` skill's path and title rules, against the head's real
 `atom/compass/` tree -- not a fixture, per the skill's own rule that the
-module set is read from the tree, never hard-coded.
+module set is read from the tree, never hard-coded. The init-only exclusion
+alone uses a scratch tree: which real directories are init-only changes as
+modules ship.
 """
 
 import importlib.util
@@ -19,10 +21,13 @@ compass_labels = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(compass_labels)
 
 
-def test_the_tree_s_modules_exclude_init_only_and_pycache_dirs():
+def test_the_tree_s_modules_exclude_init_only_and_pycache_dirs(tmp_path):
+    # A directory carrying only `__init__.py` ships nothing: no label.
+    for d, f in (("shipped", "x.py"), ("init_only", "__init__.py")):
+        (tmp_path / d).mkdir()
+        (tmp_path / d / f).touch()
+    assert compass_labels.discover_modules(tmp_path) == ["shipped"]
     modules = compass_labels.discover_modules()
-    # `run/` carries only `__init__.py` today: no shipped file, no label.
-    assert "run" not in modules
     assert "__pycache__" not in modules
     for expected in (
         "artifacts", "audit", "backends", "clock", "clock_transport",

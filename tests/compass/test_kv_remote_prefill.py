@@ -1,28 +1,23 @@
 # SPDX-License-Identifier: MIT
-"""The consumer half of a disaggregated prefill, and the blob that starts one.
-
-Two claims live here and they are tested in different ways on purpose.
+"""A disaggregated prefill through two real schedulers, and the blob that starts one.
 
 **The blob's field set is not asserted against a list typed into this file.**
-It is parsed out of the backend the router and the consumer were actually
-built against, so the comparison is against the source at this head rather
-than against somebody's reading of it. A field added there, or renamed, turns
-this red; a list copied into a test would not notice either.
+It is parsed out of Mooncake, the backend the simulated connector stands in
+for, so a field added there, or renamed, turns this red.
 
-**The suspension is not asserted by calling the connector.** The engine asks
-whether a request is held elsewhere, allocates its blocks, tells the connector
-about the allocation and only then decides to suspend it -- four steps in one
-loop, in that order, and the defect the suspension tests exist to catch is a connector
-that behaves correctly at each step and wrongly across them. So the request
-here goes into a real `Scheduler`, and what is asserted is the status the
-engine put it in and the step it came back out on. The clock is the list
-holding one number that the rest of this package's tests use.
+**The transfer is not asserted by calling the connector.** A prefill engine
+and a decode engine, each a real `Scheduler` with the connector's scheduler
+half on its own `LPRuntime`, are stepped in `EngineCore`'s order: schedule,
+the forward, the KV poll, postprocess. The clock authority is a script: every
+clock request is granted the next time the test names, releasing the write
+requests it names.
 """
 
 from __future__ import annotations
 
 import ast
 import ipaddress
+import itertools
 import json
 import pathlib
 import socket
@@ -34,19 +29,13 @@ import numpy
 import pytest
 import torch
 from conftest import MockConfig, atom_config_double
-from test_kv_simulated_connector import (
-    BLOCK_SIZE,
-    CONFIG_JSON,
-    ISSUE_AT,
-    PEAKS,
-    TICK,
-    model_for,
-)
+from test_kv_simulated_connector import BLOCK_SIZE, CONFIG_JSON, PEAKS, TICK, model_for
 from test_runner_non_allocating import ATOM_RUNNER, PACKAGE, _classes
 from transformers import PretrainedConfig
 
 from atom.compass.backends import KvGeometry
-from atom.compass.kv import CLOCK_KEY, TRANSFER_KEY
+from atom.compass.clock import LpId, prefill_decode_table
+from atom.compass.kv import TRANSFER_KEY, WRITE_REQ_KEY
 from atom.compass.kv.connector import SimulatedKVConnector
 from atom.compass.kv.handoff import (
     SIMULATED_ENGINE_ID,
@@ -56,16 +45,17 @@ from atom.compass.kv.handoff import (
 )
 from atom.compass.runner.overrides import NonAllocatingRunner, RunnerRefusal
 from atom.kv_transfer import disaggregation
-from atom.kv_transfer.disaggregation.aggregator import KVOutputAggregator
 from atom.kv_transfer.disaggregation.factory import KVConnectorFactory
 from atom.kv_transfer.disaggregation.types import ConnectorMetadata, KVConnectorOutput
-from atom.model_engine.scheduler import Scheduler
-from atom.model_engine.sequence import SequenceStatus
-from atom.utils import forward_context
+from atom.model_engine.scheduler import ScheduledBatchOutput, Scheduler
+from atom.model_engine.sequence import Sequence, SequenceStatus
+from atom.sampling_params import SamplingParams
+from atom.utils import clock, forward_context
+from atom.utils.clock import LPRuntime
 
 #: The backend whose blob shape the router and the consumer were built around.
-PULL_BACKEND_SOURCE = (
-    pathlib.Path(disaggregation.__file__).parent / "moriio" / "moriio_connector.py"
+MOONCAKE_SOURCE = (
+    pathlib.Path(disaggregation.__file__).parent / "mooncake" / "mooncake_connector.py"
 )
 
 #: The first sampled token the producer hands back; the consumer resumes on it.
@@ -73,6 +63,18 @@ FIRST_TOKEN_ID = 7
 
 #: A prompt long enough to occupy several blocks of the pool below.
 PROMPT = list(range(40))
+
+#: The write request's declared latency, which is also the notify latency.
+L = 2.0**-10
+KV = "engine-D->engine-P:kv_write_req"
+TABLE = prefill_decode_table(
+    admission_path="serving",
+    ipc_s=L,
+    stream_s=L,
+    router_s=L,
+    kv_write_req_s=L,
+)
+_PAIRS = itertools.count()
 
 
 @pytest.fixture(scope="module")
@@ -83,15 +85,327 @@ def geometry():
     return KvGeometry.from_hf_config(hf, block_size=BLOCK_SIZE)
 
 
-def relayed_fields() -> frozenset:
-    """The keys of the pull backend's own transfer blob, read from its source.
+class Script:
+    """The clock authority: each clock request gets the next scripted grant."""
 
-    Parsed rather than imported: the module it lives in reaches for an RDMA
-    library this tier does not have. Exactly one assignment is expected, so a
-    backend that grew a second way to build the blob fails here instead of
-    being read half.
+    def __init__(self):
+        self.grants = []
+
+    def send(self, request):
+        pass
+
+    def recv(self):
+        return self.grants.pop(0)
+
+
+def runtime(lp):
+    rt = LPRuntime(LpId(lp), TABLE, Script())
+    rt.start_run()
+    return rt
+
+
+def at(rt, t, *released):
+    """Move `rt`'s clock to `t`, releasing the write requests `(seq, arrival)`."""
+    rt.conn.grants.append((t, {KV: list(released)} if released else {}))
+    rt.advance_to(t)
+
+
+def connector(rt, monkeypatch, model, *, kv_role, address="inproc://unused", **cfg):
+    """The scheduler half, built the way the engine builds it, on `rt`."""
+    monkeypatch.setattr(clock, "_installed", rt)
+    kv = {
+        "kv_connector": "compass",
+        "kv_role": kv_role,
+        TRANSFER_KEY: model,
+        WRITE_REQ_KEY: address,
+    }
+    half = KVConnectorFactory.create_connector(
+        atom_config_double(kv_transfer_config=kv, **cfg), role="scheduler"
+    )
+    monkeypatch.setattr(clock, "_installed", None)
+    return half
+
+
+@pytest.fixture
+def pd(geometry, monkeypatch):
+    """A prefill and a decode engine whose connectors share one write-request pair."""
+    model = model_for(geometry, PEAKS[0])
+    address = f"inproc://kv-write-req-{next(_PAIRS)}"
+    rt_p, rt_d = runtime("engine-P"), runtime("engine-D")
+    p = connector(rt_p, monkeypatch, model, kv_role="kv_producer", address=address)
+    d = connector(rt_d, monkeypatch, model, kv_role="kv_consumer", address=address)
+    return SimpleNamespace(
+        model=model,
+        address=address,
+        rt_p=rt_p,
+        rt_d=rt_d,
+        p=scheduler_with(p),
+        d=scheduler_with(d),
+    )
+
+
+def scheduler_with(connector_half, **config):
+    """A real scheduler, sized by the caller, carrying this connector."""
+    settings = {
+        "num_kvcache_blocks": 100,
+        "max_num_seqs": 4,
+        "max_num_batched_tokens": 1000,
+    }
+    settings.update(config)
+    engine = Scheduler(MockConfig(**settings))
+    engine.kv_connector = connector_half
+    return engine
+
+
+def engine_step(engine, rt, t, *released):
+    """`EngineCore`'s order: schedule, the forward ending at `t`, the KV poll,
+    postprocess. With nothing scheduled it is the idle drain: the poll only."""
+    result = engine.schedule()
+    at(rt, t, *released)
+    engine._update_from_kv_xfer_finished(KVConnectorOutput())
+    batch = None if result is None else result[0]
+    if batch is not None and batch.req_ids:
+        engine.postprocess(
+            list(result[1].values()),
+            ScheduledBatchOutput(
+                req_ids=list(batch.req_ids),
+                token_ids=[(FIRST_TOKEN_ID,)] * len(batch.req_ids),
+                num_rejected=None,
+                num_bonus=None,
+                draft_token_ids=None,
+            ),
+            batch=batch,
+        )
+
+
+def prefilled(pd, n, r):
+    """`n` requests prefilled on engine-P by a forward that ends at `r`."""
+    seqs = [
+        Sequence(PROMPT, 4, sampling_params=SamplingParams(max_tokens=1))
+        for _ in range(n)
+    ]
+    for seq in seqs:
+        pd.p.add(seq)
+    engine_step(pd.p, pd.rt_p, r)
+    return seqs
+
+
+def admitted(pd, seqs, seq_factory, t):
+    """Decode requests for the prefilled `seqs`, admitted by engine-D at `t`."""
+    at(pd.rt_d, t)
+    out = [
+        seq_factory(PROMPT, kv_transfer_params=dict(seq.kv_transfer_params_output))
+        for seq in seqs
+    ]
+    for seq in out:
+        pd.d.add(seq)
+    pd.d.schedule()
+    return out
+
+
+def free_blocks(engine):
+    return engine.block_manager.kv.num_free
+
+
+# -- The transfer --------------------------------------------------------
+
+#: Prefill's forward ends at R; decode is busy until SEND, so admits late.
+R, SEND = 1.0, 2.0
+
+
+def test_prefill_frees_at_max_a_r_plus_t_and_decode_is_ready_at_a_t_notify(
+    pd, seq_factory
+):
+    """One request whose decode admission is delayed past prefill's finish."""
+    total = free_blocks(pd.p)
+    (x,) = prefilled(pd, 1, R)
+    assert x.id in pd.p.deferred_free_blocks
+    (y,) = admitted(pd, [x], seq_factory, SEND)
+    assert y.status is SequenceStatus.WAITING_FOR_REMOTE_KVS
+    assert y.kv_transfer_params["do_remote_prefill"] is False, "Mooncake clears it"
+    assert pd.d.kv_connector.has_pending_work() is True, "an idle decode stops polling"
+
+    a = SEND + L
+    T = pd.model.duration_s(len(y.block_table))
+    e, ready = max(a, R) + T, a + T + L
+    assert pd.rt_d.send_log == [(KV, 0, a)], "the write request's arrival"
+
+    engine_step(pd.p, pd.rt_p, a, (0, a))
+    engine_step(pd.p, pd.rt_p, e - TICK)
+    assert x.id in pd.p.deferred_free_blocks, "freed before the write was done"
+    engine_step(pd.p, pd.rt_p, e)
+    assert pd.p.deferred_free_blocks == {}
+    assert free_blocks(pd.p) == total
+
+    engine_step(pd.d, pd.rt_d, ready - TICK)
+    pd.d.schedule()
+    assert y.status is SequenceStatus.WAITING_FOR_REMOTE_KVS, "ready early"
+    engine_step(pd.d, pd.rt_d, ready)
+    pd.d.schedule()
+    assert y.status is SequenceStatus.RUNNING
+    assert y.token_ids[y.num_prompt_tokens] == FIRST_TOKEN_ID
+    assert pd.d.finished_recving_kv_req_ids == [], "an id with no reachable pop"
+    assert pd.d.kv_connector.has_pending_work() is False
+
+
+def test_a_write_request_for_an_unfinished_prefill_is_refused(pd, seq_factory):
+    """r > a: the write request arrived before prefill had the data."""
+    x = SimpleNamespace(
+        kv_transfer_params_output={"do_remote_prefill": True, "transfer_id": 999}
+    )
+    admitted(pd, [x], seq_factory, SEND)
+    with pytest.raises(ValueError, match="before its prefill finished"):
+        engine_step(pd.p, pd.rt_p, SEND + L, (0, SEND + L))
+
+
+#: The decode pool's block size (`MockConfig`'s), and a different one.
+HBS = 4
+
+
+@pytest.mark.parametrize(
+    "blob_hbs, priced",
+    [(HBS, 1), (4 * HBS, len(PROMPT) // HBS)],
+    ids=["matching", "different"],
+)
+def test_a_decode_side_prefix_hit_is_written_only_when_both_hash_alike(
+    pd, monkeypatch, seq_factory, blob_hbs, priced
+):
+    """Mooncake's rule: the blocks decode already caches are not written,
+    unless prefill hashed its blocks at another size."""
+    half = connector(
+        pd.rt_d,
+        monkeypatch,
+        pd.model,
+        kv_role="kv_consumer",
+        address=pd.address,
+        kv_cache_block_size=HBS,
+    )
+    pd.d = scheduler_with(half, enable_prefix_caching=True)
+    warm = seq_factory(PROMPT)
+    pd.d.block_manager.allocate(warm)
+    pd.d.block_manager.hash_blocks(warm, warm.num_tokens)
+    pd.d.block_manager.deallocate(warm)
+
+    blob = {"do_remote_prefill": True, "transfer_id": 0, "hash_block_size": blob_hbs}
+    (y,) = admitted(
+        pd, [SimpleNamespace(kv_transfer_params_output=blob)], seq_factory, SEND
+    )
+    assert y.status is SequenceStatus.WAITING_FOR_REMOTE_KVS
+    assert y.num_cached_tokens == len(PROMPT) - HBS, "no decode-side hit"
+
+    ready = SEND + L + pd.model.duration_s(priced) + L
+    engine_step(pd.d, pd.rt_d, ready - TICK)
+    pd.d.schedule()
+    assert y.status is SequenceStatus.WAITING_FOR_REMOTE_KVS, "ready early"
+    engine_step(pd.d, pd.rt_d, ready)
+    pd.d.schedule()
+    assert y.status is SequenceStatus.RUNNING
+
+
+def test_pipeline_parallelism_is_refused_by_name(geometry, monkeypatch):
+    """A PP head never hands the connector an empty poll, so nothing completes."""
+    with pytest.raises(
+        ValueError,
+        match="pipeline_parallel_size is 2.*process_completions.*MSG_RELEASE",
+    ):
+        connector(
+            runtime("engine-P"),
+            monkeypatch,
+            model_for(geometry, PEAKS[0]),
+            kv_role="kv_producer",
+            pipeline_parallel_size=2,
+        )
+
+
+@pytest.mark.parametrize("follower", [False, True], ids=["idle", "follower"])
+def test_an_idle_producer_frees_every_finished_prefill(pd, seq_factory, follower):
+    """N prefills, then nothing (or one more request): all freed on their times."""
+    total = free_blocks(pd.p)
+    seqs = prefilled(pd, 3, R)
+    if follower:
+        seqs += prefilled(pd, 1, R + 0.5)
+    held = sum(len(seq.block_table) for seq in seqs)
+    assert len(pd.p.deferred_free_blocks) == len(seqs)
+    assert free_blocks(pd.p) == total - held
+
+    admitted(pd, seqs, seq_factory, SEND)
+    a = SEND + L
+    engine_step(pd.p, pd.rt_p, a, *[(k, a) for k in range(len(seqs))])
+    T = pd.model.duration_s(max(len(seq.block_table) for seq in seqs))
+    engine_step(pd.p, pd.rt_p, a + T)
+    assert pd.p.deferred_free_blocks == {}
+    assert free_blocks(pd.p) == total
+
+
+def test_a_request_the_cap_bounced_parks_on_a_later_step(pd, seq_factory):
+    """The claim is not spent on the asking: the flag is cleared at allocation.
+
+    So a request bounced before allocation asks again and parks, and each
+    parked request sends exactly one write request.
     """
-    tree = ast.parse(PULL_BACKEND_SOURCE.read_text())
+    pd.d.max_num_seqs = 1
+    blob = {"do_remote_prefill": True, "transfer_id": 0}
+    first = seq_factory(PROMPT, kv_transfer_params=dict(blob))
+    bounced = seq_factory(PROMPT, kv_transfer_params=dict(blob, transfer_id=1))
+    pd.d.add(first)
+    pd.d.add(bounced)
+    pd.d.schedule()
+    assert first.status is SequenceStatus.WAITING_FOR_REMOTE_KVS
+    assert bounced.status is SequenceStatus.WAITING, "the cap did not bounce it"
+    pd.d.max_num_seqs = 4
+    pd.d.schedule()
+    assert bounced.status is SequenceStatus.WAITING_FOR_REMOTE_KVS
+    assert [seq for _, seq, _ in pd.rt_d.send_log] == [0, 1]
+
+
+@pytest.mark.parametrize("side", ["p", "d"])
+def test_an_ordinary_request_is_neither_claimed_nor_sent(pd, seq_factory, side):
+    seq = seq_factory(PROMPT)
+    half = getattr(pd, side).kv_connector
+    assert half.get_num_new_matched_tokens(seq) == (0, False)
+    seq.block_table = [0, 1]
+    half.update_state_after_alloc(seq)
+    assert getattr(pd, f"rt_{side}").send_log == []
+
+
+def test_the_producing_side_refuses_a_remote_fill(pd, seq_factory):
+    """A deployment cannot wait for a transfer it is the source of."""
+    seq = seq_factory(PROMPT, kv_transfer_params={"do_remote_prefill": True})
+    with pytest.raises(ValueError, match="producer side"):
+        pd.p.kv_connector.update_state_after_alloc(seq)
+
+
+def test_a_parked_request_is_not_counted_as_admittable_work(pd, seq_factory):
+    """The engine's guards read the suspended state; the request must have it."""
+    seq = seq_factory(
+        PROMPT, kv_transfer_params={"do_remote_prefill": True, "transfer_id": 0}
+    )
+    pd.d.add(seq)
+    pd.d.schedule()
+    assert seq.status is SequenceStatus.WAITING_FOR_REMOTE_KVS
+    assert pd.d._waiting_new_token_count() == 0
+    assert pd.d._can_admit_head_prefill() is False
+    assert pd.d._oldest_waiting_prefill_age_ms() == 0.0
+
+    # The positive control: an ordinary request queued beside it is counted.
+    queued = seq_factory(list(range(24)))
+    queued.arrive_time = time.time() - 1.0
+    pd.d.add(queued)
+    assert pd.d._waiting_new_token_count() == 24
+    assert pd.d._can_admit_head_prefill() is True
+    assert 1000.0 <= pd.d._oldest_waiting_prefill_age_ms() < 60_000.0
+
+
+# -- The blob ------------------------------------------------------------
+
+
+def relayed_fields() -> frozenset:
+    """The keys of Mooncake's own transfer blob, read from its source.
+
+    Parsed rather than imported: the module reaches for an RDMA library this
+    tier does not have. Exactly one assignment is expected.
+    """
+    tree = ast.parse(MOONCAKE_SOURCE.read_text())
     found = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Dict):
@@ -105,7 +419,7 @@ def relayed_fields() -> frozenset:
         assert all(
             isinstance(key, ast.Constant) and isinstance(key.value, str)
             for key in node.value.keys
-        ), f"{PULL_BACKEND_SOURCE.name} builds its blob with computed keys"
+        ), f"{MOONCAKE_SOURCE.name} builds its blob with computed keys"
         found.append(frozenset(key.value for key in node.value.keys))
     assert len(found) == 1, f"expected one blob assignment, found {len(found)}"
     return found[0]
@@ -138,28 +452,12 @@ def finished_sequence():
 
 
 def simulated_blob(tp_size=4, dp_rank=2) -> dict:
-    return transfer_params(finished_sequence(), tp_size=tp_size, dp_rank=dp_rank)
-
-
-def connector(model, clock, *, role, kv_role="kv_consumer", tp_size=1, dp_rank=None):
-    """A connector built the way the engine builds one.
-
-    `dp_rank` reaches the connector through `parallel_config`, which is where
-    it reads it from; left alone, the double carries the real default.
-    """
-    settings = {
-        "tensor_parallel_size": tp_size,
-        "kv_transfer_config": {
-            "kv_connector": "compass",
-            "kv_role": kv_role,
-            CLOCK_KEY: clock,
-            TRANSFER_KEY: model,
-        },
-    }
-    if dp_rank is not None:
-        settings["parallel_config"] = SimpleNamespace(data_parallel_rank=dp_rank)
-    return KVConnectorFactory.create_connector(
-        atom_config_double(**settings), role=role
+    return transfer_params(
+        finished_sequence(),
+        tp_size=tp_size,
+        dp_rank=dp_rank,
+        pp_size=1,
+        hash_block_size=16,
     )
 
 
@@ -186,11 +484,8 @@ def assert_could_not_be_dialled(value, field) -> None:
     )
 
 
-# -- The blob ------------------------------------------------------------
-
-
 def test_the_blob_carries_the_field_set_the_router_relays():
-    """The emitted set equals the backend's, re-derived."""
+    """The emitted set equals Mooncake's, re-derived."""
     assert set(simulated_blob()) == relayed_fields()
     assert_relays_every_field(simulated_blob())
 
@@ -208,12 +503,8 @@ def test_dropping_one_field_from_the_blob_is_refused_by_name(field):
 def test_no_field_of_the_blob_names_a_machine_the_simulation_runs_on():
     """A simulated peer has no address, and must not borrow a real one.
 
-    Two kinds of assertion, and they catch different things. The identities
-    say the blob is built from the constants above rather than from a literal
-    typed into the emitter. The properties say what those constants may hold
-    -- and they are the half that survives the constants themselves changing,
-    which is the way this would actually go wrong: an endpoint reaches a blob
-    by somebody filling in the value that is already there.
+    The identities say the blob is built from the constants; the properties
+    say what those constants may hold, and survive the constants changing.
     """
     blob = simulated_blob()
     assert blob["remote_host"] == SIMULATED_HOST
@@ -233,15 +524,7 @@ def test_no_field_of_the_blob_names_a_machine_the_simulation_runs_on():
 
 
 def test_the_engine_id_is_the_label_the_host_invents_and_nothing_else():
-    """The engine id is held to the host's rule, not only to "no colon".
-
-    A dotted name such as `prod-decode-07.internal` carries no colon and no
-    address, and is not the name of the machine running the test, so every
-    check above passes it on every machine. The rule that makes the host safe
-    is that it is one label, invented here, under a suffix that resolves
-    nowhere; the engine id is held to that same label, so it names nothing a
-    resolver could find either.
-    """
+    """The engine id is one invented label, the one the host reserves."""
     blob = simulated_blob()
     engine_id = blob["remote_engine_id"]
     assert "." not in engine_id, (
@@ -254,30 +537,23 @@ def test_the_engine_id_is_the_label_the_host_invents_and_nothing_else():
     )
 
 
-def test_the_ranks_the_router_reads_are_numbers(geometry):
+def test_the_ranks_the_router_reads_are_numbers(pd, geometry, monkeypatch):
     """The router drops `dp_rank` unless it is a number, and says nothing.
 
     Driven through the connector from a config carrying the widths as floats
-    with no fractional part, because handing `transfer_params` two literal
-    ints asserts nothing the conversion is responsible for. A whole float is
-    converted to an `int` on the way in; text is refused, which the test
-    below pins. A rank that went out as anything but a number would fail
-    silently -- the router substitutes its own registry value for the
-    prefilling worker rather than refusing the blob.
+    with no fractional part: each is converted to an `int` on the way in.
     """
-    blob = simulated_blob(tp_size=8, dp_rank=3)
-    assert isinstance(blob["dp_rank"], int) and blob["dp_rank"] == 3
-    assert isinstance(blob["tp_size"], int) and blob["tp_size"] == 8
-
-    scheduler = connector(
-        model_for(geometry, PEAKS[0]),
-        lambda: ISSUE_AT,
-        role="scheduler",
-        tp_size=8.0,
-        dp_rank=3.0,
+    half = connector(
+        pd.rt_p,
+        monkeypatch,
+        pd.model,
+        kv_role="kv_producer",
+        address=f"inproc://kv-write-req-{next(_PAIRS)}",
+        tensor_parallel_size=8.0,
+        parallel_config=SimpleNamespace(data_parallel_rank=3.0),
     )
     seq = finished_sequence()
-    scheduler.request_finished(seq)
+    half.request_finished(seq)
     relayed = seq.kv_transfer_params_output
     assert isinstance(relayed["tp_size"], int) and relayed["tp_size"] == 8
     assert isinstance(relayed["dp_rank"], int) and relayed["dp_rank"] == 3
@@ -305,20 +581,24 @@ def test_the_ranks_the_router_reads_are_numbers(geometry):
         pytest.param("tp_size", " 8 ", id="tp_size-padded-text"),
     ],
 )
-def test_a_width_that_is_not_a_whole_number_is_refused_by_name(geometry, field, value):
+def test_a_width_that_is_not_a_whole_number_is_refused_by_name(
+    geometry, monkeypatch, field, value
+):
     """A width that is not exactly an integer refuses the connector by name.
 
     Refused when the connector is built, so a malformed config never serves a
-    request. Casting 8.5 to 8 would emit a blob for a deployment that was
-    never launched, and nothing reading it could tell. A boolean, Python's,
-    numpy's or torch's, would go out as a width of 1 or 0. Text is refused
-    whatever it spells, "8" included: ATOM's launch path parses its widths
-    with `int`, so reading text would be a conversion no launch needs.
+    request: 8.5 cast to 8, or a boolean sent as 1 or 0, would name a
+    deployment that was never launched.
     """
     widths = {"tp_size": 8, "dp_rank": 3, field: value}
     with pytest.raises(ValueError, match=f"^{field} is .*not a whole number"):
         connector(
-            model_for(geometry, PEAKS[0]), lambda: ISSUE_AT, role="scheduler", **widths
+            runtime("engine-P"),
+            monkeypatch,
+            model_for(geometry, PEAKS[0]),
+            kv_role="kv_producer",
+            tensor_parallel_size=widths["tp_size"],
+            parallel_config=SimpleNamespace(data_parallel_rank=widths["dp_rank"]),
         )
 
 
@@ -334,106 +614,38 @@ def test_the_blob_carries_the_request_and_not_a_template():
     assert blob["prefix_cache_hit_tokens"] == FINISHED_HIT_TOKENS
 
 
-def test_a_finished_request_carries_the_blob_out(geometry):
+def test_a_finished_request_carries_the_blob_out(pd):
     """The connector attaches it where the API layer looks for it."""
-    scheduler = connector(
-        model_for(geometry, PEAKS[0]), lambda: ISSUE_AT, role="scheduler", tp_size=4
-    )
     seq = finished_sequence()
-    scheduler.request_finished(seq)
-    assert seq.kv_transfer_params_output == transfer_params(seq, tp_size=4, dp_rank=0)
-
-
-# -- The suspension ------------------------------------------------------
-
-
-def remote_filled(seq_factory):
-    """A request the router sent here to be decoded, not prefilled."""
-    return seq_factory(
-        PROMPT,
-        kv_transfer_params={
-            "do_remote_prefill": True,
-            "first_token_id": FIRST_TOKEN_ID,
-        },
+    pd.p.kv_connector.request_finished(seq)
+    assert seq.kv_transfer_params_output == transfer_params(
+        seq, tp_size=1, dp_rank=0, pp_size=1, hash_block_size=16
     )
 
 
-def scheduler_with(connector_half, **config):
-    """A real scheduler, sized by the caller, carrying this connector."""
-    settings = {
-        "num_kvcache_blocks": 100,
-        "max_num_seqs": 4,
-        "max_num_batched_tokens": 1000,
-    }
-    settings.update(config)
-    engine = Scheduler(MockConfig(**settings))
-    engine.kv_connector = connector_half
-    return engine
-
-
-def test_a_remote_filled_request_parks_and_leaves_on_its_deadline(
-    geometry, seq_factory
-):
-    """The module's second claim, driven through the engine's own order.
-
-    Nothing here calls the connector's scheduler methods. The request is added
-    to a real scheduler and stepped; the engine asks, allocates, notifies and
-    decides in its own sequence, and what is read back is the status it chose.
-    The transfer is announced from the metadata that same step produced, so
-    the blocks the worker prices are the blocks the engine allocated.
-
-    The request's own `do_remote_prefill` is asserted at both ends of the
-    park, because the defect this connector's predecessor was fixed for was a
-    flag cleared on the way past the engine -- which no test that calls the
-    connector directly can see.
-    """
-    model = model_for(geometry, PEAKS[0])
-    now = [ISSUE_AT]
-    engine = scheduler_with(connector(model, lambda: now[0], role="scheduler"))
-    worker = connector(model, lambda: now[0], role="worker")
-    seq = remote_filled(seq_factory)
-    engine.add(seq)
-
-    batch, _ = engine.schedule()
-    assert seq.status is SequenceStatus.WAITING_FOR_REMOTE_KVS
-    assert engine._num_parked_remote_kv == 1
-    assert batch.total_seqs_num_prefill == 0, "it prefilled what it was sent"
-    assert seq.kv_transfer_params["do_remote_prefill"] is True, "intent destroyed"
-
-    announced = batch.connector_meta_output.reqs_to_recv
-    assert set(announced) == {seq.id}
-    assert announced[seq.id].local_block_ids == list(seq.block_table)
-    worker.start_load_kv(batch.connector_meta_output)
-    deadline = model.release_at(ISSUE_AT, len(seq.block_table))
-
-    now[0] = deadline - TICK
-    step(engine, worker)
-    assert seq.status is SequenceStatus.WAITING_FOR_REMOTE_KVS, "released early"
-    assert engine._num_parked_remote_kv == 1
-
-    now[0] = deadline
-    step(engine, worker)
-    assert seq.status is SequenceStatus.RUNNING
-    assert engine._num_parked_remote_kv == 0
-    assert seq.token_ids[seq.num_prompt_tokens] == FIRST_TOKEN_ID
-    assert seq.kv_transfer_params["do_remote_prefill"] is True, "intent destroyed"
-    assert engine.finished_recving_kv_req_ids == [], "an id with no reachable pop"
-
-
-def step(engine, worker):
-    """One engine step's worth of the completion path, through real parts."""
-    sending, recving = worker.get_finished()
-    aggregated = KVOutputAggregator(world_size=1).aggregate(
-        [KVConnectorOutput(finished_sending=sending, finished_recving=recving)]
+def test_the_emitted_blob_is_one_a_consumer_can_actually_consume():
+    """The blob goes back in where a consumer reads it, through `ReqMeta`."""
+    blob = simulated_blob(tp_size=4, dp_rank=2)
+    meta = ConnectorMetadata()
+    meta.add_new_req_to_recv(
+        request_id=FINISHED_ID, local_block_ids=[0, 1], kv_transfer_params=blob
     )
-    engine._update_from_kv_xfer_finished(aggregated)
-    engine.schedule()
+    req = meta.reqs_to_recv[FINISHED_ID]
+
+    assert req.remote_block_ids == FINISHED_BLOCKS
+    assert req.remote_host == SIMULATED_HOST
+    assert req.remote_port == SIMULATED_PORT
+    assert req.remote_handshake_port == SIMULATED_PORT
+    assert req.remote_engine_id == SIMULATED_ENGINE_ID
+    assert req.tp_size == 4
+    assert req.transfer_id == FINISHED_ID
 
 
-def test_the_compass_runner_builds_the_worker_that_ends_the_park(
-    geometry, seq_factory, monkeypatch
-):
-    """The same park, with the worker built and started by the runner.
+# -- The runner ----------------------------------------------------------
+
+
+def test_the_compass_runner_builds_the_worker_half(monkeypatch):
+    """The worker the engine polls is built by the runner and reports nothing.
 
     Importing either runner needs a driver, so `CompassModelRunner`'s class
     statement is compiled from source over the overrides and an ATOM
@@ -459,30 +671,17 @@ def test_the_compass_runner_builds_the_worker_that_ends_the_park(
     monkeypatch.setitem(sys.modules, "aiter.dist.parallel_state", group)
     monkeypatch.setattr(forward_context, "_global_kvconnector", None)
 
-    model = model_for(geometry, PEAKS[0])
-    now = [ISSUE_AT]
     runner = object.__new__(namespace["CompassModelRunner"])
     runner.config = atom_config_double(
-        kv_transfer_config={
-            "kv_connector": "compass",
-            "kv_role": "kv_consumer",
-            CLOCK_KEY: lambda: now[0],
-            TRANSFER_KEY: model,
-        }
+        kv_transfer_config={"kv_connector": "compass", "kv_role": "kv_consumer"}
     )
     assert runner.allocate_kv_cache(100) is True
     worker = forward_context.get_kvconnector()
     assert isinstance(worker, SimulatedKVConnector)
-
-    engine = scheduler_with(connector(model, lambda: now[0], role="scheduler"))
-    seq = remote_filled(seq_factory)
-    engine.add(seq)
-    batch, _ = engine.schedule()
-    assert seq.status is SequenceStatus.WAITING_FOR_REMOTE_KVS
-    runner.process_kvconnector_output(batch.connector_meta_output)
-    now[0] = model.release_at(ISSUE_AT, len(seq.block_table))
-    step(engine, worker)
-    assert seq.status is SequenceStatus.RUNNING
+    meta = ConnectorMetadata()
+    meta.add_new_req_to_recv(request_id=0, local_block_ids=[0], kv_transfer_params={})
+    runner.process_kvconnector_output(meta)
+    assert worker.get_finished() == (set(), set())
 
 
 @pytest.mark.parametrize(
@@ -527,207 +726,3 @@ def test_the_compass_runner_refuses_a_config_that_lacks_the_field(monkeypatch):
     with pytest.raises(RunnerRefusal, match="no field 'kv_transfer_config'"):
         runner.allocate_kv_cache(100)
     assert calls == []
-
-
-def test_nothing_is_announced_for_a_request_the_engine_did_not_suspend(
-    geometry, seq_factory
-):
-    """An offer is dropped when the suspension it was offered for did not happen.
-
-    The engine asks whether a request is held elsewhere *before* it knows
-    whether it can admit it, and the claim is spent on the asking. So a
-    request bounced by the admission cap arrives at the allocation on a later
-    step with its claim gone and its `do_remote_prefill` still set: it is
-    prefilled locally, and it is not suspended. Both real backends queue a
-    receive for it anyway -- their guard is the flag alone -- and the workers
-    then report a transfer finished against a request the scheduler never
-    suspended: an id on `finished_recving_kv_req_ids` with no reachable pop,
-    after which the engine rebuilds its waiting queue on every step for the
-    rest of the run.
-
-    Driven through a real scheduler over two steps, because each step is
-    individually correct and only the pair is wrong. The cap that bounced the
-    claim is lifted between them, which is the whole content of the second
-    step.
-    """
-    model = model_for(geometry, PEAKS[0])
-    now = [ISSUE_AT]
-    worker = connector(model, lambda: now[0], role="worker")
-    engine = scheduler_with(
-        connector(model, lambda: now[0], role="scheduler"), max_num_seqs=1
-    )
-    parked, bounced = remote_filled(seq_factory), remote_filled(seq_factory)
-    engine.add(parked)
-    engine.add(bounced)
-
-    first, _ = engine.schedule()
-    assert parked.status is SequenceStatus.WAITING_FOR_REMOTE_KVS
-    assert bounced.status is SequenceStatus.WAITING, "the cap did not bounce it"
-    assert bounced.kv_async_tagged is True, "the claim was not spent"
-    assert set(first.connector_meta_output.reqs_to_recv) == {parked.id}
-
-    engine.max_num_seqs = 4
-    second, _ = engine.schedule()
-    assert bounced.status is not SequenceStatus.WAITING_FOR_REMOTE_KVS
-    assert second.total_seqs_num_prefill == 1, "it did not prefill locally"
-    assert bounced.id not in second.connector_meta_output.reqs_to_recv
-
-    worker.start_load_kv(second.connector_meta_output)
-    now[0] = model.release_at(ISSUE_AT, len(bounced.block_table)) + 1.0
-    sending, recving = worker.get_finished()
-    engine._update_from_kv_xfer_finished(
-        KVConnectorOutput(finished_sending=sending, finished_recving=recving)
-    )
-    assert engine.finished_recving_kv_req_ids == [], "an id with no reachable pop"
-
-
-def test_a_parked_request_is_not_counted_as_admittable_work(geometry, seq_factory):
-    """The engine's guards read the suspended state; the request must have it.
-
-    A suspended request must not look like queued prefill to the admission
-    signals, or a deployment waiting on a transfer reports work it cannot do.
-    """
-    model = model_for(geometry, PEAKS[0])
-    engine = scheduler_with(connector(model, lambda: ISSUE_AT, role="scheduler"))
-    seq = remote_filled(seq_factory)
-    engine.add(seq)
-    engine.schedule()
-
-    assert seq.status is SequenceStatus.WAITING_FOR_REMOTE_KVS, (
-        "nothing was parked, so the three signals below are reading an empty "
-        "queue rather than a suspended request"
-    )
-    assert engine._waiting_new_token_count() == 0
-    assert engine._can_admit_head_prefill() is False
-    assert engine._oldest_waiting_prefill_age_ms() == 0.0
-
-
-#: The ordinary prompt queued behind a parked one, of a length no other count
-#: in the queue can produce.
-QUEUED_PROMPT = list(range(24))
-
-
-def test_the_request_queued_beside_a_parked_one_is_the_one_counted(
-    geometry, seq_factory
-):
-    """The positive control for the test above: the signals do count work.
-
-    Reading zero beside a parked request says the parked one was excluded
-    only if the same signals read non-zero for work that is admittable. So an
-    ordinary request is queued behind the parked one, and each signal must
-    report exactly that request: its token count, not the parked one's added
-    to it and not nothing; a head that can be admitted; and its own age, which
-    is a second, where the parked request's arrival stamp is decades old.
-    """
-    model = model_for(geometry, PEAKS[0])
-    engine = scheduler_with(connector(model, lambda: ISSUE_AT, role="scheduler"))
-    parked = remote_filled(seq_factory)
-    engine.add(parked)
-    engine.schedule()
-    assert parked.status is SequenceStatus.WAITING_FOR_REMOTE_KVS
-
-    queued = seq_factory(QUEUED_PROMPT)
-    queued.arrive_time = time.time() - 1.0
-    engine.add(queued)
-
-    assert engine._waiting_new_token_count() == len(QUEUED_PROMPT)
-    assert engine._can_admit_head_prefill() is True
-    assert 1000.0 <= engine._oldest_waiting_prefill_age_ms() < 60_000.0
-
-
-def test_the_prompt_is_claimed_once_and_the_request_keeps_its_intent(
-    geometry, seq_factory
-):
-    """The whole prompt, one claim, and the request's own flag left alone.
-
-    The claim is spent on the first ask, which is what stops a request being
-    suspended twice. It is spent on a mark and not by clearing the request's
-    `do_remote_prefill`, which is what both real backends do instead -- so the
-    request still states its own intent afterwards, and the guard against
-    announcing a receive nobody waits for has to live somewhere the request is
-    not: it is the suspension check in `build_connector_meta`, asserted here
-    by setting the status the engine would have set.
-    """
-    scheduler = connector(
-        model_for(geometry, PEAKS[0]), lambda: ISSUE_AT, role="scheduler"
-    )
-    seq = remote_filled(seq_factory)
-    seq.block_table = [0, 1, 2]
-
-    assert scheduler.get_num_new_matched_tokens(seq) == (len(PROMPT), True)
-    assert scheduler.get_num_new_matched_tokens(seq) == (0, False)
-
-    scheduler.update_state_after_alloc(seq)
-    assert seq.kv_transfer_params["do_remote_prefill"] is True
-    seq.status = SequenceStatus.WAITING_FOR_REMOTE_KVS
-    assert scheduler.build_connector_meta().reqs_to_recv[seq.id].local_block_ids == [
-        0,
-        1,
-        2,
-    ]
-    assert scheduler.build_connector_meta().reqs_to_recv == {}, "announced twice"
-
-
-@pytest.mark.parametrize("kv_role", ["kv_consumer", "kv_producer"])
-def test_an_ordinary_request_is_neither_claimed_nor_announced(
-    geometry, seq_factory, kv_role
-):
-    """Only a remote fill is taken on; every other allocation is silent.
-
-    Both roles, because "silent" is two different things and only one of them
-    is visible in the metadata. On the consumer side an ordinary allocation
-    is not claimed and no receive is announced for it; whether it was queued
-    as an offer is not observed here, because the announcement drops any
-    offer the engine did not suspend. On the producer side the refusal below
-    stands between every ordinary allocation and a `ValueError`, and no
-    announcement check can see that: the raise happens before there is
-    anything to announce. One case per role, so a failure names the role.
-    """
-    scheduler = connector(
-        model_for(geometry, PEAKS[0]),
-        lambda: ISSUE_AT,
-        role="scheduler",
-        kv_role=kv_role,
-    )
-    seq = seq_factory(PROMPT)
-    assert scheduler.get_num_new_matched_tokens(seq) == (0, False)
-    scheduler.update_state_after_alloc(seq)
-    assert scheduler.build_connector_meta().reqs_to_recv == {}
-
-
-def test_the_producing_side_refuses_a_remote_fill(geometry, seq_factory):
-    """A deployment cannot wait for a transfer it is the source of."""
-    scheduler = connector(
-        model_for(geometry, PEAKS[0]),
-        lambda: ISSUE_AT,
-        role="scheduler",
-        kv_role="kv_producer",
-    )
-    seq = remote_filled(seq_factory)
-    with pytest.raises(ValueError, match="producer side"):
-        scheduler.update_state_after_alloc(seq)
-
-
-def test_the_emitted_blob_is_one_a_consumer_can_actually_consume():
-    """The blob goes back in where a consumer reads it, not just out.
-
-    Key-set equality says the router will relay every field. It does not say
-    the consumer half finds what it needs in them, because that half reads the
-    blob through the engine's own `ReqMeta` builder rather than by key. So the
-    emitted blob is fed back in as a received one.
-    """
-    blob = simulated_blob(tp_size=4, dp_rank=2)
-    meta = ConnectorMetadata()
-    meta.add_new_req_to_recv(
-        request_id=FINISHED_ID, local_block_ids=[0, 1], kv_transfer_params=blob
-    )
-    req = meta.reqs_to_recv[FINISHED_ID]
-
-    assert req.remote_block_ids == FINISHED_BLOCKS
-    assert req.remote_host == SIMULATED_HOST
-    assert req.remote_port == SIMULATED_PORT
-    assert req.remote_handshake_port == SIMULATED_PORT
-    assert req.remote_engine_id == SIMULATED_ENGINE_ID
-    assert req.tp_size == 4
-    assert req.transfer_id == FINISHED_ID
-    assert req.num_computed_blocks == 0, "the full table, as this field set forces"
