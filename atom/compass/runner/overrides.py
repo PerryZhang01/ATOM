@@ -411,27 +411,21 @@ class PricedSteps:
 
     def priced_steps(self) -> dict[str, Any]:
         """This rank's own steps, folded into one `ProvenanceMix` as each was
-        priced, before the max over the DP group. ``reasons`` holds one
-        ``cost:`` reason per refused step. A dict even before the first step,
-        since a None reply parks the engine that asks.
+        priced, before the max over the DP group, with the analytical and the
+        extrapolated steps and seconds apart. A dict even before the first
+        step, since a None reply parks the engine that asks.
         """
         from atom.compass.backends.cost import ProvenanceMix
         from atom.compass.backends.provenance import Species
 
         mix = vars(self).get("_priced") or ProvenanceMix()
+        steps, seconds = mix.steps_by_species(), mix.seconds_by_species()
+        apart = (Species.ANALYTICAL, Species.EXTRAPOLATED)
         return {
             "steps": mix.steps,
             "seconds": mix.seconds,
-            "refused_seconds": mix.refused_seconds,
-            "extrapolated_steps": mix.steps_by_species().get(Species.EXTRAPOLATED, 0),
-            "extrapolated_seconds": mix.seconds_by_species().get(
-                Species.EXTRAPOLATED, 0.0
-            ),
-            "reasons": [
-                f"cost:{chain}"
-                for chain, n in mix.refused_chains().items()
-                for _ in range(n)
-            ],
+            **{f"{s}_steps": steps.get(s, 0) for s in apart},
+            **{f"{s}_seconds": seconds.get(s, 0.0) for s in apart},
         }
 
 

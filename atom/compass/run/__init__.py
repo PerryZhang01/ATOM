@@ -33,10 +33,10 @@ Run file keys: ``clock_endpoint``, ``bound_s`` (finite), ``admission_path``,
 `ShapeStubBackend`) or ``law`` (a `CoarseLaw` mapping, priced by `CoarseBackend`),
 ``machine`` (a machine spec mapping), ``parameter_count``, and ``out_dir``,
 where the step table, the run summary and each server LP's refusals go: an
-engine's are the worker's refused commands and refused steps and the engine's
-refused clock calls, a frontend's its executor's refused jobs and its refused
-clock calls. Each engine also writes there what its worker's steps cost, for
-the summary's predicted, refused and extrapolated seconds.
+engine's are the worker's refused commands and the engine's refused clock
+calls, a frontend's its executor's refused jobs and its refused clock calls.
+Each engine also writes there what its worker's steps cost, for the summary's
+predicted seconds and its analytical and extrapolated shares.
 Each engine's worker writes the memory it predicts there too, for
 ``python -m atom.compass.memory.check``. The authority removes an earlier
 run's files there as it starts. An optional ``data_parallel_size``, 1 when
@@ -101,8 +101,6 @@ COMMANDS_FILE, MEMORY_FILE, PRICED_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
 )
 #: Wall seconds the summary's writer waits for the server LPs' refusals.
 HAND_IN_WAIT_S = 300.0
-#: Above this share of predicted seconds refused, a run is a coverage report.
-REFUSED_SECONDS_GATE = 0.05
 
 _authority: "_RecordingAuthority | None" = None
 #: This engine process's member name in the engine LP, None at DP width one.
@@ -538,19 +536,18 @@ def _hand_in(run: dict, lp: str, reasons: list) -> None:
 
 def engine_done(engine_core) -> None:
     """After the engine's loop: leave the clock and hand in what the worker's
-    steps cost, then its command and cost refusals and the engine's refused
-    clock calls."""
+    steps cost, then its command refusals and the engine's refused clock
+    calls."""
     clock.close()
     run = spec()
     if run is not None:
         workers = engine_core.runner_mgr
         refused = workers.call_func("refused_commands", wait_out=True)
-        priced = dict(workers.call_func("priced_steps", wait_out=True))
+        priced = workers.call_func("priced_steps", wait_out=True)
         rt = clock.installed()
         lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
-        cost = priced.pop("reasons", [])
         _write_whole(Path(run["out_dir"]) / PRICED_FILE.format(lp), json.dumps(priced))
-        _hand_in(run, lp, list(refused) + cost + rt.refusals)
+        _hand_in(run, lp, list(refused) + rt.refusals)
 
 
 def frontend_done(llm_engine) -> bool:
@@ -594,24 +591,21 @@ def _write_summary(run: dict, a: _RecordingAuthority) -> None:
         return sum(p.get(key, 0) for p in priced)
 
     seconds = total("seconds")
-    tally = RefusalTally.of(reasons, total("steps"), total("refused_seconds"), seconds)
+    tally = RefusalTally.of(reasons, total("steps"))
     summary = RunSummary.of(a, a.finished - a.started, refusals=tally).as_record()
     schedule = summary["schedule"]
     schedule["predicted_seconds"] = seconds
-    # Priced outside the law's hull: a diagnostic, never a refusal.
-    schedule["extrapolated"] = {
-        "steps": total("extrapolated_steps"),
-        "fraction_of_predicted_seconds": (
-            total("extrapolated_seconds") / seconds if seconds else 0.0
-        ),
-    }
+    # Answers no measurement backs: diagnostics, never refusals.
+    for species in ("analytical", "extrapolated"):
+        schedule[species] = {
+            "steps": total(f"{species}_steps"),
+            "fraction_of_predicted_seconds": (
+                total(f"{species}_seconds") / seconds if seconds else 0.0
+            ),
+        }
     summary["configuration"] = configuration(run)
-    # A refused command leaves ATOM's half of it applied, so what ran after it
-    # was not the deployment simulated.
-    summary["coverage_report"] = (
-        any(r.startswith("command:") for r in reasons)
-        or schedule["refusals"]["fraction_of_predicted_seconds"] > REFUSED_SECONDS_GATE
-    )
+    # Any refusal, of any source, leaves part of the run unsimulated.
+    summary["coverage_report"] = bool(reasons)
     _write_whole(out / SUMMARY_FILE, json.dumps(summary, sort_keys=True, indent=1))
 
 

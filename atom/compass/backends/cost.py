@@ -221,7 +221,6 @@ class ProvenanceMix:
         self._species_seconds: dict[Species, float] = {}
         self._species_steps: dict[Species, int] = {}
         self._reasons: dict[tuple[str, str], int] = {}
-        self._refused_chains: dict[str, int] = {}
 
     def record(self, step: StepCost) -> None:
         self.steps += 1
@@ -229,11 +228,6 @@ class ProvenanceMix:
         if step.is_refused:
             self.refused_steps += 1
             self.refused_seconds = fold_step(self.refused_seconds, step.refused_seconds)
-            # Terms that fell through the same rungs give one chain, not one each.
-            chain = "; ".join(
-                f"{r.source}: {r.reason}" for r in dict.fromkeys(step.refusals)
-            )
-            self._refused_chains[chain] = self._refused_chains.get(chain, 0) + 1
         for species, seconds in step.seconds_by_species().items():
             self._species_seconds[species] = fold_step(
                 self._species_seconds.get(species, 0.0), seconds
@@ -276,10 +270,3 @@ class ProvenanceMix:
     def reasons(self) -> Mapping[tuple[str, str], int]:
         """Distinct (source, reason) pairs with the number of terms each hit."""
         return dict(self._reasons)
-
-    def refused_chains(self) -> Mapping[str, int]:
-        """Each refused step's distinct refusals, ``source: reason`` joined in
-        order, with the number of steps that gave it. The counts sum to
-        `refused_steps`; `reasons` counts every refusal instead.
-        """
-        return dict(self._refused_chains)

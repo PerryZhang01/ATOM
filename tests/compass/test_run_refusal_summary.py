@@ -24,9 +24,11 @@ from atom.compass.backends import (
     CoarseLaw,
     Coefficients,
     CostTerm,
+    Provenance,
     Refusal,
     RequestShape,
     ShapeStubBackend,
+    Species,
     StepCost,
 )
 from atom.utils import clock
@@ -42,10 +44,12 @@ SHORT_PREFILL_HULL = {
     "equal": {"query_cached": 0},
     "facets": [[-1, 0, 1], [0, -1, 1], [-33, 1, 32], [1, 0, -32]],
 }
+NONE_APART = {"steps": 0, "fraction_of_predicted_seconds": 0.0}
 
 
-class StandsIn(ShapeStubBackend):
-    """The stub, standing in after two rungs refused a prefill of `tokens` or more."""
+class AnalyticBelow(ShapeStubBackend):
+    """The stub's seconds, answered by an analytical rung after two rungs above
+    it declined a prefill of `tokens` or more."""
 
     def __init__(self, coefficients, tokens):
         super().__init__(coefficients)
@@ -55,12 +59,9 @@ class StandsIn(ShapeStubBackend):
         cost = super().estimate(batch_view)
         if sum(r.query_tokens for r in batch_view.prefill) < self.tokens:
             return cost
+        analytic = Provenance(Species.ANALYTICAL, "roofline", "tier0", CHAIN)
         return StepCost(
-            [
-                CostTerm(t.name, t.seconds, t.provenance.resolved("stub", CHAIN))
-                for t in cost.terms
-                if t.seconds > 0.0
-            ]
+            [CostTerm(t.name, t.seconds, analytic) for t in cost.terms if t.seconds]
         )
 
 
@@ -68,8 +69,10 @@ def seconds(backend, tokens):
     return backend.estimate(BatchView((RequestShape(tokens, tokens, False),))).seconds
 
 
-def summary(monkeypatch, tmp_path, backend, *prompts):
-    """The run summary after one engine's runner priced a prefill of each prompt."""
+def summary(monkeypatch, tmp_path, backend, *prompts, clock_refusals=(), jobs=()):
+    """The run summary after one engine's runner priced a prefill of each
+    prompt, with the engine's refused clock calls and the frontend's refused
+    executor jobs given."""
     monkeypatch.setattr(torch.distributed, "all_reduce", None)
     run = {
         "admission_path": "serving",
@@ -90,49 +93,56 @@ def summary(monkeypatch, tmp_path, backend, *prompts):
         r.forward(prefill(tokens))
     engine = LPRuntime(compass_run.ENGINE, table, None)
     engine.now = math.inf
+    engine.refusals.extend(clock_refusals)
     monkeypatch.setattr(clock, "_installed", engine)
     compass_run.engine_done(SimpleNamespace(runner_mgr=Worker(r)))
 
     monkeypatch.setattr(compass_run, "_authority", authority)
     frontend = LPRuntime(compass_run.FRONTEND, table, None)
     frontend.now = math.inf
-    frontend.loop = SimpleNamespace(executor=SimpleNamespace(refusals=[]))
+    frontend.loop = SimpleNamespace(executor=SimpleNamespace(refusals=list(jobs)))
     monkeypatch.setattr(clock, "_installed", frontend)
     assert compass_run.frontend_done(SimpleNamespace(close=lambda: None))
     return json.loads((tmp_path / compass_run.SUMMARY_FILE).read_text())
 
 
-def test_steps_priced_after_a_refusal_are_counted_by_step_and_by_second(
+def test_a_step_a_lower_rung_answered_is_not_refused_and_its_answer_is_apart(
     monkeypatch, tmp_path
 ):
-    backend = StandsIn(STAGE1, tokens=40)
+    backend = AnalyticBelow(STAGE1, tokens=40)
     out = summary(monkeypatch, tmp_path, backend, 8, 8, 8, 40)
 
     short, long = seconds(backend, 8), seconds(backend, 40)
-    refusals = out["schedule"]["refusals"]
-    reason = "cost:price_list: no entry for this shape; nearest_key: outside the measured range"
-    assert refusals["count"] == 1
-    assert refusals["steps"] == 4
-    assert refusals["fraction_of_steps"] == 0.25
-    assert refusals["fraction_of_predicted_seconds"] == pytest.approx(
-        long / (3 * short + long)
-    )
-    assert refusals["reasons"] == [[reason, 1]]
-    assert out["schedule"]["predicted_seconds"] == pytest.approx(3 * short + long)
-    assert out["coverage_report"]
+    schedule = out["schedule"]
+    assert schedule["predicted_seconds"] == pytest.approx(3 * short + long)
+    assert schedule["analytical"] == {
+        "steps": 1,
+        "fraction_of_predicted_seconds": pytest.approx(long / (3 * short + long)),
+    }
+    assert schedule["extrapolated"] == NONE_APART
+    refusals = schedule["refusals"]
+    assert (refusals["count"], refusals["steps"], refusals["reasons"]) == (0, 4, [])
+    assert refusals["fraction_of_steps"] == 0.0
+    assert out["coverage_report"] is False
 
 
-@pytest.mark.parametrize("clean,report", [(18, True), (20, False)])
-def test_more_than_five_percent_of_seconds_refused_is_a_coverage_report(
-    monkeypatch, tmp_path, clean, report
+@pytest.mark.parametrize(
+    "where,reason",
+    [
+        ("clock_refusals", "clock:sleep from engine"),
+        ("jobs", "executor:a job past the bound"),
+    ],
+)
+def test_any_refusal_of_any_source_is_a_coverage_report(
+    monkeypatch, tmp_path, where, reason
 ):
-    flat = Coefficients.constant(prefill_seconds=0.001, decode_seconds=0.001)
-    out = summary(monkeypatch, tmp_path, StandsIn(flat, 40), *[8] * clean, 40)
+    backend = ShapeStubBackend(STAGE1)
+    out = summary(monkeypatch, tmp_path, backend, 8, 40, **{where: [reason]})
 
-    fraction = out["schedule"]["refusals"]["fraction_of_predicted_seconds"]
-    assert fraction == pytest.approx(1 / (clean + 1))
-    assert (fraction > compass_run.REFUSED_SECONDS_GATE) == report
-    assert out["coverage_report"] is report
+    refusals = out["schedule"]["refusals"]
+    assert (refusals["count"], refusals["reasons"]) == (1, [[reason, 1]])
+    assert refusals["fraction_of_steps"] == 0.0
+    assert out["coverage_report"] is True
 
 
 def test_steps_outside_the_hull_are_extrapolated_and_never_refused(
@@ -142,14 +152,15 @@ def test_steps_outside_the_hull_are_extrapolated_and_never_refused(
     out = summary(monkeypatch, tmp_path, backend, 8, 8, 8, 40)
 
     short, long = seconds(backend, 8), seconds(backend, 40)
-    assert out["schedule"]["extrapolated"] == {
+    schedule = out["schedule"]
+    assert schedule["extrapolated"] == {
         "steps": 1,
         "fraction_of_predicted_seconds": pytest.approx(long / (3 * short + long)),
     }
-    refusals = out["schedule"]["refusals"]
+    assert schedule["analytical"] == NONE_APART
+    refusals = schedule["refusals"]
     assert (refusals["count"], refusals["steps"]) == (0, 4)
-    assert refusals["fraction_of_predicted_seconds"] == 0.0
-    assert not out["coverage_report"]
+    assert out["coverage_report"] is False
 
 
 def test_a_run_with_neither_reports_zero_of_both_beside_its_seconds(
@@ -162,10 +173,7 @@ def test_a_run_with_neither_reports_zero_of_both_beside_its_seconds(
     assert schedule["predicted_seconds"] == pytest.approx(
         seconds(backend, 8) + seconds(backend, 40)
     )
-    assert schedule["extrapolated"] == {
-        "steps": 0,
-        "fraction_of_predicted_seconds": 0.0,
-    }
-    assert schedule["refusals"]["fraction_of_predicted_seconds"] == 0.0
+    assert schedule["analytical"] == schedule["extrapolated"] == NONE_APART
+    assert schedule["refusals"]["count"] == 0
     assert schedule["refusals"]["fraction_of_steps"] == 0.0
-    assert not out["coverage_report"]
+    assert out["coverage_report"] is False
