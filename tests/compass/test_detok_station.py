@@ -235,7 +235,7 @@ def test_a_frame_from_before_the_run_decoded_on_an_output_thread_is_a_summary_re
     (tmp_path / "run.json").write_text(json.dumps(run))
     monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
     authority = compass_run._RecordingAuthority(run)
-    (tmp_path / compass_run.COMMANDS_FILE.format("engine")).write_text("[]")
+    (tmp_path / compass_run.LP_FILE.format("engine")).write_text('{"refusals": []}')
     monkeypatch.setattr(compass_run, "_authority", authority)
     server = clock_transport.serve(authority, run["clock_endpoint"])
     clock_transport.connect(LpId("traffic"), run["clock_endpoint"]).send(

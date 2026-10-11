@@ -431,7 +431,15 @@ class PricedSteps:
         }
 
 
-class NonAllocatingRunner(RefusedControlCommands, PricedSteps):
+class PredictedMemory:
+    """The memory a runner predicts, read by the engine's hand-in over the worker RPC."""
+
+    def predicted_memory(self) -> dict[str, Any]:
+        """`compass_memory` as a run installed it; a None reply parks the engine."""
+        return vars(self).get("compass_memory", {})
+
+
+class NonAllocatingRunner(RefusedControlCommands, PricedSteps, PredictedMemory):
     """Overrides that construct a model runner without touching device memory."""
 
     def _build_and_load_model(self, model_class: Any) -> None:

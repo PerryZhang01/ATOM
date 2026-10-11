@@ -129,9 +129,7 @@ def run_pd(out: Path, seed: str) -> dict:
     return {
         "table": (out / compass_run.STEP_TABLE_FILE).read_text(),
         "summary": json.loads((out / compass_run.SUMMARY_FILE).read_text()),
-        "handed_in": sorted(
-            f.name for f in out.glob(compass_run.COMMANDS_FILE.format("*"))
-        ),
+        "handed_in": sorted(f.name for f in out.glob(compass_run.LP_FILE.format("*"))),
         "request": (traffic.sent, traffic.events[0][0], traffic.events[-1][0]),
         "events": traffic.events,
     }
@@ -176,7 +174,7 @@ def test_the_run_summary_holds_every_server_lps_refusals(runs):
     run = runs[0]
     summary = run["summary"]
     print("\nsummary:", json.dumps(summary, sort_keys=True))
-    assert run["handed_in"] == [compass_run.COMMANDS_FILE.format(lp) for lp in LPS[:-1]]
+    assert run["handed_in"] == [compass_run.LP_FILE.format(lp) for lp in LPS[:-1]]
     assert summary["schedule"]["grants_total"] > 0
     assert summary["schedule"]["refusals"]["count"] == 0
     assert summary["schedule"]["refusals"]["steps"] > 0
@@ -354,7 +352,7 @@ def test_the_standalone_authority_writes_the_step_table_at_the_finish_and_the_su
 ):
     run = _run_file(tmp_path, **PD)
     # What a previous run into the same out_dir left there.
-    for name in [compass_run.COMMANDS_FILE.format(lp) for lp in LPS[:-1]] + [
+    for name in [compass_run.LP_FILE.format(lp) for lp in LPS[:-1]] + [
         compass_run.STEP_TABLE_FILE,
         compass_run.SUMMARY_FILE,
     ]:
@@ -423,10 +421,10 @@ def test_a_summary_missing_a_server_lps_refusals_names_it_though_the_last_run_le
 ):
     run = json.loads(_run_file(tmp_path, **PD).read_text())
     monkeypatch.setattr(compass_run, "HAND_IN_WAIT_S", 0.2)
-    (tmp_path / compass_run.COMMANDS_FILE.format("engine-D")).write_text("[]")
+    (tmp_path / compass_run.LP_FILE.format("engine-D")).write_text('{"refusals": []}')
     authority = compass_run._RecordingAuthority(run)
-    (tmp_path / compass_run.COMMANDS_FILE.format("engine-P")).write_text("[]")
-    with pytest.raises(TimeoutError, match="no commands-engine-D.json, commands-fr"):
+    (tmp_path / compass_run.LP_FILE.format("engine-P")).write_text('{"refusals": []}')
+    with pytest.raises(TimeoutError, match="no lp-engine-D.json, lp-fr"):
         compass_run._write_summary(run, authority)
 
 
