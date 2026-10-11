@@ -365,6 +365,10 @@ stays free of ATOM imports and is testable on a laptop. The prior work enforced 
 this separation (`atom.compass.core` was forbidden from importing anything from ATOM) and
 it paid for itself.
 
+`seconds` is one forward's device busy time, with no launch gaps. Host time is never a
+backend's: the runner composes it with `seconds` into the forward's charge (`01` D4,
+owner ruling on #815, 2026-10-11).
+
 `StepCost` carries `seconds` **and a breakdown**. The breakdown is not decoration: every
 serious error in the prior effort was found by decomposing a total, and at least six
 times an aggregate hid compensating errors — a +13.8% memory sum that was three errors
@@ -547,5 +551,5 @@ scheduler at shapes no real model has.
 |---|---|---|
 | D10 | Attach at `ModelRunner.forward`, delivered by a `--runner-qualname` subclass; no ATOM change for the injection. Revised: `flush_pp_send` keeps ATOM's own answer and the stage loop settles the pending send before calling it; the control-command refusals are recorded in [`01` D5](01_execution_and_time_model.md#decision-log) | 2026-09-18, revised 2026-09-28 and 2026-09-30 |
 | D10.1 | A model comes into existence three ways, none reading weights: HF-config geometry where only geometry is needed; a `torch.device("meta")` context where a module tree is needed without tracing (no transient, no GPU, covers buffers - ATOM already has this shape at `models/utils.py::no_init_weights`, unused); and `FakeTensorMode` for tracing, the only one with symbolic shapes and the right device branch. `--load_dummy` is reused in all three. `_init_weight_params_on_meta` is not a bug but is superseded by the meta context. The T5 fallback is the meta context plus concrete traces. | 2026-09-20 |
-| D11 | No modes on the runner. Every run simulates; the algorithm comes from a pluggable cost backend. `measure` and `trace` are orthogonal flags. | 2026-09-18 |
+| D11 | No modes on the runner. Every run simulates; the algorithm comes from a pluggable cost backend. `measure` and `trace` are orthogonal flags. A backend's `seconds` is one forward's device busy time; host time is composed outside it (`01` D4). | 2026-09-18; revised 2026-10-11 (#815) |
 | D12 | M1 fake model = KV/weight geometry from the HF config + a shape-analytic cost stub including the quadratic query term; constant mode retained for bring-up | 2026-09-18 |

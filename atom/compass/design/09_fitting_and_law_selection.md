@@ -104,6 +104,37 @@ DP and EP with a **per-rank** law: it prices one rank's step, and the group's st
   max-affine fitting (Magnani and Boyd, 2009), with the ranks in place of the affine
   pieces and one coefficient vector shared by all of them.
 
+### The label: device busy time, and the host laws beside it
+
+Owner ruling on [#815](https://github.com/jgong5/ATOM/issues/815), 2026-10-11, superseding
+ruling 2 of
+[#627's 2026-10-10 plan](https://github.com/jgong5/ATOM/issues/627#issuecomment-6096543740).
+That ruling labelled a step with its period, from one forward's host entry to the next,
+with host gaps in the intercepts. A pure middle chunk's device tail then lands in the next
+step's period: about +4% after idle and -8% after a pure middle chunk, at c1 and c4
+(#801).
+
+**The tier-a label is one forward's device busy time**, the window from a device event at
+`run_model` entry to one at the forward's exit (`01` D4, *Measured, not hooked*). The
+window is busy time only when the host's launch stays ahead of the device. A forward whose
+device start precedes its host launch end is cut as launch-exposed and counted apart; it
+labels no fit. The R1 wait's exit, a host time at which a known device event has
+completed, anchors the host and device clocks to each other. With MTP the label splits at
+`forward_done_event` into target and draft
+([#829](https://github.com/jgong5/ATOM/issues/829)).
+
+**Four host laws** price the host segments of `01` D4: `E`, `W_pre`, `W_launch` and
+`W_post`, each linear in `(1, tokens, seqs)`, fitted separately for prefill and decode.
+They use tier a's solver: D53's relative error and MAD drops, D57's report, D58's hull. An
+`E` sample whose gap spans an idle engine is cut as idle and counted apart.
+
+- **Key:** the host CPU, the `atom` source digest, the model and the engine config. A
+  mismatch refuses. There is no transfer mode: the MI455 projection prices no host floor
+  (`08` D50.2).
+- **Home:** beside the tier-a law, not in the machine spec's `host.*` (`05` D25).
+- **Use:** the runner composes them with any backend's device time by `01` D4's
+  recurrence; no backend adds them to its own price.
+
 ---
 
 ## D55. Feature construction
@@ -383,7 +414,7 @@ choice that must be visible.
 | # | Decision | Date |
 |---|---|---|
 | D53 | Fit relative error, not absolute seconds. MAD outlier test on the same relative residuals. | 2026-09-18 |
-| D54 | Prefill and decode fitted separately; decode per CUDA-graph rung with both coefficients per rung. Under DP and EP, tier a is one per-rank law keyed by `(dp, ep)`, with the DP-unified rung and the MoE row count as features (`T_moe` with EP off; open with EP on), captured on a real deployment at that `(dp, ep)` and fitted by alternating max-affine regression. | 2026-09-18; revised 2026-10-01 and 2026-10-09 (`T_moe`, #502) |
+| D54 | Prefill and decode fitted separately; decode per CUDA-graph rung with both coefficients per rung. Under DP and EP, tier a is one per-rank law keyed by `(dp, ep)`, with the DP-unified rung and the MoE row count as features (`T_moe` with EP off; open with EP on), captured on a real deployment at that `(dp, ep)` and fitted by alternating max-affine regression. Tier a's label is one forward's device busy time, launch-exposed forwards cut; four host laws (`E`, `W_pre`, `W_launch`, `W_post`), each `(1, tokens, seqs)` per prefill and decode, are fitted beside it, keyed by host CPU, `atom` digest, model and engine config, with no transfer. | 2026-09-18; revised 2026-10-01, 2026-10-09 (`T_moe`, #502) and 2026-10-11 (#815) |
 | D55 | Attention terms summed per request; the padding term is the rung's rectangle, not the batch's. | 2026-09-18 |
 | D56 | Distinguish rank deficiency from coverage gap: drop zero-variance features explicitly, report the condition number, and treat "widening the evidence does not move the error" as evidence the feature is wrong. | 2026-09-18 |
 | D57 | Every fit reports provenance, sample count, dropped count, condition number and validity hull. Report an interval or report nothing. | 2026-09-18 |

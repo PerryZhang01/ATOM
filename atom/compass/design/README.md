@@ -580,7 +580,7 @@ The documents use these precisely; a reader will bounce off without them.
 |---|---|
 | D1 | Keep ATOM's multi-process and multi-thread topology; every change is additive |
 | D3 | A central **Clock Authority** acting as the HLA RTI; a grant stays strictly below the lookahead-distance LBTS and waits for messages in transit; zero-lookahead couplings collapse into one LP |
-| D4 | Every synchronization site maps to one of the PDES mechanisms K1–K9; the boundary is the LP, not the process |
+| D4 | Every synchronization site maps to one of the PDES mechanisms K1–K9; the boundary is the LP, not the process. A forward's charge composes the backend's device time with measured host time, by one recurrence per runner |
 | D10 | Attach at `ModelRunner.forward` via `--runner-qualname`; no ATOM change for the injection |
 | D13 | Do not simulate the KV pool; run ATOM's real one |
 | D14 | Substitute the five device readings, never the arithmetic |

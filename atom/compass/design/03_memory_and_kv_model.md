@@ -119,8 +119,8 @@ D58 spent three iterations abandoning.
 
 **What is still not modelled:** the *lookup* cost. Matching a 100k-token prompt against
 the prefix index is host work proportional to block count, and it is charged to nobody
-— it currently falls inside the host floor of doc `07` Phase 1c as an unattributed
-constant. At cc-traces' p50 input of 88,768 tokens that is ~1,387 blocks hashed and
+— it falls inside `01` D4's host segment `E`, whose law (`09` D54) has no block-count
+term. At cc-traces' p50 input of 88,768 tokens that is ~1,387 blocks hashed and
 probed per request. Whether that is 0.1 ms or 10 ms is unmeasured. Recorded as **T49**.
 - `hash_blocks` is deliberately called from `Scheduler.postprocess` (`scheduler.py`)
   *after* the forward, because the real engine only publishes a prefix once the KV

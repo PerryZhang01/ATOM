@@ -84,6 +84,13 @@ All four parameters come from the machine spec (doc 05 D25): `compute.*_flops` a
 leaf's operand precision,
 `memory.bandwidth_bytes_per_s`, their `derate`s, and — for `h` — `host.*`.
 
+**Revised 2026-10-11 by the owner's ruling on
+[#815](https://github.com/jgong5/ATOM/issues/815): tier 0 prices `Σ t_leaf` only.** Every
+backend prices one forward's device time (`02` D11), so the host floor leaves tier 0. The
+`max` it states survives in `01` D4's recurrence, `end = max(target_end + D_draft,
+launch_end)`, where `launch_end` plays the part of `launches × h`. The launch time comes
+from the measured `W_launch` host law (`09` D54), not from `host.*`. The evidence below is why that `max` is kept.
+
 ### Why the host floor is not optional
 
 `step = max(kernel time, launches × h)` at h = **95.8 µs** held four warm prefill shapes
@@ -392,7 +399,7 @@ what tier b exists for.
 | # | Decision | Date |
 |---|---|---|
 | D63 | Three classes: A exact from geometry, B device-parameterised, C policy-determined. Analytic works where the quantity is a pure function of declared geometry and fails where a runtime or library policy decides it. | 2026-09-19 |
-| D64 | Roofline leaf `max(F/flops, M/bandwidth)` with derates, plus the host floor as a step-level `max`, not an addend. | 2026-09-19 |
+| D64 | Roofline leaf `max(F/flops, M/bandwidth)` with derates, plus the host floor as a step-level `max`, not an addend. Revised: tier 0 prices `Σ t_leaf` only; the `max` moves to `01` D4's recurrence, with the launch time from the measured `W_launch` law. | 2026-09-19; revised 2026-10-11 (#815) |
 | D65 | Tier 0 is a smooth model and says so: it reports a band where a known discontinuity lies in range, and is not promoted for such leaves without a measured band table. | 2026-09-19 |
 | D66 | Two-regime collective model with the algorithm named in the spec. Textbook ring/log models are refuted on this fabric. | 2026-09-19 |
 | D67.1 | Tier-0 accuracy goals declared per quantity: ≤5% on weights and on KV capacity/block count (the empirical gate for KV, tighter than it for weights), ≤25% each other non-KV memory term, ≤30% step time, ≤40% end-to-end. **Configuration ranking (top-1 and top-3 set) is the primary gate**; no false "fits". Checked against the empirical campaign at no extra GPU cost. | 2026-09-19 |
@@ -413,6 +420,6 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 | T34 | Test whether the activation coefficient `k_model` is derivable from geometry, against the measured coefficient ([#705](https://github.com/jgong5/ATOM/issues/705)) | decides whether a model nobody has run needs a real run for its activation term |
 | T35 | Derive FLOPs and bytes-moved expressions for the ~20 opaque leaves | Class A is free from the IR for aten ops, but an opaque leaf's internal work must be described by hand (doc 04 D20's parameter extractor, extended) |
 | T36 | Name the collective algorithm per code path in the machine spec schema | doc 05 D25 has no field for it yet |
-| T37 | Decide whether `h` (the host floor) is derivable or stays a per-model measured constant | 40% apart between two models; it is the largest single Class-C term |
+| ~~T37~~ | ~~Decide whether `h` (the host floor) is derivable or stays a per-model measured constant~~ — **ruled 2026-10-11 on #815**: host time is measured, as host laws keyed by host CPU, `atom` digest, model and engine config, with no transfer (`09` D54) | 40% apart between two models; it is the largest single Class-C term |
 | T38 | Build the analytic-vs-measured ratio report as part of the empirical campaign | it must exist before the campaign, not after |
 | T39 | Establish a dispatch-band table from geometry for leaves with no measured bands | tile sizes and chunk sizes are knowable; whether the *selection rule* is, is not |
