@@ -38,12 +38,18 @@ class _AiterStandIn(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 
 
 if torch.cuda.is_available():
-    from atom.model_ops.attentions.gdn_attn import GDNStateMixin
+    from atom.model_ops.attentions.gdn_attn import (
+        GDNStateMixin,
+        compute_causal_conv1d_metadata,
+    )
 else:
     _finder = _AiterStandIn()
     sys.meta_path.insert(0, _finder)
     try:
-        from atom.model_ops.attentions.gdn_attn import GDNStateMixin
+        from atom.model_ops.attentions.gdn_attn import (
+            GDNStateMixin,
+            compute_causal_conv1d_metadata,
+        )
     finally:
         sys.meta_path.remove(_finder)
         for _name in [n for n in sys.modules if n.split(".")[0] == "aiter"]:
@@ -115,3 +121,14 @@ def test_program_map_is_staged_in_the_runner_buffers():
     )
     np.testing.assert_array_equal(md.batch_ptr.numpy(), [0, 1, 1, 1])
     np.testing.assert_array_equal(md.token_chunk_offset_ptr.numpy(), [0, 0, 1, 2])
+
+
+def test_plugins_build_the_map_from_the_device_lengths_alone():
+    """The SGLang and RTP-LLM plugins pass only their `query_start_loc`."""
+    cu = torch.tensor([0, 3, 20], dtype=torch.int32)
+    nums_dict, batch_ptr, token_chunk_offset_ptr = compute_causal_conv1d_metadata(cu)
+    assert nums_dict[BLOCK_M]["tot"] == 4
+    assert batch_ptr.dtype == token_chunk_offset_ptr.dtype == torch.int32
+    assert batch_ptr.device == cu.device
+    assert batch_ptr.tolist() == [0, 1, 1, 1]
+    assert token_chunk_offset_ptr.tolist() == [0, 0, 1, 2]

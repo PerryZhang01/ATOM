@@ -1547,10 +1547,18 @@ class GDNAttentionMetadataBuilder(GDNStateMixin, AiterAttentionMetadataBuilder):
 PAD_SLOT_ID = -1
 
 
-def compute_causal_conv1d_metadata(cu_seqlens, batch_buf, token_chunk_offset_buf):
-    # Needed for causal_conv1d. Host lengths and pinned non-blocking copies, so
-    # preparing a prefill never waits for the device.
-    seqlens = torch.from_numpy(np.diff(cu_seqlens))
+def compute_causal_conv1d_metadata(
+    cu_seqlens, batch_buf=None, token_chunk_offset_buf=None
+):
+    # Needed for causal_conv1d. With staging buffers, `cu_seqlens` is the host
+    # copy and the program map goes over by pinned non-blocking copies, so
+    # preparing a prefill never waits for the device. Without them (the SGLang
+    # and RTP-LLM plugins), `cu_seqlens` is a device tensor and the map goes to
+    # new tensors on its device.
+    if batch_buf is None:
+        seqlens = cu_seqlens.diff().to("cpu")
+    else:
+        seqlens = torch.from_numpy(np.diff(cu_seqlens))
     nums_dict = {}  # type: ignore
     for BLOCK_M in [8]:  # cover all BLOCK_M values
         nums = -(-seqlens // BLOCK_M)
@@ -1567,10 +1575,14 @@ def compute_causal_conv1d_metadata(cu_seqlens, batch_buf, token_chunk_offset_buf
         offsetlist = torch.tensor(offsetlist, dtype=torch.int32)
         nums_dict[BLOCK_M]["offsetlist"] = offsetlist
 
-        batch_buf.np[:mlist_len] = mlist
-        token_chunk_offset_buf.np[:mlist_len] = offsetlist
-        batch_ptr = batch_buf.copy_to_gpu(mlist_len)
-        token_chunk_offset_ptr = token_chunk_offset_buf.copy_to_gpu(mlist_len)
+        if batch_buf is None:
+            batch_ptr = mlist.to(cu_seqlens.device, torch.int32)
+            token_chunk_offset_ptr = offsetlist.to(cu_seqlens.device)
+        else:
+            batch_buf.np[:mlist_len] = mlist
+            token_chunk_offset_buf.np[:mlist_len] = offsetlist
+            batch_ptr = batch_buf.copy_to_gpu(mlist_len)
+            token_chunk_offset_ptr = token_chunk_offset_buf.copy_to_gpu(mlist_len)
         nums_dict[BLOCK_M]["batch_ptr"] = batch_ptr
         nums_dict[BLOCK_M]["token_chunk_offset_ptr"] = token_chunk_offset_ptr  # type: ignore
 
