@@ -83,35 +83,47 @@ class _Vector:
                     "is a non-negative duration"
                 )
         self.coefficients = tuple(float(coefficients[f]) for f in features)
-        hull = spec["hull"]
-        self.equal = dict(hull.get("equal", {}))
-        if not set(self.equal) <= set(features[1:]):
+        # The intercept, first in `features`, is not a hull coordinate.
+        self.hull = Hull(f"the {name} hull", features[1:], spec["hull"])
+        self.features = features
+
+
+class Hull:
+    """The convex hull of the features a fit ranged over.
+
+    `equal` maps each feature that was constant over the fit to its value;
+    `facets` bound the others, in `features` order, as `a . x + c <= 0` inside.
+    `label` names the hull in every load error.
+    """
+
+    def __init__(self, label: str, features: tuple[str, ...], hull: Mapping) -> None:
+        equal = hull.get("equal", {})
+        if not set(equal) <= set(features):
             raise ValueError(
-                f"the {name} hull checks {sorted(self.equal)} for equality, which "
-                f"are not all among its features {list(features[1:])}"
+                f"{label} checks {sorted(equal)} for equality, which "
+                f"are not all among its features {list(features)}"
             )
-        self.vary = [i for i, f in enumerate(features[1:], 1) if f not in self.equal]
+        self.equal = {features.index(f): value for f, value in equal.items()}
+        self.vary = [i for i in range(len(features)) if i not in self.equal]
         width = len(self.vary) + 1
         if any(len(row) != width for row in hull["facets"]):
             raise ValueError(
-                f"the {name} hull has a facet not {width} wide: one entry per "
+                f"{label} has a facet not {width} wide: one entry per "
                 f"varying feature {[features[i] for i in self.vary]}, then the offset"
             )
         self.facets = np.asarray(hull["facets"], dtype=np.float64).reshape(-1, width)
         if self.vary and not len(self.facets):
             raise ValueError(
-                f"the {name} hull bounds {len(self.vary)} varying features with no "
+                f"{label} bounds {len(self.vary)} varying features with no "
                 "facets, which is all of space"
             )
         if not np.isfinite(self.facets).all():
-            raise ValueError(f"the {name} hull has a facet that is not finite")
-        self.features = features
+            raise ValueError(f"{label} has a facet that is not finite")
 
-    def contains(self, counts: tuple[int, ...]) -> bool:
-        for feature, value in self.equal.items():
-            if counts[self.features.index(feature)] != value:
-                return False
-        x = np.array([counts[i] for i in self.vary], dtype=np.float64)
+    def contains(self, point: tuple[float, ...]) -> bool:
+        if any(point[i] != value for i, value in self.equal.items()):
+            return False
+        x = np.array([point[i] for i in self.vary], dtype=np.float64)
         normals, offsets = self.facets[:, :-1], self.facets[:, -1]
         scale = np.abs(normals) @ np.abs(x) + np.abs(offsets)
         return bool(np.all(normals @ x + offsets <= _HULL_TOLERANCE * scale))
@@ -185,7 +197,7 @@ class CoarseBackend(CostBackend):
             counts = (1, sum_context(decode), batch_view.graph_padding)
         detail = self.law.provenance
         species = Species.FITTED
-        if not vector.contains(counts):
+        if not vector.hull.contains(counts[1:]):
             species = Species.EXTRAPOLATED
             detail = f"{detail}; outside the {vector.name} hull"
         return StepCost(

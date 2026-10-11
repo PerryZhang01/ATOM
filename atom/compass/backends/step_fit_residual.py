@@ -59,8 +59,7 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from fractions import Fraction
 
-import numpy as np
-
+from atom.compass.backends.coarse import Hull
 from atom.compass.backends.shape import (
     BatchView,
     RequestShape,
@@ -70,9 +69,6 @@ from atom.compass.backends.shape import (
     sum_tokens,
 )
 from atom.compass.backends.step_fit import _refused
-
-#: A point on a facet evaluates to rounding error, relative to its magnitudes.
-_HULL_TOLERANCE = 1e-9
 
 
 def tokens(rows: Sequence[RequestShape]) -> Fraction:
@@ -120,42 +116,6 @@ class Recipe:
 V1 = Recipe(
     "step-fit-residual", 1, (tokens, query_square, query_context, order, raggedness)
 )
-
-
-class _Hull:
-    """The features' range over the fit, checked as `coarse.py` checks a law's."""
-
-    def __init__(self, features: tuple[str, ...], hull: Mapping) -> None:
-        equal = hull.get("equal", {})
-        if not set(equal) <= set(features):
-            raise ValueError(
-                f"the residual's hull checks {sorted(equal)} for equality, which "
-                f"are not all among its features {list(features)}"
-            )
-        self.equal = {features.index(f): value for f, value in equal.items()}
-        self.vary = [i for i in range(len(features)) if i not in self.equal]
-        width = len(self.vary) + 1
-        if any(len(row) != width for row in hull["facets"]):
-            raise ValueError(
-                f"the residual's hull has a facet not {width} wide: one entry per "
-                f"varying feature {[features[i] for i in self.vary]}, then the offset"
-            )
-        self.facets = np.asarray(hull["facets"], dtype=np.float64).reshape(-1, width)
-        if self.vary and not len(self.facets):
-            raise ValueError(
-                f"the residual's hull bounds {len(self.vary)} varying features "
-                "with no facets, which is all of space"
-            )
-        if not np.isfinite(self.facets).all():
-            raise ValueError("the residual's hull has a facet that is not finite")
-
-    def contains(self, x: tuple[float, ...]) -> bool:
-        if any(x[i] != value for i, value in self.equal.items()):
-            return False
-        v = np.array([x[i] for i in self.vary], dtype=np.float64)
-        normals, offsets = self.facets[:, :-1], self.facets[:, -1]
-        scale = np.abs(normals) @ np.abs(v) + np.abs(offsets)
-        return bool(np.all(normals @ v + offsets <= _HULL_TOLERANCE * scale))
 
 
 class _Linear:
@@ -209,7 +169,7 @@ class Residual:
                 "the residual was fitted under recipe {} v{} digest {}, and this "
                 "code's is {} v{} digest {}".format(*theirs, *ours)
             )
-        self.hull = _Hull(V1.names, residual["hull"])
+        self.hull = Hull("the residual's hull", V1.names, residual["hull"])
         if not residual["selected"]:
             raise ValueError("the residual selects no member")
         self.members = []
