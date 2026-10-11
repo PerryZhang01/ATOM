@@ -6,13 +6,22 @@
     python -m atom.compass.backends.coarse_fit RECORD... --out LAW [--form FORM]
 
 Each RECORD is a real run's step record (`steps/dp0.jsonl`, written with
-`ATOM_COMPASS_PARITY_RECORD`). A step's label is its period: `t_enter_ns` of
-the step to `t_enter_ns` of the next, kept only where the next batch holds a
-request this one left unfinished, so the engine went straight from one forward
-to the next. The host time between forwards lands in the intercepts. A step
-whose period may hold an idle gap and a step mixing prefill and decode rows
-are counted and not fitted. The step after an idle gap is fitted: its period
-starts at its own forward, after the gap.
+`ATOM_COMPASS_PARITY_RECORD`). A step's label is its device busy time,
+`d_busy_ns`, except where its device start precedes its host launch end: that
+step is launch-exposed, counted and not fitted. Each R1 wait's exit bounds the
+host clock's lead over the device's (the previous output forward had finished
+by then); the tightest of the last `ANCHORS` bounds is the lead. A record
+without device windows labels a step by its period, `t_enter_ns` to the next
+step's, cutting a period that may hold an idle gap. A step mixing prefill and
+decode rows is counted and not fitted.
+
+Records with a host key (`dp0.key.json`, from the real runner) also give the
+host laws as a run file's `host` entry: `key`, and `laws[kind][segment]`,
+seconds on `(1, tokens, seqs)`. `E` runs from the previous forward's exit,
+cut as idle when the two batches share no request; `W_pre` to the launch, less
+the staging gate's wait; `W_post` from the launch to the exit, less the R1
+wait, and a middle chunk has none. They take tier a's solver, MAD drops and
+hulls; `seqs` equal to `tokens` on every sample gets zero. Two keys refuse.
 
 Each equation is divided by its own label and the coefficients are bound to be
 non-negative. Steps whose relative residual is more than `MAD_K` scaled MADs
@@ -36,7 +45,8 @@ an intercept per rung.
 
 With two or more records it also prints, per form, the error on each record of
 a law fitted on the others, warm steps left out: per kind and rung, or prefill
-token band, the p10, p50 and p90 of `predicted / measured - 1`.
+token band, the p10, p50 and p90 of `predicted / measured - 1`; and the same
+per host law.
 """
 
 from __future__ import annotations
@@ -44,6 +54,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+from collections import deque
 from itertools import pairwise
 from pathlib import Path
 
@@ -67,10 +78,46 @@ MAD_PASSES = 20
 #: A step that ran this many times its price is a one-off first touch, not scatter.
 WARM_FACTOR = 5.0
 TOKEN_BANDS = (512, 2048, 8192)
+#: R1 wait exits whose tightest bound is a step's host clock lead.
+ANCHORS = 32
+HOST_KINDS = ("decode", "prefill", "middle")
+HOST_SEGMENTS = ("E", "W_pre", "W_launch", "W_post")
+HOST_FEATURES = ("step", "tokens", "seqs")
 
 
 def _rung_key(rung: int | None) -> str:
     return EAGER if rung is None else str(rung)
+
+
+def _lines(record) -> list[dict]:
+    return [json.loads(line) for line in Path(record).read_text().splitlines()]
+
+
+def _launch_exposed(lines) -> set[int]:
+    """The steps whose device start precedes their host launch end."""
+    device, output_end, timed = 0, None, []
+    for s in lines:
+        if "d_busy_ns" not in s:
+            continue
+        start = device + s.get("d_gap_ns", 0)
+        device = start + s["d_busy_ns"]
+        bound = None
+        if "t_recv_ns" in s and output_end is not None:
+            bound = s["t_recv_ns"][1] - output_end
+        if s["produces_output"]:
+            output_end = device
+        timed.append((s, start, bound))
+    bounds = [b for _, _, b in timed if b is not None]
+    if not bounds:
+        raise ValueError("no R1 wait exit ties the record's host and device clocks")
+    # Steps before the first anchor read the first ones.
+    first, recent, exposed = min(bounds[:ANCHORS]), deque(maxlen=ANCHORS), set()
+    for s, start, bound in timed:
+        if bound is not None:
+            recent.append(bound)
+        if start + min(recent, default=first) < s["t_launch_ns"][1]:
+            exposed.add(s["step"])
+    return exposed
 
 
 def samples(record, form: str = "law") -> tuple[list[tuple], dict]:
@@ -79,16 +126,22 @@ def samples(record, form: str = "law") -> tuple[list[tuple], dict]:
     `vector` is `prefill` or a decode rung's key; features are in `CoarseLaw`'s
     order, plus `history` for that form.
     """
-    steps = [json.loads(line) for line in Path(record).read_text().splitlines()]
-    steps = [s for s in steps if not s["is_dummy_run"]]
+    lines = _lines(record)
+    steps = [s for s in lines if not s["is_dummy_run"]]
     if not steps or "t_enter_ns" not in steps[0]:
         raise ValueError(
             f"{record} has no timed steps; a fit needs a real run's record"
         )
-    cut = {"idle": 0, "mixed": 0, "last": 1}
+    busy = "d_busy_ns" in steps[0]
+    if busy:
+        exposed = _launch_exposed(lines)
+        cut = {"exposed": 0, "mixed": 0}
+        pairs = zip(steps, steps[1:] + [None])
+    else:
+        exposed, cut, pairs = set(), {"idle": 0, "mixed": 0, "last": 1}, pairwise(steps)
     rows = []
-    for step, nxt in pairwise(steps):
-        idle = not {r[0] for r in step["batch"]} & {r[0] for r in nxt["batch"]}
+    for step, nxt in pairs:
+        idle = not busy and not _shared(step, nxt)
         view = BatchView(
             tuple(RequestShape(q, c, bool(d)) for q, c, d in step["rows"]),
             capture_rung=step["rung"],
@@ -97,6 +150,8 @@ def samples(record, form: str = "law") -> tuple[list[tuple], dict]:
             cut["idle"] += 1
         elif view.prefill and view.decode:
             cut["mixed"] += 1
+        elif step["step"] in exposed:
+            cut["exposed"] += 1
         else:
             if view.prefill:
                 r = view.prefill
@@ -107,9 +162,87 @@ def samples(record, form: str = "law") -> tuple[list[tuple], dict]:
             else:
                 key = _rung_key(view.capture_rung)
                 counts = (1, sum_context(view.decode), view.graph_padding)
-            period = (nxt["t_enter_ns"] - step["t_enter_ns"]) * 1e-9
-            rows.append((key, counts, period, step["step"]))
+            if busy:
+                label = step["d_busy_ns"] * 1e-9
+            else:
+                label = (nxt["t_enter_ns"] - step["t_enter_ns"]) * 1e-9
+            rows.append((key, counts, label, step["step"]))
     return rows, cut
+
+
+def _shared(step, other) -> bool:
+    """Whether two steps' batches hold a request in common."""
+    return bool({r[0] for r in step["batch"]} & {r[0] for r in other["batch"]})
+
+
+def host_samples(record) -> tuple[list[tuple], int]:
+    """(kind, segment, (1, tokens, seqs), seconds) per host segment of each
+    real forward, and how many `E` gaps were cut as idle."""
+    rows, idle, prev = [], 0, None
+    for s in _lines(record):
+        if s["is_dummy_run"]:
+            prev = s
+            continue
+        enter, (l0, l1) = s["t_enter_ns"], s["t_launch_ns"]
+        g0, g1 = s.get("t_gate_ns", (l0, l0))
+        r0, r1 = s.get("t_recv_ns", (0, 0))
+        kind = "decode" if all(d for _, _, d in s["rows"]) else "prefill"
+        kind = kind if s["produces_output"] else "middle"
+        segments = {"W_pre": g0 - enter + l0 - g1, "W_launch": l1 - l0}
+        if kind != "middle":
+            segments["W_post"] = s["t_exit_ns"] - l1 - (r1 - r0)
+        if prev is not None and _shared(s, prev):
+            segments["E"] = enter - prev["t_exit_ns"]
+        elif prev is not None:
+            idle += 1
+        x = (1, sum(r[1] for r in s["batch"]), len(s["batch"]))
+        rows += [(kind, k, x, v * 1e-9) for k, v in segments.items()]
+        prev = s
+    return rows, idle
+
+
+def _key(record):
+    path = Path(record).with_suffix(".key.json")
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def fit_host(records) -> tuple[dict, dict]:
+    """The host laws over `records`, as a run file's `host` entry, and their report."""
+    from scipy.spatial import QhullError
+
+    keys = {json.dumps(_key(r), sort_keys=True) for r in records}
+    if len(keys) != 1:
+        raise ValueError(
+            f"the records carry {len(keys)} host keys ({' / '.join(sorted(keys))}); "
+            "host laws are fitted under one"
+        )
+    got = [host_samples(r) for r in records]
+    rows = [row for r, _ in got for row in r]
+    host = {"key": json.loads(keys.pop()), "laws": {}}
+    report = {"cut": {"idle": sum(n for _, n in got)}, "unfitted": {}}
+    for kind in HOST_KINDS:
+        for segment in HOST_SEGMENTS[: 3 if kind == "middle" else 4]:
+            members = [r for r in rows if r[:2] == (kind, segment) and r[3] > 0]
+            x = np.array([r[2] for r in members], dtype=np.float64).reshape(-1, 3)
+            width = 2 if np.array_equal(x[:, 1], x[:, 2]) else 3
+            if width == 2:
+                x[:, 2] = 0.0
+            try:
+                if len(members) <= len(HOST_FEATURES):
+                    raise ValueError(f"{len(members)} forwards for 3 coefficients")
+                s = _solve(x, np.array([r[3] for r in members]), list(HOST_FEATURES))
+                hull = _hull(x[s["keep"]][:, 1:width], HOST_FEATURES[1:width])
+            except (ValueError, QhullError) as e:
+                report["unfitted"][f"{kind}.{segment}"] = str(e).splitlines()[0]
+                continue
+            host["laws"].setdefault(kind, {})[segment] = s["coef"].tolist()
+            report[f"{kind}.{segment}"] = {
+                "hull": hull,
+                "samples": int(s["keep"].sum()),
+                "dropped": int((~s["keep"]).sum()),
+                **{k: s[k] for k in ("condition", "centre", "mad", "zero")},
+            }
+    return host, report
 
 
 def _solve(x: np.ndarray, y: np.ndarray, names: list[str]) -> dict:
@@ -179,12 +312,17 @@ def fit(records, form: str = "law") -> dict:
 
     if form not in FORMS:
         raise ValueError(f"form {form!r} is not one of {FORMS}")
-    rows, cut = [], {"warm": 0, "warm_s": 0.0}
+    rows, cut, labels = [], {"warm": 0, "warm_s": 0.0}, set()
     for i, record in enumerate(records):
         got, c = samples(record, form)
         rows += [(i, *r) for r in got]
+        labels.add("exposed" in c)
         for k, v in c.items():
             cut[k] = cut.get(k, 0) + v
+    if len(labels) > 1:
+        raise ValueError(
+            "some records carry device windows and some do not; one law takes one label"
+        )
     digests = [
         f"{Path(r).name}:{hashlib.sha256(Path(r).read_bytes()).hexdigest()[:12]}"
         for r in records
@@ -270,6 +408,8 @@ def fit(records, form: str = "law") -> dict:
                 law["prefill"] = vector
             else:
                 law["decode"][k] = vector
+    if any(_key(r) for r in records):
+        law["host"], law["host_fit"] = fit_host(records)
     return law
 
 
@@ -297,6 +437,20 @@ def held_out(records, form: str = "law") -> dict:
                 continue
             price = np.dot(list(vector["coefficients"].values()), counts)
             errors.setdefault(band, []).append(float(price) / seconds - 1.0)
+    return errors
+
+
+def host_held_out(records) -> dict:
+    """Per host law, the relative errors on each record of the laws fitted on the others."""
+    errors: dict[str, list[float]] = {}
+    for i, record in enumerate(records):
+        laws = fit_host(records[:i] + records[i + 1 :])[0]["laws"]
+        for kind, segment, x, seconds in host_samples(record)[0]:
+            c = laws.get(kind, {}).get(segment)
+            if seconds > 0:
+                errors.setdefault(
+                    f"host {kind} {segment}" + ("" if c else " (no law)"), []
+                ).append(float(np.dot(c, x)) / seconds - 1.0 if c else float("nan"))
     return errors
 
 
@@ -330,9 +484,13 @@ def main(argv=None) -> None:
             print(
                 f"{name}: {json.dumps(vector['coefficients'])} {json.dumps(vector['fit'])}"
             )
+    if "host" in law:
+        print(f"host: {json.dumps(law['host']['laws'])} {json.dumps(law['host_fit'])}")
     if len(args.records) > 1:
         for form in FORMS:
             print(f"\nheld out, form {form}\n{_table(held_out(args.records, form))}")
+        if "host" in law:
+            print(f"\nheld out, host laws\n{_table(host_held_out(args.records))}")
 
 
 if __name__ == "__main__":

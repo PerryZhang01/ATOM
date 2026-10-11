@@ -8,8 +8,9 @@ RECORD is a real run's step record directory (`ATOM_COMPASS_PARITY_RECORD`,
 `coarse_fit` writes it. Pricing the real run's own steps separates cost error
 from schedule error: both sides run the same batches.
 
-Each step is labelled as the fit labels it, by its period (`coarse_fit.samples`,
-which also says which steps carry no label), and priced by `CoarseBackend`. The
+Each step is labelled as the fit labels it, by its device busy time or, on a
+record without device windows, its period (`coarse_fit.samples`, which also
+says which steps carry no label), and priced by `CoarseBackend`. The
 error of a step is `priced / measured - 1`. Per kind the report gives the error
 on totals, on totals holding out the step that contributes most to their error,
 and the median per step; per decode rung or prefill token band, the p10, p50

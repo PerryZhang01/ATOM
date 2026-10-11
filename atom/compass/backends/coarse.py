@@ -39,11 +39,16 @@ above, as `a . x + c <= 0` inside: the rows of qhull's `ConvexHull.equations`.
 
 from __future__ import annotations
 
+import hashlib
 import math
+import platform
+import re
 from collections.abc import Mapping
+from pathlib import Path
 
 import numpy as np
 
+import atom
 from atom.compass.backends.base import CostBackend, Tier
 from atom.compass.backends.cost import CostTerm, StepCost
 from atom.compass.backends.ladder import CostRefused
@@ -217,3 +222,27 @@ class CoarseBackend(CostBackend):
 
     def describe(self) -> str:
         return f"tier-a coarse law; {self.law.provenance}"
+
+
+def host_key(config) -> dict:
+    """What host laws are keyed by: this host's CPU, ATOM's source outside
+    Compass, the served config.json and the engine config a step fit bundle is
+    keyed by."""
+    from atom.compass.run import _file_digest
+    from atom.compass.run.step_fit import keyed
+
+    cpu = re.search(
+        r"^model name\s*:\s*(.+)$", Path("/proc/cpuinfo").read_text(), re.MULTILINE
+    )
+    root = Path(atom.__file__).parent
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*.py")):
+        relative = path.relative_to(root)
+        if relative.parts[0] != "compass":
+            digest.update(f"{relative}\0".encode() + path.read_bytes())
+    return {
+        "host_cpu": cpu.group(1) if cpu else platform.processor(),
+        "atom": digest.hexdigest(),
+        "model": _file_digest(config.model, "config.json"),
+        "engine": keyed(config),
+    }

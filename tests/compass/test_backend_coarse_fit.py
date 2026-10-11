@@ -7,6 +7,7 @@ so each step's period is the known law's price. The fitted law is read by
 """
 
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -290,3 +291,183 @@ def test_the_cost_report_names_the_leading_warm_steps_the_law_names(tmp_path):
     assert 0 in law["warm_steps"][1]
     named = [w["step"] for w in cost_accuracy(tmp_path / "wide", law)["warm"]]
     assert sorted(named) == sorted(law["warm_steps"][1])
+
+
+# Host laws, ns-exact on (1, tokens, seqs). Decode's seqs equal its tokens, so
+# its law is written on tokens alone, as the fit returns it.
+HOST = {
+    "decode": {
+        "E": [2e-4, 3e-6, 0.0],
+        "W_pre": [3e-4, 5e-6, 0.0],
+        "W_launch": [1e-4, 2e-6, 0.0],
+        "W_post": [1.5e-4, 4e-6, 0.0],
+    },
+    "prefill": {
+        "E": [4e-4, 2e-8, 5e-5],
+        "W_pre": [6e-4, 1e-7, 8e-5],
+        "W_launch": [2e-4, 3e-8, 2e-5],
+        "W_post": [3e-4, 1e-9, 6e-5],
+    },
+    "middle": {
+        "E": [5e-4, 3e-8, 4e-5],
+        "W_pre": [7e-4, 9e-8, 7e-5],
+        "W_launch": [2.5e-4, 2e-8, 3e-5],
+    },
+}
+KEY = {"host_cpu": "test cpu", "atom": "0" * 64, "model": None, "engine": {}}
+IDLE_NS = 10**9
+
+
+def _timed_record(path, steps, idle_after=(), key=KEY):
+    """`steps` as a real record with device windows and host stamps.
+
+    Each forward runs the host laws' segments and its price on the device, by
+    the recurrence: a device that reaches a forward before its launch ends
+    waits for it, which stretches the window. Every fourth step's prefill is a
+    middle chunk. Returns the record and its launch-exposed steps.
+    """
+    t, device_end, output_end, owner, lines, exposed = 0, None, None, 0, [], []
+    for i, (rows, rung, seconds) in enumerate(steps):
+        if i - 1 in idle_after:
+            owner += 1
+            t += IDLE_NS
+        ids = [owner] + [10_000 + i * 10 + j for j in range(len(rows) - 1)]
+        prefill, output = not rows[0][2], bool(rows[0][2] or i % 4)
+        kind = "decode" if not prefill else "prefill" if output else "middle"
+        x = (1, sum(r[0] for r in rows), len(rows))
+        ns = {k: round(float(np.dot(c, x)) * 1e9) for k, c in HOST[kind].items()}
+        enter = t + ns["E"]
+        g0 = enter + ns["W_pre"] // 2
+        g1 = g0 + 1000
+        l0 = g1 + ns["W_pre"] - ns["W_pre"] // 2
+        l1 = l0 + ns["W_launch"]
+        start = l0 if device_end is None else max(device_end, l0)
+        busy = round(seconds * 1e9) + max(0, l1 - start)
+        if start < l1:
+            exposed.append(i)
+        line = {
+            "step": i,
+            "dp_rank": 0,
+            "is_dummy_run": False,
+            "produces_output": output,
+            "batch": [[r, q, n] for r, (q, n, _) in zip(ids, rows)],
+            "named": [],
+            "rows": [list(r) for r in rows],
+            "rung": rung,
+            "t_enter_ns": enter,
+            "t_gate_ns": [g0, g1],
+            "t_launch_ns": [l0, l1],
+            "d_busy_ns": busy,
+        }
+        if device_end is not None:
+            line["d_gap_ns"] = start - device_end
+        device_end = start + busy
+        t = l1
+        if output:
+            r0 = l1 + ns["W_post"] // 2
+            r1 = r0 if output_end is None else max(r0, output_end)
+            line["t_recv_ns"] = [r0, r1]
+            t = r1 + ns["W_post"] - ns["W_post"] // 2
+            output_end = device_end
+        line["t_exit_ns"] = t
+        lines.append(line)
+    path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    if key is not None:
+        path.with_suffix(".key.json").write_text(json.dumps(key))
+    return path, exposed
+
+
+def test_device_busy_time_and_host_laws_are_recovered_from_a_timed_record(tmp_path):
+    steps = _steps(14, n=400)
+    record, exposed = _timed_record(tmp_path / "dp0.jsonl", steps, {60, 201})
+
+    # The first forward and the two after idle find the device waiting on them.
+    assert exposed == [0, 61, 202]
+    rows, cut = samples(record)
+    assert cut == {"exposed": 3, "mixed": 0}
+    labelled = {r[3]: r[2] for r in rows}
+    assert not set(exposed) & set(labelled)
+    assert labelled[62] == pytest.approx(steps[62][2], rel=1e-6)
+
+    law = fit([record])
+    assert law["prefill"]["coefficients"] == pytest.approx(PREFILL, rel=1e-5)
+    assert law["decode"]["2"]["coefficients"] == pytest.approx(DECODE["2"], rel=1e-5)
+
+    assert law["host"]["key"] == KEY
+    assert law["host_fit"]["cut"] == {"idle": 2}
+    assert law["host_fit"]["unfitted"] == {}
+    assert law["host_fit"]["decode.E"]["zero"] == ["seqs"]
+    assert set(law["host"]["laws"]["middle"]) == {"E", "W_pre", "W_launch"}
+    for kind, segments in HOST.items():
+        for segment, c in segments.items():
+            got = law["host"]["laws"][kind][segment]
+            assert got == pytest.approx(c, rel=1e-4, abs=1e-12), f"{kind}.{segment}"
+
+
+def test_records_under_two_host_keys_are_refused(tmp_path):
+    other = dict(KEY, host_cpu="another cpu")
+    a = _timed_record(tmp_path / "a.jsonl", _steps(15))[0]
+    b = _timed_record(tmp_path / "b.jsonl", _steps(16), key=other)[0]
+    c = _timed_record(tmp_path / "c.jsonl", _steps(17), key=None)[0]
+
+    for pair in ([a, b], [a, c]):
+        with pytest.raises(ValueError, match="2 host keys"):
+            fit(pair)
+    assert "host" not in fit([c])
+    with pytest.raises(ValueError, match="one law takes one label"):
+        fit([a, _record(tmp_path / "d.jsonl", _steps(18))])
+
+
+def test_the_command_writes_host_laws_a_run_file_takes_and_scores_them_held_out(
+    tmp_path, capsys
+):
+    records = [
+        str(_timed_record(tmp_path / f"dp0-{s}.jsonl", _steps(s))[0]) for s in (19, 20)
+    ]
+    main([*records, "--out", str(tmp_path / "law.json")])
+
+    law = json.loads((tmp_path / "law.json").read_text())
+    CoarseLaw(law)
+    assert set(law["host"]) == {"key", "laws"}
+    assert {len(c) for s in law["host"]["laws"].values() for c in s.values()} == {3}
+    out = capsys.readouterr().out
+    assert "held out, host laws" in out and "host decode W_post | " in out
+
+
+def test_the_host_key_reads_atom_outside_compass_and_the_real_runner_writes_it(
+    tmp_path, monkeypatch
+):
+    from test_parity_record import ENV, _config, _drive, _Runner
+
+    import atom
+    from atom.compass.backends.coarse import host_key
+
+    tree = tmp_path / "atom"
+    (tree / "compass").mkdir(parents=True)
+    (tree / "engine.py").write_text("a = 1\n")
+    (tree / "compass" / "sim.py").write_text("b = 1\n")
+    (tmp_path / "model").mkdir()
+    (tmp_path / "model" / "config.json").write_text('{"hidden_size": 8}')
+    monkeypatch.setattr(atom, "__file__", str(tree / "__init__.py"))
+    config = SimpleNamespace(
+        model=str(tmp_path / "model"),
+        enforce_eager=True,
+        kv_cache_block_size=16,
+        kv_cache_dtype="bf16",
+        quant_config=SimpleNamespace(compute_hash=lambda: "q"),
+        tensor_parallel_size=1,
+    )
+    key = host_key(config)
+    assert key["host_cpu"] and key["model"].startswith("sha256:")
+    assert key["engine"]["kv_cache_block_size"] == 16
+    (tree / "compass" / "sim.py").write_text("b = 2\n")
+    assert host_key(config) == key
+    (tree / "engine.py").write_text("a = 2\n")
+    assert host_key(config)["atom"] != key["atom"]
+
+    batches = _drive(tmp_path / "source", monkeypatch, {0: [0]})[0][0]
+    monkeypatch.setenv(ENV, str(tmp_path / "out"))
+    runner = _Runner(_config())
+    runner.host_key = key
+    runner.forward(batches[0])
+    assert json.loads((tmp_path / "out" / "dp0.key.json").read_text()) == key
