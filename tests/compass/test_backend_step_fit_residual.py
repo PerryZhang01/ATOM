@@ -226,6 +226,7 @@ def test_the_digest_is_over_the_feature_functions_source():
         ("version", 2),
         ("digest", Recipe(V1.name, 1, V1.features[:-1] + (raggedness,)).digest),
     ],
+    ids=["name", "version", "digest"],
 )
 def test_a_residual_fitted_under_another_recipe_fails_loading(field, value):
     mapping = fitted({"u": linear()}, {"u": 1.0})
