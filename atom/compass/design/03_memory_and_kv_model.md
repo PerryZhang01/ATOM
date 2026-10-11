@@ -102,13 +102,14 @@ scans is not. ATOM already computes these sums itself — `detailed_sqsq`, `deta
 and `detailed_sk` on `scheduler.py::ScheduledBatch` are exactly `Σ N_Q²`, `Σ N_Q·N_KV` and
 `Σ N_KV`, so the features are read from the batch rather than recomputed.
 
-**3. The calibration must have *seen* high-hit steps, or the hull refuses.** This is
-the consequence with teeth, and it belongs here because it is easy to miss. A
+**3. The calibration must have *seen* high-hit steps, or they are all extrapolated.**
+This is the consequence with teeth, and it belongs here because it is easy to miss. A
 cache-hit step has a shape that a prefix-cache-disabled sweep **never produces**: small
 `N_Q`, very large `N_KV_cached`, a ratio far off the `N_Q ≈ N_KV` diagonal that an
 uncached chunked prefill walks. Calibrating with prefix caching off and predicting with
 it on puts every hit step outside the convex hull of doc `09` D58, and the honest
-outcome is a refusal on most of the workload.
+outcome is most of the workload priced `extrapolated`, reported apart from the measured
+result (`08` D50.1).
 
 So: **doc `07`'s Phase 0 discovery must run with prefix caching enabled**, matching the
 cc-traces default, and the discovered shape set must be checked for coverage of the
