@@ -109,11 +109,12 @@ UNIT = Residual(fitted({"unit": linear()}, {"unit": 1.0}))
 
 
 def replay(points=REPLAY, residual=UNIT):
-    return StepFitBackend(StepFitGrid(bundle("replay", points)), residual)
+    return StepFitBackend(StepFitGrid(bundle("replay", points)), residual, "replay")
 
 
 def eager(points=EAGER, residual=UNIT, **prefill):
-    return StepFitBackend(StepFitGrid(bundle("eager", points, **prefill)), residual)
+    grid = StepFitGrid(bundle("eager", points, **prefill))
+    return StepFitBackend(grid, residual, "eager")
 
 
 def view(*rows, rung=None, produces_output=None):
@@ -353,7 +354,7 @@ def test_a_negative_count_never_reaches_the_backend():
 def test_it_is_one_tier_a_line():
     assert replay().tier is Tier.COARSE
     assert replay().describe() == (
-        "tier-a step fit; replay decode grid, timing scope forward; "
+        "tier-a step fit, bundle replay; replay decode grid, timing scope forward; "
         "recipe step-fit-residual v1, members unit"
     )
 

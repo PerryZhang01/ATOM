@@ -2,8 +2,8 @@
 """The invalidation matrix, the gate state in the artifact, and the ledger.
 
 **The whole matrix is exercised, not one row, and the zeroes as hard as the
-crosses.** `test_every_cell_of_the_matrix_decides_by_itself` walks all
-forty-two cells: where the matrix says a row depends on an axis, moving that
+crosses.** `test_every_cell_of_the_matrix_decides_by_itself` walks
+every cell: where the matrix says a row depends on an axis, moving that
 axis refuses and the refusal names the cell; where it says the row does not,
 moving the same axis loads clean. A matrix that has been tidied into a uniform rule
 passes neither half, and one pair -- `price_list` surviving a model change
@@ -176,7 +176,7 @@ def test_the_matrix_is_not_uniform():
 
 @pytest.mark.parametrize("kind", [Kind.SHAPE_POPULATION, Kind.COVERAGE_HULL])
 def test_a_kind_the_matrix_does_not_row_is_refused_by_name(kind):
-    """The key table declares seven artifacts and the matrix rows seven.
+    """The key table and the matrix do not hold the same artifacts.
 
     The tempting default is "depends on nothing", which loads clean forever,
     and the other is "depends on everything", which re-measures forever. Both
@@ -186,7 +186,7 @@ def test_a_kind_the_matrix_does_not_row_is_refused_by_name(kind):
         rows_for(kind)
     assert refused.value.rule is Rule.INVALIDATED
     assert f"no dependency row for {kind}" in str(refused.value)
-    assert "not the same seven" in str(refused.value)
+    assert "do not hold the same artifacts" in str(refused.value)
 
 
 # --- every cell, the zeroes as hard as the crosses -------------------------
@@ -198,9 +198,9 @@ def test_a_kind_the_matrix_does_not_row_is_refused_by_name(kind):
     ids=[f"{row.name}-{axis.name}" for row in Row for axis in Axis],
 )
 def test_every_cell_of_the_matrix_decides_by_itself(row, axis):
-    """Forty-two cells: a cross refuses and names itself, a zero loads clean.
+    """Every cell: a cross refuses and names itself, a zero loads clean.
 
-    It is one test rather than seven because the claim is about the table
+    It is one test rather than one per row because the claim is about the table
     and not about any row: a rule that refused on every axis would pass every
     cross and fail every zero, and a rule that refused on none would do the
     reverse.

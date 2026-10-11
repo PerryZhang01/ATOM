@@ -59,7 +59,7 @@ class Axis(enum.Enum):
 
 
 class Row(enum.Enum):
-    """The seven rows. `machine_spec` is three of them, and that is the point."""
+    """The rows. `machine_spec` is three of them, and that is the point."""
 
     OP_GRAPH = "op_graph"
     PRICE_LIST = "price_list"
@@ -68,6 +68,7 @@ class Row(enum.Enum):
     MACHINE_SPEC_CAPACITY = "machine_spec: capacity"
     MACHINE_SPEC_RUNTIME_CONSTANTS = "machine_spec: runtime constants"
     MACHINE_SPEC_TOKENIZER_TERMS = "machine_spec: tokenizer terms"
+    STEP_FIT_BUNDLE = "step fit bundle"
 
     @property
     def field(self) -> str:
@@ -82,10 +83,10 @@ class Row(enum.Enum):
 class Cell:
     """One cell of the table: the mark, and the parenthesis beside it.
 
-    The note is carried rather than dropped because three of the seven rows
-    have one and each says something the mark alone does not -- which part of
-    the engine config an `op_graph` turns on, why a `price_list` is free of
-    the model, and which reading of "model" a tokenizer term follows.
+    The note is carried rather than dropped because each row that has one
+    says something the mark alone does not -- which part of the engine config
+    an `op_graph` turns on, why a `price_list` is free of the model, and which
+    reading of "model" a tokenizer term follows.
     """
 
     depends: bool
@@ -158,6 +159,14 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.DEVICE: Cell(False, "host CPU"),
         Axis.ENGINE_CONFIG: INDEPENDENT,
     },
+    Row.STEP_FIT_BUNDLE: {
+        Axis.SOFTWARE_STACK: DEPENDS,
+        Axis.TORCH: DEPENDS,
+        Axis.ATOM_SRC: DEPENDS,
+        Axis.MODEL: DEPENDS,
+        Axis.DEVICE: DEPENDS,
+        Axis.ENGINE_CONFIG: DEPENDS,
+    },
 }
 
 #: Which rows decide a kind's validity. `machine_spec` is three; two kinds are
@@ -172,6 +181,7 @@ ROWS_OF: Mapping[Kind, tuple[Row, ...]] = {
         Row.MACHINE_SPEC_RUNTIME_CONSTANTS,
         Row.MACHINE_SPEC_TOKENIZER_TERMS,
     ),
+    Kind.STEP_FIT_BUNDLE: (Row.STEP_FIT_BUNDLE,),
 }
 
 
@@ -187,11 +197,10 @@ def rows_for(kind: Kind) -> tuple[Row, ...]:
         raise ArtifactRefusal(
             Rule.INVALIDATED,
             f"the invalidation matrix states no dependency row for {kind}",
-            "the artifact key table declares seven artifacts and the matrix "
-            f"rows seven, and they are not the same seven: {kind} is in the "
-            "first and not the second. Add a row to the matrix, or say there "
-            "why the kind needs none (#174); a row guessed here would answer "
-            "under conditions nobody checked",
+            "the artifact key table and the matrix do not hold the same "
+            f"artifacts: {kind} is in the first and not the second. Add a row "
+            "to the matrix, or say there why the kind needs none (#174); a row "
+            "guessed here would answer under conditions nobody checked",
         )
     return rows
 

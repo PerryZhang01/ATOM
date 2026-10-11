@@ -230,6 +230,15 @@ def install_cost_backend(runner: Any, backend: CostBackend) -> None:
     runner.compass_backend = backend
 
 
+def schedulable_ladder(config: Any) -> list[int]:
+    """The capture sizes the scheduler can produce, ascending: ATOM's capture
+    bound at one token per sequence, since this runner never has a drafter.
+    `max_schedulable_decode_bs` holds it; importing that would pull the engine,
+    and its kernels, into a driver-free process."""
+    bound = min(config.max_num_seqs, config.max_num_batched_tokens)
+    return sorted(s for s in config.capture_sizes if s <= bound)
+
+
 def _installed_backend(runner: Any) -> CostBackend:
     """The installed backend, or a refusal that says what would supply it.
 
@@ -439,7 +448,18 @@ class PredictedMemory:
         return vars(self).get("compass_memory", {})
 
 
-class NonAllocatingRunner(RefusedControlCommands, PricedSteps, PredictedMemory):
+class StepFitBundle:
+    """The step fit bundle a runner prices with, read by the engine's hand-in."""
+
+    def step_fit_bundle(self) -> dict[str, Any]:
+        """`compass_step_fit` as a step fit run installed it; empty before
+        one is, since a None reply parks the engine."""
+        return vars(self).get("compass_step_fit", {})
+
+
+class NonAllocatingRunner(
+    RefusedControlCommands, PricedSteps, PredictedMemory, StepFitBundle
+):
     """Overrides that construct a model runner without touching device memory."""
 
     def _build_and_load_model(self, model_class: Any) -> None:
@@ -683,11 +703,9 @@ class NonAllocatingRunner(RefusedControlCommands, PricedSteps, PredictedMemory):
         runs at all. Replacing it anyway is the point: a runner must not depend
         on a caller-side flag to stay off the device.
         """
-        # `max_schedulable_decode_bs` at one token per sequence; importing it
-        # would pull the engine, and its kernels, into a driver-free process.
-        bound = min(self.config.max_num_seqs, self.config.max_num_batched_tokens)
-        self.capture_sizes = sorted(s for s in self.config.capture_sizes if s <= bound)
+        self.capture_sizes = schedulable_ladder(self.config)
         if not self.capture_sizes:
+            bound = min(self.config.max_num_seqs, self.config.max_num_batched_tokens)
             raise RunnerRefusal(
                 f"no cudagraph capture size in {self.config.capture_sizes} is "
                 f"schedulable at bound {bound}; ATOM's capture refuses to "

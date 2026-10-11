@@ -222,10 +222,11 @@ class StepFitGrid:
 
 
 class StepFitBackend(CostBackend):
-    """Prices a step as the grid's value at its equivalent shape, times the residual."""
+    """Prices a step as the grid's value at its equivalent shape, times the
+    residual; `bundle` names the artifact both came from, for `describe`."""
 
-    def __init__(self, grid: StepFitGrid, residual: Residual) -> None:
-        self.grid, self.residual = grid, residual
+    def __init__(self, grid: StepFitGrid, residual: Residual, bundle: str) -> None:
+        self.grid, self.residual, self.bundle = grid, residual, bundle
 
     @property
     def tier(self) -> Tier:
@@ -296,6 +297,6 @@ class StepFitBackend(CostBackend):
 
     def describe(self) -> str:
         return (
-            f"tier-a step fit; {self.grid.graph_mode} decode grid, "
-            f"timing scope {self.grid.scope}; {self.residual.describe()}"
+            f"tier-a step fit, bundle {self.bundle}; {self.grid.graph_mode} "
+            f"decode grid, timing scope {self.grid.scope}; {self.residual.describe()}"
         )

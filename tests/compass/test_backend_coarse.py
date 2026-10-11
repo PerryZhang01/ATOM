@@ -273,9 +273,9 @@ def test_a_run_file_with_coefficients_still_installs_the_stub(monkeypatch, tmp_p
             {"law": law(), "coefficients": dataclasses.asdict(STAGE1)},
             "coefficients and law",
         ),
-        ({}, "neither"),
+        ({}, "none"),
     ],
-    ids=["both", "neither"],
+    ids=["both", "none"],
 )
 def test_a_run_file_with_both_keys_or_neither_is_refused(
     monkeypatch, tmp_path, keys, named
