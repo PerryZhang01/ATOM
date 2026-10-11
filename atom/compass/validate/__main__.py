@@ -114,6 +114,10 @@ def rows(cell) -> list[tuple]:
     real = sorted(r for r in cell.glob("real*") if r.is_dir())
     law, p97 = cell / "law", cell / "p97"
     run = {r.name: json.loads((r / "run.json").read_text()) for r in (*real, law, p97)}
+    if what_if := [n for n, f in run.items() if f.get("host", {}).get("skip")]:
+        raise ValueError(
+            f"{cell}'s runs {what_if} skip host segments; a what-if run is not graded"
+        )
     if len({json.dumps(f["workload"], sort_keys=True) for f in run.values()}) != 1:
         raise ValueError(f"{cell}'s runs {sorted(run)} ran different workloads")
     summaries = {r: json.loads((r / "summary.json").read_text()) for r in (law, p97)}

@@ -45,6 +45,9 @@ the steps the backend refuses),
 ``on_refusal`` (optional: ``mark``, the default, prices a step no cost source
 answers at 0 s, hands in its ``cost:`` reason and continues; ``abort`` ends
 the run there, which still writes the summary),
+``host`` (optional: ``laws``, per forward kind and host segment, coefficients
+on ``(1, tokens, seqs)``, zero where absent; ``skip``, segments zeroed for a
+what-if run, which the graders refuse),
 ``machine`` (a machine spec mapping), ``parameter_count``, and ``out_dir``,
 where the step table, the run summary and each server LP's hand-in go, one
 file written as the LP leaves its loop. It holds the LP's refusals: an
@@ -89,6 +92,8 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
+
 from atom.compass.artifacts import provenance
 from atom.compass.clock import (
     ClockAuthority,
@@ -105,6 +110,8 @@ from atom.utils import clock
 
 ENV = "ATOM_COMPASS_RUN"
 CLOCK_ENV = "ATOM_COMPASS_CLOCK_ENDPOINT"
+#: The file an engine LP's clock is mapped from, for its model runner workers.
+NOW_ENV = "ATOM_COMPASS_NOW"
 FRONTEND, ENGINE, TRAFFIC = LpId("frontend"), LpId("engine"), LpId("traffic")
 ATOM_RUNNER = "atom.model_engine.model_runner.ModelRunner"
 #: Keys that differ between two runs of one configuration, kept out of its name.
@@ -141,8 +148,24 @@ def spec() -> dict | None:
             f"{path}: on_refusal is {run['on_refusal']!r}; a step no cost source "
             "answers is marked and the run continues (mark), or ends it (abort)"
         )
+    _check_host(path, run.get("host", {}))
     run["clock_endpoint"] = os.environ.get(CLOCK_ENV, run.get("clock_endpoint"))
     return run
+
+
+def _check_host(path, host: dict) -> None:
+    """Refuse a ``host`` entry the runner would read as zero host time."""
+    from atom.compass.runner.overrides import FORWARD_KINDS, HOST_SEGMENTS
+
+    laws = host.get("laws", {})
+    names = set(host) | set(host.get("skip", ())) | set(laws)
+    names |= {s for v in laws.values() for s in v}
+    lengths = {len(c) for v in laws.values() for c in v.values()}
+    if names - {"laws", "skip", *FORWARD_KINDS, *HOST_SEGMENTS} or lengths - {3}:
+        raise ValueError(
+            f"{path}: host is {host!r}; it takes skip, naming segments of "
+            f"{HOST_SEGMENTS}, and laws of three coefficients per kind and segment"
+        )
 
 
 def _dp(run: dict) -> int:
@@ -280,10 +303,24 @@ class _RecordingAuthority(ClockAuthority):
         return replies
 
 
-def _runtime(lp: LpId, run: dict, member: str | None = None) -> clock.LPRuntime:
-    rt = clock.LPRuntime(
-        lp, channel_table(run), connect(lp, run["clock_endpoint"], member)
-    )
+class _PublishedClock(clock.LPRuntime):
+    """An LP runtime whose clock is also written to the file `NOW_ENV` names."""
+
+    def __init__(self, *args) -> None:
+        self.slot = np.memmap(os.environ[NOW_ENV], np.float64, "w+", shape=(1,))
+        super().__init__(*args)
+
+    @property
+    def now(self) -> float:
+        return self._now
+
+    @now.setter
+    def now(self, t: float) -> None:
+        self._now = self.slot[0] = t
+
+
+def _runtime(lp: LpId, run: dict, member=None, cls=clock.LPRuntime) -> clock.LPRuntime:
+    rt = cls(lp, channel_table(run), connect(lp, run["clock_endpoint"], member))
     clock.install(rt)
     return rt
 
@@ -383,7 +420,19 @@ def engine(config):
     pc = config.parallel_config
     utils.LP_OF_RANK = dict.fromkeys(range(pc.data_parallel_size), lp)
     _member = f"dp{pc.data_parallel_rank}" if pc.data_parallel_size > 1 else None
-    return _start_on_leaving(_runtime(lp, run, _member))
+    name = lp.name if _member is None else f"{lp.name}.{_member}"
+    os.environ[NOW_ENV] = str(Path(run["out_dir"]) / f"now-{name}.bin")
+    return _named(_start_on_leaving(_runtime(lp, run, _member, _PublishedClock)))
+
+
+@contextlib.contextmanager
+def _named(inner):
+    """`inner`, with `NOW_ENV` set for the processes started in it."""
+    try:
+        with inner:
+            yield
+    finally:
+        del os.environ[NOW_ENV]
 
 
 def runner(model_runner) -> None:
@@ -400,6 +449,7 @@ def runner(model_runner) -> None:
     from atom.compass.memory import ModelTerms, device_readings, predicts
     from atom.compass.memory.check import record
     from atom.compass.runner.overrides import (
+        HostDeviceRecurrence,
         install_cost_backend,
         install_device_readings,
     )
@@ -461,6 +511,12 @@ def runner(model_runner) -> None:
         )
         backend = Tiered(backend, roofline)
     install_cost_backend(model_runner, backend)
+    if NOW_ENV in os.environ:
+        slot = np.memmap(os.environ[NOW_ENV], np.float64, "r", shape=(1,))
+        host = run.get("host", {})
+        model_runner.compass_host = HostDeviceRecurrence(
+            host.get("laws", {}), host.get("skip", ()), lambda: float(slot[0])
+        )
     model_runner.compass_abort = run.get("on_refusal") == "abort"
     reserved, captured = _graph_pool(model_runner, machine, model)
     readings = device_readings(
