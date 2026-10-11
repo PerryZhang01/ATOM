@@ -339,8 +339,7 @@ contradicts it.
 
 Per leaf family: `analytic / measured` ratio distribution, and the fraction of leaves
 promoted. A tier-0-only run reports 100% `analytical` in its `provenance_mix`; a tier-b run
-with gaps reports the mixture, and doc 08 D52 refuses an acceptance cell whose analytic
-fraction exceeds the declared threshold.
+with gaps reports the mixture, beside the cell's verdict and not gated (doc 08 D50.1).
 
 ---
 
@@ -379,7 +378,7 @@ that goal governs; the rows below cover the uses D67.1 does not gate.
 |---|---|---|
 | tier 0, unmeasured device | **unbounded, derate-dominated** | D69. This is why D67.1's goals are validated only where both tiers exist. |
 | rung 4 gap-filling, promoted leaf | **~2%** | the promotion rule (D68) requires it |
-| rung 4 gap-filling, unpromoted leaf | **unknown** — that is why the fraction is capped | |
+| rung 4 gap-filling, unpromoted leaf | **unknown** — that is why its share is reported apart | |
 | analytic memory: weights, KV | **exact** | Class A; D67.1 gates both at ≤5% purely to catch bugs — for KV that is the empirical gate, for weights it is tighter than empirical's ≤10% |
 | analytic memory: block count end to end | **unknown** | depends on activations and the Class-C constants |
 

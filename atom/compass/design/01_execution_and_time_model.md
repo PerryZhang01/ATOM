@@ -1009,7 +1009,7 @@ refusal, an engine that raises) included, and carried in the run artifact:
 | wall seconds vs simulated seconds | the speed result (`08`), and the only place the ≥5x target is measured |
 | lazy traces: count and wall seconds | `02` — they consume real time inside a simulated run and must not silently degrade the speed result |
 | causality detector state | straggler count (must be 0), stall diagnostics printed, clock-lint status |
-| refusals: count and distinct reasons; analytic and extrapolated steps apart, each with its count and share of predicted seconds; `coverage_report` | `08` D50.1: any refusal makes the run a coverage report, and D52 caps the analytic share |
+| refusals: count and distinct reasons; analytic and extrapolated steps apart, each with its count and share of predicted seconds; `coverage_report` | `08` D50.1: any refusal makes the run a coverage report; the analytic and extrapolated shares are reported, not gated |
 
 ### Rules
 
