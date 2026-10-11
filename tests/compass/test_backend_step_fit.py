@@ -10,7 +10,8 @@ same scheduler, chunking one prompt into pure middle chunks and a final one.
 
 Decode times are `f(B, c)` microseconds, plus `100 * rung` in a replay bundle.
 A cell's interpolation reproduces any `a + x.B + y.c + z.B.c` exactly, so the
-expected values below are `f` evaluated by hand.
+expected values below are `f` evaluated by hand. Each backend's residual is a
+factor of 1 over a hull no step here leaves, so a price is the lookup's.
 """
 
 import copy
@@ -34,6 +35,7 @@ from atom.compass.backends import (
 )
 from atom.compass.backends.analytic import Tiered
 from atom.compass.backends.step_fit import equivalent_shape
+from atom.compass.backends.step_fit_residual import V1, Residual
 from atom.model_engine.scheduler import ScheduledBatchOutput, Scheduler
 from atom.model_engine.sequence import Sequence
 from atom.sampling_params import SamplingParams
@@ -79,12 +81,39 @@ def bundle(mode, points, output=(), no_output=(), unit="us"):
     }
 
 
-def replay(points=REPLAY):
-    return StepFitBackend(StepFitGrid(bundle("replay", points)))
+def linear(intercept=1.0, transform="identity", **coefficients):
+    return {
+        "form": "linear",
+        "transform": transform,
+        "intercept": intercept,
+        "coefficients": {**dict.fromkeys(V1.names, 0.0), **coefficients},
+    }
 
 
-def eager(points=EAGER, **prefill):
-    return StepFitBackend(StepFitGrid(bundle("eager", points, **prefill)))
+def fitted(members, selected, hull=None):
+    """A residual mapping under this code's recipe; by default its hull is a box."""
+    box = [
+        [s * (i == j) for j in range(len(V1.names))] + [-1e6 * (s > 0)]
+        for i in range(len(V1.names))
+        for s in (1, -1)
+    ]
+    return {
+        "recipe": {"name": V1.name, "version": V1.version, "digest": V1.digest},
+        "hull": hull or {"facets": box},
+        "members": members,
+        "selected": selected,
+    }
+
+
+UNIT = Residual(fitted({"unit": linear()}, {"unit": 1.0}))
+
+
+def replay(points=REPLAY, residual=UNIT):
+    return StepFitBackend(StepFitGrid(bundle("replay", points)), residual)
+
+
+def eager(points=EAGER, residual=UNIT, **prefill):
+    return StepFitBackend(StepFitGrid(bundle("eager", points, **prefill)), residual)
 
 
 def view(*rows, rung=None, produces_output=None):
@@ -278,12 +307,14 @@ INSIDE = [(1, 601, True)] * 32
     ],
     ids=["homogeneous-on-a-node", "ragged-on-a-node", "inside-a-cell"],
 )
-def test_only_a_homogeneous_batch_on_a_node_is_measured(rows, species, seconds):
+def test_only_a_homogeneous_batch_on_a_node_is_a_measured_lookup(
+    rows, species, seconds
+):
     cost = eager().estimate(view(*rows, rung=32))
 
     (term,) = cost.terms
     assert term.name == "forward"
-    assert term.provenance.species is species
+    assert term.provenance.species is Species.FITTED
     assert term.seconds == seconds
     assert term.provenance.detail.startswith(f"lookup {term.seconds!r} s, {species};")
     assert eager().estimate(view(*rows, rung=32)) == cost
@@ -322,7 +353,8 @@ def test_a_negative_count_never_reaches_the_backend():
 def test_it_is_one_tier_a_line():
     assert replay().tier is Tier.COARSE
     assert replay().describe() == (
-        "tier-a step fit; replay decode grid, timing scope forward"
+        "tier-a step fit; replay decode grid, timing scope forward; "
+        "recipe step-fit-residual v1, members unit"
     )
 
 

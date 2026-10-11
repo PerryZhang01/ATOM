@@ -25,9 +25,12 @@ more than one token, a count that is not an int, a prefill step that does not
 say whether it produces output, and under a replay bundle a decode step that
 replays no graph, being wider than the widest rung or eager.
 
-The answer is one term for the whole forward, never multiplied by the TP
-width, since the measurement already holds the collectives. Its species is
-`measured` only for a homogeneous batch on a node, `interpolated` otherwise.
+The answer is the lookup times the residual's factor for the batch's ordered
+rows (`step_fit_residual.py`), which the residual may refuse. It is one
+`fitted` term for the whole forward, never multiplied by the TP width, since
+the measurement already holds the collectives. Its detail keeps the lookup's
+own species, `measured` only for a homogeneous batch on a node and
+`interpolated` otherwise, and each member's output.
 
 The grid is a mapping, as a bundle holds it:
 
@@ -49,6 +52,7 @@ import itertools
 import math
 from collections.abc import Mapping, Sequence
 from fractions import Fraction
+from typing import TYPE_CHECKING
 
 from atom.compass.backends.base import CostBackend, Tier
 from atom.compass.backends.cost import CostTerm, StepCost
@@ -61,6 +65,9 @@ from atom.compass.backends.shape import (
     sum_query_square,
     sum_tokens,
 )
+
+if TYPE_CHECKING:
+    from atom.compass.backends.step_fit_residual import Residual
 
 SOURCE = "step-fit"
 UNITS = {"s": Fraction(1), "ms": Fraction(1, 10**3), "us": Fraction(1, 10**6)}
@@ -215,10 +222,10 @@ class StepFitGrid:
 
 
 class StepFitBackend(CostBackend):
-    """Prices a step as the grid's value at the batch's equivalent shape."""
+    """Prices a step as the grid's value at its equivalent shape, times the residual."""
 
-    def __init__(self, grid: StepFitGrid) -> None:
-        self.grid = grid
+    def __init__(self, grid: StepFitGrid, residual: Residual) -> None:
+        self.grid, self.residual = grid, residual
 
     @property
     def tier(self) -> Tier:
@@ -278,14 +285,17 @@ class StepFitBackend(CostBackend):
         value, on_node, cell = cells.lookup(view, at)
         homogeneous = len({(r.query_tokens, r.context_tokens) for r in rows}) == 1
         species = Species.MEASURED if on_node and homogeneous else Species.INTERPOLATED
-        seconds = float(value * self.grid.unit)
-        detail = f"lookup {seconds!r} s, {species}; {cells.name} cell {cell}"
-        return StepCost(
-            [CostTerm("forward", seconds, Provenance(species, detail, SOURCE))]
+        lookup = float(value * self.grid.unit)
+        factor, summed = self.residual.factor(view)
+        detail = (
+            f"lookup {lookup!r} s, {species}; {cells.name} cell {cell}; "
+            f"residual {factor!r} = {summed}"
         )
+        fitted = Provenance(Species.FITTED, detail, SOURCE)
+        return StepCost([CostTerm("forward", lookup * factor, fitted)])
 
     def describe(self) -> str:
         return (
             f"tier-a step fit; {self.grid.graph_mode} decode grid, "
-            f"timing scope {self.grid.scope}"
+            f"timing scope {self.grid.scope}; {self.residual.describe()}"
         )
