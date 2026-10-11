@@ -36,8 +36,8 @@ Every number is a non-negative integer and each node list ascends.
 target's ladder (the capture sizes the scheduler can produce), with B nodes at
 the previous rung + 1 and at the rung. It plans every corner of each step's
 cell, widened by `margin` nodes on every axis and to `margin` rungs either
-side, and the B and c nodes of any rung between two planned rungs. A point the
-target cannot run is not planned: B above `max_num_seqs`, a prefill's B·N_Q
+side, and, on any rung between two planned rungs, its B nodes at the decode c
+nodes planned on other rungs. A point the target cannot run is not planned: B above `max_num_seqs`, a prefill's B·N_Q
 above `max_num_batched_tokens`, c + N_Q above `max_model_len`, or
 B·⌈(c + N_Q) / block size⌉ above the block count, assuming no prefix sharing.
 

@@ -237,41 +237,58 @@ def test_a_rung_between_planned_rungs_is_planned_so_the_bundle_loads(
 
 
 @pytest.mark.parametrize(
-    "changes,dropped,reason,kept",
+    "changes,grid,dropped,reason,kept",
     [
         (
             {},
+            "prefill no_output",
             [2, 64, 0],
             "B.N_Q 128 is above max_num_batched_tokens",
             [2, 32, 0],
         ),
-        ({"max_num_seqs": 1}, [2, 32, 0], "B 2 is above max_num_seqs", [1, 32, 0]),
+        (
+            {"max_num_seqs": 1},
+            "prefill no_output",
+            [2, 32, 0],
+            "B 2 is above max_num_seqs",
+            [1, 32, 0],
+        ),
         (
             {"max_model_len": 192},
+            "prefill no_output",
             [1, 64, 192],
             "c + N_Q 256 is above max_model_len",
             [1, 64, 128],
         ),
         (
             {"num_kvcache_blocks": 12},
+            "prefill no_output",
             [2, 32, 128],
             "20 KV blocks are above num_kvcache_blocks",
             [2, 32, 64],
         ),
+        # 3 decode rows of 64 cached + 1 tokens hold 5 blocks of 16 each;
+        # counting 65 // 16 = 4 a row would fit the 12.
+        (
+            {"num_kvcache_blocks": 12},
+            "decode rung 4",
+            [4, 3, 64],
+            "15 KV blocks are above num_kvcache_blocks",
+            [4, 3, 0],
+        ),
     ],
-    ids=["token-budget", "max-num-seqs", "max-model-len", "kv-blocks"],
+    ids=["token-budget", "max-num-seqs", "max-model-len", "kv-blocks", "decode"],
 )
 def test_a_point_the_target_cannot_run_is_listed_and_not_planned(
-    tmp_path, monkeypatch, capsys, changes, dropped, reason, kept
+    tmp_path, monkeypatch, capsys, changes, grid, dropped, reason, kept
 ):
     planned = plan(
         tmp_path, capsys, record(tmp_path, monkeypatch, *MIXED), margin=1, **changes
     )
 
-    points = planned["prefill"]["no_output"]
-    assert {"grid": "prefill no_output", "at": dropped, "reason": reason} in planned[
-        "infeasible"
-    ]
+    phase, key = ("decode", "points") if "rung" in grid else grid.split(" ")
+    points = planned[phase][key]
+    assert {"grid": grid, "at": dropped, "reason": reason} in planned["infeasible"]
     assert dropped not in points and kept in points
 
 

@@ -83,7 +83,7 @@ def _span(home, nodes, corners, axis: int, margin: int) -> list:
 def _infeasible(target: dict, b: int, n_q: int, c: int, prefill: bool) -> str:
     """Why the target cannot run B rows of N_Q tokens on c cached, or ''."""
     blocks = b * -(-(c + n_q) // target["kv_cache_block_size"])
-    for over, why in [
+    checks = [
         (b > target["max_num_seqs"], f"B {b} is above max_num_seqs"),
         (
             prefill and b * n_q > target["max_num_batched_tokens"],
@@ -97,10 +97,8 @@ def _infeasible(target: dict, b: int, n_q: int, c: int, prefill: bool) -> str:
             blocks > target["num_kvcache_blocks"],
             f"{blocks} KV blocks are above num_kvcache_blocks",
         ),
-    ]:
-        if over:
-            return why
-    return ""
+    ]
+    return next((why for over, why in checks if over), "")
 
 
 def plan(definition: dict, steps) -> dict:
