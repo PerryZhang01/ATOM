@@ -543,7 +543,7 @@ def engine_done(engine_core) -> None:
     if run is not None:
         workers = engine_core.runner_mgr
         refused = workers.call_func("refused_commands", wait_out=True)
-        priced = workers.call_func("priced_steps", wait_out=True)
+        priced = dict(workers.call_func("priced_steps", wait_out=True))
         rt = clock.installed()
         lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
         _write_whole(Path(run["out_dir"]) / PRICED_FILE.format(lp), json.dumps(priced))
