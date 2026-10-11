@@ -10,7 +10,7 @@ prefill price, and REAL two or more real runs of it, spaced in time.
 
 The tolerance of a metric is the real runs' own spread: its distance between
 every ordered pair of real runs, at most. A metric's result is its distance
-from the simulated cell to each real run. Three families:
+from the simulated cell to each real run. The families:
 
 - counts, from the step record and the export: steps and tokens per kind,
   preemptions, prefill streaks, requests completed. Distance `|a - b|`.
@@ -26,7 +26,7 @@ from the simulated cell to each real run. Three families:
 Every metric is `inside the real spread` where each result is at most the
 spread, else `outside`. One that moves no further from the simulated cell
 under the perturbed price than the real spread is `inadmissible`: it cannot
-grade a cost model, whatever its verdict.
+grade a cost model, and neither can an `ungradeable` one.
 
 A step is prefill when any of its rows is. A preemption is a request's row
 that is prefill after one of its decode rows, or that reads no more context
@@ -40,7 +40,7 @@ import json
 from itertools import permutations
 from pathlib import Path
 
-import numpy as np
+from scipy.stats import ks_2samp
 
 from atom.compass import parity
 
@@ -116,15 +116,6 @@ def _end_to_end(export) -> dict:
     return {name: export[k][stat] for name, (k, stat) in END_TO_END.items()}
 
 
-def ks(a, b) -> float:
-    """The two-sample Kolmogorov-Smirnov statistic of `a` and `b`."""
-    a, b = np.sort(a), np.sort(b)
-    grid = np.concatenate([a, b])
-    fa = np.searchsorted(a, grid, side="right") / len(a)
-    fb = np.searchsorted(b, grid, side="right") / len(b)
-    return float(np.max(np.abs(fa - fb)))
-
-
 def _read(cell) -> dict:
     steps = _steps(cell)
     export = json.loads((Path(cell) / EXPORT).read_text())
@@ -137,7 +128,7 @@ def _read(cell) -> dict:
 
 DISTANCE = {
     "counts": lambda a, b: abs(a - b),
-    "distributions": ks,
+    "distributions": lambda a, b: ks_2samp(a, b).statistic,
     "end to end": lambda a, b: abs(a / b - 1.0),
 }
 
@@ -162,7 +153,7 @@ def _grade(family, name, real, simulated, perturbed) -> dict:
     else:
         verdict = "outside"
     out["verdict"] = verdict
-    out["admissible"] = moved > spread
+    out["admissible"] = moved > spread and verdict != "ungradeable"
     return out
 
 

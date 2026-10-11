@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from atom.compass.validate.runs import grade, ks, main
+from atom.compass.validate.runs import grade, main
 
 EXPORT = {
     "request_count": {"unit": "requests", "avg": 3.0},
@@ -102,12 +102,13 @@ def test_a_metric_is_graded_against_the_real_spread_and_the_perturbed_cell(tmp_p
         for i, (t, p) in enumerate(zip(ttft, tpot))
     ]
 
-    def simulated(name, t, schedule=None):
+    def simulated(name, t, schedule=None, tpot=25.0):
         return _cell(
             tmp_path / name,
             schedule or _schedule(),
             keys,
             time_to_first_token=("avg", t),
+            inter_token_latency=("avg", tpot),
         )
 
     report = grade(real, simulated("at", 1040.0), simulated("p97", 1200.0))
@@ -119,6 +120,12 @@ def test_a_metric_is_graded_against_the_real_spread_and_the_perturbed_cell(tmp_p
     assert report["end to end"]["tpot mean"]["verdict"] == "ungradeable"
     assert report["end to end"]["ttft p50"]["verdict"] == "inside the real spread"
     assert not report["end to end"]["ttft p50"]["admissible"]
+
+    # Moving past its 20% spread does not make an ungradeable metric admissible.
+    report = grade(real, simulated("at2", 1040.0), simulated("p97t", 1040.0, tpot=31.0))
+    g = report["end to end"]["tpot mean"]
+    assert g["moved"] > g["spread"] == pytest.approx(0.2)
+    assert g["verdict"] == "ungradeable" and not g["admissible"]
 
     report = grade(real, simulated("high", 1140.0), simulated("p97b", 1040.0))
     assert report["end to end"]["ttft mean"]["verdict"] == "within target"
@@ -133,12 +140,6 @@ def test_a_metric_is_graded_against_the_real_spread_and_the_perturbed_cell(tmp_p
     assert (
         report["distributions"]["batch width"]["result"] == [pytest.approx(1 / 14)] * 3
     )
-
-
-def test_ks_is_the_largest_gap_between_the_two_cdfs():
-    assert ks([1, 2, 3, 4], [1, 2, 3, 4]) == 0
-    assert ks([1, 2, 3, 4], [3, 4, 5, 6]) == 0.5
-    assert ks([1], [2]) == 1
 
 
 def test_the_command_prints_every_metric_and_needs_two_real_runs(tmp_path, capsys):
