@@ -31,6 +31,8 @@ member, the frontend's included, connects to.
 Run file keys: ``clock_endpoint``, ``bound_s`` (finite), ``admission_path``,
 ``ipc_s``, ``stream_s``, ``coefficients`` (a `Coefficients` mapping, priced by
 `ShapeStubBackend`) or ``law`` (a `CoarseLaw` mapping, priced by `CoarseBackend`),
+``roofline_floor_s`` (optional: a tier-0 `Roofline` with this host floor prices
+the steps the backend refuses),
 ``machine`` (a machine spec mapping), ``parameter_count``, and ``out_dir``,
 where the step table, the run summary and each server LP's refusals go: an
 engine's are the worker's refused commands and the engine's refused clock
@@ -354,8 +356,9 @@ def runner(model_runner) -> None:
         return
     from transformers import PretrainedConfig
 
+    from atom.compass.backends.analytic import Roofline, Tiered
     from atom.compass.backends.coarse import CoarseBackend, CoarseLaw
-    from atom.compass.backends.geometry import Parallelism
+    from atom.compass.backends.geometry import KvGeometry, Parallelism
     from atom.compass.backends.shape import Coefficients, ShapeStubBackend
     from atom.compass.memory import ModelTerms, device_readings, predicts
     from atom.compass.memory.check import record
@@ -386,7 +389,6 @@ def runner(model_runner) -> None:
             Parallelism(tp_size=tp),
             stack_layers=config.hf_config.num_hidden_layers,
         )
-    install_cost_backend(model_runner, backend)
     machine = MachineSpec.from_mapping(_width_keys(run["machine"]))
     config_json = PretrainedConfig.get_config_dict(config.model)[0]
     model = ModelTerms.from_declared_config(
@@ -401,6 +403,22 @@ def runner(model_runner) -> None:
             tp,
         ),
     )
+    if "roofline_floor_s" in run:
+        kv = KvGeometry.from_hf_config(
+            config.hf_config,
+            block_size=config.kv_cache_block_size,
+            parallelism=Parallelism(tp_size=tp),
+            kv_dtype=config.kv_cache_dtype,
+        )
+        roofline = Roofline(
+            machine,
+            parameters=run["parameter_count"] // tp,
+            weight_bytes=model.weights.nbytes,
+            kv_token_bytes=kv.layers * kv.bytes_per_token_per_layer,
+            host_floor_s=run["roofline_floor_s"],
+        )
+        backend = Tiered(backend, roofline)
+    install_cost_backend(model_runner, backend)
     reserved, captured = _graph_pool(model_runner, machine, model)
     readings = device_readings(
         machine, tp_width=tp, model=model, cudagraph_overhead=reserved
