@@ -462,7 +462,7 @@ The documents use these precisely; a reader will bounce off without them.
 | **structure** | a distinct operator list, independent of shape. Prefill has two (chunked, unchunked); decode has one across all CUDA-graph rungs. Traces are cached per structure, not per shape. |
 | **treatment** | a factor that moves cost and is invisible to every feature in the model. Decode **row order** is one, worth 1.77× at a fixed context multiset. |
 | **tier** | which cost model was asked (0 analytic / a coarse / b op-level). Orthogonal to provenance. |
-| **refusal** | a declined answer with a named reason. Refusals are results, not errors, and are preferred to fallbacks everywhere. |
+| **refusal** | a declined answer with a named reason. Refusals are results, not errors, and are preferred to fallbacks everywhere. A **refused step** is one no rung of the resolver ladder answered: it costs 0 s, the run continues, and any refusal makes the run a coverage report (`08` D50.1). A rung that declines while a lower one answers is a fall-through, and an analytic or extrapolated answer is reported apart; neither is a refusal. |
 | **step fit** | the tier-a backend of `17`: a grid of step measurements looked up per batch, plus a residual, fitted on replayed batches, for what the grid's coordinates cannot see (row order, raggedness). |
 | **complete cell** | a cell of step fit's grid whose every corner was measured. Step fit answers only inside one, by exact hit or interpolation; anywhere else it refuses. |
 | **recipe** | step fit's feature functions and the constants frozen with them. Configuration supplies geometry and hardware values, a fit supplies coefficients, and a recipe's version changes only when a function does. |

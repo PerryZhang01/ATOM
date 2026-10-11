@@ -197,9 +197,10 @@ TP>1**. If it turns out to need a live process group, this phase stops being sch
 on a CPU box and the campaign's shape changes — which is why both are gating tasks.
 
 **What it does not produce.** A graph is a structure, not a price. Every leaf in it is
-unpriced until Phase 1b. A run with complete Phase 1a coverage and no Phase 1b refuses
-every step, by name, which is the intended behaviour and a useful diagnostic rather than
-a failure.
+unpriced until Phase 1b. A run with complete Phase 1a coverage and no Phase 1b has no
+tier-b answer for any step: each falls to tier 0 where one exists and is refused, by
+name, where none does (`08` D50.1). That is the intended behaviour and a useful
+diagnostic rather than a failure.
 
 ### Phase 1b — op pricing, and why it cannot leave the worker
 

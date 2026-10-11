@@ -108,7 +108,7 @@ python -m atom.entrypoints.openai_server \
 | `--compass-clock-endpoint` | where the Clock Authority listens. Absent means co-hosted in the API-server process (`01` D3.3). | co-hosted |
 | `--compass-tier` | `0`, `a` or `b`. Which cost model is asked; provenance records what each answer actually was. | `b` |
 | `--compass-no-lazy-trace` | refuse an unknown structure rather than tracing it in-run (`02`) | lazy tracing on |
-| `--compass-on-refusal` | `mark` (record `provenance=refused`, continue) or `abort` | `mark` (`08` D50.1) |
+| `--compass-on-refusal` | `mark`: a refused step costs 0 s, its reason is recorded, and the run continues. `abort`: stop at the first refusal; the run summary is still written. Either way a refusal makes the run a coverage report (`08` D50.1) | `mark` (`08` D50.1) |
 | `--measure` | additionally run on a real GPU and record. **Never valid in an acceptance run** (`07` D42). | off |
 
 Eight flags, one of which is ATOM's. That is the whole engine-side surface.

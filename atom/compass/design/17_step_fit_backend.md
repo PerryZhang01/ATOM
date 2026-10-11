@@ -306,8 +306,8 @@ dispatch band and is refused or split.
   treatments. Model, dtype and width select and check the bundle (D101); they never enter
   a feature. The lookup stays split by graph mode (D98): eager and replay are two
   measurements, not two forms.
-- **Hull refusal.** The residual answers only inside its fitted hull (`09` D58, `08` D49
-  item 6); outside, the step refuses.
+- **Hull refusal.** The residual answers only inside its fitted hull (`09` D58); outside,
+  the step refuses, where the tier-a law would extrapolate (`08` D49 item 6; D102).
 
 ### Families and members
 

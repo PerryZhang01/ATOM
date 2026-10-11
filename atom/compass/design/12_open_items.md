@@ -59,12 +59,12 @@ silently carried as gaps.
 | # | Topic | Why it is missing, and why it matters | Recommendation |
 |---|---|---|---|
 | ~~M-a~~ | ~~Configuration surface and CLI~~ | Flags were scattered across five topics with no owner and no precedence rule. | **DONE** - topic `13_configuration_surface.md`, D78-D81. |
-| ~~M-b~~ | ~~Refusal semantics end to end~~ | Seven documents emitted refusals and none said what one *does to the run*. | **DONE** - `08` D50.1: mark and continue, priced by the next answerable rung, with a >5%-of-predicted-seconds admissibility gate. |
+| ~~M-b~~ | ~~Refusal semantics end to end~~ | Seven documents emitted refusals and none said what one *does to the run*. | **DONE** - `08` D50.1: a step is refused only when no rung answers; a refused step costs 0 s and the run continues, and any refusal makes the run a coverage report. |
 | ~~M-c~~ | ~~Model loading without a GPU~~ | 关键技术点 1.4.2. Doc `03` covers memory *sizing*; nothing covers how the module tree comes into existence to be traced. ATOM has the pieces — `--load_dummy {empty,zero,xavier}`, `RapidServeModelRunner._init_weight_params_on_meta` — but no doc names the path or says whether weights are read at all. | **DONE** - `02` D10.1: HF-config geometry where only geometry is needed, construction inside `FakeTensorMode` with `--load_dummy empty` where a module tree is. |
 | ~~M-d~~ | ~~TP / DP / PP / EP specifics~~ | DP couples *scheduling decisions* across ranks through a per-forward collective that rewrites the batch - so TP's and DP's LP structure is an M1 deliverable, not an accuracy one. | **DONE** - topic `15_parallelism_support.md`, D88-D94; D94 splits the work between M1 (plumbing, no parity test) and M2 (scheduling parity, then accuracy), with PP after v1. |
 | ~~M-e~~ | ~~Determinism and reproducibility~~ | Doc `08` **T26** asks for bit-reproducibility as a test, but nothing designs for it. Under a distributed CA, grant ordering is a function of real-time message arrival unless something pins it. Two runs of one configuration disagreeing would undermine every paired comparison. | **DONE** - `01` D3.4: the `(LP, virtual time, event)` sequence is what must reproduce; CA grants tie-break by LP identity. |
 | ~~M-f~~ | ~~Speculative decoding / MTP~~ | Acceptance is a *behaviour* Compass cannot compute - the first quantity in the design that is neither derivable nor measurable. | **IN SCOPE** by decision 2026-09-19; topic `14_speculative_decoding.md`, D82-D87. Placed in **M2**: see [`14` *Milestone placement*](14_speculative_decoding.md#milestone-placement). |
-| ~~M-g~~ | ~~Simulated-run observability~~ | Doc `01` D3.1's open issue says the CA should own the global timeline log and the stall diagnostic, and that "its output format is part of the acceptance evidence and should be designed, not improvised". Doc `11` covers Prometheus metrics, which is a different thing. Still improvised. | **DONE** - `01` D3.5: timeline log, stall diagnostic, and an always-written run summary. |
+| ~~M-g~~ | ~~Simulated-run observability~~ | Doc `01` D3.1's open issue says the CA should own the global timeline log and the stall diagnostic, and that "its output format is part of the acceptance evidence and should be designed, not improvised". Doc `11` covers Prometheus metrics, which is a different thing. Still improvised. | **DONE** - `01` D3.5: timeline log, stall diagnostic, and a run summary written always, an early end included. |
 
 **All seven are now closed.** M-a `13`; M-b `08` D50.1; M-c `02` D10.1; M-d `15`; M-e `01` D3.4;
 M-f `14`; M-g `01` D3.5.
@@ -100,7 +100,7 @@ M-f `14`; M-g `01` D3.5.
 | ~~T13~~ | ~~Decide the simulated KV connector's completion semantic~~ — **done**, `01` D6: Mooncake, one simulated write event per request |
 | T14 | Build the client-count matrix given only 144 fan-out-capable sessions |
 | ~~T15~~ | ~~Warmup handling in the harness contract~~ — **done**: warmup requests are ordinary requests; the rule is an exclusion window agreed by request id |
-| **T54** | Detect warmth that *recurs* mid-run (a new shape reaching autotune at minute 10); D62 measures leading warmth only |
+| **T54** | Detect warmth that *recurs* mid-run (a new shape reaching autotune at minute 10) under `coarse_fit.WARM_FACTOR` times its price: the fit and `validate.cost` name a vector's leading slow steps and any step above that factor, not a mid-run step below it |
 
 ### Topic 07 — calibration toolchain
 
@@ -127,7 +127,7 @@ M-f `14`; M-g `01` D3.5.
 | T26 | Assert simulator bit-reproducibility as a test — mechanism now `01` D3.4; this item is the CI wiring |
 | T27 | Decide the construction of the cells the corpus cannot fill without reusing sessions: 256 clients with fan-out in every root, and the recipe's largest DPA concurrency (`08` D50) |
 | ~~T28~~ | ~~Establish whether ranking/regret becomes an explicit acceptance gate~~ - **DONE**: `08` D50, M2's ranking gate |
-| ~~T48~~ | ~~What a refusal does to a run~~ - **DONE**: `08` D50.1, mark-and-continue with a 5%-of-seconds admissibility gate |
+| ~~T48~~ | ~~What a refusal does to a run~~ - **DONE**: `08` D50.1, a refused step (no rung answered) costs 0 s and the run continues as a coverage report |
 
 ### Topic 09 — fitting and law selection
 

@@ -10,16 +10,19 @@ Each RECORD is a real run's step record (`steps/dp0.jsonl`, written with
 the step to `t_enter_ns` of the next, kept only where the next batch holds a
 request this one left unfinished, so the engine went straight from one forward
 to the next. The host time between forwards lands in the intercepts. A step
-whose period may hold an idle gap, the step after one, and a step mixing
-prefill and decode rows are counted and not fitted.
+whose period may hold an idle gap and a step mixing prefill and decode rows
+are counted and not fitted. The step after an idle gap is fitted: its period
+starts at its own forward, after the gap.
 
 Each equation is divided by its own label and the coefficients are bound to be
 non-negative. Steps whose relative residual is more than `MAD_K` scaled MADs
 from the median are dropped and the rest refitted, until the kept set settles.
 The dropped steps that lead a record's steps of one vector, each slower than
-the law, are its warm steps (shape compiles and first touches): counted with
-their seconds apart from the dropped ones, never charged. A feature with no
-variance gets coefficient zero and is named. Each vector reports its samples,
+the law, are its warm steps (shape compiles and first touches), and so is a
+dropped step anywhere that ran more than `WARM_FACTOR` times its price, such as
+the first short chunk on a deep history: counted with their seconds apart from
+the dropped ones, never charged. A feature with no variance gets coefficient
+zero and is named. Each vector reports its samples,
 warm and dropped counts, the condition number of its column-scaled design and
 the convex hull of its fitted steps, which `CoarseLaw` reads. A vector with
 no more fitted steps than coefficients, or whose steps span no hull, is left
@@ -60,6 +63,8 @@ MAD_K = 3.5
 #: A relative residual this small is never an outlier, however tight the rest.
 MAD_FLOOR = 0.01
 MAD_PASSES = 20
+#: A step that ran this many times its price is a one-off first touch, not scatter.
+WARM_FACTOR = 5.0
 TOKEN_BANDS = (512, 2048, 8192)
 
 
@@ -79,16 +84,16 @@ def samples(record, form: str = "law") -> tuple[list[tuple], dict]:
         raise ValueError(
             f"{record} has no timed steps; a fit needs a real run's record"
         )
-    cut = {"idle": 0, "after_idle": 0, "mixed": 0, "last": 1}
-    rows, after_idle = [], False
+    cut = {"idle": 0, "mixed": 0, "last": 1}
+    rows = []
     for step, nxt in pairwise(steps):
         idle = not {r[0] for r in step["batch"]} & {r[0] for r in nxt["batch"]}
         view = BatchView(
             tuple(RequestShape(q, c, bool(d)) for q, c, d in step["rows"]),
             capture_rung=step["rung"],
         )
-        if idle or after_idle:
-            cut["idle" if idle else "after_idle"] += 1
+        if idle:
+            cut["idle"] += 1
         elif view.prefill and view.decode:
             cut["mixed"] += 1
         else:
@@ -103,7 +108,6 @@ def samples(record, form: str = "law") -> tuple[list[tuple], dict]:
                 counts = (1, sum_context(view.decode), view.graph_padding)
             period = (nxt["t_enter_ns"] - step["t_enter_ns"]) * 1e-9
             rows.append((key, counts, period, step["step"]))
-        after_idle = idle
     return rows, cut
 
 
@@ -209,6 +213,7 @@ def fit(records, form: str = "law") -> dict:
             r for r in rows if r[1] == key or (key is None and r[1] != "prefill")
         ]
         if not members:
+            law["unfitted"][key] = f"0 steps for {len(names)} coefficients"
             continue
         counts = np.array([r[2] for r in members], dtype=np.float64)
         x = counts
@@ -216,11 +221,15 @@ def fit(records, form: str = "law") -> dict:
             onehot = [[float(r[1] == k) for k in rungs] for r in members]
             x = np.column_stack([counts[:, 1:], onehot])
         solved = _solve(x, np.array([r[3] for r in members]), names)
+        slow = ~solved["keep"] & (solved["residual"] < 0)
+        once = solved["residual"] < 1 / WARM_FACTOR - 1
         warm = np.zeros(len(members), dtype=bool)
         for rec in range(len(records)):
+            leading = True
             for j in (j for j, r in enumerate(members) if r[0] == rec):
-                if solved["keep"][j] or solved["residual"][j] >= 0:
-                    break
+                leading = leading and slow[j]
+                if not (leading or slow[j] and once[j]):
+                    continue
                 warm[j] = True
                 law["warm_steps"][rec].append(members[j][4])
                 cut["warm"] += 1

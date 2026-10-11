@@ -17,7 +17,7 @@ infrastructure and add nothing to it.
 |---|---|
 | harness-side latency metrics | `06` D34 — aiperf stamps them in its own transport, so our transport controls them |
 | per-request `sim_*` response fields | `06` D28 |
-| simulator observability (speed ratio, provenance mix, refusal counts, coverage distance, Clock Authority stats) | **fields in the run artifact**, written once at the end. Not a metrics subsystem, not an exporter, no cadence. |
+| simulator observability (speed ratio, provenance mix, refusal counts, coverage distance, Clock Authority stats) | **fields in the run artifact**, written once at the end, always, an early end included (`01` D3.5). Not a metrics subsystem, not an exporter, no cadence. |
 | the graded product outputs | `08` D44 |
 
 ---

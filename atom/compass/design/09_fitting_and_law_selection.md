@@ -110,6 +110,7 @@ DP and EP with a **per-rank** law: it prices one rank's step, and the group's st
 
 ```
 prefill:  [ 1,  tokens,  Σ_req N_Q²,  Σ_req N_Q·(ctx − N_Q) ]
+          + history: Σ_req (ctx − N_Q), in coarse_fit's `history` form
 decode:   [ 1,  batch,   Σ ctx ]
 per rung: [ 1,  Σ ctx,   rung·max(ctx) − Σ ctx ]
 ```
@@ -176,7 +177,7 @@ Before concluding "we need more samples", check the design matrix:
 
 ---
 
-## D58. Guards: refuse, and use a hull
+## D58. Guards: refuse an unseen kind, extrapolate outside the hull
 
 ### Refuse rather than fall back
 
@@ -200,7 +201,10 @@ This cost **three** iterations to abandon:
    64 samples at raggedness exactly 1.00 against a run at 1.18–1.32
 
 **Decision: a convex hull or k-NN distance with a threshold, never a per-feature bounding
-box.** The k-NN oracle already computes the distance.
+box.** The k-NN oracle already computes the distance. The guard decides provenance, not
+whether a step is answered: a step outside the hull is priced `extrapolated` and reported
+apart, not refused (`08` D50.1; #627's
+[ruling 3](https://github.com/jgong5/ATOM/issues/627#issuecomment-6096543740)).
 
 And the dimensions are **workload-dependent** — 0.6B batches ran at raggedness 2.82–3.85,
 27B at 1.11–1.42 — so:
@@ -383,7 +387,7 @@ choice that must be visible.
 | D55 | Attention terms summed per request; the padding term is the rung's rectangle, not the batch's. | 2026-09-18 |
 | D56 | Distinguish rank deficiency from coverage gap: drop zero-variance features explicitly, report the condition number, and treat "widening the evidence does not move the error" as evidence the feature is wrong. | 2026-09-18 |
 | D57 | Every fit reports provenance, sample count, dropped count, condition number and validity hull. Report an interval or report nothing. | 2026-09-18 |
-| D58 | Refuse rather than fall back. The extrapolation guard is a convex hull or k-NN distance, never a per-feature bounding box. | 2026-09-18 |
+| D58 | Refuse rather than fall back on a step kind with no samples. The extrapolation guard is a convex hull or k-NN distance, never a per-feature bounding box; an out-of-hull step is priced `extrapolated` and reported apart, not refused. | 2026-09-18; revised 2026-10-11 (#765) |
 | D59 | A family is validated on independently obtained data, never by LOO. Rank at least three candidates and report all held-out errors. A law that fits one axis is tested on a second before it ships. | 2026-09-18 |
 | D60 | Laws are piecewise over declared dispatch bands read from recorded kernel identity. A query with no same-band bracket refuses. | 2026-09-18 |
 | D61 | Treatments are declared and the calibration population matched. Decode row order is a known treatment worth 1.77×. Uniform routing of the MoE segment under DP and EP is a declared treatment, in every tier. | 2026-09-18; revised 2026-10-01 |
