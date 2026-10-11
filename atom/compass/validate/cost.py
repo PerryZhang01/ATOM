@@ -51,7 +51,7 @@ WITHIN = 0.10
 def _leading_slow(priced: list[tuple]) -> set[int]:
     """Steps leading their vector's (vector, band, step, seconds, cost) rows, each slow."""
     out = set()
-    for key in {p[0] for p in priced}:
+    for key in sorted({p[0] for p in priced}):
         mine = [p for p in priced if p[0] == key]
         error = np.array([p[4].seconds / p[3] - 1.0 for p in mine])
         centre = np.median(error)
