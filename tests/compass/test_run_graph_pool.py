@@ -32,10 +32,10 @@ from atom.compass import run as compass_run
 from atom.compass.runner.overrides import NonAllocatingRunner
 
 
-def _reserved(
+def _installed(
     monkeypatch, tmp_path, *, eager, piecewise=False, dp=1, sizes=None, **run
 ):
-    """What the runner reserves after `run.runner` installed its readings."""
+    """A worker's runner after `run.runner` installed its readings."""
     monkeypatch.setenv(compass_run.ENV, str(_run_file(tmp_path, **run)))
     (tmp_path / "config.json").write_text(CONFIG_JSON.read_text())
     hf = PretrainedConfig.from_dict(json.loads(CONFIG_JSON.read_text())["text_config"])
@@ -61,7 +61,14 @@ def _reserved(
         _piecewise_cg_active=lambda: piecewise,
     )
     compass_run.runner(runner)
-    return NonAllocatingRunner._estimate_cudagraph_overhead(runner)
+    return runner
+
+
+def _reserved(monkeypatch, tmp_path, **kwargs):
+    """What the runner reserves after `run.runner` installed its readings."""
+    return NonAllocatingRunner._estimate_cudagraph_overhead(
+        _installed(monkeypatch, tmp_path, **kwargs)
+    )
 
 
 def test_an_eager_deployment_reserves_nothing(monkeypatch, tmp_path):
