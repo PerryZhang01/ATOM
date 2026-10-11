@@ -162,3 +162,21 @@ def test_a_one_off_slow_step_is_named_warm_mid_record_and_enters_no_total(
     law.write_text(json.dumps(LAW))
     main([str(record), str(law)])
     assert "warm step 5 (prefill tokens 512-2048)" in capsys.readouterr().out
+
+
+def test_a_leading_slow_step_under_the_factor_is_warm_and_mid_record_is_not(tmp_path):
+    # At twice their price: prefill steps 0 and 1 lead the record, step 10
+    # leads the decode steps; step 4 ran after prefill steps at their price.
+    steps = _steps()
+    stretch = {0: 2.0, 1: 2.0, 4: 2.0, 10: 2.0}
+    report = cost_accuracy(_record(tmp_path / "steps", steps, stretch), LAW)
+
+    assert [w["step"] for w in report["warm"]] == [0, 1, 10]
+    assert report["warm"][0]["measured_s"] == pytest.approx(
+        2 * _price(steps[0][0]), rel=1e-6
+    )
+    prefill, decode = report["fitted"]["prefill"], report["fitted"]["decode"]
+    assert prefill["steps"] == 8 and prefill["held_out_step"] == 4
+    assert prefill["held_out"] == pytest.approx(0.0, abs=1e-9)
+    assert decode["steps"] == 8
+    assert decode["measured_s"] == pytest.approx(decode["priced_s"], rel=1e-9)

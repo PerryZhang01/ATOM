@@ -19,8 +19,10 @@ A step outside its vector's hull is priced, but its error describes the
 extrapolation, not the law: those steps are reported apart, with their measured
 and priced seconds, and enter none of the in-hull figures. A step that ran more
 than `coarse_fit.WARM_FACTOR` times its price is warm, a one-off first touch the
-law does not model: it is named with its seconds and enters no figure. A step
-the law refuses is counted with its measured seconds.
+law does not model: it is named with its seconds and enters no figure. So are
+the steps that lead a vector's priced steps, each slower than its price by more
+than `coarse_fit.MAD_K` scaled MADs of that vector's errors, as the fit names
+them. A step the law refuses is counted with its measured seconds.
 """
 
 from __future__ import annotations
@@ -39,10 +41,29 @@ from atom.compass.backends import (
     CostRefused,
     RequestShape,
     Species,
+    coarse_fit,
 )
 from atom.compass.backends.coarse_fit import WARM_FACTOR, _band, samples
 
 WITHIN = 0.10
+
+
+def _leading_slow(priced: list[tuple]) -> set[int]:
+    """Steps leading their vector's (vector, band, step, seconds, cost) rows, each slow."""
+    out = set()
+    for key in {p[0] for p in priced}:
+        mine = [p for p in priced if p[0] == key]
+        error = np.array([p[4].seconds / p[3] - 1.0 for p in mine])
+        centre = np.median(error)
+        mad = 1.4826 * np.median(np.abs(error - centre))
+        slow = (error < 0) & (
+            np.abs(error - centre) > max(coarse_fit.MAD_K * mad, coarse_fit.MAD_FLOOR)
+        )
+        for p, s in zip(mine, slow):
+            if not s:
+                break
+            out.add(p[2])
+    return out
 
 
 def _summary(steps: list[tuple]) -> dict:
@@ -92,7 +113,7 @@ def cost_accuracy(record, law) -> dict:
     backend = CoarseBackend(CoarseLaw(law))
     groups = {"fitted": {}, "extrapolated": {}}
     refused: dict[str, dict] = {}
-    warm = []
+    warm, priced = [], []
     for key, counts, seconds, step in labelled:
         line = by_step[step]
         view = BatchView(
@@ -107,7 +128,10 @@ def cost_accuracy(record, law) -> dict:
             r["steps"] += 1
             r["measured_s"] += seconds
             continue
-        if seconds > WARM_FACTOR * cost.seconds:
+        priced.append((key, band, step, seconds, cost))
+    leading = _leading_slow(priced)
+    for key, band, step, seconds, cost in priced:
+        if step in leading or seconds > WARM_FACTOR * cost.seconds:
             warm.append(
                 {
                     "step": step,

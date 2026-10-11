@@ -100,7 +100,7 @@ M-f `14`; M-g `01` D3.5.
 | ~~T13~~ | ~~Decide the simulated KV connector's completion semantic~~ — **done**, `01` D6: Mooncake, one simulated write event per request |
 | T14 | Build the client-count matrix given only 144 fan-out-capable sessions |
 | ~~T15~~ | ~~Warmup handling in the harness contract~~ — **done**: warmup requests are ordinary requests; the rule is an exclusion window agreed by request id |
-| **T54** | Detect warmth that *recurs* mid-run (a new shape reaching autotune at minute 10); D62 measures leading warmth only |
+| **T54** | Detect warmth that *recurs* mid-run (a new shape reaching autotune at minute 10) under `coarse_fit.WARM_FACTOR` times its price: the fit and `validate.cost` name a vector's leading slow steps and any step above that factor, not a mid-run step below it |
 
 ### Topic 07 — calibration toolchain
 
