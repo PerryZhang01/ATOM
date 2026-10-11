@@ -147,16 +147,18 @@ def test_a_feature_with_no_variance_returns_zero_named(tmp_path):
     assert cost.terms[-1].seconds == 0.0
 
 
-def test_warm_steps_and_steps_around_an_idle_gap_are_counted_and_not_fitted(tmp_path):
+def test_warm_steps_and_the_period_holding_an_idle_gap_are_not_fitted(tmp_path):
     steps = _steps(2)
-    # Two leading compiles, then a gap after step 50: its period and step 51's are cut.
-    # A later compile (step 90) is dropped, not warm.
+    # Two leading compiles, then a gap after step 50: its period is cut, step 51's
+    # starts after the gap and is fitted. A later compile (step 90) is dropped, not warm.
     stretch = {0: 40.0, 1: 30.0, 50: 9.0, 90: 20.0}
     record = _record(tmp_path / "dp0.jsonl", steps, {50}, stretch)
     rows, cut = samples(record)
 
-    assert cut == {"idle": 1, "after_idle": 1, "mixed": 0, "last": 1}
-    assert [r[3] for r in rows if r[3] in (50, 51)] == []
+    assert cut == {"idle": 1, "mixed": 0, "last": 1}
+    assert [(r[3], r[2]) for r in rows if r[3] in (50, 51)] == [
+        (51, pytest.approx(steps[51][2], rel=1e-6))
+    ]
     law = fit([record])
     assert law["warm_steps"] == [[0, 1]]
     assert law["cut"]["warm"] == 2 and law["cut"]["warm_s"] == pytest.approx(
