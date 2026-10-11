@@ -117,6 +117,9 @@ def _end_to_end(export) -> dict:
 
 
 def _read(cell) -> dict:
+    run = Path(cell) / "run.json"
+    if run.exists() and json.loads(run.read_text()).get("host", {}).get("skip"):
+        raise ValueError(f"{cell} skips host segments; a what-if run is not graded")
     steps = _steps(cell)
     export = json.loads((Path(cell) / EXPORT).read_text())
     return {

@@ -93,6 +93,7 @@ source and compare it with this table.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from typing import Any
 
@@ -228,6 +229,44 @@ def install_cost_backend(runner: Any, backend: CostBackend) -> None:
             f"{type(backend).__name__} is not one"
         )
     runner.compass_backend = backend
+
+
+HOST_SEGMENTS = ("E", "W_pre", "W_launch", "W_post")  # in the order the host runs them
+FORWARD_KINDS = ("decode", "prefill", "middle")
+
+
+class HostDeviceRecurrence:
+    """One runner's host and device timelines, composed into each forward's charge.
+
+    The host runs `HOST_SEGMENTS` from `now`. A forward's entry waits for the
+    device work two forwards back; an output forward, after launch, waits for the
+    previous output forward's. `laws[kind][segment]` are coefficients on `(1,
+    tokens, seqs)`, zero where absent. `now` reads the engine LP's clock.
+    """
+
+    def __init__(self, laws: dict, skip, now) -> None:
+        self.laws, self.skip, self.now = laws, frozenset(skip), now
+        self.ends = (-math.inf, -math.inf)  # device end of forwards n-2, n-1
+        self.output_end = -math.inf  # device end of the last output forward
+
+    def charge(self, batch: Any, device_s: float) -> float:
+        """The forward's exit less `now`; advances the device state."""
+        kind = "decode" if batch.total_seqs_num_prefill == 0 else "prefill"
+        law = self.laws.get(kind if batch.produces_output() else "middle", {})
+        x = (1, batch.total_tokens_num, batch.total_seqs_num)
+        e, pre, launch, post = (
+            float(np.dot(law.get(s, (0, 0, 0)), x)) * (s not in self.skip)
+            for s in HOST_SEGMENTS
+        )
+        now = self.now()
+        host = max(now + e, self.ends[0]) + pre
+        launch_end = host + launch
+        device_end = max(self.ends[1], host) + device_s
+        self.ends = (self.ends[1], max(device_end, launch_end))
+        released = launch_end
+        if batch.produces_output():
+            released, self.output_end = max(launch_end, self.output_end), device_end
+        return released + post - now
 
 
 def schedulable_ladder(config: Any) -> list[int]:
@@ -842,6 +881,7 @@ class NonAllocatingRunner(
 def _group_step_seconds(runner: Any, batch: Any, backend: CostBackend) -> float:
     """This rank's step priced from its own batch, then the max over its DP group.
 
+    In a run, `compass_host` composes the price, device seconds, with host time.
     The `all_reduce(MAX)` stands in for the cross-rank collectives a real
     forward makes, which a predicted one does not run, so every rank leaves the
     step at the group's seconds. With one rank there is no group to exchange
@@ -881,6 +921,9 @@ def _group_step_seconds(runner: Any, batch: Any, backend: CostBackend) -> float:
     else:
         mix.record(cost)
         seconds = cost.seconds
+    host = getattr(runner, "compass_host", None)
+    if host is not None:
+        seconds = host.charge(batch, seconds)
     if mode.sync is None:
         return seconds
     group_max = torch.tensor([seconds], dtype=torch.float64)
