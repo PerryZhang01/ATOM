@@ -73,7 +73,7 @@ def _cost(run: Path, law: dict):
             for band, b in s["bands"].items():
                 value = f"{b['steps']} steps; p10 {b['p10']:+.1%} p50 {b['p50']:+.1%} p90 {b['p90']:+.1%}"
                 yield where, f"{band} {hull}", f"{value}; within 10% {b['within_10pct']:.1%}", gated
-    yield where, "left out", f"not labelled {json.dumps(report['cut'])}; warm steps {[w['step'] for w in report['warm']]}", "-"
+    yield where, "left out", f"not labelled {json.dumps(report['cut'])}; warm steps, measured s { {w['step']: round(w['measured_s'], 2) for w in report['warm']} }", "-"
     for band, r in report["refused"].items():
         yield where, f"refused {band}", f"{r['steps']} steps, measured {r['measured_s']:.2f} s", "-"
 
