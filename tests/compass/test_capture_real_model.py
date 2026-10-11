@@ -234,9 +234,9 @@ SITE_THREE = (
 # so these say which constructor answered and how often -- the half of the
 # second site's pin that no specialisation site covers, because a repair inside
 # `__init__` changes what it allocates rather than where a symbol is solved.
-# Measured: 19 buffers, each one host allocation and one numpy view.
+# Measured: 21 buffers, each one host allocation and one numpy view.
 BUFFER_INIT = "atom/utils/__init__.py:700"
-BUFFER_COUNT = 19
+BUFFER_COUNT = 21
 
 # The `torch.cuda` names `_declare_cuda` stubs, which are exactly the names a
 # capture reads. Measured by counting every read of a stubbed name over a whole
@@ -536,7 +536,7 @@ EXPECTED_HOST_RESOLUTIONS = {
     "atom/model_engine/model_runner.py:2564 in prepare_sample": 1,
     "atom/model_ops/attentions/backends.py:398 in _mrope_cpu_view": 1,
     "atom/model_ops/attentions/backends.py:400 in _mrope_cpu_view": 1,
-    "atom/model_ops/attentions/gdn_attn.py:1237 in _attach_gdn_decode_metadata": 1,
+    "atom/model_ops/attentions/gdn_attn.py:1251 in _attach_gdn_decode_metadata": 1,
 }
 
 
@@ -2272,7 +2272,7 @@ def test_atom_s_own_buffer_constructor_is_what_runs():
         assert init["constructed"] == BUFFER_COUNT
         # ATOM allocates the host side once per buffer and takes one numpy
         # view of it; both run outside the mode. A buffer that stopped doing
-        # either, or a twentieth buffer, moves one of these.
+        # either, or one more buffer, moves one of these.
         assert init["host_allocations"] == BUFFER_COUNT
         assert init["numpy_views"] == BUFFER_COUNT
     # The device side is staged only in the symbolic pass; in the concrete one
