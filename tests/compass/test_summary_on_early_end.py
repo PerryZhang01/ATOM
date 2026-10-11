@@ -3,7 +3,8 @@
 
 ATOM's `EngineCore.run_engine` runs an engine whose loop takes one step and
 then raises, before the finish grant: an exception, or the `SystemExit` a dead
-worker raises. The authority's host, co-hosted in the
+worker raises; or it leaves the loop without raising, as a shutdown request
+ends it, and the clock refuses to close. The authority's host, co-hosted in the
 frontend or standalone, then writes ``summary.json`` with each LP's clock as
 it stands, the exception named, and the run marked a coverage report.
 """
@@ -28,8 +29,16 @@ from atom.utils.distributed import utils
         (RuntimeError("the step raised"), "RuntimeError('the step raised')"),
         # How `call_func` reports a dead worker.
         (SystemExit(), "SystemExit()"),
+        # A shutdown request mid-run: the loop returns before the finish.
+        (
+            None,
+            (
+                "RuntimeError('engine left its loop at 0.0005, before the +inf "
+                "grant finished the run')"
+            ),
+        ),
     ],
-    ids=["exception", "dead worker"],
+    ids=["exception", "dead worker", "left early"],
 )
 @pytest.mark.parametrize("host", ["co-hosted", "standalone"])
 def test_an_engine_that_raises_mid_run_leaves_a_summary_naming_it(
@@ -68,7 +77,7 @@ def test_an_engine_that_raises_mid_run_leaves_a_summary_naming_it(
         from atom.model_engine import engine_core
 
     class RaisingEngine:
-        """One step, then the loop raises. It has no workers to ask."""
+        """One step, then the loop raises or returns. It has no workers to ask."""
 
         _setup_engine_process = staticmethod(lambda name: None)
 
@@ -78,14 +87,15 @@ def test_an_engine_that_raises_mid_run_leaves_a_summary_naming_it(
         def busy_loop(self) -> None:
             # Below the frontend's lookahead, so granted while it runs at 0.
             clock.installed().advance_to(run["ipc_s"] / 2)
-            raise error
+            if error is not None:
+                raise error
 
         def exit(self) -> None:
             pass
 
     run_engine = engine_core.EngineCore.run_engine
     monkeypatch.setattr(engine_core, "EngineCore", RaisingEngine)
-    with pytest.raises(type(error)):
+    with pytest.raises(RuntimeError if error is None else type(error)):
         run_engine(_deployment(), "", "")
 
     path = tmp_path / compass_run.SUMMARY_FILE

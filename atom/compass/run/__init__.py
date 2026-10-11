@@ -28,10 +28,11 @@ member, the frontend's included, connects to.
   finish, each handing in its LP's refusals; the frontend's, when it co-hosts
   the authority, then writes the step table and the run summary.
 - `engine_loop(engine)` wraps the engine's loop: `engine_done` after it, and
-  if the loop raises, the engine hands in the exception as an ``ended:``
-  reason. A hand-in before the finish is an early end: the authority's host
-  writes the step table and the run summary at once, each LP's clock as it
-  stands, from what has been handed in.
+  if either raises, the engine hands in the exception as an ``ended:``
+  reason; `engine_done` raises for a loop that left before the finish. A
+  hand-in before the finish is an early end: the authority's host writes the
+  step table and the run summary at once, each LP's clock as it stands, from
+  what has been handed in.
 
 Run file keys: ``clock_endpoint``, ``bound_s`` (finite), ``admission_path``,
 ``ipc_s``, ``stream_s``, ``coefficients`` (a `Coefficients` mapping, priced by
@@ -588,11 +589,13 @@ def engine_done(engine_core) -> None:
 
 @contextlib.contextmanager
 def engine_loop(engine_core):
-    """Around the engine's loop: `engine_done` once it leaves. If it raises in
-    a run, hand in the engine's refused clock calls and the exception, without
-    asking the workers, which may be what died."""
+    """Around the engine's loop: `engine_done` once it leaves, which raises if
+    that was before the finish. If either raises in a run, hand in the engine's
+    refused clock calls and the exception, without asking the workers, which
+    may be what died."""
     try:
         yield
+        engine_done(engine_core)
     except BaseException as e:
         run = spec()
         if run is not None:
@@ -600,7 +603,6 @@ def engine_loop(engine_core):
             lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
             _hand_in(run, lp, rt.refusals + [f"ended:{lp} raised {e!r}"])
         raise
-    engine_done(engine_core)
 
 
 def _until_end(run: dict, a: "_RecordingAuthority") -> bool:
@@ -679,8 +681,8 @@ def _write_summary(run: dict, a: _RecordingAuthority, ended: bool = False) -> No
     summary["schema_version"] = SUMMARY_SCHEMA_VERSION
     summary["source_root"] = a.source_root.as_json()
     # Any refusal, of any source, leaves part of the run unsimulated; a run
-    # that ended early simulated part of it.
-    summary["coverage_report"] = ended or bool(reasons)
+    # that ended early handed in why.
+    summary["coverage_report"] = bool(reasons)
     _write_whole(out / SUMMARY_FILE, json.dumps(summary, sort_keys=True, indent=1))
 
 
