@@ -705,12 +705,11 @@ class NonAllocatingRunner(
         """
         self.capture_sizes = schedulable_ladder(self.config)
         if not self.capture_sizes:
+            bound = min(self.config.max_num_seqs, self.config.max_num_batched_tokens)
             raise RunnerRefusal(
                 f"no cudagraph capture size in {self.config.capture_sizes} is "
-                f"schedulable at max_num_seqs {self.config.max_num_seqs} and "
-                f"max_num_batched_tokens {self.config.max_num_batched_tokens}; "
-                "ATOM's capture refuses to start this deployment, so there is "
-                "no ladder to price"
+                f"schedulable at bound {bound}; ATOM's capture refuses to "
+                "start this deployment, so there is no ladder to price"
             )
         self.capture_sizes_np = np.asarray(self.capture_sizes, dtype=np.int32)
         logger.info(
