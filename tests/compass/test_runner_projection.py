@@ -86,6 +86,22 @@ def runner(ladder=LADDER, enforce_eager=False, dp_size=1):
     )
 
 
+def _captured(declared, max_num_seqs, max_num_batched_tokens):
+    """A `NonAllocatingRunner` before capture: declared sizes, `[0]` held."""
+
+    class Captured(NonAllocatingRunner):
+        enforce_eager = False
+        capture_sizes_np = np.asarray([0], dtype=np.int32)
+        config = SimpleNamespace(
+            capture_sizes=declared,
+            max_num_seqs=max_num_seqs,
+            max_num_batched_tokens=max_num_batched_tokens,
+            parallel_config=SimpleNamespace(data_parallel_size=1),
+        )
+
+    return Captured()
+
+
 def _frozen(seqs):
     return {
         req_id: SimpleNamespace(
@@ -514,7 +530,7 @@ class TestTheRung:
 
     @pytest.mark.parametrize(
         "declared, max_num_seqs, max_num_batched_tokens",
-        [([8, 1, 4, 2], 3, 16384), ([1, 2, 4, 8], 512, 2)],
+        [([8, 2, 4, 1], 3, 16384), ([1, 2, 4, 8], 512, 2)],
         ids=["sequence-bound", "token-bound"],
     )
     def test_a_runner_that_captured_nothing_replays_atom_s_ladder(
@@ -526,21 +542,18 @@ class TestTheRung:
         graphs-on run came back eager."""
         step = _decode(trace)
         assert len(step.rows) == 2
-
-        class Captured(NonAllocatingRunner):
-            enforce_eager = False
-            capture_sizes_np = np.asarray([0], dtype=np.int32)
-            config = SimpleNamespace(
-                capture_sizes=declared,
-                max_num_seqs=max_num_seqs,
-                max_num_batched_tokens=max_num_batched_tokens,
-                parallel_config=SimpleNamespace(data_parallel_size=1),
-            )
-
-        r = Captured()
+        r = _captured(declared, max_num_seqs, max_num_batched_tokens)
         assert r.capture_cudagraph() == (0.0, [], 0)
         assert r.capture_sizes_np.tolist() == [1, 2]
         assert capture_rung(step.batch, r) == 2
+
+    def test_a_ladder_narrowed_to_nothing_is_refused(self):
+        """ATOM's capture asserts on an empty narrowed ladder, so such a
+        deployment never starts; pricing its decode steps as eager would
+        report a run that cannot happen."""
+        r = _captured([16, 32], 8, 16384)
+        with pytest.raises(RunnerRefusal, match=r"\[16, 32\].*bound 8"):
+            r.capture_cudagraph()
 
     @pytest.mark.parametrize(
         "config",

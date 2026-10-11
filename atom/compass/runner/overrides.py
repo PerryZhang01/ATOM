@@ -642,7 +642,8 @@ class NonAllocatingRunner(RefusedControlCommands):
         rung of every step off `capture_sizes_np`, so leaving the
         construction-time `[0]` would price every decode step as eager. The
         bound charges one token per sequence because this runner never has a
-        drafter. The reply still sends `[]` for the batch sizes, since no
+        drafter. An empty narrowed ladder is refused: ATOM's capture asserts
+        on it, so that deployment never starts. The reply still sends `[]` for the batch sizes, since no
         graph exists; the caller only formats it into a log line.
 
         `EngineCore.__init__` reaches this method only when `not enforce_eager
@@ -654,6 +655,12 @@ class NonAllocatingRunner(RefusedControlCommands):
         # would pull the engine, and its kernels, into a driver-free process.
         bound = min(self.config.max_num_seqs, self.config.max_num_batched_tokens)
         self.capture_sizes = sorted(s for s in self.config.capture_sizes if s <= bound)
+        if not self.capture_sizes:
+            raise RunnerRefusal(
+                f"no cudagraph capture size in {self.config.capture_sizes} is "
+                f"schedulable at bound {bound}; ATOM's capture refuses to "
+                "start this deployment, so there is no ladder to price"
+            )
         self.capture_sizes_np = np.asarray(self.capture_sizes, dtype=np.int32)
         logger.info(
             "no cudagraph captured: there are no weights to trace; steps "
