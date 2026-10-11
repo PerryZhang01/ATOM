@@ -249,18 +249,16 @@ class HostDeviceRecurrence:
         self.ends = (-math.inf, -math.inf)  # device end of forwards n-2, n-1
         self.output_end = -math.inf  # device end of the last output forward
 
-    def segments(self, batch: Any) -> list[float]:
+    def charge(self, batch: Any, device_s: float) -> float:
+        """The forward's exit less `now`; advances the device state."""
         kind = "decode" if batch.total_seqs_num_prefill == 0 else "prefill"
         law = self.laws.get(kind if batch.produces_output() else "middle", {})
         x = (1, batch.total_tokens_num, batch.total_seqs_num)
-        return [
+        e, pre, launch, post = (
             float(np.dot(law.get(s, (0, 0, 0)), x)) * (s not in self.skip)
             for s in HOST_SEGMENTS
-        ]
-
-    def charge(self, batch: Any, device_s: float) -> float:
-        """The forward's exit less `now`; advances the device state."""
-        now, (e, pre, launch, post) = self.now(), self.segments(batch)
+        )
+        now = self.now()
         host = max(now + e, self.ends[0]) + pre
         launch_end = host + launch
         device_end = max(self.ends[1], host) + device_s
