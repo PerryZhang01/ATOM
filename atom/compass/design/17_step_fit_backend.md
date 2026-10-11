@@ -420,12 +420,7 @@ before it starts (D99), and any refusal voids that run.
 ### The departure from `08` D50.1
 
 D50.1 has a refused step cost 0 s while the run continues (item 1), and `13` D80's
-default `mark` follows it. Step fit departs from both. No lower rung exists for
-Qwen3.8-27B, since no row of `16` authors Qwen tier-0 laws (W5.2 authors
-DeepSeek-V4-Pro's), so under `mark` every step the grid misses would cost 0 s rather
-than fall to tier 0. And because coverage is checked before grading, a refusal in a
-graded run is a gap the check missed; the run is a coverage report under D50.1 either
-way (item 3), so stopping at it loses no graded result. T92 records supporting `mark`
+default `mark` follows it. Step fit departs from both. T92 records supporting `mark`
 once a tier-0 law exists for the target.
 
 ### Against the tier-a law's rule

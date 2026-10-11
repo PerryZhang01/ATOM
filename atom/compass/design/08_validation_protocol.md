@@ -448,7 +448,7 @@ The answer changes what a result *is*, so it belongs here rather than in any one
 
 **A step is refused only when no rung answers. A refused step costs 0 s and the run
 continues, and any refusal makes the run a coverage report** (owner ruling on
-[#765](https://github.com/jgong5/ATOM/pull/765), 2026-10-11). Concretely:
+[#765](https://github.com/jgong5/ATOM/pull/765#issuecomment-6104630073), 2026-10-11). Concretely:
 
 1. **Refused means no rung of the resolver ladder answered.** A rung that declines while
    a lower one answers is a fall-through, not a refusal, and the step carries the
