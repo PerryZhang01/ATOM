@@ -406,8 +406,8 @@ class RefusedControlCommands:
         return tuple(vars(self).get("_refused_commands", ()))
 
 
-class NonAllocatingRunner(RefusedControlCommands):
-    """Overrides that construct a model runner without touching device memory."""
+class PricedSteps:
+    """What a runner's steps cost, read by the run summary over the worker RPC."""
 
     def priced_steps(self) -> dict[str, Any]:
         """This rank's own steps, folded into one `ProvenanceMix` as each was
@@ -427,6 +427,10 @@ class NonAllocatingRunner(RefusedControlCommands):
             **{f"{s}_steps": steps.get(s, 0) for s in apart},
             **{f"{s}_seconds": seconds.get(s, 0.0) for s in apart},
         }
+
+
+class NonAllocatingRunner(RefusedControlCommands, PricedSteps):
+    """Overrides that construct a model runner without touching device memory."""
 
     def _build_and_load_model(self, model_class: Any) -> None:
         """Build nothing and read no checkpoint.
