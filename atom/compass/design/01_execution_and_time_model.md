@@ -1270,11 +1270,12 @@ time.
 
 **What the ruled order implies.**
 
-- **The sampler launch sits after R1.** `ModelRunner.postprocess` launches the sampler
-  before `prepare_sampled_ids` reaches the R1 wait, but the recurrence puts all of
-  `W_post` after R1. A device-bound output forward is therefore overcharged by its
-  sampler launch. #824's stamps separate the two parts of `W_post`, and #827's per-step
-  residuals detect the error.
+- **The sampler launch sits after R1.** `ModelRunner.postprocess` launches the sampler,
+  and with TP above 1 the `get_tp_group().broadcast` of its tokens, before
+  `prepare_sampled_ids` reaches the R1 wait, but the recurrence puts all of `W_post`
+  after R1. A device-bound output forward is therefore overcharged by both launches.
+  #824's stamps separate the two parts of `W_post`, and #827's per-step residuals detect
+  the error.
 - **With every host law at zero**, a forward exits at the latest of `now`, R4's release
   and, for an output forward, R1's: in a run of output forwards, forward `n` charges the
   previous output forward's device time and the first output forward charges 0, one
