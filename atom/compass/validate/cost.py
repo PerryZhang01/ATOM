@@ -41,14 +41,9 @@ from atom.compass.backends import (
     CostRefused,
     RequestShape,
     Species,
+    coarse_fit,
 )
-from atom.compass.backends.coarse_fit import (
-    MAD_FLOOR,
-    MAD_K,
-    WARM_FACTOR,
-    _band,
-    samples,
-)
+from atom.compass.backends.coarse_fit import WARM_FACTOR, _band, samples
 
 WITHIN = 0.10
 
@@ -61,7 +56,9 @@ def _leading_slow(priced: list[tuple]) -> set[int]:
         error = np.array([p[4].seconds / p[3] - 1.0 for p in mine])
         centre = np.median(error)
         mad = 1.4826 * np.median(np.abs(error - centre))
-        slow = (error < 0) & (np.abs(error - centre) > max(MAD_K * mad, MAD_FLOOR))
+        slow = (error < 0) & (
+            np.abs(error - centre) > max(coarse_fit.MAD_K * mad, coarse_fit.MAD_FLOOR)
+        )
         for p, s in zip(mine, slow):
             if not s:
                 break
