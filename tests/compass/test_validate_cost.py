@@ -96,8 +96,9 @@ def test_the_step_that_moves_the_total_is_held_out_and_the_spread_reported(tmp_p
     assert decode["steps"] == 9 and set(decode["bands"]) == {"decode rung 1"}
     assert decode["measured_s"] == pytest.approx(decode["priced_s"], rel=1e-9)
 
-    # Two under-priced steps: step 5 is short by the most seconds, step 0 by the largest ratio.
-    record = _record(tmp_path / "under", _steps(), stretch={0: 2.2, 5: 1.5})
+    # Two under-priced steps after one at its price, so neither leads: step 5
+    # is short by the most seconds, step 1 by the largest ratio.
+    record = _record(tmp_path / "under", _steps(), stretch={1: 2.2, 5: 1.8})
     assert cost_accuracy(record, LAW)["fitted"]["prefill"]["held_out_step"] == 5
 
 
@@ -162,3 +163,26 @@ def test_a_one_off_slow_step_is_named_warm_mid_record_and_enters_no_total(
     law.write_text(json.dumps(LAW))
     main([str(record), str(law)])
     assert "warm step 5 (prefill tokens 512-2048)" in capsys.readouterr().out
+
+
+def test_a_leading_slow_step_under_the_factor_is_warm_and_mid_record_is_not(tmp_path):
+    # At twice their price: prefill steps 0 and 1 lead the record, step 10
+    # leads the decode steps; step 4 ran after prefill steps at their price.
+    steps = _steps()
+    stretch = {0: 2.0, 1: 2.0, 4: 2.0, 10: 2.0}
+    report = cost_accuracy(_record(tmp_path / "steps", steps, stretch), LAW)
+
+    assert [w["step"] for w in report["warm"]] == [0, 1, 10]
+    assert report["warm"][0]["measured_s"] == pytest.approx(
+        2 * _price(steps[0][0]), rel=1e-6
+    )
+    prefill, decode = report["fitted"]["prefill"], report["fitted"]["decode"]
+    assert prefill["steps"] == 8 and prefill["held_out_step"] == 4
+    assert prefill["held_out"] == pytest.approx(0.0, abs=1e-9)
+    assert decode["steps"] == 8
+    assert decode["measured_s"] == pytest.approx(decode["priced_s"], rel=1e-9)
+
+    # A leading step that ran in half its price is fast, not warm: it stays in the totals.
+    report = cost_accuracy(_record(tmp_path / "fast", steps, {10: 0.5}), LAW)
+    assert report["warm"] == []
+    assert report["fitted"]["decode"]["steps"] == 9
