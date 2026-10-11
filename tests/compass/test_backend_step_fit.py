@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from conftest import MockConfig
+from test_analytic_rung import roofline
 from test_dp_step_max import BLOCK, runner
 
 from atom.compass.backends import (
@@ -31,6 +32,7 @@ from atom.compass.backends import (
     StepFitGrid,
     Tier,
 )
+from atom.compass.backends.analytic import Tiered
 from atom.compass.backends.step_fit import equivalent_shape
 from atom.model_engine.scheduler import ScheduledBatchOutput, Scheduler
 from atom.model_engine.sequence import Sequence
@@ -176,6 +178,23 @@ def test_a_hole_refuses_only_the_steps_that_need_it():
     assert holed.estimate(view(*rows, rung=32)).seconds == 6150e-6
     with pytest.raises(CostRefused, match="no measurement at B=48, c=1024"):
         holed.estimate(view(*[(1, 601, True)] * 37, rung=48))
+
+
+def test_a_hole_under_a_roofline_floor_is_priced_by_the_roofline():
+    holed = replay([p for p in REPLAY if p["at"] != [48, 48, 1024]])
+    r = graphed(Tiered(holed, roofline()))
+    rows = [(1, 501, True)] * 18 + [(1, 701, True)] * 18 + [(1, 601, True)]
+
+    assert r.forward(decode(B37)).predicted_s == (
+        roofline().estimate(view(*rows, rung=48)).seconds
+    )
+    assert r.refused_commands() == ()
+    assert r.priced_steps()["analytical_steps"] == 1
+    reason = (
+        "the decode rung 48 cell holding B=37, c=600 has no measurement at "
+        "B=48, c=1024"
+    )
+    assert r._priced.reasons() == {("step-fit", reason): 1}
 
 
 def test_a_decode_step_wider_than_the_widest_rung_refuses_under_a_replay_bundle():
