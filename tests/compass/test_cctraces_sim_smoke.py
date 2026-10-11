@@ -205,6 +205,40 @@ def test_the_step_tables_are_byte_identical_and_name_the_workload(cells):
     assert "--benchmark-duration" in workload["aiperf_args"]
 
 
+def test_aiperf_extra_args_reach_the_same_command_line_aiperf_runs(tmp_path):
+    """AIPERF_EXTRA_ARGS lands in the recorded args used to launch aiperf itself."""
+    template = _template(tmp_path / "template.json")
+    out = tmp_path / "extra"
+    env = dict(
+        os.environ,
+        MODEL=MODEL,
+        TRACES=TRACES,
+        HARNESS_PYTHON=HARNESS_PYTHON,
+        SESSIONS="1",
+        DURATION_S="60",
+        AIPERF_EXTRA_ARGS="--trajectory-start-min-ratio 0 --trajectory-start-max-ratio 0",
+    )
+    done = subprocess.run(
+        ["bash", str(SCRIPT), str(template), str(out)],
+        cwd="/",
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=1800,
+    )
+    assert done.returncode == 0, done.stdout[-4000:] + done.stderr[-4000:]
+    workload = json.loads((out / "run.json").read_text())["workload"]
+    args = workload["aiperf_args"]
+    i = args.index("--trajectory-start-min-ratio")
+    assert args[i : i + 4] == [
+        "--trajectory-start-min-ratio",
+        "0",
+        "--trajectory-start-max-ratio",
+        "0",
+    ], args
+
+
 @pytest.mark.skipif(not shutil.which("atomesh"), reason="a 1P1D cell needs atomesh")
 def test_a_1p1d_pair_answers_through_the_router_and_transfers_kv(tmp_path):
     template = _template(

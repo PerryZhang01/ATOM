@@ -25,6 +25,11 @@
 #   SEED            aiperf --random-seed (default 20260707)
 #   SERVER_ARGS     more API server flags (default: --enforce-eager
 #                   --max-model-len 262144)
+#   AIPERF_EXTRA_ARGS  more aiperf arguments, appended after the scenario's
+#                   own, on both a simulated and a real cell (default none);
+#                   e.g. `--trajectory-start-min-ratio 0
+#                   --trajectory-start-max-ratio 0` to start every trajectory
+#                   at its first turn, with no warmup
 #   DECODE_EXEC, ATOMESH  as pd_sim.sh takes them, for a 1P1D cell
 #
 # A run file with `router_s` and `kv_write_req_s` makes the cell 1P1D: the
@@ -57,6 +62,7 @@ HARNESS_PYTHON=${HARNESS_PYTHON:?HARNESS_PYTHON names the Python with agentx-har
 SESSIONS=${SESSIONS:-2}
 REAL=${REAL:-0}
 SERVER_ARGS=${SERVER_ARGS:---enforce-eager --max-model-len 262144}
+AIPERF_EXTRA_ARGS=${AIPERF_EXTRA_ARGS:-}
 WAIT_S=${WAIT_S:-600}
 # compass-harness pins aiperf's benchmark id: uuid4 is UUID(int=0).
 BENCHMARK_ID=000000000000
@@ -83,6 +89,8 @@ args=(--endpoint-type chat --custom-dataset-type weka_trace
     --random-seed "${SEED:-20260707}" --scenario inferencex-agentx-mvp --unsafe-override
     --streaming --use-server-token-count --extra-inputs ignore_eos:true
     --no-server-metrics --no-gpu-telemetry --ui none)
+# shellcheck disable=SC2206 # AIPERF_EXTRA_ARGS is a word list
+args+=($AIPERF_EXTRA_ARGS)
 
 read -r MODE CLOCK_PORT PORT DECODE_PORT ROUTER_PORT KV_WRITE_REQ_PORT PROMETHEUS_PORT < <(
 python3 - "$RUN_FILE" "$OUT" "$TRACES" "$BENCHMARK_ID" "${args[@]}" <<'EOF'
