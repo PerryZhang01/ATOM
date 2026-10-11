@@ -20,6 +20,7 @@ from atom.compass.backends import (
     Species,
 )
 from atom.compass.backends.coarse_fit import fit, held_out, main, samples
+from atom.compass.validate.cost import cost_accuracy
 
 PREFILL = {"step": 0.02, "tokens": 6e-5, "query_square": 2e-10, "query_cached": 3e-10}
 DECODE = {
@@ -141,7 +142,15 @@ def test_a_feature_with_no_variance_returns_zero_named(tmp_path):
     eager = law["decode"]["eager"]
     assert eager["fit"]["zero"] == ["graph_padding"]
     for vector in [prefill, *law["decode"].values()]:
-        assert set(vector["fit"]) == {"samples", "warm", "dropped", "condition", "zero"}
+        assert set(vector["fit"]) == {
+            "samples",
+            "warm",
+            "dropped",
+            "condition",
+            "centre",
+            "mad",
+            "zero",
+        }
         assert vector["fit"]["samples"] > 0 and vector["fit"]["condition"] >= 1.0
     cost = CoarseBackend(CoarseLaw(law)).estimate(_view([(100, 100, False)]))
     assert cost.terms[-1].seconds == 0.0
@@ -262,3 +271,22 @@ def test_a_step_mixing_prefill_and_decode_is_cut_not_fitted(tmp_path):
     assert 20 not in [r[3] for r in rows]
     law = fit([tmp_path / "dp0.jsonl"])
     assert law["prefill"]["coefficients"] == pytest.approx(PREFILL, rel=1e-6)
+
+
+def test_the_cost_report_names_the_leading_warm_steps_the_law_names(tmp_path):
+    # One record scatters by 1%, the other by 25% after a first step at 1.5
+    # times its price. The pooled scatter is narrow, so the fit names that step
+    # warm though the wide record's own scatter would not.
+    rng = np.random.default_rng(12)
+    narrow = {i: 1 + rng.uniform(-0.01, 0.01) for i in range(400)}
+    wide = {i: 1 + rng.uniform(-0.25, 0.25) for i in range(240)} | {0: 1.5}
+    (tmp_path / "wide").mkdir()
+    records = [
+        _record(tmp_path / "narrow.jsonl", _steps(12, n=400), stretch=narrow),
+        _record(tmp_path / "wide" / "dp0.jsonl", _steps(13), stretch=wide),
+    ]
+    law = fit(records)
+
+    assert 0 in law["warm_steps"][1]
+    named = [w["step"] for w in cost_accuracy(tmp_path / "wide", law)["warm"]]
+    assert sorted(named) == sorted(law["warm_steps"][1])
