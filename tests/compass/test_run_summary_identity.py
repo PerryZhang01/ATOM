@@ -55,6 +55,7 @@ def test_a_tree_with_neither_git_nor_a_stamp_is_refused_by_name(monkeypatch, tmp
     run = _run(tmp_path, monkeypatch)
     bare = tmp_path / "bare" / "atom"
     bare.mkdir(parents=True)
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     monkeypatch.setattr(provenance, "module_root", lambda module: str(bare))
     with pytest.raises(ArtifactRefusal, match=f"`{bare}` is neither a git checkout"):
         compass_run._RecordingAuthority(run)
