@@ -4,7 +4,7 @@
 interview and reviewed by jgong5 across two review rounds on PR #3. No code has been
 written against it yet; implementation follows the execution plan in `16`.
 
-**What this is.** Everything across the sixteen design topics that is *not settled*, in one
+**What this is.** Everything across the design topics that is *not settled*, in one
 place. Split out of `README.md` so the front page stays a bird's-eye view rather than a
 backlog. Nothing here is a decision; every decision lives in its topic's decision log.
 
@@ -169,6 +169,7 @@ M-f `14`; M-g `01` D3.5.
 |---|---|
 | T57 | Generate the `ATOM_COMPASS_*` environment twins from the flag table rather than hand-writing them |
 | T58 | Decide whether a per-leaf tier override is worth the reproducibility cost |
+| T96 | Reconcile `13` D79 and D80 with the run file the code selects a backend by (`--compass-run`, `atom/compass/run/__init__.py::runner`): `13` rejects a Compass config file, the code reads one (`17` D103) |
 
 ### Topic 14 — speculative decoding and MTP
 
@@ -191,6 +192,15 @@ M-f `14`; M-g `01` D3.5.
 | T75 | **Decide the two `loop.call_later` idle-cap timers.** Opened 2026-09-20. `replay_dependencies.py:307` and `agentic_replay.py:592` arm real-clock timers the `LoopScheduler` rebind cannot reach; upstream's own docstring says the second deliberately lives outside the scheduler. Either override the two `_arm_*_idle_watchdog` methods from the Compass subclass, or declare the idle-cap feature unsupported under virtual time and assert both caps are `None`. Related: `agentic_replay.py:531` derives the virtual-time skip from `time.monotonic()` (`06` D34) |
 | T76 | **Reconcile `seamless=True`, which keeps two `PhaseRunner`s and two schedulers live at once.** Opened 2026-09-20. `phase_orchestrator.py:267` builds one runner per phase and tracks `_active_runners`. W1.9 either reconciles two concurrent schedulers against one virtual clock or asserts `seamless=False` (`06` D34) |
 | T80 | Raise with ATOM's owners: `tests/test_prefix_cache_accuracy.py` has no test function — it is an `argparse` script driving a live server — and `test_kv_connector_scheduler.py` / `test_transfer_engine.py` have been dead since #690. Measured: all three run nothing in **either** tier |
+
+### Topic 17 — step fit backend
+
+| # | Item |
+|---|---|
+| T92 | Support `--compass-on-refusal mark` under step fit once a tier-0 law exists for the target; no row of `16` authors a Qwen tier-0 law (`17` D102) |
+| T93 | Measure in ATOM whether the scheduler's CPU segments add serially to the forward or overlap it; step fit's `fitted` CPU mode waits on it (`17` D104) |
+| T94 | Record the kernels each step fit grid point ran, and treat a cell whose corners ran different kernels as crossing a dispatch band (`09` D60): refused or split (`17` D99) |
+| T95 | A later trial, not this design: extrapolate step fit's out-of-cell steps as #627's ruling 3 has the tier-a law do, by one method only (extending the nearest complete cell's interpolation), tagged `extrapolated` with the distance, reported apart, outside the 5% gate, never aborting. It would replace the abort-only rule and the `08` D50.1 departure; decided after step fit's stage-2 evaluation shows how often steps fall outside complete cells (`17` D102) |
 
 ### Topics 02, 01 — gaps now closed
 
