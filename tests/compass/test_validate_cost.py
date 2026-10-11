@@ -186,3 +186,18 @@ def test_a_leading_slow_step_under_the_factor_is_warm_and_mid_record_is_not(tmp_
     report = cost_accuracy(_record(tmp_path / "fast", steps, {10: 0.5}), LAW)
     assert report["warm"] == []
     assert report["fitted"]["decode"]["steps"] == 9
+
+
+def test_a_leading_slow_step_is_judged_by_the_law_s_scatter_not_the_record_s(
+    tmp_path,
+):
+    # Prefill scatters by 25% after step 0, which ran at 1.5 times its price.
+    # Against this record's own scatter step 0 is ordinary; against the narrow
+    # scatter the law was fitted on, it leads slow.
+    stretch = {i: (1.25, 0.75)[i % 2] for i in range(1, 10)} | {0: 1.5}
+    record = _record(tmp_path / "steps", _steps(), stretch)
+    assert cost_accuracy(record, LAW)["warm"] == []
+
+    law = json.loads(json.dumps(LAW))
+    law["prefill"]["fit"] = {"centre": 0.0, "mad": 0.01}
+    assert [w["step"] for w in cost_accuracy(record, law)["warm"]] == [0]

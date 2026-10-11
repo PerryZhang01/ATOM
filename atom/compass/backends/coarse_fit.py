@@ -23,7 +23,8 @@ dropped step anywhere that ran more than `WARM_FACTOR` times its price, such as
 the first short chunk on a deep history: counted with their seconds apart from
 the dropped ones, never charged. A feature with no variance gets coefficient
 zero and is named. Each vector reports its samples,
-warm and dropped counts, the condition number of its column-scaled design and
+warm and dropped counts, the centre and scaled MAD of its relative residuals,
+the condition number of its column-scaled design and
 the convex hull of its fitted steps, which `CoarseLaw` reads. A vector with
 no more fitted steps than coefficients, or whose steps span no hull, is left
 out and named under `unfitted`; `CoarseBackend` refuses its steps.
@@ -141,6 +142,8 @@ def _solve(x: np.ndarray, y: np.ndarray, names: list[str]) -> dict:
         "coef": coef,
         "keep": keep,
         "residual": residual,
+        "centre": float(centre),
+        "mad": float(mad),
         "condition": float(np.linalg.cond(cols / norms)),
         "zero": [names[j] for j in range(x.shape[1]) if j not in vary],
     }
@@ -258,6 +261,8 @@ def fit(records, form: str = "law") -> dict:
                     "warm": int((mine & warm).sum()),
                     "dropped": int((mine & ~solved["keep"] & ~warm).sum()),
                     "condition": solved["condition"],
+                    "centre": solved["centre"],
+                    "mad": solved["mad"],
                     "zero": solved["zero"],
                 },
             }

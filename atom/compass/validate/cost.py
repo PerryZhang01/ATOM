@@ -21,8 +21,9 @@ and priced seconds, and enter none of the in-hull figures. A step that ran more
 than `coarse_fit.WARM_FACTOR` times its price is warm, a one-off first touch the
 law does not model: it is named with its seconds and enters no figure. So are
 the steps that lead a vector's priced steps, each slower than its price by more
-than `coarse_fit.MAD_K` scaled MADs of that vector's errors, as the fit names
-them. A step the law refuses is counted with its measured seconds.
+than `coarse_fit.MAD_K` scaled MADs of the errors the law's vector was fitted
+on, as the fit names them; of that vector's errors here if the law records no
+`fit.mad`. A step the law refuses is counted with its measured seconds.
 """
 
 from __future__ import annotations
@@ -48,7 +49,7 @@ from atom.compass.backends.coarse_fit import WARM_FACTOR, _band, samples
 WITHIN = 0.10
 
 
-def _leading_slow(priced: list[tuple]) -> set[int]:
+def _leading_slow(priced: list[tuple], law: dict) -> set[int]:
     """Steps leading their vector's (vector, band, step, seconds, cost) rows, each slow."""
     out = set()
     for key in sorted({p[0] for p in priced}):
@@ -56,6 +57,9 @@ def _leading_slow(priced: list[tuple]) -> set[int]:
         error = np.array([p[4].seconds / p[3] - 1.0 for p in mine])
         centre = np.median(error)
         mad = 1.4826 * np.median(np.abs(error - centre))
+        vector = law["prefill"] if key == "prefill" else law["decode"][key]
+        if "mad" in vector.get("fit", {}):
+            centre, mad = vector["fit"]["centre"], vector["fit"]["mad"]
         slow = (error < 0) & (
             np.abs(error - centre) > max(coarse_fit.MAD_K * mad, coarse_fit.MAD_FLOOR)
         )
@@ -129,7 +133,7 @@ def cost_accuracy(record, law) -> dict:
             r["measured_s"] += seconds
             continue
         priced.append((key, band, step, seconds, cost))
-    leading = _leading_slow(priced)
+    leading = _leading_slow(priced, law)
     for key, band, step, seconds, cost in priced:
         if step in leading or seconds > WARM_FACTOR * cost.seconds:
             warm.append(
