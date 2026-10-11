@@ -407,7 +407,30 @@ class RefusedControlCommands:
         return tuple(vars(self).get("_refused_commands", ()))
 
 
-class NonAllocatingRunner(RefusedControlCommands):
+class PricedSteps:
+    """What a runner's steps cost, read by the run summary over the worker RPC."""
+
+    def priced_steps(self) -> dict[str, Any]:
+        """This rank's own steps, folded into one `ProvenanceMix` as each was
+        priced, before the max over the DP group, with the analytical and the
+        extrapolated steps and seconds apart. A dict even before the first
+        step, since a None reply parks the engine that asks.
+        """
+        from atom.compass.backends.cost import ProvenanceMix
+        from atom.compass.backends.provenance import Species
+
+        mix = vars(self).get("_priced") or ProvenanceMix()
+        steps, seconds = mix.steps_by_species(), mix.seconds_by_species()
+        apart = (Species.ANALYTICAL, Species.EXTRAPOLATED)
+        return {
+            "steps": mix.steps,
+            "seconds": mix.seconds,
+            **{f"{s}_steps": steps.get(s, 0) for s in apart},
+            **{f"{s}_seconds": seconds.get(s, 0.0) for s in apart},
+        }
+
+
+class NonAllocatingRunner(RefusedControlCommands, PricedSteps):
     """Overrides that construct a model runner without touching device memory."""
 
     def _build_and_load_model(self, model_class: Any) -> None:
@@ -808,8 +831,12 @@ def _group_step_seconds(runner: Any, batch: Any, backend: CostBackend) -> float:
             "layers, but a cost backend prices a whole step; charging each "
             "stage the whole model would count it once per stage"
         )
+    from atom.compass.backends.cost import ProvenanceMix
+
     mode = forward_mode(batch, runner)
-    seconds = backend.estimate(batch_view(batch, mode, runner)).seconds
+    cost = backend.estimate(batch_view(batch, mode, runner))
+    vars(runner).setdefault("_priced", ProvenanceMix()).record(cost)
+    seconds = cost.seconds
     if mode.sync is None:
         return seconds
     group_max = torch.tensor([seconds], dtype=torch.float64)

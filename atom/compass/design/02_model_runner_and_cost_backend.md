@@ -343,9 +343,11 @@ is worse than tracing it. Its costs, stated so nobody is surprised:
    advance during it) but it degrades the ≥5x speed result, so the run artifact records
    lazy-trace count and seconds separately.
 2. A newly traced structure has **no price**. The graph exists; the leaves in it may
-   not. The backend then refuses that step (per the rule below) rather than guessing.
-   So a lazy trace converts "unknown shape" into a *named* refusal with a graph
-   attached — which is exactly the input `compass plan` needs to extend the campaign.
+   not. The backend then declines that step (per the rule below) rather than guessing,
+   and the step falls to tier 0 where one exists; with no rung left to answer it is
+   refused (`08` D50.1). So a lazy trace converts "unknown shape" into a *named*
+   decline with a graph attached — which is exactly the input `compass plan` needs to
+   extend the campaign.
 
 **Consequence worth stating plainly:** a lazy trace never rescues a run on its own. It
 makes the gap diagnosable. `measure` closes it, offline, on a machine with a card.
@@ -395,9 +397,10 @@ from a file is still `measured`** — what changes is whether the key matched ex
 - A backend asked about a step kind it has no samples of must **raise**, not fall back.
   The prior fallback was the mean of an empty list, i.e. zero — "a confident, precise,
   entirely fictional answer", a TTFT of 0 ms against a real 7.6 s.
-- What a refusal *does to the run* is not settled here and is not local to this document:
-  abort the run, or mark the step and continue with `provenance=refused`? Five documents
-  emit refusals and none of them says. Recorded as **T48**.
+- What a refusal *does to the run* is not local to this document and is settled in `08`
+  D50.1: a step is refused only when no rung answers, so an unpriced step falls to tier 0
+  where one exists, and an out-of-hull step is priced `extrapolated`. A refused step
+  costs 0 s, the run continues, and the run is a coverage report.
 
 ---
 

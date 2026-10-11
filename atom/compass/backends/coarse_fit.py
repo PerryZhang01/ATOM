@@ -10,8 +10,9 @@ Each RECORD is a real run's step record (`steps/dp0.jsonl`, written with
 the step to `t_enter_ns` of the next, kept only where the next batch holds a
 request this one left unfinished, so the engine went straight from one forward
 to the next. The host time between forwards lands in the intercepts. A step
-whose period may hold an idle gap, the step after one, and a step mixing
-prefill and decode rows are counted and not fitted.
+whose period may hold an idle gap and a step mixing prefill and decode rows
+are counted and not fitted. The step after an idle gap is fitted: its period
+starts at its own forward, after the gap.
 
 Each equation is divided by its own label and the coefficients are bound to be
 non-negative. Steps whose relative residual is more than `MAD_K` scaled MADs
@@ -79,16 +80,16 @@ def samples(record, form: str = "law") -> tuple[list[tuple], dict]:
         raise ValueError(
             f"{record} has no timed steps; a fit needs a real run's record"
         )
-    cut = {"idle": 0, "after_idle": 0, "mixed": 0, "last": 1}
-    rows, after_idle = [], False
+    cut = {"idle": 0, "mixed": 0, "last": 1}
+    rows = []
     for step, nxt in pairwise(steps):
         idle = not {r[0] for r in step["batch"]} & {r[0] for r in nxt["batch"]}
         view = BatchView(
             tuple(RequestShape(q, c, bool(d)) for q, c, d in step["rows"]),
             capture_rung=step["rung"],
         )
-        if idle or after_idle:
-            cut["idle" if idle else "after_idle"] += 1
+        if idle:
+            cut["idle"] += 1
         elif view.prefill and view.decode:
             cut["mixed"] += 1
         else:
@@ -103,7 +104,6 @@ def samples(record, form: str = "law") -> tuple[list[tuple], dict]:
                 counts = (1, sum_context(view.decode), view.graph_padding)
             period = (nxt["t_enter_ns"] - step["t_enter_ns"]) * 1e-9
             rows.append((key, counts, period, step["step"]))
-        after_idle = idle
     return rows, cut
 
 

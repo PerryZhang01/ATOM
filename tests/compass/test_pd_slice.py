@@ -398,7 +398,11 @@ def test_the_standalone_authority_writes_the_step_table_at_the_finish_and_the_su
         monkeypatch.setattr(clock, "_installed", rt)
         if lp.startswith("engine"):
             refused = [f"command:reset on {lp}"]
-            worker = SimpleNamespace(call_func=lambda name, wait_out, r=refused: r)
+            worker = SimpleNamespace(
+                call_func=lambda name, wait_out, r=refused: (
+                    r if name == "refused_commands" else {}
+                )
+            )
             compass_run.engine_done(SimpleNamespace(runner_mgr=worker))
         else:
             assert not (tmp_path / compass_run.SUMMARY_FILE).exists()
