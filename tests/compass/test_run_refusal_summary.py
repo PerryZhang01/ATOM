@@ -1,0 +1,179 @@
+# SPDX-License-Identifier: MIT
+"""What the run summary says about the steps a run priced.
+
+Steps are priced through the runner's own `forward`, the worker's answers are
+read back as `engine_done` reads them over the worker RPC, and the frontend's
+`frontend_done` writes ``summary.json``.
+"""
+
+import json
+import math
+import time
+from types import SimpleNamespace
+
+import pytest
+import torch
+from test_backend_coarse import law
+from test_dp_step_max import prefill, runner
+from test_runner_control_refusals import Worker
+
+from atom.compass import run as compass_run
+from atom.compass.backends import (
+    BatchView,
+    CoarseBackend,
+    CoarseLaw,
+    Coefficients,
+    CostTerm,
+    Provenance,
+    Refusal,
+    RequestShape,
+    ShapeStubBackend,
+    Species,
+    StepCost,
+)
+from atom.utils import clock
+from atom.utils.clock import LPRuntime
+
+STAGE1 = Coefficients(decode_request=0.0)
+CHAIN = (
+    Refusal("price_list", "no entry for this shape"),
+    Refusal("nearest_key", "outside the measured range"),
+)
+# Prefill of 1 to 32 tokens with nothing cached: the chord of t^2 from 1 to 32.
+SHORT_PREFILL_HULL = {
+    "equal": {"query_cached": 0},
+    "facets": [[-1, 0, 1], [0, -1, 1], [-33, 1, 32], [1, 0, -32]],
+}
+NONE_APART = {"steps": 0, "fraction_of_predicted_seconds": 0.0}
+
+
+class AnalyticBelow(ShapeStubBackend):
+    """The stub's seconds, answered by an analytical rung after two rungs above
+    it declined a prefill of `tokens` or more."""
+
+    def __init__(self, coefficients, tokens):
+        super().__init__(coefficients)
+        self.tokens = tokens
+
+    def estimate(self, batch_view):
+        cost = super().estimate(batch_view)
+        if sum(r.query_tokens for r in batch_view.prefill) < self.tokens:
+            return cost
+        analytic = Provenance(Species.ANALYTICAL, "roofline", "tier0", CHAIN)
+        return StepCost(
+            [CostTerm(t.name, t.seconds, analytic) for t in cost.terms if t.seconds]
+        )
+
+
+def seconds(backend, tokens):
+    return backend.estimate(BatchView((RequestShape(tokens, tokens, False),))).seconds
+
+
+def summary(monkeypatch, tmp_path, backend, *prompts, clock_refusals=(), jobs=()):
+    """The run summary after one engine's runner priced a prefill of each
+    prompt, with the engine's refused clock calls and the frontend's refused
+    executor jobs given."""
+    monkeypatch.setattr(torch.distributed, "all_reduce", None)
+    run = {
+        "admission_path": "serving",
+        "ipc_s": 0.001,
+        "stream_s": 0.002,
+        "bound_s": 10.0,
+        "clock_endpoint": "inproc:unused",
+        "out_dir": str(tmp_path),
+    }
+    (tmp_path / "run.json").write_text(json.dumps(run))
+    monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
+    table = compass_run.channel_table(run)
+    authority = compass_run._RecordingAuthority(run)
+    authority.started = authority.finished = time.monotonic()
+
+    r = runner(backend)
+    for tokens in prompts:
+        r.forward(prefill(tokens))
+    engine = LPRuntime(compass_run.ENGINE, table, None)
+    engine.now = math.inf
+    engine.refusals.extend(clock_refusals)
+    monkeypatch.setattr(clock, "_installed", engine)
+    compass_run.engine_done(SimpleNamespace(runner_mgr=Worker(r)))
+
+    monkeypatch.setattr(compass_run, "_authority", authority)
+    frontend = LPRuntime(compass_run.FRONTEND, table, None)
+    frontend.now = math.inf
+    frontend.loop = SimpleNamespace(executor=SimpleNamespace(refusals=list(jobs)))
+    monkeypatch.setattr(clock, "_installed", frontend)
+    assert compass_run.frontend_done(SimpleNamespace(close=lambda: None))
+    return json.loads((tmp_path / compass_run.SUMMARY_FILE).read_text())
+
+
+def test_a_step_a_lower_rung_answered_is_not_refused_and_its_answer_is_apart(
+    monkeypatch, tmp_path
+):
+    backend = AnalyticBelow(STAGE1, tokens=40)
+    out = summary(monkeypatch, tmp_path, backend, 8, 8, 8, 40)
+
+    short, long = seconds(backend, 8), seconds(backend, 40)
+    schedule = out["schedule"]
+    assert schedule["predicted_seconds"] == pytest.approx(3 * short + long)
+    assert schedule["analytical"] == {
+        "steps": 1,
+        "fraction_of_predicted_seconds": pytest.approx(long / (3 * short + long)),
+    }
+    assert schedule["extrapolated"] == NONE_APART
+    refusals = schedule["refusals"]
+    assert (refusals["count"], refusals["steps"], refusals["reasons"]) == (0, 4, [])
+    assert refusals["fraction_of_steps"] == 0.0
+    assert out["coverage_report"] is False
+
+
+@pytest.mark.parametrize(
+    "where,reason",
+    [
+        ("clock_refusals", "clock:sleep from engine"),
+        ("jobs", "executor:a job past the bound"),
+    ],
+)
+def test_any_refusal_of_any_source_is_a_coverage_report(
+    monkeypatch, tmp_path, where, reason
+):
+    backend = ShapeStubBackend(STAGE1)
+    out = summary(monkeypatch, tmp_path, backend, 8, 40, **{where: [reason]})
+
+    refusals = out["schedule"]["refusals"]
+    assert (refusals["count"], refusals["reasons"]) == (1, [[reason, 1]])
+    assert refusals["fraction_of_steps"] == 0.0
+    assert out["coverage_report"] is True
+
+
+def test_steps_outside_the_hull_are_extrapolated_and_never_refused(
+    monkeypatch, tmp_path
+):
+    backend = CoarseBackend(CoarseLaw(law(prefill_hull=SHORT_PREFILL_HULL)))
+    out = summary(monkeypatch, tmp_path, backend, 8, 8, 8, 40)
+
+    short, long = seconds(backend, 8), seconds(backend, 40)
+    schedule = out["schedule"]
+    assert schedule["extrapolated"] == {
+        "steps": 1,
+        "fraction_of_predicted_seconds": pytest.approx(long / (3 * short + long)),
+    }
+    assert schedule["analytical"] == NONE_APART
+    refusals = schedule["refusals"]
+    assert (refusals["count"], refusals["steps"]) == (0, 4)
+    assert out["coverage_report"] is False
+
+
+def test_a_run_with_neither_reports_zero_of_both_beside_its_seconds(
+    monkeypatch, tmp_path
+):
+    backend = ShapeStubBackend(STAGE1)
+    out = summary(monkeypatch, tmp_path, backend, 8, 40)
+
+    schedule = out["schedule"]
+    assert schedule["predicted_seconds"] == pytest.approx(
+        seconds(backend, 8) + seconds(backend, 40)
+    )
+    assert schedule["analytical"] == schedule["extrapolated"] == NONE_APART
+    assert schedule["refusals"]["count"] == 0
+    assert schedule["refusals"]["fraction_of_steps"] == 0.0
+    assert out["coverage_report"] is False
