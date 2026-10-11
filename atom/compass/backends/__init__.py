@@ -28,6 +28,9 @@ The pieces, and the rule each exists to make structural rather than customary:
 - `CoarseLaw` / `CoarseBackend` -- tier a: a fitted prefill vector and a decode
   vector per capture rung, each with the convex hull it was fitted on; a step
   outside its hull is priced and its terms say `extrapolated`.
+- `StepFitGrid` / `StepFitBackend` -- tier a: a grid of measured whole
+  forwards, read at a batch's equivalent homogeneous shape, answering only
+  inside a cell whose every corner was measured and refusing elsewhere.
 - `ProvenanceMix` -- the run-level mixture, and refusals counted by number, by
   fraction of steps and by fraction of predicted seconds. A run with nothing in
   it has no fractions and says so, rather than reporting a reassuring zero.
@@ -67,6 +70,7 @@ from atom.compass.backends.shape import (
     RequestShape,
     ShapeStubBackend,
 )
+from atom.compass.backends.step_fit import StepFitBackend, StepFitGrid
 
 __all__ = [
     "BatchView",
@@ -90,6 +94,8 @@ __all__ = [
     "ShapeStubBackend",
     "Species",
     "StepCost",
+    "StepFitBackend",
+    "StepFitGrid",
     "SyntheticStack",
     "Tier",
     "fold_seconds",

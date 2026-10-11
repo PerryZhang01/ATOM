@@ -215,6 +215,7 @@ def batch_view(batch: Any, mode: ForwardMode, runner: Any) -> BatchView:
     first `total_seqs_num_prefill` rows are prefill. The rung and the MoE
     gather's rows come from `mode`, the step's one `forward_mode`; a
     data-parallel runner handed a mode with no group counts is refused.
+    Whether the step produces output is `ScheduledBatch.produces_output`.
 
     The MoE gather's rows follow `running_tokens_are_unified`, as
     `FusedMoE.forward_impl_graph` does. Every rank decoding, the padded
@@ -244,4 +245,5 @@ def batch_view(batch: Any, mode: ForwardMode, runner: Any) -> BatchView:
         ),
         capture_rung=_rung(mode),
         moe_rows=moe_rows,
+        produces_output=batch.produces_output(),
     )

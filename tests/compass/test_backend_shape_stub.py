@@ -155,14 +155,16 @@ class TestPerRequestSums:
         """Every sum is a function of the rows, so none can be supplied and
         none can disagree with the rows it came from.
 
-        `capture_rung` and `moe_rows` are batch-level scalars
-        deliberately: a rung is a property of the replayed graph and the MoE
-        gather rows of the data-parallel group, not of any row.
+        `capture_rung`, `moe_rows` and `produces_output` are batch-level
+        scalars deliberately: a rung is a property of the replayed graph, the
+        MoE gather rows of the data-parallel group and whether it samples of
+        the step, not of any row.
         """
         assert [f.name for f in fields(BatchView)] == [
             "requests",
             "capture_rung",
             "moe_rows",
+            "produces_output",
         ]
         assert [f.name for f in fields(RequestShape)] == [
             "query_tokens",
