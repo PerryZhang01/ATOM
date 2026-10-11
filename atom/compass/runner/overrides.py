@@ -431,7 +431,26 @@ class PricedSteps:
         }
 
 
-class NonAllocatingRunner(RefusedControlCommands, PricedSteps):
+class PredictedMemory:
+    """The memory a runner predicts, read by the engine's hand-in over the worker RPC."""
+
+    def predicted_memory(self) -> dict[str, Any]:
+        """`compass_memory` as a run installed it; a None reply parks the engine."""
+        return vars(self).get("compass_memory", {})
+
+
+class StepFitBundle:
+    """The step fit bundle a runner prices with, read by the engine's hand-in."""
+
+    def step_fit_bundle(self) -> dict[str, Any]:
+        """`compass_step_fit` as a step fit run installed it; empty before
+        one is, since a None reply parks the engine."""
+        return vars(self).get("compass_step_fit", {})
+
+
+class NonAllocatingRunner(
+    RefusedControlCommands, PricedSteps, PredictedMemory, StepFitBundle
+):
     """Overrides that construct a model runner without touching device memory."""
 
     def _build_and_load_model(self, model_class: Any) -> None:

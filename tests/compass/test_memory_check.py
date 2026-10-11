@@ -1,23 +1,29 @@
 # SPDX-License-Identifier: MIT
-"""A simulated run's memory file, held against a real server's log per term.
+"""A simulated engine's hand-in, its memory held against a real server's log per term.
 
-`run.runner` writes the readings it installs into the run's out_dir, and
-`python -m atom.compass.memory.check` compares them with the lines a real
-ATOM server logs, through `compare` and `compare_graph_pool`. Each case
-installs through `run.runner` on a Qwen3.5-27B config at TP1 on the suite's
-machine document, as `test_run_graph_pool.py` does.
+`run.runner` records the readings it installs on the worker, `engine_done`
+hands them in to the run's out_dir, and `python -m atom.compass.memory.check`
+compares them with the lines a real ATOM server logs, through `compare` and
+`compare_graph_pool`. Each case installs through `run.runner` on a Qwen3.5-27B
+config at TP1 on the suite's machine document, as `test_run_graph_pool.py`
+does.
 """
 
 import json
+import math
+from types import SimpleNamespace
 
 import pytest
 from test_memory_readings import CAPTURE_SIZES, MAX_NUM_BATCHED_TOKENS
-from test_run_graph_pool import _reserved
+from test_run_graph_pool import _installed
 from test_vertical_slice import _run_file
 
 from atom.compass import run as compass_run
 from atom.compass.memory import MemoryRefusal
 from atom.compass.memory.check import main
+from atom.compass.runner.overrides import NonAllocatingRunner
+from atom.utils import clock
+from atom.utils.clock import LPRuntime
 
 GIB = 1 << 30
 #: The spec's graph-pool line at width 1, in the suite's machine document.
@@ -25,10 +31,25 @@ POOL_BASE, POOL_PER_TOKEN = 95_500_000, 318_000
 
 
 def _memory(monkeypatch, tmp_path, **kwargs) -> dict:
-    """The memory file `run.runner` wrote, with the reservation it installed."""
-    reserved = _reserved(monkeypatch, tmp_path, **kwargs)
-    saved = json.loads((tmp_path / compass_run.MEMORY_FILE.format("dp0")).read_text())
-    return saved | {"reserved": reserved}
+    """The memory section of the engine's hand-in, with the reservation
+    `run.runner` installed on the worker."""
+    runner = _installed(monkeypatch, tmp_path, **kwargs)
+    engine = LPRuntime(
+        compass_run.ENGINE, compass_run.channel_table(compass_run.spec()), None
+    )
+    engine.now = math.inf
+    monkeypatch.setattr(clock, "_installed", engine)
+    worker = SimpleNamespace(
+        call_func=lambda name, wait_out: (
+            NonAllocatingRunner.predicted_memory(runner)
+            if name == "predicted_memory"
+            else ()
+        )
+    )
+    compass_run.engine_done(SimpleNamespace(runner_mgr=worker))
+    saved = json.loads((tmp_path / compass_run.LP_FILE.format("engine")).read_text())
+    reserved = NonAllocatingRunner._estimate_cudagraph_overhead(runner)
+    return saved["memory"] | {"reserved": reserved}
 
 
 def _total(saved, name) -> int:
@@ -60,7 +81,7 @@ def _log(path, *, peak, non_torch, tokens=MAX_NUM_BATCHED_TOKENS, pool=None, ran
 
 def _check(capsys, tmp_path, log) -> dict[str, str]:
     """The command's output, and the first row naming each term."""
-    main([str(tmp_path / compass_run.MEMORY_FILE.format("dp0")), str(log)])
+    main([str(tmp_path / compass_run.LP_FILE.format("engine")), str(log)])
     out = capsys.readouterr().out
     rows = {
         line.split()[0]: line
@@ -139,11 +160,19 @@ def test_a_log_of_two_ranks_is_refused(monkeypatch, tmp_path):
     _memory(monkeypatch, tmp_path, eager=True)
     log = _log(tmp_path / "real.log", peak=GIB, non_torch=GIB, ranks=2)
     with pytest.raises(MemoryRefusal, match="has 2 lines matching"):
-        main([str(tmp_path / compass_run.MEMORY_FILE.format("dp0")), str(log)])
+        main([str(tmp_path / compass_run.LP_FILE.format("engine")), str(log)])
 
 
-def test_the_authority_removes_an_earlier_runs_memory_file(tmp_path):
-    stale = tmp_path / compass_run.MEMORY_FILE.format("P.dp0")
+def test_a_hand_in_with_no_memory_section_is_refused_by_name(tmp_path):
+    compass_run._hand_in({"out_dir": str(tmp_path)}, "frontend", [])
+    frontend = tmp_path / compass_run.LP_FILE.format("frontend")
+    log = _log(tmp_path / "real.log", peak=GIB, non_torch=GIB)
+    with pytest.raises(MemoryRefusal, match=f"{frontend} has no memory section"):
+        main([str(frontend), str(log)])
+
+
+def test_the_authority_removes_an_earlier_runs_hand_in(tmp_path):
+    stale = tmp_path / compass_run.LP_FILE.format("engine-P")
     stale.write_text("{}")
     compass_run._RecordingAuthority(json.loads(_run_file(tmp_path).read_text()))
     assert not stale.exists()

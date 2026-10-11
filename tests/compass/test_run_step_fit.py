@@ -127,8 +127,9 @@ def run_file(tmp_path, monkeypatch, **keys):
     return run
 
 
-def summary(monkeypatch, run, authority, r):
+def summary(monkeypatch, run, r):
     """The engine's and the frontend's hand-ins after the finish, and the summary."""
+    authority = compass_run._RecordingAuthority(run)
     authority.started = authority.finished = time.monotonic()
     table = compass_run.channel_table(run)
     engine = LPRuntime(compass_run.ENGINE, table, None)
@@ -150,17 +151,15 @@ def test_a_run_file_bundle_prices_the_runs_steps_and_the_summary_names_it(
     r = deployment(tmp_path)
     entry = publish(tmp_path, r)
     run = run_file(tmp_path, monkeypatch)
-    # The authority clears the out_dir as it starts, before any engine does.
-    authority = compass_run._RecordingAuthority(run)
 
     compass_run.runner(r)
 
     assert isinstance(r.compass_backend, StepFitBackend)
     # Rung 48's cell, as `test_backend_step_fit` reads it from the same grid.
     assert r.forward(decode(B37)).predicted_s == 8897.5e-6
-    out = summary(monkeypatch, run, authority, r)
+    out = summary(monkeypatch, run, r)
     assert out["step_fit"] == {
-        "dp0": {
+        "engine": {
             "key": KEY,
             "digest": entry.digest,
             "describe": (

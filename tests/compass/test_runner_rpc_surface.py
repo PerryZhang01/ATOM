@@ -283,15 +283,22 @@ def test_both_filters_in_the_derivation_drop_nothing():
     and has to be accounted for rather than vanishing.
 
     The compass-side broadcasts accounted for: the run bootstrap reads the
-    Compass runner's refusal tally, `refused_commands`, and what its steps
-    cost, `priced_steps`. No ATOM site sends either, so no `ModelRunner` is
-    ever asked for them.
+    Compass runner's refusal tally, `refused_commands`, what its steps cost,
+    `priced_steps`, the memory it predicts, `predicted_memory`, and its step
+    fit bundle, `step_fit_bundle`. No ATOM site sends any of them, so no
+    `ModelRunner` is ever asked for them.
     """
     assert NON_LITERAL == []
-    assert [where.rsplit(":", 1)[0] for where in FROM_COMPASS] == 2 * [
+    assert [where.rsplit(":", 1)[0] for where in FROM_COMPASS] == 4 * [
         "atom/compass/run/__init__.py"
     ]
-    assert not {"refused_commands", "priced_steps"} & set(SITES)
+    compass = {
+        "refused_commands",
+        "priced_steps",
+        "predicted_memory",
+        "step_fit_bundle",
+    }
+    assert not compass & set(SITES)
 
 
 def test_every_reply_is_taken_in_a_shape_the_arity_reads():

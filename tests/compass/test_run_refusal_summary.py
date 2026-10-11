@@ -177,3 +177,24 @@ def test_a_run_with_neither_reports_zero_of_both_beside_its_seconds(
     assert schedule["refusals"]["count"] == 0
     assert schedule["refusals"]["fraction_of_steps"] == 0.0
     assert out["coverage_report"] is False
+
+
+def test_each_server_lp_hands_in_one_file_with_a_section_per_kind(
+    monkeypatch, tmp_path
+):
+    summary(monkeypatch, tmp_path, ShapeStubBackend(STAGE1), 8, jobs=["executor:j"])
+
+    assert sorted(f.name for f in tmp_path.iterdir()) == [
+        "lp-engine.json",
+        "lp-frontend.json",
+        "run.json",
+        compass_run.STEP_TABLE_FILE,
+        compass_run.SUMMARY_FILE,
+    ]
+    engine, frontend = (
+        json.loads((tmp_path / compass_run.LP_FILE.format(lp)).read_text())
+        for lp in ("engine", "frontend")
+    )
+    assert sorted(engine) == ["memory", "priced", "refusals"]
+    assert engine["priced"]["steps"] == 1
+    assert frontend == {"refusals": ["executor:j"]}

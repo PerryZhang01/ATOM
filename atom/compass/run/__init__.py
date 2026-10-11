@@ -38,26 +38,27 @@ Run file keys: ``clock_endpoint``, ``bound_s`` (finite), ``admission_path``,
 ``ipc_s``, ``stream_s``, one of ``coefficients`` (a `Coefficients` mapping,
 priced by `ShapeStubBackend`), ``law`` (a `CoarseLaw` mapping, priced by
 `CoarseBackend`) and ``step_fit`` (an artifact store's root and a bundle's key,
-priced by `StepFitBackend`; see `step_fit`, whose bundle key, digest and
-``describe()`` line the run summary carries),
+priced by `StepFitBackend`; see `step_fit`),
 ``roofline_floor_s`` (optional: a tier-0 `Roofline` with this host floor prices
 the steps the backend refuses),
 ``on_refusal`` (optional: ``mark``, the default, prices a step no cost source
 answers at 0 s, hands in its ``cost:`` reason and continues; ``abort`` ends
 the run there, which still writes the summary),
 ``machine`` (a machine spec mapping), ``parameter_count``, and ``out_dir``,
-where the step table, the run summary and each server LP's refusals go: an
+where the step table, the run summary and each server LP's hand-in go, one
+file written as the LP leaves its loop. It holds the LP's refusals: an
 engine's are the worker's refused commands and the engine's refused clock
 calls, a frontend's its executor's refused jobs and its refused clock calls.
-Each engine also writes there what its worker's steps cost, for the summary's
+An engine's also holds what its worker's steps cost, for the summary's
 predicted seconds and its analytical and extrapolated shares.
-Each engine's worker writes the memory it predicts there too, for
-``python -m atom.compass.memory.check``. The authority removes an earlier
-run's files there as it starts. An optional ``data_parallel_size``, 1 when
-absent, is the deployment's DP width, which under DP-attention is its TP size
-times its DP size; the traffic LP reads the channel table from the run file
-alone. Each DP rank's engine process hands in its own refusals, as
-``<lp>.<member>``.
+It holds the memory the worker predicts too, for
+``python -m atom.compass.memory.check``, and under ``step_fit`` the bundle's
+key, digest and ``describe()`` line, which the summary carries. The authority
+removes an earlier run's files there as it starts. An optional
+``data_parallel_size``, 1 when absent, is the deployment's DP width, which
+under DP-attention is its TP size times its DP size; the traffic LP reads the
+channel table from the run file alone. Each DP rank's engine process hands in
+its own refusals, as ``<lp>.<member>``.
 
 A run file that also has ``router_s`` and ``kv_write_req_s`` describes a
 prefill-decode run over `prefill_decode_table`, and ``kv_link`` (``intra_node``
@@ -107,13 +108,11 @@ FRONTEND, ENGINE, TRAFFIC = LpId("frontend"), LpId("engine"), LpId("traffic")
 ATOM_RUNNER = "atom.model_engine.model_runner.ModelRunner"
 #: Keys that differ between two runs of one configuration, kept out of its name.
 PER_RUN = ("clock_endpoint", "out_dir")
-COMMANDS_FILE, MEMORY_FILE, PRICED_FILE, STEP_FIT_FILE = (
-    "commands-{}.json",  # by LP name, or <lp>.<member> for a member
-    "memory-{}.json",  # by DP rank, after P or D on a prefill-decode side
-    "priced-{}.json",  # by engine LP name, or <lp>.<member> for a member
-    "step-fit-{}.json",  # named as the memory file is
+LP_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
+    "lp-{}.json",  # by LP name, or <lp>.<member> for a member
+    "step_table.txt",
+    "summary.json",
 )
-STEP_TABLE_FILE, SUMMARY_FILE = "step_table.txt", "summary.json"
 #: Wall seconds the summary's writer waits for the server LPs' refusals.
 HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field changes meaning or goes.
@@ -246,10 +245,7 @@ class _RecordingAuthority(ClockAuthority):
         # A rerun into the same out_dir starts from none of the last run's files.
         out = Path(run["out_dir"])
         for name in (
-            COMMANDS_FILE,
-            MEMORY_FILE,
-            PRICED_FILE,
-            STEP_FIT_FILE,
+            LP_FILE,
             STEP_TABLE_FILE,
             SUMMARY_FILE,
         ):
@@ -475,18 +471,11 @@ def runner(model_runner) -> None:
         if captured is None
         else predicts(machine, tp_width=tp, captured_tokens=captured)
     )
-    name = f"dp{config.parallel_config.data_parallel_rank}"
-    if side := _pd_side(config):
-        name = f"{side}.{name}"
-    _write_whole(
-        Path(run["out_dir"]) / MEMORY_FILE.format(name),
-        json.dumps(record(readings, tokens=config.max_num_batched_tokens, pool=pool)),
+    model_runner.compass_memory = record(
+        readings, tokens=config.max_num_batched_tokens, pool=pool
     )
     if bundle is not None:
-        bundle["describe"] = backend.describe()
-        _write_whole(
-            Path(run["out_dir"]) / STEP_FIT_FILE.format(name), json.dumps(bundle)
-        )
+        model_runner.compass_step_fit = {**bundle, "describe": backend.describe()}
 
 
 def _graph_pool(model_runner, machine, model):
@@ -584,32 +573,34 @@ def _width_keys(node):
 def _write_whole(path: Path, text: str) -> None:
     """Write `path` whole or not at all, so a reader that polls for it never
     reads it part-written."""
-    # Named per process: each TP rank's worker writes the same memory and step
-    # fit files, and two renames of one part file race.
-    part = path.with_name(f"{path.name}.{os.getpid()}.part")
+    part = path.with_name(path.name + ".part")
     part.write_text(text)
     part.replace(path)
 
 
-def _hand_in(run: dict, lp: str, reasons: list) -> None:
-    """Write `lp`'s refusals for the summary's writer."""
-    _write_whole(Path(run["out_dir"]) / COMMANDS_FILE.format(lp), json.dumps(reasons))
+def _hand_in(run: dict, lp: str, reasons: list, **sections) -> None:
+    """Write `lp`'s refusals, and its other sections, for the summary's writer."""
+    out = Path(run["out_dir"]) / LP_FILE.format(lp)
+    _write_whole(out, json.dumps({"refusals": reasons, **sections}))
 
 
 def engine_done(engine_core) -> None:
     """After the engine's loop: leave the clock and hand in what the worker's
-    steps cost, then its command refusals and the engine's refused clock
-    calls."""
+    steps cost, the memory it predicts and, under ``step_fit``, its bundle,
+    with its command refusals and the engine's refused clock calls."""
     clock.close()
     run = spec()
     if run is not None:
         workers = engine_core.runner_mgr
         refused = workers.call_func("refused_commands", wait_out=True)
         priced = dict(workers.call_func("priced_steps", wait_out=True))
+        memory = workers.call_func("predicted_memory", wait_out=True)
+        sections = {"priced": priced, "memory": memory}
+        if "step_fit" in run:
+            sections["step_fit"] = workers.call_func("step_fit_bundle", wait_out=True)
         rt = clock.installed()
         lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
-        _write_whole(Path(run["out_dir"]) / PRICED_FILE.format(lp), json.dumps(priced))
-        _hand_in(run, lp, list(refused) + rt.refusals)
+        _hand_in(run, lp, list(refused) + rt.refusals, **sections)
 
 
 @contextlib.contextmanager
@@ -636,7 +627,7 @@ def _until_end(run: dict, a: "_RecordingAuthority") -> bool:
     out = Path(run["out_dir"])
     while not a.done.wait(0.1):
         # Every LP hands in after the finish sets `done`, so read it second.
-        if any(out.glob(COMMANDS_FILE.format("*"))) and not a.done.is_set():
+        if any(out.glob(LP_FILE.format("*"))) and not a.done.is_set():
             return True
         if not threading.main_thread().is_alive():
             return False
@@ -668,22 +659,18 @@ def _write_summary(run: dict, a: _RecordingAuthority, ended: bool = False) -> No
     handed in its refusals, or after an early end, from those handed in so far."""
     out = Path(run["out_dir"])
     _write_whole(out / STEP_TABLE_FILE, a.steps.text())
-    files = [out / COMMANDS_FILE.format(n) for n in _hand_ins(run)]
+    files = {n: out / LP_FILE.format(n) for n in _hand_ins(run)}
     deadline = time.monotonic() + HAND_IN_WAIT_S
-    while not ended and (missing := [f.name for f in files if not f.exists()]):
+    while not ended and (missing := [f.name for f in files.values() if not f.exists()]):
         if time.monotonic() > deadline:
             raise TimeoutError(
                 f"no {', '.join(missing)} in {out} after {HAND_IN_WAIT_S} wall "
                 "seconds, so the run summary would miss those LPs' refusals"
             )
         time.sleep(0.1)
-    reasons = [r for f in files if f.exists() for r in json.loads(f.read_text())]
-    # Each engine's priced steps, written before its refusals.
-    priced = [
-        json.loads(f.read_text())
-        for n in _hand_ins(run)
-        if (f := out / PRICED_FILE.format(n)).exists()
-    ]
+    hand_ins = {n: json.loads(f.read_text()) for n, f in files.items() if f.exists()}
+    reasons = [r for h in hand_ins.values() for r in h["refusals"]]
+    priced = [h["priced"] for h in hand_ins.values() if "priced" in h]
 
     def total(key):
         return sum(p.get(key, 0) for p in priced)
@@ -708,12 +695,8 @@ def _write_summary(run: dict, a: _RecordingAuthority, ended: bool = False) -> No
     # Any refusal, of any source, leaves part of the run unsimulated; a run
     # that ended early handed in why.
     summary["coverage_report"] = bool(reasons)
-    fits = sorted(out.glob(STEP_FIT_FILE.format("*")))
-    if fits:
-        # By the name each worker wrote under, as its memory file is.
-        summary["step_fit"] = {
-            f.stem.removeprefix("step-fit-"): json.loads(f.read_text()) for f in fits
-        }
+    if fits := {n: h["step_fit"] for n, h in hand_ins.items() if "step_fit" in h}:
+        summary["step_fit"] = fits
     _write_whole(out / SUMMARY_FILE, json.dumps(summary, sort_keys=True, indent=1))
 
 

@@ -51,9 +51,9 @@ disagreement has two causes and this module cannot tell them apart by looking
 at the numbers, so the refusal names both. Either the sequences handed in are
 not the ones the batch was built from -- a stale or a later step's mapping --
 or they are exactly those sequences and the scheduler advanced them on
-purpose: `advance_on_schedule` is on whenever `pipeline_parallel_size > 1`
-(`scheduler.py:994`), and `_advance_prefill_on_schedule` (`:1730`) adds each
-chunk to its sequence's offsets after the batch has snapshotted them. Under
+purpose: `Scheduler.advance_on_schedule` is on whenever
+`pipeline_parallel_size > 1`, and `Scheduler._advance_prefill_on_schedule` adds
+each chunk to its sequence's offsets after the batch has snapshotted them. Under
 that configuration the two readings differ by a whole chunk of history on
 every prefill row, and the projection refuses there instead of picking one of
 the two readings.
