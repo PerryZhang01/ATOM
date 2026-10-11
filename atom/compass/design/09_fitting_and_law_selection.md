@@ -124,7 +124,10 @@ completed, anchors the host and device clocks to each other. With MTP the label 
 ([#829](https://github.com/jgong5/ATOM/issues/829)).
 
 **Four host laws** price the host segments of `01` D4: `E`, `W_pre`, `W_launch` and
-`W_post`, each linear in `(1, tokens, seqs)`, fitted separately for prefill and decode.
+`W_post`, each linear in `(1, tokens, seqs)`, fitted separately for decode, output
+prefill and pure middle chunk. A pure middle chunk returns from `ModelRunner.forward`
+before `postprocess`: no sampler launch, no output and no R1 wait, so a prefill law that
+mixed the two would misprice both.
 They use tier a's solver: D53's relative error and MAD drops, D57's report, D58's hull. An
 `E` sample whose gap spans an idle engine is cut as idle and counted apart.
 
@@ -414,7 +417,7 @@ choice that must be visible.
 | # | Decision | Date |
 |---|---|---|
 | D53 | Fit relative error, not absolute seconds. MAD outlier test on the same relative residuals. | 2026-09-18 |
-| D54 | Prefill and decode fitted separately; decode per CUDA-graph rung with both coefficients per rung. Under DP and EP, tier a is one per-rank law keyed by `(dp, ep)`, with the DP-unified rung and the MoE row count as features (`T_moe` with EP off; open with EP on), captured on a real deployment at that `(dp, ep)` and fitted by alternating max-affine regression. Tier a's label is one forward's device busy time, launch-exposed forwards cut; four host laws (`E`, `W_pre`, `W_launch`, `W_post`), each `(1, tokens, seqs)` per prefill and decode, are fitted beside it, keyed by host CPU, `atom` digest, model and engine config, with no transfer. | 2026-09-18; revised 2026-10-01, 2026-10-09 (`T_moe`, #502) and 2026-10-11 (#815) |
+| D54 | Prefill and decode fitted separately; decode per CUDA-graph rung with both coefficients per rung. Under DP and EP, tier a is one per-rank law keyed by `(dp, ep)`, with the DP-unified rung and the MoE row count as features (`T_moe` with EP off; open with EP on), captured on a real deployment at that `(dp, ep)` and fitted by alternating max-affine regression. Tier a's label is one forward's device busy time, launch-exposed forwards cut; four host laws (`E`, `W_pre`, `W_launch`, `W_post`), each `(1, tokens, seqs)` per decode, output prefill and pure middle chunk (a middle chunk has no sampler launch, output or R1 wait), are fitted beside it, keyed by host CPU, `atom` digest, model and engine config, with no transfer. | 2026-09-18; revised 2026-10-01, 2026-10-09 (`T_moe`, #502) and 2026-10-11 (#815) |
 | D55 | Attention terms summed per request; the padding term is the rung's rectangle, not the batch's. | 2026-09-18 |
 | D56 | Distinguish rank deficiency from coverage gap: drop zero-variance features explicitly, report the condition number, and treat "widening the evidence does not move the error" as evidence the feature is wrong. | 2026-09-18 |
 | D57 | Every fit reports provenance, sample count, dropped count, condition number and validity hull. Report an interval or report nothing. | 2026-09-18 |

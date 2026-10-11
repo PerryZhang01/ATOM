@@ -1268,6 +1268,18 @@ charge     = exit - now                        # the K1 TAR: advance_to(exit)
 touch the clock. A device-bound forward charges device time and a host-bound one host
 time.
 
+**What the ruled order implies.**
+
+- **The sampler launch sits after R1.** `ModelRunner.postprocess` launches the sampler
+  before `prepare_sampled_ids` reaches the R1 wait, but the recurrence puts all of
+  `W_post` after R1. A device-bound output forward is therefore overcharged by its
+  sampler launch. #824's stamps separate the two parts of `W_post`, and #827's per-step
+  residuals detect the error.
+- **With every host law at zero**, a forward exits at the latest of `now`, R4's release
+  and, for an output forward, R1's: in a run of output forwards, forward `n` charges the
+  previous output forward's device time and the first output forward charges 0, one
+  output forward later than a charge of each forward's own device time.
+
 **The wait rules.** Rule numbers are #815's.
 
 | rule | applies to | where | waits for | ATOM site |
@@ -1304,7 +1316,11 @@ cost error. T97 records settling the thresholds.
 
 **Accepted approximations**, each added back only if that check shows its error: TP ranks
 are symmetric; PP send backpressure; the MTP plus DP draft barrier; the overlaps of the
-copy stream, staging and `prep_stream`. **Detected, not modelled:** implicit waits on
+copy stream, staging and `prep_stream`. One more follows from #815's ruling 2, which
+makes `E` the recurrence's first term: `E` is charged inside forward `n`'s TAR, but
+`scheduler.postprocess()` and `schedule()` run before the forward is called, at `now`, so
+their clock reads (the first-token stamps, the waiting-prefill age, the arrivals a
+`schedule()` admits) sit up to `E` early. **Detected, not modelled:** implicit waits on
 pageable copies, and launches blocking on a full hardware queue. The check names each
 failing step with its residual against the device work queued at its launch.
 

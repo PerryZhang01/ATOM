@@ -520,9 +520,12 @@ Three constraints carry over into the flow and are not optional:
    bound)` so nothing downstream treats them as device work.
 
 **The open piece:** `c10d::broadcast_` takes a `ProcessGroup` object no JSON artifact can
-hold, so it cannot be replayed from a price list — one operator per step. It is small and
-constant, and the working treatment is to fold it into the host floor of Phase 1c rather
-than price it. Recorded as **T55**.
+hold, so it cannot be replayed from a price list — one operator per step, issued in
+`ModelRunner.postprocess` after the sampler. Since the owner's ruling on
+[#815](https://github.com/jgong5/ATOM/issues/815) (2026-10-11) removed the Phase 1c host
+floor, its device time is inside the forward's device busy time, the label tier a and
+Phase 1c are fitted to (`09` D54), and its launch is inside the `W_post` host law (`01`
+D4). Recorded as **T55**.
 
 ---
 
