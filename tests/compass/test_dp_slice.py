@@ -282,6 +282,7 @@ def _finish(monkeypatch, tmp_path, ranks):
         replies = {
             "refused_commands": (f"command:on dp{rank}",),
             "priced_steps": PRICED[rank],
+            "predicted_memory": {},
         }
         worker = SimpleNamespace(call_func=lambda name, wait_out, r=replies: r[name])
         compass_run.engine_done(SimpleNamespace(runner_mgr=worker))
@@ -297,8 +298,8 @@ def _finish(monkeypatch, tmp_path, ranks):
 
 def test_every_ranks_refusals_reach_the_run_summary(monkeypatch, tmp_path):
     # A rank file of another run in a reused out_dir is not this run's.
-    (tmp_path / compass_run.COMMANDS_FILE.format("engine.dp7")).write_text(
-        '["command:an earlier run"]'
+    (tmp_path / compass_run.LP_FILE.format("engine.dp7")).write_text(
+        '{"refusals": ["command:an earlier run"]}'
     )
     assert _finish(monkeypatch, tmp_path, (0, 1))
 
@@ -327,7 +328,7 @@ def test_the_run_summary_sums_every_ranks_priced_steps(monkeypatch, tmp_path):
 
 def test_a_rank_that_wrote_no_refusal_record_fails_the_summary(monkeypatch, tmp_path):
     monkeypatch.setattr(compass_run, "HAND_IN_WAIT_S", 0.2)
-    with pytest.raises(TimeoutError, match=r"no commands-engine\.dp0\.json in"):
+    with pytest.raises(TimeoutError, match=r"no lp-engine\.dp0\.json in"):
         _finish(monkeypatch, tmp_path, (1,))
     assert not (tmp_path / compass_run.SUMMARY_FILE).exists()
 

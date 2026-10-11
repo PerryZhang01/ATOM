@@ -230,6 +230,15 @@ def install_cost_backend(runner: Any, backend: CostBackend) -> None:
     runner.compass_backend = backend
 
 
+def schedulable_ladder(config: Any) -> list[int]:
+    """The capture sizes the scheduler can produce, ascending: ATOM's capture
+    bound at one token per sequence, since this runner never has a drafter.
+    `max_schedulable_decode_bs` holds it; importing that would pull the engine,
+    and its kernels, into a driver-free process."""
+    bound = min(config.max_num_seqs, config.max_num_batched_tokens)
+    return sorted(s for s in config.capture_sizes if s <= bound)
+
+
 def _installed_backend(runner: Any) -> CostBackend:
     """The installed backend, or a refusal that says what would supply it.
 
@@ -398,7 +407,8 @@ class RefusedControlCommands:
     configure_hidden_states = _refused("configure_hidden_states")
 
     def refused_commands(self) -> tuple[str, ...]:
-        """Every refusal this runner answered, in order, for the run summary.
+        """Every refusal this runner answered, in order, for the run summary:
+        each refused command, and each step no cost source priced.
 
         A method rather than an attribute so the engine can read it over the
         same RPC the commands came in on; a tuple, so the caller gets a copy
@@ -430,7 +440,26 @@ class PricedSteps:
         }
 
 
-class NonAllocatingRunner(RefusedControlCommands, PricedSteps):
+class PredictedMemory:
+    """The memory a runner predicts, read by the engine's hand-in over the worker RPC."""
+
+    def predicted_memory(self) -> dict[str, Any]:
+        """`compass_memory` as a run installed it; a None reply parks the engine."""
+        return vars(self).get("compass_memory", {})
+
+
+class StepFitBundle:
+    """The step fit bundle a runner prices with, read by the engine's hand-in."""
+
+    def step_fit_bundle(self) -> dict[str, Any]:
+        """`compass_step_fit` as a step fit run installed it; empty before
+        one is, since a None reply parks the engine."""
+        return vars(self).get("compass_step_fit", {})
+
+
+class NonAllocatingRunner(
+    RefusedControlCommands, PricedSteps, PredictedMemory, StepFitBundle
+):
     """Overrides that construct a model runner without touching device memory."""
 
     def _build_and_load_model(self, model_class: Any) -> None:
@@ -674,11 +703,9 @@ class NonAllocatingRunner(RefusedControlCommands, PricedSteps):
         runs at all. Replacing it anyway is the point: a runner must not depend
         on a caller-side flag to stay off the device.
         """
-        # `max_schedulable_decode_bs` at one token per sequence; importing it
-        # would pull the engine, and its kernels, into a driver-free process.
-        bound = min(self.config.max_num_seqs, self.config.max_num_batched_tokens)
-        self.capture_sizes = sorted(s for s in self.config.capture_sizes if s <= bound)
+        self.capture_sizes = schedulable_ladder(self.config)
         if not self.capture_sizes:
+            bound = min(self.config.max_num_seqs, self.config.max_num_batched_tokens)
             raise RunnerRefusal(
                 f"no cudagraph capture size in {self.config.capture_sizes} is "
                 f"schedulable at bound {bound}; ATOM's capture refuses to "
@@ -822,6 +849,11 @@ def _group_step_seconds(runner: Any, batch: Any, backend: CostBackend) -> float:
 
     A pipeline stage is refused: it runs only its own layers, and a backend
     prices the whole step, so every stage would charge the whole model.
+
+    A step no cost source answers costs 0 s on this rank and still counts as
+    a priced step; its reason, ``cost:`` and what each source said, joins the
+    refusals the summary reads. With `compass_abort` set it raises instead,
+    which ends the worker.
     """
     from atom.compass.runner.projection import batch_view, dp_group, forward_mode
 
@@ -832,11 +864,23 @@ def _group_step_seconds(runner: Any, batch: Any, backend: CostBackend) -> float:
             "stage the whole model would count it once per stage"
         )
     from atom.compass.backends.cost import ProvenanceMix
+    from atom.compass.backends.ladder import CostRefused
 
     mode = forward_mode(batch, runner)
-    cost = backend.estimate(batch_view(batch, mode, runner))
-    vars(runner).setdefault("_priced", ProvenanceMix()).record(cost)
-    seconds = cost.seconds
+    mix = vars(runner).setdefault("_priced", ProvenanceMix())
+    try:
+        cost = backend.estimate(batch_view(batch, mode, runner))
+    except CostRefused as refused:
+        if getattr(runner, "compass_abort", False):
+            raise
+        mix.steps += 1
+        said = "; ".join(f"{r.source}: {r.reason}" for r in refused.declined)
+        said = said or "no cost source was consulted"
+        vars(runner).setdefault("_refused_commands", []).append(f"cost:{said}")
+        seconds = 0.0
+    else:
+        mix.record(cost)
+        seconds = cost.seconds
     if mode.sync is None:
         return seconds
     group_max = torch.tensor([seconds], dtype=torch.float64)

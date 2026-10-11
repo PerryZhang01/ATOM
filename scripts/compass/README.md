@@ -531,10 +531,11 @@ simulated seconds when `ATOM_COMPASS_SLICE_MODEL`, `ATOM_COMPASS_CCTRACES` and
 `COMPASS_HARNESS_PYTHON` are set, and with `COMPASS_AIPERF_PYTHON` (no
 compass-harness) a real cell on zero dummy weights beside it.
 
-The cell's `OUT_DIR` also holds `memory-dp0.json` (`memory-P.dp0.json` and
-`memory-D.dp0.json` for 1P1D): the readings the simulated KV pool was sized from.
+The cell's `OUT_DIR` also holds one hand-in per server LP, `lp-<lp>.json`. The
+engine's, `lp-engine.json` (`lp-engine-P.json` and `lp-engine-D.json` for 1P1D),
+holds the readings the simulated KV pool was sized from.
 Against the server log of the paired real run, with the same deployment flags,
-`python -m atom.compass.memory.check OUT_DIR/memory-dp0.json REAL_SERVER_LOG`
+`python -m atom.compass.memory.check OUT_DIR/lp-engine.json REAL_SERVER_LOG`
 prints the per-term comparison of the non-KV memory and the graph pool. It takes
 the log of one rank.
 

@@ -100,7 +100,7 @@ M-f `14`; M-g `01` D3.5.
 | ~~T13~~ | ~~Decide the simulated KV connector's completion semantic~~ — **done**, `01` D6: Mooncake, one simulated write event per request |
 | T14 | Build the client-count matrix given only 144 fan-out-capable sessions |
 | ~~T15~~ | ~~Warmup handling in the harness contract~~ — **done**: warmup requests are ordinary requests; the rule is an exclusion window agreed by request id |
-| **T54** | Detect warmth that *recurs* mid-run (a new shape reaching autotune at minute 10); D62 measures leading warmth only |
+| **T54** | Detect warmth that *recurs* mid-run (a new shape reaching autotune at minute 10) under `coarse_fit.WARM_FACTOR` times its price: the fit and `validate.cost` name a vector's leading slow steps and any step above that factor, not a mid-run step below it |
 
 ### Topic 07 — calibration toolchain
 
@@ -197,10 +197,9 @@ M-f `14`; M-g `01` D3.5.
 
 | # | Item |
 |---|---|
-| T92 | Support `--compass-on-refusal mark` under step fit once a tier-0 law exists for the target; no row of `16` authors a Qwen tier-0 law (`17` D102) |
 | T93 | Measure in ATOM whether the scheduler's CPU segments add serially to the forward or overlap it; step fit's `fitted` CPU mode waits on it (`17` D104) |
 | T94 | Record the kernels each step fit grid point ran, and treat a cell whose corners ran different kernels as crossing a dispatch band (`09` D60): refused or split (`17` D99) |
-| T95 | A later trial, not this design: extrapolate step fit's out-of-cell steps as #627's ruling 3 has the tier-a law do, by one method only (extending the nearest complete cell's interpolation), tagged `extrapolated` with the distance, reported apart, never aborting. It would replace the abort-only rule and the `08` D50.1 departure; decided after step fit's stage-2 evaluation shows how often steps fall outside complete cells (`17` D102) |
+| T95 | A later trial, not this design: extrapolate step fit's out-of-cell steps as #627's ruling 3 has the tier-a law do, by one method only (extending the nearest complete cell's interpolation), tagged `extrapolated` with the distance and reported apart, which is not a refusal. It would answer out-of-cell steps, which step fit now declines; decided after step fit's stage-2 evaluation shows how often steps fall outside complete cells (`17` D102) |
 
 ### Topics 02, 01 — gaps now closed
 

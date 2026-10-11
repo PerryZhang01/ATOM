@@ -299,8 +299,8 @@ class EngineCore:
                     engine = DPEngineCoreProc(config, input_address, output_address)
                 else:
                     engine = EngineCore(config, input_address, output_address)
-            engine.busy_loop()
-            compass_run.engine_done(engine)
+            with compass_run.engine_loop(engine):
+                engine.busy_loop()
         except Exception as e:
             logger.error(f"run_engine: exception: {e}", exc_info=True)
             raise e

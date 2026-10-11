@@ -17,6 +17,7 @@ from pathlib import Path
 from statistics import median
 
 from atom.compass.memory.check import parts
+from atom.compass.run import LP_FILE
 from atom.compass.validate import cost, runs
 
 BANDS = {0: "0-512", 512: "512-2048", 2048: "2048-8192", 8192: "8192+"}
@@ -73,13 +74,13 @@ def _cost(run: Path, law: dict):
             for band, b in s["bands"].items():
                 value = f"{b['steps']} steps; p10 {b['p10']:+.1%} p50 {b['p50']:+.1%} p90 {b['p90']:+.1%}"
                 yield where, f"{band} {hull}", f"{value}; within 10% {b['within_10pct']:.1%}", gated
-    yield where, "left out", f"not labelled {json.dumps(report['cut'])}; warm steps {[w['step'] for w in report['warm']]}", "-"
+    yield where, "left out", f"not labelled {json.dumps(report['cut'])}; warm steps, measured s { {w['step']: round(w['measured_s'], 2) for w in report['warm']} }", "-"
     for band, r in report["refused"].items():
         yield where, f"refused {band}", f"{r['steps']} steps, measured {r['measured_s']:.2f} s", "-"
 
 
 def _memory(law: Path, real: Path):
-    comparison, *_, graph = parts(law / "memory-dp0.json", real / "server.log")
+    comparison, *_, graph = parts(law / LP_FILE.format("engine"), real / "server.log")
     where = f"memory {real.name}"
     for t in comparison.compared:
         yield where, t.name, f"{t.relative:+.2%} ({t.delta_bytes:+,} B)", str(t.verdict)

@@ -5,8 +5,8 @@
 
     python -m atom.compass.memory.check PREDICTED SERVER_LOG
 
-PREDICTED is a ``memory-<engine>.json`` that a simulated run writes into its
-``out_dir``: the readings its KV pool was sized from, the warmup shape, and
+PREDICTED is an engine's ``lp-<engine>.json`` in a simulated run's ``out_dir``,
+whose memory section holds the readings its KV pool was sized from, the warmup shape, and
 what the graph pool really costs. SERVER_LOG is the log of one real ATOM
 server with the same deployment.
 
@@ -142,7 +142,9 @@ def recorded(log: Path) -> tuple[Recorded, Term | None]:
 
 def parts(predicted_file: Path, log: Path) -> list:
     """The per-term comparison, the predicted readings, and the graph pool's."""
-    saved = json.loads(predicted_file.read_text())
+    if not (saved := json.loads(predicted_file.read_text()).get("memory")):
+        what = f"{predicted_file} has no memory section"
+        raise MemoryRefusal(what, "pass an engine's hand-in, lp-engine*.json")
     readings = {name: _reading(name, rows) for name, rows in saved["readings"].items()}
     predicted = Predicted(
         saved["label"],
@@ -177,7 +179,7 @@ def main(argv: list[str] | None = None) -> None:
         prog="python -m atom.compass.memory.check",
         description="A simulated run's non-KV memory against a real run's, per term.",
     )
-    parser.add_argument("predicted", type=Path, help="a simulated run's memory file")
+    parser.add_argument("predicted", type=Path, help="a simulated engine's hand-in")
     parser.add_argument("log", type=Path, help="the real server's log")
     args = parser.parse_args(argv)
     print(check(args.predicted, args.log))
