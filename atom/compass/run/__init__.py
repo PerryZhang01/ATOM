@@ -158,13 +158,16 @@ def _check_host(path, host: dict) -> None:
     from atom.compass.runner.overrides import FORWARD_KINDS, HOST_SEGMENTS
 
     laws = host.get("laws", {})
-    names = set(host) | set(host.get("skip", ())) | set(laws)
-    names |= {s for v in laws.values() for s in v}
-    lengths = {len(c) for v in laws.values() for c in v.values()}
-    if names - {"laws", "skip", *FORWARD_KINDS, *HOST_SEGMENTS} or lengths - {3}:
+    if (
+        set(host) - {"laws", "skip"}
+        or set(host.get("skip", ())) - set(HOST_SEGMENTS)
+        or set(laws) - set(FORWARD_KINDS)
+        or {s for v in laws.values() for s in v} - set(HOST_SEGMENTS)
+        or {len(c) for v in laws.values() for c in v.values()} - {3}
+    ):
         raise ValueError(
-            f"{path}: host is {host!r}; it takes skip, naming segments of "
-            f"{HOST_SEGMENTS}, and laws of three coefficients per kind and segment"
+            f"{path}: host is {host!r}; it takes skip, a list of {HOST_SEGMENTS}, "
+            f"and laws, mapping {FORWARD_KINDS} to segments to three coefficients"
         )
 
 

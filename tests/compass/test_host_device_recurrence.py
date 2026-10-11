@@ -128,6 +128,10 @@ def test_a_runs_runner_charges_at_the_clock_its_engine_publishes(tmp_path, monke
         {"laws": {"decod": {}}},
         {"laws": {"decode": {"E": [0, 0]}}},
         {"law": {}},
+        {"decode": {"E": [1, 0, 0]}},
+        {"laws": {"E": {"decode": [1, 0, 0]}}},
+        {"laws": {"decode": {"decode": [1, 0, 0]}}},
+        {"skip": ["decode"]},
     ],
 )
 def test_a_host_entry_the_runner_would_not_read_is_refused(tmp_path, monkeypatch, host):
@@ -177,8 +181,10 @@ def test_each_kind_takes_its_own_law_on_tokens_and_seqs():
     for b, device in [
         (batch(1, 100, 2, True), 10),  # launch 0+1+1 to 4, device to 12; exit 4+1
         (batch(1, 200, 1, False), 10),  # launch 5+2+1 to 9, device 12 to 22
-        (batch(0, 4, 4, True), 3),  # R4: entry 12, launch 13 to 14, exit 14+2
-        (batch(0, 4, 4, True), 3),  # R4: entry 22, launch 23 to 24, R1 25, exit 25+2
+        # entry waits for the first forward's device end (12)
+        (batch(0, 4, 4, True), 3),  # launch 13 to 14, device to 25; exit 14+2
+        # entry waits for the second's (22), the output for the third's (25)
+        (batch(0, 4, 4, True), 3),  # launch 23 to 24; exit 25+2
     ]:
         clock[0] += host.charge(b, device)
         exits.append(clock[0])
