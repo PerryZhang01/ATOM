@@ -536,7 +536,7 @@ EXPECTED_HOST_RESOLUTIONS = {
     "atom/model_engine/model_runner.py:2564 in prepare_sample": 1,
     "atom/model_ops/attentions/backends.py:398 in _mrope_cpu_view": 1,
     "atom/model_ops/attentions/backends.py:400 in _mrope_cpu_view": 1,
-    "atom/model_ops/attentions/gdn_attn.py:1237 in _attach_gdn_decode_metadata": 1,
+    "atom/model_ops/attentions/gdn_attn.py:1251 in _attach_gdn_decode_metadata": 1,
 }
 
 
