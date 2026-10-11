@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: MIT
 """Grade cells from every source, in one table: `python -m atom.compass.validate CELL...`
 
-A CELL holds `cctraces_sim.sh` runs of one workload: `law/` (simulated at its run
-file's law), `p97/` (at 0.97 of its prefill price) and two or more `real*/`. Rows:
+A CELL holds `cctraces_sim.sh` runs of one workload: `law/` (at its run file's
+law), `p97/` (at 0.97 of its prefill price) and two or more `real*/`. Rows:
 `validate.runs`' grades, TTFT p50 per band of uncached prompt tokens graded alike,
-`validate.cost` and `memory.check` per real run, and each simulated run's
-refusals, analytical and extrapolated shares and speed. A refusal makes the cell
-a coverage report; the shares grade nothing.
+`validate.cost` (with the steps it leaves out) and `memory.check` per real run,
+and each simulated run's refusals by source, shares and speed. Any refusal makes
+the cell a coverage report; the shares grade nothing.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from atom.compass.memory.check import parts
 from atom.compass.validate import cost, runs
 
 BANDS = {0: "0-512", 512: "512-2048", 2048: "2048-8192", 8192: "8192+"}
+HULL = {"fitted": ("in hull", "-"), "extrapolated": ("outside hull", "not gated")}
 
 
 def _ttft(run: Path) -> dict[str, float]:
@@ -60,9 +61,7 @@ def _runs(real: list[Path], law: Path, p97: Path):
 
 def _cost(run: Path, law: dict):
     report, where = cost.cost_accuracy(run / "steps", law), f"cost {run.name}"
-    for group in ("fitted", "extrapolated"):
-        fitted = group == "fitted"
-        hull, gated = ("in hull", "-") if fitted else ("outside hull", "not gated")
+    for group, (hull, gated) in HULL.items():
         for kind, s in report[group].items():
             held = "-" if s["held_out"] is None else f"{s['held_out']:+.2%}"
             value = (
@@ -74,6 +73,7 @@ def _cost(run: Path, law: dict):
             for band, b in s["bands"].items():
                 value = f"{b['steps']} steps; p10 {b['p10']:+.1%} p50 {b['p50']:+.1%} p90 {b['p90']:+.1%}"
                 yield where, f"{band} {hull}", f"{value}; within 10% {b['within_10pct']:.1%}", gated
+    yield where, "left out", f"not labelled {json.dumps(report['cut'])}; warm steps {[w['step'] for w in report['warm']]}", "-"
     for band, r in report["refused"].items():
         yield where, f"refused {band}", f"{r['steps']} steps, measured {r['measured_s']:.2f} s", "-"
 
@@ -91,15 +91,16 @@ def _memory(law: Path, real: Path):
 
 
 def _summary(run: Path, summary: dict):
-    schedule, speed, where = summary["schedule"], summary["cost"], f"summary {run.name}"
+    schedule, c, where = summary["schedule"], summary["cost"], f"summary {run.name}"
     n = schedule["refusals"]
     verdict = "coverage report" if summary["coverage_report"] else "none"
-    yield where, "refusals", f"{n['count']} of {n['steps']} steps", verdict
+    yield where, "refusals", f"{n['count']} {json.dumps(dict(n['by_source']))}; cost refused {n['fraction_of_steps']:.1%} of {n['steps']} steps", verdict
     for species in ("analytical", "extrapolated"):
         yield where, species, json.dumps(schedule.get(species)), "not gated"
-    value = f"{speed['speed_ratio']:.1f}x: {speed['simulated_seconds']:.0f} simulated s in {speed['wall_seconds']:.0f} wall s"
-    target = "meets" if speed["meets_speed_target"] else "below"
-    yield where, "speed", value, f"{target} {speed['speed_target_ratio']:g}x"
+    ratio = c["speed_refused"] or f"{c['speed_ratio']:.1f}x"
+    value = f"{ratio}: {c['simulated_seconds']:.0f} simulated s in {c['wall_seconds']:.0f} wall s"
+    met = {True: "meets", False: "below"}.get(c["meets_speed_target"], "no result for")
+    yield where, "speed", value, f"{met} {c['speed_target_ratio']:g}x"
 
 
 def rows(cell) -> list[tuple]:
@@ -116,8 +117,7 @@ def rows(cell) -> list[tuple]:
     out = [("cell", "verdict", f"{len(real)} real runs", verdict)]
     out += _runs(real, law, p97)
     for r in real:
-        out += _cost(r, run["law"]["law"])
-        out += _memory(law, r)
+        out += [*_cost(r, run["law"]["law"]), *_memory(law, r)]
     for r, s in summaries.items():
         out += _summary(r, s)
     return out

@@ -9,6 +9,7 @@ price; the export and the server log are as `test_validate_runs` and
 
 import json
 
+import pytest
 from test_memory_check import GIB, _log
 from test_validate_cost import LAW, _record, _steps
 from test_validate_runs import EXPORT
@@ -19,12 +20,12 @@ TERM = {"basis": "spec", "source": "planted"}
 SPECIES = {"steps": 3, "fraction_of_predicted_seconds": 0.4}
 
 
-def _run(d, ttft, *, refusals=0, non_torch=1.0):
+def _run(d, ttft, *, refusals=(), non_torch=1.0, speed=True, workload=1, stretch=None):
     """One run. `ttft` is (uncached, cached, ms) per profiling request; a warmup
     request with 9000 uncached tokens precedes them. `refusals` None makes the
-    run real, a count makes it simulated with that many refusals."""
+    run real, a list of (source, count) makes it simulated with those refusals."""
     d.mkdir(parents=True)
-    _record(d / "steps", _steps())
+    _record(d / "steps", _steps(), stretch=stretch)
     (d / "artifacts").mkdir()
     export = json.loads(json.dumps(EXPORT))
     export["time_to_first_token"]["avg"] = ttft[0][2]
@@ -46,7 +47,9 @@ def _run(d, ttft, *, refusals=0, non_torch=1.0):
             for phase, u, c, ms in lines
         )
     )
-    (d / "run.json").write_text(json.dumps({"workload": {"traces": 1}, "law": LAW}))
+    (d / "run.json").write_text(
+        json.dumps({"workload": {"traces": workload}, "law": LAW})
+    )
     if refusals is None:
         _log(d / "server.log", peak=50 * GIB, non_torch=non_torch * GIB)
         return
@@ -61,14 +64,20 @@ def _run(d, ttft, *, refusals=0, non_torch=1.0):
     summary = {
         "coverage_report": bool(refusals),
         "cost": {
-            "speed_ratio": 20.0,
+            "speed_ratio": 20.0 if speed else None,
+            "speed_refused": None if speed else "no wall time was measured",
             "simulated_seconds": 900.0,
-            "wall_seconds": 45.0,
-            "meets_speed_target": True,
+            "wall_seconds": 45.0 if speed else 0.0,
+            "meets_speed_target": True if speed else None,
             "speed_target_ratio": 5.0,
         },
         "schedule": {
-            "refusals": {"count": refusals, "steps": 20},
+            "refusals": {
+                "count": sum(n for _, n in refusals),
+                "by_source": [list(r) for r in refusals],
+                "steps": 20,
+                "fraction_of_steps": dict(refusals).get("cost", 0) / 20,
+            },
             "analytical": SPECIES,
             "extrapolated": SPECIES,
         },
@@ -76,16 +85,18 @@ def _run(d, ttft, *, refusals=0, non_torch=1.0):
     (d / "summary.json").write_text(json.dumps(summary))
 
 
-def _rows(capsys, tmp_path, p97_refusals=0):
+def _rows(capsys, tmp_path, **p97):
+    """The cell's rows; real0's step 5 ran ten times its price, and `p97` sets that run."""
     for i, (ms, non_torch) in enumerate(((100, 1.0), (110, 1.5), (105, 1.0))):
         _run(
             tmp_path / "c4" / f"real{i}",
             [(100, 1000, ms), (600, 0, 1.0)],
             refusals=None,
             non_torch=non_torch,
+            stretch={5: 10.0} if i == 0 else None,
         )
     _run(tmp_path / "c4" / "law", [(100, 1000, 120.0)])
-    _run(tmp_path / "c4" / "p97", [(100, 1000, 118.0)], refusals=p97_refusals)
+    _run(tmp_path / "c4" / "p97", [(100, 1000, 118.0)], **p97)
     main([str(tmp_path / "c4")])
     out = capsys.readouterr().out.splitlines()
     return {tuple(r.split(" | ")[1:3]): r.split(" | ")[3:] for r in out[1:]}
@@ -108,6 +119,12 @@ def test_a_cell_is_graded_from_every_source_and_its_extrapolated_share_grades_no
     assert rows["end to end", "ttft p50 8192+ uncached"][0].startswith("no request")
     assert rows["end to end", "ttft mean"][1] == "outside, inadmissible"
     assert rows["cost real0", "decode rung 1 in hull"][0].endswith("within 10% 100.0%")
+    # Every step the cost rows leave out is named.
+    assert rows["cost real0", "left out"][0] == (
+        'not labelled {"idle": 0, "mixed": 0, "last": 1}; warm steps [5]'
+    )
+    assert rows["cost real0", "prefill in hull"][0].startswith("9 steps")
+    assert rows["cost real1", "left out"][0].endswith("warm steps []")
     assert rows["memory real0", "non_torch"][1] == "pass"
     assert rows["memory real1", "non_torch"] == ["-33.33% (-536,870,912 B)", "fail"]
     assert rows["summary law", "extrapolated"] == [json.dumps(SPECIES), "not gated"]
@@ -120,6 +137,23 @@ def test_a_cell_is_graded_from_every_source_and_its_extrapolated_share_grades_no
 def test_a_refusal_in_either_simulated_run_makes_the_cell_a_coverage_report(
     capsys, tmp_path
 ):
-    rows = _rows(capsys, tmp_path, p97_refusals=1)
+    # A clock refusal refuses no step; it is counted under its source, not as a step.
+    rows = _rows(capsys, tmp_path, refusals=[("clock", 1)], speed=False)
     assert rows["cell", "verdict"] == ["3 real runs", "coverage report"]
-    assert rows["summary p97", "refusals"] == ["1 of 20 steps", "coverage report"]
+    assert rows["summary p97", "refusals"] == [
+        '1 {"clock": 1}; cost refused 0.0% of 20 steps',
+        "coverage report",
+    ]
+    assert rows["summary law", "refusals"] == [
+        "0 {}; cost refused 0.0% of 20 steps",
+        "none",
+    ]
+    assert rows["summary p97", "speed"] == [
+        "no wall time was measured: 900 simulated s in 0 wall s",
+        "no result for 5x",
+    ]
+
+
+def test_runs_of_different_workloads_are_not_one_cell(capsys, tmp_path):
+    with pytest.raises(ValueError, match="ran different workloads"):
+        _rows(capsys, tmp_path, workload=2)
