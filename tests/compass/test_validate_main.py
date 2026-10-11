@@ -85,8 +85,9 @@ def _run(d, ttft, *, refusals=(), non_torch=1.0, speed=True, workload=1, stretch
     (d / "summary.json").write_text(json.dumps(summary))
 
 
-def _rows(capsys, tmp_path, **p97):
-    """The cell's rows; real0's step 5 ran ten times its price, and `p97` sets that run."""
+def _rows(capsys, tmp_path, law=(), **p97):
+    """The cell's rows; real0's step 5 ran ten times its price, `law` is that run's
+    refusals and `p97` sets that run."""
     for i, (ms, non_torch) in enumerate(((100, 1.0), (110, 1.5), (105, 1.0))):
         _run(
             tmp_path / "c4" / f"real{i}",
@@ -95,7 +96,7 @@ def _rows(capsys, tmp_path, **p97):
             non_torch=non_torch,
             stretch={5: 10.0} if i == 0 else None,
         )
-    _run(tmp_path / "c4" / "law", [(100, 1000, 120.0)])
+    _run(tmp_path / "c4" / "law", [(100, 1000, 120.0)], refusals=law)
     _run(tmp_path / "c4" / "p97", [(100, 1000, 118.0)], **p97)
     main([str(tmp_path / "c4")])
     out = capsys.readouterr().out.splitlines()
@@ -119,12 +120,12 @@ def test_a_cell_is_graded_from_every_source_and_its_extrapolated_share_grades_no
     assert rows["end to end", "ttft p50 8192+ uncached"][0].startswith("no request")
     assert rows["end to end", "ttft mean"][1] == "outside, inadmissible"
     assert rows["cost real0", "decode rung 1 in hull"][0].endswith("within 10% 100.0%")
-    # Every step the cost rows leave out is named.
+    # Every step the cost rows leave out is named, a warm one with its measured seconds.
     assert rows["cost real0", "left out"][0] == (
-        'not labelled {"idle": 0, "mixed": 0, "last": 1}; warm steps [5]'
+        'not labelled {"idle": 0, "mixed": 0, "last": 1}; warm steps, measured s {5: 0.81}'
     )
     assert rows["cost real0", "prefill in hull"][0].startswith("9 steps")
-    assert rows["cost real1", "left out"][0].endswith("warm steps []")
+    assert rows["cost real1", "left out"][0].endswith("warm steps, measured s {}")
     assert rows["memory real0", "non_torch"][1] == "pass"
     assert rows["memory real1", "non_torch"] == ["-33.33% (-536,870,912 B)", "fail"]
     assert rows["summary law", "extrapolated"] == [json.dumps(SPECIES), "not gated"]
@@ -157,3 +158,14 @@ def test_a_refusal_in_either_simulated_run_makes_the_cell_a_coverage_report(
 def test_runs_of_different_workloads_are_not_one_cell(capsys, tmp_path):
     with pytest.raises(ValueError, match="ran different workloads"):
         _rows(capsys, tmp_path, workload=2)
+
+
+def test_a_cost_refusal_in_the_law_run_alone_makes_the_cell_a_coverage_report(
+    capsys, tmp_path
+):
+    rows = _rows(capsys, tmp_path, law=[("cost", 2)])
+    assert rows["cell", "verdict"] == ["3 real runs", "coverage report"]
+    assert rows["summary law", "refusals"] == [
+        '2 {"cost": 2}; cost refused 10.0% of 20 steps',
+        "coverage report",
+    ]
