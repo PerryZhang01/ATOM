@@ -499,17 +499,19 @@ their own hardware, and a coarse wave cannot be claimed as an issue. Every row t
 #627's stage 2 (D95): paired real and simulated cc-traces, graded by `08`. S2.1, the real
 side, serves any candidate backend. #627 ruled on 2026-10-10 that stage 2 prices with
 `09` D54's tier-a law, whose tasks #627 files, and that step fit stays off the stage-2 path
-for now. The rows after S2.1 are the step fit candidate's (`17`), off stage 2's critical
-path.
+for now. The rows after S2.1 are step fit's stage-2 evaluation (`17` D96), off stage 2's
+critical path: no stage-2 issue waits on them, their MI308X measurements run only when node
+18 is idle from that path, S2.4 builds on the tier-a backend #738 delivered (#759), and none
+of them depends on or edits #741's or #742's code.
 
 | ID | Task | Module | Effort | Depends on |
 |---|---|---|---|---|
-| **S2.1** | The real side: Qwen3.8-27B TP1 on MI308X, aggregated, driven by cc-traces at `08` D50's stage-2 client counts; three or more spaced runs per client count (`08` D45), with per-request records and per-step tables, each forward's batch and unprofiled seconds (`08` D49 item 1). Filed under #627's stage-2 plan | `scripts/compass/` | 150–300 | GPU queue |
-| **S2.2** | Step fit's grid: a grid definition with its margin, planned from Phase 0 on the registered case set, then from S2.1's step tables; the cells the planned shapes fall in measured on MI308X per point, then topped up in the cells real batches fall in (`17` D98) | calibration, `cli/` | 300–500 | W4.1, S2.1, T27, GPU queue |
-| **S2.3** | Step fit's residual, fitted on replayed batches of the development sessions (`17` D100) | `backends/`, calibration | 250–400 | S2.2 |
-| **S2.4** | `StepFitBackend` with its production wiring: lookup, residual, bundle and startup checks, abort-only refusal, the run record and `--compass-backend` (`17` D99–D104) | `backends/`, wiring | 500–800 | W2.4, S2.3 |
-| **S2.5** | `09` D59's validation of the residual: data held out from the fit within the development sessions, three or more candidate families, a second axis (`17` D96) | calibration | 150–250 | S2.3 |
-| **S2.6** | Grading step fit by stage 2's protocol: `08` D44's three results on the held-out sessions, no ranking gate; any refusal voids the run (`17` D102) | `cli/` | 150–250 | S2.4, S2.5 |
+| **S2.1** | The real side: Qwen3.8-27B TP1 on MI308X, aggregated, driven by cc-traces at `08` D50's stage-2 client counts; three or more spaced runs per client count (`08` D45), with per-request records and per-step tables, each forward's batch and unprofiled seconds (`08` D49 item 1). Filed under #627's stage-2 plan; step fit reads #743's registered runs read only, or, if they do not exist when it is ready, runs its own under the same rules, named apart from stage 2's (`17` D96) | `scripts/compass/` | 150–300 | GPU queue |
+| **S2.2** | Step fit's grid: a grid definition with its margin, planned from Phase 0 on the registered case set, then from the shapes of S2.1's step tables, any trace's shapes and never its timings; the cells the planned shapes fall in measured on MI308X per point while node 18 is idle from the critical path, then topped up in the cells real batches fall in (`17` D98) | calibration, `cli/` | 300–500 | W4.1, S2.1, T27, GPU queue |
+| **S2.3** | Step fit's residual, fitted on replayed batches of traces 256 to 392 (`17` D100) | `backends/`, calibration | 250–400 | S2.2 |
+| **S2.4** | `StepFitBackend` with its production wiring, built on the tier-a backend #738 delivered (#759): lookup, residual, bundle and startup checks, abort-only refusal, the run record and the `step_fit` run-file key (`17` D99–D104) | `backends/`, wiring | 500–800 | W2.4, S2.3 |
+| **S2.5** | `09` D59's validation of the residual: data held out from the fit within traces 256 to 392, three or more candidate families, a second axis (`17` D96) | calibration | 150–250 | S2.3 |
+| **S2.6** | Grading step fit by stage 2's protocol: `08` D44's three results on traces 0 to 255 of S2.1's real runs, no ranking gate; any refusal voids the run (`17` D102) | `cli/` | 150–250 | S2.4, S2.5 |
 
 ### Wave 4 — DeepSeek-V4-Pro on MI355X
 
@@ -572,8 +574,9 @@ Listed so it is not mistaken for an omission; each is re-planned when v1 lands.
 
 **M2's hardware, by D95.** An RDMA-connected MI355X pair for the paired runs of W4.3 and W4.11, and a
 third MI355X node for W4.4 and W4.12, so that calibration does not queue behind the pairs; an MI308X
-node for development, the CPU-and-GPU gates, W5.5's MI308X side, and stage 2's real side
-(S2.1) and grid measurement (S2.2). Until dedicated nodes
+node for development, the CPU-and-GPU gates, W5.5's MI308X side, stage 2's real side
+(S2.1), and step fit's grid measurement (S2.2) while it is idle from stage 2's critical
+path. Until dedicated nodes
 exist, the shared pools below serve, with the pre-flight gate as written.
 
 GPU is the scarce resource; almost everything else is CPU-only by design principle 2.
