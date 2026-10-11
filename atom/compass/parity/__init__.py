@@ -10,7 +10,7 @@ a real runner's line also carries `t_enter_ns` and `t_exit_ns`, the worker's
 monotonic clock around its forward, and is written once the forward returns.
 Inside the forward it carries `[enter, exit]` on that clock around the staging
 gate (`t_gate_ns`), the launch (`t_launch_ns`) and the wait for the previous
-output's token copy (`t_r1_ns`, only on a forward that reaches it). Its device
+output's token copy (`t_recv_ns`, only on a forward that reaches it). Its device
 window is `d_busy_ns`, from an event recorded at the launch's entry to one
 recorded at the forward's exit, and `d_gap_ns`, from the previous forward's
 exit event to this launch's entry event, absent on the first line; summed in
@@ -55,13 +55,10 @@ TIMESTAMPS = (
     "t_exit_ns",
     "t_gate_ns",
     "t_launch_ns",
-    "t_r1_ns",
+    "t_recv_ns",
     "d_busy_ns",
     "d_gap_ns",
 )
-#: A line's key, until it is written, for its device window: a callable taking
-#: `wait` and returning the window's fields, or None while it is still open.
-PENDING = "_pending"
 
 
 class StepRecord:
@@ -76,7 +73,8 @@ class StepRecord:
         self.keys: dict[int, str] = {}  # request id -> key
         self.owners: dict[str, int] = {}  # key -> request id
         self.prompts: dict[int, tuple] = {}  # request id -> (digest, next position)
-        self.pending: collections.deque[dict] = collections.deque()
+        # (line, its device window: a callable taking `wait`, or None once closed)
+        self.pending: collections.deque[tuple] = collections.deque()
 
     def add(self, batch, runner, forward=None):
         """Append `batch`'s line; with `forward`, run it inside the line's timestamps.
@@ -146,12 +144,14 @@ class StepRecord:
             "rung": view.capture_rung,
         }
         reply = None
+        window = None
         if forward is not None:
             line["t_enter_ns"] = runner.step_clock_ns()
             reply = forward(batch)
             line["t_exit_ns"] = runner.step_clock_ns()
-            line.update(runner.step_stamps())
-        self.pending.append(line)
+            stamps, window = runner.step_stamps()
+            line.update(stamps)
+        self.pending.append((line, window))
         self.flush()
         self.step += 1
         return reply
@@ -163,13 +163,12 @@ class StepRecord:
         """
         with self.path.open("a") as f:
             while self.pending:
-                line = self.pending[0]
-                if PENDING in line:
-                    window = line[PENDING](wait)
-                    if window is None:
+                line, window = self.pending[0]
+                if window is not None:
+                    fields = window(wait)
+                    if fields is None:
                         return
-                    del line[PENDING]
-                    line.update(window)
+                    line.update(fields)
                 f.write(json.dumps(line) + "\n")
                 self.pending.popleft()
 
@@ -222,7 +221,7 @@ class StepRecording:
         if processor is not None:
             recv = processor.recv_async_output
             processor.recv_async_output = functools.partial(
-                self._stamped, "t_r1_ns", recv
+                self._stamped, "t_recv_ns", recv
             )
         self._recording = True
 
@@ -248,15 +247,16 @@ class StepRecording:
             self._stamps["launch_event"] = self.device_event()
         return self._stamped("t_launch_ns", super().run_model, *args)
 
-    def step_stamps(self) -> dict:
-        """At a recorded forward's exit: its stamps, with its device window pending."""
+    def step_stamps(self) -> tuple:
+        """At a recorded forward's exit: its stamps, and its device window callable or None."""
         stamps, self._stamps = self._stamps, {}
         launch = stamps.pop("launch_event", None)
+        window = None
         if launch is not None:
             done, previous = self.device_event(), self._last_exit
             self._last_exit = done
-            stamps[PENDING] = functools.partial(_window, previous, launch, done)
-        return stamps
+            window = functools.partial(_window, previous, launch, done)
+        return stamps, window
 
     def exit(self):
         if getattr(self, "_parity_record", None) is not None:

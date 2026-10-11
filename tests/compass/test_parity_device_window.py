@@ -118,9 +118,9 @@ def test_each_line_carries_its_host_stamps_and_device_window(tmp_path, monkeypat
     assert any(outputs) and not all(outputs)
     for n, (step, output) in enumerate(zip(real, outputs)):
         stamps = [step["t_enter_ns"], *step["t_gate_ns"], *step["t_launch_ns"]]
-        stamps += step["t_r1_ns"] if output else []
+        stamps += step["t_recv_ns"] if output else []
         assert stamps == sorted(stamps) and stamps[-1] < step["t_exit_ns"]
-        assert ("t_r1_ns" in step) == output
+        assert ("t_recv_ns" in step) == output
         assert step["d_busy_ns"] == BUSY + 2 * n + 1
         assert step.get("d_gap_ns") == (GAP if n else None)
     assert runner.tokenID_processor.calls == 1 + sum(outputs)
