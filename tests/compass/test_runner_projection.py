@@ -43,7 +43,7 @@ from atom.compass.backends.shape import (
     sum_query_context,
     sum_query_square,
 )
-from atom.compass.runner.overrides import RunnerRefusal
+from atom.compass.runner.overrides import NonAllocatingRunner, RunnerRefusal
 from atom.compass.runner.projection import capture_rung, project, request_rows
 from atom.model_engine.scheduler import ScheduledBatchOutput, Scheduler
 from atom.model_engine.sequence import Sequence, SequenceType
@@ -84,6 +84,22 @@ def runner(ladder=LADDER, enforce_eager=False, dp_size=1):
             parallel_config=SimpleNamespace(data_parallel_size=dp_size)
         ),
     )
+
+
+def _captured(declared, max_num_seqs, max_num_batched_tokens):
+    """A `NonAllocatingRunner` before capture: declared sizes, `[0]` held."""
+
+    class Captured(NonAllocatingRunner):
+        enforce_eager = False
+        capture_sizes_np = np.asarray([0], dtype=np.int32)
+        config = SimpleNamespace(
+            capture_sizes=declared,
+            max_num_seqs=max_num_seqs,
+            max_num_batched_tokens=max_num_batched_tokens,
+            parallel_config=SimpleNamespace(data_parallel_size=1),
+        )
+
+    return Captured()
 
 
 def _frozen(seqs):
@@ -511,6 +527,33 @@ class TestTheRung:
             capture_rung(step.batch, runner(ladder=ladder))
         unchecked = BatchView(step.rows, capture_rung=wrong_rung)
         assert unchecked.capture_rung == wrong_rung > len(step.rows)
+
+    @pytest.mark.parametrize(
+        "declared, max_num_seqs, max_num_batched_tokens",
+        [([8, 2, 4, 1], 3, 16384), ([1, 2, 4, 8], 512, 2)],
+        ids=["sequence-bound", "token-bound"],
+    )
+    def test_a_runner_that_captured_nothing_replays_atom_s_ladder(
+        self, trace, declared, max_num_seqs, max_num_batched_tokens
+    ):
+        """`capture_cudagraph` captures nothing and still leaves the ladder
+        ATOM's capture would: declared, narrowed to the schedulable width,
+        ascending. Left at the construction-time `[0]`, every decode step of a
+        graphs-on run came back eager."""
+        step = _decode(trace)
+        assert len(step.rows) == 2
+        r = _captured(declared, max_num_seqs, max_num_batched_tokens)
+        assert r.capture_cudagraph() == (0.0, [], 0)
+        assert r.capture_sizes_np.tolist() == [1, 2]
+        assert capture_rung(step.batch, r) == 2
+
+    def test_a_ladder_narrowed_to_nothing_is_refused(self):
+        """ATOM's capture asserts on an empty narrowed ladder, so such a
+        deployment never starts; pricing its decode steps as eager would
+        report a run that cannot happen."""
+        r = _captured([16, 32], 8, 16384)
+        with pytest.raises(RunnerRefusal, match=r"\[16, 32\].*bound 8"):
+            r.capture_cudagraph()
 
     @pytest.mark.parametrize(
         "config",

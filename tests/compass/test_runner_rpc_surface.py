@@ -251,9 +251,10 @@ class Runner(NonAllocatingRunner):
             eos_token_id=-1,
             stop_token_ids=[],
             pipeline_parallel_size=1,
+            capture_sizes=[1, 2, 4],
+            max_num_seqs=512,
+            max_num_batched_tokens=16384,
         )
-        self.capture_sizes = [0]
-        self.capture_sizes_np = "untouched"
 
 
 # --- the twelve, derived rather than typed ----------------------------------
@@ -553,14 +554,6 @@ def test_capture_cudagraph_answers_the_arity_its_call_sites_unpack():
 
 def test_capture_cudagraph_says_that_nothing_was_captured():
     assert Runner().capture_cudagraph() == (0.0, [], 0)
-
-
-def test_capture_cudagraph_leaves_the_eager_capture_sizes_alone():
-    """The attention metadata builder reads them on every step."""
-    runner = Runner()
-    runner.capture_cudagraph()
-    assert runner.capture_sizes == [0]
-    assert runner.capture_sizes_np == "untouched"
 
 
 def test_the_base_capture_reaches_a_device_before_it_reaches_the_model():
