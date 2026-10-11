@@ -18,9 +18,11 @@ Each equation is divided by its own label and the coefficients are bound to be
 non-negative. Steps whose relative residual is more than `MAD_K` scaled MADs
 from the median are dropped and the rest refitted, until the kept set settles.
 The dropped steps that lead a record's steps of one vector, each slower than
-the law, are its warm steps (shape compiles and first touches): counted with
-their seconds apart from the dropped ones, never charged. A feature with no
-variance gets coefficient zero and is named. Each vector reports its samples,
+the law, are its warm steps (shape compiles and first touches), and so is a
+dropped step anywhere that ran more than `WARM_FACTOR` times its price, such as
+the first short chunk on a deep history: counted with their seconds apart from
+the dropped ones, never charged. A feature with no variance gets coefficient
+zero and is named. Each vector reports its samples,
 warm and dropped counts, the condition number of its column-scaled design and
 the convex hull of its fitted steps, which `CoarseLaw` reads. A vector with
 no more fitted steps than coefficients, or whose steps span no hull, is left
@@ -61,6 +63,8 @@ MAD_K = 3.5
 #: A relative residual this small is never an outlier, however tight the rest.
 MAD_FLOOR = 0.01
 MAD_PASSES = 20
+#: A step that ran this many times its price is a one-off first touch, not scatter.
+WARM_FACTOR = 5.0
 TOKEN_BANDS = (512, 2048, 8192)
 
 
@@ -216,11 +220,15 @@ def fit(records, form: str = "law") -> dict:
             onehot = [[float(r[1] == k) for k in rungs] for r in members]
             x = np.column_stack([counts[:, 1:], onehot])
         solved = _solve(x, np.array([r[3] for r in members]), names)
+        slow = ~solved["keep"] & (solved["residual"] < 0)
+        once = solved["residual"] < 1 / WARM_FACTOR - 1
         warm = np.zeros(len(members), dtype=bool)
         for rec in range(len(records)):
+            leading = True
             for j in (j for j, r in enumerate(members) if r[0] == rec):
-                if solved["keep"][j] or solved["residual"][j] >= 0:
-                    break
+                leading = leading and slow[j]
+                if not (leading or slow[j] and once[j]):
+                    continue
                 warm[j] = True
                 law["warm_steps"][rec].append(members[j][4])
                 cut["warm"] += 1

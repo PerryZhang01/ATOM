@@ -17,8 +17,10 @@ and p90 of the per-step error and the fraction of steps within 10%.
 
 A step outside its vector's hull is priced, but its error describes the
 extrapolation, not the law: those steps are reported apart, with their measured
-and priced seconds, and enter none of the in-hull figures. A step the law
-refuses is counted with its measured seconds.
+and priced seconds, and enter none of the in-hull figures. A step that ran more
+than `coarse_fit.WARM_FACTOR` times its price is warm, a one-off first touch the
+law does not model: it is named with its seconds and enters no figure. A step
+the law refuses is counted with its measured seconds.
 """
 
 from __future__ import annotations
@@ -38,7 +40,7 @@ from atom.compass.backends import (
     RequestShape,
     Species,
 )
-from atom.compass.backends.coarse_fit import _band, samples
+from atom.compass.backends.coarse_fit import WARM_FACTOR, _band, samples
 
 WITHIN = 0.10
 
@@ -90,6 +92,7 @@ def cost_accuracy(record, law) -> dict:
     backend = CoarseBackend(CoarseLaw(law))
     groups = {"fitted": {}, "extrapolated": {}}
     refused: dict[str, dict] = {}
+    warm = []
     for key, counts, seconds, step in labelled:
         line = by_step[step]
         view = BatchView(
@@ -104,6 +107,16 @@ def cost_accuracy(record, law) -> dict:
             r["steps"] += 1
             r["measured_s"] += seconds
             continue
+        if seconds > WARM_FACTOR * cost.seconds:
+            warm.append(
+                {
+                    "step": step,
+                    "band": band,
+                    "measured_s": seconds,
+                    "priced_s": cost.seconds,
+                }
+            )
+            continue
         species = {t.provenance.species for t in cost.terms}
         group = "extrapolated" if Species.EXTRAPOLATED in species else "fitted"
         kind = "prefill" if key == "prefill" else "decode"
@@ -113,6 +126,7 @@ def cost_accuracy(record, law) -> dict:
         report[group] = {
             kind: _summary(rows) for kind, rows in sorted(kinds.items(), reverse=True)
         }
+    report["warm"] = warm
     report["refused"] = refused
     return report
 
@@ -142,6 +156,11 @@ def _text(report: dict) -> str:
                     f"  {band} | {b['steps']} | {b['p10']:+.1%} | {b['p50']:+.1%}"
                     f" | {b['p90']:+.1%} | {b['within_10pct']:.1%}"
                 )
+    for w in report["warm"]:
+        out.append(
+            f"\nwarm step {w['step']} ({w['band']}): measured {w['measured_s']:.2f} s,"
+            f" priced {w['priced_s']:.2f} s"
+        )
     for band, r in report["refused"].items():
         out.append(
             f"\nrefused {band}: {r['steps']} steps, measured {r['measured_s']:.2f} s"
