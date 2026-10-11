@@ -113,7 +113,7 @@ M-f `14`; M-g `01` D3.5.
 | T20 | Declared node + standalone benchmark for invisible collectives |
 | T21 | Establish whether Phase 1c transfers across width (the TP2 test run) |
 | ~~T22~~ | ~~Analytic laws as their own design topic~~ — **done**, now `10` |
-| **T55** | Decide the treatment of `c10d::broadcast_`, which takes a `ProcessGroup` no artifact can hold — working answer is to fold it into the Phase 1c host floor |
+| **T55** | Decide the treatment of `c10d::broadcast_`, which takes a `ProcessGroup` no artifact can hold — working answer since #815's ruling (2026-10-11): its device time is in the device-busy label, its launch in `W_post` (`07` D40) |
 | T86 | **aiter is a second executed source root, and no artifact key names it.** Opened 2026-09-21 by P0.6. D41 gives every artifact a provenance stanza naming *the* executed source root, and keys `price_list` on `(model, width, source-root digest)` — one root, ATOM's. But the EP group is constructed entirely in aiter (`15` D92), the MoE kernels and every collective are aiter's, and `aiter` is installed in the container's writable layer at `/app/aiter-test`, outside `/workspace` and discarded by `teardown.sh`. D43's matrix already invalidates `price_list`, `region_terms` and `memory_readings` on an AITER bump — but a fingerprint can only refuse on a version something recorded, and nothing records one. It is **not** a recoverability problem: that checkout is a clean `https://github.com/ROCm/aiter.git` at a commit on `origin/main`, so the hash resolves. It is a provenance gap, and the machinery already exists — `scripts/compass/gate_gpu.sh` resolves aiter's checkout with `atom/compass/artifacts/provenance.py::module_root("aiter")`, which does not import aiter, and takes `git describe --tags --always --dirty`, comparing it against `BASE_AITER`. W2.4 adopts the same call. **Two aiter versions are in circulation on this project right now**: `v0.1.20-103-g23f83724f` in `jgong5_vllm` and `v0.1.21.dev0-49-gf4e7c7509` on node 18, so this is an observed divergence rather than a hypothetical one. The decision half — whether an aiter bump invalidates an EP artifact or only warns — is the owner's, and it is cheap to take before the first artifact exists rather than after. |
 | T87 | **`07`'s price-list table states the MoE all-to-all's block-count cap as one number, and it is two.** Opened 2026-09-21 by P0.6. `_get_dispatch_config` returns `min(128, CU)` blocks at 16 warps for **prefill** and `min(64, CU)` at 4 warps for **decode** (`atom/model_ops/fused_moe/mori_prepare_finalize.py`), so on node 18's 80-CU MI308X the cap is 80 for prefill and 64 for decode, not one figure. aiter's own config-time default is a hard-coded 80 for IntraNode and 32 plus 16 RDMA for InterNodeV1 (`aiter/dist/device_communicators/all2all.py:64-75`), overridden per call. The cell that hides the split is the `exclusive` row of `07`'s calibration table; `04`'s `exclusive` join-policy text has the same single-number phrasing. Reporting one number for two is the aggregate-without-decomposition failure principle 7 names. |
 
@@ -146,7 +146,7 @@ M-f `14`; M-g `01` D3.5.
 | T34 | Test whether the activation coefficient is derivable from geometry: the fallback for a model nobody has run, against the measured coefficient that is the source ([#705](https://github.com/jgong5/ATOM/issues/705)) |
 | T35 | Derive FLOPs and bytes-moved expressions for the ~20 opaque leaves |
 | T36 | Name the collective algorithm per code path in the machine spec schema |
-| T37 | Decide whether the host floor is derivable or stays a per-model constant |
+| ~~T37~~ | ~~Decide whether the host floor is derivable or stays a per-model constant~~ — ruled 2026-10-11 on #815: measured host laws, keyed by host CPU, `atom` digest, model and engine config, with no transfer (`09` D54, `10` D64) |
 | T38 | Build the analytic-vs-measured ratio report as part of the empirical campaign |
 | T39 | Establish a dispatch-band table from geometry where no measured bands exist |
 | **T56** | Record the observed tier-0 error per measured device in the artifact, so an unmeasured-device user sees a range rather than a promise |
@@ -197,7 +197,7 @@ M-f `14`; M-g `01` D3.5.
 
 | # | Item |
 |---|---|
-| T93 | Measure in ATOM whether the scheduler's CPU segments add serially to the forward or overlap it; step fit's `fitted` CPU mode waits on it (`17` D104) |
+| ~~T93~~ | ~~Measure in ATOM whether the scheduler's CPU segments add serially to the forward or overlap it; step fit's `fitted` CPU mode waits on it~~ — ruled 2026-10-11 on #815: serial on the host timeline, inside `01` D4's `E` (`17` D104) |
 | T94 | Record the kernels each step fit grid point ran, and treat a cell whose corners ran different kernels as crossing a dispatch band (`09` D60): refused or split (`17` D99) |
 | T95 | A later trial, not this design: extrapolate step fit's out-of-cell steps as #627's ruling 3 has the tier-a law do, by one method only (extending the nearest complete cell's interpolation), tagged `extrapolated` with the distance and reported apart, which is not a refusal. It would answer out-of-cell steps, which step fit now declines; decided after step fit's stage-2 evaluation shows how often steps fall outside complete cells (`17` D102) |
 
@@ -230,6 +230,7 @@ M-f `14`; M-g `01` D3.5.
 | # | Item | Topic |
 |---|---|---|
 | **T47** | A wrong lookahead is a calibration error no causality detector sees; only validation against real runs (`08`) or a declared-vs-measured channel-delay check catches it | `01` |
+| **T97** | Settle the recurrence check's provisional thresholds, p10 to p90 of the host-period error within 2% per step kind and the run total within 0.5%, once [#827](https://github.com/jgong5/ATOM/issues/827) reports them on [#828](https://github.com/jgong5/ATOM/issues/828)'s records | `01` |
 | ~~**T91**~~ | ~~How the DP ranks that make no CA call register sends and get frames released~~ — ruled 2026-10-01, option (b) ([#470](https://github.com/jgong5/ATOM/issues/470#issuecomment-5933154215)); stated in `01` D3 | `01` |
 | **T49** | The prefix-index *lookup* cost is charged to nobody — ~1,387 blocks hashed and probed per request at the cc-traces p50, magnitude unmeasured | `03` |
 | **T50** | Whether runtime memory constants transfer across dies (the working assumption says yes within a software generation) | `03`, `05` |

@@ -231,6 +231,12 @@ that makes op prices usable — because **an operator priced alone is not the sa
 in a step**: priced kernels at 98.8% coverage summed to **0.749 of the step**; per kernel
 the ratio clusters 0.83-0.93, across all kernels it runs **0.434 to 0.989**.
 
+**Revised 2026-10-11 by the owner's ruling on
+[#815](https://github.com/jgong5/ATOM/issues/815):** every backend prices device time only
+(`02` D11), so the region terms and the residual are fitted to device busy time, and the
+host floor is no tier-b term. Host time is `09` D54's host laws, composed by `01` D4's
+recurrence.
+
 **Plus one full-engine run at TP2**, not to calibrate but to **test whether 1c transfers**.
 It is the cheapest possible test of the one term with no transfer evidence: between TP=1
 and TP=2 on the same GPUs, the two overhead constants moved **12% and 7% in opposite
@@ -514,9 +520,12 @@ Three constraints carry over into the flow and are not optional:
    bound)` so nothing downstream treats them as device work.
 
 **The open piece:** `c10d::broadcast_` takes a `ProcessGroup` object no JSON artifact can
-hold, so it cannot be replayed from a price list — one operator per step. It is small and
-constant, and the working treatment is to fold it into the host floor of Phase 1c rather
-than price it. Recorded as **T55**.
+hold, so it cannot be replayed from a price list — one operator per step, issued in
+`ModelRunner.postprocess` after the sampler. Since the owner's ruling on
+[#815](https://github.com/jgong5/ATOM/issues/815) (2026-10-11) removed the Phase 1c host
+floor, its device time is inside the forward's device busy time, the label tier a and
+Phase 1c are fitted to (`09` D54), and its launch is inside the `W_post` host law (`01`
+D4). Recorded as **T55**.
 
 ---
 

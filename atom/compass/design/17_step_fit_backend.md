@@ -100,8 +100,9 @@ step fit refuses a speculative step (D97).
 
 ### One term per step
 
-The whole batch is one `StepCost` with a single term covering the forward's interval
-(D98): compute, logits, sampling, the in-forward TP collectives and their overlap. The term
+The whole batch is one `StepCost` with a single term: the forward's device busy time over
+its interval (D98), with no launch gaps (`02` D11, owner ruling on #815, 2026-10-11). It
+covers compute, logits, sampling, the in-forward TP collectives and their overlap. The term
 is not multiplied by TP, and no collective terms are added beside it, because the
 measurement already contains them. The lookup's value, the residual and each member's
 output are diagnostics in the provenance detail, never terms, so no term is negative. The
@@ -110,8 +111,9 @@ term is in seconds; a bundle's unit is converted once, at that boundary.
 ### The runner prices, the engine charges
 
 - **One charge per logical forward.** The predicted forward's runner prices its own
-  rank's batch with the installed backend, and the cost rides on the step's output to the
-  engine, whose clock owner charges it (`01` D4, K1). A real forward carries no cost and
+  rank's batch with the installed backend. The runner composes that device time with the
+  host laws by `01` D4's recurrence, and the recurrence's charge rides on the step's output
+  to the engine, whose clock owner charges it (K1). A real forward carries no cost and
   charges nothing. The backend never touches the clock and never sleeps.
 - **The label is the group's step.** A step measurement of a TP group is the group's
   step, which `01` charges to its slowest rank (`15` D90), so a step is priced once, never
@@ -121,8 +123,9 @@ term is in seconds; a bundle's unit is converted once, at that boundary.
   DP-attention's tier a stays #529's. A PP stage refuses to price: `15` D91 prices each
   stage, and a whole-step label cannot price a stage.
 - **Only executed batches are priced**, intermediate prefill chunks included: a chunk that
-  samples nothing still costs forward time (`02` D10). A forward is atomic: no op-level,
-  pipeline or cross-step overlap.
+  samples nothing still costs forward time (`02` D10). A forward's device time is atomic:
+  no op-level or pipeline overlap. Overlap across forwards, a host running ahead of the
+  device, is `01` D4's recurrence's, not step fit's.
 - **The step's output keeps `02` D10's three semantics.** The cost rides on the output,
   not beside it, so the deferred-token protocol is unchanged and nothing visible is
   published before the grant.
@@ -144,9 +147,11 @@ term is in seconds; a bundle's unit is converted once, at that boundary.
 
 ### Outside the backend
 
-Queueing emerges from events. KV transfer has its own model (`01` D6). The estimator's
-own CPU time is simulator overhead, which counts against the speed target (`08` D51) and
-never against the forward. Worker dispatch and IPC are not forward time.
+Queueing emerges from events. KV transfer has its own model (`01` D6). Host time,
+worker dispatch and IPC included, is `01` D4's host segments, priced by `09` D54's host
+laws and composed by the runner, never by step fit. The estimator's own CPU time is
+simulator overhead, which counts against the speed target (`08` D51) and never against
+the forward.
 
 ---
 
@@ -224,8 +229,12 @@ priced from one that does.
 
 The interval is `02` D10's: the whole `ModelRunner.forward()`, sampling included. It is
 timed per `07` D42, with CUDA events drained by `query()` and no per-forward synchronize,
-under the target workload's sampling settings. A bundle declares its scope, and a narrower
-one is refused at load.
+under the target workload's sampling settings. A point's value is device busy time (D97): a
+repeat whose device start precedes its host launch end is launch-exposed and is cut, as
+`09` D54 cuts it. The measurement queues device work ahead of each repeat so its launch
+stays ahead; a point whose every repeat is still launch-exposed has no value, and its
+cell is incomplete and refuses (D99). A bundle declares its scope, and a narrower one is
+refused at load.
 
 The measurement this rests on (#626 at `1139bbca`): the reference bundle measured
 `run_model` plus logits under a GPU synchronize, which leaves `ModelRunner.postprocess` —
@@ -470,14 +479,17 @@ prices scheduling decisions (README, *Scope*). "Scheduler postprocess" here mean
 `scheduler.postprocess()`, not `ModelRunner.postprocess()`, which is inside the forward's
 interval (D98).
 
-- **No `measured` mode.** Charging the simulating host's wall clock would make two runs
-  of one input disagree (`01` D3.4), and it charges time the simulated machine never spent.
-- **Default `off`**: neither segment is charged, as `01` D4 has it today.
-- **`fitted`** prices each segment from parameters in the machine spec's `host.*` (`05`
-  D25), a host property like the tokenizer terms. It is not usable until it is measured in
-  ATOM whether a segment's time adds serially to the forward or overlaps it (T93): `10`
-  D64 found the host floor to be a `max`, not an addend, and a serial charge is the addend.
-  When `fitted` becomes usable, `01` D4's site table is amended to name the two segments.
+**Revised 2026-10-11 by the owner's ruling on
+[#815](https://github.com/jgong5/ATOM/issues/815).** Both segments are inside `01` D4's
+host segment `E`, which is serial on the host timeline and is the recurrence's first term;
+that answers T93. `E` is priced by `09` D54's host laws and composed by the runner for
+every backend, step fit included, so step fit has no CPU-segment modes of its own: the
+`off` and `fitted` modes and the two-segment split are dropped.
+
+- **No `measured` mode**, still. Charging the simulating host's wall clock would make two
+  runs of one input disagree (`01` D3.4), and it charges time the simulated machine never
+  spent. The host laws are fitted on real runs, never read off the simulating host.
+- **A what-if** that drops host time uses `01` D4's `host.skip`, and is never graded.
 
 ---
 
@@ -502,8 +514,9 @@ After stage 2, step fit gets one evaluation on DeepSeek-V4-Pro (`16` W4.13):
   the kernels it ran (D99). Until then the residual's held-out error is the only detector,
   so a band that the replayed batches never straddle is not caught before grading.
   Recorded as **T94**.
-- **Whether the scheduler's CPU segments add serially to the forward or overlap it** is
-  unmeasured in ATOM, and gates the `fitted` mode. Recorded as **T93**.
+- ~~**Whether the scheduler's CPU segments add serially to the forward or overlap it**~~ —
+  ruled 2026-10-11 on #815: serial on the host timeline, inside `01` D4's `E` (D104).
+  **T93** is closed.
 - **Whether step fit should extrapolate out-of-cell steps** as the tier-a law does under
   #627's ruling 3 is untried; today it declines them (D102). Recorded as **T95**.
 - **`13` does not describe the run file** that selects a backend (D103). Recorded as
@@ -516,14 +529,14 @@ After stage 2, step fit gets one evaluation on DeepSeek-V4-Pro (`16` W4.13):
 | # | Decision | Date |
 |---|---|---|
 | D96 | Step fit (`StepFitBackend`, `step_fit`) is a tier-a `CostBackend`: grid lookup plus a residual. A candidate for #627's stage 2, graded by stage 2's protocol after `09` D59's validation, a use beyond `07` D36 by ruling; which backend passes stage 2 is #627's ruling, which chose `09` D54's law and keeps step fit off the stage-2 path for now, so step fit's evaluation runs off that critical path. Grading reads #743's registered real runs, or step fit's own named apart; the residual, validation and grid comparisons use traces 256 to 392, grading traces 0 to 255. Not a stage-3 backend, not the source of the per-family MI308X tables; Kimi-K3 and DCP after v1. | 2026-10-10 (#696); #627's rulings applied 2026-10-11 (#626) |
-| D97 | One term per step over the forward's whole interval, priced once per logical forward by the runner and charged by the engine. Rows in order; mixed phases and speculative decode refuse; a DP run refuses by key and a PP stage refuses. The backend imports nothing from ATOM. | 2026-10-10 (#696) |
-| D98 | A synthetic homogeneous grid, departing from `07` D39 for the baseline only. Its definition (a node list per axis and the planning margin) is a calibration input recorded in the bundle's identity; a cell is the box between adjacent nodes; warm-up, repeats and statistic are fixed in code; measurements are stored per point. Nodes are placed from shapes, and only the cells the planned shapes fall in, plus the margin, are measured; boundary nodes sit at the feasible region's edge. Decode in replay on the target's own ladder, per rung at `B = R` and `B = previous rung + 1`; prefill eager on `(B, N_Q, c)` by whether a chunk produces output. `02` D10's interval, `07` D42's timing; a narrower declared scope refuses. | 2026-10-10 (#696); grid definition 2026-10-11 (#626) |
+| D97 | One term per step, the forward's device busy time over its whole interval, priced once per logical forward by the backend; the runner composes it with the host laws by `01` D4's recurrence and the engine charges the result. Rows in order; mixed phases and speculative decode refuse; a DP run refuses by key and a PP stage refuses. The backend imports nothing from ATOM. | 2026-10-10 (#696); revised 2026-10-11 (#815) |
+| D98 | A synthetic homogeneous grid, departing from `07` D39 for the baseline only. Its definition (a node list per axis and the planning margin) is a calibration input recorded in the bundle's identity; a cell is the box between adjacent nodes; warm-up, repeats and statistic are fixed in code; measurements are stored per point. Nodes are placed from shapes, and only the cells the planned shapes fall in, plus the margin, are measured; boundary nodes sit at the feasible region's edge. Decode in replay on the target's own ladder, per rung at `B = R` and `B = previous rung + 1`; prefill eager on `(B, N_Q, c)` by whether a chunk produces output. `02` D10's interval, `07` D42's timing, device busy time with device work queued ahead and launch-exposed repeats cut, a point left with none refusing its cell; a narrower declared scope refuses. | 2026-10-10 (#696); grid definition 2026-10-11 (#626); device time 2026-10-11 (#815) |
 | D99 | An answer only from a complete cell, by exact hit or interpolation; otherwise refuse, naming the missing corners. No extrapolation, clamp, recovery or fallback. A pre-run coverage check over cells and the residual hull; deterministic lookups; `02` D11 species. | 2026-10-10 (#696) |
 | D100 | The residual is in the first version, fitted on replayed batches of traces 256 to 392 in `14` D85's form plus order and raggedness, graded on traces 0 to 255, refusing outside its hull; grid definitions compared on traces 256 to 392 only, each one tried recorded. Members are bundle data; each output checked. Recipes are fixed functions with injected geometry and hardware constants, versioned only when a function changes; optional recipes, DCP's first. | 2026-10-10 (#696); grid comparison 2026-10-11 (#626) |
 | D101 | A bundle is a `07` D41 key plus a digest, immutable, with a row in `07` D43 invalidated by every column. Keyed conditions refuse; derived values go to provenance; #626's asserted and record-only grades are dropped. Conditions come from the resolved ATOM config. At startup, unmeasured rungs and bounds beyond the planned grid refuse. | 2026-10-10 (#696) |
 | D102 | Refusal follows `08` D50.1 as ruled on #765, with no departure: when step fit cannot answer a step, the step goes to the next rung and is refused only when none answers; a refused step costs 0 s and the run continues under `13` D80's default `mark`; any refusal makes the run a coverage report. Where the tier-a law extrapolates under #627's ruling 3, step fit declines; T95 records trying that rule later. | 2026-10-10 (#696); ruling 3 contrast 2026-10-11 (#626); revised 2026-10-11 (#765) |
 | D103 | Selected as the code selects a backend: a `step_fit` run-file key, exclusive with `law` and `coefficients`; no new Compass flag. The bundle is found by its key in the artifact store. `13` does not yet describe the run file (T96). | 2026-10-10 (#696); revised 2026-10-11 (#626) |
-| D104 | The run record lives inside `01` D3.5's outputs with no `off` level, written incrementally and flushed before the run ends, per step from each `estimate()` return. The scheduler's CPU segments: no `measured` mode, default `off`, `fitted` from `host.*` once T93 is settled. | 2026-10-10 (#696) |
+| D104 | The run record lives inside `01` D3.5's outputs with no `off` level, written incrementally and flushed before the run ends, per step from each `estimate()` return. The scheduler's CPU segments are inside `01` D4's `E`, priced by the host laws for every backend: no `measured` mode, and no step-fit modes of its own; `host.skip` is the what-if. | 2026-10-10 (#696); revised 2026-10-11 (#815) |
 | D105 | One non-graded evaluation on DeepSeek-V4-Pro's nightly TP cell on MI355X, against W4.3's step tables and tier b, reported per `08` D47; not a stage-3 backend. | 2026-10-10 (#696) |
 
 ---
@@ -535,7 +548,7 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 
 | # | Item | Why deferred |
 |---|---|---|
-| T93 | Measure in ATOM whether the scheduler's CPU segments add serially to the forward or overlap it, before `fitted` is usable | needs a real run with per-segment timing |
+| ~~T93~~ | ~~Measure in ATOM whether the scheduler's CPU segments add serially to the forward or overlap it, before `fitted` is usable~~ — ruled 2026-10-11 on #815: serial, inside `01` D4's `E` | needs a real run with per-segment timing |
 | T94 | Record the kernels each grid point ran, and treat a cell whose corners ran different kernels as crossing a dispatch band (`09` D60): refused or split | needs the grid measurement (`16` S2.2) to record kernel identity |
 | T95 | Trial, not this design: extrapolate an out-of-cell step as #627's ruling 3 has the tier-a law do, by one method only, extending the nearest complete cell's interpolation, tagged `extrapolated` with the distance and reported apart, which is not a refusal. It would answer out-of-cell steps, which step fit now declines (D102) | decide after step fit's stage-2 evaluation shows how often steps fall outside complete cells |
 | T96 | Reconcile `13` D79 and D80 with the run file the code selects a backend by (`--compass-run`, `atom/compass/run/__init__.py::runner`): `13` rejects a Compass config file, the code reads one | needs an owner choice between describing the run file in `13` and moving selection to flags |
