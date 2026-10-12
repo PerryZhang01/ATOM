@@ -589,7 +589,7 @@ def _hang_up_while_the_grant_is_out(monkeypatch, timer: float | None):
     loop = CompassEventLoop()
     client, peer = socket.socketpair()
     stamps, released = [], []
-    handling, stopped = threading.Event(), threading.Event()
+    handling = threading.Event()
 
     def hang_up():
         loop.remove_reader(peer)
@@ -597,7 +597,7 @@ def _hang_up_while_the_grant_is_out(monkeypatch, timer: float | None):
         stamps.append(rt.stamp_send(CONTROL))
 
     def engine_lp():
-        _until(lambda: rt.asked)
+        _until(lambda: rt.calls)  # the frontend has asked for its first grant
         client.send(b"x")
         handling.wait(10)
         g = None
@@ -605,24 +605,26 @@ def _hang_up_while_the_grant_is_out(monkeypatch, timer: float | None):
             engine.send((NER, INF, [], INF))
             g, got = engine.recv()
             released.extend(got[CONTROL])
-        if not stopped.wait(10):  # the finish did not stop the loop
-            loop.call_soon_threadsafe(loop.stop)
 
     loop.add_reader(peer, hang_up)
     if timer is not None:
         loop.call_at(timer, lambda: None)
     thread = threading.Thread(target=engine_lp, daemon=True)
     thread.start()
+    # A loop the finish does not stop is stopped after 20 wall seconds.
+    guard = threading.Timer(20, lambda: loop.call_soon_threadsafe(loop.stop))
+    guard.start()
     try:
         loop.run_forever()
-        stopped.set()
         thread.join(10)
         return stamps, released, loop.ended and loop.ended[0]
     finally:
+        guard.cancel()
         client.close()
         peer.close()
         authority.close()
-        loop.close()
+        if loop.ended:
+            loop.close()
 
 
 def test_a_send_while_the_grant_is_out_is_sent_at_the_grant(monkeypatch):
