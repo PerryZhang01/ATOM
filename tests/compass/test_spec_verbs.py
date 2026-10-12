@@ -2234,9 +2234,10 @@ def test_a_tokenizer_with_no_tokenizer_json_is_refused_before_the_merge(tmp_path
         _swept_on(script, tmp_path, 112, fingerprint=None)
 
 
-def test_the_checked_in_node_18_spec_validates_and_prices_its_activations():
+def test_the_checked_in_node_18_spec_validates_and_prices_its_activations(monkeypatch):
     from atom.compass.run import _width_keys
 
+    monkeypatch.delenv("COMPASS_MACHINE", raising=False)
     script = _node18_script()
     path = SPEC_ROOT / "scripts" / "compass" / "machines" / f"{script.NAME}.json"
     document = _width_keys(json.loads(path.read_text()))
