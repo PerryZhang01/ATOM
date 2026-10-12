@@ -399,6 +399,7 @@ class PagedAttentionImpl(nn.Module):
                 bs, dtype=torch.int32, device=attn_metadata.context_lens.device
             ),
             attn_metadata.context_lens.long(),
+            output_size=total_tokens,
         )
 
         num_kv_heads = k.shape[1]
