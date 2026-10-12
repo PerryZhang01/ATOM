@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
-"""The node-18 MI308X machine spec, from a tokenizer swept here and one real start.
+"""An MI308X machine spec, from a tokenizer swept here and one real start.
 
     python3 scripts/compass/mi308x_spec.py [--model M] [--out PATH]
 
-Run on hjbog-srdc-18, in a container that has the model's files: the tokenizer
+Run on hjbog-srdc-18, or on hjbog-srdc-39 with COMPASS_MACHINE=mi308x-hjbog39,
+in a container that has the model's files: the tokenizer
 fragment carries this host's core counts, and the merge refuses it if they are
 not the ones the device fragment recorded there. The device fragment is the
 readings ATOM's own `ModelRunner` took at one engine start (Qwen3.8-27B, TP1,
@@ -17,6 +18,7 @@ them, and the basis of `kv_blocks`.
 import argparse
 import datetime
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -34,9 +36,8 @@ from atom.compass.spec import (
     validate,
 )
 
-NAME = "mi308x-hjbog18"
+NAME = os.environ.get("COMPASS_MACHINE", "mi308x-hjbog18")
 AUTHOR = "compass agent for jgong5"
-DATE = "2026-10-11"
 #: Token counts swept, one to past the 204,288-token p90 prompt of cc-traces.
 LENGTHS = tuple(4**k for k in range(10))
 #: The worst relative residual a tokenizer fit may leave at any swept length.
@@ -49,7 +50,7 @@ BOUND = 0.25
 #: commit 983e42973 (the stage-2 arguments, max_num_batched_tokens 16384):
 #: `allocated` and the unique parameter and buffer bytes right after the model
 #: loaded, then the four figures `_read_device_memory` takes after warmup.
-READ = {
+NODE18 = {
     "total": 206141652992,
     "non_torch": 1249902592,
     "loaded": 54761936384,
@@ -59,6 +60,12 @@ READ = {
     "peak": 58034271744,
     "warmup_tokens": 16384,
 }
+#: The same readings on card 6 of hjbog-srdc-39 at commit a1cac25a6.
+HJBOG39 = dict(NODE18, non_torch=1254096896, current=55077418496, peak=58034402816)
+DATE, COMMIT, READ = {
+    "mi308x-hjbog18": ("2026-10-11", "983e42973", NODE18),
+    "mi308x-hjbog39": ("2026-10-12", "a1cac25a6", HJBOG39),
+}[NAME]
 CONFIG_JSON = "sha256:191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab"
 
 DEVICE = {
@@ -133,7 +140,7 @@ def fragment(source: str, body: dict, method: str, notes: str) -> Fragment:
 def device_fragments() -> list[Fragment]:
     """The fragment one engine start measured, and the declared one."""
     return [
-        fragment("device", DEVICE, "probed", "one Qwen3.8-27B TP1 start at 983e42973"),
+        fragment("device", DEVICE, "probed", f"one Qwen3.8-27B TP1 start at {COMMIT}"),
         fragment("declared", DECLARED, "assumed", "no probe fills these"),
     ]
 
@@ -179,7 +186,7 @@ def report(merged, measured: set[str]) -> str:
     for row in rows:
         split[bool(measured & set(row.supplied_by))].append(f"  {row}")
     return "\n".join(
-        ["measured on node 18:", *split[True], "declared:", *split[False]]
+        [f"measured on {NAME}:", *split[True], "declared:", *split[False]]
         + [str(explain(spec, "kv_blocks", tp_width=1, origin=merged))]
     )
 
