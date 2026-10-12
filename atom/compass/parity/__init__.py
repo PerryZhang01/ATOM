@@ -35,11 +35,11 @@ Prefix caching is not covered: the worker never sees a cached prefix, so parity
 runs need caching off or the same cache hits in both runs. Requests of one
 record with one prompt are named in the order their final chunks are scheduled:
 the first by the digest, the n-th after it by `<digest>.<n>`. A run that
-schedules them in the other order names them the other way round. While both
-are in every batch the two records still agree; `compare` reports the first
-step that schedules one without the other, as when one finishes first, where
-the rows differ only in the `.<n>` suffix. Twins that are always scheduled
-together never part.
+schedules them in the other order names them the other way round. The two
+records still agree, because a row carries the key and token counts and swapped
+twins have the same ones, until one twin finishes while the other runs on:
+`compare` reports the next step, where the rows differ only in the `.<n>`
+suffix. Twins that finish in the same step never part.
 """
 
 import collections
