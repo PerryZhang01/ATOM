@@ -11,3 +11,6 @@ python -m atom.compass.parity REAL_DIR SIMULATED_DIR
 
 It prints `compare`'s report as JSON: per DP rank, the first step whose
 decision differs (null where none does), and each request's DP rank in both.
+
+`python -m atom.compass.parity.recurrence REAL_DIR` gates the host/device
+recurrence on a real record with device windows (`recurrence.py` says how).
