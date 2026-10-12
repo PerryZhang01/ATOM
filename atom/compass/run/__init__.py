@@ -46,8 +46,9 @@ the steps the backend refuses),
 answers at 0 s, hands in its ``cost:`` reason and continues; ``abort`` ends
 the run there, which still writes the summary),
 ``host`` (optional: ``laws``, per forward kind and host segment, coefficients
-on ``(1, tokens, seqs)``, zero where absent; ``skip``, segments zeroed for a
-what-if run, which the graders refuse),
+on ``(1, tokens, seqs)``, zero where absent; ``key``, the `host_key` they were
+fitted under, which a run with laws must match; ``skip``, segments zeroed for
+a what-if run, which the graders refuse),
 ``machine`` (a machine spec mapping), ``parameter_count``, and ``out_dir``,
 where the step table, the run summary and each server LP's hand-in go, one
 file written as the LP leaves its loop. It holds the LP's refusals: an
@@ -88,12 +89,15 @@ import hashlib
 import json
 import math
 import os
+import platform
+import re
 import threading
 import time
 from pathlib import Path
 
 import numpy as np
 
+import atom
 from atom.compass.artifacts import provenance
 from atom.compass.clock import (
     ClockAuthority,
@@ -159,7 +163,7 @@ def _check_host(path, host: dict) -> None:
 
     laws = host.get("laws", {})
     if (
-        set(host) - {"laws", "skip"}
+        set(host) - {"laws", "skip", "key"}
         or set(host.get("skip", ())) - set(HOST_SEGMENTS)
         or set(laws) - set(FORWARD_KINDS)
         or {s for v in laws.values() for s in v} - set(HOST_SEGMENTS)
@@ -167,7 +171,8 @@ def _check_host(path, host: dict) -> None:
     ):
         raise ValueError(
             f"{path}: host is {host!r}; it takes skip, a list of {HOST_SEGMENTS}, "
-            f"and laws, mapping {FORWARD_KINDS} to segments to three coefficients"
+            f"laws, mapping {FORWARD_KINDS} to segments to three coefficients, "
+            "and key, the host key the laws were fitted under"
         )
 
 
@@ -517,6 +522,13 @@ def runner(model_runner) -> None:
     if NOW_ENV in os.environ:
         slot = np.memmap(os.environ[NOW_ENV], np.float64, "r", shape=(1,))
         host = run.get("host", {})
+        ours, theirs = host.get("laws") and host_key(config), host.get("key") or {}
+        if ours and theirs != ours:
+            differ = [k for k in ours if theirs.get(k) != ours[k]]
+            raise ValueError(
+                f"the run file's host laws were fitted under another {differ}; "
+                f"this run's key is {ours}"
+            )
         model_runner.compass_host = HostDeviceRecurrence(
             host.get("laws", {}), host.get("skip", ()), lambda: float(slot[0])
         )
@@ -607,6 +619,29 @@ def _fingerprint(tok) -> str | None:
     if not (tok.is_fast and name):
         return None
     return _file_digest(name, "tokenizer.json")
+
+
+def host_key(config) -> dict:
+    """What host laws are keyed by: this host's CPU, ATOM's source outside
+    Compass, the served config.json and the engine config a step fit bundle is
+    keyed by."""
+    from atom.compass.run.step_fit import keyed
+
+    cpu = re.search(
+        r"^model name\s*:\s*(.+)$", Path("/proc/cpuinfo").read_text(), re.MULTILINE
+    )
+    root = Path(atom.__file__).parent
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*.py")):
+        relative = path.relative_to(root)
+        if relative.parts[0] != "compass":
+            digest.update(f"{relative}\0".encode() + path.read_bytes())
+    return {
+        "host_cpu": cpu.group(1) if cpu else platform.processor(),
+        "atom": digest.hexdigest(),
+        "model": _file_digest(config.model, "config.json"),
+        "engine": keyed(config),
+    }
 
 
 def _file_digest(name: str, filename: str) -> str | None:

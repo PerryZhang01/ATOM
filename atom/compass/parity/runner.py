@@ -10,11 +10,17 @@ import time
 import torch
 
 from atom.compass.parity import StepRecording
+from atom.compass.run import host_key
 from atom.model_engine.model_runner import ModelRunner
 
 
 class RecordingModelRunner(StepRecording, ModelRunner):
     """`ModelRunner`, unchanged, with each forward call recorded around it."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # Read once at startup, so no forward pays for it.
+        self.host_key = host_key(self.config)
 
     @staticmethod
     def step_clock_ns() -> int:

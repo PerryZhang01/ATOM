@@ -21,7 +21,8 @@ the first step where they part; timestamps are not part of a step's decision.
 
 Setting `ATOM_COMPASS_PARITY_RECORD` to a directory turns recording on: TP rank 0
 of each DP rank writes `dp<rank>.jsonl` there, replacing any earlier file.
-Unset, nothing is recorded. The simulated runner records from
+Unset, nothing is recorded. A runner with a `host_key` also writes it to
+`dp<rank>.key.json`. The simulated runner records from
 `NonAllocatingRunner.forward`; a real one records through `StepRecording`,
 composed into `RUNNER`, which the frontend names on a real run with the
 variable set.
@@ -191,6 +192,9 @@ def record_step(runner, batch, forward=None):
                 )
             dp_rank = runner.config.parallel_config.data_parallel_rank
             record = StepRecord(directory, dp_rank)
+            key = getattr(runner, "host_key", None)
+            if key is not None:
+                record.path.with_suffix(".key.json").write_text(json.dumps(key))
         runner._parity_record = record
     if runner._parity_record is not None:
         return runner._parity_record.add(batch, runner, forward)
