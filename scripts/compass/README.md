@@ -552,12 +552,18 @@ fit under `unfitted`.
 Calibration cells replay traces the graded cells do not: `FIRST_SESSION=256
 SESSIONS=137` against graded traces 0 to 255, by the
 [owner's ruling on #627](https://github.com/jgong5/ATOM/issues/627#issuecomment-6096543740).
+`calib_capture.sh RUN_FILE OUT_DIR` captures them: the real cells one at a time,
+each with the host load and the GPU's processes at its start and end; its header
+lists its environment.
 Given two or more records, the command also prints each form's error on every
 record under a law fitted on the others, per decode rung and prefill token band.
 
 `scripts/compass/laws/qwen3.8-27b-tp1-mi308x-hjbog18.json` is the `history` form
 fitted on the five stage-2 calibration cells (concurrency 1, 4, 16, 64 and 256)
 on node 18; a stage-2 run file holds it under `law`.
+`scripts/compass/laws/qwen3.8-27b-tp1-mi308x-hjbog39.json` is the `history` form
+with the host laws (`host`), labelled by device time, fitted on the five cells
+`calib_capture.sh` captured at f454bc71a on hjbog-srdc-39.
 
 ## Cost accuracy on a real run's own steps — `validate.cost`
 
