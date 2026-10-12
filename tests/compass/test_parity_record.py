@@ -34,6 +34,8 @@ from atom.utils import clock
 PROMPT, BUDGET, BLOCK = 200, 64, 16
 #: The capture ladder every runner here replays decode steps from.
 LADDER = [1, 2, 4, 8]
+#: An attention builder that runs every decode from a graph, as ATOM's base does.
+GRAPHABLE = SimpleNamespace(step_needs_eager=lambda batch: False)
 
 
 def _prompt(i):
@@ -66,6 +68,7 @@ class _Runner(NonAllocatingRunner):
         self.config, self.rank = config, rank
         install_cost_backend(self, ShapeStubBackend())
         self.capture_sizes_np, self.enforce_eager = np.array(LADDER), False
+        self.attn_metadata_builder = GRAPHABLE
         self._token_stream = DeferredTokenStream([0])
 
 
@@ -422,6 +425,7 @@ def test_the_mixin_records_from_the_first_forward_after_construction(
         def __init__(self, rank, config):
             self.rank, self.config = rank, config
             self.capture_sizes_np, self.enforce_eager = np.array(LADDER), False
+            self.attn_metadata_builder = GRAPHABLE
             self.forward(batches[1])
 
         def forward(self, batch):
@@ -449,6 +453,7 @@ def test_a_real_runner_records_the_batch_it_was_handed_and_times_its_forward(
         def __init__(self, rank, config):
             self.rank, self.config = rank, config
             self.capture_sizes_np, self.enforce_eager = np.array(LADDER), False
+            self.attn_metadata_builder = GRAPHABLE
             self.inside = []
 
         def forward(self, batch):
