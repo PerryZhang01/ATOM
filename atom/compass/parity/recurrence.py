@@ -4,7 +4,7 @@
     python -m atom.compass.parity.recurrence RECORD_DIR
 
 `HostDeviceRecurrence` charges each forward with `d_busy_ns` as its device
-time and its line's host segments: `E` from the previous exit to the entry,
+time, plus `d_gap_ns` on a decode, and its line's host segments: `E` from the previous exit to the entry,
 `W_pre` to the launch less the staging gate's wait, `W_launch`, and `W_post`
 from the launch to the exit less the recv wait. Each forward is called at the
 exit predicted for the one before, so only the waits and device times move it.
@@ -59,7 +59,8 @@ def check(steps: list[dict]) -> dict:
         batch = SimpleNamespace(total_tokens_num=0, total_seqs_num=0)
         batch.total_seqs_num_prefill = sum(not d for *_, d in s["rows"])
         batch.produces_output = lambda out=s["produces_output"]: out
-        charge = rec.charge(batch, s["d_busy_ns"] * 1e-9)
+        gap = 0 if batch.total_seqs_num_prefill else s.get("d_gap_ns", 0)
+        charge = rec.charge(batch, (gap + s["d_busy_ns"]) * 1e-9)
         period = (s["t_exit_ns"] - last) * 1e-9
         r1_ms = (charge - (post + r1 - last) * 1e-9) * 1e3 if "t_recv_ns" in s else None
         res, queued = (charge - period) * 1e3, max(queued, 0.0) * 1e3

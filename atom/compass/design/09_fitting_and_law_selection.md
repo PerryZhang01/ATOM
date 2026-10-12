@@ -104,7 +104,7 @@ DP and EP with a **per-rank** law: it prices one rank's step, and the group's st
   max-affine fitting (Magnani and Boyd, 2009), with the ranks in place of the affine
   pieces and one coefficient vector shared by all of them.
 
-### The label: device busy time, and the host laws beside it
+### The label: device time per step kind, and the host laws beside it
 
 Owner ruling on [#815](https://github.com/jgong5/ATOM/issues/815), 2026-10-11, superseding
 ruling 2 of
@@ -114,12 +114,32 @@ with host gaps in the intercepts. A pure middle chunk's device tail then lands i
 step's period: about +4% after idle and -8% after a pure middle chunk, at c1 and c4
 (#801).
 
-**The tier-a label is one forward's device busy time**, the window from a device event at
-`run_model` entry to one at the forward's exit (`01` D4, *Measured, not hooked*). The
-window is busy time only when the host's launch stays ahead of the device. A forward whose
-device start precedes its host launch end is cut as launch-exposed and counted apart; it
-labels no fit. The R1 wait's exit, a host time at which a known device event has
-completed, anchors the host and device clocks to each other. With MTP the label splits at
+**The tier-a label is one forward's device time**, built from the window from a device
+event at `run_model` entry to one at the forward's exit (`01` D4, *Measured, not hooked*),
+and the device gap, from the previous forward's exit event to this forward's entry event.
+Owner ruling on [#843](https://github.com/jgong5/ATOM/issues/843#issuecomment-6116328961),
+2026-10-12, sets it per step kind:
+
+| step kind | label | launch-exposed cut |
+|---|---|---|
+| decode | device gap + busy window | kept |
+| output prefill, middle chunk | busy window | none |
+
+- **Decode.** The gap is device work between forwards that no other term carries; leaving
+  it out charged decode about 0.29% short on #824's c=1 record (#841). A forward whose
+  device start precedes its host launch end is cut as launch-exposed and counted apart: a
+  launch event that finds the device idle completes on enqueue, so the cut also keeps
+  device idle out of the gap.
+- **Prefill and middle chunks.** No gap: after an idle engine the gap holds the idle time.
+  No cut: under an eager launch the device starts the first kernel while the host still
+  launches the rest, so device start precedes launch end on every eager forward, and the
+  cut would leave prefill unpriced.
+- **Accepted approximation.** A host bubble inside a prefill forward stays in its device
+  time. Same-host parity absorbs it through `01` D4's `end = max(target_end,
+  launch_end)`; skipping a host segment or pricing another host does not.
+
+The R1 wait's exit, a host time at which a known device event has completed, anchors the
+host and device clocks to each other. With MTP the label splits at
 `forward_done_event` into target and draft
 ([#829](https://github.com/jgong5/ATOM/issues/829)).
 
@@ -417,7 +437,7 @@ choice that must be visible.
 | # | Decision | Date |
 |---|---|---|
 | D53 | Fit relative error, not absolute seconds. MAD outlier test on the same relative residuals. | 2026-09-18 |
-| D54 | Prefill and decode fitted separately; decode per CUDA-graph rung with both coefficients per rung. Under DP and EP, tier a is one per-rank law keyed by `(dp, ep)`, with the DP-unified rung and the MoE row count as features (`T_moe` with EP off; open with EP on), captured on a real deployment at that `(dp, ep)` and fitted by alternating max-affine regression. Tier a's label is one forward's device busy time, launch-exposed forwards cut; four host laws (`E`, `W_pre`, `W_launch`, `W_post`), each `(1, tokens, seqs)` per decode, output prefill and pure middle chunk (a middle chunk has no sampler launch, output or R1 wait, so its `W_post` is zero and not fitted), are fitted beside it, keyed by host CPU, `atom` digest, model and engine config, with no transfer. | 2026-09-18; revised 2026-10-01, 2026-10-09 (`T_moe`, #502) and 2026-10-11 (#815) |
+| D54 | Prefill and decode fitted separately; decode per CUDA-graph rung with both coefficients per rung. Under DP and EP, tier a is one per-rank law keyed by `(dp, ep)`, with the DP-unified rung and the MoE row count as features (`T_moe` with EP off; open with EP on), captured on a real deployment at that `(dp, ep)` and fitted by alternating max-affine regression. Tier a's label is one forward's device busy time, plus the device gap before it on a decode, with launch-exposed decodes cut and no prefill cut; four host laws (`E`, `W_pre`, `W_launch`, `W_post`), each `(1, tokens, seqs)` per decode, output prefill and pure middle chunk (a middle chunk has no sampler launch, output or R1 wait, so its `W_post` is zero and not fitted), are fitted beside it, keyed by host CPU, `atom` digest, model and engine config, with no transfer. | 2026-09-18; revised 2026-10-01, 2026-10-09 (`T_moe`, #502) and 2026-10-11 (#815); label per step kind 2026-10-12 (#843) |
 | D55 | Attention terms summed per request; the padding term is the rung's rectangle, not the batch's. | 2026-09-18 |
 | D56 | Distinguish rank deficiency from coverage gap: drop zero-variance features explicitly, report the condition number, and treat "widening the evidence does not move the error" as evidence the feature is wrong. | 2026-09-18 |
 | D57 | Every fit reports provenance, sample count, dropped count, condition number and validity hull. Report an interval or report nothing. | 2026-09-18 |
