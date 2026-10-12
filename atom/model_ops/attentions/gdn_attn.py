@@ -1440,6 +1440,12 @@ class GDNAttentionMetadataBuilder(GDNStateMixin, AiterAttentionMetadataBuilder):
             attn_metadata.gdn_metadata = None
             return attn_metadata, positions
         gdn_metadata = self.prepare_gdn_metadata(batch, attn_metadata, is_prefill=True)
+        # `prepare_chunk_indices` reads the lengths from this host copy, so the
+        # chunk kernels' launch does not wait for the device.
+        cu = gdn_metadata.non_spec_query_start_loc
+        cu.host_copy = (
+            self.model_runner.forward_vars["cu_seqlens_q"].cpu[: cu.numel()].clone()
+        )
 
         gdn_metadata.ssm_checkpoints = self._checkpoint_targets(batch)
         if gdn_metadata.ssm_checkpoints is not None:
