@@ -21,6 +21,8 @@ import time
 from collections import deque
 from collections.abc import Callable
 
+from atom.utils import clock
+
 logger = logging.getLogger("atom")
 
 
@@ -196,7 +198,7 @@ class EngineStats:
         # usually log to the same place. "" for the aggregated engine.
         self.label = label
         self.throughput_log_interval_s = throughput_log_interval_s
-        self._throughput_last_log_time = time.monotonic()
+        self._throughput_last_log_time = clock.now(time.monotonic)
         self.num_prompt_tokens = 0
         self.num_generation_tokens = 0
 
@@ -739,7 +741,7 @@ class EngineStats:
     ) -> None:
         if not self.throughput_enabled:
             return
-        now = time.monotonic()
+        now = clock.now(time.monotonic)
         elapsed = now - self._throughput_last_log_time
         # `elapsed <= 0` is unreachable while the interval holds the positive
         # value `__init__` validated, but the interval is a public attribute

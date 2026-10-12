@@ -225,12 +225,15 @@ def test_a_requests_tokens_surface_at_the_next_output_producing_step(run):
     assert run.first_offer == predicted
 
 
-def test_reporting_this_steps_tokens_strands_the_whole_prefill_streak():
-    """No placeholder exists for them yet, so they are dropped and not re-offered."""
+def test_reporting_this_steps_tokens_surfaces_each_one_output_step_early(run):
+    """The scheduler takes an undeferred token at its final chunk, a step early."""
     eager = _drive(stream=_Eager([0], deferred=True))
     assert eager.final_chunk_at == {0: 4, 1: 8, 2: 12, 3: 16}
-    # Every one of them waits for the first batch that decodes it.
-    assert set(eager.first_offer.values()) == {eager.output_steps[-4]}
+    assert eager.first_offer == eager.final_chunk_at
+    assert all(
+        run.first_offer[r] == run.next_output_step_after(s)
+        for r, s in eager.first_offer.items()
+    )
     assert all(s.leave_reason == "max_tokens" for s in eager.sequences)
 
 
@@ -361,13 +364,19 @@ def test_a_pipeline_stage_reports_the_step_it_ran(run):
 
 
 def test_forward_keeps_inference_mode_and_drops_the_expert_load_monitor():
-    """The base runs both; the other non-allocating runner here runs one."""
+    """The base runs both; the other non-allocating runner here runs one.
+
+    ATOM's stage annotation acts only while a profiler runs, and this runner
+    refuses to start one, so it carries none.
+    """
     assert _decorators(ATOM_RUNNER, "ModelRunner", "forward") == [
+        "_profile_runner_stage",
         "torch.inference_mode()",
         "with_eplb_forward_monitor",
     ]
     assert _decorators(ATOM_RUNNER, "RapidServeModelRunner", "forward") == [
-        "torch.inference_mode()"
+        "_profile_runner_stage",
+        "torch.inference_mode()",
     ]
     assert _decorators(OVERRIDES, "NonAllocatingRunner", "forward") == [
         "torch.inference_mode()"

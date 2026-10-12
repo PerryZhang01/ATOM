@@ -164,6 +164,8 @@ SET_DRAINS = ("pop",)
 
 _STARTUP = "runs at startup, before the simulated window"
 _INTO_A_SET = "every member goes into a set or a dict lookup; no order survives"
+_INTS = "ints and bools, whose hash is unseeded, so every process reads one order"
+_ONE = "read only when the set holds one member"
 
 #: Ordered set reads in ATOM's core where the order cannot matter, by site:
 #: (file, the innermost def or class holding the reads) -> (reason, how many
@@ -174,11 +176,23 @@ _KEPT = (
     ("atom/config.py", "init_with_cudagraph_sizes", "torch.compile sizes, " + _STARTUP, 1),
     ("atom/entrypoints/atomesh/atom_standalone_service.py", "close",
      "fails every pending future at shutdown, in any order", 1),
-    ("atom/kv_transfer/disaggregation/pp_kv_aggregator.py", "ingest", _INTO_A_SET, 6),
+    ("atom/kv_transfer/disaggregation/pp_kv_aggregator.py", "ingest", _INTO_A_SET, 9),
     ("atom/kv_transfer/disaggregation/types.py", "__repr__", "log text", 7),
     ("atom/kv_transfer/offload/_offload_common.py", "process_completions", _REPLACED_TRANSFER, 4),
-    ("atom/kv_transfer/offload/hybrid/dsv4/connector.py", "get_finished", _REPLACED_TRANSFER, 2),
-    ("atom/model_engine/block_pool.py", "num_reusable_free", "a count", 1),
+    ("atom/kv_transfer/offload/_offload_common.py", "wait_for_requests", _REPLACED_TRANSFER, 1),
+    ("atom/kv_transfer/offload/chunked_scheduler.py", "build_connector_meta",
+     _REPLACED_TRANSFER, 1),
+    ("atom/kv_transfer/offload/hybrid/dsv4/connector.py", "get_finished", _REPLACED_TRANSFER, 4),
+    ("atom/kv_transfer/offload/hybrid/kimi_k3/connector.py", "_arm_joint_loads",
+     _REPLACED_TRANSFER, 1),
+    ("atom/kv_transfer/offload/hybrid/kimi_k3/connector.py", "get_finished",
+     _REPLACED_TRANSFER, 1),
+    ("atom/kv_transfer/offload/hybrid/kimi_k3/connector.py", "_refresh_save_stall",
+     _REPLACED_TRANSFER, 2),
+    ("atom/kv_transfer/offload/hybrid/kimi_k3/state_tier.py", "drain", _REPLACED_TRANSFER, 1),
+    ("atom/kv_transfer/offload/mp/scheduler.py", "_enforce_transfer_deadlines",
+     _REPLACED_TRANSFER, 1),
+    ("atom/model_engine/block_manager.py", "deallocate_partial", _INTS, 1),
     ("atom/model_engine/block_pool.py", "free", "rebuilds a heap, which pops by block id", 1),
     ("atom/model_engine/llm_engine.py", "__init__",
      "stop-token ids, which the scheduler only tests for membership", 1),
@@ -193,7 +207,14 @@ _KEPT = (
      "sorted when there are several, popped when there is one", 2),
     ("atom/model_ops/v4_kernels/fused_compress.py", "fused_compress_attn", "error text", 1),
     ("atom/models/deepseek_v4.py", "load_weights", "pops each key; " + _STARTUP, 1),
+    ("atom/models/deepseek_v41/bounded_replay.py", "build_late_layer_tail", _INTS, 2),
+    ("atom/models/deepseek_v41/dspark.py", "_context_kv_fusion", _ONE, 1),
+    ("atom/models/deepseek_v41/dspark.py", "_draft_kv_tail_fusion", _ONE, 1),
+    ("atom/models/deepseek_v41/mono/runner.py", "_rows_build", _INTS, 1),
+    ("atom/models/minimax_m3/mono/runner.py", "_build_layer_kernels", _INTS, 1),
+    ("atom/models/minimax_m3/mono/runner.py", "_bind", "error text, and " + _ONE, 2),
     ("atom/models/mimo_v2_mtp.py", "remap_mtp_weight_name", "any() over the set", 1),
+    ("atom/mono/device/sync.py", "poll", "error text, and " + _ONE, 2),
     ("atom/utils/__init__.py", "get_open_ports_list",
      "real ports from the OS; nothing simulated reads which role got which", 1),
     ("atom/utils/__init__.py", "getLogger", "names torch.compile tests for membership", 1),

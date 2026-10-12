@@ -971,7 +971,7 @@ class Scheduler:
         if not stats.throughput_enabled:
             return
         stats.update_throughput(num_prompt_tokens, num_generation_tokens)
-        if not stats.window_expired(time.monotonic()):
+        if not stats.window_expired(clock.now(time.monotonic)):
             return
         num_running_reqs, num_waiting_reqs = self.get_request_counts()
         stats.maybe_log_throughput(
@@ -1313,7 +1313,7 @@ class Scheduler:
         timeout = self._save_abandon_timeout_s()
         if timeout <= 0:
             return 0
-        now = time.monotonic()
+        now = clock.now(time.monotonic)
         if now < self._next_save_reconcile_at:
             return 0
         self._next_save_reconcile_at = now + _SAVE_RECONCILE_INTERVAL_S
@@ -3562,7 +3562,7 @@ class Scheduler:
                         # Stamp when the save was deferred so the reconciler
                         # can reclaim it if the completion report never
                         # arrives.
-                        seq._deferred_save_at = time.monotonic()
+                        seq._deferred_save_at = clock.now(time.monotonic)
                         self.deferred_free_blocks[seq.id] = seq
                 else:
                     self.block_manager.deallocate(seq)
@@ -4214,7 +4214,7 @@ class PrefillScheduler:
         if not stats.throughput_enabled:
             return
         stats.update_throughput(num_prompt_tokens, num_generation_tokens)
-        if not stats.window_expired(time.monotonic()):
+        if not stats.window_expired(clock.now(time.monotonic)):
             return
         num_running_reqs, num_waiting_reqs = self.get_request_counts()
         stats.maybe_log_throughput(

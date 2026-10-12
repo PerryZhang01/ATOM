@@ -331,11 +331,11 @@ def test_exactly_two_attributes_of_the_runner_hold_the_ring():
     buffer, one attribute deeper -- true, and outside a claim about attributes
     on the runner.
     """
-    # The three `setattr`s bind whatever the attention builders return --
+    # The two `setattr`s bind whatever the attention builders return --
     # the KV cache and the per-request state, by names the source never states.
     assigned = _self_assigned(
         _classes(ATOM_RUNNER)["ModelRunner"],
-        unreadable=["setattr(self, name, value)"] * 3,
+        unreadable=["setattr(self, name, value)"] * 2,
     )
     holders = {n for n, v in assigned if any(t in v for t in BUFFER_TERMS)}
     assert holders == {"forward_vars", "_fv_ring"}

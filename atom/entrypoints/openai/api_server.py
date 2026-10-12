@@ -2485,7 +2485,7 @@ async def responses_create(raw_request: Request):
             prompt = tokenizer.decode(token_ids, skip_special_tokens=False)
             input_tokens = max_input
 
-        created_at = int(time.time())
+        created_at = int(clock.now(time.time))
         if request.stream:
             seq_id, stream_collector, _num_prompt_tokens = (
                 await setup_streaming_request(prompt, sampling_params, request_id)

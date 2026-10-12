@@ -320,7 +320,10 @@ def test_the_engine_input_thread_takes_a_request_sent_by_the_frontend(
     )
     engine_rt.start_run()
     call(engine_rt.advance_to, 1.0)  # returns once the input thread is back at its poll
-    assert engine.input_queue.get(timeout=5) == [SimpleNamespace(id=7)]
+    [request] = engine.input_queue.get(timeout=5)
+    assert request.id == 7
+    # Receipt is stamped on the engine's clock: the arrival, one IPC after 0.
+    assert request.queue_timing.received_at == IPC
     assert engine_rt.handled[REQ] == {0}
     frontend.end_run()
     engine_rt.end_run()

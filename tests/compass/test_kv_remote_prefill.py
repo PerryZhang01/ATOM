@@ -483,7 +483,8 @@ def simulated_blob(tp_size=4, dp_rank=2) -> dict:
         tp_size=tp_size,
         dp_rank=dp_rank,
         pp_size=1,
-        hash_block_size=16,
+        block_size=16,
+        dcp_size=1,
     )
 
 
@@ -645,7 +646,7 @@ def test_a_finished_request_carries_the_blob_out(pd):
     seq = finished_sequence()
     pd.p.kv_connector.request_finished(seq)
     assert seq.kv_transfer_params_output == transfer_params(
-        seq, tp_size=1, dp_rank=0, pp_size=1, hash_block_size=16
+        seq, tp_size=1, dp_rank=0, pp_size=1, block_size=16, dcp_size=1
     )
 
 
