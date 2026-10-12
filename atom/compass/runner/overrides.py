@@ -351,6 +351,21 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
     method = get_distributed_init_method(
         pc.data_parallel_master_ip, pc.data_parallel_base_port
     )
+    if (
+        getattr(pc, "_managed_distributed_store", False)
+        and not torch.distributed.is_initialized()
+    ):
+        # The engine core manager already listens on the base port; join its
+        # store as a client, as ModelRunner does, and aiter reuses the group.
+        store = torch.distributed.TCPStore(
+            pc.data_parallel_master_ip, pc.data_parallel_base_port, is_master=False
+        )
+        torch.distributed.init_process_group(
+            backend="gloo",
+            store=store,
+            rank=pc.data_parallel_rank + rank,
+            world_size=pc.data_parallel_size,
+        )
     if pc.data_parallel_size == 1:
         from aiter import init_dist_env
 
