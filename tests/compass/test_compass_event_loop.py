@@ -150,22 +150,18 @@ def test_a_60_second_sleep_ends_at_lp_60_with_no_wall_wait(run):
     assert run.rt.now == INF
 
 
-def test_the_metrics_refresh_is_a_daemon_and_the_finish_stops_the_loop(
-    run, monkeypatch
-):
+def test_the_metrics_refresh_is_a_daemon_and_the_finish_stops_the_loop(run):
     _idle_traffic(run)
     refreshed, late = [], []
 
     async def refresh():
         loop = asyncio.get_running_loop()
         refreshed.append(loop.time())
-        # A plain callback, a daemon because the refresh loop schedules it.
+        # A plain callback, a daemon because the periodic job schedules it.
         loop.call_later(4, lambda: late.append(loop.time()))
 
-    monkeypatch.setattr(api_server, "_refresh_metrics_once", refresh)
-
     async def serve():
-        asyncio.create_task(api_server._metrics_refresh_loop())
+        asyncio.create_task(api_server._periodic(5, refresh))
         await asyncio.sleep(12)  # the last essential timer
         await asyncio.Event().wait()  # serves until stopped, as uvicorn does
 

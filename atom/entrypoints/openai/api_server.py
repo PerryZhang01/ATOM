@@ -2960,7 +2960,6 @@ def main():
     )
 
     engine = engine_args.create_engine(tokenizer=tokenizer)
-    compass_run.tokenizer(tokenizer, engine.config)
     # Forced acceptance emits draft tokens that nothing verified, and once the
     # context is long enough those degenerate into the dialect's own channel
     # framing and nothing else -- read as structure, correctly, that leaves a
@@ -2995,6 +2994,9 @@ def main():
         envs.ATOM_DETOKENIZER_DELTA_REUSE,
         envs.ATOM_DETOKENIZER_AUDIT_EVERY,
     )
+    # After the probe: its decodes are startup work, not served traffic, so
+    # they are not charged to a simulated run's clock.
+    compass_run.tokenizer(tokenizer, engine.config)
 
     # Wire the batched stream-flush hook: per-seq stream callbacks only buffer
     # their chunks into a thread-local; the engine core manager's output thread
