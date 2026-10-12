@@ -7,8 +7,10 @@
 
 Each RECORD is a real run's step record (`steps/dp0.jsonl`, written with
 `ATOM_COMPASS_PARITY_RECORD`). A step's label is its device busy time,
-`d_busy_ns`, except where its device start precedes its host launch end: that
-step is launch-exposed, counted and not fitted. The exit of each wait for the
+`d_busy_ns`, plus for a decode step the device work queued since the previous
+forward's exit, `d_gap_ns`. A decode step whose device start precedes its host
+launch end is launch-exposed, counted and not fitted; a prefill step is never
+cut, so a host bubble inside it stays in its label. The exit of each wait for the
 previous output's token copy (`t_recv_ns`) bounds the host clock's lead over
 the device's (that forward had finished by then); the tightest of the last
 `ANCHORS` bounds is the lead. A record without device windows labels a step by
@@ -152,7 +154,7 @@ def samples(record, form: str = "law") -> tuple[list[tuple], dict]:
             cut["idle"] += 1
         elif view.prefill and view.decode:
             cut["mixed"] += 1
-        elif step["step"] in exposed:
+        elif not view.prefill and step["step"] in exposed:
             cut["exposed"] += 1
         else:
             if view.prefill:
@@ -165,7 +167,8 @@ def samples(record, form: str = "law") -> tuple[list[tuple], dict]:
                 key = _rung_key(view.capture_rung)
                 counts = (1, sum_context(view.decode), view.graph_padding)
             if busy:
-                label = step["d_busy_ns"] * 1e-9
+                gap = 0 if view.prefill else step.get("d_gap_ns", 0)
+                label = (gap + step["d_busy_ns"]) * 1e-9
             else:
                 label = (nxt["t_enter_ns"] - step["t_enter_ns"]) * 1e-9
             rows.append((key, counts, label, step["step"]))
