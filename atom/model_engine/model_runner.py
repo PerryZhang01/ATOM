@@ -2547,7 +2547,7 @@ class ModelRunner:
 
     def prepare_sample(
         self, batch: ScheduledBatch
-    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None, bool, bool]:
+    ) -> tuple[torch.Tensor, Any, Any, bool, bool]:  # see Sampler.forward
         bs = batch.total_seqs_num
 
         # Check on CPU whether all requests are greedy (temperature=0)
@@ -2572,9 +2572,9 @@ class ModelRunner:
         if needs_topk:
             top_k_buffer = self.forward_vars["top_ks"]
             top_k_buffer.np[:bs] = batch.top_ks
-            # If all values are the same, only copy one element to save bandwidth
-            if bs > 1 and (batch.top_ks == batch.top_ks[0]).all():
-                top_ks = top_k_buffer.copy_to_gpu(1)
+            # A uniform k goes to the sampler as a host scalar: no device read.
+            if (batch.top_ks == batch.top_ks[0]).all():
+                top_ks = int(top_k_buffer.np[0])
             else:
                 top_ks = top_k_buffer.copy_to_gpu(bs)
         else:
@@ -2583,9 +2583,9 @@ class ModelRunner:
         if needs_topp:
             top_p_buffer = self.forward_vars["top_ps"]
             top_p_buffer.np[:bs] = batch.top_ps
-            # If all values are the same, only copy one element to save bandwidth
-            if bs > 1 and (batch.top_ps == batch.top_ps[0]).all():
-                top_ps = top_p_buffer.copy_to_gpu(1)
+            # Likewise for a uniform p.
+            if (batch.top_ps == batch.top_ps[0]).all():
+                top_ps = float(top_p_buffer.np[0])
             else:
                 top_ps = top_p_buffer.copy_to_gpu(bs)
         else:
@@ -3097,8 +3097,8 @@ class ModelRunner:
         batch: ScheduledBatch,
         logits: torch.Tensor,
         temperatures: torch.Tensor,
-        top_ks: torch.Tensor | None,
-        top_ps: torch.Tensor | None,
+        top_ks: torch.Tensor | int | None,
+        top_ps: torch.Tensor | float | None,
         all_greedy: bool,
         # following for draft
         hidden_states: torch.Tensor,

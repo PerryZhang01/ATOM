@@ -50,8 +50,8 @@ class Sampler(nn.Module):
         self,
         logits: torch.Tensor,  # (num_tokens, vocab_size)
         temperatures: torch.Tensor,  # (num_tokens,)
-        top_ks: torch.Tensor | None = None,  # (num_tokens,) int32, -1 means disabled
-        top_ps: torch.Tensor | None = None,  # (num_tokens,) float32, 1.0 means disabled
+        top_ks: torch.Tensor | int | None = None,  # (num_tokens,) int32, -1 off
+        top_ps: torch.Tensor | float | None = None,  # (num_tokens,) float32, 1.0 off
         all_greedy: bool = False,  # True if all temperatures are 0 (checked on CPU)
         needs_independent_noise: bool = False,
     ) -> torch.Tensor:  # (num_tokens,)
@@ -61,8 +61,10 @@ class Sampler(nn.Module):
         Args:
             logits: Raw logits from model (num_tokens, vocab_size)
             temperatures: Temperature for each token (num_tokens,), pre-clamped to eps
-            top_ks: Top-k value per token, -1 means disabled (num_tokens,)
-            top_ps: Top-p value per token, 1.0 means disabled (num_tokens,)
+            top_ks: Top-k value per token, -1 means disabled (num_tokens,),
+                or one host int shared by every token
+            top_ps: Top-p value per token, 1.0 means disabled (num_tokens,),
+                or one host float shared by every token
             all_greedy: True if all requests use greedy sampling (checked on CPU)
             needs_independent_noise: True when the batch contains fan-out
                 siblings (SamplingParams.n>1). Forces fresh per-row random
@@ -135,8 +137,8 @@ class Sampler(nn.Module):
         self,
         logits: torch.Tensor,
         temperatures: torch.Tensor,
-        top_ks: torch.Tensor | None,
-        top_ps: torch.Tensor | None,
+        top_ks: torch.Tensor | int | None,
+        top_ps: torch.Tensor | float | None,
         all_greedy: bool,
         needs_independent_noise: bool = False,
     ) -> torch.Tensor:
@@ -155,7 +157,8 @@ class Sampler(nn.Module):
             return logits.argmax(dim=-1).to(torch.int)
 
         # Apply temperature scaling
-        # Temperatures are pre-clamped to eps in model_runner.prepare_sample()
+        # Temperatures are pre-clamped to eps in model_runner.prepare_sample(), so a
+        # greedy row has a one-hot softmax and samples its argmax with no extra pass
         scaled_logits = logits / temperatures.unsqueeze(-1)
         probs = scaled_logits.softmax(dim=-1, dtype=torch.float32).contiguous()
 
@@ -164,32 +167,29 @@ class Sampler(nn.Module):
         has_topp = top_ps is not None
 
         if AITER_TOPK_TOPP_AVAILABLE:
-            return self._aiter_sample(
-                probs, top_ks, top_ps, has_topk, has_topp, temperatures
-            )
+            return self._aiter_sample(probs, top_ks, top_ps, has_topk, has_topp)
         else:
-            return self._native_sample(probs, top_ks, top_ps, temperatures)
+            return self._native_sample(probs, top_ks, top_ps)
 
-    def _to_tensor_scalar(self, x: torch.Tensor):
+    def _to_tensor_scalar(self, x: torch.Tensor | float | None):
         """Convert to (tensor, scalar) tuple for aiter ops.
 
-        If tensor has size 1 (uniform value optimization from model_runner),
-        extract the scalar value for more efficient aiter kernel dispatch.
+        A uniform value arrives as a host scalar from model_runner and is
+        passed as the scalar, with no read from the device.
         """
         if x is None:
             return (None, 0)
-        if x.numel() == 1:  # Uniform value - use scalar for efficiency
-            return (None, x[0].item())
-        return (x, 0)
+        if isinstance(x, torch.Tensor):
+            return (x, 0)
+        return (None, x)
 
     def _aiter_sample(
         self,
         probs: torch.Tensor,
-        top_ks: torch.Tensor,
-        top_ps: torch.Tensor,
+        top_ks: torch.Tensor | int | None,
+        top_ps: torch.Tensor | float | None,
         has_topk: bool,
         has_topp: bool,
-        temperatures: torch.Tensor,
     ) -> torch.Tensor:
         """Use aiter optimized ops for top-k/top-p sampling."""
         # Convert to tensor/scalar format for aiter
@@ -220,19 +220,13 @@ class Sampler(nn.Module):
             # Neither - just multinomial from probs
             next_tokens = torch.multinomial(probs, num_samples=1)
 
-        # Handle greedy sampling (temperature=0)
-        greedy_mask = temperatures == 0
-        if greedy_mask.any():
-            next_tokens[greedy_mask] = probs[greedy_mask].argmax(dim=-1).unsqueeze(-1)
-
         return next_tokens.view(-1).to(torch.int)
 
     def _native_sample(
         self,
         probs: torch.Tensor,
-        top_ks: torch.Tensor,
-        top_ps: torch.Tensor,
-        temperatures: torch.Tensor,
+        top_ks: torch.Tensor | int | None,
+        top_ps: torch.Tensor | float | None,
     ) -> torch.Tensor:
         """
         EXPERIMENTAL: Native PyTorch fallback for top-k/top-p sampling.
@@ -262,12 +256,14 @@ class Sampler(nn.Module):
         # The mask keeps tokens where cumsum - current_prob <= top_p
         # (i.e., before we exceed the threshold)
         if top_ps is not None:
+            top_ps = torch.as_tensor(top_ps, device=device)
             topp_mask = (cumsum_probs - sorted_probs) <= top_ps.unsqueeze(-1)
         else:
             topp_mask = torch.ones_like(sorted_probs, dtype=torch.bool)
 
         # Top-k mask: keep first k tokens
         if top_ks is not None:
+            top_ks = torch.as_tensor(top_ks, device=device)
             indices = torch.arange(vocab_size, device=device).unsqueeze(0)
             effective_k = torch.where(top_ks == -1, vocab_size, top_ks)
             topk_mask = indices < effective_k.unsqueeze(-1)
@@ -286,11 +282,6 @@ class Sampler(nn.Module):
         # Sample and map back to original indices
         sampled_idx = torch.multinomial(filtered_probs, num_samples=1).squeeze(-1)
         next_tokens = sorted_indices.gather(1, sampled_idx.unsqueeze(-1)).squeeze(-1)
-
-        # Handle greedy (temperature=0)
-        greedy_mask = temperatures == 0
-        if greedy_mask.any():
-            next_tokens[greedy_mask] = probs[greedy_mask].argmax(dim=-1)
 
         return next_tokens.to(torch.int)
 
