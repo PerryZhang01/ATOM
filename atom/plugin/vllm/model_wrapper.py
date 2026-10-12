@@ -3,7 +3,6 @@ import importlib
 import json
 import logging
 import os
-import types
 from collections.abc import Iterable
 
 import torch
@@ -33,6 +32,7 @@ from vllm.model_executor.models.interfaces_base import (
 from vllm.sequence import IntermediateTensors
 
 import atom  # noqa: F401
+from atom.model_ops.embed_head import empty_token_ids
 from atom.plugin.config import (
     _generate_atom_config_from_vllm_config,
     generate_atom_config_for_plugin_mode,
@@ -41,12 +41,22 @@ from atom.plugin.prepare import _set_framework_backbone
 
 logger = logging.getLogger("atom")
 
+# vLLM 0.29 resolves the MTP draft of DSA-family targets (``deepseek_v32``,
+# ``glm_moe_dsa``, i.e. DeepSeek-V3.2 and GLM-5.x) to "DeepseekV32MTPModel";
+# 0.28 called the very same draft block "DeepSeekMTPModel". Both names map onto
+# ATOM's ``atom.models.deepseek_mtp:DeepSeekMTP``.
+_DEEPSEEK_MTP_ARCHES: set[str] = {
+    "DeepSeekMTPModel",
+    "DeepseekV32MTPModel",
+}
 _MTP_MASK_INPUT_ARCH: set[str] = {
     "DeepSeekMTPModel",
+    "DeepseekV32MTPModel",
     "Glm4MoeMTPModel",
 }
 _MTP_DRAFT_MODEL_ARCHES: set[str] = {
     "DeepSeekMTPModel",
+    "DeepseekV32MTPModel",
     "DeepSeekV4MTPModel",
     "DeepseekV4MTPModel",
     "Qwen3NextMTP",
@@ -148,6 +158,7 @@ _ATOM_MODEL_CLASSES: dict[str, str] = {
     "Glm4MoeForCausalLM": "atom.models.glm4_moe:Glm4MoeForCausalLM",
     "GlmMoeDsaForCausalLM": "atom.models.deepseek_v2:GlmMoeDsaForCausalLM",
     "DeepSeekMTPModel": "atom.models.deepseek_mtp:DeepSeekMTP",
+    "DeepseekV32MTPModel": "atom.models.deepseek_mtp:DeepSeekMTP",
     "DeepSeekV4MTPModel": "atom.plugin.vllm.models.deepseek_v4_mtp:DeepseekV4MTP",
     "Glm4MoeMTPModel": "atom.models.glm4_moe_mtp:Glm4MoeMTP",
     "Qwen3NextForCausalLM": "atom.plugin.vllm.models.qwen3_next:Qwen3NextForCausalLM",
@@ -156,7 +167,7 @@ _ATOM_MODEL_CLASSES: dict[str, str] = {
     "Qwen3_5ForConditionalGeneration": "atom.plugin.vllm.models.qwen3_5:Qwen3_5ForConditionalGeneration_",
     "KimiK25ForConditionalGeneration": "atom.plugin.vllm.models.kimi_k25:KimiK25ForConditionalGeneration_",
     "KimiK3ForConditionalGeneration": (
-        "atom.plugin.vllm.models.kimi_k3:KimiK3ForCausalLM"
+        "atom.plugin.vllm.models.kimi_k3:KimiK3ForConditionalGeneration_"
     ),
     "MiniMaxM2ForCausalLM": "atom.models.minimax_m2:MiniMaxM2ForCausalLM",
     "DeepseekV4ForCausalLM": "atom.plugin.vllm.models.deepseek_v4:DeepseekV4ForCausalLM",
@@ -507,7 +518,16 @@ class ATOMModelBase(nn.Module, VllmModel, SupportsQuant, SupportsPP):
                 else:
                     self.model = model_cls(self.atom_config)
         else:
-            self.model = model_cls(self.atom_config)
+            if model_arch == "KimiK3ForConditionalGeneration":
+                # Kimi-K3's inner class inherits vLLM SupportsQuant. Passing
+                # VllmConfig lets that protocol apply its quant mapper and
+                # packed-module mappings before the vision modules are built.
+                self.model = model_cls(
+                    self.atom_config,
+                    vllm_config=vllm_config,
+                )
+            else:
+                self.model = model_cls(self.atom_config)
 
         num_patched_post_load_hooks = _patch_required_act_dtype_post_load_hooks(
             self.model,
@@ -521,7 +541,7 @@ class ATOMModelBase(nn.Module, VllmModel, SupportsQuant, SupportsPP):
             )
 
         if model_arch in _MTP_MASK_INPUT_ARCH:
-            self._adapt_mtp_layers_for_vllm()
+            self._enable_mtp_input_masking_for_vllm()
         if self.is_eagle3_draft_model:
             self._enable_eagle3_draft_interface()
         elif (self.is_eagle3 and self._eagle3_uses_aux_hidden_state()) or (
@@ -530,7 +550,32 @@ class ATOMModelBase(nn.Module, VllmModel, SupportsQuant, SupportsPP):
             and not self.is_dspark_draft_model
         ):
             self._enable_eagle3_target_interface()
-        if self.is_mtp:
+        if self.is_mtp and model_arch in _DEEPSEEK_V4_ARCHES:
+            # Only DeepSeek-V4 targets can answer this: the pre-hc_head
+            # residual is produced by the V4 forward branch alone. vLLM's
+            # runner tests for the attribute and then subscripts the result
+            # without a None check, so exposing it on any other MTP target
+            # crashes profile_run:
+            #     spec_hidden_states = pre_hc_hidden_states[: ...]
+            #     TypeError: 'NoneType' object is not subscriptable
+            #
+            # KNOWN DIVERGENCE on vLLM 0.31, latent today. This binds the hook
+            # to the INSTANCE, but model runner V2 decides whether to widen the
+            # drafter's hidden buffer by hc_mult from the CLASS, before the
+            # target exists: _target_feeds_hc_residual() in
+            # vllm/v1/worker/gpu/spec_decode/speculator.py does
+            # `hasattr(get_model_cls(...), "get_mtp_target_hidden_states")`.
+            # The class-level test is False, so the buffer is sized for
+            # `hidden`, while the V2 runner then finds the method on the
+            # instance and feeds it the (T, hc_mult * hidden) pre-hc residual.
+            # DeepSeek-V4 is in ROCM_DEFAULT_MRV1_ARCHITECTURES, so it runs V1
+            # on ROCm and this does not fire; it would under
+            # VLLM_USE_V2_MODEL_RUNNER=1, or if V1 became unsupported for a
+            # config. Making the two agree means exposing the method on the
+            # registered class for the V4 architectures only -- the condition
+            # above is per-instance, and a wider exposure is exactly the
+            # profile_run crash this comment opens with. Not done here because
+            # no CI cell runs V4 under V2, so the change would ship unmeasured.
             self.get_mtp_target_hidden_states = self._get_mtp_target_hidden_states
         if self.is_mtp or self.is_eagle3:
             # Mirror nested attributes required by vLLM speculative decoding.
@@ -764,9 +809,10 @@ class ATOMModelBase(nn.Module, VllmModel, SupportsQuant, SupportsPP):
         otherwise feed the post-logits hidden shape expected by older MTP
         models.
 
-        Exposed under its public name only on MTP targets (see `__init__`):
-        vLLM decides whether to override the drafter's input by testing for the
-        attribute alone, so any speculator carrying it would be fed this.
+        Exposed under its public name only on DeepSeek-V4 MTP targets (see
+        `__init__`): vLLM decides whether to override the drafter's input by
+        testing for the attribute alone and then subscripts what it gets back,
+        so a target that cannot produce the residual must not carry it.
         """
         # Prefer the persistent in-graph residual buffer on the native V4 model.
         # It is refreshed by a captured `copy_` every forward (including FULL
@@ -783,50 +829,39 @@ class ATOMModelBase(nn.Module, VllmModel, SupportsQuant, SupportsPP):
             hidden_states = hidden_states.flatten(1)
         return hidden_states
 
-    def _adapt_mtp_layers_for_vllm(self) -> None:
-        """Install vLLM-only MTP input masking without changing model code."""
+    def _enable_mtp_input_masking_for_vllm(self) -> None:
+        """Turn on the MTP predictor's position-0 input-embedding mask.
+
+        This used to be installed by rebinding every draft layer's ``forward``
+        to a wrapper that zeroed ``inputs_embeds`` and then re-called the
+        original with a hardcoded five-argument list. That wrapper silently
+        rotted the moment the layer signature grew: the fused FP8 prologue
+        added ``eh_input_quant``, and every vLLM-plugin MTP run died in
+        ``profile_run`` with ``DeepSeekMultiTokenPredictorLayer.forward() takes
+        from 5 to 6 positional arguments but 7 were given``. It also could not
+        see the fused path at all, where the embedding never materializes as a
+        tensor the layer receives.
+
+        So the mask lives in the predictors now (``mask_pos0_inputs_embeds``),
+        which own the embedding lookup on both the fused and unfused paths and
+        cannot fall out of sync with their own layers.
+        """
         if not self.is_mtp_draft_model:
             return
 
-        inner_model = getattr(self.model, "model", None)
-        layers = (
-            getattr(inner_model, "layers", None) if inner_model is not None else None
-        )
-        if layers is None:
-            return
-
-        layer_iter = layers.values() if isinstance(layers, nn.ModuleDict) else layers
-        for layer in layer_iter:
-            if getattr(layer, "_atom_vllm_mtp_masked", False):
-                continue
-
-            layer.forward = types.MethodType(
-                self._make_vllm_mtp_layer_forward(layer.forward),
-                layer,
+        predictor = getattr(self.model, "model", None)
+        if predictor is None or not hasattr(predictor, "mask_pos0_inputs_embeds"):
+            # Only archs listed in _MTP_MASK_INPUT_ARCH get here, and both of
+            # them expose the flag. Reaching this means the arch list and the
+            # models drifted apart -- fail loudly rather than silently serve an
+            # unmasked draft, which is how the old wrapper's breakage stayed
+            # hidden until an accuracy job crashed.
+            raise RuntimeError(
+                f"MTP input masking requested for {self.model_arch}, but its "
+                f"predictor {type(predictor).__name__} does not support "
+                "mask_pos0_inputs_embeds"
             )
-            layer._atom_vllm_mtp_masked = True
-
-    @staticmethod
-    def _make_vllm_mtp_layer_forward(original_forward):
-        @functools.wraps(original_forward)
-        def masked_forward(
-            self_layer,
-            input_ids,
-            positions,
-            previous_hidden_states,
-            inputs_embeds,
-            spec_step_index=0,
-        ):
-            inputs_embeds = torch.where(positions.unsqueeze(-1) == 0, 0, inputs_embeds)
-            return original_forward(
-                input_ids,
-                positions,
-                previous_hidden_states,
-                inputs_embeds,
-                spec_step_index,
-            )
-
-        return masked_forward
+        predictor.mask_pos0_inputs_embeds = True
 
     def _eagle3_uses_aux_hidden_state(self) -> bool:
         vllm_spec_config = getattr(self.vllm_config, "speculative_config", None)
@@ -1011,7 +1046,7 @@ class ATOMModelBase(nn.Module, VllmModel, SupportsQuant, SupportsPP):
                     self._mtp_target_hidden_states = hidden_states
         else:
             if (
-                self.model_arch in {"Qwen3NextMTP", "DeepSeekMTPModel"}
+                self.model_arch in {"Qwen3NextMTP", *_DEEPSEEK_MTP_ARCHES}
                 and "spec_step_idx" not in model_kwargs
             ):
                 model_kwargs["spec_step_idx"] = (
@@ -1027,7 +1062,7 @@ class ATOMModelBase(nn.Module, VllmModel, SupportsQuant, SupportsPP):
         if not self.pp_group.is_last_rank:
             return IntermediateTensors({"hidden_states": hidden_states})
 
-        if self.model_arch == "DeepSeekMTPModel":
+        if self.model_arch in _DEEPSEEK_MTP_ARCHES:
             # vLLM's DeepSeek-MTP contract wants (sample_hidden, recycle_hidden).
             # DeepSeekMultiTokenPredictorLayer.forward already returns the
             # post-final-norm hidden, and compute_logits no longer re-norms, so
@@ -1111,8 +1146,10 @@ class ATOMModelBase(nn.Module, VllmModel, SupportsQuant, SupportsPP):
         vLLM's ``LLMBaseProposer._greedy_sample`` calls this (when
         ``use_local_argmax_reduction`` is enabled) in place of
         ``compute_logits(...).argmax(-1)``. Bridge it to the draft model's
-        ``compute_draft_ids``, which returns ``[N]`` int64 token ids and is
-        token-identical to ``compute_logits(...).argmax(-1)``.
+        ``compute_draft_ids``, which is token-identical to
+        ``compute_logits(...).argmax(-1)`` but answers into int32 storage the
+        caller owns -- so supply it here and widen, because vLLM's caller was
+        written against that op's int64 return.
 
         Every arch delivers the ``O(2*tp)`` behaviour vLLM enables this flag
         for: each rank reduces its own logit shard to ``(max_val, global_idx)``
@@ -1124,7 +1161,8 @@ class ATOMModelBase(nn.Module, VllmModel, SupportsQuant, SupportsPP):
             hidden_states = _deepseek_v4_mtp_unflatten_hidden_states(
                 hidden_states, self.model
             )
-        return self.model.compute_draft_ids(hidden_states)
+        ids = empty_token_ids(hidden_states)
+        return self.model.compute_draft_ids(hidden_states, out=ids).to(torch.long)
 
 
 class ATOMForCausalLM(ATOMModelBase, VllmModelForTextGeneration): ...

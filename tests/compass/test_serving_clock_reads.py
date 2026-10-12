@@ -13,8 +13,8 @@ from atom.compass.detect.clock_source import (
     ClockSourceLint,
 )
 from atom.entrypoints.atomesh.atom_standalone_service import SingleRequestState
-from atom.entrypoints.openai.metrics import AtomMetricsExporter
 from atom.entrypoints.openai.protocol import ModelCard
+from atom.metrics.exporter import AtomMetricsExporter
 from atom.utils import clock
 
 REPO = os.path.dirname(os.path.dirname(atom.__file__))

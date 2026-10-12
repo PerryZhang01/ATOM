@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import numpy as np
 import torch
 
 # Early-stop in the greedy admission loop. Required for losslessness under the
@@ -281,17 +282,21 @@ def schedule_prefix_lengths_tensor(
 
 
 def ragged_verify_len(
-    ell: int | None, full_q: int, max_num_bonus: int, scheduled_len: int
+    ell: int | None, full_q: int, num_bonus: int, scheduled_len: int
 ) -> int | None:
     """Per-request RAGGED verify length (paper §5.2 avoid-padding), or None when
     no length is representable and the caller must stay rectangular.
+
+    `num_bonus` is THIS request's count, never the batch's largest: the anchor
+    sits at `segment_start_i + num_bonus_i`, so a request that accepted 2 needs
+    3 tokens whatever its neighbours accepted.
     """
-    lo = max(max_num_bonus + 1, 1)
+    lo = max(num_bonus + 1, 1)
     if 0 < scheduled_len < lo:
         return None  # bounds cross -> no representable ragged length
 
     ell_i = full_q - 1 if ell is None else int(ell)
-    li = max(ell_i, max_num_bonus) + 1
+    li = max(ell_i, num_bonus) + 1
     if li < lo:
         li = lo
     elif li > full_q:
@@ -299,6 +304,34 @@ def ragged_verify_len(
     if 0 < scheduled_len < li:
         li = scheduled_len
     return li
+
+
+def ragged_verify_lens(
+    ells: Sequence[int | None],
+    full_q: int,
+    num_bonus: np.ndarray,
+    scheduled_lens: np.ndarray,
+) -> np.ndarray | None:
+    """Vectorized `ragged_verify_len` over a batch, or None to stay rectangular.
+
+    Takes the bonus counts as an ARRAY so no caller can reach for a batch-wide
+    summary of them: the maximum would lift every request to the largest one's
+    floor, which at real concurrency is `full_q` -- the ragged path silently
+    doing nothing. One unrepresentable request aborts the batch, since the
+    layout is chosen once per step.
+    """
+    bs = len(scheduled_lens)
+    nb = np.asarray(num_bonus, dtype=np.int64)
+    sched = np.asarray(scheduled_lens, dtype=np.int64)
+    lo = np.maximum(nb + 1, 1)
+    bounded = sched > 0  # 0 means "no scheduler bound to honor"
+    if np.any(bounded & (sched < lo)):
+        return None
+    ell = np.fromiter(
+        (full_q - 1 if e is None else e for e in ells), dtype=np.int64, count=bs
+    )
+    li = np.clip(np.maximum(ell, nb) + 1, lo, full_q)
+    return np.where(bounded & (sched < li), sched, li).astype(np.int32)
 
 
 def resolve_q_buckets(spec: str, max_q: int) -> list[int]:
@@ -339,3 +372,78 @@ def quantize_to_bucket(q: int, buckets: list[int]) -> int:
         if b >= q:
             return b
     return buckets[-1]
+
+
+def apply_q_bucket(batch, drafter, dspark, *, apply_ragged=None) -> int | None:
+    """Shrink a pure-decode step to one CUDA-graph bucket, or leave it alone.
+
+    Returns the chosen q when the step shrank, otherwise None so the caller
+    keeps `num_spec_step + 1`. A batch with no draft slots (a P/D producer
+    reserves one token) must not be widened: the drafter still carries `mtp_k`,
+    and rounding ell+1 up into a bucket would read past the reserved tokens.
+    """
+    if drafter is None or not drafter.uses_confidence_schedule:
+        return None
+    if batch.total_tokens_num_prefill > 0:
+        return None
+    scheduled_bs = batch.total_seqs_num_decode
+    if scheduled_bs <= 0:
+        return None
+    if int(getattr(batch, "num_spec_step", 0) or 0) <= 0:
+        return None
+    full_q = drafter.mtp_k + 1
+
+    verify_scheduler = drafter.verify_scheduler
+    by_req = (
+        verify_scheduler.ell_by_req if verify_scheduler is not None else None
+    ) or {}
+    if not by_req:
+        return None
+
+    if dspark.ragged:
+        return apply_ragged(scheduled_bs, full_q, by_req)
+
+    buckets = resolve_q_buckets(dspark.q_buckets, full_q)
+    if buckets == [full_q]:
+        return None
+
+    max_ell = 0
+    for rid in batch.req_ids[:scheduled_bs]:
+        ell = by_req.get(rid)
+        max_ell = full_q - 1 if ell is None else max(max_ell, int(ell))
+        if max_ell >= full_q - 1:
+            break
+
+    max_num_bonus = 0
+    num_bonus_arr = getattr(batch, "num_bonus", None)
+    if num_bonus_arr is not None:
+        nb = np.asarray(num_bonus_arr)[:scheduled_bs]
+        if nb.size > 0:
+            max_num_bonus = int(nb.max())
+    need = max(max_ell + 1, max_num_bonus + 1)
+    q = quantize_to_bucket(need, buckets)
+    if q >= full_q:
+        return None
+
+    old_nst = batch.num_scheduled_tokens
+    if int(np.min(old_nst[:scheduled_bs])) < q:
+        return None
+    sched = np.asarray(batch.scheduled_tokens)
+    old_cu = np.zeros(scheduled_bs + 1, dtype=np.int64)
+    np.cumsum(old_nst[:scheduled_bs], out=old_cu[1:])
+    new_sched = np.empty(scheduled_bs * q, dtype=sched.dtype)
+    for i in range(scheduled_bs):
+        start = int(old_cu[i])
+        new_sched[i * q : (i + 1) * q] = sched[start : start + q]
+    batch.scheduled_tokens = new_sched
+
+    nst = old_nst.copy()
+    prefill_tok = int(batch.total_tokens_num_prefill)
+    nst[:scheduled_bs] = q
+    batch.num_scheduled_tokens = nst
+    batch.total_tokens_num_decode = int(nst[:scheduled_bs].sum())
+    batch.total_tokens_num = prefill_tok + batch.total_tokens_num_decode
+    spec = batch.scheduled_spec_decode_tokens
+    if spec is not None and getattr(spec, "size", 0) > 0:
+        batch.scheduled_spec_decode_tokens = np.ascontiguousarray(spec[:, : q - 1])
+    return q

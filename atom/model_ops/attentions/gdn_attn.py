@@ -5,6 +5,7 @@ import logging
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 import torch
@@ -26,14 +27,50 @@ from .aiter_attention import (
     AiterBackend,
     kv_indices_generate_triton,
 )
-from .paged_state_copy import (
+from .pool_layout.paged_state_copy import (
     SegmentedCopyPlan,
     launch_copy_descriptor,
     plan_segmented_copy,
 )
-from .sub_pool_spec import SubPoolSpec, page_pool, state_pool
+from .pool_layout.pool_rows import PoolRowsMixin
+from .pool_layout.sub_pool_spec import SubPoolSpec, page_pool, state_pool
+
+if TYPE_CHECKING:
+    from atom.kv_transfer.disaggregation.types import KVTransferRegion
 
 logger = logging.getLogger("atom")
+
+# The linear-attention state pool's row space -- one slot per recurrent layer,
+# whether GDN calls it that or K3 calls it KDA. Shared so a hybrid that binds
+# both kinds cannot number them into the same space.
+LINEAR_STATE_ROWS = "linear_state"
+
+_GDN_SSM_DTYPES = {
+    "fp32": torch.float32,
+    "fp16": torch.float16,
+    "bf16": torch.bfloat16,
+}
+
+
+def slot_indexed_caches(runner, replayssm: bool) -> list[torch.Tensor]:
+    """The `(layer, slot, ...)` caches that together hold one slot's state.
+
+    `relocate_state_slots` moves exactly these, and `state_slot_regions`
+    describes exactly these; anything added to the pool belongs here so that
+    neither can be extended without the other.
+
+    Takes the runner rather than the builder so that both callers reach it the
+    same way whether or not they are bound: the state tests drive those two
+    methods unbound, against a stub that has the caches but no methods.
+    """
+    caches = [runner.mamba_k_cache, runner.mamba_v_cache]
+    if replayssm:
+        caches += [
+            runner.replayssm_buf_k,
+            runner.replayssm_buf_u,
+            runner.replayssm_buf_g,
+        ]
+    return caches
 
 
 class GDNAttentionBackend(AiterBackend):
@@ -89,6 +126,8 @@ class GDNAttentionMetadata:
     # mapping the chunk kernel builds internally. Only computed when there are
     # checkpoints to place against it.
     ssm_chunk_offsets: torch.Tensor | None = None
+    # Qwen4Exp-only optional AITER schedule, built once outside the layer loop.
+    flydsl_prefill_metadata: object | None = None
     # --- ReplaySSM ---------------------------------------------------------
     # When enabled the recurrent state is NOT snapshotted per speculative
     # token, so `spec_state_indices_tensor` collapses to a single slot per
@@ -108,7 +147,7 @@ class GDNAttentionMetadata:
     token_chunk_offset_ptr: torch.Tensor | None = None
 
 
-class GDNStateMixin:
+class GDNStateMixin(PoolRowsMixin):
     def __init__(self, model_runner, **kwargs):
         super().__init__(model_runner=model_runner, **kwargs)
         self._init_gdn_state(model_runner)
@@ -117,24 +156,27 @@ class GDNStateMixin:
         self,
         model_runner,
     ):
-        # Hybrid model layer-counting state (formerly set as a side effect
-        # inside the qwen_next branch of the KV sizing path).
-        # Promoted to runner attributes here so all consumers
-        # (build_kv_cache_tensor, allocate_kv_cache_tensors, the per-req
-        # cache hooks) can read them as `self.model_runner.<name>` without
-        # a hidden ordering dependency on the KV sizing path being
-        # called first.
+        # Which layers are full attention, for the hybrid PAGE transfer that
+        # still names them globally. Not how MANY of either kind: those are the
+        # modules, counted (`num_state_layers`), and a config list that
+        # disagreed with what was built would size a pool the bind walk then
+        # overruns.
         hf = model_runner.config.hf_config
-        if getattr(hf, "model_type", None) == "kimi_linear":
+        model_type = getattr(hf, "model_type", None)
+        if model_type in ("kimi_linear", "glm5_next_text"):
             lin = getattr(hf, "linear_attn_config", {}) or {}
-            model_runner.full_attention_layers = [
-                int(i) - 1 for i in lin.get("full_attn_layers", [])
-            ]
-            model_runner.kda_attention_layers = [
-                int(i) - 1 for i in lin.get("kda_layers", [])
-            ]
-            model_runner.num_full_attn = len(model_runner.full_attention_layers)
-            model_runner.num_gdn_attn_state = len(model_runner.kda_attention_layers)
+            # Kimi-Linear numbers these 1-based; GLM-5.3-Flash numbers them
+            # 0-based (its layer_types[3] is the first full-attention layer, and
+            # full_attn_layers correspondingly starts at 3).
+            offset = 0 if model_type == "glm5_next_text" else 1
+            if model_type == "glm5_next_text" and hasattr(hf, "glm5_full_attn_layers"):
+                # The model normalizer derives these from layer_types when a
+                # config revision omits the redundant linear-attn lists.
+                model_runner.full_attention_layers = list(hf.glm5_full_attn_layers)
+            else:
+                model_runner.full_attention_layers = [
+                    int(i) - offset for i in lin.get("full_attn_layers", [])
+                ]
             hf.linear_num_key_heads = getattr(
                 hf, "linear_num_key_heads", lin.get("num_heads", hf.num_attention_heads)
             )
@@ -153,14 +195,6 @@ class GDNStateMixin:
                 hf,
                 "linear_conv_kernel_dim",
                 lin.get("short_conv_kernel_size", 4),
-            )
-        else:
-            model_runner.full_attention_interval = hf.full_attention_interval
-            model_runner.num_full_attn = (
-                hf.num_hidden_layers // model_runner.full_attention_interval
-            )
-            model_runner.num_gdn_attn_state = (
-                hf.num_hidden_layers - model_runner.num_full_attn
             )
 
         self.num_spec = 0
@@ -217,23 +251,10 @@ class GDNStateMixin:
                 ),
             )
 
-        self.spec_state_indices_tensor = CpuGpuBuffer(
-            (self.max_bs, self.num_spec + 1),
-            dtype=torch.int32,
-            device=self.device,
-        )
-        self.non_spec_state_indices_tensor = CpuGpuBuffer(
-            (self.max_bs,),
-            dtype=torch.int32,
-            device=self.device,
-        )
-        # Read side of a state fork. Only the prefill path can carry one (a
-        # fork is always followed by at least `min_fork_tokens` prompt tokens),
-        # so the spec/decode index buffers have no counterpart.
-        self.non_spec_state_indices_in_tensor = CpuGpuBuffer(
-            (self.max_bs,),
-            dtype=torch.int32,
-            device=self.device,
+        # All host state indices belong to the selected runner slot. The
+        # properties below follow PP rotation instead of retaining slot 0.
+        self.model_runner.forward_vars.update(
+            self._state_index_buffers(self.max_bs, self.num_spec, self.device)
         )
         # Pinned staging for causal_conv1d's program map, one entry per chunk.
         # Kept in forward_vars so the pipeline ring gives each in-flight slot
@@ -278,8 +299,6 @@ class GDNStateMixin:
         )
 
         gdn_metadata = {
-            "spec_state_indices": self.spec_state_indices_tensor,
-            "non_spec_state_indices": self.non_spec_state_indices_tensor,
             "spec_sequence_masks": self.spec_sequence_masks,
             "spec_token_indx": self.spec_token_indx,
             "non_spec_token_indx": self.non_spec_token_indx,
@@ -288,6 +307,53 @@ class GDNStateMixin:
             "num_accepted_tokens": self.num_accepted_tokens,
         }
         self.model_runner.forward_vars.update(gdn_metadata)
+
+    @staticmethod
+    def _state_index_buffers(max_bs, num_spec, device):
+        kwargs = {
+            "dtype": torch.int32,
+            "device": device,
+            "pin_memory": torch.device(device).type != "cpu",
+            "publication_group": "gdn_state",
+        }
+        return {
+            "spec_state_indices": CpuGpuBuffer(max_bs, num_spec + 1, **kwargs),
+            "non_spec_state_indices": CpuGpuBuffer(max_bs, **kwargs),
+            "non_spec_state_indices_in": CpuGpuBuffer(max_bs, **kwargs),
+        }
+
+    @property
+    def spec_state_indices_tensor(self):
+        return self.model_runner.forward_vars["spec_state_indices"]
+
+    @property
+    def non_spec_state_indices_tensor(self):
+        return self.model_runner.forward_vars["non_spec_state_indices"]
+
+    @property
+    def non_spec_state_indices_in_tensor(self):
+        return self.model_runner.forward_vars["non_spec_state_indices_in"]
+
+    def _check_state_indices_writable(self):
+        groups = getattr(self.model_runner, "h2d_groups", None)
+        if groups is not None:
+            groups["gdn_state"].check_writable()
+
+    def _prepare_state_indices_for_capture(self, bs):
+        """Give Qwen4's synthetic requests distinct slots before capture."""
+        self._check_state_indices_writable()
+        for indices in (
+            self.non_spec_state_indices_tensor,
+            self.non_spec_state_indices_in_tensor,
+        ):
+            indices.np[:bs] = np.arange(bs, dtype=np.int32)
+            indices.copy_to_gpu(bs)
+        if self.use_spec_decode:
+            slots = self.spec_state_indices_tensor
+            slots.np[:bs] = np.arange(bs * slots.np.shape[1]).reshape(bs, -1)
+            if self.replayssm:
+                slots.np[:bs] = np.arange(bs)[:, None]
+            slots.copy_to_gpu(bs)
 
     # ------------------------------------------------------------------ #
     # Per-request cache hooks (called from ModelRunner via base class).  #
@@ -322,14 +388,21 @@ class GDNStateMixin:
         return conv_state_shape, temporal_state_shape
 
     def _state_dtypes(self) -> tuple[torch.dtype, torch.dtype]:
-        if (
-            getattr(self.model_runner.config.hf_config, "model_type", None)
-            == "kimi_linear"
+        # The KDA recurrence accumulates in fp32 whatever the pool stores, so
+        # the KDA models pick their storage dtype; everyone else keeps the
+        # state at the model dtype.
+        if getattr(self.model_runner.config.hf_config, "model_type", None) in (
+            "kimi_linear",
+            "glm5_next_text",
         ):
-            return (
-                self.model_runner.config.torch_dtype,
-                torch.float32,
-            )
+            requested = envs.ATOM_GDN_SSM_DTYPE
+            temporal_dtype = _GDN_SSM_DTYPES.get(requested)
+            if temporal_dtype is None:
+                raise ValueError(
+                    f"ATOM_GDN_SSM_DTYPE={requested!r} is not one of "
+                    f"{sorted(_GDN_SSM_DTYPES)}."
+                )
+            return (self.model_runner.config.torch_dtype, temporal_dtype)
         return (
             self.model_runner.config.torch_dtype,
             self.model_runner.config.torch_dtype,
@@ -362,9 +435,14 @@ class GDNStateMixin:
         )
 
     def _is_kda(self) -> bool:
-        return (
-            getattr(self.model_runner.config.hf_config, "model_type", None)
-            == "kimi_linear"
+        # Both KDA models, matching the two sibling checks above. GLM-5.3-Flash
+        # was added to those and missed here, which mattered because this one
+        # feeds `_replayssm_buffer_shapes()`: answering "not KDA" for a KDA
+        # model sizes the ReplaySSM record buffers for the wrong head geometry
+        # and the recurrence writes past them.
+        return getattr(self.model_runner.config.hf_config, "model_type", None) in (
+            "kimi_linear",
+            "glm5_next_text",
         )
 
     def _replayssm_bytes_per_slot(self) -> int:
@@ -379,7 +457,7 @@ class GDNStateMixin:
             + math.prod(su) * rec_dtype.itemsize
             + math.prod(sg) * 4  # g stays fp32: it is exponentiated on rebuild
         )
-        return self.model_runner.num_gdn_attn_state * per_layer
+        return self.num_state_layers() * per_layer
 
     def state_transfer(self) -> StateTransfer:
         """A fork whose successor forward need only carry one token.
@@ -418,10 +496,21 @@ class GDNStateMixin:
         Exact, not approximate, when it is turned back on: `h` is `k.new_empty`
         and `_state_dtypes` returns `config.torch_dtype`, so slicing `h` rounds
         exactly where a shortened forward would. That rests on the two dtypes
-        agreeing; kimi_linear's fp32 v side is the one pool that breaks it, and
-        it overrides (`_KimiMLAGDNCommon.state_transfer`).
+        agreeing; kimi_linear's temporal side is `ATOM_GDN_SSM_DTYPE` and need
+        not, so it overrides unconditionally
+        (`_KimiMLAGDNCommon.state_transfer`).
         """
         return StateTransfer.fork(1, readable_midstep=False)
+
+    def num_state_layers(self) -> int:
+        """Layers holding a recurrent state, one slot each.
+
+        The modules, counted -- so the pool sized here is the pool the bind
+        walk fills. A shared draft's linear-attention layers are in the walk
+        and were never in the config count they replace, which is a slot the
+        walk used to hand out past the end of the pool.
+        """
+        return self.row_counts().get(LINEAR_STATE_ROWS, 0)
 
     def state_spec(self) -> SubPoolSpec:
         """The GDN state pool: conv_state + temporal_state over all GDN
@@ -450,8 +539,7 @@ class GDNStateMixin:
         )
         return state_pool(
             STATE_SLOT_CLASS,
-            self.model_runner.num_gdn_attn_state * per_layer
-            + self._replayssm_bytes_per_slot(),
+            self.num_state_layers() * per_layer + self._replayssm_bytes_per_slot(),
             entries_per_req=self.slots_per_req(),
         )
 
@@ -478,7 +566,7 @@ class GDNStateMixin:
         num_slots = entries.get(STATE_SLOT_CLASS, 0)
         shape_k, shape_v = self._state_shape_for_runner()
         dt_k, dt_v = self._state_dtypes()
-        n = self.model_runner.num_gdn_attn_state
+        n = self.num_state_layers()
         tensors = {
             "mamba_k_cache": torch.zeros(
                 (n, num_slots) + shape_k, dtype=dt_k, device="cuda"
@@ -586,10 +674,22 @@ class GDNStateMixin:
         """
         shape_k, shape_v = self._state_shape_for_runner()
         dt_k, dt_v = self._state_dtypes()
-        n = self.model_runner.num_gdn_attn_state
+        n = self.num_state_layers()
         return [
             (math.prod(shape_k) * dt_k.itemsize, n),
             (math.prod(shape_v) * dt_v.itemsize, n),
+        ]
+
+    def _checkpoint_plane_tensors(self) -> list[torch.Tensor]:
+        """Allocated source planes in the order `_checkpoint_plane_shapes` names.
+
+        Kept separate from the pure geometry method because checkpoint sizing
+        runs before these tensors exist. Hybrid backends may extend both lists
+        with state that shares the same slot lifetime.
+        """
+        return [
+            self.model_runner.mamba_k_cache,
+            self.model_runner.mamba_v_cache,
         ]
 
     def _checkpoint_num_slots(self) -> int:
@@ -638,10 +738,14 @@ class GDNStateMixin:
         than cleared by a hook, so a pool that moves underneath invalidates
         this by disagreeing with its own key.
         """
-        runner = self.model_runner
-        k_cache, v_cache = runner.mamba_k_cache, runner.mamba_v_cache
-        num_slots = int(k_cache.shape[1])
-        key = (k_cache.data_ptr(), v_cache.data_ptr(), num_slots)
+        plane_tensors = getattr(self, "_checkpoint_plane_tensors", None)
+        planes = (
+            GDNStateMixin._checkpoint_plane_tensors(self)
+            if plane_tensors is None
+            else plane_tensors()
+        )
+        num_slots = int(planes[0].shape[1])
+        key = tuple(cache.data_ptr() for cache in planes) + (num_slots,)
         cached = getattr(self, "_checkpoint_slot_base_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
@@ -649,12 +753,18 @@ class GDNStateMixin:
         slots = np.arange(num_slots, dtype=np.int64)[:, None]
         columns = []
         for cache, (nbytes, n_layers) in zip(
-            (k_cache, v_cache), self._checkpoint_plane_shapes(), strict=True
+            planes, self._checkpoint_plane_shapes(), strict=True
         ):
             if not cache.is_contiguous():
                 raise RuntimeError(
                     "a PAGE-copy state plane must be contiguous; "
                     f"{tuple(cache.shape)} stride {cache.stride()} is not"
+                )
+            if int(cache.shape[0]) != n_layers or int(cache.shape[1]) != num_slots:
+                raise RuntimeError(
+                    "a PAGE-copy state plane disagrees with its checkpoint "
+                    f"geometry: tensor={tuple(cache.shape[:2])}, "
+                    f"geometry=({n_layers}, {num_slots})"
                 )
             layers = np.arange(n_layers, dtype=np.int64)[None, :]
             columns.append(cache.data_ptr() + (layers * num_slots + slots) * nbytes)
@@ -697,35 +807,8 @@ class GDNStateMixin:
             )
         return self._checkpoint_plan_cache
 
-    def _checkpoint_descriptor_buffer(self) -> CpuGpuBuffer:
-        """Pinned staging for a step's whole descriptor, sized for the worst step.
-
-        Pinned because the alternative synchronizes: a pageable H2D from
-        `build()` makes the host wait out the forward already enqueued. Reused
-        because allocating pinned memory is itself a synchronizing call.
-
-        A step can carry at most one store and one restore per sequence, so two
-        per sequence bounds it. The caller checks that bound rather than growing
-        on demand: a descriptor that did not fit would otherwise be silently
-        truncated into a copy of the wrong shape.
-
-        The store half of that bound is not a property of the batch -- it is
-        held by `PagedStateCheckpointCoordinator._supersede`, which keeps one
-        pending boundary per sequence. A change that let two of a sequence's
-        boundaries drain together would raise from `build()` here, and would be
-        storing one of them from the wrong slot besides; the two constraints
-        have the same owner and move together.
-        """
-        if getattr(self, "_checkpoint_descriptor", None) is None:
-            plan = self._checkpoint_copy_plan()
-            max_ops = 2 * int(self.model_runner.config.max_num_seqs)
-            self._checkpoint_descriptor = CpuGpuBuffer(
-                max_ops * plan.num_spans,
-                3,
-                dtype=torch.int64,
-                device=self.model_runner.mamba_k_cache.device,
-            )
-        return self._checkpoint_descriptor
+    def _checkpoint_descriptor_device(self) -> torch.device:
+        return self.model_runner.mamba_k_cache.device
 
     def _validate_paged_state_op(self, op) -> None:
         """Refuse an op this worker cannot honour, before it addresses memory.
@@ -761,7 +844,9 @@ class GDNStateMixin:
         if any(unit < 0 or unit >= num_blocks for unit in op.unit_ids):
             raise RuntimeError("state checkpoint PAGE unit is out of range")
 
-    def execute_paged_state_copies(self, store_ops, restore_ops) -> None:
+    def execute_paged_state_copies(
+        self, store_ops, restore_ops, descriptor_slot: int = 0
+    ) -> None:
         """Copy raw checkpoint bytes between slots and non-contiguous PAGEs.
 
         Every op of either direction goes into one descriptor and one launch.
@@ -779,14 +864,15 @@ class GDNStateMixin:
         slot_bases = self._checkpoint_slot_bases()
         per_op = plan.num_spans
         total = (len(store_ops) + len(restore_ops)) * per_op
-        staging = self._checkpoint_descriptor_buffer()
-        if total > staging.np.shape[0]:
+        staging = self._checkpoint_staging()
+        rows = staging.rows(descriptor_slot)
+        if total > rows.shape[0]:
             raise RuntimeError(
                 f"a step asked to copy {total // per_op} checkpoints, more "
-                f"than the {staging.np.shape[0] // per_op} its descriptor was "
+                f"than the {rows.shape[0] // per_op} its descriptor was "
                 "sized for"
             )
-        descriptor = staging.np[:total]
+        descriptor = rows[:total]
         at = 0
         for ops, storing in ((store_ops, True), (restore_ops, False)):
             if not ops:
@@ -800,7 +886,7 @@ class GDNStateMixin:
                 forward=storing,
             )
             at = end
-        launch_copy_descriptor(staging.copy_to_gpu(total), plan)
+        launch_copy_descriptor(staging.upload(descriptor_slot, total), plan)
 
     def warmup_per_req_cache(self) -> None:
         """Run one checkpoint copy now, so the first real one is only a copy.
@@ -823,13 +909,113 @@ class GDNStateMixin:
         plan = self._checkpoint_copy_plan()
         if not plan.num_spans:
             return
-        staging = self._checkpoint_descriptor_buffer()
+        staging = self._checkpoint_staging()
         plan.write_descriptor(
-            staging.np[: plan.num_spans],
+            staging.rows(0)[: plan.num_spans],
             self._checkpoint_slot_bases()[:1],
             self._page_unit_bases([list(range(spec.units_per_checkpoint))]),
         )
-        launch_copy_descriptor(staging.copy_to_gpu(plan.num_spans), plan)
+        launch_copy_descriptor(staging.upload(0, plan.num_spans), plan)
+
+    def state_entry_views(self, slot: int) -> list[torch.Tensor]:
+        """One contiguous slice per (cache, layer) — the slot's whole state.
+
+        Both caches are layer-major with the slot on axis 1, so one slot's rows
+        are strided and there is no single range covering them. Slicing per
+        layer makes each piece contiguous, which is what the staging packer
+        requires; `relocate_state_slots` keeps its own strided views because
+        `_foreach_copy_` has no such constraint and one launch beats `LAYERS`.
+
+        One slot, not a request's whole set: a checkpoint is exactly the
+        committed state (#2045), and the speculation scratch beside it is this
+        request's own and resumable by nobody.
+        """
+        # Reject an out-of-range slot in BOTH directions, for parity with the
+        # DSV4 twin (`deepseek_v4_attn.py`), whose `self._slot_views()[slot]` is
+        # a list index and raises `IndexError` on a stray -1 *or* an
+        # out-of-range positive. Here `cache[layer, slot : slot + 1]` clamps
+        # silently instead: a -1 (the "no slot" sentinel used elsewhere on this
+        # path) gathers/scatters the last slot's state under this request's
+        # identity, and a too-large slot yields a zero-element view
+        # (`numel() == 0`, no error) that the staging packer moves as 0 bytes --
+        # `StateByteCodec.get` then returns True on state never written and the
+        # request resumes on whatever the slot already held. Either way: silent
+        # cross-request corruption. The upstream invariant is a real, in-range
+        # slot (`StateSlotPool.pop` never returns negative, and
+        # `_attach_state_slots` pops before requesting the load), so this guards
+        # the shape rather than a demonstrated path; fail loudly if it is ever
+        # violated instead of corrupting silently.
+        num_slots = self.model_runner.mamba_k_cache.shape[1]
+        if not 0 <= slot < num_slots:
+            raise IndexError(
+                f"state_entry_views: slot {slot} out of range [0, {num_slots})"
+            )
+        views = []
+        for cache in (
+            self.model_runner.mamba_k_cache,
+            self.model_runner.mamba_v_cache,
+        ):
+            for layer in range(cache.shape[0]):
+                views.append(cache[layer, slot : slot + 1])
+        return views
+
+    def state_slot_regions(self) -> tuple[list["KVTransferRegion"], int]:
+        """RDMA regions for the state pool, addressed by state slot.
+
+        The third view of the bytes `relocate_state_slots` moves and
+        `state_entry_views` names, for the one consumer that needs neither a
+        copy nor a view but an address: a peer's NIC.
+
+        One region per (cache, layer), not per cache. A region resolves an
+        index as `base + slot * unit`, so a slot's bytes must be contiguous
+        and evenly strided -- true within a layer, false across them, since
+        every cache is `(layer, slot) + state_shape` and a slot's rows are a
+        layer-stride apart.
+
+        Returns the regions and the pool's slot count. The count is the
+        allocated width, not the live request count: it is what makes a
+        region's extent, and both ends compute addresses from it.
+        """
+        from atom.kv_transfer.disaggregation.types import KVTransferRegion
+
+        caches = slot_indexed_caches(self.model_runner, self.replayssm)
+        num_slots = caches[0].shape[1]
+        regions: list[KVTransferRegion] = []
+        for cache in caches:
+            assert cache.is_contiguous(), (
+                "slot-indexed state cache must be contiguous: a transfer "
+                "region addresses a slot as base + slot * unit_bytes"
+            )
+            assert cache.shape[1] == num_slots, (
+                f"state caches disagree on slot count: {cache.shape[1]} != "
+                f"{num_slots}; one slot index has to address all of them"
+            )
+            slot_bytes = cache[0, 0].numel() * cache.element_size()
+            layer_bytes = num_slots * slot_bytes
+            for layer in range(cache.shape[0]):
+                regions.append(
+                    KVTransferRegion(
+                        base_addr=cache.data_ptr() + layer * layer_bytes,
+                        total_bytes=layer_bytes,
+                        unit_bytes=slot_bytes,
+                    )
+                )
+
+        if self.replayssm:
+            # The cursor has no layer axis -- one int32 per slot, shared by
+            # every layer -- so the whole tensor is a single region whose unit
+            # is one element. Without it the records above are unreadable: the
+            # reader cannot tell which of them the sequence has committed.
+            pos = self.model_runner.replayssm_write_pos
+            regions.append(
+                KVTransferRegion(
+                    base_addr=pos.data_ptr(),
+                    total_bytes=pos.numel() * pos.element_size(),
+                    unit_bytes=pos.element_size(),
+                )
+            )
+
+        return regions, num_slots
 
     def relocate_state_slots(self, pairs: Sequence[tuple[int, int]]) -> None:
         """Relocate a live GDN state slot between Active Slot positions.
@@ -856,17 +1042,13 @@ class GDNStateMixin:
         range to copy. `_foreach_copy_` keeps it to one launch for the batch.
         The cursor is the exception — one entry per slot, no layer axis.
         """
-        caches = [self.model_runner.mamba_k_cache, self.model_runner.mamba_v_cache]
+        runner = self.model_runner
+        caches = slot_indexed_caches(runner, self.replayssm)
         cursor = None
         if self.replayssm:
-            caches += [
-                self.model_runner.replayssm_buf_k,
-                self.model_runner.replayssm_buf_u,
-                self.model_runner.replayssm_buf_g,
-            ]
             # One entry per slot, no layer axis -- moved alongside, not with
             # the layer-major caches above.
-            cursor = self.model_runner.replayssm_write_pos
+            cursor = runner.replayssm_write_pos
         destinations, sources = [], []
         for src, dst in pairs:
             for cache in caches:
@@ -972,6 +1154,7 @@ class GDNStateMixin:
         so this is where a contiguity assumption would have been *invented*
         rather than a place one has to be honoured.
         """
+        self._check_state_indices_writable()
         non_spec_state_indices = self.non_spec_state_indices_tensor.np
         non_spec_state_indices_in = self.non_spec_state_indices_in_tensor.np
         spec_state_indices = self.spec_state_indices_tensor.np
@@ -1058,18 +1241,18 @@ class GDNStateMixin:
         else:
             self.prepare_state_indices(batch, with_spec=True)
             self.prepare_num_accepted_tokens(batch)
+            # The published query prefix (including graph padding) ends at
+            # the scheduled token count. Use its CPU value so ragged decode
+            # does not synchronize the device just to size an index view.
             spec_token_size = min(
-                num_decodes * (self.num_spec + 1), query_start_loc[-1].item()
+                num_decodes * (self.num_spec + 1), batch.total_tokens_num
             )
-            spec_token_indx = torch.arange(
-                spec_token_size, dtype=torch.int32, device=self.device
-            )
-            non_spec_token_indx = torch.empty(
-                0, dtype=torch.int32, device=query_start_loc.device
-            )
-            spec_sequence_masks = torch.ones(
-                num_reqs, dtype=torch.bool, device=self.device
-            )
+            # The token range is immutable. Masks must be restored when a
+            # larger batch reuses entries padded False by a smaller batch.
+            spec_token_indx = self.spec_token_indx[:spec_token_size]
+            non_spec_token_indx = self.non_spec_token_indx[:0]
+            spec_sequence_masks = self.spec_sequence_masks[:num_reqs]
+            spec_sequence_masks.fill_(True)
             spec_state_indices_tensor = self.spec_state_indices_tensor.copy_to_gpu(
                 num_reqs
             )
@@ -1212,31 +1395,21 @@ class GDNStateMixin:
         if self.use_spec_decode:
             self.spec_state_indices_tensor.gpu[num_decodes:, :].fill_(PAD_SLOT_ID)
 
-            self.spec_sequence_masks[:num_decodes].copy_(
-                gdn_metadata.spec_sequence_masks, non_blocking=True
-            )
             self.spec_sequence_masks[num_decodes:].fill_(False)
-            gdn_metadata.spec_sequence_masks = self.spec_sequence_masks[:num_decodes]
-
-            self.spec_token_indx[: gdn_metadata.spec_token_indx.size(0)].copy_(
-                gdn_metadata.spec_token_indx, non_blocking=True
-            )
-            gdn_metadata.spec_token_indx = self.spec_token_indx[
-                : gdn_metadata.spec_token_indx.size(0)
-            ]
 
             self.spec_query_start_loc[: num_decodes + 1].copy_(
                 gdn_metadata.spec_query_start_loc[: num_decodes + 1], non_blocking=True
             )
-            spec_num_query_tokens = self.spec_query_start_loc[num_decodes]
-            self.spec_query_start_loc[num_decodes + 1 :].fill_(spec_num_query_tokens)
+            # Broadcast the final prefix directly: fill_(GPU scalar) creates
+            # a temporary device allocation on ROCm.
+            self.spec_query_start_loc[num_decodes + 1 :].copy_(
+                self.spec_query_start_loc[num_decodes : num_decodes + 1],
+                non_blocking=True,
+            )
             gdn_metadata.spec_query_start_loc = self.spec_query_start_loc[
                 : num_decodes + 1
             ]
 
-            self.num_accepted_tokens[:num_decodes].copy_(
-                gdn_metadata.num_accepted_tokens[:num_decodes], non_blocking=True
-            )
             self.num_accepted_tokens[num_decodes:].fill_(1)
             gdn_metadata.num_accepted_tokens = self.num_accepted_tokens[:num_decodes]
         else:
@@ -1247,8 +1420,9 @@ class GDNStateMixin:
                 gdn_metadata.non_spec_query_start_loc[: num_decodes + 1],
                 non_blocking=True,
             )
-            self.non_spec_query_start_loc[num_decodes + 1 :].fill_(
-                gdn_metadata.non_spec_query_start_loc[num_decodes]
+            self.non_spec_query_start_loc[num_decodes + 1 :].copy_(
+                self.non_spec_query_start_loc[num_decodes : num_decodes + 1],
+                non_blocking=True,
             )
             gdn_metadata.non_spec_query_start_loc = self.non_spec_query_start_loc[
                 : num_decodes + 1
@@ -1321,7 +1495,7 @@ class GDNStateMixin:
 
 
 class GDNAttentionMetadataBuilder(GDNStateMixin, AiterAttentionMetadataBuilder):
-
+    BACKEND: ClassVar[type[AiterBackend]] = GDNAttentionBackend
     reorder_batch_threshold: int = 1
     # `prepare_mtp_decode` below regenerates kv_indices and nothing else, so it
     # cannot absorb the position bump the fused path hands off to the backend.
@@ -1329,76 +1503,24 @@ class GDNAttentionMetadataBuilder(GDNStateMixin, AiterAttentionMetadataBuilder):
     # `update_context_lens` / `positions_out` into a signature that has neither.
     fuse_mtp_decode_position_update = False
 
+    def _module_kinds(self, module) -> tuple:
+        """The MHA row spaces, plus a slot for every linear-attention layer."""
+        if hasattr(module, "base_linear_attention"):
+            return (LINEAR_STATE_ROWS,)
+        return super()._module_kinds(module)
+
     def sub_pool_specs(self) -> list[SubPoolSpec]:
         """GDN hybrid: a paged KV pool holding ONLY the full-attention layer
         slots, plus the per-request state pool for the linear-attention
         layers (`GDNStateMixin.state_spec`).
+
+        The parent prices and allocates that pool unchanged: a linear-attention
+        layer is not a module it owns, so counting the modules leaves it out
+        without this class saying which layers those are.
         """
-        from aiter import dtypes
+        return [page_pool(self._paged_entry_bytes()), self.state_spec()]
 
-        runner = self.model_runner
-        config = runner.config
-        hf_config = config.hf_config
-        num_kv_heads = runner._get_num_kv_heads()
-        total = runner._get_total_num_layers()
-        num_draft = total - hf_config.num_hidden_layers
-        n_full = runner.num_full_attn + num_draft
-        kv_dtype_size = dtypes.d_dtypes[config.kv_cache_dtype].itemsize
-
-        # kv_cache: [2, n_full, blocks, block_size, num_kv_heads, head_dim]
-        block_bytes = (
-            2
-            * n_full
-            * runner.physical_block_size
-            * num_kv_heads
-            * hf_config.head_dim
-            * kv_dtype_size
-        )
-        # kv_scale: [2, n_full, blocks, num_kv_heads, block_size] fp32
-        block_bytes += 2 * n_full * num_kv_heads * runner.physical_block_size * 4
-        return [page_pool(block_bytes), self.state_spec()]
-
-    def allocate_kv_cache_tensors(
-        self, num_kv_heads: int, num_draft_layers: int
-    ) -> dict:
-        """GDN hybrid: KV cache only covers full-attention layer slots
-        (linear-attention layers don't store paged KV; they use the
-        per-request mamba_k/v_cache pool allocated separately).
-
-        Layout: `[2, num_full_attn + num_draft_layers, ...]` — note this
-        differs from AiterAttentionMetadataBuilder's `num_hidden_layers`
-        first dim. The slot index math is in build_kv_cache_tensor's
-        attn_idx computation (skips linear-attn slots).
-        """
-        from aiter import dtypes
-
-        runner = self.model_runner
-        config = runner.config
-        hf_config = config.hf_config
-        n_full = runner.num_full_attn + num_draft_layers
-        return {
-            "kv_cache": torch.zeros(
-                2,
-                n_full,
-                runner.num_physical_kvcache_blocks,
-                runner.physical_block_size,
-                num_kv_heads,
-                hf_config.head_dim,
-                dtype=dtypes.d_dtypes[config.kv_cache_dtype],
-                device="cuda",
-            ),
-            "kv_scale": torch.zeros(
-                2,
-                n_full,
-                runner.num_physical_kvcache_blocks,
-                num_kv_heads,
-                runner.physical_block_size,
-                dtype=dtypes.fp32,
-                device="cuda",
-            ),
-        }
-
-    def build_kv_cache_tensor(self, layer_id: int, module):
+    def build_kv_cache_tensor(self, module):
         """Dispatch by module type:
 
         - `base_linear_attention` (GDN linear attention) → wrap the slot
@@ -1410,10 +1532,11 @@ class GDNAttentionMetadataBuilder(GDNStateMixin, AiterAttentionMetadataBuilder):
             from atom.config import KVCacheTensor
 
             runner = self.model_runner
-            interval = runner.full_attention_interval
-            gdn_idx = (layer_id // interval) * (interval - 1) + (layer_id % interval)
+            # This module's slot: the mamba pool holds one per
+            # linear-attention layer, and its rows are those modules.
+            gdn_idx = self.pool_rows[LINEAR_STATE_ROWS][module]
             return KVCacheTensor(
-                layer_num=layer_id,
+                layer_num=module.layer_num,
                 k_cache=runner.mamba_k_cache[gdn_idx],
                 v_cache=runner.mamba_v_cache[gdn_idx],
                 k_scale=None,
@@ -1427,8 +1550,12 @@ class GDNAttentionMetadataBuilder(GDNStateMixin, AiterAttentionMetadataBuilder):
                 replay_buf_g=(
                     runner.replayssm_buf_g[gdn_idx] if self.replayssm else None
                 ),
+                # Slot-addressed recurrent state, not paged KV. It has to be
+                # registered (the linear-attention forward reads its state out
+                # of `kv_cache_data`), but no block-addressed mover may touch it.
+                per_request_state=True,
             )
-        return super().build_kv_cache_tensor(layer_id, module)
+        return super().build_kv_cache_tensor(module)
 
     def prepare_prefill(  # type: ignore[override]
         self,
@@ -1439,7 +1566,11 @@ class GDNAttentionMetadataBuilder(GDNStateMixin, AiterAttentionMetadataBuilder):
         if batch.block_tables == []:
             attn_metadata.gdn_metadata = None
             return attn_metadata, positions
-        gdn_metadata = self.prepare_gdn_metadata(batch, attn_metadata, is_prefill=True)
+        # `super().prepare_prefill` has already marshalled them, and the early
+        # return above is the only case where it would not have.
+        gdn_metadata = self.prepare_gdn_metadata(
+            batch, attn_metadata, is_prefill=True, prepare_block_tables=False
+        )
         # `prepare_chunk_indices` reads the lengths from this host copy, so the
         # chunk kernels' launch does not wait for the device.
         cu = gdn_metadata.non_spec_query_start_loc
@@ -1471,15 +1602,16 @@ class GDNAttentionMetadataBuilder(GDNStateMixin, AiterAttentionMetadataBuilder):
         attn_metadata, positions = super().prepare_decode(
             batch, running_bs, running_tokens, max_seqlen_q
         )
-        self.model_runner.forward_vars["cu_seqlens_q"].cpu[
-            running_bs:
-        ] = batch.total_tokens_num_decode
-        # we fill the attn_metadata cu_seqlens_q here since aiter attn won't calc it for decode
-        attn_metadata.cu_seqlens_q = self.model_runner.forward_vars[
-            "cu_seqlens_q"
-        ].copy_to_gpu(running_bs + 1)
+        # publish_cu_seqlens_q already filled and uploaded the padded prefix
+        # before prepare_input_ids. Reuse it without rewriting a borrowed source.
+        attn_metadata.cu_seqlens_q = self.model_runner.forward_vars["cu_seqlens_q"].gpu[
+            : running_bs + 1
+        ]
 
-        self._attach_gdn_decode_metadata(batch, attn_metadata)
+        # The common decode builder already filled the block-table source.
+        self._attach_gdn_decode_metadata(
+            batch, attn_metadata, prepare_block_tables=False
+        )
         return attn_metadata, positions
 
     def prepare_mtp_decode(
@@ -1513,6 +1645,13 @@ class GDNAttentionMetadataBuilder(GDNStateMixin, AiterAttentionMetadataBuilder):
         result = {}
         if self.block_size == 1024:
             result = self.set_aiter_persistent_worker_buffers(running_bs)
+        # The draft advanced context_lens, and the planner bakes per-task tile
+        # ranges from it. Inheriting prepare_decode's plan would attend over the
+        # pre-bump context -- a wrong answer, and one the op cannot detect: the
+        # shape guard only compares batch and kv-head count.
+        result["flydsl_work_plan"] = self.refresh_flydsl_plan(
+            var["context_lens"].gpu[:running_bs]
+        )
         return result
 
     def build_for_cudagraph_capture(self, bs: int):
@@ -1535,10 +1674,18 @@ class GDNAttentionMetadataBuilder(GDNStateMixin, AiterAttentionMetadataBuilder):
 
         attn_metadata.gdn_metadata = self._build_gdn_capture_metadata(bs)
 
-        positions = var["positions"].copy_to_gpu(bs)
+        # Decode replays this graph, so the op must see a plan HERE: absent at
+        # capture time, the static path is what gets recorded and every later
+        # refresh feeds a graph that never reads it -- with no error, and an
+        # A/B of the planner that measures pure overhead.
+        attn_metadata.flydsl_work_plan = self.refresh_flydsl_plan(
+            attn_metadata.context_lens, create=True
+        )
+
         # A capture runs a full synthetic batch, so nothing is padded and the
         # scheduled shape is the running one.
         capture_tokens = bs * int(var["max_qlen"])
+        positions = var["positions"].copy_to_gpu(capture_tokens)
         context = Context(
             positions=positions,
             is_prefill=False,

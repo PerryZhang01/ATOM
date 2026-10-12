@@ -66,3 +66,8 @@ agent_scratch/
 
 # editor backups
 *~
+
+# pytest JUnit report -- run_unit_tests.sh writes it into the workspace root,
+# so it lands in `git status` on every local run and gets committed by accident.
+# That has happened before (#1662 removed one), hence the rule rather than care.
+unit-report.xml
