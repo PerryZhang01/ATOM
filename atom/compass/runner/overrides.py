@@ -351,10 +351,7 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
     method = get_distributed_init_method(
         pc.data_parallel_master_ip, pc.data_parallel_base_port
     )
-    if (
-        getattr(pc, "_managed_distributed_store", False)
-        and not torch.distributed.is_initialized()
-    ):
+    if pc._managed_distributed_store and not torch.distributed.is_initialized():
         # The engine core manager already listens on the base port; join its
         # store as a client, as ModelRunner does, and aiter reuses the group.
         store = torch.distributed.TCPStore(
