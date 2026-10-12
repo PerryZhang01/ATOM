@@ -32,9 +32,11 @@ digest of its whole prompt as its prefill windows carry it, taken when its final
 chunk is scheduled, so it does not move with chunking. A line records request
 ids and names each request whose final chunk it holds; `read` puts the keys in.
 Prefix caching is not covered: the worker never sees a cached prefix, so parity
-runs need caching off or the same cache hits in both runs. Two requests of one
-run with one prompt could not be told apart in either record, so the second is
-refused.
+runs need caching off or the same cache hits in both runs. Requests of one
+record with one prompt are named in the order their final chunks are scheduled:
+the first by the digest, the n-th after it by `<digest>.<n>`. A run that
+schedules them in the other order parts from this one where they are first
+scheduled differently.
 """
 
 import collections
@@ -72,7 +74,7 @@ class StepRecord:
         self.dp_rank = dp_rank
         self.step = 0
         self.keys: dict[int, str] = {}  # request id -> key
-        self.owners: dict[str, int] = {}  # key -> request id
+        self.prompt_count: collections.Counter[str] = collections.Counter()
         self.prompts: dict[int, tuple] = {}  # request id -> (digest, next position)
         # (line, its device window: a callable taking `wait`, or None once closed)
         self.pending: collections.deque[tuple] = collections.deque()
@@ -124,13 +126,11 @@ class StepRecord:
                     self.prompts[req_id] = (digest, start + num)
                     continue
                 key = digest.hexdigest()
-                if key in self.owners:
-                    raise ValueError(
-                        f"requests {self.owners[key]} and {req_id} were scheduled "
-                        f"with the same prompt (key {key}), so no record can tell "
-                        "them apart; give each request a prompt of its own."
-                    )
-                self.keys[req_id], self.owners[key] = key, req_id
+                n = self.prompt_count[key]
+                self.prompt_count[key] += 1
+                if n:
+                    key = f"{key}.{n}"
+                self.keys[req_id] = key
                 named.append([req_id, key])
         line = {
             "step": self.step,
