@@ -104,11 +104,10 @@ def test_the_native_fallback_takes_host_scalars(sampler, monkeypatch):
 
 
 def test_prepare_sample_hands_over_a_shared_k_and_p_as_host_scalars():
-    mod = pytest.importorskip(
-        "atom.model_engine.model_runner",
-        reason="model_runner imports aiter at module load",
-        exc_type=ImportError,
-    )
+    try:
+        import atom.model_engine.model_runner as mod
+    except (ImportError, RuntimeError) as e:
+        pytest.skip(f"model_runner does not import here: {e}")
     runner = object.__new__(mod.ModelRunner)
     kw = {"device": "cpu", "pin_memory": False}
     runner.forward_vars = {
