@@ -7,6 +7,7 @@ so each step's period is the known law's price. The fitted law is read by
 """
 
 import json
+import re
 from types import SimpleNamespace
 
 import numpy as np
@@ -479,19 +480,24 @@ def test_a_run_refuses_host_laws_fitted_under_another_key(tmp_path, monkeypatch)
     from atom.compass import run as compass_run
 
     laws = {"decode": {"E": [1e-4, 0.0, 0.0]}}
-    for name, other in (("same", {}), ("other", {"host_cpu": "another cpu"})):
+    cases = (("same", {}), ("other", {"host_cpu": "another cpu"}), ("none", None))
+    for name, other in cases:
         (tmp_path / name).mkdir()
         r = deployment(tmp_path / name)
         publish(tmp_path / name, r)
-        key = dict(compass_run.host_key(r.config), **other)
-        run = run_file(tmp_path / name, monkeypatch, host={"key": key, "laws": laws})
+        key = compass_run.host_key(r.config)
+        host = {"laws": laws}
+        if other is not None:
+            host["key"] = dict(key, **other)
+        run = run_file(tmp_path / name, monkeypatch, host=host)
         monkeypatch.setenv(compass_run.NOW_ENV, str(tmp_path / name / "now.bin"))
         compass_run._PublishedClock(
             compass_run.ENGINE, compass_run.channel_table(run), None
         )
-        if other:
-            with pytest.raises(ValueError, match=r"another \['host_cpu'\]"):
-                compass_run.runner(r)
-        else:
+        if other == {}:
             compass_run.runner(r)
             assert r.compass_host.laws == laws
+        else:
+            differ = list(other or key)
+            with pytest.raises(ValueError, match=re.escape(f"another {differ}")):
+                compass_run.runner(r)
