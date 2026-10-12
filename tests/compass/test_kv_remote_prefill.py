@@ -178,10 +178,19 @@ def engine_step(engine, rt, t, *released):
         )
 
 
-def prefilled(pd, n, r):
+#: What the router attaches to a request it sends to prefill.
+TO_PREFILL = {"do_remote_decode": True}
+
+
+def prefilled(pd, n, r, params=TO_PREFILL):
     """`n` requests prefilled on engine-P by a forward that ends at `r`."""
     seqs = [
-        Sequence(PROMPT, 4, sampling_params=SamplingParams(max_tokens=1))
+        Sequence(
+            PROMPT,
+            4,
+            sampling_params=SamplingParams(max_tokens=1),
+            kv_transfer_params=dict(params) if params else None,
+        )
         for _ in range(n)
     ]
     for seq in seqs:
@@ -246,6 +255,23 @@ def test_prefill_frees_at_max_a_r_plus_t_and_decode_is_ready_at_a_t_notify(
     assert y.token_ids[y.num_prompt_tokens] == FIRST_TOKEN_ID
     assert pd.d.finished_recving_kv_req_ids == [], "an id with no reachable pop"
     assert pd.d.kv_connector.has_pending_work() is False
+
+
+def test_a_prefill_the_router_does_not_send_on_is_freed_at_once(pd):
+    """No `do_remote_decode`, no send claim: the blocks go back at finish."""
+    total = free_blocks(pd.p)
+    prefilled(pd, 1, R, params=None)
+    assert pd.p.deferred_free_blocks == {}
+    assert free_blocks(pd.p) == total
+
+
+def test_an_aborted_prefill_takes_no_send_claim(pd, seq_factory):
+    """Mooncake's rule: no peer will read an abort's blocks."""
+    seq = seq_factory(PROMPT, kv_transfer_params=dict(TO_PREFILL))
+    seq.block_table = [0, 1]
+    seq.leave_reason = "aborted"
+    pd.p.kv_connector.request_finished(seq)
+    assert pd.p.kv_connector.should_defer_free(seq) is False
 
 
 def test_a_write_request_for_an_unfinished_prefill_is_refused(pd, seq_factory):
