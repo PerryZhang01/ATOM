@@ -115,7 +115,6 @@ def test_an_event_built_after_it_records_and_waits_on_the_host(started):
     owner.finish()
     owner.begin()
     owner._wait_sources()
-    assert event.query()
 
 
 @pytest.mark.parametrize("width", [{"tp": 2}, {"simulated_tp": 2}])

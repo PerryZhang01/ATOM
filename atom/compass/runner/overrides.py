@@ -305,7 +305,7 @@ class HostStream:
 
 
 class HostEvent:
-    """Stands in for a device event on a host start: no work to order, always done."""
+    """Stands in for a device event on a host start: nothing to order or wait on."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         pass
@@ -315,9 +315,6 @@ class HostEvent:
 
     def synchronize(self) -> None:
         pass
-
-    def query(self) -> bool:
-        return True
 
 
 def start_on_host(runner: Any, rank: int, config: Any) -> None:
