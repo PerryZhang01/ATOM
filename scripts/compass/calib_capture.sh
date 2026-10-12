@@ -22,7 +22,8 @@
 # and the GPU's processes at the cell's start and end, and the cell's exit
 # status, 1 for a stopped cell: aiperf, stopped, writes no export. Fit the
 # records with
-#   python -m atom.compass.backends.coarse_fit OUT_DIR/c*/steps/dp0.jsonl --out LAW
+#   python -m atom.compass.backends.coarse_fit --form history \
+#       OUT_DIR/c{1,4,16,64,256}/steps/dp0.jsonl --out LAW
 set -uo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/_lib.sh"
 
