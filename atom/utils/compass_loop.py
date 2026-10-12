@@ -237,10 +237,11 @@ def wrap_decode(decode, entry):
 
 #: Timers that do not keep the run alive, by the qualified name of their
 #: callback or of a coroutine on the stack that scheduled them: the API
-#: server's metrics refresh, uvicorn's server tick and its keep-alive timeout.
+#: server's periodic jobs (metrics refresh, collector watch), uvicorn's server
+#: tick and its keep-alive timeout.
 DAEMON_TIMERS = frozenset(
     {
-        "_metrics_refresh_loop",
+        "_periodic",
         "Server.main_loop",
         "H11Protocol.timeout_keep_alive_handler",
         "HttpToolsProtocol.timeout_keep_alive_handler",

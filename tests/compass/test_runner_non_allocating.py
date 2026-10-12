@@ -44,6 +44,7 @@ from atom.compass.runner.overrides import (
     RunnerRefusal,
     UnbuiltModel,
 )
+from atom.model_ops.attentions.pool_layout.pool_rows import PoolRowsMixin
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 PACKAGE = REPO / "atom" / "compass" / "runner"
@@ -124,6 +125,9 @@ class Runner(NonAllocatingRunner):
 class SomeModel:
     """Stands in for the model class the engine hands the runner."""
 
+    def __init__(self, config):
+        pass
+
 
 # --- what is replaced, and how that differs from the runner already in tree ---
 
@@ -203,6 +207,35 @@ def test_the_model_that_replaces_the_weights_owns_nothing():
 def test_calling_that_model_refuses_and_names_the_class_it_stands_for():
     with pytest.raises(RunnerRefusal, match="SomeModel"):
         UnbuiltModel(SomeModel)(torch.zeros(1))
+
+
+class AttentionModel(torch.nn.Module):
+    """A model whose construction registers a parameter and a buffer."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.attn = torch.nn.Linear(4, 4)
+        self.register_buffer("rope", torch.ones(4))
+
+
+class LinearRows(PoolRowsMixin):
+    """A builder that gives each `Linear` a KV row."""
+
+    def __init__(self, runner):
+        self.model_runner = runner
+
+    def _module_kinds(self, module):
+        return ("kv",) if isinstance(module, torch.nn.Linear) else ()
+
+
+def test_atoms_pool_walk_finds_the_model_tree_built_on_meta():
+    """ATOM sizes the KV pool from the rows its walk over the model assigns."""
+    runner = Runner()
+    runner.draft_shares_kv_pool = lambda: False
+    runner._build_and_load_model(AttentionModel)
+    assert LinearRows(runner).row_counts() == {"kv": 1}
+    tensors = [*runner.model.parameters(), *runner.model.buffers()]
+    assert tensors and all(t.is_meta for t in tensors)
 
 
 # --- what stays resident after construction, and which names hold it ---------

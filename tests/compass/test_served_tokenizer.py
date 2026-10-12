@@ -8,9 +8,11 @@ and the calls are made on the clock owner's thread, as the event loop makes the
 final decode of a non-streaming completion.
 """
 
+import ast
 import copy
 import hashlib
 import json
+import pathlib
 import warnings
 from types import SimpleNamespace
 
@@ -23,6 +25,7 @@ from atom.compass.spec import FingerprintMismatch, SpecRefusal
 from atom.utils import clock
 from atom.utils.clock import LPRuntime
 
+REPO = pathlib.Path(__file__).resolve().parents[2]
 PROMPT_TOKENS, OUTPUT_TOKENS = 1000, 200
 
 
@@ -135,3 +138,18 @@ def test_the_measured_tokenizer_json_is_silent(monkeypatch, tmp_path):
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         compass_run.tokenizer(_LoadedFrom(model), _config())
+
+
+def test_the_server_wraps_its_tokenizer_after_the_delta_reuse_probe():
+    """The probe decodes at startup, before the run has traffic; a charged
+    decode there waits on a clock that no request will advance."""
+    tree = ast.parse((REPO / "atom/entrypoints/openai/api_server.py").read_text())
+    main = next(
+        f for f in tree.body if isinstance(f, ast.FunctionDef) and f.name == "main"
+    )
+    body = [ast.unparse(s) for s in main.body]
+
+    def first(text):
+        return next(i for i, s in enumerate(body) if text in s)
+
+    assert first("enable_delta_reuse(") < first("compass_run.tokenizer(")
