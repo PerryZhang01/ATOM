@@ -518,13 +518,13 @@ class StreamDeliveryTiming:
     def record(
         self, num_new_tokens: int, observe: Callable[[float, int], None]
     ) -> None:
-        now = time.perf_counter()
+        now = clock.now(time.perf_counter)
         if self.last_output_at is None:
             self.last_output_at = now
         else:
             observe(now - self.last_output_at, num_new_tokens)
             # Keep instrumentation work out of the next interval.
-            self.last_output_at = time.perf_counter()
+            self.last_output_at = clock.now(time.perf_counter)
 
 
 @dataclass

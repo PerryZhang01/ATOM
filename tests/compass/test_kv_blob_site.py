@@ -32,7 +32,8 @@ def _blob_site(path: Path) -> list[ast.Assign]:
     form both connectors use. Every other write of the name is what
     `_writes_not_read` returns, and the one-site test refuses those, so a
     second site written another way fails there by name instead of passing
-    unseen.
+    unseen. An assignment of `None` builds no blob -- an aborted producer
+    request advertises nothing -- so it is not a site.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"))
     return [
@@ -42,6 +43,7 @@ def _blob_site(path: Path) -> list[ast.Assign]:
         and any(
             isinstance(t, ast.Attribute) and t.attr == BLOB_ATTR for t in node.targets
         )
+        and not (isinstance(node.value, ast.Constant) and node.value.value is None)
     ]
 
 

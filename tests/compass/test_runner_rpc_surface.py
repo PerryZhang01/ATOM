@@ -257,7 +257,7 @@ class Runner(NonAllocatingRunner):
         )
 
 
-# --- the twelve, derived rather than typed ----------------------------------
+# --- the surface, derived rather than typed ---------------------------------
 
 
 def test_the_surface_is_every_dispatched_name_a_model_runner_answers():
@@ -268,7 +268,7 @@ def test_the_surface_is_every_dispatched_name_a_model_runner_answers():
     `ModelRunner` are exactly this intersection -- no list, no judgement.
     """
     assert set(RPC_SURFACE) == set(SITES) & BASE
-    assert len(RPC_SURFACE) == 12
+    assert len(RPC_SURFACE) == 14
 
 
 def test_both_filters_in_the_derivation_drop_nothing():
@@ -447,12 +447,12 @@ def test_the_worker_cannot_break_on_an_unpack_and_the_wait_is_unbounded():
     ), "engine_core.py no longer constructs the manager, so it is not the parent"
 
 
-def test_the_aggregating_form_is_the_one_bounded_wait():
-    """Its breach is a stall and a None, not a hang -- and only one name uses it."""
+def test_the_aggregating_form_drains_without_waiting():
+    """A missing rank is a None this step, not a hang -- and only one name uses it."""
     aggregated = {n for n, s in SITES.items() if any(x.aggregated for x in s)}
     assert aggregated == {"async_proc_aggregation"}
     assert '_KV_FUNC_NAMES = frozenset(["async_proc_aggregation"])' in ASYNC_PROC
-    assert "output_queue.get(timeout=timeout)" in ASYNC_PROC
+    assert "output_queue.get_nowait()" in ASYNC_PROC
 
 
 def test_a_refusal_reaches_the_caller_instead_of_stranding_it():
@@ -537,7 +537,7 @@ def test_the_binding_module_refuses_rather_than_composing_a_hole():
     that it fires correctly can only be observed with a driver present.
     What is checked here is the part that can drift silently: that the message
     partitions the missing names on `RPC_SURFACE` instead of telling one story
-    about all twelve, since two of them are waited on by nobody.
+    about every name, since some of them are waited on by nobody.
     """
     assert "unanswered_rpc_names(CompassModelRunner)" in COMPOSED
     assert "raise RunnerRefusal(" in COMPOSED
@@ -918,29 +918,36 @@ def test_the_reply_assertion_scans_the_roots_the_constant_names(monkeypatch, sur
     assert seen == [surface]
 
 
-def test_the_two_names_no_caller_waits_for_and_what_replying_costs():
+def test_the_names_no_caller_waits_for_and_what_replying_costs():
     """A reply nobody reads sits on the queue for whoever asks next.
 
-    `process_kvconnector_output` therefore answers nothing at all. `exit` does
+    So every one of them but `exit` answers nothing at all. `exit` does
     reply, and is the one place that is harmless: `busy_loop` breaks on the
     name, so there is no next caller.
 
-    These two are also the reason the composed class's refusal message
-    partitions the surface. A hole at either parks nobody -- the worker skips
-    the name and carries on -- so "each one would park its caller" is false for
-    exactly these.
+    These are also the reason the composed class's refusal message
+    partitions the surface. A hole at any of them parks nobody -- the worker
+    skips the name and carries on -- so "each one would park its caller" is
+    false for exactly these.
     """
     assert {n for n, w in RPC_SURFACE.items() if not w} == {
         "exit",
+        "poll_forward_metrics",
         "process_kvconnector_output",
+        "release_multimodal_requests",
     }
     bodies = {
         n.name: n
         for n in ast.walk(_classes(ATOM_RUNNER)["ModelRunner"])
         if isinstance(n, ast.FunctionDef)
     }
-    silent = bodies["process_kvconnector_output"]
-    assert not [n for n in ast.walk(silent) if isinstance(n, ast.Return) and n.value]
+    for name in (
+        "poll_forward_metrics",
+        "process_kvconnector_output",
+        "release_multimodal_requests",
+    ):
+        returns = [n for n in ast.walk(bodies[name]) if isinstance(n, ast.Return)]
+        assert not [n for n in returns if n.value], name
     assert bodies["exit"].body[-1].value.value is True
     assert 'if func_name == "exit":\n                break' in ASYNC_PROC
 
@@ -959,7 +966,7 @@ def test_the_break_on_exit_is_a_sibling_of_the_per_runner_loop():
     still breaks.
 
     The assertion in
-    `test_the_two_names_no_caller_waits_for_and_what_replying_costs` pins the
+    `test_the_names_no_caller_waits_for_and_what_replying_costs` pins the
     same two lines as an exact string. That catches the break moving one level
     in, because its own indentation would change, but says nothing about what
     the `if` is a sibling of or about what its test reaches. Both are here.
@@ -1039,10 +1046,9 @@ def test_what_a_hole_at_exit_loses_is_what_exit_does():
     ), f"line {kv.lineno} deletes names not written as literals: {unread}"
     assert {e.value for e in kv.iter.elts} == {
         "kv_cache",
-        "kv_scale",
-        "index_cache",
         "mamba_k_cache",
         "mamba_v_cache",
+        "kpool_tail_cache",
     }
     assert any(
         isinstance(n, ast.If)

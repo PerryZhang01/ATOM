@@ -149,8 +149,10 @@ RPC_SURFACE: dict[str, bool] = {
     "exit": False,  # EngineCore.exit, the last call of the process's life
     "freeze_gc_heap": True,  # EngineCore._freeze_after_startup catches a raise, not a None
     "process_kvconnector_output": False,  # EngineCore does not wait
-    "async_proc_aggregation": True,  # the one bounded wait, in EngineCore
+    "async_proc_aggregation": True,  # EngineCore drains it each step, never blocking
     "flush_pp_send": True,  # PPEngineCoreProc waits before the next send
+    "poll_forward_metrics": False,  # EngineUtilityHandler does not wait
+    "release_multimodal_requests": False,  # EngineCore does not wait
     # Refused by `RefusedControlCommands`: ATOM's own starts a real profiler.
     "start_profiler": True,  # EngineUtilityHandler forwards the reply unread
     "stop_profiler": True,  # EngineUtilityHandler forwards the reply unread
@@ -160,13 +162,13 @@ RPC_SURFACE: dict[str, bool] = {
 def unanswered_rpc_names(runner: Any) -> tuple[str, ...]:
     """The dispatched names `getattr` would answer with None for this runner.
 
-    Drawn from all twelve, which do not fail the same way, so this return
+    Drawn from the whole surface, which does not fail one way, so this return
     carries no one story about its names. `RPC_SURFACE[name]` records whether
     any caller reads the reply, and this function's only caller in the package
     partitions the result on exactly that before reporting it: a waited name
     parks its caller on an unbounded queue read for the life of the process,
-    while `exit` and `process_kvconnector_output` are read by nobody and a
-    hole in either parks no one.
+    while a name no caller reads, such as `exit`, parks no one when it is a
+    hole.
 
     Checked where the class is composed instead of being discovered by a
     deployment, because the worker raises on none of them.
