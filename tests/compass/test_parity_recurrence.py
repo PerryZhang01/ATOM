@@ -109,3 +109,13 @@ def test_a_record_without_device_windows_is_refused():
     del steps[2]["d_busy_ns"]
     with pytest.raises(ValueError, match="step 2 has no device window"):
         recurrence.check(steps)
+
+
+def test_a_decode_charges_the_device_gap_before_it_and_a_prefill_does_not():
+    """A 4 ms gap before step 3 ends its device work at 45 ms, where step 4
+    receives it; the same gap before the output prefill moves nothing."""
+    steps = record(r1=45)
+    steps[2]["d_gap_ns"] = steps[3]["d_gap_ns"] = 4 * MS
+    report = recurrence.check(steps)
+    assert report["total"] == pytest.approx(0, abs=1e-9)
+    assert report["pass"] and not report["failures"]

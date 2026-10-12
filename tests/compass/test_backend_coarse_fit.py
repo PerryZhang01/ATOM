@@ -317,15 +317,18 @@ HOST = {
 }
 KEY = {"host_cpu": "test cpu", "atom": "0" * 64, "model": None, "engine": {}}
 IDLE_NS = 10**9
+#: Device work between forwards, which a decode's label takes and a prefill's does not.
+GAP_NS = 40_000
 
 
-def _timed_record(path, steps, idle_after=(), key=KEY):
+def _timed_record(path, steps, idle_after=(), key=KEY, gap=0):
     """`steps` as a real record with device windows and host stamps.
 
     Each forward runs the host laws' segments and its price on the device, by
     the recurrence: a device that reaches a forward before its launch ends
     waits for it, which stretches the window. Every fourth step's prefill is a
-    middle chunk. Returns the record and its launch-exposed steps.
+    middle chunk, and `gap` ns of device work runs between forwards. Returns the
+    record and its launch-exposed steps.
     """
     t, device_end, output_end, owner, lines, exposed = 0, None, None, 0, [], []
     for i, (rows, rung, seconds) in enumerate(steps):
@@ -342,7 +345,7 @@ def _timed_record(path, steps, idle_after=(), key=KEY):
         g1 = g0 + 1000
         l0 = g1 + ns["W_pre"] - ns["W_pre"] // 2
         l1 = l0 + ns["W_launch"]
-        start = l0 if device_end is None else max(device_end, l0)
+        start = l0 if device_end is None else max(device_end + gap, l0)
         busy = round(seconds * 1e9) + max(0, l1 - start)
         if start < l1:
             exposed.append(i)
@@ -380,19 +383,24 @@ def _timed_record(path, steps, idle_after=(), key=KEY):
 
 def test_device_busy_time_and_host_laws_are_recovered_from_a_timed_record(tmp_path):
     steps = _steps(14, n=400)
-    record, exposed = _timed_record(tmp_path / "dp0.jsonl", steps, {60, 201})
+    record, exposed = _timed_record(
+        tmp_path / "dp0.jsonl", steps, {60, 201}, gap=GAP_NS
+    )
 
-    # The first forward and the two after idle find the device waiting on them.
+    # The first forward and the two after idle find the device waiting on them:
+    # the decode is cut, the prefills keep the wait in their label.
     assert exposed == [0, 61, 202]
     rows, cut = samples(record)
-    assert cut == {"exposed": 3, "mixed": 0}
+    assert cut == {"exposed": 1, "mixed": 0}
     labelled = {r[3]: r[2] for r in rows}
-    assert not set(exposed) & set(labelled)
+    assert 61 not in labelled and labelled[202] > steps[202][2]
     assert labelled[62] == pytest.approx(steps[62][2], rel=1e-6)
+    assert labelled[63] == pytest.approx(steps[63][2] + GAP_NS * 1e-9, rel=1e-6)
 
     law = fit([record])
     assert law["prefill"]["coefficients"] == pytest.approx(PREFILL, rel=1e-5)
-    assert law["decode"]["2"]["coefficients"] == pytest.approx(DECODE["2"], rel=1e-5)
+    decode = dict(DECODE["2"], step=DECODE["2"]["step"] + GAP_NS * 1e-9)
+    assert law["decode"]["2"]["coefficients"] == pytest.approx(decode, rel=1e-5)
 
     assert law["host"]["key"] == KEY
     assert law["host_fit"]["cut"] == {"idle": 2}
