@@ -54,7 +54,7 @@ from atom.compass.runner.overrides import (
     install_device_readings,
 )
 from atom.compass.spec import MachineSpec
-from atom.model_ops.attentions.sub_pool_spec import page_pool, plan_pools
+from atom.model_ops.attentions.pool_layout.sub_pool_spec import page_pool, plan_pools
 from atom.models.utils import get_pp_indices
 
 # Located through the package as the suite imported it, never by walking up

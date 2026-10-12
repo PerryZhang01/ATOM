@@ -46,7 +46,7 @@ from transformers import PretrainedConfig
 from atom.compass.backends.geometry import KvGeometry, Parallelism
 from atom.compass.memory import Basis, Reading, Term
 from atom.compass.spec import MachineSpec
-from atom.model_ops.attentions.sub_pool_spec import page_pool
+from atom.model_ops.attentions.pool_layout.sub_pool_spec import page_pool
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(),

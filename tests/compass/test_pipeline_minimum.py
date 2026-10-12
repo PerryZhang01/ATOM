@@ -38,7 +38,7 @@ import pathlib
 from transformers import PretrainedConfig
 
 from atom.compass.backends import KvGeometry, Parallelism
-from atom.model_ops.attentions.sub_pool_spec import page_pool, plan_pools
+from atom.model_ops.attentions.pool_layout.sub_pool_spec import page_pool, plan_pools
 from atom.models.utils import get_pp_indices
 
 REPO = pathlib.Path(__file__).resolve().parents[2]

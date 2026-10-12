@@ -171,6 +171,7 @@ def forward_mode(batch: Any, runner: Any) -> ForwardMode:
         dp_size=dp_size,
         dp_group=dp_group() if dp_size > 1 else None,
         enforce_eager=bool(runner.enforce_eager),
+        step_needs_eager=runner.attn_metadata_builder.step_needs_eager(batch),
         capture_sizes=ladder,
         captured_tokens=None,
         is_block_drafter=False,

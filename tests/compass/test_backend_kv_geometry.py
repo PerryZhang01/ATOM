@@ -43,7 +43,7 @@ from transformers import PretrainedConfig
 from atom.compass.backends import KvGeometry, Parallelism
 from atom.compass.clock import LpId, LpRegistry
 from atom.model_engine.block_manager import BlockManager
-from atom.model_ops.attentions.sub_pool_spec import page_pool, plan_pools
+from atom.model_ops.attentions.pool_layout.sub_pool_spec import page_pool, plan_pools
 from atom.models.utils import get_pp_indices
 
 CONFIG_JSON = pathlib.Path(__file__).with_name("qwen3_5_27b_config.json")

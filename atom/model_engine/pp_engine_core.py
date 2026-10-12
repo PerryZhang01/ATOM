@@ -368,7 +368,7 @@ class PPEngineCoreProc(EngineCore):
         try:
             while True:
                 self.utility_handler.process_queue(self.utility_queue, self)
-                now = time.monotonic()
+                now = clock.now(time.monotonic)
                 if now >= next_metrics_push:
                     next_metrics_push = now + metrics_interval
                     self.utility_handler.push_metrics(scheduler_metrics=False)
