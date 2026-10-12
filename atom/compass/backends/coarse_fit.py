@@ -8,20 +8,20 @@
 Each RECORD is a real run's step record (`steps/dp0.jsonl`, written with
 `ATOM_COMPASS_PARITY_RECORD`). A step's label is its device busy time,
 `d_busy_ns`, except where its device start precedes its host launch end: that
-step is launch-exposed, counted and not fitted. Each R1 wait's exit bounds the
-host clock's lead over the device's (the previous output forward had finished
-by then); the tightest of the last `ANCHORS` bounds is the lead. A record
-without device windows labels a step by its period, `t_enter_ns` to the next
-step's, cutting a period that may hold an idle gap. A step mixing prefill and
-decode rows is counted and not fitted.
+step is launch-exposed, counted and not fitted. The exit of each wait for the
+previous output's token copy (`t_recv_ns`) bounds the host clock's lead over
+the device's (that forward had finished by then); the tightest of the last
+`ANCHORS` bounds is the lead. A record without device windows labels a step by
+its period, `t_enter_ns` to the next step's, cutting a period that may hold an
+idle gap. A step mixing prefill and decode rows is counted and not fitted.
 
 Records with a host key (`dp0.key.json`, from the real runner) also give the
 host laws as a run file's `host` entry: `key`, and `laws[kind][segment]`,
 seconds on `(1, tokens, seqs)`. `E` runs from the previous forward's exit,
 cut as idle when the two batches share no request; `W_pre` to the launch, less
-the staging gate's wait; `W_post` from the launch to the exit, less the R1
-wait, and a middle chunk has none. They take tier a's solver, MAD drops and
-hulls; `seqs` equal to `tokens` on every sample gets zero. Two keys refuse.
+the staging gate's wait; `W_post` from the launch to the exit, less the token
+copy wait, and a middle chunk has none. They take tier a's solver, MAD drops
+and hulls; `seqs` equal to `tokens` on every sample gets zero. Two keys refuse.
 
 Each equation is divided by its own label and the coefficients are bound to be
 non-negative. Steps whose relative residual is more than `MAD_K` scaled MADs
@@ -78,7 +78,7 @@ MAD_PASSES = 20
 #: A step that ran this many times its price is a one-off first touch, not scatter.
 WARM_FACTOR = 5.0
 TOKEN_BANDS = (512, 2048, 8192)
-#: R1 wait exits whose tightest bound is a step's host clock lead.
+#: Token copy wait exits whose tightest bound is a step's host clock lead.
 ANCHORS = 32
 HOST_KINDS = ("decode", "prefill", "middle")
 HOST_SEGMENTS = ("E", "W_pre", "W_launch", "W_post")
@@ -109,7 +109,9 @@ def _launch_exposed(lines) -> set[int]:
         timed.append((s, start, bound))
     bounds = [b for _, _, b in timed if b is not None]
     if not bounds:
-        raise ValueError("no R1 wait exit ties the record's host and device clocks")
+        raise ValueError(
+            "no token copy wait exit (`t_recv_ns`) ties the record's host and device clocks"
+        )
     # Steps before the first anchor read the first ones.
     first, recent, exposed = min(bounds[:ANCHORS]), deque(maxlen=ANCHORS), set()
     for s, start, bound in timed:
