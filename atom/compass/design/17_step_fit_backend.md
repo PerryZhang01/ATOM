@@ -231,8 +231,8 @@ The interval is `02` D10's: the whole `ModelRunner.forward()`, sampling included
 timed per `07` D42, with CUDA events drained by `query()` and no per-forward synchronize,
 under the target workload's sampling settings. A point's value is device busy time (D97): a
 repeat whose device start precedes its host launch end is launch-exposed and is cut, as
-`09` D54 cuts it. The measurement queues device work ahead of each repeat so its launch
-stays ahead; a point whose every repeat is still launch-exposed has no value, and its
+`09` D54 cuts a decode. The measurement queues device work ahead of each repeat so its
+launch stays ahead; a point whose every repeat is still launch-exposed has no value, and its
 cell is incomplete and refuses (D99). A bundle declares its scope, and a narrower one is
 refused at load.
 
