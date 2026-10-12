@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 
 import torch
 
+from atom.model_ops.attentions.token_layout.batch_ids import build_batch_ids_device
 from atom.utils import CpuGpuBuffer
 
 
@@ -71,6 +72,8 @@ def test_gdn_chunk_indices_follow_the_host_lengths(monkeypatch):
         "cu_seqlens_q": buf(8),
         "gdn_batch_ptr": buf(64),
         "gdn_token_chunk_offset_ptr": buf(64),
+        "non_spec_state_indices": buf(8),
+        "non_spec_state_indices_in": buf(8),
     }
     var["cu_seqlens_q"].np[: len(host_cu)] = host_cu
     attn_metadata = SimpleNamespace(
@@ -90,8 +93,6 @@ def test_gdn_chunk_indices_follow_the_host_lengths(monkeypatch):
         device="cpu",
         prepare_state_indices=lambda batch, with_spec: None,
         prepare_block_tables=lambda batch: None,
-        non_spec_state_indices_tensor=buf(8),
-        non_spec_state_indices_in_tensor=buf(8),
         _checkpoint_targets=lambda batch: None,
     )
     batch = SimpleNamespace(
@@ -133,12 +134,16 @@ def test_prefix_kv_gather_sizes_its_token_map_on_the_host(monkeypatch):
     impl.__dict__.update(_cache_format="NHD", kv_cache_dtype="bf16")
     meta = {"device": "meta", "dtype": torch.bfloat16}
     k = torch.empty(5, 2, 64, **meta)
+    context_lens = torch.empty(3, dtype=torch.int32, device="meta")
+    # The prefill builder's map, built once per step from the host `total_kv`.
+    token_map = build_batch_ids_device(context_lens, total=40)
     attn_metadata = SimpleNamespace(
         cu_seqlens_k=torch.empty(4, dtype=torch.int32, device="meta"),
-        context_lens=torch.empty(3, dtype=torch.int32, device="meta"),
+        context_lens=context_lens,
         total_kv=40,
         block_tables=None,
         seq_starts=None,
+        batch_id_per_k_token=token_map,
     )
     k_cache = torch.empty(9, 16, 2, 64, **meta)
 
@@ -146,5 +151,6 @@ def test_prefix_kv_gather_sizes_its_token_map_on_the_host(monkeypatch):
         k, k, k, k_cache, k_cache, None, None, attn_metadata
     )
 
-    assert calls[0]["token_to_batch"].shape == (40,)
+    assert token_map.shape == (40,)
+    assert calls[0]["batch_id_per_k_token"] is token_map
     assert out[1].shape == out[2].shape == (40, 2, 64)

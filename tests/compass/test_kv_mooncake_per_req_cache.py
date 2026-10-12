@@ -27,7 +27,7 @@ def test_per_request_cache_forces_the_full_transfer(
     own = 16
     scheduler = object.__new__(mc.MooncakeConnectorScheduler)
     scheduler.is_producer = False
-    scheduler.hash_block_size = own
+    scheduler.block_size, scheduler.dcp_size, scheduler.hash_block_size = own, 1, own
     scheduler._reqs_need_recv = {}
     scheduler.transfer_id_to_request_id = {}
     scheduler.request_id_to_transfer_id = {}

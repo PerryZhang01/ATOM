@@ -126,9 +126,7 @@ def test_the_summary_counts_each_refusal_read_back_over_the_worker_rpc():
 
 def test_the_commands_that_reach_no_worker_run_as_in_atom():
     seq = SimpleNamespace(id="r0", status=SequenceStatus.RUNNING)
-    scheduler = SimpleNamespace(
-        running=[seq], waiting=[], spec_stats=None, cache_stats=None
-    )
+    scheduler = SimpleNamespace(running=[seq], waiting=[], engine_stats=None)
     runner = Runner()
     calls, responses = _send(
         runner, *(c for c, m in REACHES.items() if not m), scheduler=scheduler
