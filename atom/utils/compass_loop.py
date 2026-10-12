@@ -39,8 +39,9 @@ nothing pending; with none, the loop cancels its timers and stops. Over a
 clock connection with a socket, it waits for the grant and its own sockets at
 once, so a request from outside the run, such as a router's health check, is
 served while the grant is out; a timer that request sets earlier than the time
-asked for fires at the grant. `HttpChannel` is the inline receive of HTTP
-requests.
+asked for fires at the grant, and a cross-LP send its handler makes, such as
+the abort of a client that hung up, takes the grant first and is sent at it.
+`HttpChannel` is the inline receive of HTTP requests.
 """
 
 import asyncio
@@ -385,11 +386,15 @@ class CompassSelector(selectors.DefaultSelector):
         # The wait the loop cannot ask time through: (what, wall time to warn
         # at, or None once warned). It outlives the selects an fd event ends.
         self.stall = None
-        self.asked = False  # a next-event request is out, its grant not taken
+        self.end = 0.0  # the LP clock when the request out was sent
 
     def select(self, timeout=None):
         loop, rt = self.loop, self.loop.rt
         if not rt.in_run:  # before the run, or after the +inf grant
+            if rt.now == math.inf and loop.ended is None:
+                # A send took the +inf grant (`LPRuntime.stamp_send`).
+                loop.finish(self.end)
+                return super().select(0)
             return super().select(timeout)
         if loop.executor.station is None:
             loop.executor.start_run()
@@ -431,7 +436,7 @@ class CompassSelector(selectors.DefaultSelector):
                     self.stall = (what, None)
                 continue
             self.stall = None
-            if not self.asked:
+            if not rt.asked:
                 t = t_daemon = math.inf
                 for h in loop._scheduled:
                     if h.cancelled():
@@ -445,16 +450,14 @@ class CompassSelector(selectors.DefaultSelector):
                     if self._granted(end, rt.next_event(t, t_daemon)):
                         return super().select(0)
                     continue
+                self.end = rt.now
                 rt.ask_next_event(t, t_daemon)
-                self.asked = True
             waiting = select.poll()
             for fd in (self, rt.conn):
                 waiting.register(fd, select.POLLIN)
-            if rt.conn.fileno() in {fd for fd, _ in waiting.poll()}:
-                self.asked = False
-                end = rt.now
-                if self._granted(end, rt.take_grant()):
-                    return super().select(0)
+            polled = {fd for fd, _ in waiting.poll()}
+            if rt.conn.fileno() in polled and self._granted(self.end, rt.take_grant()):
+                return super().select(0)
 
     def _granted(self, end: float, g: float) -> bool:
         """Whether grant `g` is ``+inf``, which ends the run at LP time `end`."""
