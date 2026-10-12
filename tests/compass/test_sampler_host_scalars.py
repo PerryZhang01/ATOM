@@ -119,11 +119,19 @@ def test_prepare_sample_hands_over_a_shared_k_and_p_as_host_scalars():
     }
     # The rows each step uploads, by buffer: None is a buffer left on the host.
     published = []
+
+    def publish(counts):
+        published.append(dict(counts))
+        for name, rows in counts.items():
+            if rows is not None:
+                runner.forward_vars[name].copy_to_gpu(rows)
+
     runner.h2d_groups = {
         "sampling": SimpleNamespace(
             counts={},
             indices={name: name for name in runner.forward_vars},
-            publish=lambda counts: published.append(dict(counts)),
+            publish=publish,
+            check_writable=lambda: None,
         )
     }
 
