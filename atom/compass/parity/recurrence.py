@@ -6,7 +6,7 @@
 `HostDeviceRecurrence` charges each forward with `d_busy_ns` as its device
 time and its line's host segments: `E` from the previous exit to the entry,
 `W_pre` to the launch less the staging gate's wait, `W_launch`, and `W_post`
-from the launch to the exit less the R1 wait. Each forward is called at the
+from the launch to the exit less the recv wait. Each forward is called at the
 exit predicted for the one before, so only the waits and device times move it.
 
 Per kind (decode, output prefill, middle chunk, and idle: sharing no request
@@ -14,7 +14,7 @@ with the forward before), p10 and p90 of charge over measured exit-to-exit
 period, less one, in percent, lie within `STEP_BAND`, the run total within
 `TOTAL_BAND`.
 A failing kind's steps outside the band are named with their residual, the
-device work queued at their launch, and their R1 release less the measured.
+device work queued at their launch, and their recv release less the measured.
 """
 
 import sys
@@ -90,7 +90,7 @@ def main(record: str) -> int:
     for rank, steps in read(record).items():
         report = check(steps)
         ok &= report["pass"]
-        print(f"dp{rank} kind      n      p10      p50      p90  R1 p50 ms  gate")
+        print(f"dp{rank} kind      n      p10      p50      p90  recv p50 ms  gate")
         for k, (n, p10, p50, p90, r1, good) in report["kinds"].items():
             r1 = "-" if r1 is None else f"{r1:.3f}"
             gate = "pass" if good else "FAIL"
@@ -107,7 +107,7 @@ def main(record: str) -> int:
                 r1 = "-" if r1 is None else f"{r1:+.3f}"
                 print(
                     f"      step {step}: {err:+.2f}%, residual {res:+.3f} ms, "
-                    f"queued {queued:.3f} ms, R1 {r1} ms"
+                    f"queued {queued:.3f} ms, recv {r1} ms"
                 )
     return 0 if ok else 1
 

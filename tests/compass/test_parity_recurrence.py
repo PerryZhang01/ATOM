@@ -3,8 +3,8 @@
 
 Two middle chunks, the output prefill, then two decodes, each 10 ms of device
 work and 1 ms per host segment. The stamps are what the recurrence's wait
-rules give: the third forward's gate waits for the first one's device end
-(R4), and each decode's R1 wait for the previous output forward's.
+rules give: the third forward's gate waits for the first one's device end,
+and each decode waits to receive the previous output forward's.
 """
 
 import json
@@ -36,7 +36,7 @@ def line(step, rows, output, enter, gate, launch, recv, exit_):
 
 
 def record(r1=41):
-    """The last decode's R1 wait ends at `r1` ms; 41 is step 3's device end."""
+    """The last decode's recv wait ends at `r1` ms; 41 is step 3's device end."""
     return [
         line(0, [[50, 50, False]], False, 0, (0, 0), (1, 2), None, 3),
         line(1, [[50, 100, False]], False, 4, (4, 4), (5, 6), None, 7),
@@ -76,6 +76,32 @@ def test_the_script_reads_a_record_directory(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "decode: 1 steps outside the band" in out
     assert "step 4: -28.57%" in out
+
+
+def test_every_kind_can_pass_while_the_run_total_still_fails():
+    """Five decodes, each receiving 0.1 ms later than the record's first two:
+    within every kind's step band, but their sum breaches the tighter total one."""
+    steps, exit_ = record()[:4], 32
+    for i in range(5):
+        enter, launch = exit_ + 1, (exit_ + 2, exit_ + 3)
+        recv_end = enter + 8.1
+        steps.append(
+            line(
+                4 + i,
+                [[1, 152 + i, True]],
+                True,
+                enter,
+                (enter, enter),
+                launch,
+                (launch[1], recv_end),
+                recv_end + 1,
+            )
+        )
+        exit_ = recv_end + 1
+    report = recurrence.check(steps)
+    assert all(k[-1] for k in report["kinds"].values()) and not report["failures"]
+    assert abs(report["total"]) > recurrence.TOTAL_BAND
+    assert not report["pass"]
 
 
 def test_a_record_without_device_windows_is_refused():
