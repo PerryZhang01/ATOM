@@ -552,6 +552,9 @@ fit under `unfitted`.
 Calibration cells replay traces the graded cells do not: `FIRST_SESSION=256
 SESSIONS=137` against graded traces 0 to 255, by the
 [owner's ruling on #627](https://github.com/jgong5/ATOM/issues/627#issuecomment-6096543740).
+`calib_capture.sh RUN_FILE OUT_DIR` captures them: the real cells one at a time,
+each with the host load and the GPU's processes at its start and end; its header
+lists its environment.
 Given two or more records, the command also prints each form's error on every
 record under a law fitted on the others, per decode rung and prefill token band.
 
