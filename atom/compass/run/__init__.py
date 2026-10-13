@@ -130,10 +130,8 @@ LP_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
 HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field changes meaning or goes.
 SUMMARY_SCHEMA_VERSION = 1
-#: Compass source the host-law key's ``atom`` digest leaves out, by path under
-#: the package: all of it (None), or the top-level definitions named, which
-#: only a run with an LP runtime installed reaches. The rest of such a file is
-#: what a real run executes, so it stays in.
+#: Compass source the host-law key leaves out, by path under the package: all
+#: of it (None), or the top-level names only an installed LP runtime reaches.
 COMPASS_ONLY = {
     "compass": None,
     "utils/compass_loop.py": None,
@@ -633,39 +631,34 @@ def _fingerprint(tok) -> str | None:
 
 
 def host_key(config) -> dict:
-    """What host laws are keyed by: this host's CPU, ATOM's source outside
-    Compass (`atom_digest`), the served config.json and the engine config a
-    step fit bundle is keyed by."""
+    """What host laws are keyed by: this host's CPU, ATOM's source less
+    `COMPASS_ONLY`, the served config.json and the engine config a step fit
+    bundle is keyed by."""
     from atom.compass.run.step_fit import keyed
 
     cpu = re.search(
         r"^model name\s*:\s*(.+)$", Path("/proc/cpuinfo").read_text(), re.MULTILINE
     )
-    return {
-        "host_cpu": cpu.group(1) if cpu else platform.processor(),
-        "atom": atom_digest(Path(atom.__file__).parent),
-        "model": _file_digest(config.model, "config.json"),
-        "engine": keyed(config),
-    }
-
-
-def atom_digest(root: Path) -> str:
-    """sha256 of the ``*.py`` files under the package `root`, less `COMPASS_ONLY`."""
+    root = Path(atom.__file__).parent
     digest = hashlib.sha256()
     for path in sorted(root.rglob("*.py")):
         relative = path.relative_to(root)
-        skip = next((v for k, v in COMPASS_ONLY.items() if relative.is_relative_to(k)), ())
+        skip = next(
+            (v for k, v in COMPASS_ONLY.items() if relative.is_relative_to(k)), ()
+        )
         if skip is None:
             continue
-        data = path.read_bytes()
-        if skip:
-            lines = data.splitlines(keepends=True)
-            for node in reversed(ast.parse(data).body):
-                if getattr(node, "name", None) in skip:
-                    del lines[node.lineno - 1 : node.end_lineno]
-            data = b"".join(lines)
-        digest.update(f"{relative}\0".encode() + data)
-    return digest.hexdigest()
+        lines = path.read_bytes().splitlines(keepends=True)
+        for node in reversed(ast.parse(b"".join(lines)).body if skip else []):
+            if getattr(node, "name", None) in skip:
+                del lines[node.lineno - 1 : node.end_lineno]
+        digest.update(f"{relative}\0".encode() + b"".join(lines))
+    return {
+        "host_cpu": cpu.group(1) if cpu else platform.processor(),
+        "atom": digest.hexdigest(),
+        "model": _file_digest(config.model, "config.json"),
+        "engine": keyed(config),
+    }
 
 
 def _file_digest(name: str, filename: str) -> str | None:
