@@ -60,6 +60,18 @@
  ],
  "sites": [
   {
+   "id": "atom/distributed/indexer_cp.py::warmup_exchange::torch.cuda.synchronize()::device_sync#0",
+   "file": "atom/distributed/indexer_cp.py",
+   "symbol": "warmup_exchange",
+   "call": "torch.cuda.synchronize",
+   "expr": "torch.cuda.synchronize()",
+   "shape": "device_sync",
+   "peer": "none",
+   "why": "ends the one eager all-to-all run before graph capture, at startup inside the runner the simulator replaces",
+   "mechanism": "K9",
+   "mechanism_why": "a startup synchronize inside the runner the simulator replaces, before any request exists"
+  },
+  {
    "id": "atom/distributed/kv_events.py::ZmqEventPublisher.shutdown::self._sender.join(timeout=2.0)::join#0",
    "file": "atom/distributed/kv_events.py",
    "symbol": "ZmqEventPublisher.shutdown",
@@ -73,11 +85,11 @@
    "mechanism_why": ""
   },
   {
-   "id": "atom/distributed/kv_events.py::ZmqEventPublisher._run::self._queue.get()::queue_get#0",
+   "id": "atom/distributed/kv_events.py::ZmqEventPublisher._run::self._queue.get(timeout=get_timeout)::queue_get#0",
    "file": "atom/distributed/kv_events.py",
    "symbol": "ZmqEventPublisher._run",
    "call": "self._queue.get",
-   "expr": "self._queue.get()",
+   "expr": "self._queue.get(timeout=get_timeout)",
    "shape": "queue_get",
    "category": "ignore",
    "peer": "thread",
@@ -86,29 +98,52 @@
    "mechanism_why": ""
   },
   {
-   "id": "atom/distributed/kv_events.py::ZmqEventPublisher._run::self._socket.send_multipart([self._topic_bytes, item])::p2p#0",
+   "id": "atom/distributed/kv_events.py::ZmqEventPublisher._run::self._socket.send_multipart([self._topic_bytes, seq_bytes, payload])::p2p#0",
    "file": "atom/distributed/kv_events.py",
    "symbol": "ZmqEventPublisher._run",
    "call": "self._socket.send_multipart",
-   "expr": "self._socket.send_multipart([self._topic_bytes, item])",
+   "expr": "self._socket.send_multipart([self._topic_bytes, seq_bytes, payload])",
    "shape": "p2p",
    "peer": "process",
-   "why": "the topic form of the publish below it: a publish socket drops rather than parks once its bound is reached, and nothing in the step loop waits for it",
+   "why": "a publish socket drops rather than parks once its bound is reached, and nothing in the step loop waits for it",
    "mechanism": "K9",
    "mechanism_why": "the event publisher's own thread sends to subscribers outside the modelled deployment, and no clock owner waits for it"
   },
   {
-   "id": "atom/distributed/kv_events.py::ZmqEventPublisher._run::self._socket.send(item)::p2p#0",
+   "id": "atom/distributed/kv_events.py::ZmqEventPublisher._accept_replay_request::self._replay.recv_multipart()::socket_recv#0",
+   "file": "atom/distributed/kv_events.py",
+   "symbol": "ZmqEventPublisher._accept_replay_request",
+   "call": "self._replay.recv_multipart",
+   "expr": "self._replay.recv_multipart()",
+   "shape": "socket_recv",
+   "peer": "process",
+   "why": "takes a subscriber's replay request, and runs only after a zero-timeout poll has seen one waiting",
+   "mechanism": "K9",
+   "mechanism_why": "the event publisher's own thread serves subscribers outside the modelled deployment, and no clock owner waits for it"
+  },
+  {
+   "id": "atom/distributed/kv_events.py::ZmqEventPublisher._replay_send::self._replay.send_multipart(frames, flags=self._zmq_noblock)::p2p#0",
+   "file": "atom/distributed/kv_events.py",
+   "symbol": "ZmqEventPublisher._replay_send",
+   "call": "self._replay.send_multipart",
+   "expr": "self._replay.send_multipart(frames, flags=self._zmq_noblock)",
+   "shape": "p2p",
+   "peer": "process",
+   "why": "a non-blocking send on the replay socket; a full pipe abandons the replay instead of parking",
+   "mechanism": "K9",
+   "mechanism_why": "the event publisher's own thread serves subscribers outside the modelled deployment, and no clock owner waits for it"
+  },
+  {
+   "id": "atom/distributed/kv_events.py::ZmqEventPublisher._run::self._replay.poll(0)::poll#0",
    "file": "atom/distributed/kv_events.py",
    "symbol": "ZmqEventPublisher._run",
-   "call": "self._socket.send",
-   "expr": "self._socket.send(item)",
-   "shape": "p2p",
-   "category": "ignore",
+   "call": "self._replay.poll",
+   "expr": "self._replay.poll(0)",
+   "shape": "poll",
    "peer": "process",
-   "why": "a publish socket drops rather than parks once its bound is reached, and nothing in the step loop waits for it",
+   "why": "a zero-timeout poll for a replay request, which returns at once",
    "mechanism": "K9",
-   "mechanism_why": ""
+   "mechanism_why": "the event publisher's own thread serves subscribers outside the modelled deployment, and no clock owner waits for it"
   },
   {
    "id": "atom/distributed/pcp_utils.py::pcp_allgather_rerange::group.all_gather(input_.contiguous(), dim=0)::collective#0",
@@ -540,17 +575,17 @@
    "mechanism_why": "tokenization: a multi-server resource station inside the frontend LP, whose completion times come from the station's service model"
   },
   {
-   "id": "atom/entrypoints/openai/api_server.py::_metrics_refresh_loop::asyncio.sleep(_METRICS_REFRESH_INTERVAL_SECONDS)::sleep#0",
+   "id": "atom/entrypoints/openai/api_server.py::_periodic::asyncio.sleep(interval)::sleep#0",
    "file": "atom/entrypoints/openai/api_server.py",
-   "symbol": "_metrics_refresh_loop",
+   "symbol": "_periodic",
    "call": "asyncio.sleep",
-   "expr": "asyncio.sleep(_METRICS_REFRESH_INTERVAL_SECONDS)",
+   "expr": "asyncio.sleep(interval)",
    "shape": "sleep",
    "category": "ignore",
    "peer": "none",
    "why": "the metrics scrape cadence is deliberately left on the real clock",
    "mechanism": "K7",
-   "mechanism_why": "the metrics refresh cadence is a daemon timer on simulated time once the frontend's event loop runs on the LP clock, with no change at the call"
+   "mechanism_why": "the metrics refresh and reclaim-watch cadences are daemon timers on simulated time once the frontend's event loop runs on the LP clock, with no change at the call"
   },
   {
    "id": "atom/entrypoints/openai/api_server.py::chat_completions::loop.run_in_executor( None, _prepare_multimodal_inputs, messages, merged_kwargs, request.tools, )::executor_handoff#0",
@@ -579,6 +614,42 @@
    "mechanism_why": "a frontend coroutine waiting for data that its own LP's output thread delivers"
   },
   {
+   "id": "atom/entrypoints/openai/api_server.py::get_gc_census::asyncio.get_running_loop().run_in_executor( _gc_census_executor, gc_census, top, types_per_owner )::executor_handoff#0",
+   "file": "atom/entrypoints/openai/api_server.py",
+   "symbol": "get_gc_census",
+   "call": "asyncio.get_running_loop().run_in_executor",
+   "expr": "asyncio.get_running_loop().run_in_executor( _gc_census_executor, gc_census, top, types_per_owner )",
+   "shape": "executor_handoff",
+   "peer": "thread",
+   "why": "a debug endpoint that walks the collector's heap on its own thread; no request a replay sends reaches it",
+   "mechanism": "K9",
+   "mechanism_why": "a diagnostic endpoint off the serving path a simulated run drives"
+  },
+  {
+   "id": "atom/entrypoints/openai/api_server.py::lifespan::asyncio.gather(*_background_tasks, return_exceptions=True)::collective#0",
+   "file": "atom/entrypoints/openai/api_server.py",
+   "symbol": "lifespan",
+   "call": "asyncio.gather",
+   "expr": "asyncio.gather(*_background_tasks, return_exceptions=True)",
+   "shape": "collective",
+   "peer": "none",
+   "why": "shutdown collects the periodic tasks it has just cancelled, after the last request",
+   "mechanism": "K9",
+   "mechanism_why": "at shutdown, outside the simulated window"
+  },
+  {
+   "id": "atom/entrypoints/openai/api_server.py::responses_create.generate_responses_stream::stream_collector.get()::queue_get#0",
+   "file": "atom/entrypoints/openai/api_server.py",
+   "symbol": "responses_create.generate_responses_stream",
+   "call": "stream_collector.get",
+   "expr": "stream_collector.get()",
+   "shape": "queue_get",
+   "peer": "process",
+   "why": "the Responses endpoint's stream generator parks until the engine produces its next chunk",
+   "mechanism": "K6",
+   "mechanism_why": "a frontend coroutine waiting for data that its own LP's output thread delivers"
+  },
+  {
    "id": "atom/entrypoints/openai/reasoning.py::ReasoningFilter.process::while True::spin_loop#0",
    "file": "atom/entrypoints/openai/reasoning.py",
    "symbol": "ReasoningFilter.process",
@@ -590,6 +661,42 @@
    "why": "a text scanner's loop over one chunk; it consumes its input and returns, and parks on nothing",
    "mechanism": "K9",
    "mechanism_why": ""
+  },
+  {
+   "id": "atom/entrypoints/openai/request_timing.py::RequestTimingMiddleware.__call__.timed_send::send(message)::p2p#0",
+   "file": "atom/entrypoints/openai/request_timing.py",
+   "symbol": "RequestTimingMiddleware.__call__.timed_send",
+   "call": "send",
+   "expr": "send(message)",
+   "shape": "p2p",
+   "peer": "process",
+   "why": "passes each ASGI message on to the server's own send unchanged, after noting whether the response is a successful stream",
+   "mechanism": "K9",
+   "mechanism_why": "the HTTP write every response already makes inside the web framework, run for its effect; a streamed event's simulated time travels in the comment line written before it, not at this call"
+  },
+  {
+   "id": "atom/entrypoints/openai/request_timing.py::get_stream_timing::_request_timing.get()::queue_get#0",
+   "file": "atom/entrypoints/openai/request_timing.py",
+   "symbol": "get_stream_timing",
+   "call": "_request_timing.get",
+   "expr": "_request_timing.get()",
+   "shape": "queue_get",
+   "peer": "none",
+   "why": "reads the request's timing record from a context variable",
+   "mechanism": "K9",
+   "mechanism_why": "a context-variable read, which cannot park"
+  },
+  {
+   "id": "atom/entrypoints/openai/request_timing.py::record_nonstream_first_token::_request_timing.get()::queue_get#0",
+   "file": "atom/entrypoints/openai/request_timing.py",
+   "symbol": "record_nonstream_first_token",
+   "call": "_request_timing.get",
+   "expr": "_request_timing.get()",
+   "shape": "queue_get",
+   "peer": "none",
+   "why": "reads the request's timing record from a context variable",
+   "mechanism": "K9",
+   "mechanism_why": "a context-variable read, which cannot park"
   },
   {
    "id": "atom/entrypoints/openai/serving_chat.py::stream_chat_response::stream_collector.get()::queue_get#0",
@@ -809,6 +916,42 @@
    "why": "listener thread of a transfer backend the simulator replaces with a priced one",
    "mechanism": "K9",
    "mechanism_why": ""
+  },
+  {
+   "id": "atom/kv_transfer/disaggregation/mooncake/mooncake_connector.py::MooncakeConnector._acquire_index_staging_slot::time.sleep(0.001)::sleep#0",
+   "file": "atom/kv_transfer/disaggregation/mooncake/mooncake_connector.py",
+   "symbol": "MooncakeConnector._acquire_index_staging_slot",
+   "call": "time.sleep",
+   "expr": "time.sleep(0.001)",
+   "shape": "sleep",
+   "peer": "none",
+   "why": "spins for an index staging slot in a transfer backend the simulator replaces with a priced one",
+   "mechanism": "K9",
+   "mechanism_why": "inside a transfer backend the simulator replaces with a priced one"
+  },
+  {
+   "id": "atom/kv_transfer/disaggregation/mooncake/mooncake_connector.py::MooncakeConnector._await_listener::self._listener_bound.wait(timeout)::event_wait#0",
+   "file": "atom/kv_transfer/disaggregation/mooncake/mooncake_connector.py",
+   "symbol": "MooncakeConnector._await_listener",
+   "call": "self._listener_bound.wait",
+   "expr": "self._listener_bound.wait(timeout)",
+   "shape": "event_wait",
+   "peer": "thread",
+   "why": "startup wait for the backend's listener thread to bind its socket",
+   "mechanism": "K9",
+   "mechanism_why": "inside a transfer backend the simulator replaces with a priced one"
+  },
+  {
+   "id": "atom/kv_transfer/disaggregation/mooncake/mooncake_connector.py::MooncakeConnector._execute_staged_index_layer_chunk::stream.synchronize()::device_sync#0",
+   "file": "atom/kv_transfer/disaggregation/mooncake/mooncake_connector.py",
+   "symbol": "MooncakeConnector._execute_staged_index_layer_chunk",
+   "call": "stream.synchronize",
+   "expr": "stream.synchronize()",
+   "shape": "device_sync",
+   "peer": "none",
+   "why": "device synchronize after a staged index-layer copy",
+   "mechanism": "K9",
+   "mechanism_why": "inside a transfer backend the simulator replaces with a priced one"
   },
   {
    "id": "atom/kv_transfer/disaggregation/moriio/moriio_connector.py::MoRIIOConnector.start_load_kv::while need_handshake::spin_loop#0",
@@ -1081,11 +1224,11 @@
    "mechanism_why": "RPC between the engine and its workers inside one tensor-parallel group; the group is one LP, so this is not a wait across LPs"
   },
   {
-   "id": "atom/model_engine/async_proc.py::AsyncIOProcManager.exit::proc.join(timeout=5)::join#0",
+   "id": "atom/model_engine/async_proc.py::AsyncIOProcManager.exit::proc.join(timeout=max(deadline - time.monotonic(), 0))::join#0",
    "file": "atom/model_engine/async_proc.py",
    "symbol": "AsyncIOProcManager.exit",
    "call": "proc.join",
-   "expr": "proc.join(timeout=5)",
+   "expr": "proc.join(timeout=max(deadline - time.monotonic(), 0))",
    "shape": "join",
    "category": "ignore",
    "peer": "process",
@@ -1198,30 +1341,17 @@
    "mechanism_why": "RPC between the engine and its workers inside one tensor-parallel group; the group is one LP, so this is not a wait across LPs"
   },
   {
-   "id": "atom/model_engine/async_proc.py::AsyncIOProcManager.call_func_with_aggregation::self.rpc_broadcast_mq.enqueue(msg)::task_wait#0",
+   "id": "atom/model_engine/async_proc.py::AsyncIOProcManager._start_kv_aggregation::self.rpc_broadcast_mq.enqueue((func_name, *args))::task_wait#0",
    "file": "atom/model_engine/async_proc.py",
-   "symbol": "AsyncIOProcManager.call_func_with_aggregation",
+   "symbol": "AsyncIOProcManager._start_kv_aggregation",
    "call": "self.rpc_broadcast_mq.enqueue",
-   "expr": "self.rpc_broadcast_mq.enqueue(msg)",
+   "expr": "self.rpc_broadcast_mq.enqueue((func_name, *args))",
    "shape": "task_wait",
    "category": "B",
    "peer": "process",
    "why": "the engine hands a call to the workers and parks if the shared-memory ring has no free slot",
    "mechanism": "K6",
    "mechanism_why": "RPC between the engine and its workers inside one tensor-parallel group; the group is one LP, so this is not a wait across LPs"
-  },
-  {
-   "id": "atom/model_engine/async_proc.py::AsyncIOProcManager.call_func_with_aggregation::output_queue.get(timeout=timeout)::queue_get#0",
-   "file": "atom/model_engine/async_proc.py",
-   "symbol": "AsyncIOProcManager.call_func_with_aggregation",
-   "call": "output_queue.get",
-   "expr": "output_queue.get(timeout=timeout)",
-   "shape": "queue_get",
-   "category": "C1",
-   "peer": "process",
-   "why": "a ten-second bound per worker that returns None and logs an error rather than raising; it detects a dead worker, and on a slower-than-real clock it would answer wrongly and quietly",
-   "mechanism": "K6",
-   "mechanism_why": "a real-time bound on transport inside one tensor-parallel group; the simulated runner answers within real milliseconds, so the bound never fires"
   },
   {
    "id": "atom/model_engine/async_proc.py::AsyncIOProcManager.monitor_procs.monitor_engine_cores::multiprocessing.connection.wait(sentinels)::event_wait#0",
@@ -1848,6 +1978,43 @@
    "mechanism_why": ""
   },
   {
+   "id": "atom/model_engine/engine_core.py::EngineCore.exit::proc.join(timeout=5)::join#1",
+   "file": "atom/model_engine/engine_core.py",
+   "symbol": "EngineCore.exit",
+   "call": "proc.join",
+   "expr": "proc.join(timeout=5)",
+   "shape": "join",
+   "category": "ignore",
+   "peer": "process",
+   "why": "shutdown join of the worker processes",
+   "mechanism": "K9",
+   "mechanism_why": ""
+  },
+  {
+   "id": "atom/model_engine/engine_core.py::EngineCore.exit::proc.join(timeout=max(deadline - time.monotonic(), 0))::join#0",
+   "file": "atom/model_engine/engine_core.py",
+   "symbol": "EngineCore.exit",
+   "call": "proc.join",
+   "expr": "proc.join(timeout=max(deadline - time.monotonic(), 0))",
+   "shape": "join",
+   "peer": "process",
+   "why": "shutdown join of the worker processes, under one deadline shared by all of them",
+   "mechanism": "K9",
+   "mechanism_why": "at shutdown, after the last step has been charged"
+  },
+  {
+   "id": "atom/model_engine/engine_core.py::EngineCore.process_input_sockets::SchedulerMetrics.enqueue(req, received_at=received_at)::task_wait#0",
+   "file": "atom/model_engine/engine_core.py",
+   "symbol": "EngineCore.process_input_sockets",
+   "call": "SchedulerMetrics.enqueue",
+   "expr": "SchedulerMetrics.enqueue(req, received_at=received_at)",
+   "shape": "task_wait",
+   "peer": "none",
+   "why": "sets the receipt stamp on the request's queue timing; despite its name it queues nothing",
+   "mechanism": "K9",
+   "mechanism_why": "an attribute write on the request, which cannot park"
+  },
+  {
    "id": "atom/model_engine/engine_core_mgr.py::CoreManager.__init__::proc.join()::join#0",
    "file": "atom/model_engine/engine_core_mgr.py",
    "symbol": "CoreManager.__init__",
@@ -2301,32 +2468,6 @@
    "mechanism_why": ""
   },
   {
-   "id": "atom/model_engine/model_runner.py::ModelRunner._advance_forward_vars::self._fv_slot_events[self._fv_idx].synchronize()::device_sync#0",
-   "file": "atom/model_engine/model_runner.py",
-   "symbol": "ModelRunner._advance_forward_vars",
-   "call": "self._fv_slot_events[self._fv_idx].synchronize",
-   "expr": "self._fv_slot_events[self._fv_idx].synchronize()",
-   "shape": "device_sync",
-   "category": "ignore",
-   "peer": "none",
-   "why": "device-event wait inside the runner the simulator replaces",
-   "mechanism": "K9",
-   "mechanism_why": ""
-  },
-  {
-   "id": "atom/model_engine/model_runner.py::ModelRunner._gate_staging_reuse::self._stage_h2d_done.synchronize()::device_sync#0",
-   "file": "atom/model_engine/model_runner.py",
-   "symbol": "ModelRunner._gate_staging_reuse",
-   "call": "self._stage_h2d_done.synchronize",
-   "expr": "self._stage_h2d_done.synchronize()",
-   "shape": "device_sync",
-   "category": "ignore",
-   "peer": "none",
-   "why": "device-event wait inside the runner the simulator replaces",
-   "mechanism": "K9",
-   "mechanism_why": ""
-  },
-  {
    "id": "atom/model_engine/model_runner.py::ModelRunner.get_num_blocks::torch.distributed.all_reduce(t, op=torch.distributed.ReduceOp.MIN)::collective#0",
    "file": "atom/model_engine/model_runner.py",
    "symbol": "ModelRunner.get_num_blocks",
@@ -2509,6 +2650,78 @@
    "mechanism_why": ""
   },
   {
+   "id": "atom/model_engine/model_runner.py::ModelRunner.poll_forward_metrics::self.gpu_forward_metrics.poll()::poll#0",
+   "file": "atom/model_engine/model_runner.py",
+   "symbol": "ModelRunner.poll_forward_metrics",
+   "call": "self.gpu_forward_metrics.poll",
+   "expr": "self.gpu_forward_metrics.poll()",
+   "shape": "poll",
+   "peer": "none",
+   "why": "drains device timing events that have completed and stops at the first that has not; it queries and never waits",
+   "mechanism": "K9",
+   "mechanism_why": "a non-blocking event query, which cannot park"
+  },
+  {
+   "id": "atom/model_engine/model_runner.py::ModelRunner.postprocess::_g.broadcast(sampled_tokens.contiguous(), src=0)::collective#0",
+   "file": "atom/model_engine/model_runner.py",
+   "symbol": "ModelRunner.postprocess",
+   "call": "_g.broadcast",
+   "expr": "_g.broadcast(sampled_tokens.contiguous(), src=0)",
+   "shape": "collective",
+   "peer": "process",
+   "why": "a sampling broadcast inside the runner the simulator replaces",
+   "mechanism": "K9",
+   "mechanism_why": "a collective inside the forward step, which the simulator replaces with a priced one"
+  },
+  {
+   "id": "atom/model_engine/model_runner.py::ModelRunner.postprocess::_g.broadcast(verdict, src=0)::collective#0",
+   "file": "atom/model_engine/model_runner.py",
+   "symbol": "ModelRunner.postprocess",
+   "call": "_g.broadcast",
+   "expr": "_g.broadcast(verdict, src=0)",
+   "shape": "collective",
+   "peer": "process",
+   "why": "a sampling broadcast inside the runner the simulator replaces",
+   "mechanism": "K9",
+   "mechanism_why": "a collective inside the forward step, which the simulator replaces with a priced one"
+  },
+  {
+   "id": "atom/model_engine/model_runner.py::ModelRunner.postprocess::get_tp_group().broadcast(target_token_ids, src=0)::collective#0",
+   "file": "atom/model_engine/model_runner.py",
+   "symbol": "ModelRunner.postprocess",
+   "call": "get_tp_group().broadcast",
+   "expr": "get_tp_group().broadcast(target_token_ids, src=0)",
+   "shape": "collective",
+   "peer": "process",
+   "why": "a sampling broadcast inside the runner the simulator replaces",
+   "mechanism": "K9",
+   "mechanism_why": "a collective inside the forward step, which the simulator replaces with a priced one"
+  },
+  {
+   "id": "atom/model_engine/model_runner.py::ModelRunner.propose_draft_token_ids::get_pcp_group().broadcast(draft_token.contiguous(), src=0)::collective#0",
+   "file": "atom/model_engine/model_runner.py",
+   "symbol": "ModelRunner.propose_draft_token_ids",
+   "call": "get_pcp_group().broadcast",
+   "expr": "get_pcp_group().broadcast(draft_token.contiguous(), src=0)",
+   "shape": "collective",
+   "peer": "process",
+   "why": "the draft-token broadcast inside the runner's speculative step",
+   "mechanism": "K9",
+   "mechanism_why": "a collective inside the forward step, which the simulator replaces with a priced one"
+  },
+  {
+   "id": "atom/model_engine/multimodal_runtime.py::embed_multimodal_batch::cache.acquire( request_id, data, lambda payload: model.get_vision_embeddings( payload[\"pixel_values\"].to(device=device, dtype=dtype), payload[\"image_grid_thw\"],::lock_acquire#0",
+   "file": "atom/model_engine/multimodal_runtime.py",
+   "symbol": "embed_multimodal_batch",
+   "call": "cache.acquire",
+   "expr": "cache.acquire( request_id, data, lambda payload: model.get_vision_embeddings( payload[\"pixel_values\"].to(device=device, dtype=dtype), payload[\"image_grid_thw\"],",
+   "shape": "lock_acquire",
+   "peer": "none",
+   "why": "looks up, or encodes once, a request's vision embeddings in a dictionary the runner owns; it takes no lock",
+   "mechanism": "K9",
+   "mechanism_why": "a dictionary lookup inside the forward pass the simulator replaces"
+  },
+  {
    "id": "atom/model_engine/pp_engine_core.py::PPEngineCoreProc._head_busy_loop::while True::spin_loop#0",
    "file": "atom/model_engine/pp_engine_core.py",
    "symbol": "PPEngineCoreProc._head_busy_loop",
@@ -2652,9 +2865,9 @@
    "mechanism_why": "the per-step reduction inside one data-parallel group, which is one LP"
   },
   {
-   "id": "atom/model_engine/scheduler.py::Scheduler.schedule::while delayer_allows and (self.delay_factor <= 0 or self._passed_delay(clock.now(time.time))) and self.waiting and num_seqs_prefill < self.max_num_seqs and num_::spin_loop#0",
+   "id": "atom/model_engine/scheduler.py::Scheduler._schedule::while delayer_allows and (self.delay_factor <= 0 or self._passed_delay(clock.now(time.time))) and self.waiting and num_seqs_prefill < self.max_num_seqs and num_::spin_loop#0",
    "file": "atom/model_engine/scheduler.py",
-   "symbol": "Scheduler.schedule",
+   "symbol": "Scheduler._schedule",
    "call": "while delayer_allows and (self.delay_factor <= 0 or self._passed_delay(clock.now(time.time))) and self.waiting and num_seqs_prefill < self.max_num_seqs and num_",
    "expr": "while delayer_allows and (self.delay_factor <= 0 or self._passed_delay(clock.now(time.time))) and self.waiting and num_seqs_prefill < self.max_num_seqs and num_",
    "shape": "spin_loop",
@@ -2665,9 +2878,9 @@
    "mechanism_why": ""
   },
   {
-   "id": "atom/model_engine/scheduler.py::Scheduler.schedule::while not self.block_manager.can_append(seq, num_new_tokens)::spin_loop#0",
+   "id": "atom/model_engine/scheduler.py::Scheduler._schedule::while not self.block_manager.can_append(seq, num_new_tokens)::spin_loop#0",
    "file": "atom/model_engine/scheduler.py",
-   "symbol": "Scheduler.schedule",
+   "symbol": "Scheduler._schedule",
    "call": "while not self.block_manager.can_append(seq, num_new_tokens)",
    "expr": "while not self.block_manager.can_append(seq, num_new_tokens)",
    "shape": "spin_loop",
@@ -2676,6 +2889,66 @@
    "why": "preempts until the batch fits; it is arithmetic over block counts and does not park",
    "mechanism": "K9",
    "mechanism_why": ""
+  },
+  {
+   "id": "atom/model_engine/scheduler.py::PrefillScheduler.add::self.metrics.enqueue(seq)::task_wait#0",
+   "file": "atom/model_engine/scheduler.py",
+   "symbol": "PrefillScheduler.add",
+   "call": "self.metrics.enqueue",
+   "expr": "self.metrics.enqueue(seq)",
+   "shape": "task_wait",
+   "peer": "none",
+   "why": "sets the request's queue timing unless the input thread already has; it queues nothing",
+   "mechanism": "K9",
+   "mechanism_why": "an attribute write on the request, which cannot park"
+  },
+  {
+   "id": "atom/model_engine/scheduler.py::PrefillScheduler.extend::self.metrics.enqueue(seq)::task_wait#0",
+   "file": "atom/model_engine/scheduler.py",
+   "symbol": "PrefillScheduler.extend",
+   "call": "self.metrics.enqueue",
+   "expr": "self.metrics.enqueue(seq)",
+   "shape": "task_wait",
+   "peer": "none",
+   "why": "sets the request's queue timing unless the input thread already has; it queues nothing",
+   "mechanism": "K9",
+   "mechanism_why": "an attribute write on the request, which cannot park"
+  },
+  {
+   "id": "atom/model_engine/scheduler.py::Scheduler._publish_state_stores::enqueue(stores)::task_wait#0",
+   "file": "atom/model_engine/scheduler.py",
+   "symbol": "Scheduler._publish_state_stores",
+   "call": "enqueue",
+   "expr": "enqueue(stores)",
+   "shape": "task_wait",
+   "peer": "none",
+   "why": "hands this pass's state checkpoints to an offload connector, which appends them to a list; the simulated connector has no state tier",
+   "mechanism": "K9",
+   "mechanism_why": "a list append in an offload backend outside the simulated configuration, which cannot park"
+  },
+  {
+   "id": "atom/model_engine/scheduler.py::Scheduler.add::self.metrics.enqueue(seq)::task_wait#0",
+   "file": "atom/model_engine/scheduler.py",
+   "symbol": "Scheduler.add",
+   "call": "self.metrics.enqueue",
+   "expr": "self.metrics.enqueue(seq)",
+   "shape": "task_wait",
+   "peer": "none",
+   "why": "sets the request's queue timing unless the input thread already has; it queues nothing",
+   "mechanism": "K9",
+   "mechanism_why": "an attribute write on the request, which cannot park"
+  },
+  {
+   "id": "atom/model_engine/scheduler.py::Scheduler.extend::self.metrics.enqueue(seq)::task_wait#0",
+   "file": "atom/model_engine/scheduler.py",
+   "symbol": "Scheduler.extend",
+   "call": "self.metrics.enqueue",
+   "expr": "self.metrics.enqueue(seq)",
+   "shape": "task_wait",
+   "peer": "none",
+   "why": "sets the request's queue timing unless the input thread already has; it queues nothing",
+   "mechanism": "K9",
+   "mechanism_why": "an attribute write on the request, which cannot park"
   },
   {
    "id": "atom/utils/tbo/ubatching.py::sync_dp_metadata::torch.distributed.all_gather(gathered, local, group=dp_group)::collective#0",
@@ -2800,7 +3073,7 @@
   {
    "file": "atom/model_engine/engine_core.py",
    "symbol": "EngineCore.busy_loop",
-   "anchor": "next_metrics_push = now + METRICS_PUSH_INTERVAL_S",
+   "anchor": "next_metrics_push = now + metrics_interval",
    "category": "ignore",
    "peer": "none",
    "why": "the metrics push cadence is deliberately left on the real clock; the reported timeline comes from sampling, not from this",
@@ -2810,7 +3083,7 @@
   {
    "file": "atom/model_engine/engine_core.py",
    "symbol": "DPEngineCoreProc.busy_loop",
-   "anchor": "next_metrics_push = now + METRICS_PUSH_INTERVAL_S",
+   "anchor": "next_metrics_push = now + metrics_interval",
    "category": "ignore",
    "peer": "none",
    "why": "the same cadence in the data-parallel loop, deliberately left on the real clock",
