@@ -196,10 +196,11 @@ in the first version (D100), so row order and raggedness are covered before grad
   measured, stays incomplete, and refuses the step that needs it (D99).
 - **The feasible region's boundary is in the grid.** The definition's node lists stay the
   input; the planner adds the boundary nodes, given per step kind below, from the bounds
-  the bundle records: `max_num_seqs`, `max_num_batched_tokens`, `max_model_len`, the block
-  size and the KV block count (D101 checks them). A planned corner past a limit is
-  reported, never measured, not even with the limit raised or the KV pool enlarged, which
-  measures shapes the target never runs; its cell stays incomplete and refuses (D99).
+  the bundle records: the scheduler's `max_num_seqs`, `max_num_batched_tokens` and
+  `max_model_len` (D101 checks them), and the block size and KV block count the grid was
+  planned for. A planned corner past a limit is reported, never measured, not even with
+  the limit raised or the KV pool enlarged, which measures shapes the target never runs;
+  its cell stays incomplete and refuses (D99).
   The measurement this rests on ([#830](https://github.com/jgong5/ATOM/issues/830)):
   on #740's Qwen3.8-27B records of traces 256 to 392, nodes `2^(k/2)` alone leave up to
   43.5% of a record's steps in a cell with a corner past a limit, and with these boundary
