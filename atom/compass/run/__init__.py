@@ -783,15 +783,24 @@ def _write_summary(run: dict, a: _RecordingAuthority, ended: bool = False) -> No
     end = a.finished or time.monotonic()
     summary = RunSummary.of(a, end - (a.started or end), refusals=tally).as_record()
     schedule = summary["schedule"]
-    schedule["predicted_seconds"] = seconds
+    # An engine that raised, or never handed in, priced steps no one counted:
+    # its seconds and shares are absent, not 0.
+    counted = all(
+        "priced" in hand_ins.get(n, {}) for n in files if n.startswith(ENGINE.name)
+    )
+    schedule["predicted_seconds"] = seconds if counted else None
     # Answers no measurement backs: diagnostics, never refusals.
     for species in ("analytical", "extrapolated"):
-        schedule[species] = {
-            "steps": total(f"{species}_steps"),
-            "fraction_of_predicted_seconds": (
-                total(f"{species}_seconds") / seconds if seconds else 0.0
-            ),
-        }
+        schedule[species] = (
+            {
+                "steps": total(f"{species}_steps"),
+                "fraction_of_predicted_seconds": (
+                    total(f"{species}_seconds") / seconds if seconds else 0.0
+                ),
+            }
+            if counted
+            else None
+        )
     summary["configuration"] = configuration(run)
     summary["schema_version"] = SUMMARY_SCHEMA_VERSION
     summary["source_root"] = a.source_root.as_json()

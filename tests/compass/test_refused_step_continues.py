@@ -197,3 +197,36 @@ def test_another_on_refusal_is_refused_when_the_run_file_is_read(
     run_file(tmp_path, monkeypatch, on_refusal=value)
     with pytest.raises(ValueError, match="on_refusal is"):
         compass_run.spec()
+
+
+def test_a_run_that_ends_mid_run_leaves_its_seconds_and_shares_absent_not_zero(
+    monkeypatch, tmp_path
+):
+    # The engine priced a prefill, then raised; it handed in no priced steps.
+    monkeypatch.setattr(torch.distributed, "all_reduce", None)
+    run = run_file(tmp_path, monkeypatch, on_refusal="abort")
+    for module, name in [(compass_run, "_authority"), (clock, "_installed")]:
+        monkeypatch.setattr(module, name, None)
+    with compass_run.frontend(_deployment()):
+        pass
+    r = runner(no_eager_rung())
+    r.compass_abort = True
+    engine = LPRuntime(compass_run.ENGINE, compass_run.channel_table(run), None)
+    monkeypatch.setattr(clock, "_installed", engine)
+
+    with (
+        pytest.raises(CostRefused),
+        compass_run.engine_loop(SimpleNamespace(runner_mgr=Worker(r))),
+    ):
+        drive(r)
+
+    path = tmp_path / compass_run.SUMMARY_FILE
+    deadline = time.monotonic() + 10
+    while not path.exists():
+        assert time.monotonic() < deadline, "no summary.json in 10 wall seconds"
+        time.sleep(0.05)
+    schedule = json.loads(path.read_text())["schedule"]
+    assert r.priced_steps()["steps"] > 0
+    assert schedule["predicted_seconds"] is None
+    assert schedule["analytical"] is None
+    assert schedule["extrapolated"] is None
