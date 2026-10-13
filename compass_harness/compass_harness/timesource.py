@@ -73,13 +73,8 @@ class ClockTimer:
 
 
 class ClockAsyncio:
-    """``asyncio`` for the phase runner: ``wait_for`` times out on the clock.
-
-    ``ClockPhaseRunner`` overrides the runner's phase deadlines, so the one
-    ``wait_for`` left is the drain of the credits aiperf cancelled at its grace
-    deadline. It ends at the cancel plus its timeout in simulated time, or when
-    the awaited event is set. The progress report keeps its wall-clock ``sleep``.
-    """
+    """``asyncio`` for the phase runner: ``wait_for`` times out on the clock. Its
+    one caller ``ClockPhaseRunner`` does not override is the cancel drain."""
 
     sleep = staticmethod(asyncio.sleep)
     CancelledError = asyncio.CancelledError

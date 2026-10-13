@@ -83,10 +83,9 @@ class CompassAgenticReplay(AgenticReplayStrategy):
 class ClockPhaseRunner(PhaseRunner):
     """``PhaseRunner`` whose sending and grace deadlines fall on the Compass clock.
 
-    The drain after the grace deadline's cancel waits on the clock through
-    ``ClockAsyncio``. aiperf ends it early only once no branch work is pending;
-    subagent children it still tracks after the cancel keep it pending, so such
-    a run drains for the full timeout, real or simulated.
+    So does the drain after the cancel, through ``ClockAsyncio``: it ends early
+    only once no branch work is pending, so a run whose subagent children are
+    still tracked drains for the full timeout, real or simulated.
     """
 
     async def _wait_for_event_with_timeout(

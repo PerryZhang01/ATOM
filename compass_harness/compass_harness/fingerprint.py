@@ -46,8 +46,7 @@ PINNED = {
     "aiperf.timing.manager:TimingManager.__init__": "fb1667460f69c2f48a8c04a0610cd64c59cf3ff48aba734f183f8c0d5885548a",
     # The time source: what reads the rebound ``time`` and ``uuid4``, the idle
     # watchdog the strategy moves onto the clock, the deadline wait
-    # ClockPhaseRunner overrides, the cancel drain whose wait_for ClockAsyncio
-    # replaces, and the orchestrator that builds the runner.
+    # ClockPhaseRunner overrides, and the orchestrator that builds the runner.
     "aiperf.timing.phase.lifecycle:PhaseLifecycle.start": "019b5bfaa18a7e0cb59bd53867dbc6169c2601d0e052f4d59b56d819d7d2b254",
     "aiperf.timing.phase.lifecycle:PhaseLifecycle.mark_sending_complete": "b231e566784164c635580f796f650f800c0307430247a29e2a2640f60ae383a3",
     "aiperf.timing.phase.lifecycle:PhaseLifecycle.mark_complete": "4a3f74cbfddc4290b67c2bc05f3fd8844cb0655bee9dd228c5d02dc89f0e2b31",
