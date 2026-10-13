@@ -43,11 +43,10 @@ clock connection with a socket, it waits for the grant and its own sockets at
 once, so HTTP that reaches a frontend already in its run without a stamp, such
 as atomesh's worker registration at startup, is served while the grant is out.
 A timer such a request sets earlier than the time asked for fires at the grant,
-and a cross-LP send its handler makes, such as the abort of a client that hung
-up, takes the grant first and is sent at it. Which grant that is depends on
-when, in wall time, the socket event is read: the send is never backdated, but
-its time is not reproducible. `HttpChannel` is the inline receive of HTTP
-requests.
+and a cross-LP send such a handler makes takes the grant first and is sent at
+it. Which grant that is depends on when, in wall time, the socket event is
+read: the send is never backdated, but its time is not reproducible.
+`HttpChannel` is the inline receive of HTTP requests.
 """
 
 import asyncio
@@ -64,7 +63,7 @@ import weakref
 from concurrent.futures import Future, ThreadPoolExecutor
 from functools import partial
 
-from atom.compass.carriers import relay_stamp, with_relay_stamp
+from atom.compass.carriers import cancel_seq, relay_stamp, with_relay_stamp
 from atom.utils import clock
 from atom.utils.clock import DIAG_S, job
 
@@ -488,6 +487,12 @@ class HttpChannel:
     count as handled once their body has been received. The app gets the
     received body messages again from its ``receive``.
 
+    A stamped request on the ``http`` channel whose body is a cancel
+    (`atom.compass.carriers.cancel_seq`) goes to no app: it is answered 204,
+    and the request it names, if the app is still serving it, reads
+    ``http.disconnect`` from its ``receive`` then. That is the only hang-up a
+    stamped ``http`` request reads; its socket closing is never handed on.
+
     An LP whose requests come in on a ``relay`` channel reads each one's stamp
     from its body's ``kv_transfer_params`` instead. An LP that sends on one
     stamps a send on it for each JSON response whose ``kv_transfer_params`` is an
@@ -496,10 +501,12 @@ class HttpChannel:
 
     def __init__(self, app, stamp) -> None:
         self.app, self.stamp = app, stamp
+        # http seq -> its hang-up, for each stamped request the app is serving
+        self.hangups: dict[int, asyncio.Event] = {}
 
     async def __call__(self, scope, receive, send):
         rt = clock.installed()
-        relay_in = relay_out = None
+        relay_in = relay_out = hangup = None
         if rt is not None and scope["type"] == "http":
             relay_in = _relay(rt.table.channels_into(rt.me))
             relay_out = _relay(rt.table.channels_from(rt.me))
@@ -536,12 +543,30 @@ class HttpChannel:
                     body.append(await receive())
                 with rt.lock:
                     rt.count_done_locked(ch, seq)
+            if relay_in is None:
+                cancelled = cancel_seq(body[0].get("body", b""))
+                if cancelled is not None:
+                    if (hangup := self.hangups.get(cancelled)) is not None:
+                        hangup.set()
+                    await send({"type": "http.response.start", "status": 204})
+                    await send({"type": "http.response.body", "body": b""})
+                    return
+                hangup = self.hangups[seq] = asyncio.Event()
             inner = receive
 
             async def receive():
-                return body.pop(0) if body else await inner()
+                if body:
+                    return body.pop(0)
+                if hangup is None:
+                    return await inner()
+                await hangup.wait()
+                return {"type": "http.disconnect"}
 
-        await self.app(scope, receive, send)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            if hangup is not None:
+                del self.hangups[seq]
 
 
 def _relay(channels) -> str | None:

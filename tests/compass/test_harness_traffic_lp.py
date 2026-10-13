@@ -49,6 +49,7 @@ from aiperf.plugin import plugins  # noqa: F401  plugin discovery, as in aiperf
 # isort: split
 import aiperf
 import zmq
+import zmq.asyncio
 from aiperf.common.enums import CreditPhase
 from aiperf.credit.sticky_router import StickyCreditRouter
 from compass_harness.router import CompassCreditRouter
@@ -590,3 +591,68 @@ def test_a_1p1d_hold_settles_the_frontend_d_stream(tmp_path):
 
     passed, released = _run(main())
     assert passed == [0] and released == {stream: set()}
+
+
+def test_a_cancel_closes_the_open_requests_and_drops_their_later_events(tmp_path):
+    """Credits 0 and 1 are open at the grace deadline, 2.0. The cancel stamps
+    one http send per credit for its worker; their cancelled returns, which
+    the worker sends 50 ms after writing the cancels, are passed before the
+    next clock call. Credit 0's event read past the cancel is not counted, and
+    the events released after it, which no worker reports, are dropped, so
+    the run finishes with nothing open."""
+
+    class Runtime(ScriptedRuntime):
+        def next_event(self, t):
+            passed_at.append(list(passed))
+            return super().next_event(t)
+
+    passed, passed_at = [], []
+
+    async def main():
+        rt = Runtime([(1.0, {0}), (3.0, {1, 2})])
+        traffic = TrafficLP(rt, str(tmp_path / "lp"))
+        stamps, reports = addresses(str(tmp_path / "lp"))
+        sub = zmq.asyncio.Context.instance().socket(zmq.SUB)
+        sub.connect(stamps)
+        sub.subscribe(b"")
+        await traffic.subscribed(1)
+        push = zmq.Context.instance().socket(zmq.PUSH)
+        push.connect(reports)
+
+        async def on_return(worker_id, ret):
+            passed.append(ret.credit.id)
+
+        held = traffic.hold(on_return)
+
+        async def worker():
+            published = [await sub.recv_pyobj() for _ in range(4)]
+            for key, *_ in published[2:]:
+                push.send_pyobj((key,))
+            push.send_pyobj((_key(0), 1, 2.5, False))
+            await asyncio.sleep(0.05)
+            for num in (1, 0):
+                await held("w", SimpleNamespace(credit=_credit(num), error=None))
+            return published
+
+        worker = asyncio.ensure_future(worker())
+        traffic.send(_key(0))
+        traffic.send(_key(1))
+        push.send_pyobj((_key(0), 0, 1.0, False))
+        while traffic.now() < 2.0:
+            await traffic.wait(2.0)
+        await traffic.cancel()
+        traffic.finish()
+        try:
+            await asyncio.wait_for(traffic.done, 5)
+        finally:
+            push.close(linger=0)
+            sub.close(linger=0)
+        return await worker, rt.calls
+
+    published, calls = _run(main())
+    assert published[2:] == [
+        (_key(0), 2.0 + ADMIT, 2, "cancel"),
+        (_key(1), 2.0 + ADMIT, 3, "cancel"),
+    ]
+    assert calls == [2.0, 2.0, INF, INF]
+    assert passed_at == [[], [], [0, 1], [0, 1]]

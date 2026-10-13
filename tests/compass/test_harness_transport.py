@@ -68,7 +68,7 @@ from compass_harness.transport import (
     credit_key,
 )
 
-from atom.compass.carriers import stamp_events, tracestate_stamp
+from atom.compass.carriers import cancel_body, stamp_events, tracestate_stamp
 from compass_harness import fingerprint
 
 # Per request: its send stamp, then the arrival of each token event; [DONE]
@@ -358,3 +358,38 @@ def test_a_changed_pinned_function_refuses_the_run_by_name(tmp_path):
         "RuntimeError: compass_harness was built against other aiperf source; these "
         "functions changed: aiperf.transports.aiohttp_client:AioHttpClient._request"
     )
+
+
+class CancelHarness(Harness):
+    """`Harness` whose server also records each cancel posted to it and answers 204."""
+
+    def __init__(self, *args) -> None:
+        super().__init__(*args)
+        self.cancels = []
+
+    async def handle(self, request: web.Request) -> web.StreamResponse:
+        if "X-Request-ID" in request.headers:
+            return await super().handle(request)
+        self.cancels.append((request.headers["tracestate"], await request.read()))
+        return web.Response(status=204)
+
+
+def test_the_worker_that_sent_a_request_posts_its_stamped_cancel(tmp_path, monkeypatch):
+    """Credit 0 was sent with http seq 0; the traffic LP then publishes a
+    cancel for it, stamped ``(11.0, 3)``. The worker posts it to credit 0's URL
+    and reports it written; it reads the answer before it stops."""
+
+    async def run():
+        async with CancelHarness(tmp_path, monkeypatch) as h:
+            await h.stamp(0)
+            await h.send(0)
+            for _ in range(len(TOKENS[0]) + 1):
+                await h.pull.recv_pyobj()
+            await h.pub.send_pyobj((_key(0), 11.0, 3, "cancel"))
+            await h.pub.send_pyobj((_key(1), 11.0, 4, "cancel"))  # not this worker's
+            written = await h.pull.recv_pyobj()
+        return written, h.cancels
+
+    written, cancels = _run(run())
+    assert written == (_key(0),)
+    assert cancels == [("compass=a:11.0;s:3", cancel_body(SENDS[0][1]))]

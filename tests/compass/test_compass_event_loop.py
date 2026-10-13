@@ -342,7 +342,6 @@ def test_a_body_that_arrives_after_the_next_timer_is_handed_on_at_its_release(ru
         while got[-1]["more_body"]:
             got.append(await receive())
         handled.append((loop.time(), b"".join(m["body"] for m in got)))
-        assert (await receive())["type"] == "http.disconnect"
 
     def deliver():
         # The rest of the body comes once the clock passes the arrival, or
@@ -638,3 +637,68 @@ def test_a_send_that_takes_the_finish_ends_the_loop_at_the_last_lp_time(monkeypa
     stamps, released, end = _hang_up_while_the_grant_is_out(monkeypatch, None)
     assert stamps == [(INF, 0)] and released == []
     assert end == 0.0
+
+
+def test_a_stamped_cancel_hangs_its_request_up_at_its_arrival_never_the_socket(run):
+    """Request 0 is stamped at 0 and its socket closes as soon as its body is
+    read; the cancel naming it is stamped at 1. The app serving request 0
+    reads ``http.disconnect`` at the cancel's arrival, and the cancel reaches
+    no app: it is answered 204."""
+    stamps = queue.Queue()
+
+    def traffic():
+        rt = LPRuntime(TRAFFIC, TABLE, clock_transport.connect(TRAFFIC, run.endpoint))
+        rt.start_run()
+        stamps.put(rt.stamp_send(HTTP))
+        rt.advance_to(1.0)
+        stamps.put(rt.stamp_send(HTTP))
+        rt.next_event(INF)
+        rt.close()
+
+    thread = threading.Thread(target=traffic, name="traffic", daemon=True)
+    thread.start()
+    arrival, seq = TABLE.lookahead(HTTP), 0
+    cancel_at, cancel = 1.0 + arrival, 1
+    loop = CompassEventLoop()
+    served, answered = [], []
+
+    async def app(scope, receive, send):
+        served.append((await receive())["body"])
+        served.append(((await receive())["type"], loop.time()))
+
+    def wire(body: bytes):
+        parts = [{"type": "http.request", "body": body, "more_body": False}]
+
+        async def receive():
+            return parts.pop(0) if parts else {"type": "http.disconnect"}
+
+        return receive
+
+    async def answer(message):
+        answered.append(message)
+
+    def scope(a, s):
+        return {"type": "http", "headers": [(b"x-test-stamp", b"%r %d" % (a, s))]}
+
+    async def go():
+        channel = HttpChannel(app, _stamp)
+        await asyncio.gather(
+            channel(scope(arrival, seq), wire(b"{}"), None),
+            channel(scope(cancel_at, cancel), wire(carriers.cancel_body(seq)), answer),
+        )
+
+    try:
+        loop.run_until_complete(go())
+        loop.run_forever()
+    finally:
+        thread.join(10)
+    loop.close()
+    assert [stamps.get(timeout=10) for _ in range(2)] == [
+        (arrival, seq),
+        (cancel_at, cancel),
+    ]
+    assert served == [b"{}", ("http.disconnect", cancel_at)]
+    assert answered == [
+        {"type": "http.response.start", "status": 204},
+        {"type": "http.response.body", "body": b""},
+    ]
