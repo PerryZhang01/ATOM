@@ -469,12 +469,12 @@ continues, and any refusal makes the run a coverage report** (owner ruling on
    the run summary, `01` D3.5), not acceptance evidence. It names exactly what to
    measure next. There is no threshold. Neither an extrapolated nor an analytic step
    invalidates a run, whatever its share.
-4. **`--compass-on-refusal abort` exists** (`13` D80) for the case where a refusal is a
+4. **`compass run --on-refusal abort` exists** (`13` D80) for the case where a refusal is a
    bug being chased. It stops the run at the first refusal, and the run summary is still
    written. It is not the default.
 
 **Why not abort by default.** Refusals are the design's main *diagnostic* output — the
-whole point of `compass plan` is that a refusal tells you what to measure. Aborting makes
+toolchain is built so that a refusal tells you what to measure (`07` D37). Aborting makes
 that one refusal per run instead of a complete list, which turns a single coverage gap
 into as many iterations as there are gaps.
 
@@ -482,9 +482,9 @@ into as many iterations as there are gaps.
 0 s, so a run with refusals understates its time by an amount nothing measured; a
 threshold on refused seconds would gate on a number that is zero by construction.
 Analytic and extrapolated steps are priced, so their shares of seconds are real, and
-each is reported apart so neither reads as measured. Tier 0 answers only in a run whose
-run file enables it, and its share sits beside the verdict, so it cannot become a silent
-fallback — the exact failure the *refuse rather than fall back* principle exists to
+each is reported apart so neither reads as measured. Tier 0 answers only in a run given
+`--roofline-floor-s` (`13` D80), and its share sits beside the verdict, so it cannot become
+a silent fallback — the exact failure the *refuse rather than fall back* principle exists to
 prevent. No cap on that share: an analytic law is expected to differ from the hardware,
 and no fraction of seconds says by how much; the cell's error against the real runs does.
 
@@ -690,7 +690,7 @@ claims there are not.
 | D47 | Cost accuracy on the real run's own step sequence; report totals, held-out-worst, and median per step together. | 2026-09-18 |
 | D48 | Memory per term, never as a sum. The gate is whether the top-1 configuration choice survives, not the byte error. | 2026-09-18 |
 | D49 | Seven hygiene refusals, each with a prior incident behind it. | 2026-09-18 |
-| D50.1 | A step is refused only when no rung answers; a fall-through, an `analytical` answer and an `extrapolated` one are not refusals, and the last two are reported apart with their steps and share of predicted seconds. A refused step costs 0 s and the run continues; `--compass-on-refusal abort` stops at the first, and the summary is written either way. Any refusal, of any source, makes the run a coverage report: no refused-seconds fraction, no threshold, and neither an out-of-hull nor an analytic step invalidates a run, at any share. | 2026-09-19; revised 2026-10-11 (#765, and again to drop the analytic cap) |
+| D50.1 | A step is refused only when no rung answers; a fall-through, an `analytical` answer and an `extrapolated` one are not refusals, and the last two are reported apart with their steps and share of predicted seconds. A refused step costs 0 s and the run continues; `--on-refusal abort` stops at the first, and the summary is written either way. Any refusal, of any source, makes the run a coverage report: no refused-seconds fraction, no threshold, and neither an out-of-hull nor an analytic step invalidates a run, at any share. | 2026-09-19; revised 2026-10-11 (#765, and again to drop the analytic cap) |
 | D50 | Everything registered and hashed before evaluation; the case set never shrinks. One simulated run plus a reproducibility assertion; N≥3 spaced real runs. The cells are stage 2's Qwen3.8-27B TP1 on MI308X and M2's four nightly P/D configurations of DeepSeek-V4-Pro on MI355X at their concurrencies, then the DPA two at EP8. M2's ranking gate: the same best configuration as hardware at each concurrency, and rank correlation across all cells, per end-to-end metric, each inside its real-vs-real spread, with Spearman's ρ also at least 0.9. DP mechanism tests run on a CPU fake-model DP2. | 2026-09-18; revised 2026-10-01, 2026-10-09, 2026-10-10 |
 | D50.2 | The MI455 projection is sound, not graded: the roofline at the spec's peaks, derates at 1, no host floor, composed by the step's own joins and never summed across concurrent work, is a lower bound on every measured MI355X step; every MI455 input is sourced or marked assumed; the method's error is measured by projecting Qwen3.8-27B from MI308X to MI355X. | 2026-10-09 |
 | D51 | Measure a saturated cell early. Account cold costs once; report the simulator's own per-step CPU cost alongside the ratio. | 2026-09-18 |

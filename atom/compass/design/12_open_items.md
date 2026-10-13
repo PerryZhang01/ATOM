@@ -12,10 +12,11 @@ backlog. Nothing here is a decision; every decision lives in its topic's decisio
 
 1. **Load-bearing assumptions** — hold up large parts of the design; each has a check plan
 2. **Missing topics** — design points nobody has written yet, with a recommendation
-3. **TODO register** — per topic. T10, T13, T15, T22, T28, T48, T65, T71, T84 and T91 are struck
-   through as done, and T77 was opened and closed by P0.1. The register is the rows of section 3
-   below and nothing else: prose elsewhere in this file names T-numbers that belong to
-   other branches. It is allocated across parallel task branches, so not contiguous
+3. **TODO register** — per topic. T10, T13, T15, T16, T17, T22, T28, T48, T65, T71, T84,
+   T91, T93 and T96 are struck through as done or retired, and T77 was opened and closed
+   by P0.1. The register is the rows of section 3 below and nothing else: prose elsewhere
+   in this file names T-numbers that belong to other branches. It is allocated across
+   parallel task branches, so not contiguous
 4. **Cross-cutting issues and pending amendments**
 
 ---
@@ -106,9 +107,9 @@ M-f `14`; M-g `01` D3.5.
 
 | # | Item |
 |---|---|
-| T16 | Calibrate `compass plan`'s GPU-time estimates |
-| T17 | Draw the boundary of the standalone `ModelRunner` bench |
-| T18 | Verify a replayed step table reproduces the forward context faithfully |
+| ~~T16~~ | ~~Calibrate the campaign planner's GPU-time estimates~~ — retired 2026-10-13 on #851: no command plans the whole campaign (`07` D37) |
+| ~~T17~~ | ~~Draw the boundary of the standalone `ModelRunner` bench~~ — drawn 2026-10-13 on #851: `EngineCore` without its scheduler (`07` D39) |
+| T18 | Verify a batch replayed by rule reproduces the recorded step's forward context faithfully, MoE routing included |
 | T19 | Decide the artifact store's physical form |
 | T20 | Declared node + standalone benchmark for invisible collectives |
 | T21 | Establish whether Phase 1c transfers across width (the TP2 test run) |
@@ -169,7 +170,7 @@ M-f `14`; M-g `01` D3.5.
 |---|---|
 | T57 | Generate the `ATOM_COMPASS_*` environment twins from the flag table rather than hand-writing them |
 | T58 | Decide whether a per-leaf tier override is worth the reproducibility cost |
-| T96 | Reconcile `13` D79 and D80 with the run file the code selects a backend by (`--compass-run`, `atom/compass/run/__init__.py::runner`): `13` rejects a Compass config file, the code reads one (`17` D103) |
+| ~~T96~~ | ~~Reconcile `13` D79 and D80 with the run file the code selects a backend by (`--compass-run`, `atom/compass/run/__init__.py::runner`): `13` rejects a Compass config file, the code reads one (`17` D103)~~ — settled 2026-10-13 on #851: `compass run` takes flags only, and the run file is its internal transport (`13` D79, D80) |
 
 ### Topic 14 — speculative decoding and MTP
 
@@ -258,9 +259,9 @@ Beyond the per-topic TODOs.
 5. **Scheduling fidelity is unobservable at saturation.** Some cell needs deliberate slack.
 6. **Multi-node DP is implemented but not hardware-validated** — `docs/distributed_guide.md`
    §9 carries the banner. If paired evidence is needed there, the real side may not exist.
-7. **A user guide is a deliverable, not documentation debt.** `compass plan` is designed
-   so the tool tells the user what to measure, which only works if the flows, the
-   recommended calibration sequence and the flag surface are written down for a reader
+7. **A user guide is a deliverable, not documentation debt.** The toolchain is designed
+   so the tool tells the user what to measure (`07` D37), which only works if the flows,
+   the recommended calibration sequence and the flag surface are written down for a reader
    who was not in these design conversations. Requested during review; belongs in the
    execution plan as its own task, not as a trailing chore.
 8. 7. **ATOM's `main` moves while Compass is built.** The seam (`Config.runner_qualname`) has

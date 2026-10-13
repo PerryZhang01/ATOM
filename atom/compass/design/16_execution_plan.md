@@ -17,6 +17,11 @@ stages 1 and 1b, and M2 is v1, its stage 3. Phase 0 through Wave 3 stand, with
 the rows D95 changes marked in place; Phase 0b is new; Waves 4–6 replace the coarse
 sketch that followed Wave 3.
 
+**Revised 2026-10-13 by the owner's ruling on
+[#851](https://github.com/jgong5/ATOM/issues/851#issuecomment-6140384791).** The
+toolchain's steps half (`13` D80) is stage 2's, S2.7, built ahead of the ops half, which
+stays W4.1's; the module layout names where each piece goes.
+
 **Scope.** How the work is organised, allocated and gated; what happens first; and what
 each stage must produce. It is **detailed through M2**. Work after v1 is listed, not
 planned — see *After v1*. Phase 0b's answers can still reshape Waves 4–6, and the plan
@@ -119,12 +124,16 @@ atom/compass/
   memory/     device-reading substitution, per-term model
   ir/         Cost IR (Seq/Repeat/Par), nested-Repeat detector, opaque leaves
   capture/    FakeTensorMode capture, guard domains
-  spec/       machine-spec schema, merge / validate / explain
+  spec/       machine-spec schema, probes, merge / validate / explain
   artifacts/  store, keys, digests, invalidation matrix
-  cli/        compass plan / discover / trace / measure / validate
+  drive/      serving ATOM for record, trace steps and run; run.json; the GPU checks
+  bench/      the measurement bench: replay by rule, the window, measure
+  fit/        samples for fit and publishing; each backend owns its fit
+  validate/   grading: the separable results, gradeable runs only
   metrics/    per-step sampling, backfill
   kv/         simulated KV connector
 tests/compass/          mirrors the above
+tools/compass/compass.py  the one compass entry (13 D80); it parses and dispatches only
 <out-of-tree package>   the aiperf adapter (never inside ATOM)
 ```
 
@@ -502,22 +511,24 @@ side, serves any candidate backend. #627 ruled on 2026-10-10 that stage 2 prices
 for now. The rows after S2.1 are step fit's stage-2 evaluation (`17` D96), off stage 2's
 critical path: no stage-2 issue waits on them, their MI308X measurements run only when node
 18 is idle from that path, S2.4 builds on the tier-a backend #738 delivered (#759), and none
-of them depends on or edits #741's or #742's code.
+of them depends on or edits #741's or #742's code. S2.7 builds the toolchain's steps half
+that step fit's rows run on (`13` D80), ahead of the ops half (W4.1).
 
 | ID | Task | Module | Effort | Depends on |
 |---|---|---|---|---|
 | **S2.1** | The real side: Qwen3.8-27B TP1 on MI308X, aggregated, driven by cc-traces at `08` D50's stage-2 client counts; three or more spaced runs per client count (`08` D45), with per-request records and per-step tables, each forward's batch and unprofiled seconds (`08` D49 item 1). Filed under #627's stage-2 plan; step fit reads #743's registered runs read only, or, if they do not exist when it is ready, runs its own under the same rules, named apart from stage 2's (`17` D96) | `scripts/compass/` | 150–300 | GPU queue |
-| **S2.2** | Step fit's grid: a grid definition with its margin, and the boundary nodes the planner adds from the target's bounds (per decode rung, each B node's KV limit and `max_model_len - 1` as c nodes and B nodes where shapes cross the rung's limit; prefill on `(B, T, c)` with the token budget, `max_num_seqs` and `max_model_len - max_num_batched_tokens` as nodes), planned from Phase 0 on the registered case set, then from the shapes of S2.1's step tables, any trace's shapes and never its timings; the cells the planned shapes fall in measured on MI308X per point while node 18 is idle from the critical path, then topped up in the cells real batches fall in (`17` D98) | calibration, `cli/` | 300–500 | W4.1, S2.1, T27, GPU queue |
-| **S2.3** | Step fit's residual, fitted on replayed batches of traces 256 to 392 (`17` D100) | `backends/`, calibration | 250–400 | S2.2 |
+| **S2.2** | Step fit's grid: a grid definition with its margin, and the boundary nodes the planner adds from the target's bounds (per decode rung, each B node's KV limit and `max_model_len - 1` as c nodes and B nodes where shapes cross the rung's limit; prefill on `(B, T, c)` with the token budget, `max_num_seqs` and `max_model_len - max_num_batched_tokens` as nodes), planned by step fit's planner beside its backend (#909) from Phase 0 on the registered case set, then from the shapes of S2.1's step tables, any trace's shapes and never its timings; the cells the planned shapes fall in measured on MI308X per point by `measure steps` while node 18 is idle from the critical path, then topped up in the cells real batches fall in (`17` D98) | `backends/`, calibration | 300–500 | S2.7, S2.1, T27, GPU queue |
+| **S2.3** | Step fit's residual, fitted on real-run step times, bench replays or both, of traces 256 to 392, pooled with no source term and reported by source; the bundle from `fit steps --backend step-fit` (`17` D100; #907, #919) | `backends/`, calibration | 250–400 | S2.2 |
 | **S2.4** | `StepFitBackend` with its production wiring, built on the tier-a backend #738 delivered (#759): lookup, residual, bundle and startup checks, the run record and the `step_fit` run-file key (`17` D99–D104) | `backends/`, wiring | 500–800 | W2.4, S2.3 |
 | **S2.5** | `09` D59's validation of the residual: data held out from the fit within traces 256 to 392, three or more candidate families, a second axis (`17` D96) | calibration | 150–250 | S2.3 |
-| **S2.6** | Grading step fit by stage 2's protocol: `08` D44's three results on traces 0 to 255 of S2.1's real runs, no ranking gate; a run with any refusal is a coverage report (`17` D102) | `cli/` | 150–250 | S2.4, S2.5 |
+| **S2.6** | Grading step fit by stage 2's protocol: `08` D44's three results on traces 0 to 255 of S2.1's real runs, no ranking gate; a run with any refusal is a coverage report (`17` D102) | `validate/` | 150–250 | S2.4, S2.5 |
+| **S2.7** | The toolchain's steps half (`13` D80): `record`, `trace steps`, `measure steps` on the bench of `07` D39, `fit steps` and `fit host`, `run` with `--coverage` and `gradeable`, the artifact kinds and rows of `07` D41 and D43, and the one entry; its tasks are #901 to #920 but for #909 (S2.2's) and #907 and #919 (S2.3's) | `drive/`, `bench/`, `fit/`, `artifacts/` | 2700–3800 | W2.4, GPU queue |
 
 ### Wave 4 — DeepSeek-V4-Pro on MI355X
 
 | ID | Task | Module | Effort | Depends on |
 |---|---|---|---|---|
-| **W4.1** | `compass plan` and the CLI; calibration Phase 0 discovery and Phase 1a trace; the standalone `ModelRunner` bench | `cli/`, `capture/` | 400–700 | W2.4, W2.5 |
+| **W4.1** | The toolchain's ops half (`13` D80): `trace ops` (Phase 1a), `measure ops` with collectives (`07` D40), `fit ops`, and the ops-half settings of `run`, on S2.7's bench and entry | `capture/`, `bench/`, `backends/` | 400–700 | W2.4, W2.5, S2.7 |
 | **W4.2** | DeepSeek-V4-Pro capture: a fake or meta implementation for every operator P0b.1 names — shape and dtype rules, no math — plus #501's launch interceptor for Triton, FlyDSL and MORI and its two host-query rules, with no ATOM change | `capture/`, `ir/` | 600–1000 | **P0b.1** |
 | **W4.3** | The real side: the nightly P/D configurations of `recipes/mesh/DeepSeek-V4.md` (TP; DP-attention + TBO; TP + MTP3; DP-attention + MTP1) on the MI355X pair, driven by cc-traces, with per-request records and a real-vs-real repeat per cell for the noise floor (`08` D45) | `scripts/compass/` | 200–350 | **P0b.3**, GPU queue |
 | **W4.4** | Calibration Phases 1b / 1c on MI355X for DeepSeek-V4-Pro's operator families: FP4 MoE GEMMs, attention with its compressors, the CSA indexer, mHC, the DP group's variable-size gather | `backends/`, calibration | 400–700 | W4.1, W4.2, GPU queue |
@@ -529,7 +540,7 @@ of them depends on or edits #741's or #742's code.
 | **W4.10** | M2's EP8 step: `exclusive` occupancy honoured in the IR; group membership per P0.6; MORI dispatch/combine carried as the group's collective in W4.6's step, in place of the gather, and priced from W4.12 by a routing model (#501) | `ir/`, `backends/` | 350–600 | **P0.6**, **P0b.2**, W4.6, W4.12 |
 | **W4.11** | The EP8 real side: W4.3's DP-attention cells re-run with `--enable-expert-parallel` on the MI355X pair, with the same records and repeat, since no nightly cell passes it | `scripts/compass/` | 50–100 | W4.3, GPU queue |
 | **W4.12** | MORI dispatch/combine within a node on MI355X, measured and fitted (`09`) for W4.10's routing model | `backends/`, calibration | 150–300 | W4.1, W4.2, GPU queue |
-| **W4.13** | Step fit evaluated on DeepSeek-V4-Pro, not graded (`17` D105): a workload-planned grid and fit on the nightly TP cell (TP8, no DP-attention, no MTP, expert parallelism off) on MI355X, prefill node and decode node, compared with W4.3's per-step tables and with tier b where available, reported per `08` D47. Competes with W4.4 and W4.12 for MI355X | calibration, `cli/` | 200–350 | S2.2–S2.6, W4.1, W4.3, GPU queue |
+| **W4.13** | Step fit evaluated on DeepSeek-V4-Pro, not graded (`17` D105): a workload-planned grid and fit on the nightly TP cell (TP8, no DP-attention, no MTP, expert parallelism off) on MI355X, prefill node and decode node, compared with W4.3's per-step tables and with tier b where available, reported per `08` D47. Competes with W4.4 and W4.12 for MI355X | calibration | 200–350 | S2.2–S2.6, W4.3, GPU queue |
 
 ### Wave 5 — MI455 by roofline
 
@@ -537,9 +548,9 @@ of them depends on or edits #741's or #742's code.
 |---|---|---|---|---|
 | **W5.1** | The MI455 machine spec in the `05` schema; every field sourced or marked assumed | `spec/` | 100–200 | **P0b.4** |
 | **W5.2** | Tier-0 laws for DeepSeek-V4-Pro's operator families, per precision (`10`) | `backends/` | 400–600 | W4.2 |
-| **W5.3** | The soundness check (`08` D50.2): the roofline at the spec's peaks, derates at 1 and no host floor, composed by the step's `Par` joins and TBO's overlap, is a lower bound on every measured MI355X step; the measured-to-roofline efficiency reported per operator family from W4.4's tables | `backends/`, `cli/` | 150–250 | W4.4, W4.6, W5.2 |
+| **W5.3** | The soundness check (`08` D50.2): the roofline at the spec's peaks, derates at 1 and no host floor, composed by the step's `Par` joins and TBO's overlap, is a lower bound on every measured MI355X step; the measured-to-roofline efficiency reported per operator family from W4.4's tables | `backends/`, `validate/` | 150–250 | W4.4, W4.6, W5.2 |
 | **W5.4** | The projection: MI355X efficiencies from W5.3 carried onto the MI455 spec, with every assumption written into the artifact | `backends/`, `artifacts/` | 150–300 | W5.1, W5.3 |
-| **W5.5** | The method's error: Qwen3.8-27B's MI308X tables projected to MI355X by W5.4's method and scored against real MI355X runs | `cli/` | 150–250 | W5.4, GPU queue |
+| **W5.5** | The method's error: Qwen3.8-27B's MI308X tables projected to MI355X by W5.4's method and scored against real MI355X runs | `validate/` | 150–250 | W5.4, GPU queue |
 
 If MI455 hardware arrives during M2, W4.3–W4.5 repeat on it (W4.11 and W4.12 too, for the
 EP8 step), and W5.4's projection becomes
@@ -549,9 +560,9 @@ a calibration.
 
 | ID | Task | Module | Effort | Depends on |
 |---|---|---|---|---|
-| **W6.1** | Paired acceptance over W4.3's cells, expert parallelism off: the separable results of `08` D44, plus the ranking gate — the same best configuration as hardware at each concurrency, and rank correlation across all cells | `cli/` | 250–400 | W4.6–W4.9 |
-| **W6.2** | The speed check on a saturated acceptance cell, against the target in `README.md` | `cli/` | ~100 | W6.1 |
-| **W6.3** | M2's EP8 step graded the same way: W6.1 over W4.11's cells, with W4.3's cells in the ranking | `cli/` | ~100 | W4.10, W4.11, W6.1 |
+| **W6.1** | Paired acceptance over W4.3's cells, expert parallelism off: the separable results of `08` D44, plus the ranking gate — the same best configuration as hardware at each concurrency, and rank correlation across all cells | `validate/` | 250–400 | W4.6–W4.9 |
+| **W6.2** | The speed check on a saturated acceptance cell, against the target in `README.md` | `validate/` | ~100 | W6.1 |
+| **W6.3** | M2's EP8 step graded the same way: W6.1 over W4.11's cells, with W4.3's cells in the ranking | `validate/` | ~100 | W4.10, W4.11, W6.1 |
 
 ---
 

@@ -12,6 +12,12 @@ written against it yet; implementation follows the execution plan in `16`.
 needs: an FP4 matrix-core rate, the size of the domain the in-node fabric joins, and a
 *sourced* or *assumed* status on every field (D25).
 
+**Revised 2026-10-13 by the owner's ruling on
+[#851](https://github.com/jgong5/ATOM/issues/851#issuecomment-6140384791):** the probes,
+`merge`, `validate` and `explain` are the `spec` package's functions, run by per-machine
+scripts, with no `compass` command (D26, `13` D80); `software_pinned_to` states torch, and
+a step fit bundle's stack is checked against it (D25).
+
 **Scope.** The single input artifact that tells Compass what machine it is simulating,
 its schema, and the tools that fill it in. A project requirement is that compute, memory
 size, bandwidth and interconnect are **configured and not read from a device runtime**, so
@@ -138,6 +144,7 @@ device:
     rocm:  "7.2.4"
     aiter: "<commit>"
     rccl:  "<version>"
+    torch: "<version>"
 
 interconnect:
   intra_node:
@@ -202,7 +209,8 @@ Mooncake's KV transfer between the prefill and the decode node (`01` D6).
    the +5980 MiB at width > 1 is collective buffer sizing, the 926 MiB at TP1 is HIP
    context plus libraries. A stack mismatch warns loudly by default and refuses under
    `validate(strict=True)`; constants moved across stacks, by a transfer or a merge,
-   always refuse.
+   always refuse. It is the target's stack: a step fit bundle's stack, torch included, is
+   checked against it, never against the stack of the process that simulates (`17` D101).
 4. **The whole resolved spec is echoed into every run artifact.** The KV gate is **≤5%**;
    a number whose spec cannot be recovered from the artifact is unattributable.
 5. **Every field is *sourced* or *assumed*, and the document says which.** A fragment
@@ -279,11 +287,18 @@ measured, how, and on what. `merge` combines fragments into a spec, recording wh
 fragment supplied each field. `validate` refuses an incomplete or inconsistent one.
 
 ```
-compass spec probe <what>  -> fragment.yaml
-compass spec merge f1 f2 ... -> machine.yaml
-compass spec validate machine.yaml
-compass spec explain machine.yaml --term kv_blocks
+a probe                  -> a fragment
+merge(fragments)         -> the machine spec, recording which fragment supplied each field
+validate(spec or merge)  -> the refusals below
+explain(spec, term)      -> the fields behind one quantity, and how much each contributed
 ```
+
+Each is a function of the `spec` package, and a per-machine script runs them:
+`scripts/compass/mi308x_spec.py` sweeps the tokenizer, merges its fragment with the
+device's and the declared ones, validates the result and prints `explain`'s rows. No
+`compass` command wraps them (`13` D80). The readings of an engine start, which the
+`device-memory` and `device-runtime-constants` probes take, are the ones `record` writes
+(`07` D38, Phase 2).
 
 ### The probes, by what hardware they need
 
@@ -291,21 +306,21 @@ compass spec explain machine.yaml --term kv_blocks
 
 | Probe | Fills | Method |
 |---|---|---|
-| `tokenizer --model M` | `host.tokenizers[].*` | encode and decode a length sweep with **ATOM's own loaded tokenizer** (`_load_tokenizer`, `llm_engine.py`), fit `a + b*n`. Must sweep past 200k tokens: the workload's p90 input is 204,288. |
+| `tokenizer`, per model | `host.tokenizers[].*` | encode and decode a length sweep with **ATOM's own loaded tokenizer** (`_load_tokenizer`, `llm_engine.py`), fit `a + b*n`. Must sweep past 200k tokens: the workload's p90 input is 204,288. |
 | `ipc` | `host.ipc.*` | round-trip over ATOM's own `make_zmq_socket` and `aiter.dist.shm_broadcast.MessageQueue`, so it measures the transports ATOM actually uses |
 
 **Tier 1 — one GPU of the target type.**
 
 | Probe | Fills | Notes |
 |---|---|---|
-| `device-memory --tp 1` | `capacity_bytes`, `driver_and_collective_reserve_bytes[1]`, `persistent_forward_buffer_bytes`, `cudagraph_pool.w1_*` | start an engine, read the five readings. Sweep >=5 capture ladders for the graph-pool fit; the prior fit predicted a held-out sixth at **+6.4%** |
+| `device-memory`, at TP1 | `capacity_bytes`, `driver_and_collective_reserve_bytes[1]`, `persistent_forward_buffer_bytes`, `cudagraph_pool.w1_*` | start an engine, read the five readings. Sweep >=5 capture ladders for the graph-pool fit; the prior fit predicted a held-out sixth at **+6.4%** |
 | `device-compute` | `bandwidth_bytes_per_s`, `*_flops`, their `derate`s | GEMM and bandwidth sweeps; derate is achieved/datasheet |
 
 **Tier 2 — N GPUs of the target type.**
 
 | Probe | Fills | Notes |
 |---|---|---|
-| `device-runtime-constants --tp 2,4,8` | `driver_and_collective_reserve_bytes`, `allocator_retained_after_load_bytes`, `cudagraph_pool.w_gt1_flat_bytes` | one engine start per width |
+| `device-runtime-constants`, at TP 2, 4, 8 | `driver_and_collective_reserve_bytes`, `allocator_retained_after_load_bytes`, `cudagraph_pool.w_gt1_flat_bytes` | one engine start per width |
 | `interconnect-intra` | `intra_node.*` | collectives in **real groups**, several sizes |
 
 **Tier 3 — two nodes.**
@@ -319,7 +334,7 @@ compass spec explain machine.yaml --term kv_blocks
 | Probe | Fills | Provenance stamped |
 |---|---|---|
 | `from-datasheet` | `capacity_bytes`, `bandwidth`, `flops` | `method: datasheet`, derates left blank so `validate` refuses until declared |
-| `transfer --from <spec>` | `runtime_constants.*` | `method: transferred-from:<spec>`, carrying **both** specs' `software_pinned_to` so a later mismatch is visible |
+| `transfer`, from another spec | `runtime_constants.*` | `method: transferred-from:<spec>`, carrying **both** specs' `software_pinned_to` so a later mismatch is visible |
 
 ### Two refusals every hardware probe must implement
 
@@ -381,6 +396,6 @@ which cancelled — the largest being 25% of a single term.
 | # | Decision | Date |
 |---|---|---|
 | D24 | The spec describes the machine; ATOM's config describes the deployment. Thread-pool width becomes an ATOM config option, not a Compass one. | 2026-09-18 |
-| D25 | Four-section schema: `provenance`, `host`, `device`, `interconnect`. Mandatory derates, no defaults for `runtime_constants`, `software_pinned_to` checked, whole spec echoed into every artifact. Revised for the MI455 projection: an optional dense `fp4_flops`, `intra_node.domain_devices` for a scale-up fabric wider than a node, and every field *sourced* or *assumed* by the fragments that supplied it, which a `mixed` spec records in `provenance.assumed`. | 2026-09-18; revised 2026-10-10 |
-| D26 | Probes emit fragments; `merge` / `validate` / `explain` combine and check them. Four hardware tiers plus datasheet and transfer paths. Every hardware probe implements the contamination refusals. | 2026-09-18 |
+| D25 | Four-section schema: `provenance`, `host`, `device`, `interconnect`. Mandatory derates, no defaults for `runtime_constants`, `software_pinned_to` checked, torch included, as the target's stack, whole spec echoed into every artifact. Revised for the MI455 projection: an optional dense `fp4_flops`, `intra_node.domain_devices` for a scale-up fabric wider than a node, and every field *sourced* or *assumed* by the fragments that supplied it, which a `mixed` spec records in `provenance.assumed`. | 2026-09-18; revised 2026-10-10; torch 2026-10-13 (#851) |
+| D26 | Probes emit fragments; `merge` / `validate` / `explain` combine and check them. Four hardware tiers plus datasheet and transfer paths. Every hardware probe implements the contamination refusals. All are the `spec` package's functions, run by per-machine scripts, with no `compass` command; an engine start's readings are `record`'s. | 2026-09-18; revised 2026-10-13 (#851) |
 | D25.1 | Runtime-constant fields renamed to say what they are; ATOM's own term recorded as a mapping column. `host.tokenizer` becomes `host.tokenizers[]`, keyed by tokenizer identity (id + backend + fingerprint) with `applies_to` model architectures. | 2026-09-19 |
