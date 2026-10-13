@@ -49,6 +49,7 @@ from aiperf.plugin import plugins  # noqa: F401  plugin discovery, as in aiperf
 # isort: split
 import aiperf
 import zmq
+import zmq.asyncio
 from aiperf.common.enums import CreditPhase
 from aiperf.credit.sticky_router import StickyCreditRouter
 from compass_harness.router import CompassCreditRouter
@@ -70,7 +71,7 @@ from atom.compass.clock import (
     single_engine_table,
 )
 from atom.compass.run import ENV as RUN_ENV
-from atom.utils.clock import LPRuntime
+from atom.utils.clock import LPRuntime, Straggler
 from compass_harness import ADDRESS_ENV, fingerprint
 
 #: The run file's table keys, as the deployment writes them.
@@ -590,3 +591,251 @@ def test_a_1p1d_hold_settles_the_frontend_d_stream(tmp_path):
 
     passed, released = _run(main())
     assert passed == [0] and released == {stream: set()}
+
+
+def test_a_cancel_closes_the_open_requests_and_drops_their_later_events(tmp_path):
+    """Credits 0 and 1 are open at the grace deadline, 2.0. The cancel stamps
+    one http send per credit for its worker; their cancelled returns, which
+    the worker sends 50 ms after writing the cancels, are passed before the
+    next clock call. Credit 0's event read past the cancel is recorded with no
+    arrival check, and the event released after it that no worker reports is
+    dropped, so the run finishes with nothing open."""
+
+    class Runtime(ScriptedRuntime):
+        def next_event(self, t):
+            passed_at.append(list(passed))
+            return super().next_event(t)
+
+    passed, passed_at = [], []
+
+    async def main():
+        rt = Runtime([(1.0, {0}), (3.0, {1, 2})])
+        traffic = TrafficLP(rt, str(tmp_path / "lp"))
+        stamps, reports = addresses(str(tmp_path / "lp"))
+        sub = zmq.asyncio.Context.instance().socket(zmq.SUB)
+        sub.connect(stamps)
+        sub.subscribe(b"")
+        await traffic.subscribed(1)
+        push = zmq.Context.instance().socket(zmq.PUSH)
+        push.connect(reports)
+
+        async def on_return(worker_id, ret):
+            passed.append(ret.credit.id)
+
+        held = traffic.hold(on_return)
+
+        async def worker():
+            published = [await sub.recv_pyobj() for _ in range(4)]
+            for key, *_ in published[2:]:
+                push.send_pyobj((key,))
+            push.send_pyobj((_key(0), 1, 2.5, False))
+            await asyncio.sleep(0.05)
+            for num in (1, 0):
+                await held("w", SimpleNamespace(credit=_credit(num), error=None))
+            return published
+
+        worker = asyncio.ensure_future(worker())
+        traffic.send(_key(0))
+        traffic.send(_key(1))
+        push.send_pyobj((_key(0), 0, 1.0, False))
+        while traffic.now() < 2.0:
+            await traffic.wait(2.0)
+        await traffic.cancel()
+        traffic.finish()
+        try:
+            await asyncio.wait_for(traffic.done, 5)
+        finally:
+            push.close(linger=0)
+            sub.close(linger=0)
+        return await worker, rt.calls
+
+    published, calls = _run(main())
+    assert published[2:] == [
+        (_key(0), 2.0 + ADMIT, 2, "cancel"),
+        (_key(1), 2.0 + ADMIT, 3, "cancel"),
+    ]
+    assert calls == [2.0, 2.0, INF, INF]
+    assert passed_at == [[], [], [0, 1], [0, 1]]
+
+
+def test_returns_whose_finals_share_a_grant_pass_in_stream_order(tmp_path):
+    """Credits 0 and 1 end in one grant, stream seqs 0 and 1. Credit 1's return
+    reaches the hold first and credit 0's 50 ms later; both are passed in
+    stream order, so the next turns aiperf schedules from them keep it."""
+
+    async def main():
+        rt = ScriptedRuntime([(1.0, {0, 1})])
+        traffic = TrafficLP(rt, str(tmp_path / "lp"))
+        passed = []
+
+        async def on_return(worker_id, ret):
+            passed.append(ret.credit.id)
+
+        held = traffic.hold(on_return)
+        push = zmq.Context.instance().socket(zmq.PUSH)
+        push.connect(addresses(str(tmp_path / "lp"))[1])
+        traffic.send(_key(0))
+        traffic.send(_key(1))
+        push.send_pyobj((_key(0), 0, 1.0, True))
+        push.send_pyobj((_key(1), 1, 1.0, True))
+        await held("w", SimpleNamespace(credit=_credit(1), error=None))
+        while rt.now < 1.0 or 1 not in traffic._reports:
+            await asyncio.sleep(0.001)
+        await asyncio.sleep(0.05)
+        await held("w", SimpleNamespace(credit=_credit(0), error=None))
+        traffic.finish()
+        try:
+            await asyncio.wait_for(traffic.done, 5)
+        finally:
+            push.close(linger=0)
+        return passed
+
+    assert _run(main()) == [0, 1]
+
+
+def test_a_cancel_waits_for_a_released_final_s_return_before_it_stamps(tmp_path):
+    """Credits 0 and 1 are open; the grant at the grace deadline, 2.0, releases
+    credit 0's final, whose return reaches the hold 50 ms after aiperf cancels.
+    The cancel waits for that return, so credit 0 completes and only credit 1
+    gets a cancel."""
+
+    async def main():
+        rt = ScriptedRuntime([(2.0, {0})])
+        traffic = TrafficLP(rt, str(tmp_path / "lp"))
+        stamps, reports = addresses(str(tmp_path / "lp"))
+        sub = zmq.asyncio.Context.instance().socket(zmq.SUB)
+        sub.connect(stamps)
+        sub.subscribe(b"")
+        await traffic.subscribed(1)
+        push = zmq.Context.instance().socket(zmq.PUSH)
+        push.connect(reports)
+        passed, cancels = [], []
+
+        async def on_return(worker_id, ret):
+            passed.append(ret.credit.id)
+
+        held = traffic.hold(on_return)
+
+        async def worker():
+            while True:
+                key, *_, kind = await sub.recv_pyobj()
+                if kind == "cancel":
+                    cancels.append(key)
+                    push.send_pyobj((key,))
+                    ret = SimpleNamespace(credit=_credit(key[2]), error=None)
+                    await held("w", ret)
+
+        async def late_return():
+            await asyncio.sleep(0.05)
+            await held("w", SimpleNamespace(credit=_credit(0), error=None))
+
+        worker = asyncio.ensure_future(worker())
+        traffic.send(_key(0))
+        traffic.send(_key(1))
+        push.send_pyobj((_key(0), 0, 2.0, True))
+        while traffic.now() < 2.0:
+            await traffic.wait(2.0)
+        late = asyncio.ensure_future(late_return())
+        await traffic.cancel()
+        traffic.finish()
+        try:
+            await asyncio.wait_for(traffic.done, 5)
+        finally:
+            worker.cancel()
+            late.cancel()
+            push.close(linger=0)
+            sub.close(linger=0)
+        return cancels, passed
+
+    cancels, passed = _run(main())
+    assert cancels == [_key(1)]
+    assert passed == [0, 1]
+
+
+class StragglerRuntime(ScriptedRuntime):
+    """``check_arrival`` with ``LPRuntime``'s rule: a report of an unreleased seq
+    whose arrival the LP has already passed is a straggler."""
+
+    def check_arrival(self, ch, arrival, seq) -> None:
+        if seq not in self.released[ch] and arrival < self.now:
+            raise Straggler(f"{ch} seq {seq} arrives at {arrival}, now {self.now}")
+
+
+def test_a_cancelled_request_s_report_read_after_its_seq_is_dropped(tmp_path):
+    """Credits 0 and 1 are cancelled at 2.0 and their returns passed. The grant
+    at 3.0 releases credit 0's stream seq 1 with no request open, so the hold
+    drops it; its report (arrival 2.5) is read after that. Credit 5, sent next,
+    still has its return passed and the run finishes."""
+
+    async def main():
+        rt = StragglerRuntime([(1.0, {0}), (3.0, {1}), (4.0, {2})])
+        traffic = TrafficLP(rt, str(tmp_path / "lp"))
+        stamps, reports = addresses(str(tmp_path / "lp"))
+        sub = zmq.asyncio.Context.instance().socket(zmq.SUB)
+        sub.connect(stamps)
+        sub.subscribe(b"")
+        await traffic.subscribed(1)
+        push = zmq.Context.instance().socket(zmq.PUSH)
+        push.connect(reports)
+        passed = []
+
+        async def on_return(worker_id, ret):
+            passed.append(ret.credit.id)
+
+        held = traffic.hold(on_return)
+
+        async def worker():
+            published = [await sub.recv_pyobj() for _ in range(4)]
+            for key, *_ in published[2:]:
+                push.send_pyobj((key,))
+            await asyncio.sleep(0.05)
+            for num in (0, 1):
+                await held("w", SimpleNamespace(credit=_credit(num), error=None))
+
+        worker = asyncio.ensure_future(worker())
+        traffic.send(_key(0))
+        traffic.send(_key(1))
+        push.send_pyobj((_key(0), 0, 1.0, False))
+        while traffic.now() < 2.0:
+            await traffic.wait(2.0)
+        await traffic.cancel()
+        await worker
+        while traffic.now() < 3.0:
+            await traffic.wait(3.0)
+        push.send_pyobj((_key(0), 1, 2.5, False))
+        await asyncio.sleep(0.1)
+        traffic.send(_key(5))
+        push.send_pyobj((_key(5), 2, 3.5, True))
+        await held("w", SimpleNamespace(credit=_credit(5), error=None))
+        traffic.finish()
+        try:
+            await asyncio.wait_for(traffic.done, 5)
+        finally:
+            push.close(linger=0)
+            sub.close(linger=0)
+        return passed
+
+    assert _run(main()) == [0, 1, 5]
+
+
+def test_a_report_the_reader_rejects_fails_the_run(tmp_path):
+    """Credit 0 is open and its stream seq 0 released at 1.0, unreported. A
+    report of seq 1 with arrival 0.5, read after that grant, is a straggler:
+    the run fails with it instead of holding for seq 0 forever."""
+
+    async def main():
+        rt = StragglerRuntime([(1.0, {0})])
+        traffic = TrafficLP(rt, str(tmp_path / "lp"))
+        push = zmq.Context.instance().socket(zmq.PUSH)
+        push.connect(addresses(str(tmp_path / "lp"))[1])
+        traffic.send(_key(0))
+        while traffic.now() < 1.0:
+            await traffic.wait(1.0)
+        push.send_pyobj((_key(0), 1, 0.5, False))
+        try:
+            await asyncio.wait_for(traffic.done, 5)
+        finally:
+            push.close(linger=0)
+
+    with pytest.raises(Straggler, match="seq 1 arrives at 0.5, now 1.0"):
+        _run(main())

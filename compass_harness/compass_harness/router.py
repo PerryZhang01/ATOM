@@ -3,7 +3,8 @@
 
 Every credit leaves through ``send_credit`` (``CreditIssuer._issue_credit_internal``
 is its one call site), so the stamp is taken there; every return reaches the
-strategy only through the return callback, so the hold wraps it.
+strategy only through the return callback, so the hold wraps it. aiperf's
+cancel of the requests in flight goes through the traffic LP first.
 """
 
 import asyncio
@@ -32,6 +33,13 @@ class CompassCreditRouter(StickyCreditRouter):
     async def wait_for_workers(self, timeout: float) -> None:
         await super().wait_for_workers(timeout)
         await self.traffic.subscribed(len(self._workers))
+
+    async def cancel_all_credits(self) -> None:
+        """Close the requests in flight on the clock first, then cancel upstream:
+        each one's stamped cancel is written before its worker drops it."""
+        if not self.traffic.done.done():
+            await self.traffic.cancel()
+        await super().cancel_all_credits()
 
     def mark_credits_complete(self) -> None:
         super().mark_credits_complete()
