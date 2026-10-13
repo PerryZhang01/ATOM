@@ -70,6 +70,7 @@ def test_aiperf_outliving_the_deployment_ends_the_cell_after_wait_s(tmp_path):
         capture_output=True,
         text=True,
         timeout=120,
+        check=False,
     )
     ended = time.time()
     assert done.returncode == 1, done.stdout + done.stderr
