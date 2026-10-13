@@ -84,6 +84,7 @@ server LP has handed in its refusals, which the out_dir both API servers share
 carries.
 """
 
+import ast
 import contextlib
 import hashlib
 import json
@@ -129,6 +130,14 @@ LP_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
 HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field changes meaning or goes.
 SUMMARY_SCHEMA_VERSION = 1
+#: Compass source the host-law key leaves out, by path under the package: all
+#: of it (None), or the top-level names only an installed LP runtime reaches.
+COMPASS_ONLY = {
+    "compass": None,
+    "utils/compass_loop.py": None,
+    "utils/clock.py": {"LPRuntime", "WrappedSocket", "WrappedPoller", "RelayQueue"},
+    "utils/zmq_shim.py": {"_Socket", "_ChannelSocket", "_Context"},
+}
 
 _authority: "_RecordingAuthority | None" = None
 #: This engine process's member name in the engine LP, None at DP width one.
@@ -622,9 +631,9 @@ def _fingerprint(tok) -> str | None:
 
 
 def host_key(config) -> dict:
-    """What host laws are keyed by: this host's CPU, ATOM's source outside
-    Compass, the served config.json and the engine config a step fit bundle is
-    keyed by."""
+    """What host laws are keyed by: this host's CPU, ATOM's source less
+    `COMPASS_ONLY`, the served config.json and the engine config a step fit
+    bundle is keyed by."""
     from atom.compass.run.step_fit import keyed
 
     cpu = re.search(
@@ -634,8 +643,16 @@ def host_key(config) -> dict:
     digest = hashlib.sha256()
     for path in sorted(root.rglob("*.py")):
         relative = path.relative_to(root)
-        if relative.parts[0] != "compass":
-            digest.update(f"{relative}\0".encode() + path.read_bytes())
+        skip = next(
+            (v for k, v in COMPASS_ONLY.items() if relative.is_relative_to(k)), ()
+        )
+        if skip is None:
+            continue
+        lines = path.read_bytes().splitlines(keepends=True)
+        for node in reversed(ast.parse(b"".join(lines)).body if skip else []):
+            if getattr(node, "name", None) in skip:
+                del lines[node.lineno - 1 : node.end_lineno]
+        digest.update(f"{relative}\0".encode() + b"".join(lines))
     return {
         "host_cpu": cpu.group(1) if cpu else platform.processor(),
         "atom": digest.hexdigest(),

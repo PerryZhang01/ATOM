@@ -482,6 +482,54 @@ def test_the_host_key_reads_atom_outside_compass_and_the_real_runner_writes_it(
     assert json.loads((tmp_path / "out" / "dp0.key.json").read_text()) == key
 
 
+def test_the_host_key_leaves_out_what_only_a_simulated_run_reaches(
+    tmp_path, monkeypatch
+):
+    import shutil
+    from pathlib import Path
+
+    import atom
+    from atom.compass.run import host_key
+
+    src, tree = Path(atom.__file__).parent, tmp_path / "atom"
+    (tree / "utils").mkdir(parents=True)
+    (tree / "model_engine").mkdir()
+    for name in ("clock", "compass_loop", "zmq_shim"):
+        shutil.copy(src / f"utils/{name}.py", tree / f"utils/{name}.py")
+    shutil.copy(src / "model_engine/scheduler.py", tree / "model_engine/scheduler.py")
+    monkeypatch.setattr(atom, "__file__", str(tree / "__init__.py"))
+    config = SimpleNamespace(
+        model=str(tmp_path / "model"),
+        enforce_eager=True,
+        kv_cache_block_size=16,
+        kv_cache_dtype="bf16",
+        quant_config=SimpleNamespace(compute_hash=lambda: "q"),
+        tensor_parallel_size=1,
+    )
+    key = host_key(config)["atom"]
+
+    def edited(name, old, new):
+        text = (src / name).read_text()
+        assert old in text
+        (tree / name).write_text(text.replace(old, new, 1))
+        try:
+            return host_key(config)["atom"]
+        finally:
+            shutil.copy(src / name, tree / name)
+
+    body = "\n    edited = 1\n"
+    assert (
+        edited("utils/clock.py", "class LPRuntime:\n", "class LPRuntime:" + body) == key
+    )
+    assert (
+        edited("utils/zmq_shim.py", "class _Socket:\n", "class _Socket:" + body) == key
+    )
+    assert edited("utils/compass_loop.py", "\n", "\nedited = 1\n") == key
+    assert edited("utils/clock.py", "\ndef now(", "\nedited = 1\ndef now(") != key
+    assert edited("utils/zmq_shim.py", "def __getattr__", "def _getattr") != key
+    assert edited("model_engine/scheduler.py", "\n", "\nedited = 1\n") != key
+
+
 def test_a_run_refuses_host_laws_fitted_under_another_key(tmp_path, monkeypatch):
     from test_run_step_fit import deployment, publish, run_file
 
