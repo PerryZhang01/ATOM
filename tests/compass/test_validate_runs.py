@@ -151,3 +151,30 @@ def test_the_command_prints_every_metric_and_needs_two_real_runs(tmp_path, capsy
     assert "end to end | output token throughput |" in out
     with pytest.raises(ValueError, match="two or more real runs"):
         grade(cells[:1], cells[1], cells[2])
+
+
+def test_prefill_tokens_grade_the_requests_both_runs_issued(tmp_path):
+    def run(name, ids, hit=0, extra=False):
+        """Requests of 100 and 50 prompt tokens, `hit` of the second cached;
+        `extra` issues a third, of the first one's length, after them."""
+        a, b, c = ids
+        schedule = [
+            [(a, 100, 100, False)],
+            [(a, 1, 101, True), (b, 50 - hit, 50, False)],
+            [(a, 1, 102, True), (b, 1, 51, True)],
+        ]
+        if extra:
+            schedule.append([(c, 100, 100, False)])
+        return _cell(tmp_path / name, schedule, {i: f"k{i}" for i in ids})
+
+    real = [run("r0", (7, 8, 9)), run("r1", (7, 8, 9)), run("r2", (5, 6, 9), hit=10)]
+    simulated = run("sim", (21, 22, 23), hit=10, extra=True)
+    report = grade(real, simulated, simulated)
+
+    g = report["counts"]["prefill tokens"]
+    assert g["simulated"] == 240 and g["real"] == [150, 150, 140]
+    assert g["result"] == [10, 10, 0] and g["spread"] == 10
+    assert g["verdict"] == "inside the real spread"
+    one = report["one run"]["prefill tokens"]
+    assert one["result"] == [100, 100, 100] and one["spread"] == 0
+    assert one["verdict"] == "not gated" and not one["admissible"]
