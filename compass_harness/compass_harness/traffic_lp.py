@@ -213,7 +213,9 @@ class TrafficLP:
                 self._written.add(report[0])
                 continue
             key, seq, arrival, final = report
-            self.rt.check_arrival(self.stream, arrival, seq)
+            # A cancelled request's seq may be dropped already, before its report.
+            if key not in self.cancelled:
+                self.rt.check_arrival(self.stream, arrival, seq)
             self._reports[seq] = (key, final)
 
     async def _pass_returns(self) -> None:
@@ -247,6 +249,10 @@ class TrafficLP:
         self._waiters.clear()
         spins = 0
         while True:
+            # A reader that raised fails the run instead of leaving the hold waiting.
+            for task in self._tasks:
+                if task.done():
+                    task.result()
             unreported, unreturned = [], []
             # A handled seq leaves the runtime's released set, so a pass scans
             # only the open events, not every event of the run. It stops at the
