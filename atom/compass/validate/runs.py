@@ -14,7 +14,15 @@ from the simulated cell to each real run. The families:
 
 - counts, from the step record and the export: steps and tokens per kind,
   preemptions, prefill streaks, requests completed. Distance `|a - b|`.
-  `exact` where every real run has the simulated cell's value.
+  `exact` where every real run has the simulated cell's value. `prefill
+  tokens` counts only the requests both runs issued, since which turns a
+  cc-traces run issues before its cutoff moves with its end-to-end time; the
+  values it reports are the cell totals.
+- one run, `prefill tokens`: the prefill tokens of the requests only the first
+  run issued less those only the second did, `not gated`. A request is its
+  prompt length and its place in arrival order among the run's requests of
+  that length, which a prefix-cache hit does not move; the requests a record
+  never names, their prefill unfinished, are one request.
 - distributions, per step from the step record: batch width, scheduled
   tokens, context tokens, and the cached fraction of a prefill step's context.
   Distance: the two-sample KS statistic.
@@ -36,13 +44,12 @@ than its previous row did.
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 from itertools import permutations
 from pathlib import Path
 
 from scipy.stats import ks_2samp
-
-from atom.compass import parity
 
 EXPORT = "artifacts/profile_export_aiperf.json"
 TARGET = {"ttft": 0.15}
@@ -58,12 +65,39 @@ END_TO_END = {
 
 
 def _steps(cell) -> list[dict]:
-    ranks = parity.read(Path(cell) / "steps")
+    ranks = sorted((Path(cell) / "steps").glob("dp*.jsonl"))
     if len(ranks) != 1:
         raise ValueError(
             f"{cell} holds {len(ranks)} DP ranks' records; this grades one"
         )
-    return [s for s in next(iter(ranks.values())) if not s["is_dummy_run"]]
+    steps = (json.loads(line) for line in ranks[0].read_text().splitlines())
+    return [s for s in steps if not s["is_dummy_run"]]
+
+
+def _requests(steps) -> collections.Counter:
+    """Prefill tokens per request, keyed by (prompt length, arrival place)."""
+    tokens, length = collections.Counter(), {}
+    for step in steps:
+        named = {request for request, _key in step["named"]}
+        for (request, _n, context), (q, _c, decode) in zip(step["batch"], step["rows"]):
+            tokens[request] += 0 if decode else q
+            if request in named:  # its final chunk: the context is the prompt
+                length[request] = context
+    out, seen = collections.Counter(), collections.Counter()
+    for request in sorted(tokens):  # request ids number arrivals
+        n = length.get(request)
+        out[None if n is None else (n, seen[n])] += tokens[request]
+        seen[n] += 1
+    return out
+
+
+def _both(a, b) -> int:
+    return abs(sum(n - b[k] for k, n in a.items() if k in b))
+
+
+def _one_run(a, b) -> int:
+    only_a = sum(n for k, n in a.items() if k not in b)
+    return abs(only_a - sum(n for k, n in b.items() if k not in a))
 
 
 def _prefill(step) -> bool:
@@ -126,6 +160,7 @@ def _read(cell) -> dict:
         "counts": _counts(steps, export),
         "distributions": _distributions(steps),
         "end to end": _end_to_end(export),
+        "requests": _requests(steps),
     }
 
 
@@ -136,8 +171,8 @@ DISTANCE = {
 }
 
 
-def _grade(family, name, real, simulated, perturbed) -> dict:
-    d = DISTANCE[family]
+def _grade(family, name, real, simulated, perturbed, d=None) -> dict:
+    d = d or DISTANCE[family]
     spread = max(d(a, b) for a, b in permutations(real, 2))
     result = [d(simulated, r) for r in real]
     moved = d(perturbed, simulated)
@@ -166,7 +201,7 @@ def grade(real_cells, simulated_cell, perturbed_cell) -> dict:
         raise ValueError("a real spread needs two or more real runs")
     real = [_read(c) for c in real_cells]
     simulated, perturbed = _read(simulated_cell), _read(perturbed_cell)
-    return {
+    report = {
         family: {
             name: _grade(
                 family,
@@ -179,6 +214,23 @@ def grade(real_cells, simulated_cell, perturbed_cell) -> dict:
         }
         for family in DISTANCE
     }
+    totals = {
+        k: report["counts"]["prefill tokens"][k]
+        for k in ("real", "simulated", "perturbed")
+    }
+    requests = (
+        [r["requests"] for r in real],
+        simulated["requests"],
+        perturbed["requests"],
+    )
+    report["counts"]["prefill tokens"] = (
+        _grade("counts", "prefill tokens", *requests, _both) | totals
+    )
+    one_run = _grade("counts", "prefill tokens", *requests, _one_run) | totals
+    report["one run"] = {
+        "prefill tokens": one_run | {"verdict": "not gated", "admissible": False}
+    }
+    return report
 
 
 def _text(report: dict) -> str:

@@ -271,7 +271,8 @@ procedure are the stable part.
 |---|---|
 | prefill step count | 106 on both sides |
 | decode step count | 4,346 vs 4,333 |
-| total prefill tokens, total decode tokens | pure workload arithmetic — should be exact |
+| total decode tokens | pure workload arithmetic — should be exact |
+| total prefill tokens | over the requests both runs issued, against the real runs' own spread: a cc-traces run issues a turn only after the previous one returns and none after its cutoff, so which turns fall inside moves with end-to-end time; on a hybrid model a prefix hit also stops at a state checkpoint that arrival order decides (#896). Turns only one run issued are reported, not gated. Ruled 2026-10-13 (#897). |
 | preemption count | 0 in the runs measured |
 | prefill streak count | identical across four real runs |
 | requests admitted / completed | — |
@@ -682,7 +683,7 @@ claims there are not.
 |---|---|---|
 | D44 | Three separable results — cost accuracy, schedule agreement, end-to-end — reported side by side. Aggregate latency is never the judgement. | 2026-09-18 |
 | D45 | Noise-floor first: the real-vs-real spread is the tolerance. A metric is admissible only if stable **and** sensitive, the latter tested against the ×0.97 counterfactual. | 2026-09-18 |
-| D46 | Three metric families ordered by robustness, as an extensible registry: counting invariants (exact), distributional (weighted most), event timing (most diagnostic). Policy agreement is a regression guard, not a discriminator. | 2026-09-18 |
+| D46 | Three metric families ordered by robustness, as an extensible registry: counting invariants (exact), prefill tokens over the requests both runs issued, within the real spread; distributional (weighted most), event timing (most diagnostic). Policy agreement is a regression guard, not a discriminator. | 2026-09-18; revised 2026-10-13 (#897) |
 | D47 | Cost accuracy on the real run's own step sequence; report totals, held-out-worst, and median per step together. | 2026-09-18 |
 | D48 | Memory per term, never as a sum. The gate is whether the top-1 configuration choice survives, not the byte error. | 2026-09-18 |
 | D49 | Seven hygiene refusals, each with a prior incident behind it. | 2026-09-18 |
