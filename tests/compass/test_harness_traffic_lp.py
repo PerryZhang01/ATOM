@@ -691,3 +691,62 @@ def test_returns_whose_finals_share_a_grant_pass_in_stream_order(tmp_path):
         return passed
 
     assert _run(main()) == [0, 1]
+
+
+def test_a_cancel_waits_for_a_released_final_s_return_before_it_stamps(tmp_path):
+    """Credits 0 and 1 are open; the grant at the grace deadline, 2.0, releases
+    credit 0's final, whose return reaches the hold 50 ms after aiperf cancels.
+    The cancel waits for that return, so credit 0 completes and only credit 1
+    gets a cancel."""
+
+    async def main():
+        rt = ScriptedRuntime([(2.0, {0})])
+        traffic = TrafficLP(rt, str(tmp_path / "lp"))
+        stamps, reports = addresses(str(tmp_path / "lp"))
+        sub = zmq.asyncio.Context.instance().socket(zmq.SUB)
+        sub.connect(stamps)
+        sub.subscribe(b"")
+        await traffic.subscribed(1)
+        push = zmq.Context.instance().socket(zmq.PUSH)
+        push.connect(reports)
+        passed, cancels = [], []
+
+        async def on_return(worker_id, ret):
+            passed.append(ret.credit.id)
+
+        held = traffic.hold(on_return)
+
+        async def worker():
+            while True:
+                key, *_, kind = await sub.recv_pyobj()
+                if kind == "cancel":
+                    cancels.append(key)
+                    push.send_pyobj((key,))
+                    ret = SimpleNamespace(credit=_credit(key[2]), error=None)
+                    await held("w", ret)
+
+        async def late_return():
+            await asyncio.sleep(0.05)
+            await held("w", SimpleNamespace(credit=_credit(0), error=None))
+
+        worker = asyncio.ensure_future(worker())
+        traffic.send(_key(0))
+        traffic.send(_key(1))
+        push.send_pyobj((_key(0), 0, 2.0, True))
+        while traffic.now() < 2.0:
+            await traffic.wait(2.0)
+        late = asyncio.ensure_future(late_return())
+        await traffic.cancel()
+        traffic.finish()
+        try:
+            await asyncio.wait_for(traffic.done, 5)
+        finally:
+            worker.cancel()
+            late.cancel()
+            push.close(linger=0)
+            sub.close(linger=0)
+        return cancels, passed
+
+    cancels, passed = _run(main())
+    assert cancels == [_key(1)]
+    assert passed == [0, 1]

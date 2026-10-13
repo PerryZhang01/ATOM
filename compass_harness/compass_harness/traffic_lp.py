@@ -213,11 +213,8 @@ class TrafficLP:
                 self._written.add(report[0])
                 continue
             key, seq, arrival, final = report
-            if key in self.cancelled:  # its worker read on past the cancel
-                continue
             self.rt.check_arrival(self.stream, arrival, seq)
             self._reports[seq] = (key, final)
-            self._changed.set()
 
     async def _pass_returns(self) -> None:
         while True:
