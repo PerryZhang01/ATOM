@@ -426,8 +426,9 @@ One canonical sequence per half of the toolchain. For a new (model, machine) pai
        -> one step_measurement per distinct batch
  5.  compass fit host <records>; compass fit steps --backend law|step-fit ...   [CPU]
        -> host_laws; a step_law or a step fit bundle
- 6.  compass run <backend> --coverage <populations, records> ...   [CPU]
-       -> refuses before it starts if coverage fails; run.json says if gradeable
+ 6.  compass run <backend> [--coverage <populations, records>] ...   [CPU]
+       -> with a backend that has a coverage check, refuses before it starts
+          if coverage fails; run.json says if gradeable
  7.  python -m atom.compass.validate; python -m atom.compass.memory.check   [CPU]
        -> the separable results (08 D44); the memory terms, one at a time
 

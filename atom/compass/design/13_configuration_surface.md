@@ -72,8 +72,9 @@ prior effort's standing lesson is that a plausible default is worse than an erro
 with three rules on top:
 
 1. **No Compass setting has a silent default if it changes a predicted number.** The
-   machine spec, the artifact store and the model are all mandatory; omitting one names it
-   and stops. Settings that cannot change a number (log level, output path) may default.
+   machine spec and the model are mandatory, and so is the artifact store whenever a key
+   names an entry in it; omitting one names it and stops. Settings that cannot change a
+   number (log level, output path) may default.
 2. **The environment tier exists for one reason** — container and CI plumbing, where a
    command line is fixed by a harness. Every `ATOM_COMPASS_*` variable has a CLI twin, and
    the resolved value records which tier supplied it.

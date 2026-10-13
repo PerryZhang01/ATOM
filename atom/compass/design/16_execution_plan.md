@@ -511,8 +511,10 @@ side, serves any candidate backend. #627 ruled on 2026-10-10 that stage 2 prices
 for now. The rows after S2.1 are step fit's stage-2 evaluation (`17` D96), off stage 2's
 critical path: no stage-2 issue waits on them, their MI308X measurements run only when node
 18 is idle from that path, S2.4 builds on the tier-a backend #738 delivered (#759), and none
-of them depends on or edits #741's or #742's code. S2.7 builds the toolchain's steps half
-that step fit's rows run on (`13` D80), ahead of the ops half (W4.1).
+of S2.2 to S2.6 depends on or edits #741's or #742's code. S2.7 builds the toolchain's
+steps half that step fit's rows run on (`13` D80), ahead of the ops half (W4.1); it edits
+`validate/`, #741's and #742's code, through #902 and #920, and no stage-2 issue waits on
+it.
 
 | ID | Task | Module | Effort | Depends on |
 |---|---|---|---|---|
