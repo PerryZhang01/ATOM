@@ -35,7 +35,7 @@ are not a cost-model input at any width.
 What is substituted, and what is not
 ------------------------------------
 Substituted, all of it device facts declared by the caller rather than read from
-a runtime: the `torch.cuda` namespace (17 names, each one read by a capture --
+a runtime: the `torch.cuda` namespace (each name read by a capture --
 the record counts every read, see `_declare_cuda`); `rocminfo`, which aiter
 shells out to at import and which needs `/dev/kfd`; Triton's active device
 target; the collective *transport*, so
@@ -63,18 +63,17 @@ Where the shapes specialise, and what stopped it
 ------------------------------------------------
 Three sites, in an order rather than a set. A free symbol is solved by whichever
 line reaches it first, so repairing one does not always close what it solved:
-closing the first moves the caller's bound into an ATOM assertion helper in
-another file and a later phase of the step -- `forward_context.py`, reached
-from the `run_model` call in `ModelRunner.forward`, with `prepare_inputs`
-already returned. The plain symbolic pass records the first two; a third pass
-simulates the first closed, from outside ATOM, and records what is behind it.
+closing the first moves the caller's bound into the H2D publication's count
+check, later in the same step. The plain symbolic pass records the first two,
+one while the runner is built and one in the step; a third pass simulates the
+first closed, from outside ATOM, and records what is behind it.
 All three are pinned, and there is no claim that three is all there are -- only
 that these three are what this instrument can reach today.
 
 They are all symptoms of one line of torch: **`SymInt.__index__` and
 `SymInt.__int__` are `guard_int`**. Every host-side use of the step's width
 needs a number, gets the trace-time hint, and *records the ask as a guard that
-makes the symbol a constant*. Sixteen ATOM lines do it in one forward, so
+makes the symbol a constant*. Many ATOM lines do it in one forward, so
 closing them one at a time does not converge.
 
 The fourth pass, `--step-symbol`, is the one that specialises nowhere. It keeps
@@ -83,18 +82,21 @@ is the hint, which is the count ATOM computed -- and replaces the *recording*
 with a log of every conversion and the ATOM line it happened on
 (`_resolve_on_the_host`). That log is checked against a declared multiset,
 `EXPECTED_HOST_RESOLUTIONS`, so a conversion at a line this capture did not
-expect fails rather than joining the log unremarked. `__bool__` is untouched,
-so a branch on a width still guards. It symbolises no staged buffer: their
+expect fails rather than joining the log unremarked. `__hash__` is answered the
+same way, for aiter's cached top-k shapes. `__bool__` is untouched, so a
+branch on a width still guards. It symbolises no staged buffer: their
 dimensions are engine capacities, which is what the second site was really
 about. The step's width is a symbol on the `ScheduledBatch` and ATOM derives
 every bound from it -- with one exception, `ScheduledBatch.__init__` itself,
 which solves the width by comparison rather than conversion, so the batch is
 built at the concrete width and its four count fields are rebound afterwards
-(see `_decode_batch`).
+(see `_decode_batch`). The block-table padding compares the same rows with the
+width, and is handed the hint for the same reason.
 
-One line of ATOM changed for it, and only one: `assert_shape_contract`'s `_rows`
-returns `t.shape[0]` rather than `int(t.shape[0])`. That is the third site, and
-the only one of the three not reachable from a capture-time substitution.
+The width is not free in one place: the H2D publication checks each count with
+`operator.index` and copies with the number that returns, so its copies are at
+the hint. The view it hands back carries the symbol, and the digest that shows
+the width free leaves the publication's own operators out by name.
 """
 
 from __future__ import annotations
@@ -156,6 +158,9 @@ KV_BLOCKS = 64
 # through `c10d`'s own entry points.
 COLLECTIVE_OPS = r"c10d|aiter\.(all_reduce|all_gather|reduce_scatter|gather)"
 
+# ATOM's H2D publication, which dispatches every staged copy of a step.
+H2D_PUBLICATION = "atom/utils/h2d.py:"
+
 # Declared device readings -- node 18's MI308X. Nothing here reads a device.
 ARCH = "gfx942"
 CU_COUNT = 80
@@ -169,8 +174,8 @@ TOTAL_MEMORY_BYTES = 192 * (1 << 30)
 # ATOM's forward -- a fused kernel, one more view -- while the distinct set
 # moves when the kinds of work change, which is the thing worth holding.
 
-TP1_DISTINCT_OPS = 33
-TP2_DISTINCT_OPS = 38
+TP1_DISTINCT_OPS = 36
+TP2_DISTINCT_OPS = 41
 
 # What the width changes, by name. It swaps the embedding for its
 # vocab-parallel form, adds the collectives, and adds the `movedim` the
@@ -191,43 +196,34 @@ TP2_ONLY_OPS = (
 ROW_PARALLEL = (
     "atom/model_ops/communication_op.py:58 in tensor_model_parallel_all_reduce"
 )
-VOCAB_EMBEDDING = "atom/model_ops/embed_head.py:175 in forward"
-VOCAB_LM_HEAD = "atom/model_ops/embed_head.py:257 in forward"
-SAMPLER = "atom/model_engine/model_runner.py:3165 in postprocess"
+VOCAB_EMBEDDING = "atom/model_ops/embed_head.py:178 in forward"
+VOCAB_LM_HEAD = "atom/model_ops/embed_head.py:269 in forward"
+SAMPLER = "atom/model_engine/model_runner.py:3299 in postprocess"
 
 # Where a free symbol stops being free, each as the value it takes and the
-# innermost ATOM frames it takes it through. Three, not two, and in this order:
-# a symbol is solved by whichever line reaches it first, so which sites are
-# visible is a property of the order and not only of the code. Sites one and
-# two are what a plain symbolic pass records; site three is what site one hides,
-# and it shows up in the pass that simulates site one closed.
+# innermost ATOM frames it takes it through. Three, and in an order: a symbol
+# is solved by whichever line reaches it first, so which sites are visible is
+# a property of the order and not only of the code. Site two is reached while
+# the runner is built, sites one and three while the step is prepared; site
+# three is what site one hides, and it shows up in the pass that simulates
+# site one closed.
 SITE_ONE = (
     "2",
-    ("atom/model_ops/attentions/aiter_attention.py:1115 in prepare_decode",),
+    ("atom/model_ops/attentions/aiter_attention.py:1199 in prepare_decode",),
 )
+# The H2D publication binds each staged buffer in `ModelRunner.__init__` and
+# checks that its host and device sides have one shape. With a symbol on every
+# device dimension the check equates each with the host side's capacity, so
+# no staged dimension is free by the time a step begins.
 SITE_TWO = (
     "16384",
-    (
-        "atom/model_ops/attentions/aiter_attention.py:1142 in prepare_decode",
-        "atom/utils/__init__.py:725 in copy_to_gpu",
-    ),
+    ("atom/utils/h2d.py:133 in bind", "atom/utils/h2d.py:277 in __init__"),
 )
-# `assert_shape_contract`, reached with the bound still free once site one no
-# longer takes `__index__` of it. It was recorded one frame deeper, in the
-# `_rows` helper, where `int(t.shape[0])` converted a dimension before the
-# assertion compared it; `_rows` no longer converts, so what is left is the
-# assertion itself, equating the width the caller was handed with the width the
-# staged buffer carries.
-#
-# That equality is not a defect and is not closed. In the probe that reaches
-# here, the injected bound and the staged buffer's rows are **two symbols**,
-# and ATOM's contract is that they are one number -- so solving one against the
-# other is the contract doing its job. It is also why the step-symbol pass
-# below uses one symbol for the whole step: with one, the same assertion is
-# `s == s` and installs nothing.
+# The publication's count check, `operator.index` of the bound, reached once
+# site one no longer takes `__index__` of it.
 SITE_THREE = (
     "2",
-    ("atom/utils/forward_context.py:444 in assert_shape_contract",),
+    ("atom/utils/h2d.py:51 in _count",),
 )
 
 # `CpuGpuBuffer.__init__` as it is on this tree, and how many buffers one
@@ -235,13 +231,13 @@ SITE_THREE = (
 # so these say which constructor answered and how often -- the half of the
 # second site's pin that no specialisation site covers, because a repair inside
 # `__init__` changes what it allocates rather than where a symbol is solved.
-# Measured: 21 buffers, each one host allocation and one numpy view.
-BUFFER_INIT = "atom/utils/__init__.py:700"
-BUFFER_COUNT = 21
+# Measured: 22 buffers, each one host allocation and one numpy view.
+BUFFER_INIT = "atom/utils/__init__.py:714"
+BUFFER_COUNT = 22
 
 # The `torch.cuda` names `_declare_cuda` stubs, which are exactly the names a
 # capture reads. Measured by counting every read of a stubbed name over a whole
-# capture: the same 17 at both widths and in every pass this file runs.
+# capture: the same set at both widths and in every pass this file runs.
 CUDA_NAMES_READ = frozenset(
     {
         "Event",
@@ -255,6 +251,7 @@ CUDA_NAMES_READ = frozenset(
         "get_device_properties",
         "get_rng_state",
         "is_available",
+        "is_current_stream_capturing",
         "memory_allocated",
         "memory_stats",
         "set_device",
@@ -265,8 +262,8 @@ CUDA_NAMES_READ = frozenset(
 )
 
 # Every `torch.cuda` name read by code outside torch, stubbed or not, with who
-# reads it. Measured over a whole capture: the same 11 at both widths and in
-# every pass this file runs. The 8 stubs missing here are read by torch alone.
+# reads it. Measured over a whole capture: the same set at both widths and in
+# every pass this file runs. The stubs missing here are read by torch alone.
 CUDA_NAMES_READ_OUTSIDE_TORCH = frozenset(
     {
         "CUDAGraph",  # annotations: atom.utils.cuda_graph, tbo, transformers
@@ -278,6 +275,7 @@ CUDA_NAMES_READ_OUTSIDE_TORCH = frozenset(
         "device_count",  # atom.model_ops.fla_ops.utils
         "get_device_properties",  # aiter
         "is_available",  # aiter.ops.gemm_op_a6w6, atom.utils.forward_context
+        "is_current_stream_capturing",  # atom.utils.h2d
         "memory_stats",  # atom.model_engine.model_runner
         "stream",  # atom.model_engine.model_runner
     }
@@ -314,41 +312,6 @@ CONCRETE_FAMILIES = {
     ),
 }
 CONCRETE_FAMILIES[2] = CONCRETE_FAMILIES[1] | {"collective"}
-
-# What the census reads on the symbolic probe, keyed by whether site one is
-# simulated closed: the families carrying a non-integer shape entry, and the
-# operators carrying one. Kinds, not counts.
-#
-# This is the positive half of the concrete result. The concrete census reads
-# zero, and a census that could not tell a symbol from a number would read zero
-# too; these are the same census reading what it is there to find. It reads 26
-# entries today, and 32 with the repair, but those are not held: a staging
-# refactor that behaves identically -- `reshape` for `view` on a contiguous
-# buffer in `_copy_mrope_to_gpu` -- moves 26 to 27 while every site and line
-# pin in this file holds. What holds the detector instead is the loops that
-# count it, read against each other. That refactor still fails the probe test,
-# at the operator list: the `reshape` stops being dispatched, so the kinds
-# carrying a symbol change, and a change of kind is what this list is for.
-PROBE_FAMILIES = {
-    False: frozenset({"bookkeeping", "view"}),
-    True: frozenset({"bookkeeping", "transfer", "view"}),
-}
-PROBE_NON_NUMERIC_OPS = {
-    False: [
-        "aten.as_strided.default",
-        "aten.reshape.default",
-        "aten.slice.Tensor",
-        "prim.device.default",
-    ],
-    True: [
-        "aten.as_strided.default",
-        "aten.copy_.default",
-        "aten.reshape.default",
-        "aten.slice.Tensor",
-        "prim.device.default",
-    ],
-}
-
 
 # ── the step-symbol pass: what a capture that specialises nowhere records ──
 
@@ -425,7 +388,7 @@ OP_FAMILIES = (
         ),
     ),
     ("sampling", ("aiter.mixed_sample_outer_exponential", "aten.exponential_")),
-    ("elementwise", ("aten.add", "aten.mul", "aten.fill_")),
+    ("elementwise", ("aten.add", "aten.mul", "aten.fill_", "aten.le", "aten.where")),
     ("transfer", ("aten.copy_", "aten.to")),
     (
         "view",
@@ -440,16 +403,24 @@ OP_FAMILIES = (
             "aten.detach",
             "aten.lift_fresh",
             "aten.movedim",
+            "aten.alias",
         ),
     ),
     (
         "allocation",
-        ("aten.empty", "aten.empty_like", "aten.scalar_tensor", "aten.zeros"),
+        (
+            "aten.empty",
+            "aten.empty_like",
+            "aten.full",
+            "aten.scalar_tensor",
+            "aten.zeros",
+        ),
     ),
     (
         "bookkeeping",
         (
             "prim.device",
+            "aiter.get_gfx_custom_op",
             "profiler._record_function_enter_new",
             "profiler._record_function_exit",
         ),
@@ -461,51 +432,43 @@ OP_FAMILIES = (
 COST_BEARING_FAMILIES = ("gemm", "attention", "normalisation")
 
 # The applicability of the step-symbol pass: where the traced graph stops being
-# valid. The upper bounds are staging buffers' capacities read against the
-# step's width -- ATOM's `max_num_batched_tokens`, its largest attention batch
-# and its `max_num_seqs` -- so the graph covers every decode step up to the
-# narrowest of them and declines to claim anything above it. None is an
-# equality, which is the same fact as `replacements` being empty.
+# valid. Three kinds of bound, none an equality, which is the same fact as
+# `replacements` being empty:
+#
+# * staging buffers' capacities read against the step's width -- ATOM's
+#   `max_num_batched_tokens`, its largest attention batch and its
+#   `max_num_seqs`;
+# * the H2D publication's slice of a 512-row buffer, which torch guards as
+#   neither empty nor one row short;
+# * the split count of the greedy sampler's argmax, `ceil(1024 / rows)` in
+#   aiter's `topk_per_row_argmax_splits`. It is the tightest of them: the graph
+#   covers decode steps of at most 17 rows, because a wider step launches the
+#   argmax with fewer splits.
 #
 # TP2 installs one fewer of them. The per-token bound is the one that goes: the
 # width halves each rank's share of the rows that bound reads, and what is left
 # is implied by the per-sequence bounds that both widths install. Asserted per
 # width rather than as a shared set, because the difference is a property of
-# the step and worth failing on if it changes.
+# the step and worth failing on if it changes. The set is the same at every
+# step width this file traces.
 EXPECTED_GUARDS = {
-    1: ("28*<axis> <= 8192", "<axis> < 128", "<axis> <= 512"),
-    2: ("<axis> < 128", "<axis> <= 512"),
+    1: frozenset(
+        {
+            "-(((-1024)//<axis>)) > 60",
+            "-(((-1024)//<axis>)) >= 15",
+            "28*<axis> <= 8192",
+            "<axis> < 128",
+            "<axis> <= 512",
+            "Ne(512 - <axis>, 0)",
+            "Ne(512 - <axis>, 1)",
+        }
+    ),
 }
+EXPECTED_GUARDS[2] = EXPECTED_GUARDS[1] - {"28*<axis> <= 8192"}
 
-
-def expected_guards(tp, width):
-    """The guards at TP `tp` traced at step width `width`.
-
-    **The guard set is hint-dependent, and it is the one artifact of this
-    capture that is.** At every hint but 2 a *lower* bound appears as well,
-    `<axis> + 1 > <hint>`, measured at TP1 at step widths 3, 8 and 16 and at
-    TP2 at step width 8. It is not a specialisation: it is a `__bool__`
-    comparison installing an inequality on a live symbol, which is the boundary
-    this pass deliberately left alive -- so it is positive evidence that
-    `__bool__` is untouched rather than a leak. At hint 2 it is elided because
-    a size symbol's default range is `[2, inf)`, which makes `s + 1 > 2`
-    vacuously true, so torch does not record it.
-
-    What it costs is the applicability sentence: at any hint but 2 the traced
-    graph carries a lower bound as well as the upper ones, and a reader
-    comparing two widths should be told which artifact differs between them and
-    why the digest does not.
-    """
-    guards = set(EXPECTED_GUARDS[tp])
-    if width > MIN_STEP_WIDTH:
-        guards.add(f"<axis> + 1 > {width}")
-    return guards
-
-
-# How many of the step's staged buffers are copied to the device through
-# `CpuGpuBuffer.copy_to_gpu` with the step's width as the bound. Five from
-# `prepare_decode`'s own list, and the rest from the sampler's and the token
-# processor's staging around it.
+# How many of the step's staged buffers the H2D publication copies to the
+# device. Five from `prepare_decode`'s own list, and the rest from the
+# sampler's and the token processor's staging around it.
 STAGED_COPIES = 10
 
 # Every conversion of the step's width to a number that one traced forward
@@ -516,28 +479,31 @@ STAGED_COPIES = 10
 # width. Asserted as a multiset, so a line that converts twice where it used to
 # convert once fails too.
 #
-# Measured identical at TP1 and TP2 and at both widths: 20 conversions over 16
-# lines, all of them host fills and slices. A conversion that reaches a *shape*
-# would also show up as a digest that differs between two widths; one that only
-# reaches a host value would not, which is why this is asserted rather than
-# left to the digest.
+# Measured identical at TP1 and TP2 and at both widths. All of them are host
+# fills, slices and checks, and one reaches a shape: the H2D publication's
+# count check, `_count`, whose number the publication copies with. That is why
+# `graph_digest` leaves the publication's operators out. Any other conversion
+# that reaches a shape shows up as a digest that differs between two widths;
+# one that only reaches a host value does not, which is why this is asserted
+# rather than left to the digest.
 EXPECTED_HOST_RESOLUTIONS = {
-    "atom/model_ops/attentions/aiter_attention.py:1106 in prepare_decode": 2,
-    "atom/model_ops/attentions/aiter_attention.py:1115 in prepare_decode": 1,
-    "atom/model_ops/attentions/aiter_attention.py:1121 in prepare_decode": 1,
-    "atom/model_ops/attentions/aiter_attention.py:1122 in prepare_decode": 1,
-    "atom/model_ops/attentions/aiter_attention.py:1123 in prepare_decode": 2,
-    "atom/model_ops/attentions/aiter_attention.py:1131 in prepare_decode": 1,
-    "atom/model_ops/attentions/aiter_attention.py:1132 in prepare_decode": 2,
-    "atom/model_engine/model_runner.py:2468 in prepare_inputs": 1,
-    "atom/model_engine/model_runner.py:2479 in prepare_inputs": 2,
-    "atom/model_engine/model_runner.py:2481 in prepare_inputs": 1,
-    "atom/model_engine/model_runner.py:510 in prepare_input_ids": 1,
-    "atom/model_engine/model_runner.py:513 in prepare_input_ids": 1,
-    "atom/model_engine/model_runner.py:2564 in prepare_sample": 1,
-    "atom/model_ops/attentions/backends.py:398 in _mrope_cpu_view": 1,
-    "atom/model_ops/attentions/backends.py:400 in _mrope_cpu_view": 1,
-    "atom/model_ops/attentions/gdn_attn.py:1251 in _attach_gdn_decode_metadata": 1,
+    "atom/model_ops/attentions/aiter_attention.py:1199 in prepare_decode": 1,
+    "atom/model_ops/attentions/aiter_attention.py:1220 in prepare_decode": 1,
+    "atom/model_ops/attentions/aiter_attention.py:1221 in prepare_decode": 1,
+    "atom/model_ops/attentions/aiter_attention.py:1222 in prepare_decode": 2,
+    "atom/model_ops/attentions/aiter_attention.py:1230 in prepare_decode": 1,
+    "atom/model_ops/attentions/aiter_attention.py:1231 in prepare_decode": 2,
+    "atom/model_ops/attentions/backends.py:603 in prepare_block_tables": 1,
+    "atom/model_ops/attentions/backends.py:617 in _mrope_cpu_view": 1,
+    "atom/model_ops/attentions/backends.py:619 in _mrope_cpu_view": 1,
+    "atom/model_ops/attentions/backends.py:677 in _build_mrope_decode_positions": 1,
+    "atom/model_ops/attentions/backends.py:720 in prepare_cu_seqlens_q": 1,
+    "atom/model_ops/attentions/backends.py:721 in prepare_cu_seqlens_q": 3,
+    "atom/model_engine/model_runner.py:566 in prepare_input_ids": 1,
+    "atom/model_engine/model_runner.py:569 in prepare_input_ids": 1,
+    "atom/model_engine/model_runner.py:2609 in prepare_sample": 1,
+    "atom/model_ops/sampler.py:48 in _apply_greedy_tokens": 2,
+    "atom/utils/h2d.py:51 in _count": STAGED_COPIES,
 }
 
 
@@ -817,9 +783,12 @@ def _select_direct_h2d():
     """Select ATOM's direct host-to-device copies, and say so.
 
     The packed transport, ATOM's default, stages every published buffer through
-    one host block it reads with `.numpy()`, which a fake tensor refuses. Direct
-    copies each buffer with its own `copy_to_gpu`, the path the specialisation
-    sites below were measured on.
+    one host block it reads with `.numpy()`, which a fake tensor refuses, and
+    scatters it with a raw kernel addressed by device pointers, which a fake
+    tensor does not have. Its single copy is a byte count summed on the host,
+    so even past both it would carry the hint, never the step's symbol. Direct
+    copies each buffer with its own `copy_`. The transport decides how staged
+    metadata reaches the device and nothing about the model's operators.
     """
     os.environ["ATOM_H2D_BACKEND"] = "direct"
     return "ATOM_H2D_BACKEND=direct"
@@ -1290,9 +1259,10 @@ class _Recorder(TorchDispatchMode):
         self.ops = []
         self.collectives = []
         # Which ATOM lines produced an operator whose shapes are not all plain
-        # integers. Only these walk the stack -- a concrete capture reaches none
-        # of them and pays nothing, and a symbolic one reaches a few hundred.
+        # integers.
         self.symbolic_sites = collections.Counter()
+        # Which operators ATOM's H2D publication dispatched, by index in `ops`.
+        self.published = set()
 
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         out = func(*args, **(kwargs or {}))
@@ -1300,17 +1270,15 @@ class _Recorder(TorchDispatchMode):
         shapes_in = [self._shape(a) for a in self._tensors(args)]
         shapes_out = [self._shape(o) for o in self._tensors(self._flat(out))]
         self.ops.append((name, shapes_in, shapes_out))
+        frames = _atom_frames(self._tree_root)
+        site = frames[-1] if frames else "outside atom"
+        if site.startswith(H2D_PUBLICATION):
+            self.published.add(len(self.ops) - 1)
         if self._carries_symbol(shapes_in, shapes_out):
-            frames = _atom_frames(self._tree_root)
-            self.symbolic_sites[(name, frames[-1] if frames else "outside atom")] += 1
+            self.symbolic_sites[(name, site)] += 1
         if self._collective.search(name):
-            frames = _atom_frames(self._tree_root)
             self.collectives.append(
-                {
-                    "op": name,
-                    "call_site": frames[-1] if frames else "outside atom",
-                    "shapes": shapes_in,
-                }
+                {"op": name, "call_site": site, "shapes": shapes_in}
             )
         return out
 
@@ -1410,10 +1378,13 @@ class _Recorder(TorchDispatchMode):
         half means anything. A concrete entry is either a fact about the model
         or the engine -- a hidden size, a head count, a staging buffer's
         capacity -- or a width that was quietly resolved somewhere this capture
-        did not intercept, and only the value distinguishes them.
+        did not intercept, and only the value distinguishes them. The H2D
+        publication's operators are left out, as in `graph_digest`.
         """
         rows = {}
-        for name, shapes_in, shapes_out in self.ops:
+        for index, (name, shapes_in, shapes_out) in enumerate(self.ops):
+            if index in self.published:
+                continue
             row = rows.setdefault(op_family(name), collections.Counter())
             for shape in (*shapes_in, *shapes_out):
                 for dim in shape:
@@ -1422,7 +1393,7 @@ class _Recorder(TorchDispatchMode):
         return {family: dict(counts) for family, counts in rows.items()}
 
     def graph_digest(self, axis):
-        """A digest of the whole inventory, with the step's symbol anonymised.
+        """A digest of the inventory, with the step's symbol anonymised.
 
         Two captures taken at two different widths produce the same digest
         exactly when their operator lists agree name for name and shape for
@@ -1430,12 +1401,21 @@ class _Recorder(TorchDispatchMode):
         the symbol is free: if any dimension is carrying the trace-time hint
         rather than the symbol, it is a 2 in one inventory and an 8 in the
         other, and the digests differ.
+
+        The H2D publication's operators are not in it. The publication checks
+        each count with `operator.index` and copies with what that returns, so
+        its copies carry the hint by construction; `published_ops` lists them.
         """
         lines = [
             _anonymise(f"{name}|{shapes_in}|{shapes_out}", axis)
-            for name, shapes_in, shapes_out in self.ops
+            for index, (name, shapes_in, shapes_out) in enumerate(self.ops)
+            if index not in self.published
         ]
         return hashlib.sha256("\n".join(lines).encode()).hexdigest()
+
+    def published_ops(self):
+        """The H2D publication's operators, in dispatch order."""
+        return [self.ops[index] for index in sorted(self.published)]
 
 
 class _Specialisations:
@@ -1481,7 +1461,7 @@ class _Specialisations:
 
 
 class _TritonLaunches:
-    """Record `@triton.jit` launches and do not launch them -- a diagnostic.
+    """Record raw kernel launches and do not launch them -- a diagnostic.
 
     A raw `kernel[grid](...)` goes straight to the AMD driver. It never enters
     the torch dispatcher, so `TorchDispatchMode` cannot see it and
@@ -1491,28 +1471,42 @@ class _TritonLaunches:
     what deciding how to price them needs. It is not a capture: a skipped kernel
     writes nothing, so everything downstream of one reads uninitialised fake
     memory.
+
+    FlyDSL kernels take the same route through `flydsl.compiler.compile`,
+    which compiles and launches on a first call. aiter's launcher keeps what
+    it returns and calls `compile` again while that is `None`, so returning
+    `None` records every launch. Without this a launch fails in the driver
+    with nothing raised.
     """
 
     def __init__(self):
         self.launches = {}
+        self.flydsl_launches = {}
         self._original = None
 
     def __enter__(self):
+        import flydsl.compiler
         from triton.runtime.jit import JITFunction
 
-        self._original = JITFunction.run
-        launches = self.launches
+        self._original = JITFunction.run, flydsl.compiler.compile
+        launches, flydsl_launches = self.launches, self.flydsl_launches
 
         def run(jit_function, *args, **kwargs):
             launches[jit_function.__name__] = launches.get(jit_function.__name__, 0) + 1
 
+        def compile_and_launch(kernel, *args):
+            name = getattr(kernel, "func", kernel).__name__
+            flydsl_launches[name] = flydsl_launches.get(name, 0) + 1
+
         JITFunction.run = run
+        flydsl.compiler.compile = compile_and_launch
         return self
 
     def __exit__(self, *exc):
+        import flydsl.compiler
         from triton.runtime.jit import JITFunction
 
-        JITFunction.run = self._original
+        JITFunction.run, flydsl.compiler.compile = self._original
         self._original = None
         return False
 
@@ -1723,6 +1717,9 @@ def _resolve_on_the_host(tree_root):
     this an instrument rather than a decoration, and which this docstring
     claimed before anything implemented it.
 
+    `__hash__` is answered and logged the same way. aiter's greedy top-k
+    caches a tensor per row count, and hashing a symbol otherwise raises.
+
     What is *not* touched is `__bool__` and the comparisons that reach it. A
     branch on a symbol still installs its guard, so a step whose shape decides
     which path ATOM takes still records that it did.
@@ -1748,7 +1745,32 @@ def _resolve_on_the_host(tree_root):
 
     torch.SymInt.__index__ = resolved
     torch.SymInt.__int__ = resolved
-    return events, (original_index, original_int)
+    original_hash = torch.SymInt.__hash__
+    torch.SymInt.__hash__ = lambda self: hash(resolved(self))
+
+    # `BlockTableState.prepare` compares the padded width with the number of
+    # host rows it was handed. The rows are the batch's own, built at the
+    # concrete width, so the comparison is the host question `_decode_batch`
+    # keeps out of `ScheduledBatch.__init__`: it is answered with the hint,
+    # through `__int__`, and logged at the ATOM line that passed the width.
+    from atom.utils.block_tables import BlockTableState
+
+    original_prepare = BlockTableState.prepare
+
+    def prepare(self, rows, *, pad_to=None, **kwargs):
+        if isinstance(pad_to, torch.SymInt):
+            pad_to = int(pad_to)
+        return original_prepare(self, rows, pad_to=pad_to, **kwargs)
+
+    BlockTableState.prepare = prepare
+
+    def restore():
+        torch.SymInt.__index__ = original_index
+        torch.SymInt.__int__ = original_int
+        torch.SymInt.__hash__ = original_hash
+        BlockTableState.prepare = original_prepare
+
+    return events, restore
 
 
 def _capture(
@@ -1827,9 +1849,13 @@ def _capture(
     original_buffer_init, buffer_init = _stage_buffers(
         fake_mode, symbolic, tree_root, repair_site_one
     )
-    resolutions, original_symint = ([], None)
+    resolutions, restore_host = ([], None)
+    specialised = _Specialisations(shape_env, tree_root)
     try:
-        architecture, model_class_name, runner = _build_runner(config, fake_mode)
+        # The runner is built inside the watch: ATOM's H2D publication reads
+        # every staged buffer's dimensions while the runner is constructed.
+        with specialised:
+            architecture, model_class_name, runner = _build_runner(config, fake_mode)
         bounds = _symbolic_bound(runner, fake_mode) if symbolic else []
         axis = _step_axis(fake_mode, width) if step_symbol else width
         if step_symbol:
@@ -1837,10 +1863,9 @@ def _capture(
             # asks its own counts for a number, and a conversion that happens
             # before this is in place takes the guard and makes the axis a
             # constant before the step has begun.
-            resolutions, original_symint = _resolve_on_the_host(tree_root)
+            resolutions, restore_host = _resolve_on_the_host(tree_root)
         recorder = _Recorder(tree_root, COLLECTIVE_OPS)
         triton = _TritonLaunches()
-        specialised = _Specialisations(shape_env, tree_root)
         with specialised:
             batch = _decode_batch(width, axis if step_symbol else None)
             with fake_mode:
@@ -1851,8 +1876,8 @@ def _capture(
         from atom.utils import CpuGpuBuffer
 
         CpuGpuBuffer.__init__ = original_buffer_init
-        if original_symint is not None:
-            torch.SymInt.__index__, torch.SymInt.__int__ = original_symint
+        if restore_host is not None:
+            restore_host()
 
     import atom
 
@@ -1881,7 +1906,7 @@ def _capture(
         # Diagnostic because a raw Triton kernel was reached and skipped, and
         # everything downstream of one read uninitialised fake memory. Derived
         # from the launches rather than written, so it says what happened.
-        "diagnostic_inventory": bool(triton.launches),
+        "diagnostic_inventory": bool(triton.launches or triton.flydsl_launches),
         "model": {
             "config_sha256": digest,
             "config_revision": CONFIG_REVISION,
@@ -1912,6 +1937,7 @@ def _capture(
         "family_census": recorder.family_census(),
         "concrete_dims": recorder.concrete_dims(),
         "graph_digest": recorder.graph_digest(axis),
+        "published_ops": recorder.published_ops(),
         "symbolic_sites": [
             {"op": op, "call_site": site, "n": n}
             for (op, site), n in sorted(recorder.symbolic_sites.items())
@@ -1932,6 +1958,7 @@ def _capture(
             {_anonymise(str(g.expr), axis) for g in shape_env.guards}
         ),
         "triton_launches": triton.launches,
+        "flydsl_launches": triton.flydsl_launches,
     }
 
 
@@ -2144,8 +2171,9 @@ def test_a_decode_step_traces_at_both_widths():
     holding.
 
     Both inventories are diagnostic, and the record says so because it counted
-    the raw Triton kernels it skipped, not because a literal says it: 33
-    launches over three kernels, the same at both widths.
+    the raw kernels it skipped, not because a literal says it: the Triton
+    kernels the config predicts, and the two FlyDSL kernels of the greedy
+    sampler's argmax in aiter, the same at both widths.
     """
     tp1 = capture(1)
     tp2 = capture(2)
@@ -2154,6 +2182,10 @@ def test_a_decode_step_traces_at_both_widths():
         assert record["atom_package"].startswith(tree_root)
         assert record["ops"] > 0
         assert record["triton_launches"] == raw_triton_launches()
+        assert record["flydsl_launches"] == {
+            "launch_argmax_slice": 1,
+            "launch_argmax_fold": 1,
+        }
         assert record["diagnostic_inventory"] is True
         assert record["model"]["architecture"] == "Qwen3_5ForConditionalGeneration"
     assert len(tp1["distinct_ops"]) == TP1_DISTINCT_OPS
@@ -2311,7 +2343,7 @@ def test_the_stubbed_device_names_are_the_ones_the_capture_reads():
     The stub list is what `_declare_cuda` wrote, so asserting its length would
     assert the function against itself. What is measured is every read of a
     stubbed name over a whole capture, and that says which stubs are doing
-    anything: all 17, the same at both widths and in every pass. The stub list
+    anything: all of them, the same at both widths and in every pass. The stub list
     is held equal to that read set, so a stub nothing reads fails here as
     surely as a stub that stops being read. Every name read outside torch,
     stubbed or not, is held equal to its own measured set, so a new device read
@@ -2436,35 +2468,35 @@ def test_the_inventory_is_concrete_at_both_widths():
             assert row["non_numeric_shape_entries"] == 0, (family, tp)
 
 
-def test_the_census_counts_the_symbols_the_probe_leaves():
+def test_the_census_counts_the_symbols_the_step_carries():
     """The concreteness detector, read where there is something to detect.
 
     The concrete inventory's census is zero, and zero is also what a census
     returns when it cannot tell a symbol from a number. So the census is read
-    on the symbolic probe, which leaves a handful of symbols free on staging
-    views, and its four loops over the inventory are held against each other:
-    the total (`shape_census`), the family split (`family_census`), the
-    operators carrying one (`non_numeric_ops`) and the call sites where they
-    were dispatched (`symbolic_sites`). Each is counted separately, so a loop
-    that stops discriminating disagrees with the others, or reads zero where
-    the kinds below say there is something, and fails here by name rather than
-    agreeing with the concrete zero.
+    on the step-symbol pass, and its four loops over the inventory are held
+    against each other: the total (`shape_census`), the family split
+    (`family_census`), the operators carrying one (`non_numeric_ops`) and the
+    call sites where they were dispatched (`symbolic_sites`). Each is counted
+    separately, so a loop that stops discriminating disagrees with the others,
+    or reads zero where a family carries the symbol, and fails here by name
+    rather than agreeing with the concrete zero.
 
-    Kinds are held and counts are not: which families and which operators
-    carry a symbol, not how many entries. `PROBE_FAMILIES` says why.
+    It used to be read on the symbolic probe, which no longer leaves a symbol
+    anywhere: the H2D publication solves every staged dimension while the
+    runner is built, and site one solves the bound. Kinds are held and counts
+    are not: every family the concrete census splits into carries the symbol.
     """
-    for repaired in (False, True):
-        record = capture(1, symbolic=True, repair_site_one=repaired)
+    for tp in (1, 2):
+        record = capture(tp, step_symbol=True)
         census = record["family_census"]
         by_family = {
             family: row["non_numeric_shape_entries"]
             for family, row in census.items()
             if row["non_numeric_shape_entries"]
         }
-        assert set(by_family) == PROBE_FAMILIES[repaired], repaired
+        assert set(by_family) == CONCRETE_FAMILIES[tp], tp
         total = record["non_numeric_shape_entries"]
-        assert total == sum(by_family.values()) > 0, repaired
-        assert record["non_numeric_ops"] == PROBE_NON_NUMERIC_OPS[repaired]
+        assert total == sum(by_family.values()) > 0, tp
         # Operator by operator, the family loop and the call-site loop count
         # the same dispatches.
         from_families = collections.Counter()
@@ -2473,8 +2505,8 @@ def test_the_census_counts_the_symbols_the_probe_leaves():
         from_sites = collections.Counter()
         for entry in record["symbolic_sites"]:
             from_sites[entry["op"]] += entry["n"]
-        assert from_families == from_sites, repaired
-        assert sorted(from_families) == record["non_numeric_ops"], repaired
+        assert from_families == from_sites, tp
+        assert sorted(from_families) == record["non_numeric_ops"], tp
 
 
 def test_the_census_counts_an_expression_as_a_symbol():
@@ -2500,16 +2532,32 @@ def test_the_census_counts_an_expression_as_a_symbol():
     assert not _Recorder._carries_symbol([["-1", "8"]], [])
 
 
+def _built_and_stepped(record):
+    """A probe's specialisations, split into the runner's build and the step's.
+
+    Every staged dimension is solved while `ModelRunner.__init__` runs, so
+    the step's own event is the last one.
+    """
+    *built, stepped = record["specialisations"]
+    assert all(" in __init__" in event["frames"][0] for event in built), built
+    assert not any(" in __init__" in frame for frame in stepped["frames"])
+    return built, stepped
+
+
 def test_the_first_two_specialisation_sites_are_where_they_were_measured():
     """The two places a free symbol stops being free first.
 
-    Not two independent sites. They are the first two in an order: the bound
-    the caller passes is solved at site one because that is the first line to
-    take `__index__` of it, and the buffer's own dimension is solved in
-    `copy_to_gpu` because that is the first copy whose slice does not cover
-    it. Both are pinned by value and by the frames they happened through, so a
+    Not two independent sites. They are the first two in an order: the
+    buffer's own dimension is solved while the runner is built, because the
+    H2D publication's binding checks that a buffer's two sides have one shape
+    (`SITE_TWO`), and the bound the caller passes is solved at site one,
+    because that is the first line of the step to take `__index__` of it.
+    Both are pinned by value and by the frames they happened through, so a
     repair to either one fails here. What lies behind the first of them is the
     test below.
+
+    The probe leaves no symbol anywhere in the inventory as a result, which is
+    why the census is read on the step-symbol pass instead.
     """
     record = capture(1, symbolic=True)
     injected = record["injected_bounds"]
@@ -2519,55 +2567,44 @@ def test_the_first_two_specialisation_sites_are_where_they_were_measured():
     assert re.fullmatch(r"s\d+", injected[0]["symbol"])
     assert record["site_one_repair_simulated"] is False
 
-    one, two = record["specialisations"]
+    built, one = _built_and_stepped(record)
+    (two,) = [event for event in built if event["value"] == SITE_TWO[0]]
     assert site(one, 1) == SITE_ONE
     assert site(two, 2) == SITE_TWO
     # Two symbols solved at two places: the buffer's dimension is not the
     # caller's bound, so repairing the bound leaves the buffer as it is.
     assert one["symbol"] == injected[0]["symbol"]
     assert two["symbol"] != one["symbol"]
+    assert record["non_numeric_shape_entries"] == 0
 
 
 def test_closing_site_one_moves_the_bound_to_a_third_site():
     """Repairing the first site does not close the bound; it relocates it.
 
-    The two sites were recorded as independent, with a symbolic bound closing
-    the first and leaving the second as it is. Half of that is true. This is
-    the other half, and it is the reason the sites are an order rather than a
-    set: with the numpy view reading the bound's hint instead of solving it --
-    the simulated site-one repair, applied from outside ATOM -- the bound
-    survives site one and is solved in another file and a later phase of the
-    step, inside ATOM's own shape-contract assertion: `assert_shape_contract`
-    in `atom/utils/forward_context.py`, reached from the `run_model` call in
-    `ModelRunner.forward`, with `prepare_inputs` already returned -- not
-    further down `prepare_decode`.
+    With the numpy view reading the bound's hint instead of solving it -- the
+    simulated site-one repair, applied from outside ATOM -- the bound survives
+    site one and is solved further on in the same step, by the H2D
+    publication's count check (`SITE_THREE`), reached when the block tables
+    are published. That is why the sites are an order rather than a set.
 
-    The second site is untouched by the repair, exactly as recorded.
+    The second site is untouched by the repair.
 
-    **What the third site turned out to be.** It was recorded one frame deeper,
-    at `_rows`'s `int(t.shape[0])`, which converted a dimension before the
-    assertion compared it. `_rows` no longer converts -- it returns
-    `t.shape[0]` as it is -- and the assertion is still reached, because this
-    probe hands the caller a bound that is a *different symbol* from the one the
-    staged buffer carries, and ATOM's contract is that the two are one number.
-    Equating them is the contract working. It is not what made the capture
-    concrete, and it does not fire when the whole step is one symbol.
+    It used to be ATOM's shape-contract assertion, `assert_shape_contract`,
+    later in the step; the publication now checks the count first. Nothing on
+    the path is `_rows`, which no longer converts a dimension.
     """
     record = capture(1, symbolic=True, repair_site_one=True)
     assert record["site_one_repair_simulated"] is True
     assert record["buffer_init"]["hint_sliced_views"] > 0
 
-    two, three = record["specialisations"]
-    # Site two, unchanged by the repair -- which is the half of the two-site
-    # account that holds.
+    built, three = _built_and_stepped(record)
+    (two,) = [event for event in built if event["value"] == SITE_TWO[0]]
     assert site(two, 2) == SITE_TWO
     assert site(three, 1) == SITE_THREE
     # Still the caller's bound, solved somewhere else: the value is the same
     # and the site is not.
     assert three["value"] == SITE_ONE[0]
     assert record["injected_bounds"][0]["symbol"] == three["symbol"]
-    # And `_rows` is not where it happens any more: nothing on the path
-    # converts a dimension to a number before the comparison.
     assert not any("in _rows" in frame for frame in three["frames"])
 
 
@@ -2581,11 +2618,12 @@ def test_nothing_specialises_under_the_step_symbol_capture():
 
     **But in this pass it is a weaker statement than that makes it sound, and
     the weakness is worth naming rather than leaving for a reader to find.**
-    Two of the routes into that funnel, `__index__` and `__int__`, have been
-    replaced by `_resolve_on_the_host` for the duration of the capture, so they
-    cannot reach `_set_replacement` at all: for those two the assertion below
-    is guaranteed by construction rather than tested. What it still tests is
-    every other route -- a comparison, a hash, a format string, a `guard_size_
+    Three of the routes into that funnel, `__index__`, `__int__` and
+    `__hash__`, have been replaced by `_resolve_on_the_host` for the duration
+    of the capture, so they cannot reach `_set_replacement` at all, and the
+    block-table padding is handed its hint: for those the assertion below is
+    guaranteed by construction rather than tested. What it still tests is
+    every other route -- a comparison, a format string, a `guard_size_
     oblivious`, anything inside torch that decides it needs a number -- and
     those are live, untouched and able to fail this line.
 
@@ -2597,10 +2635,8 @@ def test_nothing_specialises_under_the_step_symbol_capture():
     two widths.
 
     The guards are asserted as a set and not as a count. Each is the record of
-    where the traced step stops being valid -- the staging buffers' capacities,
-    expressed against the step's width -- and a guard nobody intended is a
-    narrower artifact than it looks. The set is a function of the width as well
-    as of `tp`; see `expected_guards`.
+    where the traced step stops being valid -- see `EXPECTED_GUARDS` -- and a
+    guard nobody intended is a narrower artifact than it looks.
     """
     for tp in (1, 2):
         record = capture(tp, step_symbol=True)
@@ -2617,7 +2653,7 @@ def test_nothing_specialises_under_the_step_symbol_capture():
         assert record["step_axis_hint"] == DECODE_SEQS
         assert record["shape_env_replacements"] == {}, tp
         assert record["specialisations"] == [], tp
-        assert set(record["shape_env_guards"]) == expected_guards(tp, DECODE_SEQS), tp
+        assert set(record["shape_env_guards"]) == EXPECTED_GUARDS[tp], tp
 
 
 def test_the_capture_refuses_a_width_that_torch_would_specialise():
@@ -2747,36 +2783,21 @@ def test_the_symbol_reaches_the_work_that_decides_the_cost():
         row = control["family_census"][family]
         assert row["non_numeric_shape_entries"] == 0, family
     # And the two inventories are the same inventory. Same operators, same
-    # count of them, same number of shape entries -- the step traced is the
-    # step ATOM traces, and what this changed is what those entries say, not
-    # which operators ran.
+    # count of them, same number of shape entries, and every family runs the
+    # same number of operators -- the step traced is the step ATOM traces, and
+    # what this changed is what those entries say, not which operators ran.
     symbolic = capture(1, step_symbol=True)
     assert symbolic["ops"] == control["ops"]
     assert symbolic["shape_entries"] == control["shape_entries"]
-    # One operator differs, and it is a *value* rather than a shape.
-    # `gdn_attn.prepare_decode` writes the step's token count into the tail of
-    # a staging tensor; a Python integer is lifted as a constant and a symbol
-    # is materialised instead. Same line, same one call, nothing about shape.
-    assert set(symbolic["distinct_ops"]) - set(control["distinct_ops"]) == {
-        "aten.scalar_tensor.default"
-    }
-    assert set(control["distinct_ops"]) - set(symbolic["distinct_ops"]) == {
-        "aten.lift_fresh.default"
-    }
-    # Every family runs the same number of operators on both sides, save that
-    # the one operator above is an allocation where it used to be a view.
-    moved = {"allocation": 1, "view": -1}
+    assert symbolic["distinct_ops"] == control["distinct_ops"]
     ran = {family: row["ops"] for family, row in symbolic["family_census"].items()}
     assert ran == {
-        family: row["ops"] + moved.get(family, 0)
-        for family, row in control["family_census"].items()
+        family: row["ops"] for family, row in control["family_census"].items()
     }
 
 
 def test_the_three_sites_are_where_they_were_and_carry_the_symbol_instead():
-    """The three ordered sites, held by what now happens at each of them.
-
-    None has moved and none has been removed. What changed is the outcome:
+    """The three ordered sites, held by what happens at each of them in this pass.
 
     **Site one**, the bound at the caller. `prepare_decode` still fills a
     staged buffer's numpy view with the count, and a host fill still needs a
@@ -2785,35 +2806,33 @@ def test_the_three_sites_are_where_they_were_and_carry_the_symbol_instead():
     that made every shape downstream a constant. The line appears in
     `host_resolutions` and in nothing else.
 
-    **Site two**, inside the buffer. `copy_to_gpu` runs the line it always ran,
-    and the staged buffer is ATOM's own, unsymbolised. The bound carries the
-    symbol, so both slices carry it and the copy dispatches with it; the line
-    appears as the call site of operators whose shapes are not numbers.
+    **Site two**, the binding's shape check, is never reached with a symbol:
+    this pass stages ATOM's own buffers, unsymbolised.
 
-    **Site three**, `assert_shape_contract`'s `_rows`, the only one that could not
-    be closed from outside ATOM: `int(t.shape[0])` converts a dimension the assertion
-    then compares against a symbolic width. It no longer converts, so it
-    appears nowhere.
+    **Site three**, the H2D publication's count check, converts the width on
+    every copy, so it is a host resolution like site one -- but one whose
+    number the publication then copies with. The copies carry the hint, not
+    the symbol, and the view the publication hands back carries the symbol
+    again. That is the one place the width is not free, and `graph_digest`
+    leaves it out by name rather than by accident.
 
-    **And the whole log is held, not just those three lines.** The point of
-    replacing the recording with a log is that a conversion nobody expected
-    fails rather than joining the log unremarked, and a membership test on one
-    site does not do that: a seventeenth ATOM line converting the width would
-    add an entry and nothing would notice. The multiset of `(ATOM line,
-    conversions)` is asserted against `EXPECTED_HOST_RESOLUTIONS` instead, at
-    both widths of the group and both step widths, because that is the property
-    the instrument is claimed to have.
+    **And the whole log is held, not just those lines.** The point of replacing
+    the recording with a log is that a conversion nobody expected fails rather
+    than joining the log unremarked, and a membership test on one site does not
+    do that. The multiset of `(ATOM line, conversions)` is asserted against
+    `EXPECTED_HOST_RESOLUTIONS` instead, at both widths of the group and both
+    step widths, because that is the property the instrument is claimed to
+    have.
 
-    This test cannot be passed by removing a site: a `copy_to_gpu` that stopped
-    dispatching would lose its `symbolic_sites` entry, and a `prepare_decode`
-    that stopped filling the view would lose its `host_resolutions` entry.
+    This test cannot be passed by removing a site: a publication that stopped
+    copying would lose its operators, and a `prepare_decode` that stopped
+    filling the view would lose its `host_resolutions` entry.
     """
     record = capture(1, step_symbol=True)
 
-    # The declared set, on every arrangement this file traces. 20 conversions
-    # over 16 ATOM lines, the same at TP1 and TP2 and at both step widths: the
-    # lines are host fills and slices, and neither the group's width nor the
-    # step's changes which of them run.
+    # The declared set, on every arrangement this file traces, the same at TP1
+    # and TP2 and at both step widths: neither the group's width nor the
+    # step's changes which lines run.
     for tp in (1, 2):
         for width in (DECODE_SEQS, SECOND_WIDTH):
             at = capture(tp, step_symbol=True, width=width)
@@ -2822,35 +2841,26 @@ def test_the_three_sites_are_where_they_were_and_carry_the_symbol_instead():
                 width,
             )
 
-    resolved_at = {
-        frame for event in record["host_resolutions"] for frame in event["frames"][-1:]
-    }
-    assert SITE_ONE[1][0] in resolved_at
+    resolved_at = collections.Counter(
+        event["frames"][-1] for event in record["host_resolutions"]
+    )
+    assert resolved_at[SITE_ONE[1][0]] == 1
+    assert resolved_at[SITE_THREE[1][0]] == STAGED_COPIES
     # ... and nowhere in the specialisations, which is the whole change.
     assert record["specialisations"] == []
 
-    at_the_copy = {
-        entry["op"]: entry["n"]
+    # One copy per staged buffer, at the hint: none of them carries a symbol.
+    published = record["published_ops"]
+    copies = [op for op in published if op[0] == "aten.copy_.default"]
+    assert len(copies) == STAGED_COPIES
+    assert not any(_Recorder._carries_symbol(i, o) for _, i, o in copies)
+    # What the publication hands back is a slice with the symbol in it, and
+    # that is all it dispatches with one.
+    assert {
+        entry["op"]
         for entry in record["symbolic_sites"]
-        if entry["call_site"] == SITE_TWO[1][-1]
-    }
-    # One copy per staged buffer, two slices per copy -- the destination and
-    # the source, which is the pair that used to decide the shape between them
-    # and now agrees on it -- and the device read the copy does per call.
-    assert at_the_copy == {
-        "aten.copy_.default": STAGED_COPIES,
-        "aten.slice.Tensor": 2 * STAGED_COPIES,
-        "prim.device.default": STAGED_COPIES,
-    }
-
-    # Site three converts nothing now. It is ATOM's own `_rows`, which returns
-    # `t.shape[0]` unconverted, and it is the only site of the three that is not
-    # reachable from a capture-time substitution.
-    assert not [
-        event
-        for event in record["host_resolutions"]
-        if any("in _rows" in frame for frame in event["frames"])
-    ]
+        if entry["call_site"].startswith(H2D_PUBLICATION)
+    } == {"aten.slice.Tensor"}
 
 
 def test_the_symbol_is_free_across_the_step_width():
@@ -2878,7 +2888,7 @@ def test_the_symbol_is_free_across_the_step_width():
     sizes, head counts, projection widths, and the staging buffers' capacities.
 
     **One of those constants is a 2, and it is not the step's.** At TP2 the
-    value 2 appears 73 times in the concrete half of the census -- it is the
+    value 2 appears in the concrete half of the census -- it is the
     *group's* width, which this step really does have. The identity above is
     what separates the two readings: the concrete dimensions are the same at
     step width 2 and at step width 8, so a 2 that survives a step eight rows
@@ -2891,15 +2901,13 @@ def test_the_symbol_is_free_across_the_step_width():
 
     **What the digest covers, and the one artifact that differs.** The digest
     is over operator names and tensor shapes: not scalar arguments, not dtypes,
-    not strides. The single control-versus-symbol difference this file reports,
-    `lift_fresh` becoming `scalar_tensor`, is a *value*-level difference and
-    was found by comparing `distinct_ops`, which is the instrument for that.
-    And one artifact genuinely is not identical between the two widths -- the
-    guard set, which acquires a lower bound `<axis> + 1 > <hint>` at every hint
-    but 2. It is asserted here rather than left out of the comparison, because
-    a reader told five rows are identical should be told which row is not and
-    why it does not disturb the conclusion: it is a `__bool__` comparison on a
-    live symbol, which is the boundary this pass left alive on purpose.
+    not strides. And it leaves out the H2D publication's operators, which are
+    not identical between the two widths: the publication checks each count
+    with `operator.index` and copies with the number that returns, so its
+    copies are at the hint. They are asserted here rather than only left out,
+    because a reader told the inventories are identical should be told which
+    operators are not and why: the same operators in the same order, at two
+    sizes. The guards are the same at both widths.
     """
     for tp in (1, 2):
         narrow = capture(tp, step_symbol=True)
@@ -2926,19 +2934,19 @@ def test_the_symbol_is_free_across_the_step_width():
         if tp == 1:
             assert DECODE_SEQS not in values, tp
         else:
-            # At TP2 the constant 2 *is* present -- 73 entries, across
-            # allocations, views, transfers and one device read -- and it is
-            # the **group's** width, not the step's. What says so is the line
+            # At TP2 the constant 2 *is* present, and it is the **group's**
+            # width, not the step's. What says so is the line
             # above it: `concrete_dims` is identical at step widths 2 and 8, so
             # a 2 that is still a 2 when the step is eight wide is not the
             # step. The group width is an engine constant here in the way a
             # head count is.
             assert values & {DECODE_SEQS} == {DECODE_SEQS}, tp
+        assert set(narrow["shape_env_guards"]) == EXPECTED_GUARDS[tp], tp
+        assert set(wide["shape_env_guards"]) == EXPECTED_GUARDS[tp], tp
         # The one artifact that is width-dependent, stated rather than omitted.
-        assert set(narrow["shape_env_guards"]) == expected_guards(tp, DECODE_SEQS), tp
-        assert set(wide["shape_env_guards"]) == expected_guards(tp, SECOND_WIDTH), tp
-        assert f"<axis> + 1 > {SECOND_WIDTH}" in wide["shape_env_guards"], tp
-        assert f"<axis> + 1 > {SECOND_WIDTH}" not in narrow["shape_env_guards"], tp
+        names = [op[0] for op in narrow["published_ops"]]
+        assert names and [op[0] for op in wide["published_ops"]] == names, tp
+        assert wide["published_ops"] != narrow["published_ops"], tp
 
 
 if __name__ == "__main__":
