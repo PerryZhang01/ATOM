@@ -163,7 +163,8 @@ else
     ATOM_COMPASS_PARITY_RECORD=$record setsid python3 -m atom.entrypoints.openai.api_server \
         --model "$MODEL" --host 127.0.0.1 --server-port "$PORT" --timeout-keep-alive 1000000 \
         $SERVER_ARGS "${compass[@]}" >"$OUT/server.log" 2>&1 &
-    # Not /health: before the traffic LP joins the run, the frontend answers nothing.
+    # Ready once uvicorn listens; the frontend answers /health from then on,
+    # before the traffic LP joins the run too.
     ready=("Uvicorn running" "$OUT/server.log")
 fi
 server=$!

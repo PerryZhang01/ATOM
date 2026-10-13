@@ -142,9 +142,9 @@ class LPRuntime:
         self.idle_calls = 0  # `calls` when the step loop last passed its idle point
         # The frontend's event loop, once built: a frame a thread takes is a job on it.
         self.loop = None
-        # Clock calls refused off the owner thread, as run-summary reasons
-        # ``clock:<call> from <thread>``: a caller such as an output thread may
-        # log and drop the exception.
+        # Clock calls refused, as run-summary reasons ``clock:<call> ...``: a
+        # caller such as an output thread or an HTTP handler may log and drop
+        # the exception.
         self.refusals: list[str] = []
 
     def start_run(self) -> None:
@@ -163,16 +163,17 @@ class LPRuntime:
     def stamp_send(self, ch: str) -> tuple[float, int]:
         """Register one message on `ch` as produced now; returns its ``(arrival, seq)``.
 
-        While a next-event request is out, the LP waits, and the authority may
-        already have granted other LPs past its clock: a send then, from a
-        handler of an event outside the run such as a client disconnect, first
-        takes the grant and is produced at it. The grant it takes is whichever
-        is out when the event is read, a wall-clock race: this keeps the send
-        from arriving backdated, not its time reproducible.
+        Refused while a next-event request is out, as a run-summary reason
+        ``clock:stamp_send on <channel> while a next-event request is out``: the
+        authority may already have granted other LPs past this LP's clock, so
+        the send could only be backdated, or stamped at whichever grant is out
+        when, in wall time, the handler that sends runs.
         """
         self._require_owner("stamp_send")
         if self.asked:
-            self.take_grant()
+            why = f"stamp_send on {ch} while a next-event request is out"
+            self.refusals.append(f"clock:{why}")
+            raise RuntimeError(f"{self.me}: {why}, so no time can be given to it")
         with self.lock:
             seq = self.next_seq[ch]
             self.next_seq[ch] = seq + 1
