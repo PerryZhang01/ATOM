@@ -248,6 +248,13 @@ a planned corner whose `N_Q` is not an integer is no such batch, and is reported
 measured. On #740's records, nodes `2^(k/2)` leave up to 88 prefill steps per record
 with such a corner, and nodes `2^k` none.
 
+A prefill step cached past the top c node refuses (D99). Two kinds reach it: a prefix hit
+near `max_model_len`, with large c and small `N_Q`; and a long prompt's last chunk when
+`max_model_len` is not a multiple of the budget (at 200000 and 16384, a chunk at
+c = 196608 is past a top node of 183616). #740's records hold neither: 262144 is a
+multiple of 16384, and a cc-traces replay reuses no prefix. The coverage check counts
+these steps apart, on a run with prefix caching, for T98's trigger.
+
 ### Scope and timing
 
 The interval is `02` D10's: the whole `ModelRunner.forward()`, sampling included. It is
@@ -547,8 +554,10 @@ After stage 2, step fit gets one evaluation on DeepSeek-V4-Pro (`16` W4.13):
 - **`13` does not describe the run file** that selects a backend (D103). Recorded as
   **T96**.
 - **A step whose cell crosses the feasible boundary despite the boundary nodes** (D98) has
-  an unmeasured corner and refuses. Interpolating it over points measured on the boundary
-  waits until the pre-run coverage check finds such steps. Recorded as **T98**.
+  an unmeasured corner and refuses, as does a prefill step cached past the top c node.
+  Interpolating them over points measured on the boundary waits until the pre-run coverage
+  check finds such steps, the prefill ones counted on a run with prefix caching. Recorded
+  as **T98**.
 
 ---
 
@@ -580,4 +589,4 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 | T94 | Record the kernels each grid point ran, and treat a cell whose corners ran different kernels as crossing a dispatch band (`09` D60): refused or split | needs the grid measurement (`16` S2.2) to record kernel identity |
 | T95 | Trial, not this design: extrapolate an out-of-cell step as #627's ruling 3 has the tier-a law do, by one method only, extending the nearest complete cell's interpolation, tagged `extrapolated` with the distance and reported apart, which is not a refusal. It includes extrapolation within rounding distance: a step outside every complete cell, and every T98 simplex, only by integer or block rounding (an equivalent shape's mean context can sit past `c_max(B)` while its ragged batch fits) is extrapolated that far, and a farther one declined. It would answer out-of-cell steps, which step fit now declines (D102) | decide after step fit's stage-2 evaluation shows how often steps fall outside complete cells |
 | T96 | Reconcile `13` D79 and D80 with the run file the code selects a backend by (`--compass-run`, `atom/compass/run/__init__.py::runner`): `13` rejects a Compass config file, the code reads one | needs an owner choice between describing the run file in `13` and moving selection to flags |
-| T98 | Interpolate a step whose cell has a corner past a limit in the simplex of measured points holding it, those points measured where the cell's edges cross the feasible boundary (D98) | taken up when the pre-run coverage check (D99) finds steps the boundary nodes miss; #830's counts find none on #740's records |
+| T98 | Interpolate a step whose cell has a corner past a limit, or a prefill step cached past the top c node, in the simplex of measured points holding it, those points measured where the cell's edges cross the feasible boundary (D98) | taken up when the pre-run coverage check (D99) finds steps the boundary nodes miss, the prefill steps past the top c node counted on a run with prefix caching; #830's counts find none on #740's records, which hold neither kind |

@@ -44,7 +44,7 @@ LADDER = [1, 2, 4, 8, 16, 32, 48]
 C_NODES = [512, 1024]
 REPLAY_B = {"32": [17, 32], "48": [33, 48]}
 EAGER_B = [32, 40, 48]
-PREFILL_NODES = {"B": [1, 2], "N_Q": [8, 64], "c": [0, 64, 128, 192]}
+PREFILL_NODES = {"B": [1, 2], "T": [8, 64], "c": [0, 64, 128, 192]}
 
 
 def f(b, c):
@@ -75,7 +75,11 @@ def bundle(mode, points, output=(), no_output=(), unit="us"):
             "no_output": list(no_output),
         },
         "decode": {
-            "nodes": {"B": REPLAY_B if mode == "replay" else EAGER_B, "c": C_NODES},
+            "nodes": (
+                {"B": REPLAY_B, "c": dict.fromkeys(REPLAY_B, C_NODES)}
+                if mode == "replay"
+                else {"B": EAGER_B, "c": C_NODES}
+            ),
             "points": list(points),
         },
     }
@@ -125,9 +129,9 @@ def view(*rows, rung=None, produces_output=None):
     )
 
 
-def decode(prompts):
-    """The first decode batch ATOM's scheduler builds after one prompt of each length."""
-    scheduler = Scheduler(
+def scheduler_of(prompts):
+    """ATOM's scheduler holding one prompt of each length."""
+    built = Scheduler(
         MockConfig(
             num_kvcache_blocks=2048,
             kv_cache_block_size=BLOCK,
@@ -138,9 +142,15 @@ def decode(prompts):
         )
     )
     for n in prompts:
-        scheduler.add(
+        built.add(
             Sequence(list(range(5, 5 + n)), BLOCK, sampling_params=SamplingParams())
         )
+    return built
+
+
+def decode(prompts):
+    """The first decode batch ATOM's scheduler builds after one prompt of each length."""
+    scheduler = scheduler_of(prompts)
     while True:
         batch, seqs = scheduler.schedule()
         if batch.total_seqs_num_decode:
@@ -270,14 +280,28 @@ def test_a_middle_chunk_is_priced_from_the_no_output_grid_and_a_final_one_never_
     assert steps == [(False, 1e-3)] * 3 + [(True, 0.0)]
     assert refused == (
         (
-            "cost:step-fit: the prefill output cell holding B=1, N_Q=8, c=192 "
-            "has no measurement at B=1, N_Q=8, c=192"
+            "cost:step-fit: the prefill output cell holding B=1, T=8, c=192 "
+            "has no measurement at B=1, T=8, c=192"
         ),
     )
     final = [point(1, 8, 192, time=3)]
     steps, refused = chunks(eager(output=final, no_output=MIDDLE, unit="ms"))
     assert steps == [(False, 1e-3)] * 3 + [(True, 3e-3)]
     assert refused == ()
+
+
+def test_a_prefill_step_is_read_at_its_token_count():
+    """Prompts of 20 and 10 tokens open in one step: B = 2 and T = 30, and work
+    210 + 55 = 265, 132.5 a row, so c = (132.5 - 15 * 16 / 2) / 15 = 5/6."""
+    grid = [
+        point(b, t, c, time=1000 + t) for b in (1, 2) for t in (8, 64) for c in (0, 64)
+    ]
+    batch, _ = scheduler_of([20, 10]).schedule()
+    r = runner(eager(output=grid))
+
+    # 1000 + T, read between the T nodes 8 and 64.
+    assert r.forward(batch).predicted_s == 1030e-6
+    assert r.refused_commands() == ()
 
 
 def test_the_equivalent_shape_keeps_the_token_count_and_the_attention_work():
@@ -415,6 +439,10 @@ def _edited(edit, mode="eager"):
             _edited(lambda m: m["decode"]["nodes"].update(B=REPLAY_B)),
             "under graph mode eager the decode B nodes are one list, not a dict",
         ),
+        (
+            _edited(lambda m: m["decode"]["nodes"].update(c=C_NODES), mode="replay"),
+            "under graph mode replay the decode c nodes are one list per rung, not a list",
+        ),
     ],
     ids=[
         "mode",
@@ -429,6 +457,7 @@ def _edited(edit, mode="eager"):
         "rung",
         "replay-b-list",
         "eager-b-per-rung",
+        "replay-c-list",
     ],
 )
 def test_a_bundle_that_cannot_be_read_fails_loading(mapping, match):

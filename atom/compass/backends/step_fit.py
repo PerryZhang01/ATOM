@@ -8,8 +8,9 @@ attention work, Sum (N_Q.c + N_Q(N_Q+1)/2) over rows with c the cached
 context, in exact arithmetic: B rows of N_Q = tokens / B each, and the c that
 gives the same work. That shape is read in one grid:
 
-    prefill:                (B, N_Q, c), from the grid of chunks that produce
-                            output or the grid of chunks that do not
+    prefill:                (B, T, c), T = B.N_Q the step's tokens, from the
+                            grid of chunks that produce output or the grid of
+                            chunks that do not
     decode, replay bundle:  (B, c), from the grid of the rung the step replays
     decode, eager bundle:   (B, c), the rung ignored
 
@@ -36,12 +37,12 @@ The grid is a mapping, as a bundle holds it:
 
     {"graph_mode": "replay" | "eager", "scope": <timing scope>,
      "unit": "s" | "ms" | "us",
-     "prefill": {"nodes": {"B": [...], "N_Q": [...], "c": [...]},
+     "prefill": {"nodes": {"B": [...], "T": [...], "c": [...]},
                  "output": [POINT, ...], "no_output": [POINT, ...]},
-     "decode": {"nodes": {"B": B_NODES, "c": [...]}, "points": [POINT, ...]}}
+     "decode": {"nodes": {"B": NODES, "c": NODES}, "points": [POINT, ...]}}
 
-    replay: B_NODES = {"<rung>": [B, ...], ...}, a POINT at [rung, B, c]
-    eager:  B_NODES = [B, ...],                  a POINT at [B, c]
+    replay: NODES = {"<rung>": [...], ...}, a POINT at [rung, B, c]
+    eager:  NODES = [...],                  a POINT at [B, c]
     POINT = {"at": [...], "time": <in unit>, "statistic": <name>, "repeats": n}
 """
 
@@ -191,7 +192,7 @@ class StepFitGrid:
         self.unit = UNITS[bundle["unit"]]
         self.scope = bundle["scope"]
         prefill = bundle["prefill"]
-        axes = ("B", "N_Q", "c")
+        axes = ("B", "T", "c")
         nodes = [prefill["nodes"][axis] for axis in axes]
         self.prefill = {
             produces: _Cells(f"prefill {key}", axes, nodes, prefill[key])
@@ -200,12 +201,13 @@ class StepFitGrid:
         decode = bundle["decode"]
         b_nodes, c_nodes = decode["nodes"]["B"], decode["nodes"]["c"]
         replay = self.graph_mode == "replay"
-        if isinstance(b_nodes, Mapping) != replay:
-            raise ValueError(
-                f"under graph mode {self.graph_mode} the decode B nodes are "
-                f"{'one list per rung' if replay else 'one list'}, not a "
-                f"{type(b_nodes).__name__}"
-            )
+        for axis, nodes in (("B", b_nodes), ("c", c_nodes)):
+            if isinstance(nodes, Mapping) != replay:
+                raise ValueError(
+                    f"under graph mode {self.graph_mode} the decode {axis} nodes "
+                    f"are {'one list per rung' if replay else 'one list'}, not a "
+                    f"{type(nodes).__name__}"
+                )
         if not replay:
             self.decode = _Cells(
                 "decode", ("B", "c"), [b_nodes, c_nodes], decode["points"]
@@ -222,7 +224,10 @@ class StepFitGrid:
             by_rung[rung].append({**point, "at": at})
         self.decode = {
             int(rung): _Cells(
-                f"decode rung {rung}", ("B", "c"), [nodes, c_nodes], by_rung[int(rung)]
+                f"decode rung {rung}",
+                ("B", "c"),
+                [nodes, c_nodes[rung]],
+                by_rung[int(rung)],
             )
             for rung, nodes in b_nodes.items()
         }
@@ -253,7 +258,8 @@ class StepFitGrid:
                     "a prefill step that does not say whether it produces "
                     "output, which picks its grid",
                 )
-            cells, at = self.prefill[view.produces_output], (rows_n, query, cached)
+            cells = self.prefill[view.produces_output]
+            at = (rows_n, rows_n * query, cached)
         else:
             widest = max(row.query_tokens for row in decode)
             if widest > 1:
