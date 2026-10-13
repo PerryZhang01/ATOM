@@ -712,8 +712,8 @@ def engine_done(engine_core, **sections) -> None:
 def engine_loop(engine_core):
     """Around the engine's loop: `engine_done` once it leaves, which raises if
     that was before the finish. If either raises in a run, hand in the engine's
-    refused clock calls, the exception and what the workers say in 10 s, since one
-    may be what died. Under ``step_fit`` the workers are asked for the bundle
+    refused clock calls and the exception, and what the workers say in 10 wall
+    seconds unless one died. Under ``step_fit`` the workers are asked for the bundle
     before the loop, so a run that ends early still hands it in."""
     run, sections = spec(), {}
     if run is not None and "step_fit" in run:
