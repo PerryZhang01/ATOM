@@ -17,7 +17,9 @@ to the traffic LP. The orchestrator's ``PhaseRunner`` becomes
 ``ClockPhaseRunner``, whose phase deadlines wait on that clock. ``time`` in the
 phase lifecycle, the credit issuer and the strategy reads the clock, so phase
 stamps and windows, ``issued_at_ns`` and the system idle cap are simulated; the
-CLI's ``uuid4`` is fixed, so prompt token counts repeat from run to run.
+CLI's ``uuid4`` is fixed, so prompt token counts repeat from run to run. The
+runner's ``asyncio`` becomes ``ClockAsyncio``, so its cancel drain times out on
+that clock too.
 """
 
 import importlib
@@ -34,7 +36,10 @@ ADDRESS_ENV = "COMPASS_HARNESS_IPC"
 SIM_TIME = (("time", "compass_harness.timesource:SimTime"),)
 #: aiperf module -> ((a global to rebind, the replacement as module:qualname), ...).
 REBIND = {
-    RUNNER: (("LoopScheduler", "compass_harness.scheduler:ClockPacedLoopScheduler"),),
+    RUNNER: (
+        ("LoopScheduler", "compass_harness.scheduler:ClockPacedLoopScheduler"),
+        ("asyncio", "compass_harness.timesource:ClockAsyncio"),
+    ),
     "aiperf.timing.manager": (
         ("StickyCreditRouter", "compass_harness.router:CompassCreditRouter"),
     ),

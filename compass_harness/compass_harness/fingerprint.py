@@ -56,6 +56,7 @@ PINNED = {
     "aiperf.timing.strategies.agentic_replay:AgenticReplayStrategy._run_system_idle_watchdog": "be75be66b6069177145e672f4ffa7aa26252b95895bfd2c99faf8e49a11b7939",
     "aiperf.timing.strategies.agentic_replay:AgenticReplayStrategy._cancel_system_idle_watchdog": "272b852cce3db18c82e8a85d01588bb280ad9633fa0e88b68f180fc9fef53160",
     "aiperf.timing.phase.runner:PhaseRunner._wait_for_event_with_timeout": "02074d907a91cc440a678e5e8648f17d9a89c8cdad83f80e683204de8867c55b",
+    "aiperf.timing.phase.runner:PhaseRunner._wait_for_returning_complete": "4e130c806fdb0a7ef884284602eecd2aba15ffef4ad8cc0cb479b73db04b4a12",
     "aiperf.timing.phase_orchestrator:PhaseOrchestrator._execute_phases": "7181bf33a2d4e6c440c2291390feb96a8c31f76bab258e9a3df633006f125abd",
     "aiperf.cli_runner:_make_benchmark_run": "f804f11878e985466855f13604390f7b68143da9f8fccb9f22255d67b884f1cc",
 }
