@@ -138,6 +138,7 @@ class LPRuntime:
         self.endpoints: dict[str, str] = {}  # address -> channel kind it carries
         self.relays: dict[str, RelayQueue] = {}  # channel -> the engine's output relay
         self.calls = 0  # clock calls made, TAR and NER
+        self.asked = False  # a next-event request is out, its grant not taken
         self.idle_calls = 0  # `calls` when the step loop last passed its idle point
         # The frontend's event loop, once built: a frame a thread takes is a job on it.
         self.loop = None
@@ -160,8 +161,18 @@ class LPRuntime:
         return self.now if t is None else t
 
     def stamp_send(self, ch: str) -> tuple[float, int]:
-        """Register one message on `ch` as produced now; returns its ``(arrival, seq)``."""
+        """Register one message on `ch` as produced now; returns its ``(arrival, seq)``.
+
+        While a next-event request is out, the LP waits, and the authority may
+        already have granted other LPs past its clock: a send then, from a
+        handler of an event outside the run such as a client disconnect, first
+        takes the grant and is produced at it. The grant it takes is whichever
+        is out when the event is read, a wall-clock race: this keeps the send
+        from arriving backdated, not its time reproducible.
+        """
         self._require_owner("stamp_send")
+        if self.asked:
+            self.take_grant()
         with self.lock:
             seq = self.next_seq[ch]
             self.next_seq[ch] = seq + 1
@@ -191,10 +202,12 @@ class LPRuntime:
         clock stands still between the two."""
         self._require_open("next_event")
         self._ca_send("NER", t, t_daemon)
+        self.asked = True
 
     def take_grant(self) -> float:
         """Wait for the grant of the request `ask_next_event` sent; returns it."""
         G, released = self.conn.recv()
+        self.asked = False
         self._step_through(G, released)
         if G == float("inf"):
             self.end_run()

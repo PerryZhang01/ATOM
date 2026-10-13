@@ -13,6 +13,7 @@ import importlib.util
 import logging
 import math
 import queue
+import socket
 import threading
 import time
 import uuid
@@ -561,3 +562,79 @@ def test_http_channel_refuses_a_plain_asyncio_loop():
     scope = {"type": "http", "headers": [(b"x-test-stamp", b"0.5 0")]}
     with pytest.raises(TypeError, match="on a CompassEventLoop, not on"):
         asyncio.run(HttpChannel(None, _stamp)(scope, None, None))
+
+
+CONTROL = "frontend->engine:control#dp0"
+
+
+def _hang_up_while_the_grant_is_out(monkeypatch, timer: float | None):
+    """A client hangs up while the frontend waits for its grant, and the
+    frontend's handler stamps a control send, as its abort of that request does.
+
+    The frontend's clock connection is tcp, so its loop serves its sockets
+    while the grant is out. Traffic idles from the start; the engine has joined
+    and asks nothing until the handler runs, so no grant reaches the frontend
+    before then. `timer` is an essential timer of the frontend, or None.
+    Returns the stamps, the engine's control releases, and the loop's LP time
+    at the finish.
+    """
+    authority = clock_transport.serve(ClockAuthority(TABLE), "tcp://127.0.0.1:0")
+    clock_transport.connect(TRAFFIC, authority.endpoint).send((NER, INF, [], INF))
+    engine = clock_transport.connect(ENGINE, authority.endpoint)
+    rt = LPRuntime(
+        FRONTEND, TABLE, clock_transport.connect(FRONTEND, authority.endpoint)
+    )
+    rt.start_run()
+    monkeypatch.setattr(clock, "_installed", rt)
+    loop = CompassEventLoop()
+    client, peer = socket.socketpair()
+    stamps, released = [], []
+    handling = threading.Event()
+
+    def hang_up():
+        loop.remove_reader(peer)
+        handling.set()
+        stamps.append(rt.stamp_send(CONTROL))
+
+    def engine_lp():
+        _until(lambda: rt.calls)  # the frontend has asked for its first grant
+        client.send(b"x")
+        handling.wait(10)
+        g = None
+        while g != INF:
+            engine.send((NER, INF, [], INF))
+            g, got = engine.recv()
+            released.extend(got[CONTROL])
+
+    loop.add_reader(peer, hang_up)
+    if timer is not None:
+        loop.call_at(timer, lambda: None)
+    thread = threading.Thread(target=engine_lp, daemon=True)
+    thread.start()
+    # A loop the finish does not stop is stopped after 20 wall seconds.
+    guard = threading.Timer(20, lambda: loop.call_soon_threadsafe(loop.stop))
+    guard.start()
+    try:
+        loop.run_forever()
+        thread.join(10)
+        return stamps, released, loop.ended and loop.ended[0]
+    finally:
+        guard.cancel()
+        client.close()
+        peer.close()
+        authority.close()
+        if loop.ended:
+            loop.close()
+
+
+def test_a_send_while_the_grant_is_out_is_sent_at_the_grant(monkeypatch):
+    stamps, released, end = _hang_up_while_the_grant_is_out(monkeypatch, 1.0)
+    assert stamps == [(1.0 + TABLE.lookahead(CONTROL), 0)]
+    assert released == [(0, 1.0 + TABLE.lookahead(CONTROL))]
+    assert end == 1.0
+
+
+def test_a_send_that_takes_the_finish_ends_the_loop_at_the_last_lp_time(monkeypatch):
+    stamps, released, end = _hang_up_while_the_grant_is_out(monkeypatch, None)
+    assert stamps == [(INF, 0)] and released == []
+    assert end == 0.0
