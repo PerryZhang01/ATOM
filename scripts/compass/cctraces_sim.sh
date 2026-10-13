@@ -31,6 +31,9 @@
 #                   --trajectory-start-max-ratio 0` to start every trajectory
 #                   at its first turn, with no warmup
 #   DECODE_EXEC, ATOMESH  as pd_sim.sh takes them, for a 1P1D cell
+#   WAIT_S          seconds the deployment has to start, and to leave once
+#                   aiperf has; seconds aiperf has to finish once the
+#                   deployment has left (default 600)
 #
 # A run file with `router_s` and `kv_write_req_s` makes the cell 1P1D: the
 # deployment is pd_sim.sh's, and aiperf drives its atomesh router.
@@ -40,8 +43,8 @@
 # and the aiperf arguments), the server and aiperf logs, aiperf's artifacts,
 # and the step table and run summary. The last line is the cell's result, with
 # the KV transfer count and mean simulated seconds for a 1P1D cell. It exits
-# non-zero when aiperf or the deployment did, or when aiperf's benchmark id is
-# not the one recorded.
+# non-zero when aiperf or the deployment did, when aiperf's benchmark id is
+# not the one recorded, or when aiperf outlives the deployment by WAIT_S.
 #
 # A TP1 cell also writes its step record to steps/. A real cell writes no step
 # table or summary; it saves rocm-smi's process listing before and after it in
@@ -134,7 +137,7 @@ print("1p1d" if "kv_write_req_s" in run else "tp1", *ports)
 EOF
 )
 
-trap 'kill -- $(jobs -p) ${server:+-$server} 2>/dev/null || true' EXIT
+trap 'kill -- $(jobs -p) ${server:+-$server} ${client:+-$client} 2>/dev/null || true' EXIT
 gpu=${HIP_VISIBLE_DEVICES:-0}
 gpu=${gpu%%,*}
 gpu_processes() { rocm-smi --showpids --showpidgpus >"$OUT/gpu_$1.txt"; }
@@ -179,10 +182,21 @@ aiperf=(-m aiperf)
 r.uuid4 = lambda: uuid.UUID(int=0)
 from aiperf.cli import app
 app()')
+# Its own process group, so stopping it stops its workers too.
 (cd "$OUT" && ATOM_COMPASS_RUN=$OUT/run.json AIPERF_DATASET_MMAP_BASE_PATH=$OUT \
-    "$HARNESS_PYTHON" "${aiperf[@]}" profile --url "127.0.0.1:$PORT" --model "$MODEL" \
+    exec setsid "$HARNESS_PYTHON" "${aiperf[@]}" profile --url "127.0.0.1:$PORT" --model "$MODEL" \
     --tokenizer "$MODEL" --input-file "$OUT/traces" --artifact-dir "$OUT/artifacts" \
-    "${args[@]}") >"$OUT/aiperf.log" 2>&1 || rc=$?
+    "${args[@]}") >"$OUT/aiperf.log" 2>&1 &
+client=$!
+# Once the deployment has left, aiperf gets WAIT_S to finish; the trap stops it.
+left=
+while kill -0 $client 2>/dev/null; do
+    kill -0 $server 2>/dev/null || left=${left:-$((SECONDS + WAIT_S))}
+    [[ -z $left ]] || ((SECONDS < left)) ||
+        { echo "cctraces_sim: aiperf is still up $WAIT_S s after the deployment left" >&2; exit 1; }
+    sleep 1
+done
+wait $client || rc=$?
 # The deployment leaves at the finish, once the step table is written. A real
 # server serves until it is stopped, so one that has already left failed.
 ((REAL)) && { kill -TERM -- -$server 2>/dev/null || rc=$((rc ? rc : 1)); }
