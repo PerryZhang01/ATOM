@@ -2,15 +2,16 @@
 """Run grades: cells laid out as `cctraces_sim.sh` writes them.
 
 Each cell is a step record in `steps/dp0.jsonl`, the JSON lines a runner
-writes, read by `parity.read`, and aiperf's export in
+writes, read by `runs._steps`, and aiperf's export in
 `artifacts/profile_export_aiperf.json`.
 """
 
+import collections
 import json
 
 import pytest
 
-from atom.compass.validate.runs import grade, main
+from atom.compass.validate.runs import _requests, grade, main
 
 EXPORT = {
     "request_count": {"unit": "requests", "avg": 3.0},
@@ -178,3 +179,13 @@ def test_prefill_tokens_grade_the_requests_both_runs_issued(tmp_path):
     one = report["one run"]["prefill tokens"]
     assert one["result"] == [100, 100, 100] and one["spread"] == 0
     assert one["verdict"] == "not gated" and not one["admissible"]
+
+
+def test_requests_keys_by_the_final_chunks_context_not_a_later_decode_rows():
+    """A decode row after the final chunk must not move the request's key away
+    from its prompt length (100), which `named` fixes at the prefill row."""
+    steps = [
+        {"named": [[1, "k1"]], "batch": [[1, 100, 100]], "rows": [[100, 100, False]]},
+        {"named": [], "batch": [[1, 1, 101]], "rows": [[1, 101, True]]},
+    ]
+    assert _requests(steps) == collections.Counter({(100, 0): 100})
