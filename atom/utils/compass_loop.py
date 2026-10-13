@@ -5,7 +5,10 @@ Tokenization runs for real, for its result, and is charged a modelled duration
 for its time. A `Station` is a multi-server FIFO over that charged time: job k,
 submitted at ``t_k``, starts at ``s_k = max(t_k, earliest free server)`` and
 completes at ``c_k = s_k + its charged service``. Jobs are placed in submission
-order, whatever order their real threads finish in.
+order, whatever order their real threads finish in. `SimExecutor` also runs its
+service jobs for real one at a time, in submission order, so a side effect two
+jobs at one instant share, such as the request id each `Sequence` draws, follows
+the station's order and not the threads'.
 
 `SimExecutor` is the event loop's default executor. From `SimExecutor.start_run`
 on, `classify` sorts every job by name: ``do_preprocess`` is a service job on
@@ -157,6 +160,11 @@ class SimExecutor(ThreadPoolExecutor):
         self.passthrough = 0  # wait jobs in flight
         self.refusals: list[str] = []  # run-summary reasons, ``executor:<name>``
         self.settle: dict[int, partial | None] = {}  # finished, not yet placed
+        self.serial = ThreadPoolExecutor(1)  # service jobs, in submission order
+
+    def shutdown(self, wait=True, *, cancel_futures=False):
+        self.serial.shutdown(wait, cancel_futures=cancel_futures)
+        super().shutdown(wait, cancel_futures=cancel_futures)
 
     def start_run(self) -> None:
         """Freeze the width: the pool's, less the wait jobs resident now."""
@@ -175,7 +183,7 @@ class SimExecutor(ThreadPoolExecutor):
             return cf
         k = self.station.enqueue(self.loop.time())
         out = Future()
-        super().submit(self._serve, k, partial(fn, *args, **kwargs), out)
+        self.serial.submit(self._serve, k, partial(fn, *args, **kwargs), out)
         return out
 
     def _waited(self) -> None:
