@@ -92,13 +92,12 @@ def _requests(steps) -> collections.Counter:
 
 
 def _both(a, b) -> int:
-    return abs(sum(a[k] - b[k] for k in a.keys() & b.keys()))
+    return abs(sum(n - b[k] for k, n in a.items() if k in b))
 
 
 def _one_run(a, b) -> int:
-    return abs(
-        sum(a[k] for k in a.keys() - b.keys()) - sum(b[k] for k in b.keys() - a.keys())
-    )
+    only_a = sum(n for k, n in a.items() if k not in b)
+    return abs(only_a - sum(n for k, n in b.items() if k not in a))
 
 
 def _prefill(step) -> bool:
