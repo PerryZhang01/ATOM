@@ -47,6 +47,9 @@
 # table or summary; it saves rocm-smi's process listing before and after it in
 # gpu_before.txt and gpu_after.txt, and its result names the processes on its
 # GPU (the first in HIP_VISIBLE_DEVICES, default 0), with their VRAM bytes.
+# It keeps Triton's autotune results in TRITON_CACHE_DIR (Triton's default
+# ~/.triton/cache), so a kernel tuned by one real run of that directory loads
+# its choice in the next instead of tuning inside it.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/_lib.sh"
 
@@ -61,6 +64,7 @@ TRACES=${TRACES:?TRACES names a cc-traces traces.jsonl}
 HARNESS_PYTHON=${HARNESS_PYTHON:?HARNESS_PYTHON names the Python with agentx-harness}
 SESSIONS=${SESSIONS:-2}
 REAL=${REAL:-0}
+((REAL)) && export TRITON_CACHE_AUTOTUNING=1
 SERVER_ARGS=${SERVER_ARGS:---enforce-eager --max-model-len 262144}
 AIPERF_EXTRA_ARGS=${AIPERF_EXTRA_ARGS:-}
 WAIT_S=${WAIT_S:-600}
