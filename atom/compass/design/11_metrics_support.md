@@ -60,7 +60,7 @@ no rate denominators to correct.
 # EngineCore.busy_loop and DPEngineCoreProc.busy_loop (atom/model_engine/engine_core.py)
 now = clock.now(time.monotonic)
 if now >= next_metrics_push:
-    next_metrics_push = now + METRICS_PUSH_INTERVAL_S      # 5.0
+    next_metrics_push = now + metrics_interval    # ATOM_METRICS_UPDATE_INTERVAL_S
     self.utility_handler.push_metrics()
 
 # _periodic(metrics_interval, _refresh_metrics_once) (atom/entrypoints/openai/api_server.py), in the API-server process

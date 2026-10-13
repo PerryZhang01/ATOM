@@ -1439,10 +1439,10 @@ The pacing timers are local next events the clock owner hands to
 
 - `KV_IDLE_DRAIN_INTERVAL_S = 0.001` (`atom/model_engine/engine_core.py`), gated in
   `EngineCore._advance_idle_kv_transfer`, is essential and joins `t`.
-- Daemon deadlines (#533), which join `t_daemon`: `METRICS_PUSH_INTERVAL_S`, the
-  engine's metrics push (`EngineCore.busy_loop` and `DPEngineCoreProc.busy_loop`), and
-  the API server's refresh loop
-  (`_periodic` running `_refresh_metrics_once` in `api_server.py`). **Metric cadence is virtual time again**,
+- Daemon deadlines (#533), which join `t_daemon`: the engine's metrics push
+  (`EngineCore.busy_loop` and `DPEngineCoreProc.busy_loop`) and the API server's refresh
+  loop (`_periodic` running `_refresh_metrics_once` in `api_server.py`), both paced by
+  `ATOM_METRICS_UPDATE_INTERVAL_S`. **Metric cadence is virtual time again**,
   as revised `11` D72 also decides (its first version kept it on the real clock): an
   observer in the traffic LP scrapes `/metrics` every `scrape_interval` of simulated
   time. `11` D72 carries the observer and the reasons.
