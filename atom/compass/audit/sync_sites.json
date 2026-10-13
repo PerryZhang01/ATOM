@@ -1432,11 +1432,11 @@
    "mechanism_why": ""
   },
   {
-   "id": "atom/model_engine/engine_core.py::EngineCore.exit::proc.join(timeout=5)::join#0",
+   "id": "atom/model_engine/engine_core.py::EngineCore.exit::proc.join(timeout=max(deadline - time.monotonic(), 0))::join#0",
    "file": "atom/model_engine/engine_core.py",
    "symbol": "EngineCore.exit",
    "call": "proc.join",
-   "expr": "proc.join(timeout=5)",
+   "expr": "proc.join(timeout=max(deadline - time.monotonic(), 0))",
    "shape": "join",
    "category": "ignore",
    "peer": "process",
@@ -1978,27 +1978,26 @@
    "mechanism_why": ""
   },
   {
+   "id": "atom/model_engine/engine_core.py::EngineCore.exit::proc.join(timeout=5)::join#0",
+   "file": "atom/model_engine/engine_core.py",
+   "symbol": "EngineCore.exit",
+   "call": "proc.join",
+   "expr": "proc.join(timeout=5)",
+   "shape": "join",
+   "peer": "process",
+   "why": "shutdown join of a worker that outlived the deadline, after terminate or kill",
+   "mechanism": "K9",
+   "mechanism_why": "at shutdown, after the last step has been charged"
+  },
+  {
    "id": "atom/model_engine/engine_core.py::EngineCore.exit::proc.join(timeout=5)::join#1",
    "file": "atom/model_engine/engine_core.py",
    "symbol": "EngineCore.exit",
    "call": "proc.join",
    "expr": "proc.join(timeout=5)",
    "shape": "join",
-   "category": "ignore",
    "peer": "process",
-   "why": "shutdown join of the worker processes",
-   "mechanism": "K9",
-   "mechanism_why": ""
-  },
-  {
-   "id": "atom/model_engine/engine_core.py::EngineCore.exit::proc.join(timeout=max(deadline - time.monotonic(), 0))::join#0",
-   "file": "atom/model_engine/engine_core.py",
-   "symbol": "EngineCore.exit",
-   "call": "proc.join",
-   "expr": "proc.join(timeout=max(deadline - time.monotonic(), 0))",
-   "shape": "join",
-   "peer": "process",
-   "why": "shutdown join of the worker processes, under one deadline shared by all of them",
+   "why": "shutdown join of a worker that outlived the deadline, after terminate or kill",
    "mechanism": "K9",
    "mechanism_why": "at shutdown, after the last step has been charged"
   },
