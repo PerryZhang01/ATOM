@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
 """compass_harness puts aiperf's results-affecting time sources on the traffic LP clock.
 
-aiperf's own phase lifecycle, phase runner deadline and system idle cap run on
-a real ``TrafficLP`` whose runtime grants each clock call its target at once,
-with the event loop's timers made to raise. Skips by name as
+aiperf's own phase lifecycle, phase runner deadlines, cancel drain and system
+idle cap run on a real ``TrafficLP`` whose runtime grants each clock call its
+target at once, with the event loop's timers made to raise. Skips by name as
 ``test_harness_pacing.py`` does.
 """
 
@@ -37,16 +37,20 @@ from aiperf.plugin import plugins  # noqa: F401  plugin discovery, as in aiperf
 # isort: split
 import aiperf.cli_runner
 from aiperf.common.enums import CreditPhase
+from aiperf.credit.structs import TurnToSend
 from aiperf.plugin.enums import TimingMode
 from aiperf.timing import phase_orchestrator
 from aiperf.timing.config import CreditPhaseConfig
 from aiperf.timing.trajectory_source import TrajectorySource
 from compass_harness.scheduler import ClockPacedLoopScheduler
-from compass_harness.timesource import EPOCH_NS, ClockTimer
+from compass_harness.timesource import EPOCH_NS, ClockTimer, sim_ns
 from compass_harness.traffic_lp import TrafficLP
 
 DURATION = 1800.0
 CAP = 10.0
+GRACE = 30.0
+#: aiperf's default CANCEL_DRAIN_TIMEOUT.
+DRAIN = 10.0
 
 
 class GrantAtOnce:
@@ -239,6 +243,59 @@ def test_an_idle_gap_over_the_cap_replays_as_the_cap_on_the_clock(
     at, strategy = asyncio.run(main())
     assert at == CAP
     assert strategy._system_idle_seconds_skipped == 100.0 - CAP
+
+
+def _one_credit_unreturned(runner) -> None:
+    """One credit sent and never returned, so the grace wait times out and
+    aiperf cancels it."""
+    runner._credit_router = AsyncMock()
+    runner._concurrency_manager.release_stuck_slots.return_value = (0, 0)
+    runner._lifecycle.start()
+    runner._progress.increment_sent(TurnToSend("c", "x", 0, 2))
+    runner._lifecycle.mark_sending_complete()
+    runner._progress.freeze_sent_counts()
+
+
+def test_the_cancel_drain_times_out_on_the_clock(tmp_path, monkeypatch):
+    """Nothing returns: the drain times out 10 simulated s after the cancel,
+    and the phase ends there."""
+
+    async def main():
+        traffic = await _traffic(tmp_path, monkeypatch)
+        runner = _runner(grace_period_sec=GRACE)
+        _one_credit_unreturned(runner)
+        await runner._wait_for_returning_complete()
+        traffic.done.cancel()
+        return runner, traffic
+
+    runner, traffic = asyncio.run(main())
+    runner._credit_router.cancel_all_credits.assert_awaited_once()
+    assert traffic.rt.calls == [DURATION + GRACE, DURATION + GRACE + DRAIN]
+    assert runner._lifecycle.complete_at_ns == sim_ns(DURATION + GRACE + DRAIN)
+
+
+def test_a_drain_met_early_ends_the_phase_when_its_event_is_set(tmp_path, monkeypatch):
+    """Every credit is back 2 s after the cancel: the phase ends there, and
+    the drain's 10 s deadline asks the clock for nothing."""
+
+    async def main():
+        traffic = await _traffic(tmp_path, monkeypatch)
+        runner = _runner(grace_period_sec=GRACE)
+        _one_credit_unreturned(runner)
+        returned = runner._progress.all_credits_returned_event
+        runner._credit_router.cancel_all_credits.side_effect = lambda: ClockTimer(
+            2.0, returned.set
+        )
+        await runner._wait_for_returning_complete()
+        for _ in range(100):  # let the owner settle with nothing left to ask for
+            await asyncio.sleep(0)
+        traffic.done.cancel()
+        return runner, traffic
+
+    runner, traffic = asyncio.run(main())
+    assert traffic.rt.calls == [DURATION + GRACE, DURATION + GRACE + 2.0]
+    assert traffic._waiters == []
+    assert runner._lifecycle.complete_at_ns == sim_ns(DURATION + GRACE + 2.0)
 
 
 def test_the_accelerated_warmup_is_refused_by_name(tmp_path, monkeypatch):

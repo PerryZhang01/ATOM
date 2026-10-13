@@ -72,6 +72,33 @@ class ClockTimer:
             self._clock.withdraw(self._wait)
 
 
+class ClockAsyncio:
+    """``asyncio`` for the phase runner: ``wait_for`` times out on the clock.
+
+    ``ClockPhaseRunner`` overrides the runner's phase deadlines, so the one
+    ``wait_for`` left is the drain of the credits aiperf cancelled at its grace
+    deadline. It ends at the cancel plus its timeout in simulated time, or when
+    the awaited event is set. The progress report keeps its wall-clock ``sleep``.
+    """
+
+    sleep = staticmethod(asyncio.sleep)
+    CancelledError = asyncio.CancelledError
+
+    @staticmethod
+    async def wait_for(aw, timeout: float):
+        task = asyncio.ensure_future(aw)
+        expired = []
+        deadline = ClockTimer(timeout, lambda: expired.append(task.cancel()))
+        try:
+            return await task
+        except asyncio.CancelledError:
+            if expired:
+                raise TimeoutError from None
+            raise
+        finally:
+            deadline.cancel()
+
+
 def fixed_uuid4() -> uuid.UUID:
     """``uuid4`` for ``aiperf.cli_runner``: a fixed benchmark id, so the cache-bust
     marker, and with it every prompt's token count, repeats from run to run."""
