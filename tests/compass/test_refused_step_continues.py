@@ -230,3 +230,5 @@ def test_a_run_that_ends_mid_run_leaves_its_seconds_and_shares_absent_not_zero(
     assert schedule["predicted_seconds"] is None
     assert schedule["analytical"] is None
     assert schedule["extrapolated"] is None
+    assert schedule["refusals"]["steps"] is None
+    assert schedule["refusals"]["fraction_of_steps"] is None

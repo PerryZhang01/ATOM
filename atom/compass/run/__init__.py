@@ -784,10 +784,12 @@ def _write_summary(run: dict, a: _RecordingAuthority, ended: bool = False) -> No
     summary = RunSummary.of(a, end - (a.started or end), refusals=tally).as_record()
     schedule = summary["schedule"]
     # An engine that raised, or never handed in, priced steps no one counted:
-    # its seconds and shares are absent, not 0.
+    # its steps, seconds and shares are absent, not 0.
     counted = all(
         "priced" in hand_ins.get(n, {}) for n in files if n.startswith(ENGINE.name)
     )
+    if not counted:
+        schedule["refusals"].update(steps=None, fraction_of_steps=None)
     schedule["predicted_seconds"] = seconds if counted else None
     # Answers no measurement backs: diagnostics, never refusals.
     for species in ("analytical", "extrapolated"):

@@ -209,6 +209,7 @@ def test_a_run_that_ended_without_its_memory_reads_refused_and_the_cell_goes_on(
     (law / LP_FILE.format("engine")).write_text(json.dumps(ended))
     summary = json.loads((law / "summary.json").read_text())
     summary["schedule"].update(analytical=None, extrapolated=None)
+    summary["schedule"]["refusals"].update(steps=None, fraction_of_steps=None)
     (law / "summary.json").write_text(json.dumps(summary))
 
     main([str(tmp_path / "c4")])
@@ -223,4 +224,8 @@ def test_a_run_that_ended_without_its_memory_reads_refused_and_the_cell_goes_on(
     memory = {k for k in whole if k[0].startswith("memory ")}
     assert set(rows) - {k for k in rows if k[1] == "memory"} == set(whole) - memory
     assert rows["summary law", "extrapolated"] == ["null", "not gated"]
+    assert rows["summary law", "refusals"] == [
+        '1 {"ended": 1}; steps not counted',
+        "coverage report",
+    ]
     assert rows["summary p97", "speed"][1] == "meets 5x"
