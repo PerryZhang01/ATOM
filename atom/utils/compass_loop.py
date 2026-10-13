@@ -37,11 +37,14 @@ reached the caller's timeout. The ``+inf`` grant ends the run: from then on
 on the loop is asked to exit, as a signal would ask it, and shuts down with
 nothing pending; with none, the loop cancels its timers and stops. Over a
 clock connection with a socket, it waits for the grant and its own sockets at
-once, so a request from outside the run, such as a router's health check, is
-served while the grant is out; a timer that request sets earlier than the time
-asked for fires at the grant, and a cross-LP send its handler makes, such as
-the abort of a client that hung up, takes the grant first and is sent at it.
-`HttpChannel` is the inline receive of HTTP requests.
+once, so HTTP that reaches a frontend already in its run without a stamp, such
+as atomesh's worker registration at startup, is served while the grant is out.
+A timer such a request sets earlier than the time asked for fires at the grant,
+and a cross-LP send its handler makes, such as the abort of a client that hung
+up, takes the grant first and is sent at it. Which grant that is depends on
+when, in wall time, the socket event is read: the send is never backdated, but
+its time is not reproducible. `HttpChannel` is the inline receive of HTTP
+requests.
 """
 
 import asyncio

@@ -166,7 +166,9 @@ class LPRuntime:
         While a next-event request is out, the LP waits, and the authority may
         already have granted other LPs past its clock: a send then, from a
         handler of an event outside the run such as a client disconnect, first
-        takes the grant and is produced at it.
+        takes the grant and is produced at it. The grant it takes is whichever
+        is out when the event is read, a wall-clock race: this keeps the send
+        from arriving backdated, not its time reproducible.
         """
         self._require_owner("stamp_send")
         if self.asked:
