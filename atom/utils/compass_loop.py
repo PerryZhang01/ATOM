@@ -42,10 +42,10 @@ nothing pending; with none, the loop cancels its timers and stops. Over a
 clock connection with a socket, it waits for the grant and its own sockets at
 once, so HTTP that reaches a frontend already in its run without a stamp, such
 as atomesh's worker registration at startup, is served while the grant is out.
-A timer such a request sets earlier than the time asked for fires at the grant,
-and a cross-LP send such a handler makes takes the grant first and is sent at
-it. Which grant that is depends on when, in wall time, the socket event is
-read: the send is never backdated, but its time is not reproducible.
+A timer such a request sets earlier than the time asked for fires at the grant;
+a daemon one, such as uvicorn's keep-alive timeout, keeps the run alive no more
+than any other daemon timer. A cross-LP send such a handler makes is refused
+(`LPRuntime.stamp_send`).
 `HttpChannel` is the inline receive of HTTP requests.
 """
 
@@ -401,10 +401,6 @@ class CompassSelector(selectors.DefaultSelector):
     def select(self, timeout=None):
         loop, rt = self.loop, self.loop.rt
         if not rt.in_run:  # before the run, or after the +inf grant
-            if rt.now == math.inf and loop.ended is None:
-                # A send took the +inf grant (`LPRuntime.stamp_send`).
-                loop.finish(self.end)
-                return super().select(0)
             return super().select(timeout)
         if loop.executor.station is None:
             loop.executor.start_run()

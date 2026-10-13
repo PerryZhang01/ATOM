@@ -566,16 +566,15 @@ def test_http_channel_refuses_a_plain_asyncio_loop():
 CONTROL = "frontend->engine:control#dp0"
 
 
-def _hang_up_while_the_grant_is_out(monkeypatch, timer: float | None):
-    """A client hangs up while the frontend waits for its grant, and the
-    frontend's handler stamps a control send, as its abort of that request does.
+def _frontend_on_tcp(monkeypatch, poke, main):
+    """Runs `main(loop)` on a frontend whose clock connection is tcp, so its
+    loop serves its sockets while its next-event request is out.
 
-    The frontend's clock connection is tcp, so its loop serves its sockets
-    while the grant is out. Traffic idles from the start; the engine has joined
-    and asks nothing until the handler runs, so no grant reaches the frontend
-    before then. `timer` is an essential timer of the frontend, or None.
-    Returns the stamps, the engine's control releases, and the loop's LP time
-    at the finish.
+    The frontend has an essential timer at 1. Traffic idles from the start; the
+    engine joins only once `poke(loop)`, called while the frontend's request is
+    out, has returned, so no grant reaches the frontend before then. Returns
+    the frontend's runtime, the engine's control releases, and the loop's LP
+    time at the finish.
     """
     authority = clock_transport.serve(ClockAuthority(TABLE), "tcp://127.0.0.1:0")
     clock_transport.connect(TRAFFIC, authority.endpoint).send((NER, INF, [], INF))
@@ -586,57 +585,107 @@ def _hang_up_while_the_grant_is_out(monkeypatch, timer: float | None):
     rt.start_run()
     monkeypatch.setattr(clock, "_installed", rt)
     loop = CompassEventLoop()
-    client, peer = socket.socketpair()
-    stamps, released = [], []
-    handling = threading.Event()
-
-    def hang_up():
-        loop.remove_reader(peer)
-        handling.set()
-        stamps.append(rt.stamp_send(CONTROL))
+    loop.call_at(1.0, lambda: None)
+    released = []
 
     def engine_lp():
-        _until(lambda: rt.calls)  # the frontend has asked for its first grant
-        client.send(b"x")
-        handling.wait(10)
+        _until(lambda: rt.asked)
+        poke(loop)
         g = None
         while g != INF:
             engine.send((NER, INF, [], INF))
             g, got = engine.recv()
             released.extend(got[CONTROL])
 
-    loop.add_reader(peer, hang_up)
-    if timer is not None:
-        loop.call_at(timer, lambda: None)
     thread = threading.Thread(target=engine_lp, daemon=True)
     thread.start()
     # A loop the finish does not stop is stopped after 20 wall seconds.
     guard = threading.Timer(20, lambda: loop.call_soon_threadsafe(loop.stop))
     guard.start()
     try:
-        loop.run_forever()
+        main(loop)
         thread.join(10)
-        return stamps, released, loop.ended and loop.ended[0]
+        return rt, released, loop.ended and loop.ended[0]
     finally:
         guard.cancel()
-        client.close()
-        peer.close()
         authority.close()
         if loop.ended:
             loop.close()
 
 
-def test_a_send_while_the_grant_is_out_is_sent_at_the_grant(monkeypatch):
-    stamps, released, end = _hang_up_while_the_grant_is_out(monkeypatch, 1.0)
-    assert stamps == [(1.0 + TABLE.lookahead(CONTROL), 0)]
-    assert released == [(0, 1.0 + TABLE.lookahead(CONTROL))]
-    assert end == 1.0
+def test_a_send_while_the_request_is_out_is_refused_naming_its_channel(monkeypatch):
+    """A client hangs up while the frontend's request is out, and the handler
+    stamps a control send, as the frontend's abort of that request does. The
+    send is refused and the run goes on to its finish."""
+    client, peer = socket.socketpair()
+    refused, handling = [], threading.Event()
+
+    def main(loop):
+        def hang_up():
+            loop.remove_reader(peer)
+            handling.set()
+            try:
+                loop.rt.stamp_send(CONTROL)
+            except RuntimeError as e:
+                refused.append(str(e))
+
+        loop.add_reader(peer, hang_up)
+        loop.run_forever()
+
+    def poke(loop):
+        client.send(b"x")
+        handling.wait(10)
+
+    try:
+        rt, released, end = _frontend_on_tcp(monkeypatch, poke, main)
+    finally:
+        client.close()
+        peer.close()
+    assert len(refused) == 1 and CONTROL in refused[0]
+    assert rt.refusals == [
+        f"clock:stamp_send on {CONTROL} while a next-event request is out"
+    ]
+    assert released == [] and end == 1.0
 
 
-def test_a_send_that_takes_the_finish_ends_the_loop_at_the_last_lp_time(monkeypatch):
-    stamps, released, end = _hang_up_while_the_grant_is_out(monkeypatch, None)
-    assert stamps == [(INF, 0)] and released == []
-    assert end == 0.0
+def test_a_keep_alive_timer_set_while_the_request_is_out_holds_no_finish(
+    monkeypatch,
+):
+    """An unstamped GET is served while the frontend's request is out, as
+    ``/health`` is before the traffic LP joins, and its connection stays open,
+    so uvicorn's keep-alive timer is set. The run still finishes at the
+    frontend's essential timer."""
+    served, got = [], {}
+
+    async def app(scope, receive, send):
+        served.append(clock.installed().asked)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    server = uvicorn.Server(
+        uvicorn.Config(
+            app, host="127.0.0.1", port=0, lifespan="off", log_level="warning"
+        )
+    )
+
+    def poke(loop):
+        _until(lambda: server.started)
+        port = server.servers[0].sockets[0].getsockname()[1]
+        got["conn"] = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        got["conn"].request("GET", "/health")
+        got["body"] = got["conn"].getresponse().read()
+
+    try:
+        _, _, end = _frontend_on_tcp(
+            monkeypatch, poke, lambda loop: loop.run_until_complete(server.serve())
+        )
+    finally:
+        if "conn" in got:
+            got["conn"].close()
+    assert got["body"] == b"ok" and served == [True]
+    # The timer at 1 fires at the server tick that reaches it within asyncio's
+    # clock resolution; the keep-alive timer, due at 5, never moves the clock.
+    assert end == pytest.approx(1.0)
 
 
 def test_a_stamped_cancel_hangs_its_request_up_at_its_arrival_never_the_socket(run):
