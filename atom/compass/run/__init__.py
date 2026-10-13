@@ -679,6 +679,16 @@ def _hand_in(run: dict, lp: str, reasons: list, **sections) -> None:
     _write_whole(out, json.dumps({"refusals": reasons, **sections}))
 
 
+def _workers_say(engine_core) -> dict:
+    """The workers' command refusals, what their steps cost and their memory."""
+    workers = engine_core.runner_mgr
+    return {
+        "refusals": list(workers.call_func("refused_commands", wait_out=True)),
+        "priced": dict(workers.call_func("priced_steps", wait_out=True)),
+        "memory": workers.call_func("predicted_memory", wait_out=True),
+    }
+
+
 def engine_done(engine_core, **sections) -> None:
     """After the engine's loop: leave the clock and hand in what the worker's
     steps cost and the memory it predicts, with `sections`, its command
@@ -686,18 +696,14 @@ def engine_done(engine_core, **sections) -> None:
     clock.close()
     run = spec()
     if run is not None:
-        workers = engine_core.runner_mgr
-        refused = workers.call_func("refused_commands", wait_out=True)
-        priced = dict(workers.call_func("priced_steps", wait_out=True))
-        memory = workers.call_func("predicted_memory", wait_out=True)
+        said = _workers_say(engine_core)
         rt = clock.installed()
         lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
         _hand_in(
             run,
             lp,
-            list(refused) + rt.refusals,
-            priced=priced,
-            memory=memory,
+            said.pop("refusals") + rt.refusals,
+            **said,
             **sections,
         )
 
@@ -706,8 +712,8 @@ def engine_done(engine_core, **sections) -> None:
 def engine_loop(engine_core):
     """Around the engine's loop: `engine_done` once it leaves, which raises if
     that was before the finish. If either raises in a run, hand in the engine's
-    refused clock calls and the exception, without asking the workers, which
-    may be what died. Under ``step_fit`` the workers are asked for the bundle
+    refused clock calls and the exception, and what the workers say in 10 wall
+    seconds unless one died. Under ``step_fit`` the workers are asked for the bundle
     before the loop, so a run that ends early still hands it in."""
     run, sections = spec(), {}
     if run is not None and "step_fit" in run:
@@ -718,9 +724,19 @@ def engine_loop(engine_core):
         engine_done(engine_core, **sections)
     except BaseException as e:
         if run is not None:
+            said = {}
+            if not isinstance(e, SystemExit):
+                ask = threading.Thread(
+                    target=lambda: said.update(_workers_say(engine_core)), daemon=True
+                )
+                ask.start()
+                ask.join(10.0)
             rt = clock.installed()
             lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
-            _hand_in(run, lp, rt.refusals + [f"ended:{lp} raised {e!r}"], **sections)
+            reasons = said.pop("refusals", []) + rt.refusals
+            _hand_in(
+                run, lp, reasons + [f"ended:{lp} raised {e!r}"], **said, **sections
+            )
         raise
 
 
@@ -783,26 +799,22 @@ def _write_summary(run: dict, a: _RecordingAuthority, ended: bool = False) -> No
     end = a.finished or time.monotonic()
     summary = RunSummary.of(a, end - (a.started or end), refusals=tally).as_record()
     schedule = summary["schedule"]
-    # An engine that raised, or never handed in, priced steps no one counted:
-    # its steps, seconds and shares are absent, not 0.
-    counted = all(
-        "priced" in hand_ins.get(n, {}) for n in files if n.startswith(ENGINE.name)
-    )
-    if not counted:
-        schedule["refusals"].update(steps=None, fraction_of_steps=None)
-    schedule["predicted_seconds"] = seconds if counted else None
+    schedule["predicted_seconds"] = seconds
     # Answers no measurement backs: diagnostics, never refusals.
     for species in ("analytical", "extrapolated"):
-        schedule[species] = (
-            {
-                "steps": total(f"{species}_steps"),
-                "fraction_of_predicted_seconds": (
-                    total(f"{species}_seconds") / seconds if seconds else 0.0
-                ),
-            }
-            if counted
-            else None
-        )
+        schedule[species] = {
+            "steps": total(f"{species}_steps"),
+            "fraction_of_predicted_seconds": (
+                total(f"{species}_seconds") / seconds if seconds else 0.0
+            ),
+        }
+    # An engine whose workers died, or that never handed in, priced steps no
+    # one counted: they are absent, not 0.
+    if any(
+        "priced" not in hand_ins.get(n, {}) for n in files if n.startswith("engine")
+    ):
+        schedule.update(predicted_seconds=None, analytical=None, extrapolated=None)
+        schedule["refusals"].update(steps=None, fraction_of_steps=None)
     summary["configuration"] = configuration(run)
     summary["schema_version"] = SUMMARY_SCHEMA_VERSION
     summary["source_root"] = a.source_root.as_json()

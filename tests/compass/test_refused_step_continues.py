@@ -199,26 +199,29 @@ def test_another_on_refusal_is_refused_when_the_run_file_is_read(
         compass_run.spec()
 
 
-def test_a_run_that_ends_mid_run_leaves_its_seconds_and_shares_absent_not_zero(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    "error", [RuntimeError("the clock raised"), SystemExit()], ids=["live", "dead"]
+)
+def test_a_run_that_ends_mid_run_counts_what_live_workers_priced_and_no_zeros(
+    monkeypatch, tmp_path, error
 ):
-    # The engine priced a prefill, then raised; it handed in no priced steps.
+    # The engine raises after its steps; `SystemExit` is how a dead worker shows.
     monkeypatch.setattr(torch.distributed, "all_reduce", None)
-    run = run_file(tmp_path, monkeypatch, on_refusal="abort")
+    run = run_file(tmp_path, monkeypatch)
     for module, name in [(compass_run, "_authority"), (clock, "_installed")]:
         monkeypatch.setattr(module, name, None)
     with compass_run.frontend(_deployment()):
         pass
     r = runner(no_eager_rung())
-    r.compass_abort = True
     engine = LPRuntime(compass_run.ENGINE, compass_run.channel_table(run), None)
     monkeypatch.setattr(clock, "_installed", engine)
 
     with (
-        pytest.raises(CostRefused),
+        pytest.raises(type(error)),
         compass_run.engine_loop(SimpleNamespace(runner_mgr=Worker(r))),
     ):
-        drive(r)
+        _, replies = drive(r)
+        raise error
 
     path = tmp_path / compass_run.SUMMARY_FILE
     deadline = time.monotonic() + 10
@@ -226,9 +229,23 @@ def test_a_run_that_ends_mid_run_leaves_its_seconds_and_shares_absent_not_zero(
         assert time.monotonic() < deadline, "no summary.json in 10 wall seconds"
         time.sleep(0.05)
     schedule = json.loads(path.read_text())["schedule"]
-    assert r.priced_steps()["steps"] > 0
-    assert schedule["predicted_seconds"] is None
-    assert schedule["analytical"] is None
-    assert schedule["extrapolated"] is None
-    assert schedule["refusals"]["steps"] is None
-    assert schedule["refusals"]["fraction_of_steps"] is None
+    refusals, ended = schedule["refusals"], f"ended:engine raised {error!r}"
+    hand_in = json.loads((tmp_path / compass_run.LP_FILE.format("engine")).read_text())
+    if isinstance(error, SystemExit):
+        assert sorted(hand_in) == ["refusals"]
+        assert schedule["predicted_seconds"] is None
+        assert schedule["analytical"] is None
+        assert schedule["extrapolated"] is None
+        assert (refusals["steps"], refusals["fraction_of_steps"]) == (None, None)
+        assert refusals["reasons"] == [[ended, 1]]
+        return
+    priced = r.priced_steps()
+    refused = sum(reply.predicted_s == 0.0 for reply in replies)
+    assert sorted(hand_in) == ["memory", "priced", "refusals"]
+    assert priced["seconds"] > 0
+    assert schedule["predicted_seconds"] == pytest.approx(priced["seconds"])
+    assert schedule["analytical"]["steps"] == priced["analytical_steps"]
+    assert schedule["extrapolated"]["steps"] == priced["extrapolated_steps"]
+    assert refusals["steps"] == len(replies)
+    assert refusals["fraction_of_steps"] == refused / len(replies)
+    assert refusals["reasons"] == sorted([[REFUSED, refused], [ended, 1]])
