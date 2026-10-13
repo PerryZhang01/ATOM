@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: MIT
 """Real-clock reads in ATOM's core: each one takes the LP clock or is listed by site."""
 
+import asyncio
+import logging
 import os
 from types import SimpleNamespace
 
 import pytest
+from prometheus_client import CollectorRegistry
 
 import atom
 from atom.compass.detect.clock_source import (
@@ -13,8 +16,23 @@ from atom.compass.detect.clock_source import (
     ClockSourceLint,
 )
 from atom.entrypoints.atomesh.atom_standalone_service import SingleRequestState
+from atom.entrypoints.openai import api_server
 from atom.entrypoints.openai.protocol import ModelCard
+from atom.entrypoints.openai.request_timing import (
+    RequestTimingMiddleware,
+    record_nonstream_first_token,
+)
+from atom.entrypoints.openai.serving_responses import (
+    CodexToolContext,
+    ResponsesRequest,
+    ResponseStreamEmitter,
+    build_responses_response,
+)
+from atom.entrypoints.openai.streaming_dispatch import StreamDeliveryTiming
 from atom.metrics.exporter import AtomMetricsExporter
+from atom.metrics.scheduler import SchedulerMetrics
+from atom.model_engine.engine_stats import EngineStats
+from atom.model_engine.scheduler import PrefillScheduler, Scheduler
 from atom.utils import clock
 
 REPO = os.path.dirname(os.path.dirname(atom.__file__))
@@ -142,6 +160,100 @@ class TestASubstitutedReadTakesTheLpClock:
             3.0,
             5.0,
         )
+
+    def test_the_request_ttft(self, lp_clock):
+        """The middleware's start stamp and the first output's."""
+        seen = []
+
+        async def app(scope, receive, send):
+            lp_clock.t = 9.75
+            record_nonstream_first_token()
+
+        middleware = RequestTimingMiddleware(app, lambda s, streaming: seen.append(s))
+        scope = {"type": "http", "method": "POST", "path": "/v1/completions"}
+        asyncio.run(middleware(scope, None, None))
+        assert seen == [2.5]
+
+    def test_the_responses_endpoint_created_at(self, lp_clock, monkeypatch):
+        async def nonstream(generator, raw_request, request_id):
+            return {"text": "hi"}
+
+        for name, value in {
+            "engine": SimpleNamespace(
+                config=SimpleNamespace(generation_config=None, max_model_len=4096)
+            ),
+            "tokenizer": SimpleNamespace(encode=lambda text: [1]),
+            "apply_chat_template": lambda *args, **kwargs: "prompt",
+            "generate_async": lambda *args: None,
+            "_run_nonstream_with_disconnect": nonstream,
+            "read_whole_blocks": lambda *args, **kwargs: [],
+            "build_responses_response": lambda **kwargs: kwargs["created_at"],
+        }.items():
+            monkeypatch.setattr(api_server, name, value)
+
+        class Request:
+            async def json(self):
+                return {"input": "hi"}
+
+        assert asyncio.run(api_server.responses_create(Request())) == 7
+
+    @pytest.mark.parametrize("which", ["response", "stream"])
+    def test_the_responses_default_created_at(self, lp_clock, which):
+        if which == "response":
+            created_at = build_responses_response(
+                "r", "m", [], context=CodexToolContext(), request=ResponsesRequest()
+            )["created_at"]
+        else:
+            created_at = ResponseStreamEmitter("r", "m").created_at
+        assert created_at == 7
+
+    def test_the_stream_delivery_intervals(self, lp_clock):
+        """The interval's end, and the next interval's start after the observer ran."""
+        seen = []
+        timing = StreamDeliveryTiming()
+        for t in (7.25, 7.5, 8.0):
+            lp_clock.t = t
+            timing.record(1, lambda interval, n: seen.append(interval))
+        assert seen == [0.25, 0.5]
+
+    def test_the_scheduler_metrics_stamps(self, lp_clock):
+        """Receipt, the KV wait's start and end, the first forward and its label."""
+        registry = CollectorRegistry()
+        metrics = SchedulerMetrics(registry=registry)
+        seq = SimpleNamespace(id=1, kv_transfer_params={"do_remote_prefill": True})
+        SchedulerMetrics.enqueue(seq)
+        metrics.start_kv_wait(seq)
+        lp_clock.t = 8.0
+        metrics.finish_kv_wait(1, succeeded=True)
+        lp_clock.t = 9.0
+        batch = SimpleNamespace(
+            is_dummy_run=False, req_ids=[1], total_seqs_num_decode=1, context_lens=[5]
+        )
+        metrics.record_forward(batch, {1: seq})
+        labels = {"dp_rank": "0", "engine_role": "default"}
+        request = {**labels, "request_id": "1", "sequence_id": "1", "started_at": "9.0"}
+        sample = registry.get_sample_value
+        assert sample("atom:pd_kv_transfer_seconds_sum", labels) == 0.75
+        assert sample("atom:request_queue_time_seconds_sum", labels) == 1.75
+        assert sample("atom:decode_request_context_tokens", request) == 5
+
+    @pytest.mark.parametrize("scheduler", [Scheduler, PrefillScheduler])
+    def test_the_throughput_window(self, lp_clock, scheduler, caplog):
+        """Its start, the scheduler's check that it is due, and its close."""
+        stats = EngineStats(enable_log_stats=True, throughput_log_interval_s=10.0)
+        counted = []
+        owner = SimpleNamespace(
+            engine_stats=stats,
+            get_request_counts=lambda: counted.append(lp_clock.t) or (0, 0),
+            _kv_usage=lambda: None,
+        )
+        lp_clock.t = 17.0
+        scheduler._record_throughput(owner, 100)
+        lp_clock.t = 17.25
+        with caplog.at_level(logging.INFO, logger="atom"):
+            scheduler._record_throughput(owner, 0)
+        assert counted == [17.25]
+        assert "Avg prompt throughput: 10.0 tokens/s" in caplog.text
 
     def test_the_real_clock_is_never_called(self, lp_clock):
         assert clock.now(_no_real_read) == lp_clock.t

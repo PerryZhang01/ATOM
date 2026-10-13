@@ -330,7 +330,7 @@ class AsyncIOProcManager:
         self.kv_output_aggregator: KVOutputAggregator | None = None
         self.kv_output_addrs = [get_open_zmq_ipc_path() for _ in range(proc_num)]
         self.kv_outputs_queues: list[queue.Queue] = [
-            queue.Queue() for _ in range(proc_num)
+            clock.reply_queue() for _ in range(proc_num)
         ]
         self._pending_kv_aggregation: _PendingKvAggregation | None = None
         self.kv_output_threads: list[threading.Thread] = []

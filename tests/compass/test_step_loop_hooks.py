@@ -11,6 +11,7 @@ into the engine's input queue, as the input thread would.
 
 import queue
 import random
+import threading
 from itertools import accumulate
 from types import SimpleNamespace
 
@@ -26,6 +27,7 @@ from atom.utils.clock import LPRuntime
 from tests.compass.clock.test_lp_runtime import _owner
 
 with stubbed_aiter():
+    from atom.kv_transfer.disaggregation import KVConnectorOutput
     from atom.model_engine.async_proc import AsyncIOProcManager
     from atom.model_engine.engine_core import (
         KV_IDLE_DRAIN_INTERVAL_S,
@@ -248,6 +250,27 @@ def test_with_pending_kv_work_an_idle_point_waits_one_drain_interval(installed):
         call(clock.idle, engine._idle_deadline, 5.0)
     D = KV_IDLE_DRAIN_INTERVAL_S
     assert ca.calls == [("NER", 0.0, D, D), ("NER", D, 2 * D, 2 * D)]
+
+
+@pytest.mark.parametrize("simulated", [True, False])
+def test_a_kv_poll_waits_for_its_reply_only_on_a_simulated_run(installed, simulated):
+    """A poll that finds a reply missing returns None, and the scheduler then skips
+    that poll's `process_completions`: a simulated transfer would be reported at
+    a step set by how fast a worker answered in wall time."""
+    if simulated:
+        clock.install(LPRuntime(LpId("engine"), TABLE, conn=None))
+    mgr = AsyncIOProcManager.__new__(AsyncIOProcManager)
+    mgr.label, mgr.proc_num, mgr.kv_output_aggregator = "workers", 1, None
+    mgr._pending_kv_aggregation = None
+    replies = clock.reply_queue()
+    mgr.kv_outputs_queues = [replies]
+
+    def answer(msg):  # 50 wall ms after each request, as a worker process would
+        threading.Timer(0.05, replies.put, (KVConnectorOutput(),)).start()
+
+    mgr.rpc_broadcast_mq = SimpleNamespace(enqueue=answer)
+    got = mgr.call_func_with_aggregation("async_proc_aggregation")
+    assert (got is not None) == simulated
 
 
 def test_with_no_runtime_the_hooks_read_nothing():
