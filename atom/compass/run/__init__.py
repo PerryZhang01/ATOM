@@ -724,13 +724,14 @@ def engine_loop(engine_core):
         engine_done(engine_core, **sections)
     except BaseException as e:
         if run is not None:
-            said = {}
+            box = []
             if not isinstance(e, SystemExit):
                 ask = threading.Thread(
-                    target=lambda: said.update(_workers_say(engine_core)), daemon=True
+                    target=lambda: box.append(_workers_say(engine_core)), daemon=True
                 )
                 ask.start()
                 ask.join(10.0)
+            said = box[0] if box else {}
             rt = clock.installed()
             lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
             reasons = said.pop("refusals", []) + rt.refusals
