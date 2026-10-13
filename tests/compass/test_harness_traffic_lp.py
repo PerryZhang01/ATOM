@@ -656,3 +656,38 @@ def test_a_cancel_closes_the_open_requests_and_drops_their_later_events(tmp_path
     ]
     assert calls == [2.0, 2.0, INF, INF]
     assert passed_at == [[], [], [0, 1], [0, 1]]
+
+
+def test_returns_whose_finals_share_a_grant_pass_in_stream_order(tmp_path):
+    """Credits 0 and 1 end in one grant, stream seqs 0 and 1. Credit 1's return
+    reaches the hold first and credit 0's 50 ms later; both are passed in
+    stream order, so the next turns aiperf schedules from them keep it."""
+
+    async def main():
+        rt = ScriptedRuntime([(1.0, {0, 1})])
+        traffic = TrafficLP(rt, str(tmp_path / "lp"))
+        passed = []
+
+        async def on_return(worker_id, ret):
+            passed.append(ret.credit.id)
+
+        held = traffic.hold(on_return)
+        push = zmq.Context.instance().socket(zmq.PUSH)
+        push.connect(addresses(str(tmp_path / "lp"))[1])
+        traffic.send(_key(0))
+        traffic.send(_key(1))
+        push.send_pyobj((_key(0), 0, 1.0, True))
+        push.send_pyobj((_key(1), 1, 1.0, True))
+        await held("w", SimpleNamespace(credit=_credit(1), error=None))
+        while rt.now < 1.0 or 1 not in traffic._reports:
+            await asyncio.sleep(0.001)
+        await asyncio.sleep(0.05)
+        await held("w", SimpleNamespace(credit=_credit(0), error=None))
+        traffic.finish()
+        try:
+            await asyncio.wait_for(traffic.done, 5)
+        finally:
+            push.close(linger=0)
+        return passed
+
+    assert _run(main()) == [0, 1]

@@ -252,17 +252,19 @@ class TrafficLP:
         while True:
             unreported, unreturned = [], []
             # A handled seq leaves the runtime's released set, so a pass scans
-            # only the open events, not every event of the run.
+            # only the open events, not every event of the run. It stops at the
+            # first event it cannot handle yet, so returns pass in stream order
+            # whatever order they reach the hold in.
             for seq in sorted(self.rt.released[self.stream]):
                 key, final = self._reports.get(seq, (None, False))
                 if key is None and self.open:
                     unreported.append(seq)
-                    continue
+                    break
                 # With no request open, an unreported event is a closed one's.
                 if final and key not in self.cancelled:
                     if key not in self._held:
                         unreturned.append(key)
-                        continue
+                        break
                     self.open.pop(key, None)
                     if (ret := self._held.pop(key)) is not None:
                         self._returns.put_nowait(ret)
