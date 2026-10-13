@@ -164,6 +164,12 @@ def plan(definition: dict, steps) -> dict:
     odd = [n for n in counts if type(n) is not int or n < 0]
     if odd:
         raise SystemExit(f"the grid definition's {odd[0]!r} is not a count")
+    if definition["max_model_len"] < definition["max_num_batched_tokens"]:
+        raise SystemExit(
+            "the grid definition's max_model_len is below its "
+            "max_num_batched_tokens, so prefill's top c node, max_model_len "
+            "less the token budget, would be negative"
+        )
     ladder = schedulable_ladder(SimpleNamespace(**definition))
     margin = definition["margin"]
     b_nodes = {r: {p + 1, r} for p, r in zip([0, *ladder], ladder)}

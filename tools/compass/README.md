@@ -29,7 +29,8 @@ real run, or on a simulated run of the target configuration
 | `max_num_seqs`, `max_num_batched_tokens`, `max_model_len`, `capture_sizes` | the target configuration's |
 | `kv_cache_block_size`, `num_kvcache_blocks` | read from one real startup of the target on the target device |
 
-Every number is a non-negative integer and each node list ascends.
+Every number is a non-negative integer, each node list ascends, and
+`max_model_len` is at least `max_num_batched_tokens`.
 
 **`plan`** first places the nodes the target's bounds give, dropping any
 definition node past one. Prefill's top nodes are `max_num_seqs` on B,

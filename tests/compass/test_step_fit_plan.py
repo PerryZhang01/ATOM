@@ -449,6 +449,18 @@ def test_every_grid_definition_input_is_required_and_a_count(
         tool.main(["plan", str(path), str(directory)])
 
 
+def test_a_target_whose_model_length_is_below_the_token_budget_is_refused(
+    tmp_path, monkeypatch, capsys
+):
+    """Prefill's top c node, max_model_len less the budget, would be -32."""
+    path = tmp_path / "definition.json"
+    path.write_text(json.dumps({**DEFINITION, "max_model_len": 32}))
+    directory = record(tmp_path, monkeypatch, *MIXED)
+
+    with pytest.raises(SystemExit, match="max_model_len is below its max_num_"):
+        tool.main(["plan", str(path), str(directory)])
+
+
 def test_a_record_with_no_steps_is_refused(tmp_path, capsys):
     path = tmp_path / "definition.json"
     path.write_text(json.dumps(DEFINITION))
