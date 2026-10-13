@@ -181,7 +181,7 @@ def test_prefill_tokens_grade_the_requests_both_runs_issued(tmp_path):
     assert one["verdict"] == "not gated" and not one["admissible"]
 
 
-def test_requests_keys_by_the_final_chunks_context_not_a_later_decode_rows():
+def test_requests_keys_by_the_final_chunks_context_not_a_later_decode_row():
     """A decode row after the final chunk must not move the request's key away
     from its prompt length (100), which `named` fixes at the prefill row."""
     steps = [

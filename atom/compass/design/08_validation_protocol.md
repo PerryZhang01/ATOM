@@ -277,6 +277,9 @@ procedure are the stable part.
 | prefill streak count | identical across four real runs |
 | requests admitted / completed | — |
 
+Total prefill tokens is graded over the requests both runs issued, against the real
+runs' own spread; a turn only one run issued is reported, not gated (#897).
+
 ### Family 2 — distributional. The family to weight most.
 
 Compare **histograms**, never step-*k*-to-step-*k*: batch-width distribution,
