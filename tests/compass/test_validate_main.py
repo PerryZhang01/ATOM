@@ -197,3 +197,35 @@ def test_counts_but_preemptions_and_prefill_tokens_are_not_gated(capsys, tmp_pat
     assert rows["counts", "decode tokens"][1] == "outside, admissible, not gated"
     assert rows["counts", "prefill tokens"][1] == "exact, inadmissible"
     assert rows["counts", "preemptions"][1] == "exact, inadmissible"
+
+
+def test_a_run_that_ended_without_its_memory_reads_refused_and_the_cell_goes_on(
+    capsys, tmp_path
+):
+    whole = _rows(capsys, tmp_path / "whole")
+    _rows(capsys, tmp_path, law=[("ended", 1)])
+    law = tmp_path / "c4" / "law"
+    ended = {"refusals": ["ended:engine raised RuntimeError('the step raised')"]}
+    (law / LP_FILE.format("engine")).write_text(json.dumps(ended))
+    summary = json.loads((law / "summary.json").read_text())
+    summary["schedule"].update(analytical=None, extrapolated=None)
+    summary["schedule"]["refusals"].update(steps=None, fraction_of_steps=None)
+    (law / "summary.json").write_text(json.dumps(summary))
+
+    main([str(tmp_path / "c4")])
+    out = capsys.readouterr().out.splitlines()
+    rows = {tuple(r.split(" | ")[1:3]): r.split(" | ")[3:] for r in out[1:]}
+
+    for real in ("real0", "real1", "real2"):
+        assert rows[f"memory {real}", "memory"] == [
+            f"{law / LP_FILE.format('engine')} has no memory section",
+            "refused",
+        ]
+    memory = {k for k in whole if k[0].startswith("memory ")}
+    assert set(rows) - {k for k in rows if k[1] == "memory"} == set(whole) - memory
+    assert rows["summary law", "extrapolated"] == ["null", "not gated"]
+    assert rows["summary law", "refusals"] == [
+        '1 {"ended": 1}; steps not counted',
+        "coverage report",
+    ]
+    assert rows["summary p97", "speed"][1] == "meets 5x"
