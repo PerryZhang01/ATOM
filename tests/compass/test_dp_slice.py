@@ -362,6 +362,7 @@ def test_a_dp_rank_starts_on_the_host_with_no_device_communicator(monkeypatch):
         SimpleNamespace(get_distributed_init_method=lambda ip, p: f"tcp://{ip}:{p}"),
     )
     monkeypatch.setattr(torch.cuda, "Stream", torch.cuda.Stream)
+    monkeypatch.setattr(torch.cuda, "Event", torch.cuda.Event)
     monkeypatch.setattr(CpuGpuBuffer, "__init__", CpuGpuBuffer.__init__)
     monkeypatch.delenv("MASTER_ADDR", raising=False)
     monkeypatch.delenv("MASTER_PORT", raising=False)
