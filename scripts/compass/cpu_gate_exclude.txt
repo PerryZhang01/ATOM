@@ -124,4 +124,9 @@ tests/test_benchmark_catalog.py
 tests/test_lmcache_offload_disk_integration.py
 # fails at setup or call in aiter chip_info, `No gfx arch found in rocminfo output.` (no driver); new-image CPU container, 12849025b
 tests/test_sparse_indexer_fp4.py
+# passes alone, fails in this tier with dynamo `KeyError: aiter`: with no driver
+# aiter's import fails and leaves the namespace package aiter.utility in
+# sys.modules without aiter, and torch's first custom-op registration under
+# torch.compile walks sys.modules through inspect.getmodule; 25740469b
+tests/test_sparse_indexer_side_effect_op.py
 # END MANUAL

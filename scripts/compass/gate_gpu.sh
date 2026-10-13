@@ -38,7 +38,7 @@
 # from the baseline's -- including an AITER version that reads UNKNOWN, which the
 # toolchain comparison below explicitly calls a mismatch -- warns on stderr and
 # can still end
-# GATE_GPU_RC=0. All the known failures are AITER-kernel numerics, so on an
+# GATE_GPU_RC=0. Most known failures are AITER kernels, so on an
 # AITER bump the delta compares two different things and exits 0 anyway. Making
 # it a refusal is a behaviour change with its own cost -- a `git describe` that
 # cannot read aiter's checkout would then block every run on a node where the
@@ -70,27 +70,26 @@ printf 'verdict: the last line of stdout; if this run is piped, $? is the pipe'"
 # pair cannot distinguish a regression from drift: after a torch bump, 4728/7
 # has no reading. Changing any of these seven constants is a reviewed edit.
 #
-# Measured 2026-09-20 on hjbog-srdc-18 in xiaobizh_n18, HIP_VISIBLE_DEVICES=1,
-# against a snapshot.sh archive of fe9ea043c: 4779 passed, 5 failed, 0 errors,
-# 105 skipped, 3 xfailed in 72.60 s. 4779 = the 4730 measured earlier at
-# 83daf636d + the 49 tests of tests/compass/test_cpu_gate_exclude.py, which did
-# not exist at 83daf636d. No importable atom module differs between the two
-# commits -- the only delta under atom/ is 30 inserted lines of markdown
-# documentation, which no test imports -- so the tiers are comparable and the
-# surplus is fully accounted for.
-BASE_PASSED=4779
-BASE_FAILED=5
-BASE_COMMIT=fe9ea043c
+# Measured 2026-10-13 on hjbog-srdc-20 in xiaobizh_n20_next (image
+# rocm/atom-dev vllm-v0.31.0-nightly_20261011), HIP_VISIBLE_DEVICES=3, against a
+# git archive of pure upstream 2479251d3, the ATOM that image ships: 10213
+# passed, 119 failed, 0 errors, 485 skipped, 3 xfailed in 1026.7 s. A run on
+# GPU 5 on 2026-10-12 failed the same 119 node-ids; its two extra skips were
+# the timing class in tests/entrypoints/test_stream_marker_properties.py.
+# Upstream has no tests/compass/, so every Compass test is surplus.
+BASE_PASSED=10213
+BASE_FAILED=119
+BASE_COMMIT=2479251d3
 BASE_TORCH=2.10.0+rocm7.2.4.git3d3aa833
 # BASE_ROCM is compared against torch.version.hip below, so it carries the HIP
 # runtime version, not the ROCm release. ROCm release was 7.2.4.
 BASE_ROCM=7.2.53211
 # AITER has no __version__; this is `git describe --tags --always` in the source
-# checkout aiter imports from. All the known failures are AITER-kernel numerics
-# comparisons, so AITER is the likeliest single cause of a change that moves
-# them -- a bump used to pass the drift check in silence because only torch and
-# HIP were compared.
-BASE_AITER=v0.1.21.dev0-49-gf4e7c7509
+# checkout aiter imports from. Most known failures are AITER kernels or the
+# gfx950-only formats they test, so AITER is the likeliest single cause of a
+# change that moves them -- a bump used to pass the drift check in silence
+# because only torch and HIP were compared.
+BASE_AITER=v0.1.24-180-g4eecc6509
 # How many of BASE_PASSED came from tests/compass/ at BASE_COMMIT. The pass count
 # is checked for EQUALITY against BASE_PASSED adjusted by what tests/compass/
 # contributes on this tree, so a surplus is accounted for rather than absorbed.
@@ -103,7 +102,7 @@ BASE_AITER=v0.1.21.dev0-49-gf4e7c7509
 # blamed tests outside tests/compass/. compass_compass_pass_count in _lib.sh now
 # counts passes on both sides, so the two are the same quantity by construction
 # rather than while a condition happens to hold.
-BASE_COMPASS_TESTS=49
+BASE_COMPASS_TESTS=0
 
 # The baseline's failures by name. The count above and the list here are two
 # statements of one fact, so a disagreement between them is a defect in this
@@ -177,15 +176,15 @@ printf '          torch %s, hip %s, aiter %s\n' "$BASE_TORCH" "$BASE_ROCM" "$BAS
 # where the pair below cannot be trusted.
 if [ "$TORCH" != "$BASE_TORCH" ] || [ "$ROCM" != "$BASE_ROCM" ] || [ "$AITER" != "$BASE_AITER" ]; then
     printf 'WARNING: toolchain differs from the baseline'"'"'s. The known failures are\n' >&2
-    printf '         bf16 ULP and bitwise differences in AITER kernels that depend on\n' >&2
-    printf '         exactly this stack; the pair below is not comparable until it is\n' >&2
+    printf '         mostly AITER kernel results that depend on exactly this\n' >&2
+    printf '         stack; the pair below is not comparable until it is\n' >&2
     printf '         re-measured and the constants and %s updated.\n' "$(basename "$KNOWN_FILE")" >&2
 fi
 
 # The surplus this tree is allowed, derived from this tree rather than declared.
 # An absent tests/compass/ counts zero and the gate still produces a verdict --
-# on such a tree that is 4779 + 0 - 49 = 4730, which is what a tree
-# without this phase's tests measures. See compass_compass_pass_count in _lib.sh
+# on such a tree that is BASE_PASSED + 0 - BASE_COMPASS_TESTS, which is what a
+# tree without this phase's tests measures. See compass_compass_pass_count in _lib.sh
 # for why that is a count and not a refusal.
 COMPASS_N=$(compass_compass_pass_count "$ROOT") || finish $? "the tests/compass pass count has no source; the suite was not run"
 [ -d "$ROOT/tests/compass" ] ||
