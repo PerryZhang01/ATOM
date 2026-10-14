@@ -87,7 +87,10 @@ def _records(tmp_path, groups):
     for r in range(DP):
         steps = [
             (
-                [(row.query_tokens, row.context_tokens, row.decode) for row in v[r].requests],
+                [
+                    (row.query_tokens, row.context_tokens, row.decode)
+                    for row in v[r].requests
+                ],
                 v[r].capture_rung,
                 seconds,
             )
