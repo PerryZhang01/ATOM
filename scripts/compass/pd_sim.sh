@@ -13,6 +13,9 @@
 #   CLOCK_PORT PREFILL_PORT DECODE_PORT ROUTER_PORT KV_WRITE_REQ_PORT
 #   PROMETHEUS_PORT     the ports it uses, all on 127.0.0.1; at DP width n the
 #                       write requests take n*n ports from KV_WRITE_REQ_PORT
+#   PREFILL_DP_PORT DECODE_DP_PORT
+#                       each side's --data-parallel-master-port; above DP width
+#                       one its ranks derive their sockets from it
 #   DECODE_EXEC         a command prefix that runs the decode server elsewhere
 #                       on this node, e.g. `docker exec <container>`; on a
 #                       failure, stopping it there is the caller's
@@ -38,6 +41,8 @@ DECODE_PORT=${DECODE_PORT:-8020}
 ROUTER_PORT=${ROUTER_PORT:-8000}
 KV_WRITE_REQ_PORT=${KV_WRITE_REQ_PORT:-29401}
 PROMETHEUS_PORT=${PROMETHEUS_PORT:-29100}
+PREFILL_DP_PORT=${PREFILL_DP_PORT:-29500}
+DECODE_DP_PORT=${DECODE_DP_PORT:-29700}
 SERVER_ARGS=${SERVER_ARGS:---enforce-eager --max-model-len 2048}
 ATOMESH=${ATOMESH:-atomesh}
 WAIT_S=${WAIT_S:-600}
@@ -53,13 +58,14 @@ for name in PYTHONPATH PYTHONHASHSEED AITER_LOG_LEVEL HIP_VISIBLE_DEVICES; do
     [[ -n "${!name:-}" ]] && passed+=("$name=${!name}")
 done
 
-server() { # role port kv_role
+server() { # role port kv_role dp_port [exec]
     # uvicorn's keep-alive timeout runs on the LP clock, the router drops idle
     # connections on the wall clock: which comes first, and with it whether the
     # timeout takes a grant, would differ between runs. Only the router closes.
     # shellcheck disable=SC2086 # DECODE_EXEC and SERVER_ARGS are word lists
-    ${4:-} env "${passed[@]}" python3 -m atom.entrypoints.openai_server \
+    ${5:-} env "${passed[@]}" python3 -m atom.entrypoints.openai_server \
         --model "$MODEL" --host 127.0.0.1 --server-port "$2" --timeout-keep-alive 1000000 \
+        --data-parallel-master-port "$4" \
         $SERVER_ARGS \
         --compass-run "$RUN_FILE" --compass-clock-endpoint "$CLOCK" \
         --kv-transfer-config "{\"kv_role\":\"$3\",\"kv_connector\":\"compass\",\"compass_kv_write_req\":\"$KV_WRITE_REQ\"}" \
@@ -83,9 +89,9 @@ until (exec 3<>"/dev/tcp/127.0.0.1/$CLOCK_PORT") 2>/dev/null; do
     sleep 0.2
 done
 
-server prefill "$PREFILL_PORT" kv_producer
+server prefill "$PREFILL_PORT" kv_producer "$PREFILL_DP_PORT"
 prefill=$!
-server decode "$DECODE_PORT" kv_consumer "${DECODE_EXEC:-}"
+server decode "$DECODE_PORT" kv_consumer "$DECODE_DP_PORT" "${DECODE_EXEC:-}"
 decode=$!
 wait_for prefill $prefill "http://127.0.0.1:$PREFILL_PORT/health"
 wait_for decode $decode "http://127.0.0.1:$DECODE_PORT/health"
