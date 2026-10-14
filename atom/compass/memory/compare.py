@@ -26,39 +26,16 @@ would be a comparator nobody could run against the card they are sizing for.
 
 | outcome | when |
 |---|---|
-| `Verdict.PASS` | both sides present, within the gate, and the predicted side carries a basis that can discharge one -- see below |
-| `Verdict.FAIL` | both sides present and outside the gate -- **including** when the predicted side is a declared coefficient, because a recording that contradicts a coefficient is evidence |
-| `Verdict.NOT_DISCHARGED` | both sides present and within the gate, but the predicted side carries a basis that cannot discharge one. The error is reported and the gate is not called discharged |
+| `Verdict.PASS` | both sides present, within the gate, and the predicted side is not declared |
+| `Verdict.FAIL` | both sides present and outside the gate -- **including** when the predicted side is declared, because a recording that contradicts a declared input is evidence |
+| `Verdict.NOT_DISCHARGED` | both sides present and within the gate, but the predicted side is declared. The error is reported and the gate is not called discharged |
 | a `TermRefusal` | the two sides cannot be compared at all: the run records no such term, the run records it as zero bytes, the shapes disagree, or the recorded peak is the warmup prefill's |
 
-**Which bases discharge a gate.** It is a stated list, not the single word
-"obtained", because the bases divide three ways and only one of the three is
-about a number having been read off the thing it describes.
-
-- `Basis.SPEC` **discharges.** A machine specification's runtime constants are
-  filled by probe runs on a card, so a spec number is a measurement taken
-  elsewhere rather than a coefficient somebody wrote down, and holding it
-  against this run is a real check. What a pass does *not* say is that a law
-  was validated: two of the constants this package reads -- the driver and
-  collective reserve, and the load residue -- are width tables exactly because
-  no closed form fits them, so a pass means the table's entry for this width
-  agrees with this run and means nothing at any other width.
-- `Basis.DERIVED` **discharges**, being arithmetic over readings that are
-  themselves one of these.
-- `Basis.OBTAINED` **discharges**: the number was read off the thing itself.
-- `Basis.DECLARED` **does not.** It is a coefficient with a named successor,
-  and agreement with one run does not turn a coefficient into a measurement.
-- `Basis.DEPLOYMENT` **does not.** It is a knob the serving config states, and
-  a knob agreeing with a run is not evidence about bytes in either direction.
-  No footprint term carries it today; the only one in this package labels the
-  eager-mode branch of the graph-pool estimator, which is not a footprint term.
-
-The asymmetry between the second and third rows is deliberate: a declared term
-can **fail** its gate but cannot **pass** it. Two of the three model terms have
-a successor that makes them exact -- weights from a meta build, buffers from a
-recording off a card -- and the third has none yet: a traced graph without the
-invisible-scratch table is not enough to discharge the 10% gate on the
-activation term.
+**A declared term can fail its gate but cannot pass it.** Every other method
+can: analytical, measured and estimated (validated or not) are in
+`DISCHARGES`. Agreement with one run does not turn an assumed input into an
+observation. The recorded side is measured: every term of a recording was
+read off the card.
 
 ## The traps this module refuses rather than papers over
 
@@ -72,9 +49,7 @@ activation term.
   that as a field with no default, and a recording that did not reset it
   refuses every term it took at a shape.
 - **A term the run does not record.** Not a term of zero bytes. The refusal
-  names it and, when the predicted side is declared, carries that term's own
-  note -- which for buffers is the reason for recording them rather than
-  computing them.
+  names it and carries the predicted term's own note.
 - **A term the run records as zero bytes.** An error relative to zero has no
   value, and the gate's unit is relative. So it refuses in the comparison
   rather than dividing, which also keeps it out of the renderer: one term that
@@ -96,17 +71,18 @@ import enum
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
+from atom.compass.backends.provenance import Method
 from atom.compass.memory import graph_pool
 from atom.compass.memory.readings import DeviceReadings, MemoryRefusal
-from atom.compass.memory.terms import Basis, Reading, Term
+from atom.compass.memory.terms import Reading, Term
 
 #: The acceptance gate on each non-KV term, as a fraction of the recorded term.
 NON_KV_TERM_GATE = 0.10
 
-#: The bases that can discharge a gate. Stated as a set rather than as "not
-#: DECLARED" so that adding a member to `Basis` is a decision about this list
-#: rather than a silent grant. See the module docstring for why each is here.
-DISCHARGES = frozenset({Basis.SPEC, Basis.DERIVED, Basis.OBTAINED})
+#: The methods that can discharge a gate. Stated as a set rather than as "not
+#: DECLARED" so that adding a member to `Method` is a decision about this list
+#: rather than a silent grant.
+DISCHARGES = frozenset({Method.ANALYTICAL, Method.MEASURED, Method.ESTIMATED})
 
 
 class Verdict(enum.Enum):
@@ -198,10 +174,10 @@ class Recorded:
         if not by_name:
             raise ValueError(f"recording {self.run!r} records nothing")
         for term in self.terms:
-            if term.basis is not Basis.OBTAINED:
+            if term.method is not Method.MEASURED:
                 raise ValueError(
-                    f"{self.run}.{term.name} is {term.basis}; every term of a "
-                    "recording was read off the card, which is Basis.OBTAINED"
+                    f"{self.run}.{term.name} is {term.method}; every term of a "
+                    "recording was read off the card, which is measured"
                 )
         unknown = self.at_shape - by_name.keys()
         if unknown:
@@ -317,8 +293,10 @@ class TermComparison:
 
     def row(self) -> tuple[str, ...]:
         predicted = "-" if self.predicted is None else f"{self.predicted_bytes:,}"
+        method = "-" if self.predicted is None else self.predicted.method_label
         return (
             self.name,
+            method,
             predicted,
             f"{self.recorded.nbytes:,}",
             f"{self.delta_bytes:+,}",
@@ -385,7 +363,15 @@ class Comparison:
 
     def table(self) -> str:
         """The per-term table, then every refusal by name. Never a total."""
-        header = ("term", "predicted", "recorded", "delta", "of term", "verdict")
+        header = (
+            "term",
+            "method",
+            "predicted",
+            "recorded",
+            "delta",
+            "of term",
+            "verdict",
+        )
         rows = [header] + [t.row() for t in self.compared]
         widths = [max(len(r[i]) for r in rows) for i in range(len(header))]
         shapes = (
@@ -397,7 +383,7 @@ class Comparison:
             lines.append(
                 "  "
                 + "  ".join(
-                    cell.rjust(widths[i]) if i else cell.ljust(widths[i])
+                    cell.rjust(widths[i]) if i > 1 else cell.ljust(widths[i])
                     for i, cell in enumerate(row)
                 ).rstrip()
             )
@@ -540,18 +526,11 @@ def _refuse_zero(name: str, run: str) -> TermRefusal:
 def _verdict(predicted: Term, relative: float, gate: float) -> tuple[Verdict, str]:
     if abs(relative) > gate:
         return Verdict.FAIL, ""
-    if predicted.basis in DISCHARGES:
+    if predicted.method in DISCHARGES:
         return Verdict.PASS, ""
-    if predicted.basis is Basis.DECLARED:
-        return Verdict.NOT_DISCHARGED, (
-            f"within the gate, and the gate is not discharged: the predicted "
-            f"side is a declared coefficient over {predicted.source}. "
-            f"{predicted.note}"
-        )
     return Verdict.NOT_DISCHARGED, (
-        f"within the gate, and the gate is not discharged: the predicted side "
-        f"is {predicted.basis}, over {predicted.source}, and a knob the serving "
-        "config states agreeing with a run is not evidence about bytes"
+        f"within the gate, and the gate is not discharged: the predicted "
+        f"side is declared, over {predicted.source}. {predicted.note}"
     )
 
 
@@ -683,10 +662,10 @@ class GraphPoolComparison:
     predicts: Reading
 
     def __post_init__(self) -> None:
-        if self.recorded.basis is not Basis.OBTAINED:
+        if self.recorded.method is not Method.MEASURED:
             raise ValueError(
-                f"the recorded pool is {self.recorded.basis}; a pool to compare "
-                "against was read off a card, which is Basis.OBTAINED"
+                f"the recorded pool is {self.recorded.method}; a pool to compare "
+                "against was read off a card, which is measured"
             )
         if self.reserves.name != graph_pool.RESERVES:
             raise MemoryRefusal(
@@ -830,7 +809,7 @@ def footprint_terms(mapping: Mapping[str, int], *, source: str) -> tuple[Term, .
 
     A convenience for the one shape a recording arrives in -- a printed
     breakdown is names and byte counts -- and it does the one thing that must
-    not be got wrong, which is to label every one of them `Basis.OBTAINED` and
+    not be got wrong, which is to label every one of them measured and
     to make each name its run.
 
     **It converts nothing.** `Term` rejects a non-integer byte count and says
@@ -843,5 +822,5 @@ def footprint_terms(mapping: Mapping[str, int], *, source: str) -> tuple[Term, .
     rather than a contrived one, and truncating it would be silent.
     """
     return tuple(
-        Term(name, nbytes, Basis.OBTAINED, source) for name, nbytes in mapping.items()
+        Term(name, nbytes, Method.MEASURED, source) for name, nbytes in mapping.items()
     )

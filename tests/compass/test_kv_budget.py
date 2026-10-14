@@ -41,11 +41,13 @@ from test_memory_readings import (  # one spec document and one model, not two
     DOCUMENT,
     EXPECTED,
     readings_at,
+    spec_of,
 )
 from transformers import PretrainedConfig
 
 import atom.compass.memory as memory_package
 from atom.compass.backends.geometry import KvGeometry, Parallelism
+from atom.compass.backends.provenance import Method
 from atom.compass.memory import MemoryRefusal, SizedKVPool, reserves
 from atom.compass.memory.readings import DeviceReadings
 from atom.compass.runner.overrides import (
@@ -246,9 +248,7 @@ def test_no_budget_arithmetic_is_written_anywhere_in_this_package():
         assert (
             "_kv_budget_extra_reserve" not in strings
         ), f"{module} names ATOM's budget reserve override point"
-        assert "gpu_memory_utilization" not in {
-            s for n, s in named if n not in keys
-        }, (
+        assert "gpu_memory_utilization" not in {s for n, s in named if n not in keys}, (
             f"{module} names gpu_memory_utilization outside rules.py's string "
             "dict keys and a budget_bytes argument"
         )
@@ -274,29 +274,38 @@ def _sizing(spec, qwen, tp_width, blocks=100_000):
     )
 
 
-def test_the_count_says_how_much_of_the_footprint_was_a_coefficient(spec, qwen, capsys):
-    """`Basis.DECLARED` on each term, read back as bytes by the block count.
+def test_the_count_reports_the_footprint_by_method(qwen, capsys):
+    """Each term's method, read back as bytes by the block count.
 
     Both figures are derived from `test_memory_readings`' per-term table rather
     than restated here, so a term that moves there moves here too instead of
     this becoming a second place the same bytes are written down.
     """
-    sizing = _sizing(spec, qwen, 1)
-    declared = {
-        "peak_torch.weights",
-        "peak_torch.buffers",
-        "peak_torch.activations",
-        "cudagraph_overhead.per-token x captured tokens",
-    }
-    assert set(sizing.declared_terms) == declared
+    sizing = SizedKVPool(
+        num_kvcache_blocks=100_000,
+        entries={"kv": 100_000},
+        readings=readings_at(spec_of("probed"), qwen, 1),
+    )
     expected = EXPECTED[1]
-    assert sizing.declared_bytes == sum(
-        expected[name.partition(".")[0]][name.partition(".")[2]] for name in declared
-    )
-    assert sizing.subtracted_bytes == sum(
-        sum(expected[name].values())
-        for name in ("peak_torch", "non_torch", "cudagraph_overhead")
-    )
+
+    def bytes_of(*names):
+        return sum(expected[r][t] for r, t in (n.split(".") for n in names))
+
+    declared = ("peak_torch.weights", "peak_torch.activations")
+    assert set(sizing.declared_terms) == set(declared)
+    assert sizing.bytes_by_method == {
+        Method.DECLARED: bytes_of(*declared),
+        Method.ANALYTICAL: bytes_of(
+            "peak_torch.buffers", "cudagraph_overhead.per-token x captured tokens"
+        ),
+        Method.MEASURED: bytes_of(
+            "peak_torch.load residue",
+            "peak_torch.persistent",
+            "non_torch.driver and collective reserve",
+        ),
+    }
+    assert sizing.declared_bytes == bytes_of(*declared)
+    assert sizing.subtracted_bytes == sum(sizing.bytes_by_method.values())
     with capsys.disabled():
         print()
         print(sizing.declared_line())
@@ -315,7 +324,7 @@ def test_the_table_is_the_count_and_its_readings_and_never_the_count_alone(spec,
     assert "100,000 paged blocks" in table
     for term in ("weights", "buffers", "load residue", "persistent", "activations"):
         assert term in table, term
-    assert "declared:" in table
+    assert "declared:" in table and "by method: " in table
 
 
 def test_a_count_of_zero_is_a_run_that_did_not_start_and_refuses_to_be_recorded(
@@ -329,7 +338,7 @@ def test_a_footprint_with_no_declared_term_says_so_rather_than_saying_nothing(
     spec, qwen
 ):
     """Otherwise an absent line and a line nobody printed read the same."""
-    readings = readings_at(spec, qwen, 1)
+    readings = readings_at(spec_of("probed"), qwen, 1)
     obtained = DeviceReadings(
         total=readings.total,
         peak_torch=readings.non_torch,

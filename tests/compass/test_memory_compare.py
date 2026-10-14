@@ -30,7 +30,6 @@ for every branch at once lives in `test_memory_readings.py` and globs the
 package, so `compare.py` is inside it already.
 """
 
-import copy
 import json
 
 import pytest
@@ -38,10 +37,10 @@ import torch
 from transformers import PretrainedConfig
 
 from atom.compass.backends.geometry import dtype_bytes as element_bytes
+from atom.compass.backends.provenance import Method
 from atom.compass.memory import (
     DISCHARGES,
     NON_KV_TERM_GATE,
-    Basis,
     Comparison,
     MemoryRefusal,
     ModelTerms,
@@ -63,15 +62,14 @@ from atom.compass.memory import (
     reserves,
     tied_lm_head_bytes,
 )
-from atom.compass.spec import MachineSpec
 from tests.compass.test_memory_readings import (
     CAPTURE_SIZES,
     CONFIG_JSON,
-    DOCUMENT,
     GPU_MEMORY_UTILIZATION,
     MAX_NUM_BATCHED_TOKENS,
     PARAMETERS,
     WARMUP_TOKENS,
+    spec_of,
 )
 
 MIB = 1 << 20
@@ -93,7 +91,8 @@ def no_device_readings(monkeypatch):
 
 @pytest.fixture(scope="module")
 def spec():
-    return MachineSpec.from_mapping(copy.deepcopy(DOCUMENT))
+    # Probed, so the constants it supplies are measured terms.
+    return spec_of("probed")
 
 
 @pytest.fixture(scope="module")
@@ -138,13 +137,13 @@ HISTORICAL_PREDICTED = Predicted(
         Term(
             "weights",
             1_400_000_000,
-            Basis.OBTAINED,
+            Method.MEASURED,
             "a meta build, deduped by storage, that had not been through the loader",
         ),
         Term(
             "activations",
             95_000_000,
-            Basis.OBTAINED,
+            Method.MEASURED,
             "a liveness walk of the traced graph",
         ),
     ),
@@ -300,7 +299,7 @@ def test_a_comparison_with_no_comparable_term_refuses_a_largest_error():
     predicted = Predicted(
         label="a prediction of that one term",
         shape=HISTORICAL_SHAPE,
-        terms=(Term("activations", 95_000_000, Basis.OBTAINED, "a liveness walk"),),
+        terms=(Term("activations", 95_000_000, Method.MEASURED, "a liveness walk"),),
         at_shape=AT_SHAPE,
     )
     comparison = compare(predicted, recorded)
@@ -392,7 +391,7 @@ def weights_comparison(predicted_bytes):
             Term(
                 "weights",
                 predicted_bytes,
-                Basis.OBTAINED,
+                Method.MEASURED,
                 "a meta build, deduped by storage",
             ),
         ),
@@ -497,12 +496,8 @@ def test_a_term_the_run_does_not_record_refuses_and_carries_its_own_reason(
 ):
     """`buffers` refuses by name, and the refusal quotes the reason.
 
-    This term has to be recorded rather than computed: the formula that
-    matched the 0.6B exactly was 4x wrong on the 27B, was tested on a second
-    model, failed and did not ship. The replacement that shipped was itself 4x
-    high and now says on the term that it is derived from ATOM's rotary source
-    and validated against no card. A comparator cannot discharge a 10% gate on
-    a term with no recording, and the refusal is the result.
+    A real run's split does not isolate buffers, so a comparator cannot hold
+    them to a 10% gate, and the refusal is the result.
     """
     prediction = live_prediction(spec, qwen)
     comparison = compare(prediction, agreeing_recording(prediction))
@@ -515,7 +510,7 @@ def test_a_term_the_run_does_not_record_refuses_and_carries_its_own_reason(
     message = str(refused["buffers"])
     assert "records no 'buffers'" in message
     assert "not a term of zero bytes" in message
-    assert "validated against no card" in message
+    assert "positions x rotary_dim elements" in message
     assert "buffers" not in {t.name for t in comparison.compared}
 
 
@@ -568,7 +563,7 @@ def test_a_declared_term_can_fail_its_gate_even_though_it_cannot_pass_one():
     declared = Term(
         "activations",
         200_000_000,
-        Basis.DECLARED,
+        Method.DECLARED,
         "a coefficient over one live layer",
         "a liveness walk over a traced op graph",
     )
@@ -726,9 +721,9 @@ def test_a_recorded_term_that_was_not_read_off_a_card_is_rejected():
             run="a run whose terms are formulas",
             shape=HISTORICAL_SHAPE,
             high_water_reset=True,
-            terms=(Term("weights", 1, Basis.SPEC, "a spec field"),),
+            terms=(Term("weights", 1, Method.ANALYTICAL, "a spec field"),),
         )
-    assert "Basis.OBTAINED" in str(bad.value)
+    assert "which is measured" in str(bad.value)
 
 
 def test_the_peak_guard_holds_when_only_the_prediction_names_a_shaped_term():
@@ -776,9 +771,9 @@ def test_a_peak_that_was_not_reset_with_no_shaped_term_anywhere_refuses_outright
 
 
 def zero_byte_recording(*, also_predicted):
-    predicted_terms = [Term("weights", 100, Basis.OBTAINED, "a meta build")]
+    predicted_terms = [Term("weights", 100, Method.MEASURED, "a meta build")]
     if also_predicted:
-        predicted_terms.append(Term("ghost", 5, Basis.OBTAINED, "a meta build"))
+        predicted_terms.append(Term("ghost", 5, Method.MEASURED, "a meta build"))
     return (
         Predicted(
             label="a prediction beside a term the run measured as empty",
@@ -828,7 +823,7 @@ def test_the_named_refusal_for_a_zero_recorded_term_is_still_reachable():
     pair = TermComparison(
         name="ghost",
         predicted=None,
-        recorded=Term("ghost", 0, Basis.OBTAINED, "the printout"),
+        recorded=Term("ghost", 0, Method.MEASURED, "the printout"),
         gate=NON_KV_TERM_GATE,
         verdict=Verdict.FAIL,
     )
@@ -848,32 +843,24 @@ def test_a_printout_carrying_a_float_byte_count_refuses_rather_than_truncating()
     assert "bytes are whole" in str(bad.value)
 
 
-# --- which bases discharge a gate -------------------------------------------
+# --- which methods discharge a gate -----------------------------------------
 
 
 @pytest.mark.parametrize(
-    "basis, expected",
+    "method, expected",
     [
-        (Basis.SPEC, Verdict.PASS),
-        (Basis.DERIVED, Verdict.PASS),
-        (Basis.OBTAINED, Verdict.PASS),
-        (Basis.DECLARED, Verdict.NOT_DISCHARGED),
-        (Basis.DEPLOYMENT, Verdict.NOT_DISCHARGED),
+        (Method.ANALYTICAL, Verdict.PASS),
+        (Method.MEASURED, Verdict.PASS),
+        (Method.ESTIMATED, Verdict.PASS),
+        (Method.DECLARED, Verdict.NOT_DISCHARGED),
     ],
 )
-def test_the_bases_that_discharge_a_gate_are_the_stated_set(basis, expected):
-    """A stated set, so adding a `Basis` member is a decision rather than a grant.
-
-    A knob the serving config states is the one that would have been let
-    through by a rule reading "not declared": a knob agreeing with a run is not
-    evidence about bytes in either direction.
-    """
-    assert DISCHARGES == frozenset({Basis.SPEC, Basis.DERIVED, Basis.OBTAINED})
-    note = "a successor" if basis is Basis.DECLARED else ""
+def test_every_method_but_declared_can_pass_a_gate(method, expected):
+    note = "a successor" if method is Method.DECLARED else ""
     predicted = Predicted(
-        label=f"a prediction whose term is {basis}",
+        label=f"a prediction whose term is {method}",
         shape=HISTORICAL_SHAPE,
-        terms=(Term("persistent", 100, basis, "wherever it came from", note),),
+        terms=(Term("persistent", 100, method, "wherever it came from", note),),
     )
     recorded = Recorded(
         run="a run that agrees to the byte",
@@ -884,10 +871,8 @@ def test_the_bases_that_discharge_a_gate_are_the_stated_set(basis, expected):
     assert compare(predicted, recorded).compared[0].verdict is expected
 
 
-def test_every_basis_is_either_discharging_or_named_as_not():
-    # No member may fall through unclassified, which is what would happen if a
-    # future addition met a rule phrased as "not declared".
-    assert set(Basis) - DISCHARGES == {Basis.DECLARED, Basis.DEPLOYMENT}
+def test_only_declared_is_left_out_of_the_set_that_discharges():
+    assert set(Method) - DISCHARGES == {Method.DECLARED}
 
 
 # --- the graph pool: two numbers, both reported ------------------------------
@@ -902,7 +887,7 @@ RECORDED_POOL_W_GT1 = 104 * MIB
 
 
 def recorded_pool(nbytes, where):
-    return Term("recorded pool", int(nbytes), Basis.OBTAINED, where)
+    return Term("recorded pool", int(nbytes), Method.MEASURED, where)
 
 
 @pytest.mark.parametrize(
@@ -991,7 +976,7 @@ def test_the_graph_pool_cannot_be_folded_into_the_per_term_table(spec, qwen):
             Term(
                 pool.name,
                 pool.total,
-                Basis.DECLARED,
+                Method.DECLARED,
                 "ATOM's own estimator",
                 "the measured pool, which disagrees by 4-19x",
             ),

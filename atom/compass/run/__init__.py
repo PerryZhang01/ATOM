@@ -634,7 +634,7 @@ def _graph_pool(model_runner, machine, model):
         capture_token_shapes(config.capture_sizes, max_num_batched_tokens=bound)
     )
     if not model_runner._piecewise_cg_active():
-        return reserves(activation_bytes=model.activations.nbytes), captured
+        return reserves(activations=model.activations), captured
     hf = config.hf_config
     sizes = config.compilation_config.cudagraph_capture_sizes or [config.max_num_seqs]
     capacity = machine.value("device.memory.capacity_bytes")

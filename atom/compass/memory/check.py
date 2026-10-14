@@ -12,8 +12,8 @@ server with the same deployment.
 
 A real server logs each reading once, in its ``Memory budget`` line, so the
 terms compared are ``peak_torch`` and ``non_torch``. Each predicted reading
-enters as one term and its own terms are printed under the table; one that
-sums a term which cannot discharge the gate cannot discharge it either. The
+enters as one term, whose method combines its own terms' methods, and its
+terms are printed under the table, each with its method. The
 graph pool is compared apart, both of its numbers against the pool the
 real server's capture reserved.
 """
@@ -26,10 +26,10 @@ import json
 import re
 from pathlib import Path
 
+from atom.compass.backends.provenance import Method
 from atom.compass.memory import graph_pool
 from atom.compass.memory.budget import SUBTRACTED
 from atom.compass.memory.compare import (
-    DISCHARGES,
     Predicted,
     Recorded,
     Shape,
@@ -38,7 +38,7 @@ from atom.compass.memory.compare import (
     footprint_terms,
 )
 from atom.compass.memory.readings import DeviceReadings, MemoryRefusal
-from atom.compass.memory.terms import Basis, Reading, Term
+from atom.compass.memory.terms import Reading, Term
 
 #: Both sides are taken at the warmup forward, ATOM's and the simulated one.
 PHASE = "warmup"
@@ -54,12 +54,18 @@ _POOL = re.compile(
 
 
 def _rows(reading: Reading) -> list[dict]:
-    return [dataclasses.asdict(t) | {"basis": t.basis.value} for t in reading.terms]
+    return [dataclasses.asdict(t) | {"method": t.method.value} for t in reading.terms]
 
 
 def _reading(name: str, rows: list[dict]) -> Reading:
+    if any("basis" in row for row in rows):
+        raise MemoryRefusal(
+            f"the {name} reading records each term's basis, a vocabulary this "
+            "check no longer reads",
+            "rerun the simulated run on this tree, which records each term's " "method",
+        )
     return Reading(
-        name, tuple(Term(**row | {"basis": Basis(row["basis"])}) for row in rows)
+        name, tuple(Term(**row | {"method": Method(row["method"])}) for row in rows)
     )
 
 
@@ -75,22 +81,6 @@ def record(readings: DeviceReadings, *, tokens: int, pool: Reading | None) -> di
         "readings": {name: _rows(readings.as_dict()[name]) for name in SUBTRACTED},
         "predicts": None if pool is None else _rows(pool),
     }
-
-
-def as_term(reading: Reading) -> Term:
-    """One reading as one term, for a run that records it as one number."""
-    owed = [t.name for t in reading.terms if t.basis not in DISCHARGES]
-    source = " + ".join(t.name for t in reading.terms)
-    if not owed:
-        return Term(reading.name, reading.total, Basis.DERIVED, source)
-    return Term(
-        reading.name,
-        reading.total,
-        Basis.DECLARED,
-        source,
-        f"It sums {', '.join(owed)}, which cannot discharge a gate; a run "
-        f"that records {reading.name} split compares each term on its own",
-    )
 
 
 def _one(pattern: re.Pattern, text: str, log: Path) -> tuple[str, ...]:
@@ -134,7 +124,7 @@ def recorded(log: Path) -> tuple[Recorded, Term | None]:
     pool = Term(
         "pool(reserved)",
         _gib(pools[0]),
-        Basis.OBTAINED,
+        Method.MEASURED,
         "the CUDA graph capture memory line",
     )
     return run, pool
@@ -149,7 +139,7 @@ def parts(predicted_file: Path, log: Path) -> list:
     predicted = Predicted(
         saved["label"],
         Shape(saved["tokens"], PHASE),
-        tuple(as_term(readings[name]) for name in COMPARED),
+        tuple(readings[name].as_term() for name in COMPARED),
         at_shape=SHAPED,
     )
     run, pool = recorded(log)

@@ -35,9 +35,9 @@ because the instrument that reads one figure over a decomposition is the one
 the per-term rule was written to reject.
 
 **A block count keeps its readings.** ATOM's own arithmetic turns the five into
-one integer, and an integer cannot say that most of what produced it was a
-coefficient somebody wrote down. `budget.SizedKVPool` is the count carried
-beside the readings it came out of; it computes nothing ATOM computes.
+one integer, and an integer cannot say how what produced it was obtained.
+`budget.SizedKVPool` is the count carried beside the readings it came out of,
+with their bytes by method; it computes nothing ATOM computes.
 """
 
 from atom.compass.memory.budget import SUBTRACTED, SizedKVPool
@@ -74,7 +74,7 @@ from atom.compass.memory.readings import (
     ModelTerms,
     device_readings,
 )
-from atom.compass.memory.terms import Basis, Reading, Term
+from atom.compass.memory.terms import Reading, Term
 
 __all__ = [
     "DISCHARGES",
@@ -83,7 +83,6 @@ __all__ = [
     "PREDICTS",
     "RESERVES",
     "SUBTRACTED",
-    "Basis",
     "Comparison",
     "DeviceReadings",
     "GraphPoolComparison",
