@@ -25,7 +25,7 @@ echo "c=$CONCURRENCY done" >> "$2/../order"
 """
 
 
-def _capture(tmp_path, smi, cells):
+def _capture(tmp_path, smi, cells, gpus="6"):
     tree = tmp_path / "ATOM"
     (tree / "scripts" / "compass").mkdir(parents=True)
     for name in ("calib_capture.sh", "_lib.sh"):
@@ -42,7 +42,7 @@ def _capture(tmp_path, smi, cells):
         PATH=f"{bindir}:{os.environ['PATH']}",
         CELLS=cells,
         STEPS_S="0",
-        HIP_VISIBLE_DEVICES="6",
+        HIP_VISIBLE_DEVICES=gpus,
     )
     script = "scripts/compass/calib_capture.sh"
     r = subprocess.run(
@@ -75,3 +75,21 @@ def test_a_gpu_holding_a_process_runs_no_cell(tmp_path):
     assert r.returncode == 3
     assert "GPU 6 is in use" in (cap / "c1.log").read_text()
     assert not (cap / "c1").exists()
+
+
+EIGHT = "0,1,2,3,4,5,6,7"
+
+
+@pytest.mark.skipif(BASH is None, reason="no bash on PATH")
+def test_a_process_on_the_last_named_gpu_runs_no_cell(tmp_path):
+    r, cap = _capture(tmp_path, "PID 1 is using 1 DRM device(s):\n7\n", "1", EIGHT)
+    assert r.returncode == 3
+    assert "GPU 7 is in use" in (cap / "c1.log").read_text()
+    assert not (cap / "c1").exists()
+
+
+@pytest.mark.skipif(BASH is None, reason="no bash on PATH")
+def test_a_process_on_an_unnamed_gpu_leaves_the_cell_running(tmp_path):
+    r, cap = _capture(tmp_path, "PID 1 is using 2 DRM device(s):\n6 7\n", "1", "0,1")
+    assert r.returncode == 0, r.stderr
+    assert (cap / "c1.log").read_text().startswith("cafe\nCONCURRENCY=1 GPU=0,1 ")

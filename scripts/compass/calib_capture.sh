@@ -14,12 +14,12 @@
 #   STEPS_S      wall seconds recorded per cell (default 1800)
 #   SERVER_ARGS  API server flags (default: --max-model-len 262144, so decode
 #                runs on captured graphs)
-#   HIP_VISIBLE_DEVICES  the GPU (default 0); a cell refuses to start while
-#                `rocm-smi` lists a process on it
+#   HIP_VISIBLE_DEVICES  the GPUs (default 0); a cell refuses to start while
+#                `rocm-smi` lists a process on any of them
 #
 # OUT_DIR/c<C>/ is the cell's cctraces_sim.sh directory, its step record in
-# steps/; OUT_DIR/c<C>.log holds the tree's commit, the host load (`uptime`)
-# and the GPU's processes at the cell's start and end, and the cell's exit
+# steps/; OUT_DIR/c<C>.log holds the tree's commit, the host load (`uptime`),
+# the GPUs' processes, VRAM and use at the cell's start and end, and its exit
 # status, 1 for a stopped cell: aiperf, stopped, writes no export. Fit the
 # records with
 #   python -m atom.compass.backends.coarse_fit --form history \
@@ -34,22 +34,24 @@ mkdir -p "$OUT" && OUT=$(realpath "$OUT")
 export REAL=1 RECORD=1 FIRST_SESSION=256 SESSIONS=137 WAIT_S=${WAIT_S:-1800}
 export SERVER_ARGS=${SERVER_ARGS:---max-model-len 262144}
 export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-0}
-gpu=${HIP_VISIBLE_DEVICES%%,*}
 unset ATOM_COMPASS_RUN
 # The GPUs `rocm-smi` lists a process on.
 busy() { rocm-smi --showpids --showpidgpus | awk '/is using [1-9]/ {getline; print}' | tr ' ' '\n'; }
 state() {
     echo "$1 $(date -u +%FT%TZ) uptime:$(uptime)"
-    rocm-smi --showpids --showpidgpus | sed 's/^/  /'
+    { rocm-smi --showpids --showpidgpus; rocm-smi --showmeminfo vram --showuse; } | sed 's/^/  /'
 }
 
 for c in ${CELLS:-1 4 16 64 256}; do
     o=$OUT/c$c log=$OUT/c$c.log
     [[ -e $o ]] && { echo "calib_capture: $o exists" >&2; exit 4; }
     { cat "$ROOT/.compass-commit" 2>/dev/null || git -C "$ROOT" rev-parse HEAD
-      echo "CONCURRENCY=$c GPU=$gpu STEPS_S=${STEPS_S:-1800} SERVER_ARGS=$SERVER_ARGS"
+      echo "CONCURRENCY=$c GPU=$HIP_VISIBLE_DEVICES STEPS_S=${STEPS_S:-1800} SERVER_ARGS=$SERVER_ARGS"
       state start; } >"$log"
-    busy | grep -qx "$gpu" && { echo "calib_capture: GPU $gpu is in use" | tee -a "$log" >&2; exit 3; }
+    held=$(busy)
+    for gpu in ${HIP_VISIBLE_DEVICES//,/ }; do
+        grep -qx "$gpu" <<<"$held" && { echo "calib_capture: GPU $gpu is in use" | tee -a "$log" >&2; exit 3; }
+    done
     CONCURRENCY=$c timeout 7200 bash "$ROOT/scripts/compass/cctraces_sim.sh" "$RUN_FILE" "$o" >"$o.out" 2>&1 &
     sim=$!
     until [[ -s $o/steps/dp0.jsonl ]] || ! kill -0 $sim 2>/dev/null; do sleep 10; done

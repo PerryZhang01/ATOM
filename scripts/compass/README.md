@@ -518,8 +518,8 @@ same requests and warm up on the same ones. The server runs ATOM's own runner
 (no `--compass-run`), and aiperf runs as shipped: `HARNESS_PYTHON` must have
 agentx-harness without compass-harness (exit 92 otherwise), and the script pins
 the benchmark id as compass-harness does. The result line reads aiperf's export
-alone and adds `contaminated`, true when `rocm-smi` lists any process on the
-cell's GPU before or after it, with each one's pid and VRAM bytes. Both modes
+alone and adds `contaminated`, true when `rocm-smi` lists any process on one of the
+cell's GPUs before or after it, with each one's pid and VRAM bytes. Both modes
 write the TP1 step record to `steps/dp0.jsonl` (`atom/compass/parity`);
 `RECORD=0` turns it off. `FIRST_SESSION` skips that many traces, so calibration
 and graded cells can replay disjoint ones.
@@ -553,7 +553,7 @@ Calibration cells replay traces the graded cells do not: `FIRST_SESSION=256
 SESSIONS=137` against graded traces 0 to 255, by the
 [owner's ruling on #627](https://github.com/jgong5/ATOM/issues/627#issuecomment-6096543740).
 `calib_capture.sh RUN_FILE OUT_DIR` captures them: the real cells one at a time,
-each with the host load and the GPU's processes at its start and end; its header
+each with the host load and the GPUs' processes, VRAM and use at its start and end; its header
 lists its environment.
 Given two or more records, the command also prints each form's error on every
 record under a law fitted on the others, per decode rung and prefill token band.
