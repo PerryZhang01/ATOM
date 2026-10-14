@@ -458,11 +458,13 @@ def _refused(method: str):
 class RefusedControlCommands:
     """The worker methods behind ATOM's utility commands, each refused by name.
 
-    The profiler pair would start a real profiler, and the other seven exist
-    only on ATOM's rollout runner, so without them here `busy_loop` skips the
-    name and the handler waits forever. Each answers `command:<method>` rather
-    than raising, so the engine keeps serving, and records it for
-    `refused_commands`.
+    The profiler pair would start a real profiler, and the others exist only
+    on ATOM's rollout runner: without them here `busy_loop` skips a name sent
+    by `call_func` and the handler waits forever, and answers one sent over
+    the all-rank RPC with a missing-method error. Each answers
+    `command:<method>` rather than raising, so the engine keeps serving, and
+    records it for `refused_commands`. A refused weight update still fences
+    serving until a sync is finished, as ATOM does for any update.
     """
 
     start_profiler = _refused("start_profiler")
@@ -470,6 +472,7 @@ class RefusedControlCommands:
     update_weights = _refused("update_weights")
     update_weights_from_shm = _refused("update_weights_from_shm")
     update_weights_from_ipc = _refused("update_weights_from_ipc")
+    discard_failed_weight_sync = _refused("discard_failed_weight_sync")
     release_memory = _refused("release_memory")
     resume_memory = _refused("resume_memory")
     clear_kv_cache = _refused("clear_kv_cache")
