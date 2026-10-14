@@ -394,7 +394,8 @@ is `Σ ctx`. It names no kernel, split rule, head count or CU count. A rung adop
 as a fourth column (D55) only when all four hold:
 
 1. the column cuts the rung's scaled MAD, by at least a tenth;
-2. shuffling each step's rows takes that cut away;
+2. shuffling each step's rows takes that cut away, read as the mean MAD over 8 seeded
+   shuffles;
 3. no calibration cell, held out of a fit on the others, gets a p50 error further from zero;
 4. every cell holds at least 100 steps at the rung, and there are two cells or more.
 

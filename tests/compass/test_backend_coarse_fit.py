@@ -598,13 +598,14 @@ def test_a_run_refuses_host_laws_fitted_under_another_key(tmp_path, monkeypatch)
 ROWMOD = {"step": 0.02, "context": 1e-8, "graph_padding": 5e-9, "rowmod": 3e-7}
 
 
-def _rowmod_steps(seed, n, k=4, uniform=False):
+def _rowmod_steps(seed, n, k=4, uniform=False, faint=False):
     """Rung-8 decode steps whose cost reads `rowmod(k)` of their rows in order.
 
     Every step is wider than 4 rows, so its order moves `rowmod(k)`. With
     `uniform`, every row of a step holds one context and a step is 1 to 8 rows
     wide: no order moves `rowmod(k)`, and the rung's three features cannot
-    express it.
+    express it. With `faint`, the `rowmod` term carries 12% of its weight and
+    each step's seconds a 3% scatter: the column cuts the MAD by under a tenth.
     """
     rng = np.random.default_rng(seed)
     out = []
@@ -620,8 +621,10 @@ def _rowmod_steps(seed, n, k=4, uniform=False):
             ROWMOD["step"]
             + ROWMOD["context"] * int(context.sum())
             + ROWMOD["graph_padding"] * view.graph_padding
-            + ROWMOD["rowmod"] * modded
+            + ROWMOD["rowmod"] * (0.12 if faint else 1.0) * modded
         )
+        if faint:
+            seconds *= rng.normal(1.0, 0.03)
         out.append((rows, 8, seconds))
     return out
 
@@ -655,21 +658,31 @@ def test_a_rung_whose_cost_follows_row_order_adopts_rowmod_and_prices_the_order(
 
 
 @pytest.mark.parametrize(
-    "steps, k, uniform",
-    [((150, 99), 4, False), ((150, 150), 4, True), ((150, 150), 2, False)],
+    "steps, k, uniform, faint",
+    [
+        ((150, 99), 4, False, False),
+        ((150, 150), 4, True, False),
+        ((150, 150), 2, False, False),
+        ((150, 150), 4, False, True),
+    ],
     ids=[
         "a cell under 100 steps",
         "an order shuffling cannot move",
         "a held-out cell priced worse",
+        "a column cutting the MAD by under a tenth",
     ],
 )
 def test_a_rung_keeps_its_law_unless_every_cell_and_the_order_support_rowmod(
-    tmp_path, steps, k, uniform
+    tmp_path, steps, k, uniform, faint
 ):
     # The second record's cost follows `rowmod(k)`, the first's `rowmod(4)`.
     records = [
-        _record(tmp_path / "dp0-20.jsonl", _rowmod_steps(20, steps[0], 4, uniform)),
-        _record(tmp_path / "dp0-21.jsonl", _rowmod_steps(21, steps[1], k, uniform)),
+        _record(
+            tmp_path / "dp0-20.jsonl", _rowmod_steps(20, steps[0], 4, uniform, faint)
+        ),
+        _record(
+            tmp_path / "dp0-21.jsonl", _rowmod_steps(21, steps[1], k, uniform, faint)
+        ),
     ]
     law = fit(records)
 

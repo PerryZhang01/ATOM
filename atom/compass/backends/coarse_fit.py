@@ -53,8 +53,8 @@ an intercept per rung.
 Outside `shared`, a decode rung may adopt a `rowmod(k)` column (`CoarseLaw`),
 read from its rows in scheduled order, by the rule `_rowmod` states; the
 vector then names `k` and records, under `fit.rowmod`, the MAD without the
-column, the MAD with each step's rows shuffled, and per held-out record the
-p50 error without and with it.
+column, the mean MAD with each step's rows shuffled, and per held-out record
+the p50 error without and with it.
 
 With two or more records it also prints, per form, the error on each record of
 a law fitted on the others, warm steps left out: per kind and rung, or prefill
@@ -95,6 +95,8 @@ ROWMOD_CELL_STEPS = 100
 #: The fraction of a rung's scaled MAD a `rowmod` column must cut: a smaller cut is
 #: within the sampling error of a MAD over a few hundred steps.
 ROWMOD_GAIN = 0.1
+#: Seeded shuffles of each step's rows whose mean MAD the `rowmod` column must not beat.
+ROWMOD_SHUFFLES = 8
 #: Token copy wait exits whose tightest bound is a step's host clock lead.
 ANCHORS = 32
 HOST_KINDS = ("decode", "prefill", "middle")
@@ -308,9 +310,10 @@ def _rowmod(members, rung: int, base: dict) -> tuple | None:
 
     `members` are the rung's `fit` rows, `base` their solve without the column.
     `k` runs over the powers of two up to the rung. A `k` qualifies when its
-    solve cuts `base`'s scaled MAD by `ROWMOD_GAIN`, the same solve on each
-    step's rows shuffled does not, and no record (a cell) priced by a solve on
-    the others has a p50 error further from zero than without the column. Every cell
+    solve cuts `base`'s scaled MAD by `ROWMOD_GAIN`, the mean MAD of the same
+    solve over `ROWMOD_SHUFFLES` seeded shuffles of each step's rows does not,
+    and no record (a cell) priced by a solve on the others has a p50 error
+    further from zero than without the column. Every cell
     needs `ROWMOD_CELL_STEPS` steps at the rung, and a rung needs two cells.
     The qualifying `k` of smallest MAD is adopted: returned with its column,
     its solve and the evidence the law records.
@@ -322,7 +325,13 @@ def _rowmod(members, rung: int, base: dict) -> tuple | None:
     x = np.array([r[2] for r in members], dtype=np.float64)
     y = np.array([r[3] for r in members])
     rng = np.random.default_rng(0)
-    shuffled = [rng.permutation(r[5]) for r in members]
+    shuffles = [
+        [rng.permutation(r[5]) for r in members] for _ in range(ROWMOD_SHUFFLES)
+    ]
+
+    def mad(rows, k):
+        column = [rowmod(r, k) for r in rows]
+        return _solve(np.column_stack([x, column]), y, list(ROWMOD))["mad"]
 
     def p50(design):
         names = list(ROWMOD[: design.shape[1]])
@@ -340,8 +349,7 @@ def _rowmod(members, rung: int, base: dict) -> tuple | None:
         design = np.column_stack([x, column])
         solved = _solve(design, y, list(ROWMOD))
         if solved["mad"] < min(target, best[2]["mad"] if best else target):
-            mixed = np.array([rowmod(s, k) for s in shuffled], dtype=np.float64)
-            shuffled_mad = _solve(np.column_stack([x, mixed]), y, list(ROWMOD))["mad"]
+            shuffled_mad = float(np.mean([mad(s, k) for s in shuffles]))
             held = p50(design)
             if shuffled_mad >= target and all(
                 abs(w) <= abs(o) for w, o in zip(held, without)

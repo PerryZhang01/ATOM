@@ -342,9 +342,9 @@ dispatch band and is refused or split.
   grading holds out (`08` D50).
 - **Features in `14` D85's form**: tokens, `Σ N_Q²` and `Σ N_Q·N_KV` over requests, the
   aggregates `ScheduledBatch` carries; one form for prefill and decode, a decode step being
-  its `N_Q = 1` case. Plus the row order and raggedness that `07` D39 and `09` D61 name as
-  treatments. Model, dtype and width select and check the bundle (D101); they never enter
-  a feature. The lookup stays split by graph mode (D98): eager and replay are two
+  its `N_Q = 1` case. Plus row order and raggedness, `07` D39's two hazards, which the
+  grid cannot see. Model, dtype and width select and check the bundle (D101); they never
+  enter a feature. The lookup stays split by graph mode (D98): eager and replay are two
   measurements, not two forms.
 - **Hull refusal.** The residual answers only inside its fitted hull (`09` D58); outside,
   the step refuses, where the tier-a law would extrapolate (`08` D49 item 6; D102).
