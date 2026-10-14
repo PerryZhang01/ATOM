@@ -237,5 +237,5 @@ def test_the_checked_in_specs_say_where_each_field_came_from(monkeypatch, name):
         if "cudagraph_pool" not in label[0]:
             assert answered[label] == {"origin": "probed", **script.SUBJECT}, label
     for label, found in answered.items():
-        if found["origin"] != "probed":
+        if found["origin"] != "probed" or label[0].endswith(".derate"):
             assert found == {"origin": "assumed"}, label

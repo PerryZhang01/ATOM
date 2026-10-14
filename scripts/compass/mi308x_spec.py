@@ -66,8 +66,6 @@ DATE, COMMIT, READ = {
     "mi308x-hjbog18": ("2026-10-11", "983e42973", NODE18),
     "mi308x-hjbog39": ("2026-10-12", "a1cac25a6", HJBOG39),
 }[NAME]
-#: The stack both hosts ran.
-PINS = {"rocm": "7.2.4", "aiter": "f4e7c7509", "rccl": "2.27.7"}
 #: What the start ran: the model, the width and the tree.
 SUBJECT = {"model": "Qwen/Qwen3.8-27B", "width": 1, "source_root": f"commit:{COMMIT}"}
 CONFIG_JSON = "sha256:191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab"
@@ -96,7 +94,7 @@ DEVICE = {
                 },
             }
         ],
-        "software_pinned_to": PINS,
+        "software_pinned_to": {"rocm": "7.2.4", "aiter": "f4e7c7509", "rccl": "2.27.7"},
     },
 }
 
