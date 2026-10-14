@@ -266,7 +266,8 @@ class StepRecording:
             from atom.utils.forward_context import get_forward_context
 
             self._stamps["launch_event"] = self.device_event()
-            self._stamps["forward_mode"] = get_forward_context().context.forward_mode
+            context = get_forward_context().context
+            self._stamps["forward_mode"] = getattr(context, "forward_mode", None)
         return self._stamped("t_launch_ns", super().run_model, *args)
 
     def step_stamps(self) -> tuple:
