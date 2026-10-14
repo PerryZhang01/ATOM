@@ -134,8 +134,8 @@ atom/compass/
   validate/   grading: whether a client run is gradeable, the separable results
   metrics/    per-step sampling, backfill
   kv/         simulated KV connector
+  cli.py      the `compass` console script, declared in pyproject.toml (13 D80); it parses and dispatches only
 tests/compass/          mirrors the above
-tools/compass/compass.py  the one compass entry (13 D80); it parses and dispatches only
 <out-of-tree package>   the aiperf adapter (never inside ATOM)
 ```
 

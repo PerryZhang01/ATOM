@@ -61,8 +61,7 @@ as a candidate for #627's stage 2 by the owner's ruling on #696 (`17` D96). The
 Scope boundary, stated once: **Compass models a device it has been measured on.**
 Configurability — dialling the capacity, bandwidth or interconnect of a measured device —
 stays in scope. Predicting an unmeasured architecture is tier 0's job. Accordingly, doc 05
-D26's `transfer` probe is **deferred**: there is no cross-hardware transfer of empirical
-data.
+D26 has no `transfer` probe: there is no cross-hardware transfer of empirical data.
 
 ---
 
@@ -96,7 +95,7 @@ D80's.
 | new parallel width | `measure memory` and `measure` at that width, since memory readings and collectives are per width (D40) |
 | software upgrade | each entry whose D43 row the change invalidates refuses at load, naming its key; only those are re-measured |
 | configuration sweep | `measure memory` and `run` per configuration, then rank |
-| day zero, nothing measured | tier 0 (`10`), with no measurement |
+| day zero, nothing measured | tier 0 (`10`), with no measurement: memory from a declared `memory_readings` entry marked assumed (Phase 2) |
 
 The upgrade case is the one the invalidation matrix (D43) exists to make cheap. Day zero
 is why tier 0 is a tier and not a fallback.
@@ -279,10 +278,10 @@ campaign and the one with the tightest acceptance gate behind it — KV block co
 | Reading | Source |
 |---|---|
 | `capacity_bytes` | the device, once; the capacity a run sizes against stays the machine spec's configured one (`13` D78) |
-| `driver_and_collective_reserve_bytes[W]` | ATOM's own `get_num_blocks` `non_torch` term at that width |
-| `allocator_retained_after_load_bytes[W]` | torch allocator, after weight load completes and before the first forward |
+| `driver_and_collective_reserve_bytes` | ATOM's own `get_num_blocks` `non_torch` term |
+| `allocator_retained_after_load_bytes` | torch allocator, after weight load completes and before the first forward |
 | `persistent_forward_buffer_bytes` | allocator delta across `allocate_forward_vars` + attention metadata setup |
-| `cudagraph_pool.*` | allocator delta across capture, swept over ≥5 capture ladders so the W=1 line can be fitted rather than assumed |
+| `cudagraph_pool` | allocator delta across capture, at the configuration's own ladder |
 
 **Three rules that turn this from a reading into evidence:**
 
@@ -301,10 +300,15 @@ campaign and the one with the tightest acceptance gate behind it — KV block co
 **The checkpoint is loaded.** ATOM's `--load_dummy` skips it, and `measure memory`
 refuses it until its readings match a real load's on Qwen3.8-27B TP1 on MI308X (T100).
 
+**A device never measured** has no engine to start. Developer tooling outside the CLI
+publishes a declared entry for its configuration, every reading marked assumed, as `16`
+marks every MI455 input; `run` reads it as any entry and records in its provenance that it
+is assumed.
+
 **Why it is per width and not fitted across widths:** because it does not fit. The
 measured `non_torch` sequence is 926 / 6906 / 7266 / 10704 MiB at widths 1/2/4/8, and
 **no fixed-plus-per-peer form reproduces** the deltas 5980 / 6340 / 9138. A table, not
-a law — which is also why Phase 2 is per-width rather than a one-off.
+a law — which is also why Phase 2 is per configuration rather than a one-off.
 
 ### What is NOT a calibration axis — and why there is no Phase 3
 
@@ -626,7 +630,7 @@ its own, and a population is keyed by the backend that priced it.
 | `op_graph` | Phase 1a, `trace ops` | **structure** — not shape |
 | `price_list` | Phase 1b, `fit ops` | **(model, width, source-root digest)** — a triple, never a path |
 | `region_terms` | Phase 1c, `fit ops` | (model, width) |
-| `memory_readings` | Phase 2, `measure memory` | (model, device, width, utilization, max_num_seqs, max_model_len, kv dtype, block size) |
+| `memory_readings` | Phase 2, `measure memory`; declared and marked assumed for a device never measured | (model, device, parallel, engine config) |
 | `coverage_hull` | derived | the price list it was built from |
 | `step_measurement` | Phase 1c, `measure steps` | (model, device, parallel, engine config, source-root digest, sampling, step kind, the batch's digest) |
 | `step_law` | `fit steps --backend law` | (model, device, parallel, engine config, source-root digest, form) |
@@ -805,12 +809,12 @@ So: every gate's state is written into the artifact and checked there.
 
 | # | Decision | Date |
 |---|---|---|
-| D36 | Three tiers: analytic/roofline, coarse empirical, op-level empirical. Compass models a device it has been measured on; cross-hardware transfer of empirical data is out of scope, and doc 05 D26's `transfer` probe is deferred. | 2026-09-18 |
+| D36 | Three tiers: analytic/roofline, coarse empirical, op-level empirical. Compass models a device it has been measured on; cross-hardware transfer of empirical data is out of scope, and doc 05 D26 has no `transfer` probe. | 2026-09-18; probe dropped 2026-10-14 (#937) |
 | D37 | The tool tells the user what to measure: a backend that needs measurements plans them beside its own code and owns the coverage check that `compass run --coverage` calls before the run starts; step fit's planner runs inside `measure steps`; no single command plans the campaign. Coverage checks use a convex hull or k-NN distance, never a bounding box. | 2026-09-18; revised 2026-10-13 and 2026-10-14 (#851) |
 | D38 | Phase 0 discovery (shapes only) -> 1a trace -> 1b price -> 1c in-situ (+ one TP2 transfer test) -> Phase 2 memory. Client count and workload are not calibration axes. `13` D80's commands run them: `trace steps`, `trace ops`, `measure ops` and `fit ops`, `record` and `measure steps` then `fit steps\|host`, and `measure memory` for Phase 2, one engine start per configuration whose `memory_readings` a run reads and refuses without; `measure` writes per point, `fit` makes laws, bundles and leaves. | 2026-09-18; commands 2026-10-13 (#851); Phase 2 2026-10-14 (#851) |
 | D39 | The bench is `EngineCore` without its scheduler: every TP rank's `RecordingModelRunner` started through its runner manager in its order, at any TP width, a step charged to its slowest rank, fed **replayed** batches rebuilt from step records by a versioned rule. One window for both step kinds: device time from an event at the forward's entry to one at its exit, with device work queued ahead, a repeat counting only if the entry event is still pending when the forward returns; whatever is fitted on it declares that value kind. Op prices may use synthetic shapes; step and region measurements may not, step fit's grid excepted (`17` D98). | 2026-09-18; revised 2026-10-13 (#851) |
 | D40 | Four classes of communication, priced separately. Scaling is measured per width, never modelled. A collective's measured duration is an upper bound on device work. | 2026-09-18 |
-| D41 | Artifacts, each with key, digest, fingerprint and provenance. Keys are tuples; source roots are `git archive` digests; resolution names its answer; handed-off artifacts are immutable. `step_measurement`, `step_law` and `host_laws` added, and `shape_population` keyed by its pricing backend. `memory_readings` from `measure memory`, keyed by device too. | 2026-09-18; kinds 2026-10-13 (#851); `memory_readings` 2026-10-14 (#851) |
+| D41 | Artifacts, each with key, digest, fingerprint and provenance. Keys are tuples; source roots are `git archive` digests; resolution names its answer; handed-off artifacts are immutable. `step_measurement`, `step_law` and `host_laws` added, and `shape_population` keyed by its pricing backend. `memory_readings` from `measure memory`, keyed as `step_law` is, or declared and marked assumed for a device never measured. | 2026-09-18; kinds 2026-10-13 (#851); `memory_readings` 2026-10-14 (#851) |
 | D42 | Trace is JIT and cached; pricing is offline or opt-in `--measure`. A `--measure` run is never an acceptance run. New shape is fine; new operator kind refuses. | 2026-09-18 |
 | D43 | Per-artifact invalidation matrix, not a global fingerprint. Every gate's state is written into the artifact and checked there. Rows for `shape_population`, `step_measurement`, `step_law` and `host_laws`, and a host-CPU axis. | 2026-09-18; rows 2026-10-13 (#851) |
 | D38.1 | One recommended flow per half: steps (`measure memory`, `record`, `trace steps`, `measure steps` with step fit's planner, `fit host` and `fit steps`, `run --coverage`, then grading outside the CLI), each server driven by a client started apart, and ops (`trace ops`, `measure ops`, `fit ops`). Phases unchanged; the bench hosts 1b and 1c, Phase 2 is a plain startup `measure memory` runs. | 2026-09-19; revised 2026-10-13 and 2026-10-14 (#851) |

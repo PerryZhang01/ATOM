@@ -134,13 +134,16 @@ python -m atom.entrypoints.openai_server <ATOM arguments> \
 | `--coverage` | `shape_population` keys and `record` directories the backend's coverage check reads before the run starts; a failed check refuses the run (`07` D37) | off; `run.json` records the check's result, or that none ran |
 
 `run` reads the `memory_readings` entry for its configuration (`07` D41) and refuses when
-there is none, naming the configuration; `compass measure memory` takes it.
+there is none, naming the configuration. `compass measure memory` takes it; for a device
+never measured, developer tooling declares it marked assumed, and `run.json` records that
+(`07` D38).
 
 `--compass-clock-endpoint` names a standalone Clock Authority (`01` D3.3); absent, it is
 co-hosted in the API-server process. The tool sets it and `--compass-run`, and refuses
-both among ATOM's arguments; a client started apart finds the clock endpoint in the run
-file `run.json` keeps (`compass_harness/compass_harness/traffic_lp.py`). The run file
-selects the simulated runner through `Config.runner_qualname`, the seam (`02` D10).
+both among ATOM's arguments. How a client started apart is pointed at its run, the run
+file's clock endpoint included, is settled by the launch script's own issue (below). The
+run file selects the simulated runner through `Config.runner_qualname`, the seam (`02`
+D10).
 
 Two settings of tier b are settled with the toolchain's ops half (`16` W4.1): refusing an
 unknown structure rather than tracing it in-run (`02`), and `--measure`, which
@@ -149,10 +152,11 @@ additionally runs on a real GPU and records, and is **never valid in an acceptan
 
 ### Tool-side: the `compass` CLI
 
-One entry with subcommands. A verb with two halves takes `steps` or `ops`: the steps half
-is tier a's and step fit's, built for stage 2 (`16` S2.7); the ops half is tier b's, built
-by the toolchain task (`16` W4.1). Each command runs one of `07` D38's phases or fits what
-a phase measured.
+One entry with subcommands: the `compass` console script, whose module is
+`atom/compass/cli.py`, declared in `pyproject.toml`. A verb with two halves takes `steps`
+or `ops`: the steps half is tier a's and step fit's, built for stage 2 (`16` S2.7); the ops
+half is tier b's, built by the toolchain task (`16` W4.1). Each command runs one of `07`
+D38's phases or fits what a phase measured.
 
 **Users reach Compass only through these commands.** What developers use to check its
 quality stays outside the CLI: grading (`python -m atom.compass.validate`, `08`), the
@@ -186,7 +190,7 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
 | `record` | 1c's real runs | GPU | ATOM's arguments; the requests clients send | `--out`: the step record with its cost lines; `run.json` with the engine's bounds as ATOM resolved them; logs |
 | `trace steps` | 0 | none | `run`'s inputs | `--store`: one `shape_population`, keyed by the backend that priced it; `--out`: what `run` writes |
 | `trace ops` | 1a | none | the structures Phase 0 found | `--store`: one `op_graph` per structure |
-| `measure steps` | 1c, on the bench | GPU | batches as step-record lines, from `record` directories and `shape_population` keys; for step fit's planner, `shape_population` keys and `record` directories | `--store`: one `step_measurement` per distinct batch |
+| `measure steps` | 1c, on the bench | GPU | its `<batches>`, and `--grid`'s inputs | `--store`: one `step_measurement` per distinct batch |
 | `measure ops` | 1b, collectives included | GPU, each width | the signatures `trace ops` captured; the declared collective entry points (`07` D40) | per-signature measurements |
 | `measure memory` | 2 | GPU | ATOM's arguments | `--store`: one `memory_readings` for the configuration; `--out`: `run.json`, logs |
 | `fit steps` | from 1c's measurements | none | `record` directories and `step_measurement` entries, as the backend accepts | `--store`: a `step_law` or a step fit bundle, with its report; `--out`: a readable copy |
@@ -223,9 +227,9 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
   instance's server, prefill, decode or aggregated as ATOM's arguments say. `record` is
   `run`'s launch on a real GPU plus recording; `trace steps` is `run`'s launch plus
   publishing. A server outlives any client and serves any number of client runs until it
-  is stopped, keeping its state between them, its prefix cache included (`03` D13).
-  Several instances are several invocations, started by a script outside the CLI that its
-  own issue designs, with how simulated instances share one Clock Authority (`01` D3.3).
+  is stopped. Several instances are several invocations, started by a script outside the
+  CLI that its own issue designs, with how simulated instances share one Clock Authority
+  (`01` D3.3) and how a client started apart is pointed at its run.
   A simulated server outliving its client needs `01` D3's end of a run, when no essential
   work is left, to end a client run instead (T99).
 - **A client run** is one client invocation against a server. Which requests and traces it
@@ -236,7 +240,9 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
   steps: its step counts (the refusals, the analytic and extrapolated shares,
   `coverage_report`; `01` D3.5) are taken over a client run's steps, while grants, speed
   and detector state stay the server's. Every reader of a record, grading included, takes
-  its client runs and traces from this split.
+  its client runs and traces from this split. A later client run on a server meets the
+  prefix cache earlier ones left (`03` D13), so grading pairs each server's first client
+  run: every graded run, real or simulated, is a fresh server (`08` D45, D50).
 
 **Per command:**
 
@@ -303,6 +309,7 @@ Audited, because an absent flag is a decision and should be a visible one:
 | virtual-clock enable/disable | there is no simulated run without one. A switch would create an untested second configuration. |
 | per-term memory overrides | a memory term comes from the machine spec or a `memory_readings` entry, where it is echoed and fingerprinted |
 | a workload, the client's settings | no command starts the client: a client started apart sends them, and grading reads which traces it served from the client run |
+| a perturbed price for grading's sensitivity control (`08` D45) | grading's tooling, outside the CLI, publishes a copy of the law with its prefill price scaled by 0.97 as its own `step_law` entry, its provenance "scaled from <key> by 0.97", and the control is `run --law <that key>` |
 | acceptance rate for speculative decoding | **ATOM's own flag** — `--spec-decode-acceptance-length` / `--spec-decode-acceptance-rate` already exist (`14` D83) |
 | thread-pool widths | ATOM's, per `05` D24 |
 | the run file's lookaheads, bound and admission path | fixed in code: no measurement backs the lookaheads (`atom/compass/clock/channels.py::single_engine_table`), and `run` always drives the API server |

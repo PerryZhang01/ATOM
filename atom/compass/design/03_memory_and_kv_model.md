@@ -238,7 +238,8 @@ Where each reading comes from:
   and `total - free` counts every process on the card. Six prior runs died at start-up
   with `available_for_kv = -103667.58 MB (budget=57.60GB, peak_torch=2.94GB,
   non_torch=152.01GB, ...)` because a neighbour held 152 GB while this rank had reserved
-  2.9 GB. Reading it from a spec removes the contamination by construction.
+  2.9 GB. Reading it from a `memory_readings` entry, taken on a machine checked quiet
+  before and after (`07` D38, Phase 2), keeps the contamination out of the run.
 - **The `min(budget, free)` clamp becomes inert.** With `free` derived as a clean box it
   cannot bind. The prior design needed a `free_was_binding()` guard to refuse records
   where it had; that guard is unnecessary here.
@@ -356,9 +357,9 @@ not own cannot measure any of them.
 
 ### Decision
 
-**Option 4: a device specification is an input artifact.** A user or a separate tool
-authors it beforehand and passes it to Compass; Compass consumes it and does not derive
-it.
+**Option 4: a device specification is an input artifact.** Developers author it, one per
+supported machine (`05` D26), and a user passes it to Compass; Compass consumes it and
+does not derive it.
 
 It carries, in one object serving **both** the memory model and the cost model — the
 project requires compute, memory size, bandwidth and interconnect all configurable and
@@ -372,7 +373,9 @@ none read from a runtime:
 
 The runtime and library memory constants above are not in it (revised 2026-10-14):
 `compass measure memory` takes them on the target per configuration, and a run reads that
-`memory_readings` entry and refuses without it (`07` D38, Phase 2).
+`memory_readings` entry and refuses without it (`07` D38, Phase 2). For a card nobody has
+run, developer tooling outside the CLI declares the entry, every reading marked assumed,
+and a run records that it is.
 
 ### The one honesty measure retained
 

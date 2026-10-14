@@ -51,7 +51,7 @@ width-keyed material has one index.
 | **Q1 LPs** | **None added.** A TP group is one LP (`01` D3) — it already barriers on every collective. Rank-0 single-sourcing of the clock is measured correct: TP=2 over 1,727 steps, per-step rank difference median **0.03%**, worst 0.82%; TP=4 over 2,295 steps, rank totals within **±0.02%**, and charging every step to its *slowest* rank adds **0.06%**. |
 | **Q2 scheduling** | **None.** One scheduler, one batch. |
 | **Q3 cost** | Collectives priced per width, never scaled by a law — measured `cross_device_reduce_1stage` **9.08 / 10.40 / 10.95 µs** at TP 2/4/8 (+20.6%) while `allgather_lastdim` went **29.00 / 23.73 / 16.39 µs (−43.5%)** (`07` D40, `10` D66). Some structures exist only at width. |
-| **Q4 memory** | Weights shard; `runtime_constants` are **tabulated per width and do not fit a law** — 926 / 6906 / 7266 / 10704 MiB at 1/2/4/8 (`03` D14, `07` D41's `memory_readings`). |
+| **Q4 memory** | Weights shard; the runtime memory readings are **measured per configuration and do not fit a law** — `non_torch` 926 / 6906 / 7266 / 10704 MiB at 1/2/4/8 (`03` D14, `07` D41's `memory_readings`). |
 | **Open** | **T21** — whether the in-situ calibration transfers across width. The one unproven assumption in the recipe. |
 
 **What TP supplies to the others:** the per-width discipline. Every strategy below inherits
@@ -148,7 +148,7 @@ Consequences:
 |---|---|
 | **Q1 LPs** | **None added.** One LP per DP group, barriered at each of ATOM's DP collectives and at Compass's step-seconds exchange, every step. Each rank is a member process of that LP with its own LP runtime, and the CA joins the members (`01` D3). |
 | **Q3 cost** | ATOM's DP collectives (the table above) are tiny, and the liveness one runs on the **CPU/Gloo** path. Each is priced like any other collective (`07` D40), per width. The step-seconds exchange is not priced: it stands in for the MoE gather and reduce-scatter (the all-to-all under EP), which the MoE segment already prices. The all-gather payload is `n_fields × dp_size` int32 — bandwidth-irrelevant, latency-dominated, which is the regime `10` D66 already models. |
-| **Q4 memory** | **Plain DP** (no DP-attention): weights and KV **replicate** per DP rank; nothing shards. So the memory model is per-replica and the width key is DP-independent — plain DP is the one strategy that does *not* add a `runtime_constants` dimension. **DP-attention is not plain DP** (revised 2026-10-10): `moe.py::FusedMoEParallelConfig.make` flattens TP across DP, so the routed experts shard over the DP group, and aiter builds device communicators for the DP-wide and EP-wide groups. Weights come from a meta build at those widths (`03` D16, [#699](https://github.com/jgong5/ATOM/issues/699)); which width keys `non_torch` and the load residue is open ([#702](https://github.com/jgong5/ATOM/issues/702)). |
+| **Q4 memory** | **Plain DP** (no DP-attention): weights and KV **replicate** per DP rank; nothing shards. So the memory model is per-replica — plain DP is the one strategy that does *not* move the memory readings. **DP-attention is not plain DP** (revised 2026-10-10): `moe.py::FusedMoEParallelConfig.make` flattens TP across DP, so the routed experts shard over the DP group, and aiter builds device communicators for the DP-wide and EP-wide groups. Weights come from a meta build at those widths (`03` D16, [#699](https://github.com/jgong5/ATOM/issues/699)); which width keys `non_torch` and the load residue is open ([#702](https://github.com/jgong5/ATOM/issues/702)). |
 
 ### The step costs the `max` over ranks
 
@@ -485,10 +485,10 @@ by construction and the layer ratio is correct — that is the case anyone check
 it is why this stood. The widths above where they agree at every stage, 2, 4 and 8, are
 the ones where the paged period of this model, 4, divides every span.
 
-The Class-C `runtime_constants` scale by neither key, since HIP context and collective
+The Class-C memory readings scale by neither key, since HIP context and collective
 buffers are per-process; that half of the sentence this replaces was already right.
-**Memory readings must be keyed by PP degree as well as TP width**, and that is a new
-dimension on `07` D41's `memory_readings` key rather than a derivation.
+**Memory readings depend on PP degree as well as TP width**, and `07` D41 keys them by the
+whole parallel configuration rather than deriving one degree from another.
 
 The per-stage *block count* these paged counts produce, and the `all_reduce(MIN)` that
 picks one of them for the whole deployment, are `03` D14's question and not this one's.
@@ -781,7 +781,7 @@ CPU-only path (`08` D43.1).
   configurations, one of them documented) and **T85** (multi-node EP rank-to-node
   mapping, unverified; after v1 by `16` D95). **T84** (which EP2 D94's parity test means)
   is answered by `16` D95, and D94 states its answer.
-- **PP degree is a new key on the memory readings** (`07` D41), and nothing has
+- **PP degree is in the memory readings' key** (`07` D41), and nothing has
   measured whether the Class-C constants move with it. One startup per PP degree settles
   it; recorded as **T66**.
 - **The DP `max`-over-ranks rule is unmeasured.** `01`'s 0.06% figure is a TP result. What

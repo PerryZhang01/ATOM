@@ -88,7 +88,7 @@ name: mi355x-8gpu-2node
 provenance:                      # one block, not per-field tags
   authored_by: <who>
   date: 2026-09-18
-  method: datasheet | probed | transferred-from:<spec-name> | assumed | mixed
+  method: datasheet | probed | assumed | mixed
   fragments: [...]               # filled by `merge`, see D26
   assumed: [...]                 # a `mixed` spec only: its assumed fields, rule 5
   notes: free text
@@ -200,8 +200,8 @@ Mooncake's KV transfer between the prefill and the decode node (`01` D6).
    use a datasheet FLOP as an achievable one.
 3. **`software_pinned_to` is checked, not decorative.** Device numbers track the
    ROCm/RCCL/AITER build as well as the die (`07` D43). A stack mismatch warns loudly by
-   default and refuses under `validate(strict=True)`; constants moved across stacks, by a
-   transfer or a merge, always refuse. It is the target's stack: a step fit bundle's
+   default and refuses under `validate(strict=True)`; constants moved across stacks by a
+   merge always refuse. It is the target's stack: a step fit bundle's
    stack, torch included, is checked against it, never against the stack of the process
    that simulates (`17` D101).
 4. **The whole resolved spec is echoed into every run artifact.** The KV gate is **≤5%**;
@@ -269,9 +269,9 @@ measured on different CPUs must not be merged into one spec — that is what
 
 ### Problem
 
-The schema asks users for numbers most of them cannot obtain by reading a datasheet — the
-runtime constants in particular are measurable only by starting an engine. Shipping a
-schema without the tools to fill it is shipping a blank form.
+The schema asks for numbers a datasheet does not give — achievable rates, tokenizer
+throughput, link latencies. Shipping a schema without the tools to fill it is shipping a
+blank form.
 
 ### Design
 
@@ -327,7 +327,6 @@ configuration into a `memory_readings` entry (`07` D38, Phase 2).
 | Probe | Fills | Provenance stamped |
 |---|---|---|
 | `from-datasheet` | `capacity_bytes`, `bandwidth`, `flops` | `method: datasheet`, derates left blank so `validate` refuses until declared |
-| `transfer`, from another spec | nothing since the memory readings left the spec; deferred (`07` D36) | `method: transferred-from:<spec>`, carrying **both** specs' `software_pinned_to` so a later mismatch is visible |
 
 ### Two refusals every hardware probe must implement
 
@@ -355,7 +354,6 @@ with them.
 - a missing required field
 - a `derate` missing beside a spec-peak number
 - `software_pinned_to` not matching the running stack (warn, or refuse under a strict flag)
-- a `transfer` fragment whose source spec pinned a different stack
 
 ### `explain`
 
@@ -378,9 +376,9 @@ which cancelled — the largest being 25% of a single term.
   were lost or degraded by other tenants — two refused to start with a negative KV budget
   at 141 GB of neighbour, one ran 64% slow. **Any probe run needs the machine checked
   before and after, not only before.**
-- Nothing yet decides what a user does when they have no card of the target type and no
-  spec to transfer from. Today the answer is "declare it and accept the error", which is
-  honest but unguided.
+- Nothing yet decides what a developer does with no card of the target type. Today the
+  answer is "declare it and accept the error", the memory readings in an entry marked
+  assumed (`07` D38), which is honest but unguided.
 
 ---
 
@@ -390,5 +388,5 @@ which cancelled — the largest being 25% of a single term.
 |---|---|---|
 | D24 | The spec describes the machine; ATOM's config describes the deployment. Thread-pool width becomes an ATOM config option, not a Compass one. | 2026-09-18 |
 | D25 | Four-section schema: `provenance`, `host`, `device`, `interconnect`. Mandatory derates, no memory readings (`measure memory`'s entries, 2026-10-14), `software_pinned_to` checked, torch included, as the target's stack, whole spec echoed into every artifact. Revised for the MI455 projection: an optional dense `fp4_flops`, `intra_node.domain_devices` for a scale-up fabric wider than a node, and every field *sourced* or *assumed* by the fragments that supplied it, which a `mixed` spec records in `provenance.assumed`. | 2026-09-18; revised 2026-10-10; torch 2026-10-13 (#851) |
-| D26 | Probes emit fragments; `merge` / `validate` / `explain` combine and check them. Four hardware tiers plus datasheet and transfer paths. Every hardware probe implements the contamination refusals. All are the `spec` package's functions, run by per-machine scripts, with no `compass` command. Machine specs are developers', one per supported machine, passed by `--machine`; an engine start's memory readings are `measure memory`'s, not the spec's. | 2026-09-18; revised 2026-10-13 and 2026-10-14 (#851) |
+| D26 | Probes emit fragments; `merge` / `validate` / `explain` combine and check them. Four hardware tiers plus a datasheet path; the transfer path dropped 2026-10-14 (#937). Every hardware probe implements the contamination refusals. All are the `spec` package's functions, run by per-machine scripts, with no `compass` command. Machine specs are developers', one per supported machine, passed by `--machine`; an engine start's memory readings are `measure memory`'s, not the spec's. | 2026-09-18; revised 2026-10-13 and 2026-10-14 (#851) |
 | D25.1 | Runtime-constant fields renamed to say what they are; ATOM's own term recorded as a mapping column. `host.tokenizer` becomes `host.tokenizers[]`, keyed by tokenizer identity (id + backend + fingerprint) with `applies_to` model architectures. | 2026-09-19 |
