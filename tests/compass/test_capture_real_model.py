@@ -111,6 +111,7 @@ import re
 import subprocess
 import sys
 import traceback
+import unittest.mock
 
 import numpy
 import torch
@@ -644,7 +645,7 @@ def _declare_cuda():
 
     class _Stream:
         def __init__(self, *a, **k):
-            self.cuda_stream = 0
+            self.cuda_stream = self.stream_id = 0
 
         def record_event(self, *a, **k):
             return _Event()
@@ -677,7 +678,7 @@ def _declare_cuda():
         # `function | None` is a TypeError.
         "Stream": _Stream,
         "Event": _Event,
-        "current_stream": lambda *a, **k: _Stream(),
+        "current_stream": lambda *a, **k: current,
         "default_stream": lambda *a, **k: _Stream(),
         "set_device": lambda *a, **k: None,
         "synchronize": lambda *a, **k: None,
@@ -688,7 +689,12 @@ def _declare_cuda():
         },
         "memory_allocated": lambda *a, **k: 0,
         "stream": lambda s: contextlib.nullcontext(),
+        "is_current_stream_capturing": lambda: False,
     }
+    # ATOM's H2D publication compares the current stream by identity, and by
+    # id through torch's own accessor, which it reads off `torch._C`.
+    current = _Stream()
+    torch._C._cuda_getCurrentStream = lambda *a: (current.stream_id, 0, 1)
     for group in (for_import, for_runner):
         for name, value in group.items():
             setattr(torch.cuda, name, value)
@@ -805,6 +811,18 @@ def _decline_custom_all_gather():
     """
     os.environ["ATOM_USE_CUSTOM_ALL_GATHER"] = "0"
     return "ATOM_USE_CUSTOM_ALL_GATHER=0"
+
+
+def _select_direct_h2d():
+    """Select ATOM's direct host-to-device copies, and say so.
+
+    The packed transport, ATOM's default, stages every published buffer through
+    one host block it reads with `.numpy()`, which a fake tensor refuses. Direct
+    copies each buffer with its own `copy_to_gpu`, the path the specialisation
+    sites below were measured on.
+    """
+    os.environ["ATOM_H2D_BACKEND"] = "direct"
+    return "ATOM_H2D_BACKEND=direct"
 
 
 def _decline_context_priming():
@@ -1217,7 +1235,7 @@ def _stage_buffers(fake_mode, symbolic, tree_root, repair_site_one=False):
         "hint_sliced_views": 0,
     }
 
-    def staged_init(self, *size, dtype, device, pin_memory=True, with_numpy=True):
+    def staged_init(self, *size, dtype, device, pin_memory=True, with_numpy=True, **kw):
         observed["constructed"] += 1
         with _staged_allocators(fake_mode, symbolic, observed):
             original(
@@ -1227,6 +1245,7 @@ def _stage_buffers(fake_mode, symbolic, tree_root, repair_site_one=False):
                 device=device,
                 pin_memory=pin_memory,
                 with_numpy=with_numpy,
+                **kw,
             )
         if repair_site_one and with_numpy:
             observed["hint_sliced_views"] += 1
@@ -1565,7 +1584,7 @@ def _build_runner(config, fake_mode):
     it through `init_dist_env` and then reach for `apply_simulated_tp`.
     """
     from atom.model_engine.model_runner import ModelRunner, support_model_arch_dict
-    from atom.utils import resolve_obj_by_qualname
+    from atom.utils import h2d, resolve_obj_by_qualname
 
     architecture = config.hf_config.architectures[0]
     if architecture not in support_model_arch_dict:
@@ -1589,7 +1608,9 @@ def _build_runner(config, fake_mode):
     previous_dtype = torch.get_default_dtype()
     torch.set_default_dtype(config.torch_dtype)
     try:
-        with fake_mode:
+        # A fake tensor has no address and a symbolic one no fixed span: the alias
+        # check ATOM runs on its published buffers sees each as empty.
+        with fake_mode, unittest.mock.patch.object(h2d, "_range", lambda t: (0, 0)):
             runner = _CapturedRunner(0, config)
     finally:
         torch.set_default_dtype(previous_dtype)
@@ -1768,6 +1789,7 @@ def _capture(
     declared_priming = _decline_context_priming()
     declared_init = _decline_initialisers()
     declared_gather = _decline_custom_all_gather()
+    declared_h2d = _select_direct_h2d()
 
     tree_root = pathlib.Path(__file__).resolve().parents[2]
     model_dir = pathlib.Path(tmpdir) / "published-config"
@@ -1875,6 +1897,7 @@ def _capture(
             "initialisers": declared_init,
             "transport": declared_transport,
             "config": declared_gather,
+            "h2d": declared_h2d,
         },
         "ops": len(recorder.ops),
         "distinct_ops": recorder.distinct_ops(),

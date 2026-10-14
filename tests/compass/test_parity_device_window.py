@@ -10,7 +10,7 @@ completes once the device clock has passed it.
 """
 
 import numpy as np
-from test_parity_record import LADDER, _config, _drive
+from test_parity_record import GRAPHABLE, LADDER, _config, _drive
 
 from atom.compass.parity import ENV, TIMESTAMPS, StepRecording, compare, read
 
@@ -56,6 +56,7 @@ def _recorded(warmup):
         def __init__(self, rank, config):
             self.rank, self.config = rank, config
             self.capture_sizes_np, self.enforce_eager = np.array(LADDER), False
+            self.attn_metadata_builder = GRAPHABLE
             self.tokenID_processor = _Processor()
             self.exited = False
             self.forward(warmup)

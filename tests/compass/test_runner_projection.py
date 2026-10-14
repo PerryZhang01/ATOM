@@ -66,6 +66,9 @@ STEPS = 20
 # fallback 0 at the bottom. Ascending is what `ForwardMode.decide` searches.
 LADDER = [0, 1, 2, 4, 8]
 
+#: An attention builder that runs every decode from a graph, as ATOM's base does.
+GRAPHABLE = SimpleNamespace(step_needs_eager=lambda batch: False)
+
 
 class Step(NamedTuple):
     batch: object
@@ -76,10 +79,11 @@ class Step(NamedTuple):
 
 
 def runner(ladder=LADDER, enforce_eager=False, dp_size=1):
-    """The three attributes a rung is read from, and nothing else."""
+    """The attributes a rung is read from, and nothing else."""
     return SimpleNamespace(
         capture_sizes_np=np.asarray(ladder, dtype=np.int32),
         enforce_eager=enforce_eager,
+        attn_metadata_builder=GRAPHABLE,
         config=SimpleNamespace(
             parallel_config=SimpleNamespace(data_parallel_size=dp_size)
         ),
@@ -92,6 +96,7 @@ def _captured(declared, max_num_seqs, max_num_batched_tokens):
     class Captured(NonAllocatingRunner):
         enforce_eager = False
         capture_sizes_np = np.asarray([0], dtype=np.int32)
+        attn_metadata_builder = GRAPHABLE
         config = SimpleNamespace(
             capture_sizes=declared,
             max_num_seqs=max_num_seqs,

@@ -18,6 +18,7 @@ import pytest
 from aiter_stub import stubbed_aiter
 
 from atom.compass.clock import LpId, single_engine_table
+from atom.model_engine.block_table_codec import BlockTableDeltaEncoder
 from atom.model_engine.scheduler import ScheduledBatchOutput
 from atom.model_engine.sequence import SequenceStatus
 from atom.utils import clock
@@ -82,6 +83,7 @@ class Workers:
 
     def __init__(self, reply):
         self.outputs_queue, self.steps = queue.Queue(), 0
+        self._block_table_encoder = BlockTableDeltaEncoder()
         self.rpc_broadcast_mq = SimpleNamespace(enqueue=self.enqueue)
         self.reply = reply
 
@@ -95,6 +97,7 @@ class Scheduler:
     """Runs every waiting request in each step, `STEPS` steps per request."""
 
     prefill_delayer = None
+    metrics = SimpleNamespace(record_forward=lambda batch, seqs: None)
 
     def __init__(self):
         self.waiting = []
@@ -116,6 +119,9 @@ class Scheduler:
             s.left -= 1
         self.waiting = [s for s in self.waiting if s.left]
         return [s for s in seqs if not s.left]
+
+    def heartbeat_throughput(self, now):
+        pass
 
     def take_rejected(self):
         return []
@@ -183,16 +189,18 @@ def _run(loop, reply, arrivals=ARRIVALS):
     return engine, ca
 
 
-#: Each loop, and the times it pushes metrics: every 5 LP seconds from 0, or never.
+#: Each loop, and the times it pushes metrics: every 5 LP seconds from 0, the
+#: interval the test sets.
 LOOPS = {
     "EngineCore": (EngineCore.busy_loop, [0.0, 5.0]),
     "DPEngineCoreProc": (DPEngineCoreProc.busy_loop, [0.0, 5.0]),
-    "PPEngineCoreProc head": (PPEngineCoreProc._head_busy_loop, []),
+    "PPEngineCoreProc head": (PPEngineCoreProc._head_busy_loop, [0.0, 5.0]),
 }
 
 
 @pytest.mark.parametrize("name", LOOPS)
-def test_an_idle_loop_asks_for_time_once_per_idle_period(name, installed):
+def test_an_idle_loop_asks_for_time_once_per_idle_period(name, installed, monkeypatch):
+    monkeypatch.setenv("ATOM_METRICS_UPDATE_INTERVAL_S", "5")
     loop, pushes = LOOPS[name]
     engine, ca = _run(loop, SimpleNamespace(predicted_s=STEP_S))
     served = []

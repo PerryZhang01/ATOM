@@ -65,6 +65,8 @@ def sampler(monkeypatch):
         ),
     )
     monkeypatch.setattr(module, "AITER_TOPK_TOPP_AVAILABLE", True)
+    # The greedy-row pick every sampled batch ends with; torch's runs on meta.
+    monkeypatch.setattr(module, "topk_select", lambda x, k, tie: torch.topk(x, k))
     return module, calls
 
 
@@ -115,6 +117,23 @@ def test_prepare_sample_hands_over_a_shared_k_and_p_as_host_scalars():
         "top_ks": CpuGpuBuffer(4, dtype=torch.int32, **kw),
         "top_ps": CpuGpuBuffer(4, dtype=torch.float, **kw),
     }
+    # The rows each step uploads, by buffer: None is a buffer left on the host.
+    published = []
+
+    def publish(counts):
+        published.append(dict(counts))
+        for name, rows in counts.items():
+            if rows is not None:
+                runner.forward_vars[name].copy_to_gpu(rows)
+
+    runner.h2d_groups = {
+        "sampling": SimpleNamespace(
+            counts={},
+            indices={name: name for name in runner.forward_vars},
+            publish=publish,
+            check_writable=lambda: None,
+        )
+    }
 
     def batch(top_ks, top_ps):
         return SimpleNamespace(
@@ -131,3 +150,7 @@ def test_prepare_sample_hands_over_a_shared_k_and_p_as_host_scalars():
     _, top_ks, top_ps, _, _ = runner.prepare_sample(batch([20, 40], [0.95, 0.95]))
     assert top_ks.tolist() == [20, 40]
     assert type(top_ps) is float
+    assert published == [
+        {"temperatures": 1, "top_ks": None, "top_ps": None},
+        {"temperatures": 2, "top_ks": 2, "top_ps": None},
+    ]

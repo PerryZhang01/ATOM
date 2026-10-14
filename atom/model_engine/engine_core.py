@@ -397,7 +397,7 @@ class EngineCore:
                     self.utility_handler.push_metrics()
                 self.scheduler.heartbeat_throughput(now)
                 shutdown = (
-                    clock.idle(self._idle_deadline, next_metrics_push)
+                    clock.idle(lambda: self._idle_deadline(), next_metrics_push)
                     or shutdown
                     or self.pull_and_process_input_queue()
                 )
@@ -836,7 +836,7 @@ class DPEngineCoreProc(EngineCore):
                     self.utility_handler.push_metrics()
                 self.scheduler.heartbeat_throughput(now)
                 shutdown = (
-                    clock.idle(self._idle_deadline, next_metrics_push)
+                    clock.idle(lambda: self._idle_deadline(), next_metrics_push)
                     or shutdown
                     or self.pull_and_process_input_queue()
                 )
