@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Step fit in a run: its bundle loaded from the artifact store by key, and
+"""The step grid in a run: its bundle loaded from the artifact store by key, and
 checked against the resolved ATOM config before the first step.
 
 The run file's ``step_fit`` is the store's root and the bundle's key fields:
@@ -10,7 +10,7 @@ The run file's ``step_fit`` is the store's root and the bundle's key fields:
 A bundle prices a TP group's whole step, so it is one member at any width,
 ``bundle.dp0of1.pp0of1.pcp0of1.tp0of1.json``:
 
-    {"grid": <a StepFitGrid mapping>, "residual": <a Residual mapping>,
+    {"grid": <a StepGrid mapping>, "residual": <a Residual mapping>,
      "bounds": {"max_num_seqs": n, "max_num_batched_tokens": n,
                 "max_model_len": n}}
 
@@ -49,8 +49,8 @@ from atom.compass.artifacts import (
     git_tree_root,
     module_root,
 )
-from atom.compass.backends.step_fit import StepFitBackend, StepFitGrid
-from atom.compass.backends.step_fit_residual import Residual
+from atom.compass.backends.step_grid import StepGrid, StepGridBackend
+from atom.compass.backends.step_grid_residual import Residual
 from atom.compass.runner.overrides import schedulable_ladder
 from atom.compass.spec.fields import PINNED
 
@@ -88,7 +88,7 @@ def conditions(config, machine) -> Conditions:
     )
 
 
-def load(spec: Mapping, config, machine) -> tuple[StepFitBackend, dict]:
+def load(spec: Mapping, config, machine) -> tuple[StepGridBackend, dict]:
     """The backend the bundle at the run file's key prices with, and the
     bundle's key and digest for the run summary; or a refusal naming what
     differs."""
@@ -104,7 +104,7 @@ def load(spec: Mapping, config, machine) -> tuple[StepFitBackend, dict]:
     entry = store.read(key)
     try:
         member = json.loads(entry.read_member(*MEMBER))
-        grid, residual = StepFitGrid(member["grid"]), Residual(member["residual"])
+        grid, residual = StepGrid(member["grid"]), Residual(member["residual"])
         bounds = {name: member["bounds"][name] for name in BOUNDS}
         row = dict(entry.fingerprints[Row.STEP_FIT_BUNDLE].cells)
         recorded = json.loads(row[Axis.ENGINE_CONFIG].value)
@@ -149,7 +149,7 @@ def load(spec: Mapping, config, machine) -> tuple[StepFitBackend, dict]:
         raise ValueError(
             f"this run's {'; '.join(over)} the grid of {key} was planned for"
         )
-    return StepFitBackend(grid, residual, bundle=str(key)), {
+    return StepGridBackend(grid, residual, bundle=str(key)), {
         "key": key.values,
         "digest": entry.digest,
     }

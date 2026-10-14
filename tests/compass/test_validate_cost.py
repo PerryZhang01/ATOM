@@ -3,7 +3,7 @@
 
 Each record is the JSON lines a real runner writes, each step's device busy
 time (`d_busy_ns`) the law's price, times a stretch where one is planted. It
-is read by `parity.read` and priced by `CoarseBackend.estimate`.
+is read by `parity.read` and priced by `StepLinearBackend.price`.
 """
 
 import json

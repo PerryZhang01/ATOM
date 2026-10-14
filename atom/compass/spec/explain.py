@@ -117,7 +117,7 @@ class Contribution:
 
 
 @dataclass(frozen=True, slots=True)
-class Basis:
+class Explanation:
     """What a quantity is built out of, and the spec that is stated in."""
 
     term: str
@@ -195,7 +195,7 @@ def explain(
     *,
     tp_width: int | None = None,
     origin: Merge | None = None,
-) -> Basis:
+) -> Explanation:
     """The spec fields a quantity is built from, each with its value and source."""
     paths = QUANTITIES.get(term)
     if paths is None:
@@ -227,4 +227,4 @@ def explain(
             if not rows:
                 held = spec.values[path]
                 empty.append(_row(path, held, None, _supplied(origin, path)))
-    return Basis(term, spec.digest(), tuple(contributions), tuple(empty))
+    return Explanation(term, spec.digest(), tuple(contributions), tuple(empty))

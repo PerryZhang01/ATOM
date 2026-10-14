@@ -5,12 +5,12 @@
 
 RECORD is a real run's step record directory (`ATOM_COMPASS_PARITY_RECORD`,
 `OUT_DIR/steps` of a `REAL=1 cctraces_sim.sh` cell); LAW is a law file as
-`coarse_fit` writes it. Pricing the real run's own steps separates cost error
+`step_linear_fit` writes it. Pricing the real run's own steps separates cost error
 from schedule error: both sides run the same batches.
 
 Each step is labelled as the fit labels it, by its device time
-(`coarse_fit.samples`, which also says which steps carry no label and refuses a
-record without device windows), and priced by `CoarseBackend`. The
+(`step_linear_fit.samples`, which also says which steps carry no label and refuses a
+record without device windows), and priced by `StepLinearBackend`. The
 error of a step is `priced / measured - 1`. Per kind the report gives the error
 on totals, on totals holding out the step that contributes most to their error,
 and the median per step; per decode rung or prefill token band, the p10, p50
@@ -19,10 +19,10 @@ and p90 of the per-step error and the fraction of steps within 10%.
 A step outside its vector's hull is priced, but its error describes the
 extrapolation, not the law: those steps are reported apart, with their measured
 and priced seconds, and enter none of the in-hull figures. A step that ran more
-than `coarse_fit.WARM_FACTOR` times its price is warm, a one-off first touch the
+than `step_linear_fit.WARM_FACTOR` times its price is warm, a one-off first touch the
 law does not model: it is named with its seconds and enters no figure. So are
 the steps that lead a vector's priced steps, each slower than its price by more
-than `coarse_fit.MAD_K` scaled MADs of the errors the law's vector was fitted
+than `step_linear_fit.MAD_K` scaled MADs of the errors the law's vector was fitted
 on, as the fit names them; of that vector's errors here if the law records no
 `fit.mad`. A step the law refuses is counted with its measured seconds.
 """
@@ -38,14 +38,14 @@ import numpy as np
 from atom.compass import parity
 from atom.compass.backends import (
     BatchView,
-    CoarseBackend,
-    CoarseLaw,
     CostRefused,
     RequestShape,
     Species,
-    coarse_fit,
+    StepLinearBackend,
+    StepLinearLaw,
+    step_linear_fit,
 )
-from atom.compass.backends.coarse_fit import WARM_FACTOR, _band, samples
+from atom.compass.backends.step_linear_fit import WARM_FACTOR, _band, samples
 
 WITHIN = 0.10
 
@@ -62,7 +62,8 @@ def _leading_slow(priced: list[tuple], law: dict) -> set[int]:
         if "mad" in vector.get("fit", {}):
             centre, mad = vector["fit"]["centre"], vector["fit"]["mad"]
         slow = (error < 0) & (
-            np.abs(error - centre) > max(coarse_fit.MAD_K * mad, coarse_fit.MAD_FLOOR)
+            np.abs(error - centre)
+            > max(step_linear_fit.MAD_K * mad, step_linear_fit.MAD_FLOOR)
         )
         for p, s in zip(mine, slow):
             if not s:
@@ -106,7 +107,7 @@ def _summary(steps: list[tuple]) -> dict:
 
 
 def cost_accuracy(record, law) -> dict:
-    """The report for `law`, a mapping `CoarseLaw` reads, on the record directory `record`."""
+    """The report for `law`, a mapping `StepLinearLaw` reads, on the record directory `record`."""
     ranks = parity.read(record)
     if len(ranks) != 1:
         raise ValueError(
@@ -115,7 +116,7 @@ def cost_accuracy(record, law) -> dict:
     ((rank, steps),) = ranks.items()
     labelled, cut = samples(Path(record) / f"dp{rank}.jsonl")
     by_step = {s["step"]: s for s in steps}
-    backend = CoarseBackend(CoarseLaw(law))
+    backend = StepLinearBackend(StepLinearLaw(law))
     groups = {"fitted": {}, "extrapolated": {}}
     refused: dict[str, dict] = {}
     warm, priced = [], []
@@ -127,7 +128,7 @@ def cost_accuracy(record, law) -> dict:
         )
         band = _band(key, counts)
         try:
-            cost = backend.estimate(view)
+            cost = backend.price(view)
         except CostRefused:
             r = refused.setdefault(band, {"steps": 0, "measured_s": 0.0})
             r["steps"] += 1
@@ -150,7 +151,7 @@ def cost_accuracy(record, law) -> dict:
         group = "extrapolated" if Species.EXTRAPOLATED in species else "fitted"
         kind = "prefill" if key == "prefill" else "decode"
         groups[group].setdefault(kind, []).append((band, step, seconds, cost.seconds))
-    report = {"record": str(record), "law": backend.law.provenance, "cut": cut}
+    report = {"record": str(record), "law": backend.law.fitted_on, "cut": cut}
     for group, kinds in groups.items():
         report[group] = {
             kind: _summary(rows) for kind, rows in sorted(kinds.items(), reverse=True)
@@ -203,7 +204,7 @@ def main(argv=None) -> None:
         description=__doc__.split("\n\n")[0],
     )
     parser.add_argument("record", help="a real run's step record directory")
-    parser.add_argument("law", help="a law file, as coarse_fit writes it")
+    parser.add_argument("law", help="a law file, as step_linear_fit writes it")
     args = parser.parse_args(argv)
     print(_text(cost_accuracy(args.record, json.loads(Path(args.law).read_text()))))
 

@@ -12,26 +12,26 @@ Falling through is allowed and is not free. A source that cannot answer says
 why, as a `Refusal`, and *every* refusal collected on the way down is carried
 on the answer's provenance -- not the first one with the rest discarded, which
 would undercount the reasons a coverage report exists to list. The answer is
-also stamped with the name of the rung that produced it, always and not only
+also stamped with the name of the source that produced it, always and not only
 after a fall-through, so the record says what answered as well as what did
 not. There is no path through this class that produces an unannotated answer
 from a lower source. The failure being designed out is a run that quietly
-answers from the bottom of the ladder and reports a tidy number.
+answers from the last source and reports a tidy number.
 
-A rung may itself be resolver-backed, which is the shape a layered backend
+A source may itself be resolver-backed, which is the shape a layered backend
 takes. The chain composes rather than collapsing: the outer refusals go in
 front of the inner ones, so the earliest refusal is still the first, and the
 answering name reads `outer/inner`.
 
-A rung whose own ladder is exhausted is a rung that declined, not an escape
+A source whose own resolver is exhausted is a source that declined, not an escape
 from this one: its `CostRefused` is caught here, its refusals join this
-ladder's, and the next rung is consulted. Letting it propagate would discard
-the refusals collected above it *and* skip every rung below it, which is the
+resolver's, and the next source is consulted. Letting it propagate would discard
+the refusals collected above it *and* skip every source below it, which is the
 silent-fall-through failure inverted -- a run that refuses where it had an
 answer available, and cannot say what it passed over.
 
 When no source answers, nothing is invented. `CostRefused` is raised carrying
-every refusal in order, inner ladders' included, so the caller gets the
+every refusal in order, inner resolvers' included, so the caller gets the
 complete list of what would have to be measured rather than the first item of
 it. What the caller does next --
 charge the step from a lower-fidelity model and mark it, or stop the run -- is
@@ -51,7 +51,7 @@ from atom.compass.backends.provenance import Refusal
 
 
 class CostSource(abc.ABC):
-    """One rung: something that can price a request, or say why it cannot."""
+    """One source: something that can price a request, or say why it cannot."""
 
     @property
     @abc.abstractmethod
@@ -105,7 +105,7 @@ class Resolver:
                 raise TypeError(f"not a cost source: {source!r}")
             if source.name in seen:
                 raise ValueError(
-                    f"duplicate source {source.name!r}: a rung is read by name"
+                    f"duplicate source {source.name!r}: a source is read by name"
                 )
             seen.add(source.name)
         self._sources = sources
@@ -122,19 +122,19 @@ class Resolver:
         """The first source that answers, with every refusal above it attached.
 
         The answer carries the whole chain, earliest refusal first, and the
-        name of the rung that produced it. `Resolution.declined` holds every
-        refusal this ladder collected, including those an exhausted inner
-        ladder handed up; the provenance holds those plus any the answering
-        rung had already collected inside itself.
+        name of the source that produced it. `Resolution.declined` holds every
+        refusal this resolver collected, including those an exhausted inner
+        resolver handed up; the provenance holds those plus any the answering
+        source had already collected inside itself.
         """
         declined: list[Refusal] = []
         for source in self._sources:
             try:
                 answer = source.price(request)
             except CostRefused as exhausted:
-                # A resolver-backed rung that ran out of its own sources. Its
-                # refusals are this ladder's refusals -- keyed by the inner
-                # rungs that actually declined, not flattened onto the wrapper,
+                # A resolver-backed source that ran out of its own sources. Its
+                # refusals are this resolver's refusals -- keyed by the inner
+                # sources that actually declined, not flattened onto the wrapper,
                 # so the reason counts still name something measurable.
                 declined.extend(
                     exhausted.declined

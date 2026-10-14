@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: MIT
-"""`tools/compass/step_fit_plan.py`: step fit's grid points planned from batch
+"""`tools/compass/step_grid_plan.py`: the step grid's points planned from batch
 shapes, and steps checked for coverage against a published bundle.
 
 Steps are ATOM's `Scheduler`'s, recorded through the parity step record by
 `test_parity_record._drive` at a 64-token budget, with the simulated runner
 replaying decode on the ladder [1, 2, 4, 8]. Bundles are published to an
-`ArtifactStore` and loaded by `run.step_fit.load` under `test_run_step_fit`'s
+`ArtifactStore` and loaded by `run.step_grid.load` under `test_run_step_grid`'s
 deployment, at the same scheduler's bounds and ladder.
 """
 
@@ -14,15 +14,15 @@ import json
 from pathlib import Path
 
 import pytest
-from test_backend_step_fit import fitted, linear, point
+from test_backend_step_grid import fitted, linear, point
 from test_memory_readings import DOCUMENT
 from test_parity_record import _drive
-from test_run_step_fit import KEY, deployment, publish
+from test_run_step_grid import KEY, deployment, publish
 
 from atom.compass.runner import overrides
 
-TOOL = Path(__file__).resolve().parents[2] / "tools" / "compass" / "step_fit_plan.py"
-_spec = importlib.util.spec_from_file_location("step_fit_plan", TOOL)
+TOOL = Path(__file__).resolve().parents[2] / "tools" / "compass" / "step_grid_plan.py"
+_spec = importlib.util.spec_from_file_location("step_grid_plan", TOOL)
 tool = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(tool)
 

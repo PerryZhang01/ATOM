@@ -155,7 +155,7 @@ SCRIPTS = {
         (NER, INF),
     ],
     "engine": [
-        (NER, INF, 0.005),
+        (NER, INF, 0.002),
         (NER, INF),
         (TAR, 0.05),
         ("send", OUTPUT),
@@ -200,9 +200,9 @@ def test_every_request_gets_exactly_one_reply_through_the_finish(served):
     received = {name: len(grants) for name, (_, grants) in runs.items()}
     assert sent == received == {"traffic": 2, "frontend": 3, "engine": 4}
     assert {name: grants for name, (_, grants) in runs.items()} == {
-        "traffic": [(0.063, {STREAM: [0]}), (INF, {})],
-        "frontend": [(0.009, {HTTP: [0]}), (0.061, {OUTPUT: [0]}), (INF, {})],
-        "engine": [(0.005, {}), (0.01, {REQUEST: [0]}), (0.06, {}), (INF, {})],
+        "traffic": [(0.0556, {STREAM: [0]}), (INF, {})],
+        "frontend": [(0.0016, {HTTP: [0]}), (0.0536, {OUTPUT: [0]}), (INF, {})],
+        "engine": [(0.002, {}), (0.0026, {REQUEST: [0]}), (0.0526, {}), (INF, {})],
     }
 
 

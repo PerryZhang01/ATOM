@@ -736,7 +736,7 @@ receives it itself, at its own receive point.
 
 | Channel | Sender | Receiver (mode) | Lookahead |
 |---|---|---|---|
-| `traffic->frontend:http` | Compass traffic source | event loop (inline) | modelled admission delay. Prior work measured 13.7 ms end-to-end, worth ~4 points of TTFT. Path-specific: 13 ms offline batch, 9 ms serving. 1P+1D adds the router hop. |
+| `traffic->frontend:http` | Compass traffic source | event loop (inline) | modelled admission delay. Prior work measured 13.7 ms end-to-end, worth ~4 points of TTFT. Path-specific; the values and what each was measured on are in `channels.py::ADMISSION_DELAY_S`. 1P+1D adds the router hop. |
 | `frontend->traffic:stream` | event loop, writing the SSE stream | traffic source (inline) | declared return delay |
 | `frontend->engine:request#dpN` | event loop, `engine_core_mgr.py::CoreManager._send_request` | engine input thread, `poller.poll()` in `engine_core.py::EngineCore.process_input_sockets` (thread) | declared IPC delay |
 | `frontend->engine:control#dpN` | event loop, `engine_core_mgr.py::CoreManager._send_control`. Its second writer, the frontend output thread sending SHUTDOWN (`process_outputs_socket -> CoreManager._shutdown_engine_core_rank`), runs only outside the window | same (thread) | declared IPC delay |
