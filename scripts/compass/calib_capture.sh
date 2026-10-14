@@ -49,10 +49,7 @@ for c in ${CELLS:-1 4 16 64 256}; do
     { cat "$ROOT/.compass-commit" 2>/dev/null || git -C "$ROOT" rev-parse HEAD
       echo "CONCURRENCY=$c GPU=$HIP_VISIBLE_DEVICES STEPS_S=${STEPS_S:-1800} SERVER_ARGS=$SERVER_ARGS"
       state start; } >"$log"
-    held=$(busy)
-    for gpu in ${HIP_VISIBLE_DEVICES//,/ }; do
-        grep -qx "$gpu" <<<"$held" && { echo "calib_capture: GPU $gpu is in use" | tee -a "$log" >&2; exit 3; }
-    done
+    gpu=$(busy | grep -xFm1 -f <(tr , '\n' <<<"$HIP_VISIBLE_DEVICES")) && { echo "calib_capture: GPU $gpu is in use" | tee -a "$log" >&2; exit 3; }
     CONCURRENCY=$c timeout 7200 bash "$ROOT/scripts/compass/cctraces_sim.sh" "$RUN_FILE" "$o" >"$o.out" 2>&1 &
     sim=$!
     until [[ -s $o/steps/dp0.jsonl ]] || ! kill -0 $sim 2>/dev/null; do sleep 10; done

@@ -77,14 +77,13 @@ def test_a_gpu_holding_a_process_runs_no_cell(tmp_path):
     assert not (cap / "c1").exists()
 
 
-EIGHT = "0,1,2,3,4,5,6,7"
-
-
 @pytest.mark.skipif(BASH is None, reason="no bash on PATH")
-def test_a_process_on_the_last_named_gpu_runs_no_cell(tmp_path):
-    r, cap = _capture(tmp_path, "PID 1 is using 1 DRM device(s):\n7\n", "1", EIGHT)
+@pytest.mark.parametrize("gpu", ["3", "7"])
+def test_a_process_on_any_named_gpu_runs_no_cell(tmp_path, gpu):
+    smi = f"PID 1 is using 1 DRM device(s):\n{gpu}\n"
+    r, cap = _capture(tmp_path, smi, "1", "0,1,2,3,4,5,6,7")
     assert r.returncode == 3
-    assert "GPU 7 is in use" in (cap / "c1.log").read_text()
+    assert f"GPU {gpu} is in use" in (cap / "c1.log").read_text()
     assert not (cap / "c1").exists()
 
 
