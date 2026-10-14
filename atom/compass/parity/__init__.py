@@ -101,8 +101,9 @@ class StepRecord:
         rewrites batch fields in place, and written after it returns, with `t_enter_ns`
         and `t_exit_ns` read off `runner.step_clock_ns()` around it and
         `runner.step_stamps()` added; a line with a device window waits in
-        `pending` until the window closes. Returns `forward`'s reply, or None
-        without one.
+        `pending` until the window closes. Returns `forward`'s reply, or
+        without one the mode the view was built from, so a caller pricing the
+        step need not run the collective again.
         """
         from atom.compass.runner.projection import batch_view, forward_mode
 
@@ -158,7 +159,8 @@ class StepRecord:
             stamps, window = runner.step_stamps()
             mode = stamps.pop("forward_mode", None)
             line.update(stamps)
-        view = batch_view(before, mode or forward_mode(before, runner), runner)
+        mode = mode or forward_mode(before, runner)
+        view = batch_view(before, mode, runner)
         line["rows"] = [
             [r.query_tokens, r.context_tokens, r.decode] for r in view.requests
         ]
@@ -168,7 +170,7 @@ class StepRecord:
         self.pending.append((line, window))
         self.flush()
         self.step += 1
-        return reply
+        return mode if forward is None else reply
 
     def flush(self, wait: bool = False) -> None:
         """Write the lines whose device windows have closed, in step order.
@@ -192,6 +194,8 @@ def record_step(runner, batch, forward=None):
 
     With `forward`, it runs on `batch` whether or not the step is recorded,
     inside the line's timestamps when it is, and its reply is returned.
+    Without `forward`, a recorded step returns the `ForwardMode` it settled
+    and an unrecorded one None.
     """
     if not hasattr(runner, "_parity_record"):
         directory = os.environ.get(ENV)
