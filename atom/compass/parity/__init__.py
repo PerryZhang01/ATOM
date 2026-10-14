@@ -26,10 +26,9 @@ of each DP rank writes `dp<rank>.jsonl` there, replacing any earlier file.
 Unset, nothing is recorded. On its first step it also writes the engine its
 runner resolved to `dp<rank>.engine.json` (`README.md` says what it holds), and
 a runner with a `host_key` writes that to `dp<rank>.key.json`. The simulated
-runner records from
-`NonAllocatingRunner.forward`; a real one records through `StepRecording`,
-composed into `RUNNER`, which the frontend names on a real run with the
-variable set.
+runner records from `NonAllocatingRunner.forward`; a real one records through
+`StepRecording`, composed into `RUNNER`, which the frontend names on a real run
+with the variable set.
 
 A request is named by its key, because request ids are numbered per run: a
 digest of its whole prompt as its prefill windows carry it, taken when its final
@@ -209,11 +208,12 @@ def record_step(runner, batch, forward=None):
                 )
             from atom.compass.run.step_fit import BOUNDS, keyed
 
-            config = runner.config
-            record = StepRecord(directory, config.parallel_config.data_parallel_rank)
+            dp_rank = runner.config.parallel_config.data_parallel_rank
+            record = StepRecord(directory, dp_rank)
             # By its first forward the runner has resolved its engine.
-            engine = keyed(config) | {
-                name: getattr(config, name) for name in (*BOUNDS, "num_kvcache_blocks")
+            engine = keyed(runner.config) | {
+                name: getattr(runner.config, name)
+                for name in (*BOUNDS, "num_kvcache_blocks")
             }
             record.path.with_suffix(".engine.json").write_text(json.dumps(engine))
             key = getattr(runner, "host_key", None)
