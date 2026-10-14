@@ -198,7 +198,7 @@ ROW_PARALLEL = (
 )
 VOCAB_EMBEDDING = "atom/model_ops/embed_head.py:178 in forward"
 VOCAB_LM_HEAD = "atom/model_ops/embed_head.py:269 in forward"
-SAMPLER = "atom/model_engine/model_runner.py:3299 in postprocess"
+SAMPLER = "atom/model_engine/model_runner.py:3367 in postprocess"
 
 # Where a free symbol stops being free, each as the value it takes and the
 # innermost ATOM frames it takes it through. Three, and in an order: a symbol
@@ -493,15 +493,15 @@ EXPECTED_HOST_RESOLUTIONS = {
     "atom/model_ops/attentions/aiter_attention.py:1222 in prepare_decode": 2,
     "atom/model_ops/attentions/aiter_attention.py:1230 in prepare_decode": 1,
     "atom/model_ops/attentions/aiter_attention.py:1231 in prepare_decode": 2,
-    "atom/model_ops/attentions/backends.py:603 in prepare_block_tables": 1,
-    "atom/model_ops/attentions/backends.py:617 in _mrope_cpu_view": 1,
-    "atom/model_ops/attentions/backends.py:619 in _mrope_cpu_view": 1,
-    "atom/model_ops/attentions/backends.py:677 in _build_mrope_decode_positions": 1,
-    "atom/model_ops/attentions/backends.py:720 in prepare_cu_seqlens_q": 1,
-    "atom/model_ops/attentions/backends.py:721 in prepare_cu_seqlens_q": 3,
-    "atom/model_engine/model_runner.py:566 in prepare_input_ids": 1,
-    "atom/model_engine/model_runner.py:569 in prepare_input_ids": 1,
-    "atom/model_engine/model_runner.py:2609 in prepare_sample": 1,
+    "atom/model_ops/attentions/backends.py:618 in prepare_block_tables": 1,
+    "atom/model_ops/attentions/backends.py:632 in _mrope_cpu_view": 1,
+    "atom/model_ops/attentions/backends.py:634 in _mrope_cpu_view": 1,
+    "atom/model_ops/attentions/backends.py:692 in _build_mrope_decode_positions": 1,
+    "atom/model_ops/attentions/backends.py:735 in prepare_cu_seqlens_q": 1,
+    "atom/model_ops/attentions/backends.py:736 in prepare_cu_seqlens_q": 3,
+    "atom/model_engine/model_runner.py:570 in prepare_input_ids": 1,
+    "atom/model_engine/model_runner.py:573 in prepare_input_ids": 1,
+    "atom/model_engine/model_runner.py:2677 in prepare_sample": 1,
     "atom/model_ops/sampler.py:48 in _apply_greedy_tokens": 2,
     "atom/utils/h2d.py:51 in _count": STAGED_COPIES,
 }

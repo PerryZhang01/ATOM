@@ -271,7 +271,8 @@ class _RecordingAuthority(ClockAuthority):
     """The authority, recording the step table: a row per reply and a row per
     message each reply releases; and the wall seconds of the run, from its start
     to the finish, which sets `done`. A co-hosting frontend starts the run as it
-    starts its own; otherwise it starts once every server LP has asked once."""
+    starts its own; otherwise it starts once every server LP, and every member of
+    one declared with members, has asked once."""
 
     def __init__(self, run: dict) -> None:
         # The tree that runs, read before the run so an unidentifiable one is
@@ -282,7 +283,7 @@ class _RecordingAuthority(ClockAuthority):
         self.steps = StepTable(json.dumps(configuration(run), sort_keys=True))
         self.started = self.finished = None
         self.done = threading.Event()
-        self._joining = set(_servers(run))
+        self._joining = set(_hand_ins(run))
         # A rerun into the same out_dir starts from none of the last run's files.
         out = Path(run["out_dir"])
         for name in (
@@ -303,11 +304,11 @@ class _RecordingAuthority(ClockAuthority):
     def record(self, lp, time_from, time_to, kind, recovered) -> None:
         self.steps.record(lp, time_from, time_to, kind, detail="recovered" * recovered)
 
-    def on_request(self, *args, **kwargs) -> list:
-        self._joining.discard(args[0].name)
+    def on_request(self, lp, kind, t, log, t_daemon=math.inf, member=None) -> list:
+        self._joining.discard(f"{lp.name}.{member}" if member else lp.name)
         if not self._joining and self.started is None:
             self.started = time.monotonic()
-        replies = super().on_request(*args, **kwargs)
+        replies = super().on_request(lp, kind, t, log, t_daemon, member)
         for to, _, released in replies:
             # A member's reply is addressed (lp, member); its channels name its rank.
             lp = to[0] if isinstance(to, tuple) else to
@@ -457,8 +458,6 @@ def runner(model_runner) -> None:
     run = spec()
     if run is None:
         return
-    from transformers import PretrainedConfig
-
     from atom.compass.backends.analytic import Roofline, Tiered
     from atom.compass.backends.coarse import CoarseBackend, CoarseLaw
     from atom.compass.backends.geometry import KvGeometry, Parallelism
@@ -486,7 +485,11 @@ def runner(model_runner) -> None:
                 f"a law is fitted on one rank of tensor-parallel width 1, and this "
                 f"run has tensor_parallel_size {tp}"
             )
-        backend = CoarseBackend(CoarseLaw(run["law"]))
+        # Under DP-attention every rank runs at TP 1, and experts shard over the group.
+        dpa = config.enable_dp_attention
+        dp = config.parallel_config.data_parallel_size if dpa else 1
+        ep = dp if config.enable_expert_parallel else 1
+        backend = CoarseBackend(CoarseLaw(run["law"]), (dp, ep))
     elif "coefficients" in run:
         backend = ShapeStubBackend(
             Coefficients(**run["coefficients"]),
@@ -499,7 +502,7 @@ def runner(model_runner) -> None:
         from atom.compass.run.step_fit import load
 
         backend, bundle = load(run["step_fit"], config, machine)
-    config_json = PretrainedConfig.get_config_dict(config.model)[0]
+    config_json = _config_json(config)
     model = ModelTerms.from_declared_config(
         config.hf_config,
         parameter_count=run["parameter_count"],
@@ -659,6 +662,17 @@ def host_key(config) -> dict:
         "model": _file_digest(config.model, "config.json"),
         "engine": keyed(config),
     }
+
+
+def _config_json(config) -> dict:
+    """The model's config.json as loading reads it, with `config.hf_overrides`
+    set over its text-level keys, as `Config` sets them over `hf_config`, so
+    an overridden field counts as stated."""
+    from transformers import PretrainedConfig
+
+    file = PretrainedConfig.get_config_dict(config.model)[0]
+    file.get("text_config", file).update(getattr(config, "hf_overrides", None) or {})
+    return file
 
 
 def _file_digest(name: str, filename: str) -> str | None:

@@ -70,16 +70,15 @@ printf 'verdict: the last line of stdout; if this run is piped, $? is the pipe'"
 # pair cannot distinguish a regression from drift: after a torch bump, 4728/7
 # has no reading. Changing any of these seven constants is a reviewed edit.
 #
-# Measured 2026-10-13 on hjbog-srdc-20 in xiaobizh_n20_next (image
-# rocm/atom-dev vllm-v0.31.0-nightly_20261011), HIP_VISIBLE_DEVICES=3, against a
-# git archive of pure upstream 2479251d3, the ATOM that image ships: 10213
-# passed, 119 failed, 0 errors, 485 skipped, 3 xfailed in 1026.7 s. A run on
-# GPU 5 on 2026-10-12 failed the same 119 node-ids; its two extra skips were
-# the timing class in tests/entrypoints/test_stream_marker_properties.py.
+# Measured 2026-10-14 on hjbog-srdc-18 in xiaobizh_n18_next13 (image
+# rocm/atom-dev vllm-v0.31.0-nightly_20261013), HIP_VISIBLE_DEVICES=1, against a
+# git archive of pure upstream 661ef7661, the ATOM that image ships: 11346
+# passed, 131 failed, 0 errors, 497 skipped, 3 xfailed in 1566.2 s. A run on
+# GPU 3 the same day failed the same 131 node-ids with the same counts.
 # Upstream has no tests/compass/, so every Compass test is surplus.
-BASE_PASSED=10213
-BASE_FAILED=119
-BASE_COMMIT=2479251d3
+BASE_PASSED=11346
+BASE_FAILED=131
+BASE_COMMIT=661ef7661
 BASE_TORCH=2.10.0+rocm7.2.4.git3d3aa833
 # BASE_ROCM is compared against torch.version.hip below, so it carries the HIP
 # runtime version, not the ROCm release. ROCm release was 7.2.4.
@@ -89,7 +88,7 @@ BASE_ROCM=7.2.53211
 # gfx950-only formats they test, so AITER is the likeliest single cause of a
 # change that moves them -- a bump used to pass the drift check in silence
 # because only torch and HIP were compared.
-BASE_AITER=v0.1.24-180-g4eecc6509
+BASE_AITER=v0.1.25-44-g9205e1059
 # How many of BASE_PASSED came from tests/compass/ at BASE_COMMIT. The pass count
 # is checked for EQUALITY against BASE_PASSED adjusted by what tests/compass/
 # contributes on this tree, so a surplus is accounted for rather than absorbed.

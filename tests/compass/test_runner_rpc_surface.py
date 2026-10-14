@@ -323,14 +323,16 @@ def test_the_dispatched_names_outside_the_surface_belong_to_other_runners():
     it. So the leftovers are counted, and `extension` is intersected against
     the classes that actually define those methods rather than accepted as a
     residue of two set subtractions.
+
+    The weight-sync and memory commands are not here: ATOM sends them over
+    its all-rank RPC, which answers a missing name with an error reply.
     """
     rest = set(SITES) - set(RPC_SURFACE)
     assert rest, "no names left over means the intersection proved nothing"
     disagg = rest & RAPID
     extension = rest - RAPID
-    assert len(disagg) == 7 and len(extension) == 7
+    assert len(disagg) == 7 and extension == {"configure_hidden_states"}
     assert "prefill_forward" in disagg
-    assert "update_weights" in extension
     # The leftovers are a runner ATOM ships (`RapidServeModelRunner`) or one it
     # mixes in elsewhere; none of them is on the class Compass extends, and
     # every one of them is defined by some class in the tree.
@@ -371,6 +373,10 @@ def test_a_reply_is_forwarded_only_when_it_is_not_none():
     either one were ever moved outside the `if`, a None would start reaching a
     caller on that path and this file's whole account of the surface would be
     wrong for it.
+
+    The one exception is the all-rank RPC's branch, `if payload is not None:`,
+    whose reply is the `RpcResult` `_run_generic_rpc` or `_failure` built and
+    never None, so it is the guard's sibling rather than under it.
     """
     busy = _busy_loop()
     guards = [
@@ -393,7 +399,27 @@ def test_a_reply_is_forwarded_only_when_it_is_not_none():
         for n in ast.walk(guards[0])
         if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "put_nowait"
     ]
-    assert puts and sorted(puts) == sorted(guarded)
+    generic = next(
+        n
+        for n in ast.walk(busy)
+        if isinstance(n, ast.If) and n.orelse and n.orelse[0] is guards[0]
+    )
+    assert ast.unparse(generic.test) == "payload is not None"
+    # Where `out` comes from: the plain path's method, or the RPC's result.
+    sources = {
+        ast.unparse(n.value.func)
+        for n in ast.walk(busy)
+        if isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == "out"
+    }
+    assert sources == {"self._run_generic_rpc", "func", "self._failure"}
+    in_generic = [
+        n.lineno
+        for stmt in generic.body
+        for n in ast.walk(stmt)
+        if isinstance(n, ast.Call) and getattr(n.func, "attr", None) == "put_nowait"
+    ]
+    assert guarded and in_generic
+    assert sorted(puts) == sorted(guarded + in_generic)
 
 
 def test_the_caller_that_waits_has_no_timeout_to_rescue_it():
@@ -492,9 +518,14 @@ def test_a_refusal_reaches_the_caller_instead_of_stranding_it():
     }
     assert "_self.exit()" in ASYNC_PROC
 
-    # The worker's own dispatch catches nothing, which is what kills it.
+    # The worker's own dispatch catches nothing, which is what kills it. Its
+    # one `try` holds the barrier, and re-raises on this path.
     busy = _busy_loop()
-    assert not [n for n in ast.walk(busy) if isinstance(n, ast.Try)]
+    (held,) = [n for n in ast.walk(busy) if isinstance(n, ast.Try)]
+    assert [ast.unparse(s) for s in held.body] == ["self.all_ranks_barrier.wait()"]
+    (handler,) = held.handlers
+    assert ast.unparse(handler.type) == "threading.BrokenBarrierError"
+    assert ast.unparse(handler.body[0]) == "if payload is None:\n    raise"
 
     # SystemExit is queued before the manager finalizes its parent.
     lines = {}

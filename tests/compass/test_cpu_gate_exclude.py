@@ -159,8 +159,8 @@ def test_the_manual_section_holds_the_entries_it_is_pinned_to_hold():
     for itself.
     """
     entries = _manual_entries()
-    assert len(entries) == 12, (
-        f"the manual section holds {entries}, not the 12 entries pinned here. "
+    assert len(entries) == 14, (
+        f"the manual section holds {entries}, not the 14 entries pinned here. "
         "Add or remove one deliberately and update this count -- it is what "
         "stands between an empty section and a parametrisation of nothing."
     )
