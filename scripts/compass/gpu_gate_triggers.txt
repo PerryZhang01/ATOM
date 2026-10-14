@@ -37,19 +37,19 @@
 #
 # A trailing / matches the whole subtree.
 #
-# Measured at 1c27a31c6105ffa3a349862c8bc32ce09417c97c over this tree:
-#   tests/        561 files  = 55 in tests/plugin/ + 94 excluded + 412 CPU tier
-#   CPU tier      363 files collect >=1 test, 49 collect none
+# Measured at 5c214e1a89896a6f56ed5f1ec36179631fdd5651 over this tree:
+#   tests/        561 files  = 55 in tests/plugin/ + 96 excluded + 410 CPU tier
+#   CPU tier      361 files collect >=1 test, 49 collect none
 #   imports       852 indented `import atom.*` lines in non-plugin test files
-#   collected  11102 tests by --collect-only. A run of the same set reports
-#              the same 11102 outcomes. Its "skipped" total is LARGER than any
+#   collected  11092 tests by --collect-only. A run of the same set reports
+#              the same 11092 outcomes. Its "skipped" total is LARGER than any
 #              skip count here, because a module-level skip in one of the 49
 #              files that collect nothing is counted as skipped without ever
 #              becoming a collected test. This file states the set; gate_cpu.sh
 #              prints the run, and is the only source for its outcome counts.
-#   candidates    164 paths named by an excluded test, any indentation
-#   covered       268 paths named at module level by a live CPU-tier file
-#   triggers      115 paths below
+#   candidates    166 paths named by an excluded test, any indentation
+#   covered       266 paths named at module level by a live CPU-tier file
+#   triggers      117 paths below
 atom/distributed/dcp_utils.py
 atom/distributed/indexer_cp.py
 atom/distributed/pcp_utils.py
@@ -163,5 +163,7 @@ atom/utils/backends.py
 atom/utils/cuda_graph.py
 atom/utils/custom_register.py
 atom/utils/decorators.py
+atom/utils/graph_marker.py
+atom/utils/graph_marker_instrumentation.py
 atom/utils/tbo/ubatch_splitting.py
 atom/utils/tbo/ubatch_wrapper.py

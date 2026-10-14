@@ -116,13 +116,13 @@ tests/models/deepseek_v41/test_linear.py
 tests/models/deepseek_v41/test_moe_streams.py
 # fails at setup or call in aiter chip_info, `No gfx arch found in rocminfo output.` (no driver); new-image CPU container, 12849025b
 tests/models/deepseek_v41/test_weights.py
+# test_agentic_dispatch_replay_preserves_profile fails: build_agentic_benchmark_matrix
+# runs `git rev-parse HEAD`, and the gate's git-archive snapshot has no .git; 12849025b
+tests/test_benchmark_catalog.py
 # passes alone, fails in this tier: the unstrided case with dynamo `KeyError: aiter`
 # (the aiter.utility namespace package, as for test_sparse_indexer_side_effect_op.py);
 # new-image CPU container, nightly 20261013, b5452da1a
 tests/test_graph_marker.py
-# test_agentic_dispatch_replay_preserves_profile fails: build_agentic_benchmark_matrix
-# runs `git rev-parse HEAD`, and the gate's git-archive snapshot has no .git; 12849025b
-tests/test_benchmark_catalog.py
 # passes alone, fails in this tier: one test with dynamo `KeyError: aiter` (the
 # aiter.utility namespace package, as for test_sparse_indexer_side_effect_op.py),
 # the other re-registering `vllm::all_reduce`; new-image CPU container, 2026-10-13
