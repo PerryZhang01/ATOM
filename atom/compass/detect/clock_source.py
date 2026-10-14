@@ -92,6 +92,10 @@ DEFAULT_ALLOW_LIST: dict[str, str] = {
         "a real runner's step timestamps; a simulated run runs its own runner "
         "and never imports this module"
     ),
+    "atom/compass/parity/traffic.py": (
+        "a real run's send times, on the clock its runner's step timestamps "
+        "read; a simulated run's traffic LP sends on the run's clock"
+    ),
 }
 
 #: Packages under `atom/` a simulated run never executes, or that keep their
