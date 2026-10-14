@@ -3,14 +3,14 @@
   "name": "mi308x-hjbog39",
   "provenance": {
     "authored_by": "compass agent for jgong5",
-    "date": "2026-10-12",
+    "date": "2026-10-14",
     "method": "mixed",
     "fragments": [
       "tokenizer",
       "device",
       "declared"
     ],
-    "notes": "one Qwen3.8-27B TP1 start at a1cac25a6 | no probe fills these"
+    "notes": "one Qwen3.8-27B TP1 start at ce625ddd9 | no probe fills these"
   },
   "host": {
     "cpu": {
@@ -26,10 +26,10 @@
         "applies_to": [
           "Qwen3_5ForConditionalGeneration"
         ],
-        "encode_fixed_s": 1.69045447177344e-05,
-        "encode_tokens_per_s": 633667.7347792396,
-        "decode_fixed_s": 2.119559501311524e-06,
-        "decode_tokens_per_s": 4220170.165027067,
+        "encode_fixed_s": 1.5608247097135237e-05,
+        "encode_tokens_per_s": 658885.0727878775,
+        "decode_fixed_s": 1.9072049329058643e-06,
+        "decode_tokens_per_s": 4174064.0793044483,
         "derate": 1.0
       }
     ],
@@ -55,12 +55,12 @@
     },
     "runtime_constants": {
       "driver_and_collective_reserve_bytes": {
-        "1": 1254096896
+        "1": 1291845632
       },
       "allocator_retained_after_load_bytes": {
-        "1": 14924832
+        "1": 14850080
       },
-      "persistent_forward_buffer_bytes": 315482112,
+      "persistent_forward_buffer_bytes": 383345152,
       "cudagraph_pool": {
         "w1_base_bytes": 95500000.0,
         "w1_bytes_per_captured_token": 318000.0,
@@ -75,13 +75,13 @@
         ],
         "fingerprint": "sha256:191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
         "bytes_per_token": {
-          "1": 180480.0
+          "1": 180479.96875
         }
       }
     ],
     "software_pinned_to": {
       "rocm": "7.2.4",
-      "aiter": "f4e7c7509",
+      "aiter": "9205e1059",
       "rccl": "2.27.7"
     }
   },
