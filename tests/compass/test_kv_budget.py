@@ -283,7 +283,6 @@ def test_the_count_says_how_much_of_the_footprint_was_a_coefficient(spec, qwen, 
     """
     sizing = _sizing(spec, qwen, 1)
     declared = {
-        "peak_torch.weights",
         "peak_torch.buffers",
         "peak_torch.activations",
         "cudagraph_overhead.per-token x captured tokens",
