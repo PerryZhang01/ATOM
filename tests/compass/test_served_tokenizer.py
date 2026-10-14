@@ -98,9 +98,7 @@ def test_with_no_run_file_the_tokenizer_is_left_as_it_is(monkeypatch):
 
 
 def test_an_unmeasured_architecture_is_refused(run_file):
-    with pytest.raises(
-        SpecRefusal, match="no tokenizer measured for 'LlamaForCausalLM'"
-    ):
+    with pytest.raises(SpecRefusal, match="no tokenizer probed for 'LlamaForCausalLM'"):
         compass_run.tokenizer(_Tokenizer(), _config("LlamaForCausalLM"))
 
 

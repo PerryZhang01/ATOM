@@ -32,7 +32,7 @@ and nothing more. A consumer that reaches for a term this table does not list
 for it is the thing to fix, in the table.
 
 A width-keyed constant explains at the width asked for, or at every width that
-was measured when no width is given; asking at a width nobody measured is
+was probed when no width is given; asking at a width nobody probed is
 refused by name, here as everywhere else. Tokenizer rates explain per entry and
 per rate, because a spec holding two tokenizers has two different answers and a
 reader tracing a tokenization cost needs to see which of them was used.

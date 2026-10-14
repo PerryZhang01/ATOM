@@ -5,7 +5,7 @@ The first half of this module is the tier that needs no device; the second is
 the table of which probe supplies each runtime constant, and the one entry that
 no probe supplies. The reading that makes two fragments comparable comes first.
 
-A probe measures part of a machine and emits a fragment: the fields it measured
+A probe measures part of a machine and emits a fragment: the fields it probed
 plus the stanza saying which machine they are for, by whom, when and how. What
 is here is the tier that needs no device: `tokenizer_sweep` times a loaded
 tokenizer, `tokenizer_fragment` composes whatever rates it is handed -- and a
@@ -21,17 +21,17 @@ is the whole of its second job.** `host.cpu.cores_physical` and
 `host.cpu.cores_logical` are already required fields of the machine, so a
 fragment that fills them in is claiming that the host that composed it is the
 machine its stanza names. When it is not
--- the tokenizer measured on the laptop, the device fields measured on the node,
+-- the tokenizer probed on the laptop, the device fields probed on the node,
 both authored for the node -- the two fragments then state different numbers for
 one field of one machine, and the merge refuses the pair with both readings and
 both stanzas. Before this they shared no field at all: nothing in a fragment's
-shape says where it was measured, so nothing contradicted anything, and the pair
+shape says where it was probed, so nothing contradicted anything, and the pair
 combined into a document that describes neither host. Two fields that were
 already required, and nothing added to the schema, are what turn that silence
 into a refusal.
 
 This does not make the transfer illegitimate, and it does not record where the
-probe ran -- no field of a fragment does that. A tokenizer measured on a
+probe ran -- no field of a fragment does that. A tokenizer probed on a
 comparable processor is still the intended use. What changes is that an author
 who wants it now has to write the target's own core counts into the document,
 rather than have the question go unasked.
@@ -66,7 +66,7 @@ that carried it has to be worked back to.
 
 **Which probe fills which runtime constant, and the one entry that has none.**
 The runtime constants keyed by tensor-parallel width are the terms with no law
-behind them, so a width nobody measured is refused by name rather than
+behind them, so a width nobody probed is refused by name rather than
 interpolated, and the remedy such a refusal offers is to go and run a probe.
 `FILLED_BY` records which probe that is. Two of them fill these terms: one
 starts a single engine on one card and reads the device's own reserve off it,
@@ -135,7 +135,7 @@ def probe_for(constant: str, tp_width: int) -> str:
     if constant not in FILLED_BY:
         raise SpecRefusal(
             Rule.NO_DEFAULTS,
-            f"`{constant}` is not one of the constants measured per "
+            f"`{constant}` is not one of the constants probed per "
             f"tensor-parallel width: {sorted(FILLED_BY)}",
             "ask this of a width-keyed runtime constant; a term that is flat "
             "in width has no width to ask about, and one that is not a "
@@ -148,7 +148,7 @@ def probe_for(constant: str, tp_width: int) -> str:
             f"engine runs on, so no probe fills `{constant}` there",
             "ask about a width of one or more; the probes here fill this term "
             "at one card and above it, and a width below that is a wrong "
-            "question rather than a term nobody has measured yet",
+            "question rather than a term nobody has probed yet",
         )
     at_one, above_one = FILLED_BY[constant]
     probe = at_one if tp_width == 1 else above_one
@@ -225,7 +225,7 @@ def tokenizer_fragment(
             Rule.TOKENIZER_IDENTITY,
             f"the tokenizer fragment for {machine!r} carries no tokenizer",
             "sweep a tokenizer and emit its entry; a fragment carrying only "
-            "this host's core counts states nothing measured about the thing "
+            "this host's core counts states nothing probed about the thing "
             "the probe is for",
         )
     # Read for its refusals: an entry that is not a tokenizer entry is refused
