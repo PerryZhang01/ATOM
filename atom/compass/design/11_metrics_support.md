@@ -28,17 +28,17 @@ Verified on `feature/atomcompass_new`:
 
 | | |
 |---|---|
-| metric families | **`GaugeMetricFamily` and `CounterMetricFamily` only**, most built in loops; the inventory is `metrics.py::_AtomMetricsCollector.collect` |
+| metric families | **`GaugeMetricFamily` and `CounterMetricFamily` only**, most built in loops; the inventory is `atom/metrics/exporter.py::_AtomMetricsCollector.collect` |
 | histograms / summaries | **none today** |
 | `.observe()` call sites | **none** (the `buckets=` hits in the tree are CUDA-graph query buckets, unrelated) |
-| API style | collector-style `prometheus_client.core.*MetricFamily` (`metrics.py::_AtomMetricsCollector.collect`) |
+| API style | collector-style `prometheus_client.core.*MetricFamily` (`atom/metrics/exporter.py::_AtomMetricsCollector.collect`) |
 | rate metrics (anything ÷ time) | **none.** The three that look like rates are not: `queued_prefill_tokens_per_rank` is per *rank*, `mtp_acceptance_rate` is a ratio of counts, `mtp_average_tokens_per_forward` is per *forward* |
 
 The pipeline: `EngineUtilityHandler.collect_metrics()` (`engine_utility.py`) →
 `push_metrics()` on the EngineCore busy loop → DP aggregation in
-`LLMEngine.get_metrics_statistics()` (`llm_engine.py`) → `_metrics_refresh_loop`
+`LLMEngine.get_metrics_statistics()` (`llm_engine.py`) → `_periodic(metrics_interval, _refresh_metrics_once)`
 (`api_server.py`) → `_AtomMetricsCollector` / `AtomMetricsExporter`
-(`atom/entrypoints/openai/metrics.py`) → `/metrics` (`api_server.py::metrics`).
+(`atom/metrics/exporter.py`) → `/metrics` (`api_server.py::metrics`).
 
 **Histograms are being added.** They are not present yet, which means this is the moment to
 influence how they land rather than retrofit them. See D73.
@@ -60,14 +60,14 @@ no rate denominators to correct.
 # EngineCore.busy_loop and DPEngineCoreProc.busy_loop (atom/model_engine/engine_core.py)
 now = clock.now(time.monotonic)
 if now >= next_metrics_push:
-    next_metrics_push = now + METRICS_PUSH_INTERVAL_S      # 5.0
+    next_metrics_push = now + metrics_interval    # ATOM_METRICS_UPDATE_INTERVAL_S
     self.utility_handler.push_metrics()
 
-# _metrics_refresh_loop (atom/entrypoints/openai/api_server.py), in the API-server process
-await asyncio.sleep(_METRICS_REFRESH_INTERVAL_SECONDS)     # 5.0
-await _refresh_metrics_once()
+# _periodic(metrics_interval, _refresh_metrics_once) (atom/entrypoints/openai/api_server.py), in the API-server process
+await asyncio.sleep(interval)     # ATOM_METRICS_UPDATE_INTERVAL_S
+await step()                      # _refresh_metrics_once
 
-# AtomMetricsExporter.update (atom/entrypoints/openai/metrics.py)
+# AtomMetricsExporter.update (atom/metrics/exporter.py)
 self._last_refresh = clock.now(time.time)   # "when was this snapshot taken", returned by read()
 ```
 

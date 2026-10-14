@@ -10,21 +10,48 @@
 # the node list. Regenerating rewrites this section wholesale.
 #
 # MANUAL -- files that collect cleanly and so are invisible to the regenerator
-# (it greps `^ERROR ` from --collect-only), but fail at run time on a driver
-# call. The regenerator preserves this section verbatim. Every entry must carry
-# the observed failure above it: an entry without one is indistinguishable from
-# a test somebody found inconvenient.
+# (it greps `^ERROR ` from --collect-only), but fail at run time on what the
+# gate's snapshot lacks: a driver, or a .git. The regenerator preserves this
+# section verbatim. Every entry must carry the observed failure above it: an
+# entry without one is indistinguishable from a test somebody found
+# inconvenient.
 # BEGIN GENERATED
+tests/attentions/deepseek_v41/test_cache.py
+tests/attentions/deepseek_v41/test_metadata.py
 tests/model_ops/test_balance_router_logits.py
+tests/model_ops/test_blockscale_dispatch.py
+tests/model_ops/test_fused_rmsnorm_mxfp8.py
+tests/model_ops/test_glm5_kpool_kernels.py
+tests/model_ops/test_indexer_cp_parity.py
+tests/model_ops/test_kimi_k3_activations.py
+tests/model_ops/test_mori_protocol_selection.py
+tests/model_ops/test_rccl_prepare_finalize.py
 tests/model_ops/test_shared_expert_dispatch.py
-tests/test_block_table_marshal.py
+tests/model_ops/test_triton_dynamic_shapes.py
+tests/model_ops/test_v4_fused_decode.py
+tests/model_ops/test_v4_hca_persist_gpu.py
+tests/models/deepseek_v41/test_attention.py
+tests/models/deepseek_v41/test_attention_streams.py
+tests/models/deepseek_v41/test_dspark_integration.py
+tests/models/deepseek_v41/test_moe_quant_config.py
+tests/models/deepseek_v41/test_normalization.py
+tests/models/deepseek_v41/test_projections.py
+tests/models/deepseek_v41/test_rotary.py
+tests/models/deepseek_v41/test_sparse_attention.py
+tests/models/deepseek_v41/test_speculative_state.py
+tests/models/test_glm_moe_router_dtype.py
 tests/test_cudagraph_capture_bounds.py
 tests/test_dcp_merge_ops.py
 tests/test_dcp_sparse_filter.py
 tests/test_dcp_topk.py
-tests/test_decode_input_ids.py
+tests/test_deepseek_v41_mono_build_key.py
+tests/test_deepseek_v41_mono_contract.py
+tests/test_deepseek_v41_mono_dispatch.py
+tests/test_deepseek_v41_mono_tp_widths.py
 tests/test_deepseek_v4_wo_a_dequant.py
+tests/test_dp_sharded_argmax.py
 tests/test_dspark.py
+tests/test_dspark_markov_sample.py
 tests/test_dspark_swa_fp8_2buff.py
 tests/test_dummy_weight_init.py
 tests/test_eplb_metadata.py
@@ -33,20 +60,73 @@ tests/test_eplb_module_b.py
 tests/test_eplb_module_c.py
 tests/test_eplb_module_d.py
 tests/test_eplb_module_e.py
+tests/test_eplb_unplaced_layer.py
+tests/test_fp4_indexer_kv_transfer_gate.py
 tests/test_gdn_state_relocation.py
+tests/test_glm5_next_kpool_state.py
+tests/test_graph_marker.py
 tests/test_kda_checkpoint_slot_copy.py
 tests/test_kda_layout_id.py
 tests/test_lm_head_argmax.py
+tests/test_lm_head_argmax_out.py
 tests/test_mega_mxfp4_method.py
 tests/test_merge_attn_states.py
+tests/test_minimax_m3_index_topk.py
+tests/test_minimax_m3_mono_build_key.py
+tests/test_minimax_m3_mono_contract.py
+tests/test_minimax_m3_mono_dispatch.py
+tests/test_minimax_m3_sparse_pa_floor.py
+tests/test_mla_chunk_workspace_width.py
+tests/test_mla_flydsl_gather_dispatch.py
+tests/test_mla_index_cache.py
+tests/test_model_runner_decode_padding.py
 tests/test_moe_online_quant_batch.py
 tests/test_mori_dispatch_trim_bound.py
 tests/test_mtp_deferred_status_queue.py
+tests/test_mtp_draft_warmup_workplan.py
 tests/test_mxfp4_moe_has_bias.py
+tests/test_nvfp4_loading.py
+tests/test_paged_attention_dispatch.py
+tests/test_postprocess_width.py
+tests/test_qwen4_exp_mtp.py
+tests/test_qwen4_exp_quantization.py
+tests/test_sampler_greedy_rows.py
+tests/test_sampler_scalar_filters.py
+tests/test_speculative_sampling.py
+tests/test_v4_checkpoint_slot_copy.py
+tests/test_v4_hca_persist_dispatch.py
+tests/test_v4_opus_plan_metadata.py
+tests/test_v4_prefill_asm_decode_dispatch.py
 # END GENERATED
 # BEGIN MANUAL
-# collects cleanly, then fails at run time with `hipHostMalloc failed: 100`
-# -- a pinned-host-memory allocation, which needs the driver. Measured in the
-# CPU container at 83daf636d.
+# fails at setup or call in aiter chip_info, `No gfx arch found in rocminfo output.` (no driver); new-image CPU container, 12849025b
+tests/attentions/deepseek_v41/test_runtime_contract.py
+# fails at setup or call in aiter chip_info, `No gfx arch found in rocminfo output.` (no driver); new-image CPU container, 12849025b
+tests/model_ops/engram/test_host_path.py
+# fails at setup or call in aiter chip_info, `No gfx arch found in rocminfo output.` (no driver); new-image CPU container, 12849025b
+tests/models/deepseek_v41/test_bounded_replay.py
+# fails at setup or call in aiter chip_info, `No gfx arch found in rocminfo output.` (no driver); new-image CPU container, 12849025b
+tests/models/deepseek_v41/test_config.py
+# fails at setup or call in aiter chip_info, `No gfx arch found in rocminfo output.` (no driver); new-image CPU container, 12849025b
+tests/models/deepseek_v41/test_dspark.py
+# fails at setup or call in aiter chip_info, `No gfx arch found in rocminfo output.` (no driver); new-image CPU container, 12849025b
+tests/models/deepseek_v41/test_linear.py
+# fails at setup or call in aiter chip_info, `No gfx arch found in rocminfo output.` (no driver); new-image CPU container, 12849025b
+tests/models/deepseek_v41/test_moe_streams.py
+# fails at setup or call in aiter chip_info, `No gfx arch found in rocminfo output.` (no driver); new-image CPU container, 12849025b
+tests/models/deepseek_v41/test_weights.py
+# test_agentic_dispatch_replay_preserves_profile fails: build_agentic_benchmark_matrix
+# runs `git rev-parse HEAD`, and the gate's git-archive snapshot has no .git; 12849025b
+tests/test_benchmark_catalog.py
+# passes alone, fails in this tier: one test with dynamo `KeyError: aiter` (the
+# aiter.utility namespace package, as for test_sparse_indexer_side_effect_op.py),
+# the other re-registering `vllm::all_reduce`; new-image CPU container, 2026-10-13
 tests/test_lmcache_offload_disk_integration.py
+# fails at setup or call in aiter chip_info, `No gfx arch found in rocminfo output.` (no driver); new-image CPU container, 12849025b
+tests/test_sparse_indexer_fp4.py
+# passes alone, fails in this tier with dynamo `KeyError: aiter`: with no driver
+# aiter's import fails and leaves the namespace package aiter.utility in
+# sys.modules without aiter, and torch's first custom-op registration under
+# torch.compile walks sys.modules through inspect.getmodule; 25740469b
+tests/test_sparse_indexer_side_effect_op.py
 # END MANUAL

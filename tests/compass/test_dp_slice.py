@@ -48,6 +48,14 @@ MAX_TOKENS = (2, 4, 6, 8)
 DONE = "data: [DONE]"
 
 
+@pytest.fixture(autouse=True)
+def device_classes_put_back(monkeypatch):
+    """`start_on_host` swaps these for host stand-ins process-wide; undo it per test."""
+    monkeypatch.setattr(torch.cuda, "Stream", torch.cuda.Stream)
+    monkeypatch.setattr(torch.cuda, "Event", torch.cuda.Event)
+    monkeypatch.setattr(CpuGpuBuffer, "__init__", CpuGpuBuffer.__init__)
+
+
 class Requests(Traffic):
     """The traffic LP: every request of `MAX_TOKENS` sent at 0, streamed."""
 
@@ -361,8 +369,6 @@ def test_a_dp_rank_starts_on_the_host_with_no_device_communicator(monkeypatch):
         "aiter.dist.utils",
         SimpleNamespace(get_distributed_init_method=lambda ip, p: f"tcp://{ip}:{p}"),
     )
-    monkeypatch.setattr(torch.cuda, "Stream", torch.cuda.Stream)
-    monkeypatch.setattr(CpuGpuBuffer, "__init__", CpuGpuBuffer.__init__)
     monkeypatch.delenv("MASTER_ADDR", raising=False)
     monkeypatch.delenv("MASTER_PORT", raising=False)
     config = SimpleNamespace(
