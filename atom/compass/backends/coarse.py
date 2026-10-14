@@ -13,6 +13,11 @@ A prefill vector may add `history`, Sum (N_KV - N_Q): the KV a chunk reads
 on its cached history, which a short chunk on a deep history pays apart from
 its attention arithmetic.
 
+A decode vector may add `rowmod`, `rowmod(k)` over its rows in scheduled
+order: the largest summed N_KV over the rows `i = r (mod k)`, with `k` the
+vector's `"rowmod"` entry. It prices an order the same multiset of rows can
+take at a different cost; `rowmod(1)` is Sum N_KV.
+
 A decode step that replays no graph (an eager runner, or a batch wider than
 the widest captured size) is the rung named `eager`, whose padding is zero.
 
@@ -29,7 +34,8 @@ The law is a mapping, as a run file holds it, `prefill` optional:
      "decode": {"eager": VECTOR, "1": VECTOR, "2": VECTOR, ...}}
 
     VECTOR = {"coefficients": {<feature>: seconds, ...},
-              "hull": {"equal": {<feature>: value, ...}, "facets": [[a_1, ..., a_k, c], ...]}}
+              "hull": {"equal": {<feature>: value, ...}, "facets": [[a_1, ..., a_k, c], ...]},
+              "rowmod": k}    # a decode vector with a `rowmod` coefficient only
 
 `coefficients` names every feature of its kind, `step` for the intercept.
 `equal` holds each feature that was constant over the fit and the value a step
@@ -59,6 +65,7 @@ from atom.compass.backends.shape import (
 PREFILL = ("step", "tokens", "query_square", "query_cached")
 HISTORY = PREFILL + ("history",)
 DECODE = ("step", "context", "graph_padding")
+ROWMOD = DECODE + ("rowmod",)
 EAGER = "eager"
 SOURCE = "coarse-law"
 #: A point on a facet evaluates to rounding error, relative to its magnitudes.
@@ -86,6 +93,14 @@ class _Vector:
         # The intercept, first in `features`, is not a hull coordinate.
         self.hull = Hull(f"the {name} hull", features[1:], spec["hull"])
         self.features = features
+        self.rowmod = int(spec["rowmod"]) if "rowmod" in features else None
+        if self.rowmod is not None and self.rowmod < 1:
+            raise ValueError(f"the {name} vector's rowmod modulus is {self.rowmod}")
+
+
+def rowmod(context, k: int) -> int:
+    """The largest summed context over rows `i = r (mod k)`, in `context`'s order."""
+    return max(sum(context[r::k]) for r in range(min(k, len(context))))
 
 
 class Hull:
@@ -143,7 +158,9 @@ class CoarseLaw:
             self.prefill = _Vector("prefill", features, prefill)
         self.decode = {
             None if rung == EAGER else int(rung): _Vector(
-                f"decode rung {rung}", DECODE, spec
+                f"decode rung {rung}",
+                ROWMOD if "rowmod" in spec["coefficients"] else DECODE,
+                spec,
             )
             for rung, spec in law["decode"].items()
         }
@@ -195,6 +212,8 @@ class CoarseBackend(CostBackend):
                     f"no decode vector for rung {EAGER if rung is None else rung}",
                 )
             counts = (1, sum_context(decode), batch_view.graph_padding)
+            if vector.rowmod:
+                counts += (rowmod([r.context_tokens for r in decode], vector.rowmod),)
         detail = self.law.provenance
         species = Species.FITTED
         if not vector.hull.contains(counts[1:]):

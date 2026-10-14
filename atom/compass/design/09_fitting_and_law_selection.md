@@ -169,6 +169,7 @@ prefill:  [ 1,  tokens,  Σ_req N_Q²,  Σ_req N_Q·(ctx − N_Q) ]
           + history: Σ_req (ctx − N_Q), in coarse_fit's `history` form
 decode:   [ 1,  batch,   Σ ctx ]
 per rung: [ 1,  Σ ctx,   rung·max(ctx) − Σ ctx ]
+          + rowmod(k), on a rung that adopts one (D61)
 ```
 
 Two constructions are load-bearing and both were originally wrong.
@@ -372,8 +373,8 @@ A treatment is a factor that moves cost and is **invisible to every feature in t
 It must be declared and the calibration population matched to the target, or the fit is
 silently averaging over it.
 
-**Known treatment: decode row order.** At one fixed 32-row context multiset, row order
-alone moves measured decode attention across **1.77×** — grouped-descending 276.1 µs,
+**Decode row order: a treatment, then a feature.** At one fixed 32-row context multiset,
+row order alone moves measured decode attention across **1.77×** — grouped-descending 276.1 µs,
 grouped-ascending 292.2 µs, alternating 376.5 µs, ladder-interleaved 489.5 µs. Refuted as
 causes: KV pool footprint (2.42× pool maximum moves the price −0.5%), co-residency, shape,
 and launch-wave packing.
@@ -386,6 +387,28 @@ and launch-wave packing.
 Consequence, already in `07` D39: calibration batches are **replayed** from the real
 scheduler's step table, with explicit `block_tables`. Hand-built ladders are grouped by
 construction.
+
+**Since #941, row order is a decode feature of tier a, not a treatment.** `rowmod(k)` is the
+largest summed context over the rows `i ≡ r (mod k)` of a batch in scheduled order; `k = 1`
+is `Σ ctx`. It names no kernel, split rule, head count or CU count. A rung adopts one `k`
+as a fourth column (D55) only when all four hold:
+
+1. the column cuts the rung's scaled MAD, by at least a tenth;
+2. shuffling each step's rows takes that cut away;
+3. no calibration cell, held out of a fit on the others, gets a p50 error further from zero;
+4. every cell holds at least 100 steps at the rung, and there are two cells or more.
+
+Candidates are the powers of two up to the rung; the qualifying `k` with the smallest MAD
+wins, and the law records `k` with the MADs and held-out errors that chose it. A rung
+that adopts none keeps its three columns and prices exactly as before. Pricing reads the
+rows in the order the scheduler built the batch, the order the real engine's attention
+metadata takes them in; a simulated run prices the batch ATOM's own scheduler built.
+
+On the hjbog-srdc-39 law's records the rule adopts `k = 16` at rung 32 alone: scaled MAD
+7.59% to 2.21%, held-out p50 −13.7% to −2.2% (c=64) and +11.7% to +3.7% (c=256)
+([evidence](https://github.com/jgong5/ATOM/issues/941#issuecomment-6162749853)). At rung 32
+the gfx942 decode attention grid places workgroups so that the rows `i mod 16` share a
+dispatch class; the fit found 16 from the data alone.
 
 **Declared treatment: uniform routing** (owner's DP ruling, 2026-10-01). Under DP the
 MoE segment is priced as if routing spread tokens evenly over the experts, in every
@@ -440,13 +463,13 @@ choice that must be visible.
 |---|---|---|
 | D53 | Fit relative error, not absolute seconds. MAD outlier test on the same relative residuals. | 2026-09-18 |
 | D54 | Prefill and decode fitted separately; decode per CUDA-graph rung with both coefficients per rung. Under DP and EP, tier a is one per-rank law keyed by `(dp, ep)`, with the DP-unified rung and the MoE row count as features (`T_moe` with EP off; open with EP on), captured on a real deployment at that `(dp, ep)` and fitted by alternating max-affine regression. Tier a's label is one forward's device busy time, plus the device gap before it on a decode, with launch-exposed decodes cut and no prefill cut; four host laws (`E`, `W_pre`, `W_launch`, `W_post`), each `(1, tokens, seqs)` per decode, output prefill and pure middle chunk (a middle chunk has no sampler launch, output or R1 wait, so its `W_post` is zero and not fitted), are fitted beside it, keyed by host CPU, `atom` digest, model and engine config, with no transfer. | 2026-09-18; revised 2026-10-01, 2026-10-09 (`T_moe`, #502) and 2026-10-11 (#815); label per step kind 2026-10-12 (#843) |
-| D55 | Attention terms summed per request; the padding term is the rung's rectangle, not the batch's. | 2026-09-18 |
+| D55 | Attention terms summed per request; the padding term is the rung's rectangle, not the batch's. A decode rung may add `rowmod(k)` (D61). | 2026-09-18; revised 2026-10-14 (#941) |
 | D56 | Distinguish rank deficiency from coverage gap: drop zero-variance features explicitly, report the condition number, and treat "widening the evidence does not move the error" as evidence the feature is wrong. | 2026-09-18 |
 | D57 | Every fit reports provenance, sample count, dropped count, condition number and validity hull. Report an interval or report nothing. | 2026-09-18 |
 | D58 | Refuse rather than fall back on a step kind with no samples. The extrapolation guard is a convex hull or k-NN distance, never a per-feature bounding box; an out-of-hull step is priced `extrapolated` and reported apart, not refused. | 2026-09-18; revised 2026-10-11 (#765) |
 | D59 | A family is validated on independently obtained data, never by LOO. Rank at least three candidates and report all held-out errors. A law that fits one axis is tested on a second before it ships. | 2026-09-18 |
 | D60 | Laws are piecewise over declared dispatch bands read from recorded kernel identity. A query with no same-band bracket refuses. | 2026-09-18 |
-| D61 | Treatments are declared and the calibration population matched. Decode row order is a known treatment worth 1.77×. Uniform routing of the MoE segment under DP and EP is a declared treatment, in every tier. | 2026-09-18; revised 2026-10-01 |
+| D61 | Treatments are declared and the calibration population matched. Decode row order, worth 1.77× at a fixed multiset, is a decode feature, `rowmod(k)` in scheduled order, adopted per rung by a four-condition rule. Uniform routing of the MoE segment under DP and EP is a declared treatment, in every tier. | 2026-09-18; revised 2026-10-01, 2026-10-14 (#941) |
 | D62 | Leading warmth is measured and reported, never charged. Error is reported stratified by the axes the law is linear in. | 2026-09-18 |
 
 ---
