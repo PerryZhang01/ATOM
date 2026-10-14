@@ -8,7 +8,7 @@ takes a `Method` with no default, and `CostTerm` takes a `Provenance` with no
 default, so there is no constructor path that produces a number whose origin
 is unknown.
 
-The four methods:
+The methods:
 
 - `ANALYTICAL`: a form from first principles whose every parameter is model
   geometry, deployment configuration, or a device parameter from a datasheet
@@ -24,7 +24,7 @@ The four methods:
   its algorithm's held-out error was measured, and is not otherwise. The
   algorithm, extrapolation included, is named in `source`.
 
-`MEASURED` and `ESTIMATED` are the two `empirical` methods. `combine` gives
+`MEASURED` and `ESTIMATED` are `empirical`. `combine` gives
 the method of an answer built from several: any declared input makes it
 declared, all analytical stays analytical, all measured stays measured, and
 anything else is estimated.

@@ -28,7 +28,6 @@ from atom.compass.backends import (
     StepLinearBackend,
 )
 from atom.compass.backends.step_roofline import (
-    FIELDS,
     StepFallbackBackend,
     StepRooflineBackend,
 )
@@ -154,24 +153,37 @@ def _spec(origin, origins=None):
     return MachineSpec.from_mapping(document)
 
 
+# The spec fields the roofline's constructor reads.
+READS = (
+    "device.compute.bf16_flops",
+    "device.compute.derate",
+    "device.memory.bandwidth_bytes_per_s",
+    "device.memory.derate",
+)
+
+
 @pytest.mark.parametrize(
     "spec,method,named",
     [
         (_spec("datasheet"), Method.ANALYTICAL, []),
         (_spec("probed"), Method.ANALYTICAL, []),
-        (_spec("assumed"), Method.DECLARED, list(FIELDS)),
-        (_spec("transferred-from:mi308x-hjbog18"), Method.DECLARED, list(FIELDS)),
-        (
-            _spec(
-                "mixed",
-                {p: {"origin": "datasheet"} for p in FIELDS}
-                | {"device.memory.derate": {"origin": "assumed"}},
-            ),
-            Method.DECLARED,
-            ["device.memory.derate"],
-        ),
+        (_spec("assumed"), Method.DECLARED, list(READS)),
+        (_spec("transferred-from:mi308x-hjbog18"), Method.DECLARED, list(READS)),
+        *[
+            (
+                _spec(
+                    "mixed",
+                    {p: {"origin": "datasheet"} for p in READS}
+                    | {path: {"origin": "assumed"}},
+                ),
+                Method.DECLARED,
+                [path],
+            )
+            for path in READS
+        ],
     ],
-    ids=["datasheet", "probed", "assumed", "transferred", "one-derate-assumed"],
+    ids=["datasheet", "probed", "assumed", "transferred"]
+    + [f"{path}-assumed" for path in READS],
 )
 def test_the_roofline_is_declared_iff_a_spec_field_it_reads_is_not_its_own(
     spec, method, named
@@ -186,6 +198,6 @@ def test_the_roofline_is_declared_iff_a_spec_field_it_reads_is_not_its_own(
     (term,) = backend.price(view((1, 900, True))).terms
 
     assert term.provenance.method is method
-    assert [p for p in FIELDS if p in term.provenance.note] == named
+    assert [p for p in READS if p in term.provenance.note] == named
     if named:
         assert "no successor" in term.provenance.note
