@@ -71,7 +71,9 @@ or ``inter_node``) names the link its KV transfers are priced on. A deployment
 whose ``kv_connector`` is ``compass`` is its prefill (``kv_producer``) or
 decode side: `engine(config)` makes it the ``engine-P`` or ``engine-D`` LP and
 binds the connector's transfer model. The write-request address comes with the
-deployment's own ``kv_transfer_config``. `frontend(config)` refuses such a
+deployment's own ``kv_transfer_config``. Above DP width one each DP rank is a
+member of its side's engine LP, and ATOM's DP dispatch on each side picks the
+rank a request runs on. `frontend(config)` refuses such a
 deployment unless the authority is standalone: a prefill-decode run spans two
 API servers that must share one.
 
@@ -192,26 +194,37 @@ def _dp(run: dict) -> int:
 def channel_table(run: dict):
     common = {k: run[k] for k in ("admission_path", "ipc_s", "stream_s")}
     if "kv_write_req_s" in run:
-        if _dp(run) != 1:
-            raise ValueError(
-                f"a prefill-decode run declares data_parallel_size {_dp(run)}; "
-                "its channel table has the channels of DP rank 0 only"
-            )
         return prefill_decode_table(
-            **common, router_s=run["router_s"], kv_write_req_s=run["kv_write_req_s"]
+            **common,
+            router_s=run["router_s"],
+            kv_write_req_s=run["kv_write_req_s"],
+            dp=_dp(run),
         )
     return single_engine_table(**common, dp=_dp(run))
 
 
 def _members(table, dp: int) -> dict | None:
-    """At DP width above one, the engine LP's members: each rank owns its ``#dp<rank>`` channels."""
+    """At DP width above one, each engine LP's members: rank ``dp<r>`` owns the
+    channels whose ``#`` tag names it at that LP's end, ``#dp<r>`` or, on a
+    channel between two engine LPs, ``#dp<sender rank>.dp<receiver rank>``."""
     if dp == 1:
         return None
-    names = [c.name for c in table.channels_into(ENGINE) + table.channels_from(ENGINE)]
+
+    def rank(c, lp):
+        tags = c.name.rpartition("#")[2].split(".")
+        return tags[0] if c.source == lp else tags[-1]
+
     return {
-        ENGINE: {
-            f"dp{r}": [n for n in names if n.endswith(f"#dp{r}")] for r in range(dp)
+        lp: {
+            f"dp{r}": [
+                c.name
+                for c in table.channels_into(lp) + table.channels_from(lp)
+                if rank(c, lp) == f"dp{r}"
+            ]
+            for r in range(dp)
         }
+        for lp in table.registry.ids()
+        if lp.name.startswith(ENGINE.name)
     }
 
 

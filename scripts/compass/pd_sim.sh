@@ -11,7 +11,8 @@
 # Usage: pd_sim.sh RUN_FILE
 #   MODEL               model directory (required)
 #   CLOCK_PORT PREFILL_PORT DECODE_PORT ROUTER_PORT KV_WRITE_REQ_PORT
-#   PROMETHEUS_PORT     the ports it uses, all on 127.0.0.1
+#   PROMETHEUS_PORT     the ports it uses, all on 127.0.0.1; at DP width n the
+#                       write requests take n*n ports from KV_WRITE_REQ_PORT
 #   DECODE_EXEC         a command prefix that runs the decode server elsewhere
 #                       on this node, e.g. `docker exec <container>`; on a
 #                       failure, stopping it there is the caller's
