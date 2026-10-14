@@ -4,7 +4,7 @@ gives back.
 
 Each record is the JSON lines a real runner writes, each step's device busy
 time (`d_busy_ns`) the known law's price. The fitted law is read by
-`StepLinearLaw` and priced by `StepLinearBackend.estimate`.
+`StepLinearLaw` and priced by `StepLinearBackend.price`.
 """
 
 import json

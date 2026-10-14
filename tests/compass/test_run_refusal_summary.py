@@ -48,7 +48,7 @@ NONE_APART = {"steps": 0, "fraction_of_predicted_seconds": 0.0}
 
 
 class AnalyticBelow(StepStubBackend):
-    """The stub's seconds, answered by an analytical rung after two rungs above
+    """The stub's seconds, answered by an analytical source after two sources above
     it declined a prefill of `tokens` or more."""
 
     def __init__(self, coefficients, tokens):
