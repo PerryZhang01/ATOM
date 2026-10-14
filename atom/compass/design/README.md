@@ -70,7 +70,7 @@ ATOM's real code owns still never touch a device.
 | **Prefix caching** | **REUSED, unmodified** | The hit *is* ATOM's hit, at ATOM's 64-token block granularity. Its effect on prefill cost is a cost-model term, not an inference. `03` |
 | **Scheduler / admission / chunking** | **REUSED, unmodified** | The whole point. Same decisions as a real run. `01`, `03` |
 | **API server, tokenizer** | **REUSED, real** | Real HTTP, real uvicorn, real tokenizer — run for its *effect*, with a modelled duration charged for its *time*. `06` D33 |
-| **Device memory readings** | **SUBSTITUTED** | Five readings come from the machine spec instead of the runtime, so an MI308X host can model an MI355X. The budget *arithmetic* around them is ATOM's. `03` D14, `05` |
+| **Device memory readings** | **SUBSTITUTED** | The five readings are built from the machine spec, the model and a `memory_readings` entry `compass measure memory` took on the target, instead of the runtime, so a host without the device can model it. The budget *arithmetic* around them is ATOM's. `03` D14, `07` D38 |
 | **Wall-clock time** | **SUBSTITUTED** | Every clock read and timer the Clock Authority can reach runs on virtual time, failure detectors and metrics cadence included. Only the Atomesh router's bounds and health check, set by its flags, and OS-level process-death detection stay real. `01` D5, `11` D72 |
 | **Collectives / comms** | **SIMULATED** (cost only) | Priced from measurements or the spec; no collective actually runs on a device. `07` D40 |
 | **Atomesh router** | **REUSED, configured** | No Compass change beyond the `--worker-request-timeout-secs` option (#478); a simulated launch sets it large and switches the health check and circuit breaker off. The simulated timeline rides carriers the router already relays: the `compass` entry of the `tracestate` header on requests, a field in `kv_transfer_params` on the prefill-to-decode forward, and SSE comment lines on streamed output. `01` D7, `06` D30 |
@@ -152,11 +152,13 @@ document that owns it. Nothing in `01`–`11` is outside this diagram.
 
 ```
   +=====================================================================+
-  |  L5  TOOLING          compass plan | discover | trace |             |
-  |                       measure {ops,collectives,steps,memory} |      |
-  |                       validate | explain                            |
-  |                       spec probes . merge . validate . explain      |
-  |                       flags, precedence, the `compass` executable   |
+  |  L5  TOOLING          compass record | trace {steps,ops} |          |
+  |                       measure {steps,ops,memory} |                  |
+  |                       fit {steps,ops,host} | run; the bench;        |
+  |                       step fit's planner, inside measure steps      |
+  |                       spec package: probes . merge . validate .     |
+  |                       explain, run by per-machine scripts           |
+  |                       flags, precedence, the `compass` entry        |
   |                                                docs 07, 05, 13      |
   +=====================================================================+
   |  L4  WORKLOAD         clock client  |  compass stamps on the wire   |
@@ -189,6 +191,8 @@ document that owns it. Nothing in `01`–`11` is outside this diagram.
   +=====================================================================+
   |  L0  ARTIFACTS        machine_spec   op_graph      price_list       |
   |                       region_terms   memory_readings coverage_hull  |
+  |                       shape_population  step_measurement            |
+  |                       step_law  host_laws  step fit bundle          |
   |                       keys . digests . fingerprints . invalidation  |
   |                                                    docs 05, 07      |
   +=====================================================================+
@@ -218,11 +222,11 @@ document that owns it. Nothing in `01`–`11` is outside this diagram.
 | L3 | Analytic laws (tier 0) | [`10_analytic_laws.md`](10_analytic_laws.md) | D63–D70 |
 | L3 | Step fit backend (tier a), a stage-2 candidate | [`17_step_fit_backend.md`](17_step_fit_backend.md) | D96–D105 |
 | L4 | Harness contract, wire fields, adapter | [`06_workload_harness_contract.md`](06_workload_harness_contract.md) | D27–D35 |
-| L5 | `compass plan` and the calibration phases | [`07_calibration_toolchain.md`](07_calibration_toolchain.md) | D36–D43 |
+| L5 | The calibration phases, the measurement bench and the recommended flow | [`07_calibration_toolchain.md`](07_calibration_toolchain.md) | D36–D43 |
 | L5 | Machine spec schema and probes | [`05_machine_spec_and_probes.md`](05_machine_spec_and_probes.md) | D24–D26 |
 | L0 | Artifact store, keys, invalidation | [`07`](07_calibration_toolchain.md) | D41, D43 |
 | — | Validation protocol (judges all of it) | [`08_validation_protocol.md`](08_validation_protocol.md) | D43.1, D44–D52 (+ D50.1, D50.2) |
-| L5 | Configuration surface: flags, precedence, the `compass` CLI | [`13_configuration_surface.md`](13_configuration_surface.md) | D78–D81 |
+| L5 | Configuration surface: flags, precedence, the `compass` commands with their inputs and outputs | [`13_configuration_surface.md`](13_configuration_surface.md) | D78–D81 |
 | L2/L3 | Speculative decoding and MTP | [`14_speculative_decoding.md`](14_speculative_decoding.md) | D82–D87 |
 | L1/L3 | Parallelism: TP, DP, PP, EP | [`15_parallelism_support.md`](15_parallelism_support.md) | D88–D94 |
 | — | Open items, assumptions, gaps | [`12_open_items.md`](12_open_items.md) | — |
@@ -463,7 +467,7 @@ The documents use these precisely; a reader will bounce off without them.
 | **treatment** | a factor that moves cost and is invisible to every feature in the model. Uniform MoE routing under DP is one. Decode **row order** is one to tier b's op-level IR. Tier a's coarse law prices it with `rowmod(k)` (`09` D61); step fit's residual reads it (`17` D100). |
 | **tier** | which cost model was asked (0 analytic / a coarse / b op-level). Orthogonal to provenance. |
 | **refusal** | a declined answer with a named reason. Refusals are results, not errors, and are preferred to fallbacks everywhere. A **refused step** is one no rung of the resolver ladder answered: it costs 0 s, the run continues, and any refusal makes the run a coverage report (`08` D50.1). A rung that declines while a lower one answers is a fall-through, and an analytic or extrapolated answer is reported apart; neither is a refusal. |
-| **step fit** | the tier-a backend of `17`: a grid of step measurements looked up per batch, plus a residual, fitted on replayed batches, for what the grid's coordinates cannot see (row order, raggedness). |
+| **step fit** | the tier-a backend of `17`: a grid of step measurements looked up per batch, plus a residual, fitted on real-run step times, bench replays or both, for what the grid's coordinates cannot see (row order, raggedness). |
 | **complete cell** | a cell of step fit's grid whose every corner was measured. Step fit answers only inside one, by exact hit or interpolation; anywhere else it refuses. |
 | **recipe** | step fit's feature functions and the constants frozen with them. Configuration supplies geometry and hardware values, a fit supplies coefficients, and a recipe's version changes only when a function does. |
 | **bundle** | step fit's artifact: a grid, a recipe and the residual fitted with them, identified by a `07` D41 key and a digest, never by a path. |
@@ -514,13 +518,13 @@ The documents use these precisely; a reader will bounce off without them.
 | [`03`](03_memory_and_kv_model.md) | Memory Model and the KV Pool | **Do not simulate the KV pool** — ATOM's real one is pure arithmetic. Substitute the five device readings, never the arithmetic. How a prefix-cache hit reaches the cost model. Validate per term, never as a sum. |
 | [`04`](04_model_capture_and_cost_ir.md) | Model Capture and the Cost IR | Capture with `TorchDispatchMode` + `FakeTensorMode` + `ShapeEnv`. A hierarchical, symbolic, stream-annotated IR whose `Repeat` nests and tolerates non-contiguous layer patterns. **Opaque leaves** are priced, not decomposed. |
 | [`10`](10_analytic_laws.md) | Analytic Laws (Tier 0) | Cost and memory from device parameters and model geometry, with no measurement of the subject. Three classes: exact from geometry, device-parameterised, policy-determined. Declared accuracy goals with **ranking** as the primary gate. **The most speculative document here.** |
-| [`17`](17_step_fit_backend.md) | Step Fit Backend (Tier a) | A measured grid of whole forwards, answered only from complete cells, plus a residual fitted on replayed batches. A stage-2 candidate, graded by stage 2's protocol and off the stage-2 path for now (#627). |
+| [`17`](17_step_fit_backend.md) | Step Fit Backend (Tier a) | A measured grid of whole forwards, answered only from complete cells, plus a residual fitted on real-run step times, bench replays or both. A stage-2 candidate, graded by stage 2's protocol and off the stage-2 path for now (#627). |
 
 ### Part III — How the data is made
 
 | Doc | Title | What it settles |
 |---|---|---|
-| [`07`](07_calibration_toolchain.md) | Calibration and Benchmarking Toolchain | `compass plan` as the single entry point, and one recommended flow it emits. The minimal recipe: one full-engine run at TP1, plus one TP2 transfer test, plus a startup per width. Four classes of communication pricing. The artifact store, its keys and its invalidation matrix. |
+| [`07`](07_calibration_toolchain.md) | Calibration and Benchmarking Toolchain | The phases and the commands that run them; the backend that needs a measurement plans it; the bench is `EngineCore` without its scheduler, with one window for every step. One recommended flow per half, steps and ops. The minimal recipe: one full-engine run at TP1, plus one TP2 transfer test, plus an engine start per configuration (`measure memory`). Four classes of communication pricing. The artifact store, its keys and its invalidation matrix. |
 | [`09`](09_fitting_and_law_selection.md) | Fitting and Law Selection | How measurements become a model: fit relative error, per-rung decode, hull guards not bounding boxes, and why leave-one-out cannot choose a family. Owns coverage geometry for every other document. |
 
 ### Part IV — How it is driven and judged
@@ -535,7 +539,7 @@ The documents use these precisely; a reader will bounce off without them.
 
 | Doc | Title | What it settles |
 |---|---|---|
-| [`13`](13_configuration_surface.md) | The Configuration Surface | Three homes for a setting, and the test that assigns them. Precedence is CLI > env > artifact > **refuse**. The engine-side flags, one `compass` executable, and an audit of what is deliberately *not* a flag. |
+| [`13`](13_configuration_surface.md) | The Configuration Surface | Three homes for a setting, and the test that assigns them. Precedence is CLI > artifact > **refuse**, with no environment tier. `compass run`'s flags, handed to ATOM in a run file; one `compass` entry, the only way users reach Compass, whose commands, with their inputs and outputs, run the toolchain, the original ones deprecated; one instance per `record` or `run`, serving client runs started apart; and an audit of what is deliberately *not* a flag. |
 | [`14`](14_speculative_decoding.md) | Speculative Decoding and MTP | Three of the four changes are routine. Acceptance is a **declared input** through ATOM's existing flags, fed the *measured per-position distribution* rather than a mean. No new cost form — decode becomes the `N_Q = 1` case of the general one. |
 | [`15`](15_parallelism_support.md) | Parallelism Support | One frame of four questions per strategy. **Only PP adds logical processes** - TP, DP and EP each sit behind a barrier ATOM already has. DP is the one that couples *scheduling decisions*, through a per-forward collective that rewrites the batch; both its collectives run for real, because both reduce over scheduling metadata rather than model outputs. Explicit M1/M2 split; PP after v1. |
 
@@ -590,7 +594,7 @@ The documents use these precisely; a reader will bounce off without them.
 | D28 | Stamps on the **real** endpoint, both directions, in carriers a real server ignores: a `tracestate` entry in, SSE comment lines out |
 | D30 | Ride the simulated timeline on carriers Atomesh already forwards, `kv_transfer_params` on the prefill-to-decode hop among them; Atomesh needs zero changes |
 | D36 | Three tiers: analytic, coarse empirical, op-level empirical. Compass models a device it has been measured on |
-| D37 | `compass plan` — the tool tells the user what to measure |
+| D37 | The tool tells the user what to measure: the backend that needs a measurement plans it |
 | D45 | The real-vs-real spread is the tolerance; a metric must be stable **and** sensitive |
 | D3.2 | Always-on causality detectors: a straggler, checked on receipt and at each drain, fails the run rather than warning; a stall the Clock Authority cannot see waits for ever and prints one `DIAG_S` diagnostic, never aborting; a CI clock-source lint |
 | D3.3 | The Clock Authority ships two deployment forms from one implementation: co-hosted by default, standalone for multi-container runs |

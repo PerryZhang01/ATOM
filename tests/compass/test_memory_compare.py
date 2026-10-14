@@ -448,7 +448,7 @@ def live_readings(spec, qwen, tp_width=1):
     return device_readings(
         spec,
         tp_width=tp_width,
-        model=ModelTerms.from_declared_config(
+        model=ModelTerms.from_config(
             qwen,
             parameter_count=PARAMETERS,
             tp_size=tp_width,

@@ -2,7 +2,7 @@
 """One request end to end through ATOM's real serving stack on the simulated clock.
 
 A run is ATOM's API server started with ``--compass-run``: its engine core and
-TP1 worker processes, the Compass runner priced by `ShapeStubBackend`, and
+TP1 worker processes, the Compass runner priced by `StepStubBackend`, and
 the Clock Authority co-hosted in the API server. The traffic LP is `Traffic`
 below, in this process. The run is made twice, in two process trees with
 different `PYTHONHASHSEED`, and the two step tables the authority writes are
@@ -32,7 +32,7 @@ import torch
 from test_memory_readings import DOCUMENT, TOKENIZER
 
 from atom.compass import run as compass_run
-from atom.compass.backends.shape import Coefficients
+from atom.compass.backends.step_stub import Coefficients
 from atom.compass.carriers import sse_stamp, tracestate_with
 from atom.compass.clock import LpId
 from atom.compass.clock_transport import connect
@@ -205,7 +205,7 @@ def _run_file(out: Path, **overrides) -> Path:
         "admission_path": "serving",
         "ipc_s": 2.0**-14,
         "stream_s": 2.0**-12,
-        "coefficients": dataclasses.asdict(Coefficients()),
+        "step_stub": dataclasses.asdict(Coefficients()),
         "machine": DOCUMENT,
         "parameter_count": 8_000_000_000,
         "out_dir": str(out),

@@ -34,16 +34,14 @@ The declared scope boundary that follows, stated so it is not discovered as a
 gap: Compass models a **dedicated** device. It will not predict the OOM a shared
 box produces and will not reproduce a neighbour-induced admission cliff.
 
-**Two of the five `peak_torch` terms are not obtainable here.** Weights are
-exact from a meta build deduped by storage -- at every width on both models
-tested -- and buffers need a recording, because the formula that matched the
-0.6B was 4x wrong on the 27B. A meta build needs a module
-tree, which needs the engine, which this tier does not import; and there is no
-recording of a card nobody has run. So `ModelTerms` takes those two terms rather
-than deriving them, with no default -- the same shape as the spec's "a runtime
-constant has no default" rule, and for the same reason. `from_declared_config`
-fills all three with declared formulas and labels every one of them, unless a
-real run measured the activation term's bytes per token in the machine spec.
+**Two of the five `peak_torch` terms are not derivable here.** Weights are
+exact from a meta build deduped by storage, and buffers need a recording,
+because the formula that matched the 0.6B was 4x wrong on the 27B. A meta build
+needs a module tree, which needs the engine, which this package does not import;
+the simulated runner builds one and hands it in. `from_config` reads
+the weights off that tree's parameter storages when it is given one, and fills
+the rest with declared formulas, labelling every one of them, unless a real run
+measured the activation term's bytes per token in the machine spec.
 """
 
 from __future__ import annotations
@@ -125,29 +123,38 @@ class ModelTerms:
     activations: Term
 
     @classmethod
-    def from_declared_config(
+    def from_config(
         cls,
         config,
         *,
-        parameter_count: int,
+        parameter_count: int | None = None,
         tp_size: int,
         warmup_tokens: int,
         dtype_bytes: int | None = None,
         config_json: dict | None = None,
-        measured_activations: tuple[str, float] | None = None,
+        activations_entry: tuple[str, float] | None = None,
+        tree=None,
     ) -> ModelTerms:
-        """All three from geometry and declared coefficients, each labelled.
+        """All three, each labelled with where its bytes came from.
 
         `config_json` is the model's config.json as loaded; without it, a
         field `config`'s class has a default for is refused, since the
         default cannot be told from a stated value. An MoE model, one that
         states `moe_intermediate_size`, takes its live intermediate from its
-        expert fields.
+        expert fields, or from `intermediate_size` when it states dense layers
+        wider than that.
+
+        `tree` is the model's module tree built on the meta device, with
+        ATOM's own quantisation config and process groups; the weights are the
+        bytes of its parameter storages, each storage once, so a tied
+        `lm_head` that shares the embedding's storage counts once, as it is
+        resident once. Without it, the weights are `parameter_count` at one
+        dtype, sharded by `tp_size`.
 
         With fake models, a declared formula suffices and must say so.
-        Every term below is `Basis.DECLARED` and every one names its
-        successor, because none of the three is its eventual source: weights
-        are owed a meta build, buffers a recording, and
+        Every declared term below names its successor, because none of the
+        three formulas is its eventual source: weights are owed a meta
+        build, buffers a recording, and
         activations a liveness walk over a traced op graph *plus* the
         per-leaf invisible-scratch constants -- and the second is the one
         with no law behind it. The measured spread that makes it load-bearing
@@ -155,7 +162,7 @@ class ModelTerms:
         difference between -35.0% and +3.4% held out. A formula does not
         stand in for that on a real model.
 
-        `measured_activations`, what `MachineSpec.activations_for` returns,
+        `activations_entry`, what `MachineSpec.activations_for` returns,
         replaces the activation formula with that entry's bytes per token
         times `warmup_tokens`; the scratch is inside it.
         """
@@ -199,7 +206,16 @@ class ModelTerms:
             klass = type(text)
             named = sorted(k for k in vars(text) if "shared" in k)
             shared, why = _stated(config, file, "n_shared_experts"), ""
-            if shared is None:
+            if shared is None and hasattr(klass, "shared_expert_intermediate_size"):
+                # One shared expert sized by its own width (Qwen2MoeConfig and
+                # its successors), live beside the routed ones.
+                width = int(_geometry(config, file, "shared_expert_intermediate_size"))
+                intermediate = routed * int(experts) + width
+                live = (
+                    f"({routed} num_experts_per_tok x {experts} moe_intermediate_size"
+                    f" + {width} shared_expert_intermediate_size)"
+                )
+            elif shared is None:
                 if named:
                     raise MemoryRefusal(
                         "this config states no `n_shared_experts`, and the "
@@ -214,21 +230,49 @@ class ModelTerms:
                 # expert, in its fields or in config.json (Qwen3MoeConfig),
                 # has none: 0 is its geometry.
                 shared, why = 0, f" ({klass.__name__} has none)"
-            shared = int(shared)
-            intermediate = (routed + shared) * int(experts)
-            live = (
-                f"({routed} num_experts_per_tok + {shared} n_shared_experts{why}) "
-                f"x {experts} moe_intermediate_size"
+            if shared is not None:
+                shared = int(shared)
+                intermediate = (routed + shared) * int(experts)
+                live = (
+                    f"({routed} num_experts_per_tok + {shared} n_shared_experts{why}) "
+                    f"x {experts} moe_intermediate_size"
+                )
+            # ATOM builds a dense MLP in these layers instead; the wider form
+            # is the one live at the peak.
+            if (
+                _stated(config, file, "first_k_dense_replace")
+                or _stated(config, file, "mlp_only_layers")
+                or (_stated(config, file, "decoder_sparse_step") or 1) > 1
+            ):
+                dense = int(_geometry(config, file, "intermediate_size"))
+                intermediate = max(dense, intermediate)
+                live = f"max({dense} intermediate_size, {live})"
+        if tree is not None:
+            # Parameters that share a storage (a tied head, a view) are one
+            # allocation; `_cdata` names the storage even on meta, where every
+            # data pointer is zero.
+            storages = {
+                p.untyped_storage()._cdata: p.untyped_storage().nbytes()
+                for p in tree.parameters()
+            }
+            weights = Term(
+                "weights",
+                sum(storages.values()),
+                Basis.OBTAINED,
+                f"{len(storages)} parameter storages of a meta build of "
+                f"{type(tree).__name__}",
             )
-        weights = Term(
-            "weights",
-            parameter_count * dtype_bytes // tp_size,
-            Basis.DECLARED,
-            f"{parameter_count} stated parameters x {dtype_bytes} B / TP{tp_size}",
-            "a meta build deduped by storage replaces this and is "
-            "exact at every width; this shards every parameter, where a real "
-            "stack replicates its norms",
-        )
+        else:
+            weights = Term(
+                "weights",
+                parameter_count * dtype_bytes // tp_size,
+                Basis.DECLARED,
+                f"{parameter_count} stated parameters x {dtype_bytes} B / "
+                f"TP{tp_size}",
+                "a meta build deduped by storage replaces this and is "
+                "exact at every width; this shards every parameter, where a "
+                "real stack replicates its norms",
+            )
         buffers = Term(
             "buffers",
             positions * rotary_dim * dtype_bytes,
@@ -265,8 +309,8 @@ class ModelTerms:
             "(ModelRunner._piecewise_per_token_bytes), over one live "
             "layer rather than all of them",
         )
-        if measured_activations is not None:
-            entry, per_token = measured_activations
+        if activations_entry is not None:
+            entry, per_token = activations_entry
             activations = Term(
                 "activations",
                 int(warmup_tokens * per_token),

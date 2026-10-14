@@ -12,10 +12,10 @@ backlog. Nothing here is a decision; every decision lives in its topic's decisio
 
 1. **Load-bearing assumptions** — hold up large parts of the design; each has a check plan
 2. **Missing topics** — design points nobody has written yet, with a recommendation
-3. **TODO register** — per topic. T10, T13, T15, T22, T28, T48, T65, T71, T84 and T91 are struck
-   through as done, and T77 was opened and closed by P0.1. The register is the rows of section 3
-   below and nothing else: prose elsewhere in this file names T-numbers that belong to
-   other branches. It is allocated across parallel task branches, so not contiguous
+3. **TODO register** — per topic. A row struck through or marked closed is done or
+   retired, and says by what. The register is the rows of section 3 below and nothing
+   else: prose elsewhere in this file names T-numbers that belong to other branches. It is
+   allocated across parallel task branches, so not contiguous
 4. **Cross-cutting issues and pending amendments**
 
 ---
@@ -106,13 +106,14 @@ M-f `14`; M-g `01` D3.5.
 
 | # | Item |
 |---|---|
-| T16 | Calibrate `compass plan`'s GPU-time estimates |
-| T17 | Draw the boundary of the standalone `ModelRunner` bench |
-| T18 | Verify a replayed step table reproduces the forward context faithfully |
+| ~~T16~~ | ~~Calibrate the campaign planner's GPU-time estimates~~ — retired 2026-10-13 on #851: no command plans the whole campaign (`07` D37) |
+| ~~T17~~ | ~~Draw the boundary of the standalone `ModelRunner` bench~~ — drawn 2026-10-13 on #851: `EngineCore` without its scheduler (`07` D39) |
+| T18 | Verify a batch replayed by rule reproduces the recorded step's forward context faithfully, MoE routing included |
 | T19 | Decide the artifact store's physical form |
 | T20 | Declared node + standalone benchmark for invisible collectives |
 | T21 | Establish whether Phase 1c transfers across width (the TP2 test run) |
 | ~~T22~~ | ~~Analytic laws as their own design topic~~ — **done**, now `10` |
+| T100 | Compare `measure memory`'s readings under ATOM's `--load_dummy` with a real load's on Qwen3.8-27B TP1 on MI308X; until they match, `measure memory` refuses `--load_dummy` (`07` D38) |
 | **T55** | Decide the treatment of `c10d::broadcast_`, which takes a `ProcessGroup` no artifact can hold — working answer since #815's ruling (2026-10-11): its device time is in the device-busy label, its launch in `W_post` (`07` D40) |
 | T86 | **aiter is a second executed source root, and no artifact key names it.** Opened 2026-09-21 by P0.6. D41 gives every artifact a provenance stanza naming *the* executed source root, and keys `price_list` on `(model, width, source-root digest)` — one root, ATOM's. But the EP group is constructed entirely in aiter (`15` D92), the MoE kernels and every collective are aiter's, and `aiter` is installed in the container's writable layer at `/app/aiter-test`, outside `/workspace` and discarded by `teardown.sh`. D43's matrix already invalidates `price_list`, `region_terms` and `memory_readings` on an AITER bump — but a fingerprint can only refuse on a version something recorded, and nothing records one. It is **not** a recoverability problem: that checkout is a clean `https://github.com/ROCm/aiter.git` at a commit on `origin/main`, so the hash resolves. It is a provenance gap, and the machinery already exists — `scripts/compass/gate_gpu.sh` resolves aiter's checkout with `atom/compass/artifacts/provenance.py::module_root("aiter")`, which does not import aiter, and takes `git describe --tags --always --dirty`, comparing it against `BASE_AITER`. W2.4 adopts the same call. **Two aiter versions are in circulation on this project right now**: `v0.1.20-103-g23f83724f` in `jgong5_vllm` and `v0.1.21.dev0-49-gf4e7c7509` on node 18, so this is an observed divergence rather than a hypothetical one. The decision half — whether an aiter bump invalidates an EP artifact or only warns — is the owner's, and it is cheap to take before the first artifact exists rather than after. |
 | T87 | **`07`'s price-list table states the MoE all-to-all's block-count cap as one number, and it is two.** Opened 2026-09-21 by P0.6. `_get_dispatch_config` returns `min(128, CU)` blocks at 16 warps for **prefill** and `min(64, CU)` at 4 warps for **decode** (`atom/model_ops/fused_moe/mori_prepare_finalize.py`), so on node 18's 80-CU MI308X the cap is 80 for prefill and 64 for decode, not one figure. aiter's own config-time default is a hard-coded 80 for IntraNode and 32 plus 16 RDMA for InterNodeV1 (`aiter/dist/device_communicators/all2all.py::MoriAll2AllManager._make_all2all_kwargs`), overridden per call. The cell that hides the split is the `exclusive` row of `07`'s calibration table; `04`'s `exclusive` join-policy text has the same single-number phrasing. Reporting one number for two is the aggregate-without-decomposition failure principle 7 names. |
@@ -167,9 +168,10 @@ M-f `14`; M-g `01` D3.5.
 
 | # | Item |
 |---|---|
-| T57 | Generate the `ATOM_COMPASS_*` environment twins from the flag table rather than hand-writing them |
+| ~~T57~~ | ~~Generate the `ATOM_COMPASS_*` environment twins from the flag table rather than hand-writing them~~ — retired 2026-10-14 on #851: there is no environment tier (`13` D79) |
 | T58 | Decide whether a per-leaf tier override is worth the reproducibility cost |
-| T96 | Reconcile `13` D79 and D80 with the run file the code selects a backend by (`--compass-run`, `atom/compass/run/__init__.py::runner`): `13` rejects a Compass config file, the code reads one (`17` D103) |
+| ~~T96~~ | ~~Reconcile `13` D79 and D80 with the run file the code selects a backend by (`--compass-run`, `atom/compass/run/__init__.py::runner`): `13` rejects a Compass config file, the code reads one (`17` D103)~~ — settled 2026-10-13 on #851: `compass run` takes flags only, and the run file is its internal transport (`13` D79, D80) |
+| T99 | A simulated server outlives its client (`13` D80): `01` D3 ends a run when no essential work is left, and must end a client run there instead, the clock then waiting for the next client |
 
 ### Topic 14 — speculative decoding and MTP
 
@@ -258,9 +260,9 @@ Beyond the per-topic TODOs.
 5. **Scheduling fidelity is unobservable at saturation.** Some cell needs deliberate slack.
 6. **Multi-node DP is implemented but not hardware-validated** — `docs/distributed_guide.md`
    §9 carries the banner. If paired evidence is needed there, the real side may not exist.
-7. **A user guide is a deliverable, not documentation debt.** `compass plan` is designed
-   so the tool tells the user what to measure, which only works if the flows, the
-   recommended calibration sequence and the flag surface are written down for a reader
+7. **A user guide is a deliverable, not documentation debt.** The toolchain is designed
+   so the tool tells the user what to measure (`07` D37), which only works if the flows,
+   the recommended calibration sequence and the flag surface are written down for a reader
    who was not in these design conversations. Requested during review; belongs in the
    execution plan as its own task, not as a trailing chore.
 8. 7. **ATOM's `main` moves while Compass is built.** The seam (`Config.runner_qualname`) has
@@ -279,7 +281,7 @@ Corrections identified while writing later documents, not yet applied to earlier
 |---|---|
 | `02`, `04` | "Two tiers" becomes **three** — analytic/roofline is a tier in its own right (`07` D36), not merely rung 4 of the resolver ladder |
 | `02` | Extend `CostBackend` with the resolver ladder and compositional `provenance_mix` |
-| `05` | D26's `transfer` probe is **deferred**: no cross-hardware transfer of empirical data (`07` D36) |
+| `05` | **Applied** 2026-10-14 (#937): D26 has no `transfer` probe; no cross-hardware transfer of empirical data (`07` D36) |
 | `04` | **Applied.** D18's open issue *"whether ATOM's real model classes trace cleanly under this mode at TP>1"* is answered yes and the measurement is now in `04` itself. What remains an amendment is the other half: the trace is **concrete, not symbolic** — 0 non-numeric shape entries of 13,047 — so it does not carry D18's argument against route D, and D18 should say so where it makes that argument (T81) |
 | `04` | D18's five `torch.cuda` stubs are not enough to import ATOM on this stack. Construction needs three more (`get_device_properties`, `current_device`, `get_device_capability` — the first is read at *import* by aiter's Triton attention configs) and running `ModelRunner.__init__` needs fourteen more, tagged `needed_for: "model_runner"` by the capture module's `install_runner_stubs` (the import-path set carried `needed_for: "import"`) and pinned by name in that module's tests — **both the module and those tests have since been withdrawn from the tree**, so the counts stand as measured and nothing here re-takes them. **Corrected since: fourteen were stubbed, nine are needed.** `tests/compass/test_capture_real_model.py` counts every read of every stub over a whole capture, and of its fourteen runner-group stubs a capture reads nine; `empty_cache`, `max_memory_allocated`, `mem_get_info`, `memory_reserved` and `reset_peak_memory_stats` were never read, leave `graph_digest` unchanged at TP1 and TP2 when removed, and are no longer stubbed (#269). "Needs fourteen more" read a stub list as a need, which is what the read count exists to separate. `get_device_properties` and `mem_get_info` are *declared readings* in the `03` D14 sense and must be passed in, never read from a host |
 | `04` | D18 does not cover raw `@triton.jit` launches. They bypass the dispatcher entirely, so `FakeTensorMode` cannot fake them and the first one reached kills the trace in `triton/backends/amd/driver.py::HIPLauncher.__call__`. Any inventory taken with them skipped is a **diagnostic**, not a capture, and must be labelled so wherever it is reported |

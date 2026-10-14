@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Step fit's residual: the lookup times a factor fitted over the rows' features
+"""The step grid's residual: the lookup times a factor fitted over the rows' features
 in batch order, answering only inside the hull it was fitted on.
 
 Decode steps come from ATOM's `Scheduler` and are priced through the runner's
@@ -19,7 +19,7 @@ import math
 from fractions import Fraction
 
 import pytest
-from test_backend_step_fit import (
+from test_backend_step_grid import (
     MIDDLE,
     chunks,
     decode,
@@ -31,10 +31,10 @@ from test_backend_step_fit import (
 )
 from test_dp_step_max import runner
 
-from atom.compass.backends import RequestShape, Species
+from atom.compass.backends import Method, RequestShape
 from atom.compass.backends.shape import sum_context
-from atom.compass.backends.step_fit import equivalent_shape
-from atom.compass.backends.step_fit_residual import V1, Recipe, Residual
+from atom.compass.backends.step_grid import equivalent_shape
+from atom.compass.backends.step_grid_residual import V1, Recipe, Residual
 
 HOMOGENEOUS = [767] * 32
 GROUPED = [575] * 16 + [959] * 16
@@ -111,15 +111,15 @@ def test_the_term_is_fitted_and_its_detail_holds_the_lookup_and_each_member():
     backend = eager(residual=residual(o=ORDERED, e=exp))
     rows = [(1, 576, True), (1, 960, True)] * 16
 
-    (term,) = backend.estimate(view(*rows)).terms
+    (term,) = backend.price(view(*rows)).terms
     factor = 1.3046875 + math.exp(0.484375)
     assert term.seconds == 4261e-6 * factor
-    assert term.provenance.species is Species.FITTED
+    assert term.provenance.method is Method.ESTIMATED
     assert term.provenance.detail == (
         "lookup 0.004261 s, interpolated; decode cell B=32, c 512..1024; "
         f"residual {factor!r} = 1.0 x o 1.3046875 + 1.0 x e {math.exp(0.484375)!r}"
     )
-    assert backend.describe().endswith("; recipe step-fit-residual v1, members o, e")
+    assert backend.describe().endswith("; recipe step-grid-residual v1, members o, e")
 
 
 # Both hulls bound order <= 1/4; the second also holds raggedness at 1, so its
@@ -155,7 +155,7 @@ def test_a_step_outside_the_residuals_hull_refuses_naming_it(
         0.0,
         (
             (
-                "cost:step-fit: the step at tokens=0.03125, "
+                "cost:step-grid: the step at tokens=0.03125, "
                 "query_square=3.05176e-05, query_context=0.0234375, "
                 f"{named} is outside the residual's hull"
             ),
@@ -201,7 +201,7 @@ def test_a_member_or_factor_that_is_not_positive_and_finite_refuses(members, sai
     seconds, refused = price(ALTERNATING, backend)
     assert seconds == 0.0
     assert refused == (
-        f"cost:step-fit: the residual's {said}, which is not a positive finite factor",
+        f"cost:step-grid: the residual's {said}, which is not a positive finite factor",
     )
 
 

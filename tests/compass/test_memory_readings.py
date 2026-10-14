@@ -99,7 +99,7 @@ DOCUMENT = {
     "provenance": {
         "authored_by": "tests/compass/test_memory_readings.py",
         "date": "2026-09-22",
-        "method": "declared",
+        "origin": "assumed",
     },
     "host": {
         "cpu": {"cores_physical": 96, "cores_logical": 192},
@@ -239,7 +239,7 @@ def readings_at(spec, qwen, tp_width):
     return device_readings(
         spec,
         tp_width=tp_width,
-        model=ModelTerms.from_declared_config(
+        model=ModelTerms.from_config(
             qwen,
             parameter_count=PARAMETERS,
             tp_size=tp_width,
@@ -388,7 +388,7 @@ def test_a_configuration_that_does_not_fit_refuses_rather_than_clamping(spec, qw
         device_readings(
             spec,
             tp_width=1,
-            model=ModelTerms.from_declared_config(
+            model=ModelTerms.from_config(
                 qwen,
                 parameter_count=400_000_000_000,
                 tp_size=1,
@@ -409,7 +409,7 @@ def test_the_predicting_function_cannot_be_spent_as_the_reserving_one(spec, qwen
         device_readings(
             spec,
             tp_width=1,
-            model=ModelTerms.from_declared_config(
+            model=ModelTerms.from_config(
                 qwen,
                 parameter_count=PARAMETERS,
                 tp_size=1,
@@ -504,10 +504,10 @@ def test_an_absent_partial_rotary_factor_says_so_in_the_table(qwen):
     # row must not look the same as a config that states 1.0.
     full = copy.deepcopy(qwen)
     del full.partial_rotary_factor
-    stated = ModelTerms.from_declared_config(
+    stated = ModelTerms.from_config(
         qwen, parameter_count=PARAMETERS, tp_size=1, warmup_tokens=WARMUP_TOKENS
     )
-    assumed = ModelTerms.from_declared_config(
+    assumed = ModelTerms.from_config(
         full, parameter_count=PARAMETERS, tp_size=1, warmup_tokens=WARMUP_TOKENS
     )
     assert "absent from config, assumed" in assumed.buffers.source
@@ -519,7 +519,7 @@ def test_the_model_dtype_sizes_the_model_terms(qwen):
     # Read off the config, not a module constant: a term sized in fp32 where
     # the tensors are resident in bf16 is twice what the model holds.
     assert str(qwen.dtype).endswith("bfloat16")
-    terms = ModelTerms.from_declared_config(
+    terms = ModelTerms.from_config(
         qwen, parameter_count=PARAMETERS, tp_size=1, warmup_tokens=WARMUP_TOKENS
     )
     assert terms.buffers.nbytes == 262_144 * 64 * 2
@@ -555,12 +555,12 @@ def test_a_measured_entry_prices_the_activations_only_for_its_model_and_width(qw
     arch, digest = ACTIVATIONS["applies_to"][0], ACTIVATIONS["fingerprint"]
 
     def activations(architecture, fingerprint, tp_width):
-        return ModelTerms.from_declared_config(
+        return ModelTerms.from_config(
             qwen,
             parameter_count=PARAMETERS,
             tp_size=tp_width,
             warmup_tokens=WARMUP_TOKENS,
-            measured_activations=measured_spec.activations_for(
+            activations_entry=measured_spec.activations_for(
                 architecture, fingerprint, tp_width
             ),
         ).activations
@@ -592,7 +592,7 @@ def test_a_config_with_no_dtype_refuses_rather_than_assuming_one(qwen):
     nameless = copy.deepcopy(qwen)
     del nameless.dtype
     with pytest.raises(MemoryRefusal, match="states no `dtype`, and every byte"):
-        ModelTerms.from_declared_config(
+        ModelTerms.from_config(
             nameless,
             parameter_count=PARAMETERS,
             tp_size=1,
@@ -607,7 +607,7 @@ def test_a_config_missing_a_geometry_field_refuses_naming_that_field(qwen, field
     shapeless = copy.deepcopy(qwen)
     delattr(shapeless, field)
     with pytest.raises(MemoryRefusal) as refusal:
-        ModelTerms.from_declared_config(
+        ModelTerms.from_config(
             shapeless,
             parameter_count=PARAMETERS,
             tp_size=1,
@@ -626,7 +626,7 @@ def test_the_negative_box_refusal_carries_its_decomposition(spec, qwen):
         device_readings(
             spec,
             tp_width=1,
-            model=ModelTerms.from_declared_config(
+            model=ModelTerms.from_config(
                 qwen,
                 parameter_count=400_000_000_000,
                 tp_size=1,
@@ -679,7 +679,7 @@ def loaded(tmp_path, raw):
 
 
 def terms_of(config, config_json):
-    return ModelTerms.from_declared_config(
+    return ModelTerms.from_config(
         config,
         parameter_count=PARAMETERS,
         tp_size=1,
@@ -775,12 +775,6 @@ def test_a_bare_config_with_no_shared_expert_count_is_refused():
 @pytest.mark.parametrize(
     "extra,klass,named",
     [
-        # A class that sizes its shared expert by width, not by count.
-        (
-            {"model_type": "qwen2_moe"},
-            "Qwen2MoeConfig",
-            "shared_expert_intermediate_size",
-        ),
         # A class that counts its shared experts under another name.
         ({"model_type": "exaone_moe"}, "ExaoneMoeConfig", "num_shared_experts"),
         # A class with no shared-expert field, and a config.json that names one.
@@ -855,6 +849,95 @@ def test_a_field_neither_the_file_nor_hf_overrides_states_is_refused(tmp_path):
         tmp_path, without_positions(V4_PRO), {"num_hidden_layers": 4}
     )
     with pytest.raises(MemoryRefusal, match="states no `max_position_embeddings`"):
+        terms_of(config, config_json)
+
+
+# --- a shared expert sized by width, and dense layers beside the experts -----
+
+#: Qwen3.5-35B-A3B's config.json, the fields the model terms read. Its class
+#: sizes one shared expert by `shared_expert_intermediate_size`.
+QWEN3_5_35B_A3B = {
+    "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+    "model_type": "qwen3_5_moe",
+    "text_config": {
+        "model_type": "qwen3_5_moe_text",
+        "dtype": "bfloat16",
+        "head_dim": 256,
+        "hidden_size": 2048,
+        "max_position_embeddings": 262144,
+        "moe_intermediate_size": 512,
+        "num_experts": 256,
+        "num_experts_per_tok": 8,
+        "num_hidden_layers": 40,
+        "shared_expert_intermediate_size": 512,
+    },
+}
+
+
+@pytest.mark.parametrize(
+    "raw,klass,live",
+    [
+        (QWEN3_5_35B_A3B, "Qwen3_5MoeTextConfig", (8, 512, 512)),
+        (
+            {
+                **QWEN3_30B_A3B,
+                "model_type": "qwen2_moe",
+                "shared_expert_intermediate_size": 5632,
+            },
+            "Qwen2MoeConfig",
+            (8, 768, 5632),
+        ),
+    ],
+)
+def test_a_shared_expert_sized_by_width_prices_and_is_named(tmp_path, raw, klass, live):
+    config, config_json = loaded(tmp_path, raw)
+    assert type(getattr(config, "text_config", config)).__name__ == klass
+    routed, experts, width = live
+    activations = terms_of(config, config_json).activations
+    assert activations.nbytes == int(
+        WARMUP_TOKENS * 2 * (2.8 * 2048 + 2 * (routed * experts + width))
+    )
+    assert activations.source.endswith(
+        f" + 2 x ({routed} num_experts_per_tok x {experts} moe_intermediate_size"
+        f" + {width} shared_expert_intermediate_size))"
+    )
+
+
+def test_a_shared_expert_width_only_the_class_supplies_is_refused_by_name(tmp_path):
+    text = dict(QWEN3_5_35B_A3B["text_config"])
+    del text["shared_expert_intermediate_size"]
+    config, config_json = loaded(tmp_path, {**QWEN3_5_35B_A3B, "text_config": text})
+    with pytest.raises(MemoryRefusal) as refusal:
+        terms_of(config, config_json)
+    assert refusal.value.what == (
+        "this config states no `shared_expert_intermediate_size`, and the memory "
+        "model reads it"
+    )
+
+
+@pytest.mark.parametrize(
+    "raw,moe",
+    [
+        ({**V4_PRO, "first_k_dense_replace": 3}, 7 * 3072),
+        ({**QWEN3_30B_A3B, "mlp_only_layers": [0]}, 8 * 768),
+        ({**QWEN3_30B_A3B, "decoder_sparse_step": 2}, 8 * 768),
+    ],
+)
+@pytest.mark.parametrize("wider", [True, False])
+def test_stated_dense_layers_take_the_wider_of_the_two_forms(tmp_path, raw, moe, wider):
+    dense = moe + 1024 if wider else moe - 1024
+    config, config_json = loaded(tmp_path, {**raw, "intermediate_size": dense})
+    activations = terms_of(config, config_json).activations
+    hidden = raw["hidden_size"]
+    assert activations.nbytes == int(
+        WARMUP_TOKENS * 2 * (2.8 * hidden + 2 * max(dense, moe))
+    )
+    assert f" + 2 x max({dense} intermediate_size, (" in activations.source
+
+
+def test_dense_layers_need_their_width_stated(tmp_path):
+    config, config_json = loaded(tmp_path, {**V4_PRO, "first_k_dense_replace": 3})
+    with pytest.raises(MemoryRefusal, match="states no `intermediate_size`"):
         terms_of(config, config_json)
 
 

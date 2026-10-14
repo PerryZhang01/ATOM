@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from atom.compass.backends.shape import ShapeStubBackend
+from atom.compass.backends.step_stub import StepStubBackend
 from atom.compass.runner.overrides import (
     RunnerRefusal,
     _installed_backend,
@@ -14,7 +14,7 @@ from atom.compass.runner.overrides import (
 
 
 def test_an_installed_backend_is_the_one_read_back():
-    runner, backend = SimpleNamespace(), ShapeStubBackend()
+    runner, backend = SimpleNamespace(), StepStubBackend()
     install_cost_backend(runner, backend)
     assert _installed_backend(runner) is backend
 

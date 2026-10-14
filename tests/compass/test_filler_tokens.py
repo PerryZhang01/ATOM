@@ -17,7 +17,7 @@ import pytest
 from conftest import MockConfig
 from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 
-from atom.compass.backends.shape import ShapeStubBackend
+from atom.compass.backends.step_stub import StepStubBackend
 from atom.compass.runner import overrides
 from atom.compass.runner.overrides import (
     NonAllocatingRunner,
@@ -92,7 +92,7 @@ def _stops(tokenizer):
 class _Runner(NonAllocatingRunner):
     def __init__(self, config, stream=None):
         self.config = config
-        install_cost_backend(self, ShapeStubBackend())
+        install_cost_backend(self, StepStubBackend())
         if stream is not None:
             self._token_stream = stream
 

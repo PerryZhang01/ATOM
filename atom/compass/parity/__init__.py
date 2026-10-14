@@ -23,11 +23,12 @@ the first step where they part; timestamps are not part of a step's decision.
 
 Setting `ATOM_COMPASS_PARITY_RECORD` to a directory turns recording on: TP rank 0
 of each DP rank writes `dp<rank>.jsonl` there, replacing any earlier file.
-Unset, nothing is recorded. A runner with a `host_key` also writes it to
-`dp<rank>.key.json`. The simulated runner records from
-`NonAllocatingRunner.forward`; a real one records through `StepRecording`,
-composed into `RUNNER`, which the frontend names on a real run with the
-variable set.
+Unset, nothing is recorded. On its first step it also writes the engine its
+runner resolved to `dp<rank>.engine.json` (`README.md` says what it holds), and
+a runner with a `host_key` writes that to `dp<rank>.key.json`. The simulated
+runner records from `NonAllocatingRunner.forward`; a real one records through
+`StepRecording`, composed into `RUNNER`, which the frontend names on a real run
+with the variable set.
 
 A request is named by its key, because request ids are numbered per run: a
 digest of its whole prompt as its prefill windows carry it, taken when its final
@@ -54,6 +55,9 @@ from itertools import zip_longest
 import numpy as np
 
 ENV = "ATOM_COMPASS_PARITY_RECORD"
+#: The file in a real run's record directory holding when its workload was sent
+#: and when the server admitted each request.
+ARRIVALS = "arrivals.json"
 RUNNER = "atom.compass.parity.runner.RecordingModelRunner"
 #: Line keys that time a step rather than describe its decision.
 TIMESTAMPS = (
@@ -101,8 +105,9 @@ class StepRecord:
         rewrites batch fields in place, and written after it returns, with `t_enter_ns`
         and `t_exit_ns` read off `runner.step_clock_ns()` around it and
         `runner.step_stamps()` added; a line with a device window waits in
-        `pending` until the window closes. Returns `forward`'s reply, or None
-        without one.
+        `pending` until the window closes. Returns `forward`'s reply, or
+        without one the mode the view was built from, so a caller pricing the
+        step need not run the collective again.
         """
         from atom.compass.runner.projection import batch_view, forward_mode
 
@@ -158,7 +163,8 @@ class StepRecord:
             stamps, window = runner.step_stamps()
             mode = stamps.pop("forward_mode", None)
             line.update(stamps)
-        view = batch_view(before, mode or forward_mode(before, runner), runner)
+        mode = mode or forward_mode(before, runner)
+        view = batch_view(before, mode, runner)
         line["rows"] = [
             [r.query_tokens, r.context_tokens, r.decode] for r in view.requests
         ]
@@ -168,7 +174,7 @@ class StepRecord:
         self.pending.append((line, window))
         self.flush()
         self.step += 1
-        return reply
+        return mode if forward is None else reply
 
     def flush(self, wait: bool = False) -> None:
         """Write the lines whose device windows have closed, in step order.
@@ -192,6 +198,8 @@ def record_step(runner, batch, forward=None):
 
     With `forward`, it runs on `batch` whether or not the step is recorded,
     inside the line's timestamps when it is, and its reply is returned.
+    Without `forward`, a recorded step returns the `ForwardMode` it settled
+    and an unrecorded one None.
     """
     if not hasattr(runner, "_parity_record"):
         directory = os.environ.get(ENV)
@@ -203,8 +211,16 @@ def record_step(runner, batch, forward=None):
                     f"{ENV} records one file per DP rank, and under pipeline "
                     "parallelism each stage would write it."
                 )
+            from atom.compass.run.step_grid import BOUNDS, keyed
+
             dp_rank = runner.config.parallel_config.data_parallel_rank
             record = StepRecord(directory, dp_rank)
+            # By its first forward the runner has resolved its engine.
+            engine = keyed(runner.config) | {
+                name: getattr(runner.config, name)
+                for name in (*BOUNDS, "num_kvcache_blocks")
+            }
+            record.path.with_suffix(".engine.json").write_text(json.dumps(engine))
             key = getattr(runner, "host_key", None)
             if key is not None:
                 record.path.with_suffix(".key.json").write_text(json.dumps(key))
@@ -304,12 +320,20 @@ def read(directory) -> dict[int, list[dict]]:
 
     A request the record never named keeps its request id, so a record that
     ends inside a request's prefill parts from a full one at that request's
-    first step.
+    first step. With `ARRIVALS`, the worker-clock times a workload was sent,
+    the steps entered before the first send are the engine's start, not the
+    workload's: they are left out and the rest renumbered from 0.
     """
-    record = {}
-    for path in sorted(pathlib.Path(directory).glob("dp*.jsonl")):
+    directory, record, start = pathlib.Path(directory), {}, None
+    if (directory / ARRIVALS).exists():
+        start = min(json.loads((directory / ARRIVALS).read_text())["sent_ns"])
+    for path in sorted(directory.glob("dp*.jsonl")):
         steps = [json.loads(line) for line in path.read_text().splitlines()]
         keys = dict(pair for step in steps for pair in step.pop("named"))
+        if start is not None:
+            steps = [s for s in steps if s["t_enter_ns"] >= start]
+            for i, step in enumerate(steps):
+                step["step"] = i
         for step in steps:
             for row in step["batch"]:
                 row[0] = keys.get(row[0], row[0])
@@ -337,7 +361,8 @@ def compare(real, simulated) -> dict:
     A rank's entry is None where its steps all agree, else the step index and
     both steps, None for a record that has already ended. A record with no
     steps is refused: two runs that scheduled nothing agree, and that means
-    nothing. Steps are compared and reported without their timestamps.
+    nothing. Steps are compared and reported without their timestamps. Under
+    `steps`, each rank's count of step pairs compared and of identical ones.
     """
     records = {"real": read(real), "simulated": read(simulated)}
     for name, record in records.items():
@@ -347,10 +372,12 @@ def compare(real, simulated) -> dict:
             for step in steps:
                 for key in TIMESTAMPS:
                     step.pop(key, None)
-    first = {}
+    first, counts = {}, {}
     for rank in sorted(records["real"].keys() | records["simulated"].keys()):
-        pairs = zip_longest(
-            records["real"].get(rank, []), records["simulated"].get(rank, [])
+        pairs = list(
+            zip_longest(
+                records["real"].get(rank, []), records["simulated"].get(rank, [])
+            )
         )
         first[rank] = next(
             (
@@ -360,8 +387,13 @@ def compare(real, simulated) -> dict:
             ),
             None,
         )
+        counts[rank] = {
+            "compared": len(pairs),
+            "identical": sum(a == b for a, b in pairs),
+        }
     return {
         "first_divergence": first,
+        "steps": counts,
         "request_dp_rank": {
             name: _request_ranks(name, record) for name, record in records.items()
         },

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2024-2025, Advanced Micro Devices, Inc. All rights reserved.
 
-"""Step fit's residual: a factor on the lookup for what its shape cannot see.
+"""The step grid's residual: a factor on the lookup for what its shape cannot see.
 
 The lookup reads a batch at its equivalent homogeneous shape, which keeps the
 token count and the attention work and drops how the rows differ and the order
@@ -28,7 +28,7 @@ A residual fitted under another recipe name, version or digest fails loading.
 
 A residual is a mapping, as a bundle holds it:
 
-    {"recipe": {"name": "step-fit-residual", "version": 1, "digest": <hex>},
+    {"recipe": {"name": "step-grid-residual", "version": 1, "digest": <hex>},
      "hull": {"equal": {<feature>: value, ...}, "facets": [[a_1, ..., a_k, c], ...]},
      "members": {<name>: MEMBER, ...},
      "selected": {<name>: <weight>, ...}}
@@ -42,7 +42,7 @@ selected members load, so an error in one the residual does not select fails
 nothing, and an error in a selected one fails loading, naming it. The factor is
 Sum weight.output over the selected members.
 
-The hull is the features' range over the fit, read as `coarse.py` reads a
+The hull is the features' range over the fit, read as `hull.py` reads a
 law's: `equal` holds each feature that was constant and its value, and `facets`
 bound the others, in recipe order, as `a . x + c <= 0` inside. A step outside
 it is refused, naming the hull; so is a step where a member's output or the
@@ -59,7 +59,7 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from fractions import Fraction
 
-from atom.compass.backends.coarse import Hull
+from atom.compass.backends.hull import Hull
 from atom.compass.backends.shape import (
     BatchView,
     RequestShape,
@@ -68,7 +68,7 @@ from atom.compass.backends.shape import (
     sum_query_square,
     sum_tokens,
 )
-from atom.compass.backends.step_fit import _refused
+from atom.compass.backends.step_grid import _refused
 
 
 def tokens(rows: Sequence[RequestShape]) -> Fraction:
@@ -114,7 +114,7 @@ class Recipe:
 
 
 V1 = Recipe(
-    "step-fit-residual", 1, (tokens, query_square, query_context, order, raggedness)
+    "step-grid-residual", 1, (tokens, query_square, query_context, order, raggedness)
 )
 
 
