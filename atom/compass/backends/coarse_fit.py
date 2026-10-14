@@ -3,7 +3,7 @@
 
 """Tier a's law fitted from real step records.
 
-    python -m atom.compass.backends.coarse_fit RECORD... --out LAW [--form FORM]
+    python -m atom.compass.backends.coarse_fit RECORD... --out LAW [--form FORM] [--dp N]
 
 Each RECORD is a real run's step record (`steps/dp0.jsonl`, written with
 `ATOM_COMPASS_PARITY_RECORD`). A step's label is its device busy time,
@@ -21,6 +21,20 @@ launch-exposed cut, so it is left in the bound rather than corrected by a
 host-specific number with no record or law of its own to carry it. A record
 without device windows is refused. A step mixing prefill and decode rows is
 counted and not fitted.
+
+With `--dp N` (EP off) the records come in runs of N, each run's `dp0.jsonl`
+to `dp<N-1>.jsonl`, and the law is keyed `(N, 1)`. A step is its ranks' lines
+joined on step index, labelled with the smallest rank label (the others wait
+for the last rank to enter), and a prefill row adds the line's `moe_rows`. A
+step that some rank cut, or whose ranks' rows fall to different vectors, is
+counted under `ranks` and not fitted. The law reports each step's rank label
+spread, `max / min - 1`, as its p50 and p90 under `spread`. The group's step
+is the max over its ranks, so each vector is fitted by alternating max-affine
+regression: from the fit on every rank's row, take each step's row the law
+prices highest and refit on those rows, until no step changes rank. Each
+vector reports, under `fit.all_rows`, the centre and scaled MAD of the fit on
+every rank's row, each step priced as its max over ranks. Held-out errors are
+printed at `--dp 1` only.
 
 Records with a host key (`dp0.key.json`, from the real runner) also give the
 host laws as a run file's `host` entry: `key`, and `laws[kind][segment]`,
@@ -141,13 +155,13 @@ def _launch_exposed(lines) -> set[int]:
     return exposed
 
 
-def samples(record, form: str = "law") -> tuple[list[tuple], dict]:
+def samples(record, form: str = "law", dp: int = 1) -> tuple[list[tuple], dict]:
     """One record's fittable steps as (vector, features, seconds, step, context), and
     what was cut.
 
     `vector` is `prefill` or a decode rung's key; features are in `CoarseLaw`'s
-    order, plus `history` for that form; `context` is the decode rows' N_KV in
-    scheduled order, empty for prefill.
+    order, plus `history` for that form and, above `dp` 1, `moe_rows` on prefill;
+    `context` is the decode rows' N_KV in scheduled order, empty for prefill.
     """
     lines = _lines(record)
     steps = [s for s in lines if not s["is_dummy_run"]]
@@ -179,6 +193,13 @@ def samples(record, form: str = "law") -> tuple[list[tuple], dict]:
                 counts = (1, sum_tokens(r), sum_query_square(r), sum_query_cached(r))
                 if form == "history":
                     counts += (sum_context(r) - sum_tokens(r),)
+                if dp > 1:
+                    if step.get("moe_rows") is None:
+                        raise ValueError(
+                            f"{record} step {step['step']} has no moe_rows, which "
+                            "a data-parallel law prices prefill from"
+                        )
+                    counts += (step["moe_rows"],)
             else:
                 key = _rung_key(view.capture_rung)
                 counts = (1, sum_context(view.decode), view.graph_padding)
@@ -390,18 +411,71 @@ def _hull(points: np.ndarray, names: tuple[str, ...]) -> dict:
     return {"equal": equal, "facets": facets}
 
 
-def fit(records, form: str = "law") -> dict:
-    """The law over `records`, as the mapping `CoarseLaw` reads."""
+def _groups(run, form: str) -> tuple[list[list[tuple]], dict, list[float]]:
+    """One run's steps, each its ranks' `samples` rows labelled with the smallest
+    rank label; what was cut; and each step's rank label spread."""
+    got = [samples(record, form, len(run)) for record in run]
+    cut = {k: sum(c[k] for _, c in got) for k in got[0][1]}
+    if len(run) == 1:
+        return [[r] for r in got[0][0]], cut, []
+    ranks = [{r[3]: r for r in rows} for rows, _ in got]
+    groups, spread, cut["ranks"] = [], [], 0
+    for step in sorted(set().union(*ranks)):
+        group = [rank.get(step) for rank in ranks]
+        if None in group or len({r[0] for r in group}) > 1:
+            cut["ranks"] += 1
+            continue
+        labels = [r[2] for r in group]
+        spread.append(max(labels) / min(labels) - 1.0)
+        groups.append([(*r[:2], min(labels), *r[3:]) for r in group])
+    return groups, cut, spread
+
+
+def _slowest(groups, prefill: list[str]) -> tuple[list[tuple], dict]:
+    """Each group's row of highest price, by alternating max-affine regression per
+    vector, and per vector the error of the fit on every rank's row."""
+    rows, report = [g[0] for g in groups], {}
+    for key in {g[0][1] for g in groups if len(g) > 1}:
+        names = prefill if key == "prefill" else list(DECODE)
+        at = [j for j, g in enumerate(groups) if g[0][1] == key]
+        x = np.array([[r[2] for r in groups[j]] for j in at], dtype=np.float64)
+        y = np.array([groups[j][0][3] for j in at])
+        flat = x.reshape(-1, x.shape[2])
+        coef = _solve(flat, np.repeat(y, x.shape[1]), names)["coef"]
+        error = (x @ coef).max(axis=1) / y - 1.0
+        centre = float(np.median(error))
+        mad = float(1.4826 * np.median(np.abs(error - centre)))
+        report[key] = {"centre": centre, "mad": mad}
+        pick = None
+        for _ in range(MAD_PASSES):
+            now = np.argmax(x @ coef, axis=1)
+            if pick is not None and (now == pick).all():
+                break
+            pick = now
+            coef = _solve(x[np.arange(len(x)), pick], y, names)["coef"]
+        for j, p in zip(at, pick):
+            rows[j] = groups[j][p]
+    return rows, report
+
+
+def fit(records, form: str = "law", dp: int = 1) -> dict:
+    """The law over `records`, runs of `dp` ranks each, as the mapping `CoarseLaw` reads."""
     from scipy.spatial import QhullError
 
     if form not in FORMS:
         raise ValueError(f"form {form!r} is not one of {FORMS}")
-    rows, cut = [], {"warm": 0, "warm_s": 0.0}
-    for i, record in enumerate(records):
-        got, c = samples(record, form)
-        rows += [(i, *r) for r in got]
+    if len(records) % dp:
+        raise ValueError(f"{len(records)} records are not runs of {dp} ranks")
+    runs = [records[i : i + dp] for i in range(0, len(records), dp)]
+    groups, cut, spread = [], {"warm": 0, "warm_s": 0.0}, []
+    for i, run in enumerate(runs):
+        got, c, s = _groups(run, form)
+        groups += [[(i, *r) for r in g] for g in got]
+        spread += s
         for k, v in c.items():
             cut[k] = cut.get(k, 0) + v
+    prefill = list(HISTORY if form == "history" else PREFILL) + ["moe_rows"] * (dp > 1)
+    rows, all_rows = _slowest(groups, prefill)
     digests = [
         f"{Path(r).name}:{hashlib.sha256(Path(r).read_bytes()).hexdigest()[:12]}"
         for r in records
@@ -411,17 +485,20 @@ def fit(records, form: str = "law") -> dict:
         f"({', '.join(digests)})",
         "form": form,
         "cut": cut,
-        "warm_steps": [[] for _ in records],
+        "key": [dp, 1],
+        "warm_steps": [[] for _ in runs],
         "unfitted": {},
         "decode": {},
     }
+    if spread:
+        law["spread"] = np.percentile(spread, (50, 90)).tolist()
     keys = sorted(
         {r[1] for r in rows},
         key=lambda k: (k != "prefill", k != EAGER, k.isdigit() and int(k)),
     )
     rungs = [k for k in keys if k != "prefill"]
     # Each solve: its column names, its rows, and their design matrix.
-    solves = [("prefill", list(HISTORY if form == "history" else PREFILL))]
+    solves = [("prefill", prefill)]
     if form == "shared" and rungs:
         solves.append(
             (None, ["context", "graph_padding"] + [f"step@{k}" for k in rungs])
@@ -451,7 +528,7 @@ def fit(records, form: str = "law") -> dict:
         slow = ~solved["keep"] & (solved["residual"] < 0)
         once = solved["residual"] < 1 / WARM_FACTOR - 1
         warm = np.zeros(len(members), dtype=bool)
-        for rec in range(len(records)):
+        for rec in range(len(runs)):
             leading = True
             for j in (j for j, r in enumerate(members) if r[0] == rec):
                 leading = leading and slow[j]
@@ -490,6 +567,8 @@ def fit(records, form: str = "law") -> dict:
                     "zero": solved["zero"],
                 },
             }
+            if k in all_rows:
+                vector["fit"]["all_rows"] = all_rows[k]
             if rowmod_k:
                 vector["rowmod"] = rowmod_k
                 vector["fit"]["rowmod"] = evidence
@@ -566,8 +645,11 @@ def main(argv=None) -> None:
         "--out", required=True, help="where the law is written, as JSON"
     )
     parser.add_argument("--form", choices=FORMS, default="law")
+    parser.add_argument(
+        "--dp", type=int, default=1, help="ranks per run, the records in rank order"
+    )
     args = parser.parse_args(argv)
-    law = fit(args.records, args.form)
+    law = fit(args.records, args.form, args.dp)
     Path(args.out).write_text(json.dumps(law) + "\n")
     print(f"cut: {json.dumps(law['cut'])}")
     for name, vector in [("prefill", law.get("prefill"))] + list(law["decode"].items()):
@@ -577,7 +659,7 @@ def main(argv=None) -> None:
             )
     if "host" in law:
         print(f"host: {json.dumps(law['host']['laws'])} {json.dumps(law['host_fit'])}")
-    if len(args.records) > 1:
+    if len(args.records) > 1 and args.dp == 1:
         for form in FORMS:
             print(f"\nheld out, form {form}\n{_table(held_out(args.records, form))}")
         if "host" in law:
