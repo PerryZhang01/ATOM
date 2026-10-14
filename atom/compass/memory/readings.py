@@ -270,10 +270,10 @@ class ModelTerms:
                 Method.DECLARED,
                 f"{parameter_count} stated parameters x {dtype_bytes} B / "
                 f"TP{tp_size}",
-                "the run file states the parameter count; a meta build "
-                "deduped by storage replaces this and is exact at every "
-                "width; this shards every parameter, where a real stack "
-                "replicates its norms",
+                "the run file states the parameter count; "
+                "a meta build deduped by storage replaces this and is "
+                "exact at every width; this shards every parameter, where a "
+                "real stack replicates its norms",
             )
         buffers = Term(
             "buffers",
@@ -281,18 +281,18 @@ class ModelTerms:
             Method.DECLARED if assumed else Method.ANALYTICAL,
             f"{positions} positions x {rotary} x {dtype_bytes} B",
             (
-                "the config states no partial_rotary_factor and 1.0 is "
-                "assumed; a config that states it replaces the assumption. "
+                "partial_rotary_factor 1.0 is assumed; a config that states it "
+                "replaces this. "
                 if assumed
                 else ""
             )
-            + "cos and sin together are positions x rotary_dim elements, "
-            "because inv_freq holds rotary_dim/2 of them "
-            "(RotaryEmbedding._compute_inv_freq in "
-            "atom/model_ops/rotary_embedding.py), and they are resident at "
-            "the model dtype they are cast to, not the fp32 they are "
-            "computed in (RotaryEmbedding.__init__, with the default dtype "
-            "set in ModelRunner.__init__)",
+            + "cos and sin together are "
+            "positions x rotary_dim elements, because inv_freq holds "
+            "rotary_dim/2 of them (RotaryEmbedding._compute_inv_freq in "
+            "atom/model_ops/rotary_embedding.py), and "
+            "they are resident at the model dtype they are cast to, not the "
+            "fp32 they are computed in (RotaryEmbedding.__init__, with the "
+            "default dtype set in ModelRunner.__init__)",
         )
         activations = Term(
             "activations",
@@ -308,11 +308,12 @@ class ModelTerms:
             f"{warmup_tokens} warmup tokens x {dtype_bytes} B x "
             f"({graph_pool.LIVE_TENSORS_PER_LAYER} x {hidden} hidden + "
             f"{_LIVE_INTERMEDIATE} x {live})",
-            "the per-layer coefficient is ATOM's own "
-            "(ModelRunner._piecewise_per_token_bytes), over one live layer "
-            "rather than all of them; a device.activations entry, or a "
-            "liveness walk over a traced op graph plus the per-leaf "
-            "invisible-scratch constants, replace this",
+            "a device.activations entry, or a liveness walk over a traced op "
+            "graph plus the per-leaf "
+            "invisible-scratch constants, replace this; the per-layer "
+            "coefficient is ATOM's own "
+            "(ModelRunner._piecewise_per_token_bytes), over one live "
+            "layer rather than all of them",
         )
         if activations_entry is not None:
             entry, per_token = activations_entry

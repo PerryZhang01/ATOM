@@ -62,7 +62,7 @@ def _reading(name: str, rows: list[dict]) -> Reading:
         raise MemoryRefusal(
             f"the {name} reading records each term's basis, a vocabulary this "
             "check no longer reads",
-            "rerun the simulated run on this tree, which records each term's " "method",
+            "rerun the simulated run on this tree, which records each method",
         )
     return Reading(
         name, tuple(Term(**row | {"method": Method(row["method"])}) for row in rows)

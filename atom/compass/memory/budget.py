@@ -85,11 +85,12 @@ class SizedKVPool:
 
     @property
     def declared_terms(self) -> tuple[str, ...]:
-        """Every subtracted term still standing on a declared input."""
+        """Every subtracted term still standing on a declared coefficient."""
         return tuple(
-            f"{reading.name}.{term}"
+            f"{reading.name}.{term.name}"
             for reading in self.subtracted
-            for term in reading.declared
+            for term in reading.terms
+            if term.method is Method.DECLARED
         )
 
     @property
@@ -111,11 +112,12 @@ class SizedKVPool:
     def declared_line(self) -> str:
         """One sentence a reader cannot take the block count without."""
         if not self.declared_terms:
-            return "declared: none of the subtracted footprint."
+            return "declared: none of the subtracted footprint is a coefficient."
         return (
             f"declared: {self.declared_bytes:,} of {self.subtracted_bytes:,} B "
             f"({self.declared_fraction:.2%}) of the footprint subtracted from "
-            "the budget stands on a declared input: " + ", ".join(self.declared_terms)
+            "the budget is a coefficient somebody wrote down, not a "
+            "measurement of this card: " + ", ".join(self.declared_terms)
         )
 
     def table(self) -> str:
