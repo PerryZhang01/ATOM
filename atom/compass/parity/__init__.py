@@ -211,7 +211,7 @@ def record_step(runner, batch, forward=None):
                     f"{ENV} records one file per DP rank, and under pipeline "
                     "parallelism each stage would write it."
                 )
-            from atom.compass.run.step_fit import BOUNDS, keyed
+            from atom.compass.run.step_grid import BOUNDS, keyed
 
             dp_rank = runner.config.parallel_config.data_parallel_rank
             record = StepRecord(directory, dp_rank)
