@@ -87,7 +87,7 @@ def test_a_saved_spec_answers_origin_for_every_field():
 def test_a_field_two_fragments_agree_on_is_assumed_only_if_both_assumed_it():
     links = fragment("links", LINKS, origin="assumed")
     probed = fragment("probe", {"interconnect": {"router_relay_s": 1.5e-3}})
-    document = saved(merge([*four_origins()[:3], links, probed]).document)
+    document = saved(merge([*four_origins()[:3], probed, links]).document)
     spec = MachineSpec.from_mapping(document)
     assert spec.origin("interconnect.router_relay_s") == {"origin": "probed"}
     assert spec.origin("interconnect.inter_node.link_latency_s") == {
