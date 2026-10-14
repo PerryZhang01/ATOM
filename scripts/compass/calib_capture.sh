@@ -20,7 +20,8 @@
 # OUT_DIR/c<C>/ is the cell's cctraces_sim.sh directory, its step record in
 # steps/; OUT_DIR/c<C>.log holds the tree's commit, the host load (`uptime`)
 # and the GPU's processes at the cell's start and end, and the cell's exit
-# status, 1 for a stopped cell: aiperf, stopped, writes no export. Fit the
+# status, 143 for a stopped cell: aiperf, stopped by SIGTERM, writes no export,
+# and cctraces_sim.sh exits with aiperf's status. Fit the
 # records with
 #   python -m atom.compass.backends.coarse_fit --form history \
 #       OUT_DIR/c{1,4,16,64,256}/steps/dp0.jsonl --out LAW
