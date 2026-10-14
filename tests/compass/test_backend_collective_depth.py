@@ -35,7 +35,7 @@ from atom.compass.backends import (
     FakeModel,
     Parallelism,
     RequestShape,
-    ShapeStubBackend,
+    StepStubBackend,
     SyntheticStack,
     hf_config,
 )
@@ -69,7 +69,7 @@ def batch():
 
 def collective_seconds(backend):
     """What this backend charges for collectives on that batch, in total."""
-    step = backend.estimate(batch())
+    step = backend.price(batch())
     return sum(
         value for name, value, _ in step.rows() if name.startswith("collective.")
     )
@@ -101,7 +101,7 @@ def substituted(model):
     stub would produce if the charge were moved back to the pool's count --
     read out of the code rather than worked out in a comment.
     """
-    return ShapeStubBackend(
+    return StepStubBackend(
         coefficients=model.coefficients,
         parallelism=model.parallelism,
         geometry=model.geometry,
@@ -164,8 +164,8 @@ class TestTheTwoCountsOnTwoConfigs:
     def test_only_the_collective_moves_when_the_count_does(self, published):
         """The rest of the step is a function of the batch and nothing else."""
         model = FakeModel(published, block_size=BLOCK_SIZE, parallelism=SHARDED)
-        on_stack = model.backend.estimate(batch())
-        on_paged = substituted(model).estimate(batch())
+        on_stack = model.backend.price(batch())
+        on_paged = substituted(model).price(batch())
         moved = {
             name
             for (name, stack, _), (_, paged, _) in zip(on_stack.rows(), on_paged.rows())

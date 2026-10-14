@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2024-2025, Advanced Micro Devices, Inc. All rights reserved.
 
-"""Tier a's law fitted from real step records.
+"""The step linear law fitted from real step records.
 
-    python -m atom.compass.backends.coarse_fit RECORD... --out LAW [--form FORM]
+    python -m atom.compass.backends.step_linear_fit RECORD... --out LAW [--form FORM]
 
 Each RECORD is a real run's step record (`steps/dp0.jsonl`, written with
 `ATOM_COMPASS_PARITY_RECORD`). A step's label is its device busy time,
@@ -27,8 +27,9 @@ host laws as a run file's `host` entry: `key`, and `laws[kind][segment]`,
 seconds on `(1, tokens, seqs)`. `E` runs from the previous forward's exit,
 cut as idle when the two batches share no request; `W_pre` to the launch, less
 the staging gate's wait; `W_post` from the launch to the exit, less the token
-copy wait, and a middle chunk has none. They take tier a's solver, MAD drops
-and hulls; `seqs` equal to `tokens` on every sample gets zero. Two keys refuse.
+copy wait, and a middle chunk has none. They take the step linear law's
+solver, MAD drops and hulls; `seqs` equal to `tokens` on every sample gets
+zero. Two keys refuse.
 
 Each equation is divided by its own label and the coefficients are bound to be
 non-negative. Steps whose relative residual is more than `MAD_K` scaled MADs
@@ -41,16 +42,16 @@ the dropped ones, never charged. A feature with no variance gets coefficient
 zero and is named. Each vector reports its samples,
 warm and dropped counts, the centre and scaled MAD of its relative residuals,
 the condition number of its column-scaled design and
-the convex hull of its fitted steps, which `CoarseLaw` reads. A vector with
+the convex hull of its fitted steps, which `StepLinearLaw` reads. A vector with
 no more fitted steps than coefficients, or whose steps span no hull, is left
-out and named under `unfitted`; `CoarseBackend` refuses its steps.
+out and named under `unfitted`; `StepLinearBackend` refuses its steps.
 
-Forms (`FORMS`): `law`, the features `CoarseLaw` always prices; `history`,
+Forms (`FORMS`): `law`, the features `StepLinearLaw` always prices; `history`,
 prefill plus `Sum (N_KV - N_Q)`, the KV a short chunk reads on a deep history;
 `shared`, decode with the context and padding slopes shared by every rung and
 an intercept per rung.
 
-Outside `shared`, a decode rung may adopt a `rowmod(k)` column (`CoarseLaw`),
+Outside `shared`, a decode rung may adopt a `rowmod(k)` column (`StepLinearLaw`),
 read from its rows in scheduled order, by the rule `_rowmod` states; the
 vector then names `k` and records, under `fit.rowmod`, the MAD without the
 column, the mean MAD with each step's rows shuffled, and per held-out record
@@ -72,7 +73,6 @@ from pathlib import Path
 
 import numpy as np
 
-from atom.compass.backends.coarse import DECODE, EAGER, HISTORY, PREFILL, ROWMOD, rowmod
 from atom.compass.backends.shape import (
     BatchView,
     RequestShape,
@@ -80,6 +80,14 @@ from atom.compass.backends.shape import (
     sum_query_cached,
     sum_query_square,
     sum_tokens,
+)
+from atom.compass.backends.step_linear import (
+    DECODE,
+    EAGER,
+    HISTORY,
+    PREFILL,
+    ROWMOD,
+    rowmod,
 )
 
 FORMS = ("law", "history", "shared")
@@ -145,7 +153,7 @@ def samples(record, form: str = "law") -> tuple[list[tuple], dict]:
     """One record's fittable steps as (vector, features, seconds, step, context), and
     what was cut.
 
-    `vector` is `prefill` or a decode rung's key; features are in `CoarseLaw`'s
+    `vector` is `prefill` or a decode rung's key; features are in `StepLinearLaw`'s
     order, plus `history` for that form; `context` is the decode rows' N_KV in
     scheduled order, empty for prefill.
     """
@@ -367,7 +375,7 @@ def _rowmod(members, rung: int, base: dict) -> tuple | None:
 
 
 def _hull(points: np.ndarray, names: tuple[str, ...]) -> dict:
-    """`CoarseLaw`'s hull over the non-intercept features of the fitted steps."""
+    """`StepLinearLaw`'s hull over the non-intercept features of the fitted steps."""
     from scipy.spatial import ConvexHull
 
     equal = {
@@ -391,7 +399,7 @@ def _hull(points: np.ndarray, names: tuple[str, ...]) -> dict:
 
 
 def fit(records, form: str = "law") -> dict:
-    """The law over `records`, as the mapping `CoarseLaw` reads."""
+    """The law over `records`, as the mapping `StepLinearLaw` reads."""
     from scipy.spatial import QhullError
 
     if form not in FORMS:
@@ -558,7 +566,7 @@ def _table(errors: dict) -> str:
 
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(
-        prog="python -m atom.compass.backends.coarse_fit",
+        prog="python -m atom.compass.backends.step_linear_fit",
         description=__doc__.split("\n\n")[0],
     )
     parser.add_argument("records", nargs="+", help="real step records, steps/dp0.jsonl")

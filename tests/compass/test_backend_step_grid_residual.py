@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Step fit's residual: the lookup times a factor fitted over the rows' features
+"""The step grid's residual: the lookup times a factor fitted over the rows' features
 in batch order, answering only inside the hull it was fitted on.
 
 Decode steps come from ATOM's `Scheduler` and are priced through the runner's
@@ -19,7 +19,7 @@ import math
 from fractions import Fraction
 
 import pytest
-from test_backend_step_fit import (
+from test_backend_step_grid import (
     MIDDLE,
     chunks,
     decode,
@@ -33,8 +33,8 @@ from test_dp_step_max import runner
 
 from atom.compass.backends import RequestShape, Species
 from atom.compass.backends.shape import sum_context
-from atom.compass.backends.step_fit import equivalent_shape
-from atom.compass.backends.step_fit_residual import V1, Recipe, Residual
+from atom.compass.backends.step_grid import equivalent_shape
+from atom.compass.backends.step_grid_residual import V1, Recipe, Residual
 
 HOMOGENEOUS = [767] * 32
 GROUPED = [575] * 16 + [959] * 16
@@ -111,7 +111,7 @@ def test_the_term_is_fitted_and_its_detail_holds_the_lookup_and_each_member():
     backend = eager(residual=residual(o=ORDERED, e=exp))
     rows = [(1, 576, True), (1, 960, True)] * 16
 
-    (term,) = backend.estimate(view(*rows)).terms
+    (term,) = backend.price(view(*rows)).terms
     factor = 1.3046875 + math.exp(0.484375)
     assert term.seconds == 4261e-6 * factor
     assert term.provenance.species is Species.FITTED

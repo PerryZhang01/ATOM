@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
-"""Tier a's fit: step records written from a known law, and the law it gives back.
+"""The step linear fit: step records written from a known law, and the law it
+gives back.
 
 Each record is the JSON lines a real runner writes, each step's device busy
 time (`d_busy_ns`) the known law's price. The fitted law is read by
-`CoarseLaw` and priced by `CoarseBackend.estimate`.
+`StepLinearLaw` and priced by `StepLinearBackend.estimate`.
 """
 
 import json
@@ -15,13 +16,13 @@ import pytest
 
 from atom.compass.backends import (
     BatchView,
-    CoarseBackend,
-    CoarseLaw,
     CostRefused,
     RequestShape,
     Species,
+    StepLinearBackend,
+    StepLinearLaw,
 )
-from atom.compass.backends.coarse_fit import _solve, fit, held_out, main, samples
+from atom.compass.backends.step_linear_fit import _solve, fit, held_out, main, samples
 from atom.compass.validate.cost import cost_accuracy
 
 PREFILL = {"step": 0.02, "tokens": 6e-5, "query_square": 2e-10, "query_cached": 3e-10}
@@ -129,14 +130,14 @@ def test_the_fit_recovers_its_law_and_drops_planted_outliers_by_name(tmp_path):
             if k in expected
         } == pytest.approx(expected, rel=1e-6)
 
-    backend = CoarseBackend(CoarseLaw(law))
+    backend = StepLinearBackend(StepLinearLaw(law))
     for i, (rows, rung, seconds) in enumerate(steps[:-1]):
         if i in outliers:
             continue
-        cost = backend.estimate(_view(rows, rung))
+        cost = backend.price(_view(rows, rung))
         assert cost.seconds == pytest.approx(seconds, rel=1e-6)
         assert {t.provenance.species for t in cost.terms} == {Species.FITTED}
-    far = backend.estimate(_view([(1, 10**6, True), (1, 10**6, True)], 2))
+    far = backend.price(_view([(1, 10**6, True), (1, 10**6, True)], 2))
     assert {t.provenance.species for t in far.terms} == {Species.EXTRAPOLATED}
 
 
@@ -160,7 +161,7 @@ def test_a_feature_with_no_variance_returns_zero_named(tmp_path):
             "zero",
         }
         assert vector["fit"]["samples"] > 0 and vector["fit"]["condition"] >= 1.0
-    cost = CoarseBackend(CoarseLaw(law)).estimate(_view([(100, 100, False)]))
+    cost = StepLinearBackend(StepLinearLaw(law)).price(_view([(100, 100, False)]))
     assert cost.terms[-1].seconds == 0.0
 
 
@@ -202,9 +203,9 @@ def test_three_forms_are_scored_on_a_record_held_out_of_their_fit(tmp_path):
     shared = fit(records, "shared")
     slopes = {v["coefficients"]["context"] for v in shared["decode"].values()}
     assert len(slopes) == 1
-    CoarseBackend(CoarseLaw(shared)).estimate(_view([(1, 900, True)], 2))
+    StepLinearBackend(StepLinearLaw(shared)).price(_view([(1, 900, True)], 2))
     rows, _, seconds = _steps(3, history=2e-7)[4]
-    cost = CoarseBackend(CoarseLaw(fit(records, "history"))).estimate(_view(rows))
+    cost = StepLinearBackend(StepLinearLaw(fit(records, "history"))).price(_view(rows))
     assert cost.seconds == pytest.approx(seconds, rel=1e-6)
     assert cost.terms[-1].name == "prefill.history"
 
@@ -233,8 +234,8 @@ def test_the_command_writes_a_law_a_run_file_can_carry(tmp_path, capsys):
     records = [str(_record(tmp_path / f"dp0-{s}.jsonl", _steps(s))) for s in (6, 7)]
     main([*records, "--out", str(tmp_path / "law.json")])
 
-    law = CoarseLaw(json.loads((tmp_path / "law.json").read_text()))
-    assert "2 real records" in law.provenance
+    law = StepLinearLaw(json.loads((tmp_path / "law.json").read_text()))
+    assert "2 real records" in law.fitted_on
     out = capsys.readouterr().out
     for form in ("law", "history", "shared"):
         assert f"held out, form {form}" in out
@@ -249,7 +250,7 @@ def test_a_rung_too_thin_to_fit_is_named_and_its_steps_refused(tmp_path):
     assert law["unfitted"] == {"4": "2 steps for 3 coefficients"}
     assert "4" not in law["decode"]
     with pytest.raises(CostRefused, match="no decode vector for rung 4"):
-        CoarseBackend(CoarseLaw(law)).estimate(_view([(1, 900, True)], 4))
+        StepLinearBackend(StepLinearLaw(law)).price(_view([(1, 900, True)], 4))
 
 
 def test_the_outlier_scale_is_read_over_every_step_so_it_does_not_shrink(tmp_path):
@@ -277,10 +278,10 @@ def test_a_law_with_prefill_too_thin_to_fit_loads_and_refuses_prefill(tmp_path, 
     law = fit([_record(tmp_path / "dp0.jsonl", steps)])
 
     assert law["unfitted"] == {"prefill": f"{kept} steps for 4 coefficients"}
-    backend = CoarseBackend(CoarseLaw(law))
+    backend = StepLinearBackend(StepLinearLaw(law))
     with pytest.raises(CostRefused, match="no prefill vector"):
-        backend.estimate(_view([(100, 100, False)]))
-    assert backend.estimate(_view([(1, 900, True)], 2)).seconds > 0
+        backend.price(_view([(100, 100, False)]))
+    assert backend.price(_view([(1, 900, True)], 2)).seconds > 0
 
 
 def test_a_step_mixing_prefill_and_decode_is_cut_not_fitted(tmp_path):
@@ -472,7 +473,7 @@ def test_the_command_writes_host_laws_a_run_file_takes_and_scores_them_held_out(
     main([*records, "--out", str(tmp_path / "law.json")])
 
     law = json.loads((tmp_path / "law.json").read_text())
-    CoarseLaw(law)
+    StepLinearLaw(law)
     assert set(law["host"]) == {"key", "laws"}
     assert {len(c) for s in law["host"]["laws"].values() for c in s.values()} == {3}
     out = capsys.readouterr().out
@@ -567,7 +568,7 @@ def test_the_host_key_leaves_out_what_only_a_simulated_run_reaches(
 
 
 def test_a_run_refuses_host_laws_fitted_under_another_key(tmp_path, monkeypatch):
-    from test_run_step_fit import deployment, publish, run_file
+    from test_run_step_grid import deployment, publish, run_file
 
     from atom.compass import run as compass_run
 
@@ -647,12 +648,12 @@ def test_a_rung_whose_cost_follows_row_order_adopts_rowmod_and_prices_the_order(
     assert set(evidence["held_out_p50"]) == {"0", "1"}
 
     # One multiset of rows in two orders: rows 0 and 4 share a residue mod 4.
-    backend = CoarseBackend(CoarseLaw(law))
+    backend = StepLinearBackend(StepLinearLaw(law))
     rows = [(1, c, True) for c in (50000, 1000, 1000, 1000, 50000, 1000)]
     apart = rows[:3] + rows[4:5] + rows[3:4] + rows[5:]
-    together = backend.estimate(_view(rows, 8))
+    together = backend.price(_view(rows, 8))
     assert together.terms[-1].name == "decode.rowmod"
-    assert together.seconds - backend.estimate(_view(apart, 8)).seconds == (
+    assert together.seconds - backend.price(_view(apart, 8)).seconds == (
         pytest.approx(ROWMOD["rowmod"] * 49000, rel=1e-3)
     )
 

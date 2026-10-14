@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2024-2025, Advanced Micro Devices, Inc. All rights reserved.
 
-"""Tier a: a step looked up in a grid of measured whole forwards.
+"""The step grid: a step looked up in a grid of measured whole forwards.
 
 A batch maps to the homogeneous shape that keeps its token count and its
 attention work, Sum (N_Q.c + N_Q(N_Q+1)/2) over rows with c the cached
@@ -27,7 +27,7 @@ say whether it produces output, and under a replay bundle a decode step that
 replays no graph, being wider than the widest rung or eager.
 
 The answer is the lookup times the residual's factor for the batch's ordered
-rows (`step_fit_residual.py`), which the residual may refuse. It is one
+rows (`step_grid_residual.py`), which the residual may refuse. It is one
 `fitted` term for the whole forward, never multiplied by the TP width, since
 the measurement already holds the collectives. Its detail keeps the lookup's
 own species, `measured` only for a homogeneous batch on a node and
@@ -55,10 +55,10 @@ from collections.abc import Mapping, Sequence
 from fractions import Fraction
 from typing import TYPE_CHECKING
 
-from atom.compass.backends.base import CostBackend, Tier
+from atom.compass.backends.base import CostBackend, Granularity
 from atom.compass.backends.cost import CostTerm, StepCost
-from atom.compass.backends.ladder import CostRefused
 from atom.compass.backends.provenance import Provenance, Refusal, Species
+from atom.compass.backends.resolver import CostRefused
 from atom.compass.backends.shape import (
     BatchView,
     RequestShape,
@@ -68,7 +68,7 @@ from atom.compass.backends.shape import (
 )
 
 if TYPE_CHECKING:
-    from atom.compass.backends.step_fit_residual import Residual
+    from atom.compass.backends.step_grid_residual import Residual
 
 SOURCE = "step-fit"
 UNITS = {"s": Fraction(1), "ms": Fraction(1, 10**3), "us": Fraction(1, 10**6)}
@@ -178,7 +178,7 @@ class _Cells:
         return value, len(corners) == 1, cell
 
 
-class StepFitGrid:
+class StepGrid:
     """A bundle's grids: prefill by whether a chunk produces output, and decode."""
 
     def __init__(self, bundle: Mapping) -> None:
@@ -284,18 +284,18 @@ class StepFitGrid:
         return cells, at
 
 
-class StepFitBackend(CostBackend):
+class StepGridBackend(CostBackend):
     """Prices a step as the grid's value at its equivalent shape, times the
     residual; `bundle` names the artifact both came from, for `describe`."""
 
-    def __init__(self, grid: StepFitGrid, residual: Residual, bundle: str) -> None:
+    def __init__(self, grid: StepGrid, residual: Residual, bundle: str) -> None:
         self.grid, self.residual, self.bundle = grid, residual, bundle
 
     @property
-    def tier(self) -> Tier:
-        return Tier.COARSE
+    def granularity(self) -> Granularity:
+        return Granularity.STEP
 
-    def estimate(self, batch_view: BatchView) -> StepCost:
+    def price(self, batch_view: BatchView) -> StepCost:
         if not isinstance(batch_view, BatchView):
             raise TypeError(
                 f"this backend prices a BatchView, not {type(batch_view).__name__}"

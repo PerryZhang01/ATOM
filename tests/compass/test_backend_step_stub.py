@@ -35,24 +35,26 @@ from atom.compass.backends import (
     BatchView,
     Coefficients,
     CostBackend,
+    Granularity,
     KvGeometry,
     Parallelism,
     RequestShape,
-    ShapeStubBackend,
     Species,
-    Tier,
+    StepStubBackend,
     fold_step,
 )
 from atom.compass.backends.shape import (
-    CANDIDATE,
-    DECLARED,
-    DEPTH_STANDS_IN,
-    PER_STACK_LAYER,
-    UNCHECKED_RUNG,
     sum_context,
     sum_query_cached,
     sum_query_context,
     sum_query_square,
+)
+from atom.compass.backends.step_stub import (
+    CANDIDATE,
+    DECLARED_NOTE,
+    DEPTH_STANDS_IN,
+    PER_STACK_LAYER,
+    UNCHECKED_RUNG,
 )
 from atom.model_engine.scheduler import ScheduledBatchOutput, Scheduler
 from atom.model_engine.sequence import Sequence, SequenceType
@@ -87,7 +89,7 @@ def named(step):
 class TestTheForm:
     def test_a_prefill_step_is_its_four_named_parts(self):
         c = Coefficients()
-        step = ShapeStubBackend().estimate(
+        step = StepStubBackend().price(
             BatchView((prefill(256), prefill(64, cached=128)))
         )
         assert named(step) == {
@@ -101,7 +103,7 @@ class TestTheForm:
     def test_a_decode_step_is_its_four_named_parts(self):
         c = Coefficients()
         view = BatchView((decode(1000), decode(600)), capture_rung=4)
-        step = ShapeStubBackend().estimate(view)
+        step = StepStubBackend().price(view)
         assert named(step) == {
             "decode.step": c.decode_step,
             "decode.requests": 2 * c.decode_request,
@@ -110,16 +112,16 @@ class TestTheForm:
         }
 
     def test_a_mixed_step_pays_both_groups(self):
-        step = ShapeStubBackend().estimate(BatchView((prefill(128), decode(900))))
+        step = StepStubBackend().price(BatchView((prefill(128), decode(900))))
         groups = {name.split(".")[0] for name in named(step)}
         assert groups == {"prefill", "decode"}
 
     def test_a_step_names_only_the_groups_it_ran(self):
-        step = ShapeStubBackend().estimate(BatchView((prefill(128),)))
+        step = StepStubBackend().price(BatchView((prefill(128),)))
         assert not [name for name in named(step) if name.startswith("decode")]
 
     def test_the_total_is_folded_from_the_parts_and_not_stored(self):
-        step = ShapeStubBackend().estimate(BatchView((prefill(300), decode(50))))
+        step = StepStubBackend().price(BatchView((prefill(300), decode(50))))
         refolded = 0.0
         for _, seconds, _ in step.rows():
             refolded = fold_step(refolded, seconds)
@@ -130,13 +132,13 @@ class TestTheForm:
             BatchView(())
 
     def test_the_backend_answers_at_step_granularity(self):
-        backend = ShapeStubBackend()
+        backend = StepStubBackend()
         assert isinstance(backend, CostBackend)
-        assert backend.tier is Tier.COARSE
+        assert backend.granularity is Granularity.STEP
 
     def test_something_that_is_not_a_projection_is_refused(self):
         with pytest.raises(TypeError, match="prices a BatchView"):
-            ShapeStubBackend().estimate({"tokens": 512})
+            StepStubBackend().price({"tokens": 512})
 
     def test_a_coefficient_that_is_not_a_duration_is_refused(self):
         with pytest.raises(ValueError, match="prefill_token"):
@@ -184,8 +186,8 @@ class TestPerRequestSums:
         honest = BatchView((prefill(256, cached=768), prefill(256, cached=768)))
         assert sum_query_context(collapsed.requests) == 512 * 2048
         assert sum_query_context(honest.requests) == 2 * 256 * 1024
-        backend = ShapeStubBackend()
-        assert backend.estimate(collapsed).seconds != backend.estimate(honest).seconds
+        backend = StepStubBackend()
+        assert backend.price(collapsed).seconds != backend.price(honest).seconds
 
     def test_a_projection_subclass_that_redefines_a_reader_is_refused(self):
         """Route two of the collapsed form, closed at the type.
@@ -251,9 +253,9 @@ class TestPerRequestSums:
 
         view = Tagged((prefill(256, cached=768), prefill(256, cached=768)), label="x")
         assert sum_query_context(view.requests) == 2 * 256 * 1024
-        assert ShapeStubBackend().estimate(view).seconds == pytest.approx(
-            ShapeStubBackend()
-            .estimate(BatchView((prefill(256, cached=768), prefill(256, cached=768))))
+        assert StepStubBackend().price(view).seconds == pytest.approx(
+            StepStubBackend()
+            .price(BatchView((prefill(256, cached=768), prefill(256, cached=768))))
             .seconds
         )
 
@@ -271,8 +273,8 @@ class TestPerRequestSums:
         assert sum(r.query_tokens for r in one_big.requests) == sum(
             r.query_tokens for r in lopsided.requests
         )
-        backend = ShapeStubBackend()
-        assert backend.estimate(one_big).seconds != backend.estimate(lopsided).seconds
+        backend = StepStubBackend()
+        assert backend.price(one_big).seconds != backend.price(lopsided).seconds
 
     def test_the_sums_are_the_ones_the_scheduler_publishes(self):
         """Checked against ATOM's own method, not against a re-derivation."""
@@ -329,7 +331,7 @@ class TestTheRung:
             BatchView((decode(10), decode(10), decode(10)), capture_rung=2)
 
     def test_without_a_rung_the_padding_term_is_zero_and_still_named(self):
-        step = ShapeStubBackend().estimate(BatchView((decode(10), decode(10))))
+        step = StepStubBackend().price(BatchView((decode(10), decode(10))))
         assert named(step)["decode.graph_padding"] == 0.0
 
     def test_a_rung_no_ladder_would_hold_is_priced_and_labelled(self):
@@ -343,17 +345,17 @@ class TestTheRung:
         """
         view = BatchView((decode(100),), capture_rung=10**9)
         assert view.graph_padding == 10**9 * 100 - 100
-        step = ShapeStubBackend().estimate(view)
+        step = StepStubBackend().price(view)
         assert named(step)["decode.graph_padding"] == pytest.approx(99.9999999)
         padding = {name: prov for name, _, prov in step.rows()}
         assert UNCHECKED_RUNG in padding["decode.graph_padding"]
 
     def test_with_no_rung_the_padding_term_carries_no_rung_qualifier(self):
         """Nothing was supplied, so there is no unchecked width to declare."""
-        step = ShapeStubBackend().estimate(BatchView((decode(10), decode(10))))
+        step = StepStubBackend().price(BatchView((decode(10), decode(10))))
         padding = {name: prov for name, _, prov in step.rows()}
         assert UNCHECKED_RUNG not in padding["decode.graph_padding"]
-        assert DECLARED in padding["decode.graph_padding"]
+        assert DECLARED_NOTE in padding["decode.graph_padding"]
 
 
 # ── constant mode ───────────────────────────────────────────────────────────
@@ -362,18 +364,16 @@ class TestTheRung:
 class TestConstantMode:
     def test_constant_pricing_is_a_coefficient_set_not_a_mode(self):
         flat = Coefficients.constant(prefill_seconds=0.05, decode_seconds=0.002)
-        backend = ShapeStubBackend(coefficients=flat)
-        short = backend.estimate(BatchView((prefill(16),)))
-        long = backend.estimate(BatchView((prefill(16128),)))
+        backend = StepStubBackend(coefficients=flat)
+        short = backend.price(BatchView((prefill(16),)))
+        long = backend.price(BatchView((prefill(16128),)))
         assert short.seconds == long.seconds == 0.05
         assert set(named(short)) == set(named(long))
         assert flat.shape_blind
 
     def test_constant_pricing_still_names_every_part(self):
         flat = Coefficients.constant(prefill_seconds=0.05, decode_seconds=0.002)
-        step = ShapeStubBackend(coefficients=flat).estimate(
-            BatchView((prefill(16128),))
-        )
+        step = StepStubBackend(coefficients=flat).price(BatchView((prefill(16128),)))
         assert named(step) == {
             "prefill.step": 0.05,
             "prefill.tokens": 0.0,
@@ -383,10 +383,10 @@ class TestConstantMode:
 
     def test_the_default_reads_the_shape(self):
         assert not Coefficients().shape_blind
-        backend = ShapeStubBackend()
+        backend = StepStubBackend()
         assert (
-            backend.estimate(BatchView((prefill(16),))).seconds
-            != backend.estimate(BatchView((prefill(256),))).seconds
+            backend.price(BatchView((prefill(16),))).seconds
+            != backend.price(BatchView((prefill(256),))).seconds
         )
 
 
@@ -397,13 +397,13 @@ class TestWhatTheOutputSays:
     """The disclaimer has to survive the trip into an artifact."""
 
     def test_every_term_says_the_coefficient_was_declared(self):
-        step = ShapeStubBackend().estimate(BatchView((prefill(128), decode(500))))
+        step = StepStubBackend().price(BatchView((prefill(128), decode(500))))
         for name, _, provenance in step.rows():
-            assert DECLARED in provenance, name
+            assert DECLARED_NOTE in provenance, name
             assert "not an accuracy claim" in provenance
 
     def test_every_term_says_which_count_and_which_coefficient(self):
-        step = ShapeStubBackend().estimate(BatchView((prefill(128),)))
+        step = StepStubBackend().price(BatchView((prefill(128),)))
         rows = {name: provenance for name, _, provenance in step.rows()}
         assert "5e-07 s x 128" in rows["prefill.tokens"]
         assert "x 16384" in rows["prefill.query_square"]
@@ -411,15 +411,15 @@ class TestWhatTheOutputSays:
     def test_the_species_is_not_analytical(self):
         """Reserved for something computed without measuring the subject, and
         a declared coefficient has not computed anything."""
-        step = ShapeStubBackend().estimate(BatchView((prefill(128),)))
+        step = StepStubBackend().price(BatchView((prefill(128),)))
         for _, _, provenance in step.rows():
             assert str(Species.ANALYTICAL) not in provenance
 
     def test_the_description_says_it_and_which_pricing_produced_it(self):
-        assert DECLARED in ShapeStubBackend().describe()
-        assert "shape-read" in ShapeStubBackend().describe()
+        assert DECLARED_NOTE in StepStubBackend().describe()
+        assert "shape-read" in StepStubBackend().describe()
         flat = Coefficients.constant(prefill_seconds=0.05, decode_seconds=0.002)
-        assert "constant bring-up" in ShapeStubBackend(coefficients=flat).describe()
+        assert "constant bring-up" in StepStubBackend(coefficients=flat).describe()
 
 
 # ── collectives ─────────────────────────────────────────────────────────────
@@ -436,18 +436,18 @@ class TestCollectives:
     STACK_LAYERS = 64
 
     def test_a_single_rank_deployment_is_charged_for_no_collective(self):
-        step = ShapeStubBackend(
+        step = StepStubBackend(
             parallelism=Parallelism(expert_parallel=True), geometry=self.GEOMETRY
-        ).estimate(BatchView((prefill(128),)))
+        ).price(BatchView((prefill(128),)))
         assert not [name for name in named(step) if name.startswith("collective")]
 
     def test_the_charged_collectives_are_the_ones_the_widths_produce(self):
         widths = Parallelism(tp_size=2, dp_size=2, expert_parallel=True)
-        step = ShapeStubBackend(
+        step = StepStubBackend(
             parallelism=widths,
             geometry=self.GEOMETRY,
             stack_layers=self.STACK_LAYERS,
-        ).estimate(BatchView((prefill(128),)))
+        ).price(BatchView((prefill(128),)))
         charged = [name for name in named(step) if name.startswith("collective")]
         assert charged == [f"collective.{n}" for n in widths.collectives()]
         assert named(step)["collective.tp-all-reduce"] == pytest.approx(
@@ -457,14 +457,14 @@ class TestCollectives:
     def test_a_collective_with_no_stack_depth_to_price_it_is_refused(self):
         """And a geometry does not answer it: what it counts is the subset."""
         with pytest.raises(ValueError, match="how many layers"):
-            ShapeStubBackend(parallelism=Parallelism(tp_size=2))
+            StepStubBackend(parallelism=Parallelism(tp_size=2))
         with pytest.raises(ValueError, match="how many layers"):
-            ShapeStubBackend(parallelism=Parallelism(tp_size=2), geometry=self.GEOMETRY)
+            StepStubBackend(parallelism=Parallelism(tp_size=2), geometry=self.GEOMETRY)
 
     def test_a_span_shallower_than_its_paged_layers_is_refused(self):
         """The two counts crossed: a subset cannot be larger than the set."""
         with pytest.raises(ValueError, match="have been crossed"):
-            ShapeStubBackend(
+            StepStubBackend(
                 parallelism=Parallelism(tp_size=2),
                 geometry=self.GEOMETRY,
                 stack_layers=4,
@@ -480,7 +480,7 @@ class TestCollectives:
         constructors answer the same question the same way.
         """
         with pytest.raises(TypeError, match="whole number of at least 1"):
-            ShapeStubBackend(
+            StepStubBackend(
                 parallelism=Parallelism(tp_size=2),
                 geometry=self.GEOMETRY,
                 stack_layers=depth,
@@ -501,12 +501,12 @@ class TestCollectives:
         out -- the record line, which exists here because the seconds do not
         carry the count -- so the type and that line are asserted too.
         """
-        taken = ShapeStubBackend(parallelism=Parallelism(tp_size=2), stack_layers=True)
+        taken = StepStubBackend(parallelism=Parallelism(tp_size=2), stack_layers=True)
         assert taken.stack_layers == 1
         assert "on 1 layers" in taken.describe()
         assert not isinstance(taken.stack_layers, bool)
         with pytest.raises(ValueError, match="at least one layer"):
-            ShapeStubBackend(parallelism=Parallelism(tp_size=2), stack_layers=False)
+            StepStubBackend(parallelism=Parallelism(tp_size=2), stack_layers=False)
 
     def test_a_collective_is_priced_with_no_geometry_paired_to_it(self):
         """The geometry is not what a collective is charged on, so it is optional.
@@ -518,9 +518,9 @@ class TestCollectives:
         crossed-count check having one count to compare and the record having
         one to write -- pinned here and in the test below.
         """
-        step = ShapeStubBackend(
+        step = StepStubBackend(
             parallelism=Parallelism(tp_size=2), stack_layers=self.STACK_LAYERS
-        ).estimate(BatchView((prefill(128),)))
+        ).price(BatchView((prefill(128),)))
         assert named(step)["collective.tp-all-reduce"] == pytest.approx(
             128 * self.STACK_LAYERS * Coefficients().collective_token_layer
         )
@@ -532,12 +532,12 @@ class TestCollectives:
         and on a hybrid it is a quarter of one. The line names the count it
         does not have instead.
         """
-        paired = ShapeStubBackend(
+        paired = StepStubBackend(
             parallelism=Parallelism(tp_size=2),
             geometry=self.GEOMETRY,
             stack_layers=self.STACK_LAYERS,
         ).describe()
-        alone = ShapeStubBackend(
+        alone = StepStubBackend(
             parallelism=Parallelism(tp_size=2), stack_layers=self.STACK_LAYERS
         ).describe()
         assert "on 64 layers, 16 paged" in paired
@@ -552,11 +552,11 @@ class TestCollectives:
         two it is where the charge is read, since the seconds are indis-
         tinguishable from a confirmed collective's once they are in a total.
         """
-        step = ShapeStubBackend(
+        step = StepStubBackend(
             parallelism=Parallelism(tp_size=2, dp_size=2, expert_parallel=True),
             geometry=self.GEOMETRY,
             stack_layers=self.STACK_LAYERS,
-        ).estimate(BatchView((prefill(128),)))
+        ).price(BatchView((prefill(128),)))
         for name, _, provenance in step.rows():
             assert (CANDIDATE in provenance) is name.startswith("collective.")
 
@@ -567,11 +567,11 @@ class TestCollectives:
         both a number of seconds in a total, so the term states the count it
         multiplied where a reader of the record finds it.
         """
-        step = ShapeStubBackend(
+        step = StepStubBackend(
             parallelism=Parallelism(tp_size=2),
             geometry=self.GEOMETRY,
             stack_layers=self.STACK_LAYERS,
-        ).estimate(BatchView((prefill(128),)))
+        ).price(BatchView((prefill(128),)))
         for name, _, provenance in step.rows():
             assert (PER_STACK_LAYER in provenance) is name.startswith("collective.")
 
@@ -584,11 +584,11 @@ class TestCollectives:
         depth in hand and its term says that is what happened. Both are the
         same seconds; only the record tells them apart.
         """
-        step = ShapeStubBackend(
+        step = StepStubBackend(
             parallelism=Parallelism(tp_size=2, dp_size=2, expert_parallel=True),
             geometry=self.GEOMETRY,
             stack_layers=self.STACK_LAYERS,
-        ).estimate(BatchView((prefill(128),)))
+        ).price(BatchView((prefill(128),)))
         stands_in = {
             name: DEPTH_STANDS_IN in provenance for name, _, provenance in step.rows()
         }
@@ -623,11 +623,11 @@ class TestCollectives:
             "collectives",
             lambda self: ("tp-all-reduce", "pp-send-recv"),
         )
-        step = ShapeStubBackend(
+        step = StepStubBackend(
             parallelism=Parallelism(tp_size=2),
             geometry=self.GEOMETRY,
             stack_layers=self.STACK_LAYERS,
-        ).estimate(BatchView((prefill(128),)))
+        ).price(BatchView((prefill(128),)))
         said = {name: provenance for name, _, provenance in step.rows()}
         assert DEPTH_STANDS_IN in said["collective.pp-send-recv"]
         assert DEPTH_STANDS_IN not in said["collective.tp-all-reduce"]
@@ -645,7 +645,7 @@ class TestChunkSize:
 
     @staticmethod
     def _terms(n):
-        return named(ShapeStubBackend().estimate(BatchView((prefill(n),))))
+        return named(StepStubBackend().price(BatchView((prefill(n),))))
 
     def test_the_token_term_doubles_exactly(self):
         assert (
@@ -670,9 +670,9 @@ class TestChunkSize:
             prefill_query_square=0.0,
             prefill_query_cached=0.0,
         )
-        backend = ShapeStubBackend(coefficients=linear)
-        short = backend.estimate(BatchView((prefill(256),))).seconds
-        long = backend.estimate(BatchView((prefill(512),))).seconds
+        backend = StepStubBackend(coefficients=linear)
+        short = backend.price(BatchView((prefill(256),))).seconds
+        long = backend.price(BatchView((prefill(512),))).seconds
         assert long == 2 * short
 
 
@@ -724,7 +724,7 @@ def _drive(coefficients, steps=10, arrival=ARRIVAL, chunk=CHUNK):
             max_model_len=4096,
         )
     )
-    backend = ShapeStubBackend(coefficients=coefficients)
+    backend = StepStubBackend(coefficients=coefficients)
     params = SamplingParams(max_tokens=200)
     scheduler.add(Sequence(list(range(1, PROMPT_A + 1)), 16, sampling_params=params))
     waiting = [
@@ -742,7 +742,7 @@ def _drive(coefficients, steps=10, arrival=ARRIVAL, chunk=CHUNK):
         assert sum_query_context(view.requests) == batch.detailed_sqsk
         assert sum_context(view.requests) == batch.detailed_sk
         trace.append((tuple(batch.req_ids), view, clock))
-        clock = fold_step(clock, backend.estimate(view).seconds)
+        clock = fold_step(clock, backend.price(view).seconds)
         scheduler.postprocess(
             list(seqs.values()),
             ScheduledBatchOutput(
@@ -844,9 +844,9 @@ class TestClosedLoop:
 
     def test_a_longer_chunk_costs_longer_in_the_real_streak(self):
         trace = _drive(Coefficients())
-        backend = ShapeStubBackend()
+        backend = StepStubBackend()
         first, joined = trace[0][1], trace[5][1]
         assert sum(r.query_tokens for r in joined.requests) == 2 * sum(
             r.query_tokens for r in first.requests
         )
-        assert backend.estimate(joined).seconds > backend.estimate(first).seconds
+        assert backend.price(joined).seconds > backend.price(first).seconds

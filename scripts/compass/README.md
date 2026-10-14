@@ -541,8 +541,8 @@ the log of one rank.
 
 ## Tier a's law from real cells — `coarse_fit`
 
-`python -m atom.compass.backends.coarse_fit RECORD... --out LAW [--form FORM]`
-fits the law a run file's `law` key holds (`atom/compass/backends/coarse.py`) from
+`python -m atom.compass.backends.step_linear_fit RECORD... --out LAW [--form FORM]`
+fits the law a run file's `law` key holds (`atom/compass/backends/step_linear.py`) from
 the step records of real cells, `OUT_DIR/steps/dp0.jsonl` of `REAL=1
 cctraces_sim.sh` runs. The module's docstring states the label, what is cut and
 how outliers are dropped; the written law also carries, per vector, its samples,

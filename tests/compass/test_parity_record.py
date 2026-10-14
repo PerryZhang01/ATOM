@@ -20,7 +20,7 @@ import pytest
 from conftest import MockConfig
 
 from atom.compass import run
-from atom.compass.backends.shape import ShapeStubBackend
+from atom.compass.backends.step_stub import StepStubBackend
 from atom.compass.parity import ENV, RUNNER, StepRecording, compare, read
 from atom.compass.runner import overrides
 from atom.compass.runner.overrides import NonAllocatingRunner, install_cost_backend
@@ -66,7 +66,7 @@ class _Runner(NonAllocatingRunner):
 
     def __init__(self, config, rank=0):
         self.config, self.rank = config, rank
-        install_cost_backend(self, ShapeStubBackend())
+        install_cost_backend(self, StepStubBackend())
         self.capture_sizes_np, self.enforce_eager = np.array(LADDER), False
         self.attn_metadata_builder = GRAPHABLE
         self._token_stream = DeferredTokenStream([0])

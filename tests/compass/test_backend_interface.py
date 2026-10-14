@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """The backend seam itself: two methods, and what it is not allowed to reach.
 
-`estimate` takes a projection of the batch -- numbers the caller prepared --
+`price` takes a projection of the batch -- numbers the caller prepared --
 rather than the scheduled batch object, and the value of that choice is only
 real if the package stays free of engine imports. So it is asserted by reading
 the sources rather than trusted: a package that imports the engine is testable
@@ -31,13 +31,13 @@ from atom.compass.backends import (
     CostBackend,
     CostTerm,
     FakeModel,
+    Granularity,
     HfConfig,
     Provenance,
     RequestShape,
     Species,
     StepCost,
     SyntheticStack,
-    Tier,
 )
 
 PACKAGE = pathlib.Path(__file__).resolve().parents[2] / "atom" / "compass" / "backends"
@@ -47,10 +47,10 @@ class TwoTermBackend(CostBackend):
     """The smallest thing that satisfies the interface, used to exercise it."""
 
     @property
-    def tier(self):
-        return Tier.COARSE
+    def granularity(self):
+        return Granularity.STEP
 
-    def estimate(self, batch_view):
+    def price(self, batch_view):
         declared = Provenance(Species.FITTED, "declared coefficients")
         return StepCost(
             [
@@ -63,13 +63,13 @@ class TwoTermBackend(CostBackend):
         return "two-term stub, declared coefficients"
 
 
-def test_the_tiers_are_the_three_cost_models():
-    assert [t.value for t in Tier] == ["0", "a", "b"]
+def test_a_backend_prices_a_step_or_its_ops():
+    assert [g.value for g in Granularity] == ["step", "op"]
 
 
 def test_a_backend_must_supply_all_three_members():
     class Partial(CostBackend):
-        def estimate(self, batch_view):
+        def price(self, batch_view):
             return None
 
     with pytest.raises(TypeError):
@@ -77,7 +77,7 @@ def test_a_backend_must_supply_all_three_members():
 
 
 def test_a_backend_returns_a_total_with_its_parts():
-    step = TwoTermBackend().estimate({"tokens": 512})
+    step = TwoTermBackend().price({"tokens": 512})
     assert [name for name, _, _ in step.rows()] == ["launch", "tokens"]
     assert step.seconds == pytest.approx(0.001 + 512 * 2e-6)
     assert not step.is_refused
@@ -86,7 +86,7 @@ def test_a_backend_returns_a_total_with_its_parts():
 def test_a_backend_says_what_it_is_answering_from():
     backend = TwoTermBackend()
     assert backend.describe()
-    assert backend.tier is Tier.COARSE
+    assert backend.granularity is Granularity.STEP
 
 
 def _imported_modules(path):
