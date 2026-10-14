@@ -33,7 +33,7 @@ from atom.utils import clock
 from atom.utils.clock import LPRuntime
 
 MAX_TOKENS = 4
-REFUSED = "cost:coarse-law: no decode vector for rung eager"
+REFUSED = "cost:step-linear: no decode vector for rung eager"
 
 
 def no_eager_rung():

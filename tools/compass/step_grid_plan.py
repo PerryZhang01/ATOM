@@ -293,7 +293,7 @@ def main(argv=None) -> int:
         definition = _read(args.definition, ("prefill", "decode", "margin", *TARGET))
         print(json.dumps(plan(definition, read), indent=1))
         return 0
-    run, fields = _read(args.run, ("step_fit", "machine")), _read(args.config, CONFIG)
+    run, fields = _read(args.run, ("step_grid", "machine")), _read(args.config, CONFIG)
     config = SimpleNamespace(
         **fields,
         parallel_config=SimpleNamespace(
@@ -302,7 +302,7 @@ def main(argv=None) -> int:
         quant_config=SimpleNamespace(compute_hash=lambda: fields["quantization"]),
     )
     machine = MachineSpec.from_mapping(_width_keys(run["machine"]))
-    backend, _ = load(run["step_fit"], config, machine)
+    backend, _ = load(run["step_grid"], config, machine)
     report = coverage(backend, read)
     print(json.dumps(report, indent=1))
     return 0 if report["covered"] == report["steps"] else 1

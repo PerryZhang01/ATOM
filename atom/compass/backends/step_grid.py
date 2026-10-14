@@ -70,7 +70,7 @@ from atom.compass.backends.shape import (
 if TYPE_CHECKING:
     from atom.compass.backends.step_grid_residual import Residual
 
-SOURCE = "step-fit"
+SOURCE = "step-grid"
 UNITS = {"s": Fraction(1), "ms": Fraction(1, 10**3), "us": Fraction(1, 10**6)}
 
 
@@ -316,6 +316,6 @@ class StepGridBackend(CostBackend):
 
     def describe(self) -> str:
         return (
-            f"tier-a step fit, bundle {self.bundle}; {self.grid.graph_mode} "
+            f"step grid, bundle {self.bundle}; {self.grid.graph_mode} "
             f"decode grid, timing scope {self.grid.scope}; {self.residual.describe()}"
         )

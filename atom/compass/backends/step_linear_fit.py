@@ -62,7 +62,7 @@ the convex hull of its fitted steps, which `StepLinearLaw` reads. A vector with
 no more fitted steps than coefficients, or whose steps span no hull, is left
 out and named under `unfitted`; `StepLinearBackend` refuses its steps.
 
-Forms (`FORMS`): `law`, the features `StepLinearLaw` always prices; `history`,
+Forms (`FORMS`): `base`, the features `StepLinearLaw` always prices; `history`,
 prefill plus `Sum (N_KV - N_Q)`, the KV a short chunk reads on a deep history;
 `shared`, decode with the context and padding slopes shared by every rung and
 an intercept per rung.
@@ -106,7 +106,7 @@ from atom.compass.backends.step_linear import (
     rowmod,
 )
 
-FORMS = ("law", "history", "shared")
+FORMS = ("base", "history", "shared")
 MAD_K = 3.5
 #: A relative residual this small is never an outlier, however tight the rest.
 MAD_FLOOR = 0.01
@@ -165,7 +165,7 @@ def _launch_exposed(lines) -> set[int]:
     return exposed
 
 
-def samples(record, form: str = "law", dp: int = 1) -> tuple[list[tuple], dict]:
+def samples(record, form: str = "base", dp: int = 1) -> tuple[list[tuple], dict]:
     """One record's fittable steps as (vector, features, seconds, step, context), and
     what was cut.
 
@@ -471,7 +471,7 @@ def _slowest(groups, prefill: list[str]) -> tuple[list[tuple], dict]:
     return rows, report
 
 
-def fit(records, form: str = "law", dp: int = 1) -> dict:
+def fit(records, form: str = "base", dp: int = 1) -> dict:
     """The law over `records`, runs of `dp` ranks each, as the mapping `StepLinearLaw` reads."""
     from scipy.spatial import QhullError
 
@@ -494,7 +494,7 @@ def fit(records, form: str = "law", dp: int = 1) -> dict:
         for r in records
     ]
     law = {
-        "provenance": f"coarse_fit {form} on {len(records)} real records "
+        "provenance": f"step_linear_fit {form} on {len(records)} real records "
         f"({', '.join(digests)})",
         "form": form,
         "cut": cut,
@@ -602,7 +602,7 @@ def _band(key: str, counts) -> str:
     return f"prefill tokens {lo}-{hi}"
 
 
-def held_out(records, form: str = "law") -> dict:
+def held_out(records, form: str = "base") -> dict:
     """Per band, the relative errors on each record of the law fitted on the others."""
     warm = fit(records, form)["warm_steps"]
     errors: dict[str, list[float]] = {}
@@ -657,7 +657,7 @@ def main(argv=None) -> None:
     parser.add_argument(
         "--out", required=True, help="where the law is written, as JSON"
     )
-    parser.add_argument("--form", choices=FORMS, default="law")
+    parser.add_argument("--form", choices=FORMS, default="base")
     parser.add_argument(
         "--dp", type=int, default=1, help="ranks per run, the records in rank order"
     )

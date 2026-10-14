@@ -523,10 +523,10 @@ class PredictedMemory:
 class StepGridBundle:
     """The step grid bundle a runner prices with, read by the engine's hand-in."""
 
-    def step_fit_bundle(self) -> dict[str, Any]:
-        """`compass_step_fit` as a step grid run installed it; empty before
+    def step_grid_bundle(self) -> dict[str, Any]:
+        """`compass_step_grid` as a step grid run installed it; empty before
         one is, since a None reply parks the engine."""
-        return vars(self).get("compass_step_fit", {})
+        return vars(self).get("compass_step_grid", {})
 
 
 class NonAllocatingRunner(

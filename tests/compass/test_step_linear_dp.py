@@ -144,7 +144,7 @@ def test_a_keyed_law_refuses_another_width_and_one_one_prices_as_tp1(monkeypatch
 
     with pytest.raises(ValueError, match=r"\(dp, ep\) \(4, 1\) .* at \(1, 1\)"):
         StepLinearBackend(StepLinearLaw(dict(law(), key=[4, 1])))
-    monkeypatch.setattr(run, "spec", lambda: {"law": law()})
+    monkeypatch.setattr(run, "spec", lambda: {"step_linear": law()})
     dpa = SimpleNamespace(
         tensor_parallel_size=1,
         enable_dp_attention=True,

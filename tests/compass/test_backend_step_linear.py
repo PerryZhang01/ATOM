@@ -5,7 +5,7 @@ Pricing is checked against `StepStubBackend`, which reads the same features:
 a law holding the stub's coefficients, with the stub's decode request term
 zero, prices every step to the same seconds. Steps reach the law through the
 runner's own `forward` and `_group_step_seconds`, and the law reaches the
-runner through `run.runner` from a run file's `law` key.
+runner through `run.runner` from a run file's `step_linear` key.
 """
 
 import dataclasses
@@ -220,22 +220,22 @@ def test_the_runner_prices_a_replayed_rung_from_its_own_vector():
     refused = graphed(backend())
     assert refused.dummy_execution().predicted_s == 0.0
     assert refused.refused_commands() == (
-        "cost:coarse-law: no decode vector for rung 1",
+        "cost:step-linear: no decode vector for rung 1",
     )
 
 
-def _without_coefficients(out, **keys):
+def _without_step_stub(out, **keys):
     path = _run_file(out, **keys)
     run = json.loads(path.read_text())
-    if "coefficients" not in keys:
-        del run["coefficients"]
+    if "step_stub" not in keys:
+        del run["step_stub"]
     path.write_text(json.dumps(run))
     return path
 
 
 def _installed(monkeypatch, tmp_path, **keys):
     """The backend `run.runner` installs from a run file with `keys`."""
-    monkeypatch.setattr(test_run_graph_pool, "_run_file", _without_coefficients)
+    monkeypatch.setattr(test_run_graph_pool, "_run_file", _without_step_stub)
     installed = []
     from atom.compass.runner import overrides
 
@@ -250,8 +250,8 @@ def _installed(monkeypatch, tmp_path, **keys):
     return installed[0]
 
 
-def test_a_run_file_law_installs_the_step_linear_backend(monkeypatch, tmp_path):
-    installed = _installed(monkeypatch, tmp_path, law=law())
+def test_a_run_file_step_linear_installs_the_step_linear_backend(monkeypatch, tmp_path):
+    installed = _installed(monkeypatch, tmp_path, step_linear=law())
 
     assert isinstance(installed, StepLinearBackend)
     assert installed.price(view((40, 40, False))).seconds == (
@@ -259,9 +259,9 @@ def test_a_run_file_law_installs_the_step_linear_backend(monkeypatch, tmp_path):
     )
 
 
-def test_a_run_file_with_coefficients_still_installs_the_stub(monkeypatch, tmp_path):
+def test_a_run_file_step_stub_installs_the_stub(monkeypatch, tmp_path):
     coefficients = dataclasses.asdict(STAGE1)
-    installed = _installed(monkeypatch, tmp_path, coefficients=coefficients)
+    installed = _installed(monkeypatch, tmp_path, step_stub=coefficients)
 
     assert isinstance(installed, StepStubBackend)
 
@@ -270,8 +270,8 @@ def test_a_run_file_with_coefficients_still_installs_the_stub(monkeypatch, tmp_p
     "keys,named",
     [
         (
-            {"law": law(), "coefficients": dataclasses.asdict(STAGE1)},
-            "coefficients and law",
+            {"step_linear": law(), "step_stub": dataclasses.asdict(STAGE1)},
+            "step_stub and step_linear",
         ),
         ({}, "none"),
     ],
@@ -284,12 +284,23 @@ def test_a_run_file_with_both_keys_or_neither_is_refused(
         _installed(monkeypatch, tmp_path, **keys)
 
 
-def test_a_run_file_law_is_refused_above_tensor_parallel_width_one(monkeypatch):
+@pytest.mark.parametrize(
+    "old,new",
+    [("law", "step_linear"), ("coefficients", "step_stub"), ("step_fit", "step_grid")],
+)
+def test_a_run_file_with_a_renamed_key_is_refused_naming_its_name_now(
+    monkeypatch, tmp_path, old, new
+):
+    with pytest.raises(ValueError, match=rf"renamed: {old} \(now {new}\)"):
+        _installed(monkeypatch, tmp_path, **{old: {}})
+
+
+def test_a_run_file_step_linear_is_refused_above_tensor_parallel_width_one(monkeypatch):
     from types import SimpleNamespace
 
     from atom.compass import run
 
-    monkeypatch.setattr(run, "spec", lambda: {"law": law()})
+    monkeypatch.setattr(run, "spec", lambda: {"step_linear": law()})
     tp2 = SimpleNamespace(config=SimpleNamespace(tensor_parallel_size=2))
     with pytest.raises(ValueError, match="tensor_parallel_size 2"):
         run.runner(tp2)

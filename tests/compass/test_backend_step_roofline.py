@@ -4,7 +4,7 @@
 The roofline's answer is `analytical` and carries what the law declined. Steps
 reach the backends through the runner's own `dummy_execution` and
 `_group_step_seconds`, and the backends reach the runner through `run.runner`
-from a run file's `law` and `roofline_floor_s` keys.
+from a run file's `step_linear` and `roofline_floor_s` keys.
 """
 
 import json
@@ -126,7 +126,9 @@ def _with_kv_fields(**fields):
 
 def test_a_run_file_floor_puts_the_roofline_under_the_law(monkeypatch, tmp_path):
     monkeypatch.setattr(test_run_graph_pool, "SimpleNamespace", _with_kv_fields)
-    installed = _installed(monkeypatch, tmp_path, law=law(), roofline_floor_s=0.004)
+    installed = _installed(
+        monkeypatch, tmp_path, step_linear=law(), roofline_floor_s=0.004
+    )
     hf = PretrainedConfig.from_dict(json.loads(CONFIG_JSON.read_text())["text_config"])
     kv = KvGeometry.from_hf_config(hf, block_size=16, kv_dtype="bf16")
 

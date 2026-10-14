@@ -99,7 +99,7 @@ def coverage(tmp_path, capsys, member, *records, grid=KEY["grid"], **config):
     publish(tmp_path, r, member=member, grid=grid)
     files = tmp_path / "run.json", tmp_path / "atom_config.json"
     spec = {"store": str(tmp_path / "store"), **KEY, "grid": grid}
-    files[0].write_text(json.dumps({"step_fit": spec, "machine": DOCUMENT}))
+    files[0].write_text(json.dumps({"step_grid": spec, "machine": DOCUMENT}))
     c = r.config
     fields = {name: getattr(c, name, None) for name in tool.CONFIG}
     fields["data_parallel_size"] = c.parallel_config.data_parallel_size

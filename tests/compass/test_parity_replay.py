@@ -136,7 +136,7 @@ def test_a_run_file_naming_a_record_replays_it_on_the_engine_clock(
     monkeypatch.delenv(ENV)
     r = deployment(tmp_path)
     run = json.loads(_run_file(tmp_path).read_text())
-    del run["coefficients"]
+    del run["step_stub"]
     (tmp_path / "run.json").write_text(json.dumps(run | {"replay": str(directory)}))
     monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
     monkeypatch.setenv(compass_run.NOW_ENV, str(tmp_path / "now.bin"))
