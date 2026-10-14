@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2024-2025, Advanced Micro Devices, Inc. All rights reserved.
 
-"""Tier a: one rank's step priced by a fitted linear law.
+"""The step linear law: one rank's step priced by a fitted linear law.
 
 A step is prefill or decode, never both. Prefill has one coefficient vector,
-decode one per capture rung, each over the features `ShapeStubBackend` reads:
+decode one per capture rung, each over the features `StepStubBackend` reads:
 
     prefill:        [1, tokens, Sum N_Q^2, Sum N_Q.(N_KV - N_Q)]
     decode, rung r: [1, Sum N_KV, r.max N_KV - Sum N_KV]
@@ -54,12 +54,11 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 
-import numpy as np
-
-from atom.compass.backends.base import CostBackend, Tier
+from atom.compass.backends.base import CostBackend, Granularity
 from atom.compass.backends.cost import CostTerm, StepCost
-from atom.compass.backends.ladder import CostRefused
+from atom.compass.backends.hull import Hull
 from atom.compass.backends.provenance import Provenance, Refusal, Species
+from atom.compass.backends.resolver import CostRefused
 from atom.compass.backends.shape import (
     BatchView,
     sum_context,
@@ -74,8 +73,6 @@ DECODE = ("step", "context", "graph_padding")
 ROWMOD = DECODE + ("rowmod",)
 EAGER = "eager"
 SOURCE = "coarse-law"
-#: A point on a facet evaluates to rounding error, relative to its magnitudes.
-_HULL_TOLERANCE = 1e-9
 
 
 class _Vector:
@@ -109,53 +106,12 @@ def rowmod(context, k: int) -> int:
     return max(sum(context[r::k]) for r in range(min(k, len(context))))
 
 
-class Hull:
-    """The convex hull of the features a fit ranged over.
-
-    `equal` maps each feature that was constant over the fit to its value;
-    `facets` bound the others, in `features` order, as `a . x + c <= 0` inside.
-    `label` names the hull in every load error.
-    """
-
-    def __init__(self, label: str, features: tuple[str, ...], hull: Mapping) -> None:
-        equal = hull.get("equal", {})
-        if not set(equal) <= set(features):
-            raise ValueError(
-                f"{label} checks {sorted(equal)} for equality, which "
-                f"are not all among its features {list(features)}"
-            )
-        self.equal = {features.index(f): value for f, value in equal.items()}
-        self.vary = [i for i in range(len(features)) if i not in self.equal]
-        width = len(self.vary) + 1
-        if any(len(row) != width for row in hull["facets"]):
-            raise ValueError(
-                f"{label} has a facet not {width} wide: one entry per "
-                f"varying feature {[features[i] for i in self.vary]}, then the offset"
-            )
-        self.facets = np.asarray(hull["facets"], dtype=np.float64).reshape(-1, width)
-        if self.vary and not len(self.facets):
-            raise ValueError(
-                f"{label} bounds {len(self.vary)} varying features with no "
-                "facets, which is all of space"
-            )
-        if not np.isfinite(self.facets).all():
-            raise ValueError(f"{label} has a facet that is not finite")
-
-    def contains(self, point: tuple[float, ...]) -> bool:
-        if any(point[i] != value for i, value in self.equal.items()):
-            return False
-        x = np.array([point[i] for i in self.vary], dtype=np.float64)
-        normals, offsets = self.facets[:, :-1], self.facets[:, -1]
-        scale = np.abs(normals) @ np.abs(x) + np.abs(offsets)
-        return bool(np.all(normals @ x + offsets <= _HULL_TOLERANCE * scale))
-
-
-class CoarseLaw:
+class StepLinearLaw:
     """A prefill vector, a decode vector per rung, each with its hull."""
 
     def __init__(self, law: Mapping) -> None:
-        self.provenance = str(law.get("provenance", "")).strip()
-        if not self.provenance:
+        self.fitted_on = str(law.get("provenance", "")).strip()
+        if not self.fitted_on:
             raise ValueError("a law states what it was fitted on, under provenance")
         self.key = tuple(law.get("key", (1, 1)))
         self.prefill = None
@@ -173,10 +129,10 @@ class CoarseLaw:
         }
 
 
-class CoarseBackend(CostBackend):
+class StepLinearBackend(CostBackend):
     """Prices a step as its features times the law's coefficients, one term each."""
 
-    def __init__(self, law: CoarseLaw, key: tuple[int, int] = (1, 1)) -> None:
+    def __init__(self, law: StepLinearLaw, key: tuple[int, int] = (1, 1)) -> None:
         if law.key != tuple(key):
             raise ValueError(
                 f"the law was fitted at (dp, ep) {law.key} and this deployment "
@@ -185,13 +141,13 @@ class CoarseBackend(CostBackend):
         self.law = law
 
     @property
-    def tier(self) -> Tier:
-        return Tier.COARSE
+    def granularity(self) -> Granularity:
+        return Granularity.STEP
 
     def _refuse(self, view: BatchView, reason: str) -> CostRefused:
         return CostRefused(view, [Refusal(SOURCE, reason)])
 
-    def estimate(self, batch_view: BatchView) -> StepCost:
+    def price(self, batch_view: BatchView) -> StepCost:
         if not isinstance(batch_view, BatchView):
             raise TypeError(
                 f"this backend prices a BatchView, not {type(batch_view).__name__}"
@@ -230,7 +186,7 @@ class CoarseBackend(CostBackend):
             counts = (1, sum_context(decode), batch_view.graph_padding)
             if vector.rowmod:
                 counts += (rowmod([r.context_tokens for r in decode], vector.rowmod),)
-        detail = self.law.provenance
+        detail = self.law.fitted_on
         species = Species.FITTED
         if not vector.hull.contains(counts[1:]):
             species = Species.EXTRAPOLATED
@@ -251,4 +207,4 @@ class CoarseBackend(CostBackend):
         )
 
     def describe(self) -> str:
-        return f"tier-a coarse law; {self.law.provenance}"
+        return f"tier-a coarse law; {self.law.fitted_on}"

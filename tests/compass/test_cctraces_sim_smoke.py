@@ -38,7 +38,7 @@ import torch
 from test_memory_readings import DOCUMENT
 
 from atom.compass import run as compass_run
-from atom.compass.backends.shape import Coefficients
+from atom.compass.backends.step_stub import Coefficients
 from atom.compass.detect.determinism import CONFIGURATION_PREFIX
 
 MODEL = os.environ.get("ATOM_COMPASS_SLICE_MODEL")

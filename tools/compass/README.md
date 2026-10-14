@@ -4,15 +4,15 @@
 Run from a tree root with ATOM importable (`pip install -e .`, or
 `PYTHONPATH=<tree root>`).
 
-## `step_fit_plan.py`: step fit's grid, planned and checked
+## `step_grid_plan.py`: the step grid, planned and checked
 
-Plans which grid points step fit's bundle must measure, from the shapes of
+Plans which grid points a step grid bundle must measure, from the shapes of
 recorded steps, and checks that a published bundle covers a set of steps.
 Needs no device, and measures and fits nothing.
 
 ```
-python tools/compass/step_fit_plan.py plan DEFINITION RECORD...
-python tools/compass/step_fit_plan.py coverage RUN CONFIG RECORD...
+python tools/compass/step_grid_plan.py plan DEFINITION RECORD...
+python tools/compass/step_grid_plan.py coverage RUN CONFIG RECORD...
 ```
 
 **RECORD** is a step record directory: set `ATOM_COMPASS_PARITY_RECORD` on a
@@ -41,7 +41,7 @@ each B between them that a recorded step on the rung reaches past the rung's
 KV limit; its c nodes add each B node's KV limit,
 `block size · ⌊num_kvcache_blocks / B⌋ - 1`, and `max_model_len - 1`.
 
-It then reads each step where step fit's backend reads it: prefill on
+It then reads each step where the step grid backend reads it: prefill on
 `(B, T, c)`, split by whether the step produces output, and decode on its
 rung. It plans every corner of each step's cell, widened by `margin` nodes on
 every axis and to `margin` rungs either side, each such rung at all its B
@@ -53,15 +53,15 @@ c + N_Q above `max_model_len`, or B·⌈(c + N_Q) / block size⌉ above the bloc
 count, assuming no prefix sharing.
 
 It prints JSON: `graph_mode`, `scope`, `bounds`, and `prefill` and `decode` in
-a bundle grid's layout (`atom/compass/backends/step_fit.py`) with each point as
+a bundle grid's layout (`atom/compass/backends/step_grid.py`) with each point as
 its coordinates, `[B, T, c]` or `[rung, B, c]`; `counts` per phase and rung;
 `infeasible`, the points not planned and why; and `unplaced`, the steps outside
 the grid with the backend's reason. To publish the grid, give each point its
 measurement (`{"at": ..., "time": ..., "statistic": ..., "repeats": ...}`) and
 a `unit`, and put `bounds` beside the grid in the bundle
-(`atom/compass/run/step_fit.py`).
+(`atom/compass/run/step_grid.py`).
 
-**`coverage`** loads the bundle with `run/step_fit.py::load`. **RUN** is the run
+**`coverage`** loads the bundle with `run/step_grid.py::load`. **RUN** is the run
 file the graded run will use, for its `step_fit` key and its `machine`.
 **CONFIG** is that run's resolved ATOM config as `load` reads it, a JSON
 object with the `Config` fields `model`, `tensor_parallel_size`,

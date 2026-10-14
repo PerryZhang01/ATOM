@@ -25,8 +25,8 @@ closed form looks.
 A `Refusal` is a declined answer with a named reason, and it is a value rather
 than an error. Every refusal collected while resolving a cost is carried on the
 provenance of the cost that was produced instead -- all of them, earliest
-first, not just the one that renders -- so a cost that came from further down a
-ladder cannot be mistaken for one that came from the top of it, and a count of
+first, not just the one that renders -- so a cost that came from a later source
+cannot be mistaken for one that came from the first, and a count of
 reasons is not quietly missing the middle of the chain.
 """
 
@@ -80,7 +80,7 @@ class Provenance:
     `detail` is the unit or the key that was matched, free text, and is how
     `measured (op-level)` is distinguished from `measured (step-level)` without
     inventing a species for each. `source` names the thing that answered, so
-    the record identifies the rung and not only the species. `refusals` holds
+    the record identifies the source and not only the species. `refusals` holds
     everything that declined on the way to this answer, earliest first, which
     is what makes a fall-through visible in the record instead of an inference
     from a changed number.
@@ -112,15 +112,15 @@ class Provenance:
     def resolved(self, source: str, declined: Sequence[Refusal] = ()) -> Provenance:
         """This origin as a resolver produced it.
 
-        `declined` is prepended rather than merged or dropped, because a rung
+        `declined` is prepended rather than merged or dropped, because a source
         may itself be resolver-backed: its own refusals are already here, and
         they happened *after* the ones being added, so earliest-first ordering
         puts the new ones in front and the first refusal is genuinely the
         first. Nothing is discarded -- dropping the inner chain would let a
-        composed ladder report the wrong rung and undercount the reasons.
+        composed resolver report the wrong source and undercount the reasons.
 
-        The answering name composes the same way: an answer from a rung that
-        is itself a ladder reads `outer/inner`, so the record names the path
+        The answering name composes the same way: an answer from a source that
+        is itself a resolver reads `outer/inner`, so the record names the path
         that produced the number rather than only its outermost step.
         """
         if not source.strip():

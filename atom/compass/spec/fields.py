@@ -90,7 +90,7 @@ def closed(fields: tuple[Field, ...]) -> tuple[Field, ...]:
 
 
 #: The machine spec, one row per field, in the order a document reads.
-DECLARED = (
+FIELDS = (
     Field("schema_version", Kind.COUNT),
     Field("name", Kind.TEXT),
     Field("provenance.authored_by", Kind.TEXT),
@@ -142,7 +142,7 @@ DECLARED = (
     Field("interconnect.router_relay_s", Kind.QUANTITY),
 )
 
-SCHEMA = closed(DECLARED)
+SCHEMA = closed(FIELDS)
 BY_PATH = {field.path: field for field in SCHEMA}
 #: Every dotted prefix of a declared path, so a document can be walked into.
 BLOCKS = frozenset(

@@ -37,8 +37,8 @@ box produces and will not reproduce a neighbour-induced admission cliff.
 **Two of the five `peak_torch` terms are not derivable here.** Weights are
 exact from a meta build deduped by storage, and buffers need a recording,
 because the formula that matched the 0.6B was 4x wrong on the 27B. A meta build
-needs a module tree, which needs the engine, which this tier does not import;
-the simulated runner builds one and hands it in. `from_declared_config` reads
+needs a module tree, which needs the engine, which this package does not import;
+the simulated runner builds one and hands it in. `from_config` reads
 the weights off that tree's parameter storages when it is given one, and fills
 the rest with declared formulas, labelling every one of them, unless a real run
 measured the activation term's bytes per token in the machine spec.
@@ -123,7 +123,7 @@ class ModelTerms:
     activations: Term
 
     @classmethod
-    def from_declared_config(
+    def from_config(
         cls,
         config,
         *,
@@ -132,7 +132,7 @@ class ModelTerms:
         warmup_tokens: int,
         dtype_bytes: int | None = None,
         config_json: dict | None = None,
-        measured_activations: tuple[str, float] | None = None,
+        activations_entry: tuple[str, float] | None = None,
         tree=None,
     ) -> ModelTerms:
         """All three, each labelled with where its bytes came from.
@@ -162,7 +162,7 @@ class ModelTerms:
         difference between -35.0% and +3.4% held out. A formula does not
         stand in for that on a real model.
 
-        `measured_activations`, what `MachineSpec.activations_for` returns,
+        `activations_entry`, what `MachineSpec.activations_for` returns,
         replaces the activation formula with that entry's bytes per token
         times `warmup_tokens`; the scratch is inside it.
         """
@@ -309,8 +309,8 @@ class ModelTerms:
             "(ModelRunner._piecewise_per_token_bytes), over one live "
             "layer rather than all of them",
         )
-        if measured_activations is not None:
-            entry, per_token = measured_activations
+        if activations_entry is not None:
+            entry, per_token = activations_entry
             activations = Term(
                 "activations",
                 int(warmup_tokens * per_token),
