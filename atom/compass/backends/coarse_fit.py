@@ -259,8 +259,14 @@ def _solve(x: np.ndarray, y: np.ndarray, names: list[str]) -> dict:
     for passes in range(1, MAD_PASSES + 1):
         cols = a[keep][:, vary]
         norms = np.linalg.norm(cols, axis=0)
+        # A column with no non-zero kept row (a rung this pass dropped every
+        # step of) sits out of this pass's solve, at coefficient 0.
+        solved = norms > 0
         coef = np.zeros(x.shape[1])
-        coef[vary] = nnls(cols / norms, np.ones(int(keep.sum())))[0] / norms
+        coef[np.array(vary)[solved]] = (
+            nnls(cols[:, solved] / norms[solved], np.ones(int(keep.sum())))[0]
+            / norms[solved]
+        )
         residual = a @ coef - 1.0
         centre = np.median(residual)
         mad = 1.4826 * np.median(np.abs(residual - centre))
@@ -274,7 +280,7 @@ def _solve(x: np.ndarray, y: np.ndarray, names: list[str]) -> dict:
         "residual": residual,
         "centre": float(centre),
         "mad": float(mad),
-        "condition": float(np.linalg.cond(cols / norms)),
+        "condition": float(np.linalg.cond(cols[:, solved] / norms[solved])),
         "zero": [names[j] for j in range(x.shape[1]) if j not in vary],
     }
 

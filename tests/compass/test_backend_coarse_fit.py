@@ -21,7 +21,7 @@ from atom.compass.backends import (
     RequestShape,
     Species,
 )
-from atom.compass.backends.coarse_fit import fit, held_out, main, samples
+from atom.compass.backends.coarse_fit import _solve, fit, held_out, main, samples
 from atom.compass.validate.cost import cost_accuracy
 
 PREFILL = {"step": 0.02, "tokens": 6e-5, "query_square": 2e-10, "query_cached": 3e-10}
@@ -207,6 +207,26 @@ def test_three_forms_are_scored_on_a_record_held_out_of_their_fit(tmp_path):
     cost = CoarseBackend(CoarseLaw(fit(records, "history"))).estimate(_view(rows))
     assert cost.seconds == pytest.approx(seconds, rel=1e-6)
     assert cost.terms[-1].name == "prefill.history"
+
+
+def test_a_rung_a_mad_pass_drops_entirely_gets_coefficient_zero():
+    # `shared` gives each rung its own intercept column (named `step@...`).
+    # Rung B's two rows share a context feature but carry labels no single
+    # non-negative intercept reconciles with rung A's tight fit, so a MAD
+    # pass drops both: rung B's column is then all zero among kept rows.
+    names = ["context", "step@A", "step@B"]
+    rng = np.random.default_rng(1)
+    context_a = rng.uniform(1, 2, 60)
+    y_a = 0.02 * context_a + 0.03 + rng.normal(0, 1e-5, 60)
+    x_a = np.column_stack([context_a, np.ones(60), np.zeros(60)])
+    x_b = np.column_stack([[1.5, 1.5], [0, 0], [1, 1]])
+    y_b = np.array([3.0, 30.0])
+
+    solved = _solve(np.vstack([x_a, x_b]), np.concatenate([y_a, y_b]), names)
+
+    assert not solved["keep"][-2:].any()
+    assert solved["coef"][2] == 0.0
+    assert np.isfinite(solved["coef"]).all()
 
 
 def test_the_command_writes_a_law_a_run_file_can_carry(tmp_path, capsys):
