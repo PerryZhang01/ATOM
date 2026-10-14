@@ -23,6 +23,11 @@ not a message, because both ends already know its time. ``T`` is the
 request travels over the zmq address at ``kv_transfer_config[WRITE_REQ_KEY]``,
 which prefill binds and decode connects to.
 
+Above DP width one each decode and prefill rank pair has its own channel and
+address, the configured port plus the pair's index among the channels. Decode
+sends to the prefill rank the relayed ``dp_rank`` names, and a prefill rank
+refuses a write request for another rank.
+
 The worker half reports nothing. The engine still builds and polls it.
 """
 
@@ -125,12 +130,35 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
                 f"kv_transfer_config[{WRITE_REQ_KEY!r}] holds {address!r}, where "
                 "this connector needs the zmq address of its write requests"
             )
-        channel = clock.channel_of(self._rt, "kv_write_req")
+        table, me = self._rt.table, self._rt.me
+        pairs = [
+            c.name
+            for c in table.channels_from(me) + table.channels_into(me)
+            if c.name.partition(":")[2].startswith("kv_write_req")
+        ]
+        # This rank's end of each pair, by the rank at the other end; the k-th
+        # pair's address is the configured one's port plus k.
+        self._socks: dict[int, clock.WrappedSocket] = {}
+        for k, channel in enumerate(pairs):
+            d, _, p = channel.partition("#")[2].replace("dp", "").partition(".")
+            mine, other = (p, d) if self.is_producer else (d, p)
+            if mine and int(mine) != self._dp_rank:
+                continue
+            head, _, port = address.rpartition(":")
+            raw = zmq.Context.instance().socket(
+                zmq.PULL if self.is_producer else zmq.PUSH
+            )
+            (raw.bind if self.is_producer else raw.connect)(
+                f"{head}:{int(port) + k}" if k else address
+            )
+            self._socks[int(other or 0)] = clock.WrappedSocket(self._rt, raw, channel)
+        if not self._socks:
+            raise UnboundSeam(
+                f"{me} at DP rank {self._dp_rank} is no end of a kv_write_req "
+                f"channel; its table declares {pairs}"
+            )
         # The write request's latency, and the write-done notice's.
-        self._latency_s = self._rt.table.lookahead(channel)
-        raw = zmq.Context.instance().socket(zmq.PULL if self.is_producer else zmq.PUSH)
-        (raw.bind if self.is_producer else raw.connect)(address)
-        self._sock = clock.WrappedSocket(self._rt, raw, channel)
+        self._latency_s = table.lookahead(pairs[0])
         self._ready: dict = {}  # prefill: request -> r
         self._due: dict = {}  # request -> when it is reported finished
         # Mooncake's send claim: a producer keeps a request's blocks from the
@@ -174,7 +202,9 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
         blocks = len(seq.block_table) - computed
         # The arrival `stamp_send` gives this send.
         a = self._rt.now + self._latency_s
-        self._sock.send(pickle.dumps((params["transfer_id"], blocks, a)))
+        # Above DP width one, to the prefill rank that served the request.
+        rank = params["dp_rank"] if len(self._socks) > 1 else 0
+        self._socks[rank].send(pickle.dumps((params["transfer_id"], blocks, a, rank)))
         self._due[seq.id] = a + self._transfer.duration_s(blocks) + self._latency_s
 
     def request_finished(self, seq) -> None:
@@ -207,10 +237,20 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
     def source_blocks_released(self, seq) -> None:
         """No block-lifetime state remains after the send claim is retired."""
 
+    def _write_requests(self):
+        """Prefill: each write request released so far, pair by pair."""
+        for sock in self._socks.values() if self.is_producer else ():
+            while sock.poll(0):
+                yield pickle.loads(sock.recv())
+
     def process_completions(self, output):
         """Take the write requests released so far; report what the clock reached."""
-        while self.is_producer and self._sock.poll(0):
-            req_id, blocks, a = pickle.loads(self._sock.recv())
+        for req_id, blocks, a, rank in self._write_requests():
+            if rank != self._dp_rank:
+                raise ValueError(
+                    f"the write request for {req_id!r} is for prefill DP rank "
+                    f"{rank} and reached rank {self._dp_rank}"
+                )
             r = self._ready.pop(req_id, None)
             if r is None or r > a:
                 raise ValueError(

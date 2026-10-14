@@ -38,8 +38,10 @@ member, the frontend's included, connects to.
 Run file keys: ``clock_endpoint``, ``bound_s`` (finite), ``admission_path``,
 ``ipc_s``, ``stream_s``, one of ``coefficients`` (a `Coefficients` mapping,
 priced by `StepStubBackend`), ``law`` (a `StepLinearLaw` mapping, priced by
-`StepLinearBackend`) and ``step_fit`` (an artifact store's root and a
-bundle's key, priced by `StepGridBackend`; see `step_grid`),
+`StepLinearBackend`), ``step_fit`` (an artifact store's root and a bundle's
+key, priced by `StepGridBackend`; see `step_grid`) and ``replay`` (a real
+run's parity record directory: each step ends when the real one did, by
+`atom.compass.parity.replay`),
 ``roofline_floor_s`` (optional: a `StepRooflineBackend` with this host floor
 prices the steps the backend refuses, through `StepFallbackBackend`),
 ``on_refusal`` (optional: ``mark``, the default, prices a step no cost source
@@ -49,7 +51,9 @@ the run there, which still writes the summary),
 on ``(1, tokens, seqs)``, zero where absent; ``key``, the `host_key` they were
 fitted under, which a run with laws must match; ``skip``, segments zeroed for
 a what-if run, which the graders refuse),
-``machine`` (a machine spec mapping), ``parameter_count``, and ``out_dir``,
+``machine`` (a machine spec mapping), ``parameter_count`` (read with
+``roofline_floor_s``, and for the weights when the runner hands in no meta
+build), and ``out_dir``,
 where the step table, the run summary and each server LP's hand-in go, one
 file written as the LP leaves its loop. It holds the LP's refusals: an
 engine's are the worker's refused commands and the engine's refused clock
@@ -71,7 +75,9 @@ or ``inter_node``) names the link its KV transfers are priced on. A deployment
 whose ``kv_connector`` is ``compass`` is its prefill (``kv_producer``) or
 decode side: `engine(config)` makes it the ``engine-P`` or ``engine-D`` LP and
 binds the connector's transfer model. The write-request address comes with the
-deployment's own ``kv_transfer_config``. `frontend(config)` refuses such a
+deployment's own ``kv_transfer_config``. Above DP width one each DP rank is a
+member of its side's engine LP, and ATOM's DP dispatch on each side picks the
+rank a request runs on. `frontend(config)` refuses such a
 deployment unless the authority is standalone: a prefill-decode run spans two
 API servers that must share one.
 
@@ -192,26 +198,37 @@ def _dp(run: dict) -> int:
 def channel_table(run: dict):
     common = {k: run[k] for k in ("admission_path", "ipc_s", "stream_s")}
     if "kv_write_req_s" in run:
-        if _dp(run) != 1:
-            raise ValueError(
-                f"a prefill-decode run declares data_parallel_size {_dp(run)}; "
-                "its channel table has the channels of DP rank 0 only"
-            )
         return prefill_decode_table(
-            **common, router_s=run["router_s"], kv_write_req_s=run["kv_write_req_s"]
+            **common,
+            router_s=run["router_s"],
+            kv_write_req_s=run["kv_write_req_s"],
+            dp=_dp(run),
         )
     return single_engine_table(**common, dp=_dp(run))
 
 
 def _members(table, dp: int) -> dict | None:
-    """At DP width above one, the engine LP's members: each rank owns its ``#dp<rank>`` channels."""
+    """At DP width above one, each engine LP's members: rank ``dp<r>`` owns the
+    channels whose ``#`` tag names it at that LP's end, ``#dp<r>`` or, on a
+    channel between two engine LPs, ``#dp<sender rank>.dp<receiver rank>``."""
     if dp == 1:
         return None
-    names = [c.name for c in table.channels_into(ENGINE) + table.channels_from(ENGINE)]
+
+    def rank(c, lp):
+        tags = c.name.rpartition("#")[2].split(".")
+        return tags[0] if c.source == lp else tags[-1]
+
     return {
-        ENGINE: {
-            f"dp{r}": [n for n in names if n.endswith(f"#dp{r}")] for r in range(dp)
+        lp: {
+            f"dp{r}": [
+                c.name
+                for c in table.channels_into(lp) + table.channels_from(lp)
+                if rank(c, lp) == f"dp{r}"
+            ]
+            for r in range(dp)
         }
+        for lp in table.registry.ids()
+        if lp.name.startswith(ENGINE.name)
     }
 
 
@@ -453,13 +470,14 @@ def _named(inner):
         del os.environ[NOW_ENV]
 
 
-def runner(model_runner) -> None:
-    """Install the cost backend and the device readings from the run file."""
+def runner(model_runner, tree=None) -> None:
+    """Install the cost backend and the device readings from the run file.
+
+    `tree` is the model built on the meta device, which the weights are read
+    off; without it they are the run file's ``parameter_count``."""
     run = spec()
     if run is None:
         return
-    from transformers import PretrainedConfig
-
     from atom.compass.backends.geometry import KvGeometry, Parallelism
     from atom.compass.backends.step_linear import StepLinearBackend, StepLinearLaw
     from atom.compass.backends.step_roofline import (
@@ -478,19 +496,29 @@ def runner(model_runner) -> None:
 
     config = model_runner.config
     tp = config.tensor_parallel_size
-    keys = [k for k in ("coefficients", "law", "step_fit") if k in run]
+    keys = [k for k in ("coefficients", "law", "step_fit", "replay") if k in run]
     if len(keys) != 1:
         raise ValueError(
-            "a run file prices its steps from one of coefficients, law and "
-            f"step_fit, and this one has {' and '.join(keys) or 'none'}"
+            "a run file prices its steps from one of coefficients, law, "
+            f"step_fit and replay, and this one has {' and '.join(keys) or 'none'}"
         )
+    replay = None
+    if "replay" in run:
+        from atom.compass.parity.replay import ReplayBackend
+
+        dp_rank = config.parallel_config.data_parallel_rank
+        backend = replay = ReplayBackend(run["replay"], dp_rank)
     if "law" in run:
         if tp != 1:
             raise ValueError(
                 f"a law is fitted on one rank of tensor-parallel width 1, and this "
                 f"run has tensor_parallel_size {tp}"
             )
-        backend = StepLinearBackend(StepLinearLaw(run["law"]))
+        # Under DP-attention every rank runs at TP 1, and experts shard over the group.
+        dpa = config.enable_dp_attention
+        dp = config.parallel_config.data_parallel_size if dpa else 1
+        ep = dp if config.enable_expert_parallel else 1
+        backend = StepLinearBackend(StepLinearLaw(run["law"]), (dp, ep))
     elif "coefficients" in run:
         backend = StepStubBackend(
             Coefficients(**run["coefficients"]),
@@ -503,10 +531,10 @@ def runner(model_runner) -> None:
         from atom.compass.run.step_grid import load
 
         backend, bundle = load(run["step_fit"], config, machine)
-    config_json = PretrainedConfig.get_config_dict(config.model)[0]
+    config_json = _config_json(config)
     model = ModelTerms.from_config(
         config.hf_config,
-        parameter_count=run["parameter_count"],
+        parameter_count=run.get("parameter_count"),
         tp_size=tp,
         warmup_tokens=config.max_num_batched_tokens,
         config_json=config_json,
@@ -515,6 +543,7 @@ def runner(model_runner) -> None:
             _file_digest(config.model, "config.json"),
             tp,
         ),
+        tree=tree,
     )
     if "roofline_floor_s" in run:
         kv = KvGeometry.from_hf_config(
@@ -542,9 +571,11 @@ def runner(model_runner) -> None:
                 f"the run file's host laws were fitted under another {differ}; "
                 f"this run's key is {ours}"
             )
-        model_runner.compass_host = HostDeviceRecurrence(
+        model_runner.compass_host = replay or HostDeviceRecurrence(
             host.get("laws", {}), host.get("skip", ()), lambda: float(slot[0])
         )
+        if replay is not None:
+            replay.now = lambda: float(slot[0])
     model_runner.compass_abort = run.get("on_refusal") == "abort"
     reserved, captured = _graph_pool(model_runner, machine, model)
     readings = device_readings(
@@ -663,6 +694,17 @@ def host_key(config) -> dict:
         "model": _file_digest(config.model, "config.json"),
         "engine": keyed(config),
     }
+
+
+def _config_json(config) -> dict:
+    """The model's config.json as loading reads it, with `config.hf_overrides`
+    set over its text-level keys, as `Config` sets them over `hf_config`, so
+    an overridden field counts as stated."""
+    from transformers import PretrainedConfig
+
+    file = PretrainedConfig.get_config_dict(config.model)[0]
+    file.get("text_config", file).update(getattr(config, "hf_overrides", None) or {})
+    return file
 
 
 def _file_digest(name: str, filename: str) -> str | None:

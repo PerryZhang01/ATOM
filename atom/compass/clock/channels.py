@@ -201,15 +201,20 @@ def prefill_decode_table(
     stream_s: float,
     router_s: float,
     kv_write_req_s: float,
+    dp: int = 1,
 ) -> ChannelTable:
-    """One prefill and one decode deployment behind the router.
+    """One prefill and one decode deployment behind the router, each with the
+    channels of its `dp` data-parallel ranks.
 
     Requests enter at frontend-P and the stream leaves from frontend-D. The
     router has no choice to make with one of each, so it is not a process of its
     own: its per-request forward cost `router_s` is added to every channel that
     crosses it -- the request, the stream and the relay from frontend-P to
-    frontend-D. Decode posts the KV write request to prefill engine to engine.
+    frontend-D. Decode posts the KV write request to prefill engine to engine,
+    above width one on a channel per decode and prefill rank pair,
+    ``kv_write_req#dp<decode rank>.dp<prefill rank>``.
     """
+    pairs = [""] if dp == 1 else [f"#dp{d}.dp{p}" for d in range(dp) for p in range(dp)]
     return _table(
         ("traffic", "frontend-P", "engine-P", "frontend-D", "engine-D"),
         [
@@ -222,8 +227,11 @@ def prefill_decode_table(
             ),
             ("frontend-D", "traffic", "stream", stream_s + router_s, "inline"),
             ("frontend-P", "frontend-D", "relay", router_s, "inline"),
-            ("engine-D", "engine-P", "kv_write_req", kv_write_req_s, "inline"),
         ]
-        + _frontend_engine("frontend-P", "engine-P", ipc_s)
-        + _frontend_engine("frontend-D", "engine-D", ipc_s),
+        + [
+            ("engine-D", "engine-P", "kv_write_req" + pair, kv_write_req_s, "inline")
+            for pair in pairs
+        ]
+        + _frontend_engine("frontend-P", "engine-P", ipc_s, dp)
+        + _frontend_engine("frontend-D", "engine-D", ipc_s, dp),
     )

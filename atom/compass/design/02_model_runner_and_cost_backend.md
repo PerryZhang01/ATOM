@@ -307,7 +307,7 @@ Two orthogonal flags sit beside it, neither a mode of the runner:
   later simulation.
 - **`trace`** — performed on demand on first use and cached; not something a user selects.
 
-#### Why these two are asymmetric, and how they line up with `compass plan`
+#### Why these two are asymmetric, and how they line up with the toolchain
 
 The asymmetry is not stylistic. It follows from one property:
 
@@ -326,12 +326,13 @@ phases rather than describe a second workflow:
 | Needs a device | no | **yes** |
 | Offline home | doc `07` **Phase 1a** — trace the structures Phase 0 discovered | doc `07` **Phase 1b/1c/2** — op pricing, in-situ steps, memory constants |
 | Allowed during a simulated run | **yes**, lazily, on a structure miss | **never** |
-| Who triggers it | the runner, automatically | the operator, via `compass plan`'s emitted commands |
+| Who triggers it | the runner, automatically | the operator: the toolchain's `record` and `measure` commands, `measure memory` for Phase 2 (`13` D80) |
 | Artifact written | the IR graph for that structure key | a price / region / memory-constant entry |
 
-**Recommended path is offline for both.** `compass plan` (doc `07` D37) emits the whole
-campaign, Phase 1a included; a run that finds every structure already traced does no
-lazy work at all, which is also the only way a run is reproducible from its artifacts.
+**Recommended path is offline for both.** Doc `07` D39's recommended flow runs the whole
+campaign, Phase 1a's `trace ops` included; a run that finds every structure already traced
+does no lazy work at all, which is also the only way a run is reproducible from its
+artifacts.
 
 **The lazy path is a fallback with a declared cost, not a convenience.** It exists
 because a structure set is discovered, not enumerated (doc `07` Phase 0 is a
@@ -346,7 +347,7 @@ is worse than tracing it. Its costs, stated so nobody is surprised:
    not. The backend then declines that step (per the rule below) rather than guessing,
    and the step falls to tier 0 where one exists; with no rung left to answer it is
    refused (`08` D50.1). So a lazy trace converts "unknown shape" into a *named*
-   decline with a graph attached — which is exactly the input `compass plan` needs to
+   decline with a graph attached — which is exactly the input `measure ops` needs to
    extend the campaign.
 
 **Consequence worth stating plainly:** a lazy trace never rescues a run on its own. It
@@ -395,9 +396,9 @@ from a file is still `measured`** — what changes is whether the key matched ex
 
 - Whether `measure` and `trace` are CLI flags, env vars, or both. Settled in part by the
   table above: `measure` is an operator-facing switch and belongs on the command line;
-  `trace` needs at most a *disable* (`--compass-no-lazy-trace`) for runs that want a
-  refusal instead of a stall. The full flag surface is a gap — see `12_open_items.md`,
-  "Missing topics".
+  `trace` needs at most a *disable*, one of the ops-half settings of `13` D80, for runs
+  that want a refusal instead of a stall. Neither is an env var: there is no environment
+  tier (`13` D79). The full flag surface is `13`'s.
 - A backend asked about a step kind it has no samples of must **raise**, not fall back.
   The prior fallback was the mean of an empty list, i.e. zero — "a confident, precise,
   entirely fictional answer", a TTFT of 0 ms against a real 7.6 s.

@@ -18,6 +18,7 @@ on, because until 2026-09-20 it was not — see "Which tree a script acts on" be
 | `regen_gpu_gate_triggers.sh` | CPU container | Re-derive `gpu_gate_triggers.txt` from the exclusion list and the tree. Run after **any** change to `cpu_gate_exclude.txt` — the two files are derived from the same tree and are wrong separately. Writes the whole file, **header counts included**; nothing in it is maintained by hand. |
 | `snapshot.sh` | either | Build the `git archive` tarball a gate runs against (never `rsync`). Stamps `.compass-commit` (so output names its tree, and a `COMPASS_GPU_GATE_DONE` attestation can be checked) and `.compass-changed` (so the blind-spot question is answerable without `.git`). Refuses a dirty tree. |
 | `pd_sim.sh` | GPU container | A simulated 1P1D run: the standalone clock authority (`python -m atom.compass.run`), a prefill and a decode API server on the simulated KV connector, and `atomesh` in PD mode between them. `tests/compass/test_pd_slice.py` drives one request through it. Its variables are in its header. |
+| `parity_one_node.sh` | GPU container, two devices | The scheduling-parity test: one workload (`python -m atom.compass.parity.traffic`) on a real `-tp 2 --enable-dp-attention` server with the step record on, then on a simulated one whose steps each end when the real one's did (`atom/compass/parity/replay.py`), and `python -m atom.compass.parity` over the two records. The last lines are, per DP rank, the steps compared, the steps identical and the first divergence. Its variables are in its header. |
 | `mi308x_spec.py` | GPU container, node 18 or hjbog-srdc-39 | `python3 scripts/compass/mi308x_spec.py`: rebuild `machines/mi308x-hjbog18.json`, the node-18 MI308X machine spec, by sweeping Qwen3.8-27B's tokenizer on this host and merging it with the device readings of one real engine start recorded in the script; with `COMPASS_MACHINE=mi308x-hjbog39`, the same for hjbog-srdc-39 into `machines/mi308x-hjbog39.json`. Prints `validate`'s verdict and `explain`'s fields split into measured and declared. |
 | `cpu_gate_exclude.txt` | — | Excluded test files in two marked sections: **GENERATED** (`# BEGIN GENERATED`, driver-dependent at *collection* time; never hand-edit — `regen_cpu_gate_exclude.sh` rewrites it wholesale) and **MANUAL** (`# BEGIN MANUAL`, collects cleanly then fails on a driver call or for want of a `.git`, so the regenerator cannot see it). The MANUAL section **is** hand-edited; every entry must carry its observed failure above it. |
 | `gpu_gate_triggers.txt` | — | The source paths that no *running* CPU-tier test names. Generated, not hand-written; matched by `gate_cpu.sh`. A trailing `/` matches a subtree. |
@@ -539,9 +540,9 @@ Against the server log of the paired real run, with the same deployment flags,
 prints the per-term comparison of the non-KV memory and the graph pool. It takes
 the log of one rank.
 
-## Tier a's law from real cells — `coarse_fit`
+## Tier a's law from real cells — `step_linear_fit`
 
-`python -m atom.compass.backends.step_linear_fit RECORD... --out LAW [--form FORM]`
+`python -m atom.compass.backends.step_linear_fit RECORD... --out LAW [--form FORM] [--dp N]`
 fits the law a run file's `law` key holds (`atom/compass/backends/step_linear.py`) from
 the step records of real cells, `OUT_DIR/steps/dp0.jsonl` of `REAL=1
 cctraces_sim.sh` runs. The module's docstring states the label, what is cut and
@@ -572,7 +573,7 @@ earlier records were fitted with that key in place of the one they carry.
 
 `python -m atom.compass.validate.cost RECORD LAW` prices each step of a real
 cell's record (`OUT_DIR/steps` of a `REAL=1 cctraces_sim.sh` run) with a law
-file as `coarse_fit` writes it, and prints the error per kind, per decode rung
+file as `step_linear_fit` writes it, and prints the error per kind, per decode rung
 and per prefill token band. The module's docstring states what each figure is.
 Grade a law only on cells whose traces its calibration cells do not replay.
 
