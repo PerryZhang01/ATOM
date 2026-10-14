@@ -608,7 +608,9 @@ LP (partition principle, above).
   `H`. When every LP waits, nothing is undelivered, no essential target is pending and
   every daemon deadline exceeds `H`, the CA grants every LP `+inf`. The clock cannot tell
   a lost message from a finished run, so on its `+inf` grant the traffic LP raises unless
-  every request it sent has its final response, naming those that do not (#534).
+  every request it sent has its final response, naming those that do not (#534). On a
+  server that serves several client runs this test ends a client run, and only the last
+  one's end is the finish (Client runs, below).
 - **Determinism:** ties at equal timestamps broken by `(time, LP id, channel, seq)`.
   Without this the 126-vs-189-decode-steps nondeterminism returns.
 
@@ -634,6 +636,87 @@ The grant rule relies on these invariants inside each LP:
   the frontend output thread, `_recv_prefill_done` and `_recv_block_assignments` send
   nothing inside the simulation window, and the simulated KV connector sends only from
   scheduler-side hooks on the step loop (D6).
+
+#### Client runs: termination in a federation open to clients
+
+A server outlives its client and serves client runs one after another, each a client
+started apart (`13` D80). The finish above is termination detection, and on such a
+server it detects less than the end of the run.
+
+**The PDES concept.** A distributed computation has terminated when every process is
+passive and no message is in transit (Dijkstra and Scholten 1980; the counting form,
+Mattern 1987). The CA is the centralised detector: every LP's state reaches it in a
+request and it counts every message, so the finish's test is that predicate. It means
+termination only in a closed system. A server open to clients is not one: after the test
+holds, a new client can still send. HLA's federation management is the standard shape
+for that case, and Compass takes it as it stands:
+
+- **A federate joins and resigns** (Join and Resign Federation Execution). The traffic
+  LP is the run's *client*: the CA is built naming it, and it alone joins and resigns.
+  Server LPs join once, at startup.
+- **A late joiner regulates time from a point none of its messages can precede** (Enable
+  Time Regulation hands it its logical time). A client binding gets in the bind's reply
+  the client row's clock and the next sequence number of each channel out of it. Its
+  first send arrives at that clock plus the channel's lookahead, in no LP's past, and
+  sequence numbers run on across client runs, so counting stays exact and no receiver
+  resets anything.
+- **A federation ends by an explicit act, not by quiescence** (Destroy Federation
+  Execution). Here the act is stated before the run: the run file's `client_runs`, the
+  number of client runs the server serves, 1 when absent and `null` for a server that
+  serves until it is stopped.
+- **A boundary every federate acts on is a synchronization point** (Register, Announce
+  and Achieve Synchronization Point). The end of a client run is one.
+
+**The rule.** When every LP waits and none is grantable, the open client run ends at
+`E`, the latest LP clock.
+
+1. If it is the last client run the run file declares, the CA finishes the run as above.
+2. Otherwise the CA announces the end in one round. The client is granted `+inf`, which
+   resigns it, and on which it raises as above unless each request it sent has its final
+   response. Every server LP, and every member of one, is granted its own clock with
+   nothing released, marked as the end of client run `k`, counted from 0. It hands in its
+   part of the summary and asks for time again, which achieves the point. No clock moves.
+3. The client's row then runs at `E`, as the first client's runs at 0 before it binds,
+   holding every LP at `E + D(client->i)`. The CA cannot find every LP waiting again until
+   a client has bound, so it announces each end once and grants nothing between client
+   runs: every daemon deadline stays above `H`, and virtual time stands at `E` until the
+   next client's first send.
+4. The connection of a client granted `+inf` may close and the next client binds the same
+   LP. A connection that closes at any other time still ends the run
+   (`clock_transport/service.py::_Server._loop`). The bound on simulated time bounds the
+   server's clock across client runs.
+
+**What a later client run meets.** Virtual time does not pass between client runs, so
+the next starts at `E` with every server LP idle, as a fresh server's first starts at 0
+(`13` D80). What carries over is state: the prefix cache earlier client runs left
+(`03` D13); the phase of daemon timers, which make no scheduling decision; request ids,
+which pick the token a simulated step reports
+(`atom/compass/runner/step_output.py::DeferredTokenStream`); and the stream
+detokenizer's audit count, which charges a decode to the first stream update of a fresh
+server and to every `audit_every`-th after it
+(`atom/entrypoints/openai/streaming_dispatch.py::_DeltaReuse`). Traces sharing no prefix
+block with an earlier client run take the steps a fresh server takes, shifted by `E` to
+rounding; their stream differs from a fresh server's only by the audits that fall
+elsewhere.
+
+**Its summary.** Once every server LP has handed in at the end of client run `k`, the
+CA's host writes the step table and client run `k`'s summary: its index, start and end;
+steps, predicted seconds, refusals, the analytic and extrapolated shares and
+`coverage_report` over its own steps, as each LP's hand-in less its hand-in at client run
+`k - 1`'s end; and final clocks, grants and wall seconds as the server's at `E` (`13`
+D80). The finish also writes the server's summary over its whole life (D3.5). A server
+stopped between client runs, by a kill, has written every ended client run's summary.
+
+**Not chosen.**
+
+- *Ending the client run when its connection closes.* A close is not a time, and the
+  clock cannot tell a lost message from a finished run (#534); only the test above says
+  the client's work is done.
+- *Restarting virtual time at 0 for each client run.* Server LPs keep timestamps in their
+  state, a request's arrival and their timers among them, which a restart would put in
+  the future.
+- *Reading the hand-ins only at the finish.* Their counts would not split by client run,
+  and a server stopped by a kill would leave no summary of the client runs it served.
 
 #### Lookahead sources
 
@@ -999,7 +1082,8 @@ None of these aborts. This is what makes a hang
 diagnosable rather than merely silent.
 
 **3. The run summary**, written once at the end of every run, an early end (an abort on
-refusal, an engine that raises) included, and carried in the run artifact:
+refusal, an engine that raises) included, and once at the end of every client run (D3,
+Client runs), and carried in the run artifact:
 
 | Field | Why |
 |---|---|
@@ -2052,7 +2136,7 @@ Ordered by how much they could cost.
 | D0 | Fresh design; prior branches referenced at the design level only, not as a code-port plan | 2026-09-17 |
 | D1 | Keep ATOM's multi-process / multi-thread topology; additive changes only | 2026-09-17 |
 | D2 | "Two nodes" means true PD disaggregation, realised as two containers on one physical node | 2026-09-17 |
-| D3 | Central Clock Authority acting as the HLA RTI (`advance_to` = TAR, idle point = NER, grant = TAG); an LP is a process group with one clock owner per process, and zero-lookahead couplings collapse into one LP; the CA grants a DP group's LP only after every rank has called; a grant is strictly below the lookahead-distance LBTS and waits for the messages already in transit (Fujimoto counters); a run finishes when no essential work is left | 2026-09-18; revised 2026-09-28 and 2026-10-02 |
+| D3 | Central Clock Authority acting as the HLA RTI (`advance_to` = TAR, idle point = NER, grant = TAG); an LP is a process group with one clock owner per process, and zero-lookahead couplings collapse into one LP; the CA grants a DP group's LP only after every rank has called; a grant is strictly below the lookahead-distance LBTS and waits for the messages already in transit (Fujimoto counters); a run finishes when no essential work is left; on a server open to clients that test ends a client run, as HLA's join, resign and synchronization point frame it, and the finish comes after the client runs the run file declares | 2026-09-18; revised 2026-09-28, 2026-10-02 and 2026-10-14 (#966) |
 | D3.1 | Single CA with a hierarchy-ready interface; LP count scales with replicas and PP stages, not with GPUs | 2026-09-18 |
 | D3.2 | Always-on causality detectors: a straggler check against the receiver's last drain (fails the run); a stall the CA cannot see prints one diagnostic after 30 wall seconds and keeps waiting, never aborting; clock-source CI lint | 2026-09-19; revised 2026-09-28 |
 | D3.3 | CA deploys two ways from one implementation: co-hosted in the API-server process by default, standalone server via `--compass-clock-endpoint` for multi-container runs (1P+1D in M1 and M2) | 2026-09-19 |
