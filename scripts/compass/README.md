@@ -569,6 +569,11 @@ turn so those cells decode at rungs 16 and up. Its host key is the one at
 3b32a9bd5: `host_key` gives f454bc71a's tree the same `atom` digest, so the
 earlier records were fitted with that key in place of the one they carry.
 
+`scripts/compass/laws/qwen3.8-27b-tp1-mi308x-hjbog39-661ef7661.json` is the
+same fit, in the same order and with the same arguments, on seven records
+captured on hjbog-srdc-39 at ce625ddd9 (ROCm/ATOM 661ef7661) in the
+nightly-20261013 image, under the host key they carry.
+
 ## Cost accuracy on a real run's own steps — `validate.cost`
 
 `python -m atom.compass.validate.cost RECORD LAW` prices each step of a real
