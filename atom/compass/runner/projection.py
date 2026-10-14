@@ -154,7 +154,8 @@ def forward_mode(batch: Any, runner: Any) -> ForwardMode:
     values: `decide` settles a query length and a token count as well, and those
     are what `captured_tokens`, `is_block_drafter`, `tbo_on` and `local_tbo`
     feed. The width and the replay decision come from `capture_sizes`,
-    `enforce_eager`, the batch and the collective alone.
+    `enforce_eager`, the attention builder's `step_needs_eager`, the batch and
+    the collective alone.
     """
     dp_size = _data_parallel_size(runner)
     ladder = np.asarray(runner.capture_sizes_np, dtype=np.int32)
@@ -171,6 +172,7 @@ def forward_mode(batch: Any, runner: Any) -> ForwardMode:
         dp_size=dp_size,
         dp_group=dp_group() if dp_size > 1 else None,
         enforce_eager=bool(runner.enforce_eager),
+        step_needs_eager=runner.attn_metadata_builder.step_needs_eager(batch),
         capture_sizes=ladder,
         captured_tokens=None,
         is_block_drafter=False,

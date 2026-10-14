@@ -86,9 +86,12 @@ def model_path_env_key(model_name: str) -> str:
     return f"ATOMESH_MODEL_PATH_{suffix}"
 
 
-def resolve_model_path(model_name: str, model_cfg: dict[str, Any]) -> str:
+def resolve_model_path(
+    model_name: str, model_cfg: dict[str, Any], slurm_submit_runner: str = ""
+) -> str:
     env_value = os.environ.get(model_path_env_key(model_name), "").strip()
-    model_path = env_value or str(model_cfg["model_path"])
+    runner_path = model_cfg.get("model_path_by_runner", {}).get(slurm_submit_runner)
+    model_path = env_value or str(runner_path or model_cfg["model_path"])
     return resolve_env_refs(model_path) if "${" in model_path else model_path
 
 
@@ -142,6 +145,29 @@ def resolve_runner(runner_cfg: dict[str, Any]) -> dict[str, Any]:
     return runner
 
 
+PIPELINE_SIZE_RE = re.compile(r"--pipeline-parallel-size(?:=|\s+)(\d+)")
+GPUS_PER_NODE = 8
+
+
+def worker_gpu_count(role_cfg: dict[str, Any]) -> int:
+    match = PIPELINE_SIZE_RE.search(str(role_cfg.get("extra_args", "")))
+    return int(role_cfg.get("tp", 8)) * (int(match.group(1)) if match else 1)
+
+
+def packed_node_count(prefill_cfg: dict[str, Any], decode_cfg: dict[str, Any]) -> int:
+    """Mirror pd_server_atom.sh: fill nodes P-first; no worker spans two nodes."""
+    nodes, used = 1, 0
+    for role_cfg in (prefill_cfg, decode_cfg):
+        gpus = worker_gpu_count(role_cfg)
+        if gpus > GPUS_PER_NODE:
+            raise ValueError("packed_nodes workers must fit on one 8-GPU node")
+        for _ in range(int(role_cfg.get("workers", 1))):
+            if used + gpus > GPUS_PER_NODE:
+                nodes, used = nodes + 1, 0
+            used += gpus
+    return nodes
+
+
 def required_node_count(
     pd_worker_layout: str,
     prefill_cfg: dict[str, Any],
@@ -149,6 +175,8 @@ def required_node_count(
 ) -> int:
     if pd_worker_layout == "single_node":
         return 1
+    if pd_worker_layout == "packed_nodes":
+        return packed_node_count(prefill_cfg, decode_cfg)
     if pd_worker_layout == "prefill_single_node":
         return 1 + int(decode_cfg.get("workers", 1))
     if pd_worker_layout == "decode_single_node":
@@ -158,6 +186,20 @@ def required_node_count(
 
 def slug(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-").lower()
+
+
+AGGREGATED_TOPOLOGY_RE = re.compile(r"^agg", re.IGNORECASE)
+
+
+def is_disaggregated(topology: str) -> bool:
+    """Whether `topology` names a prefill/decode split.
+
+    The name carries this: `<P>p<D>d[_variant]` is a split, anything starting
+    with `agg` is one aggregated server. Keying off the whole `agg` prefix
+    rather than an exact spelling means no way of writing it reads as P/D by
+    accident, which would otherwise publish numbers measured in the wrong mode.
+    """
+    return not AGGREGATED_TOPOLOGY_RE.match(topology)
 
 
 def format_display_topology(
@@ -206,7 +248,9 @@ def role_env(
         model_cfg.get("env", {}).get(role, {}),
         suite_cfg.get("env", {}).get(role, {}),
     )
-    env = resolve_env_refs_in_value(env, preserve_names={"ROLE_IP"})
+    # ROLE_IP and HANDSHAKE_PORT are filled in by pd_server_atom.sh at
+    # launch time (host IP and 6301 + ATOMESH_SERVICE_PORT_OFFSET).
+    env = resolve_env_refs_in_value(env, preserve_names={"ROLE_IP", "HANDSHAKE_PORT"})
     return {str(key): str(value) for key, value in env.items()}
 
 
@@ -257,15 +301,21 @@ def build_cell(
     required_nodes = required_node_count(pd_worker_layout, prefill_cfg, decode_cfg)
     slurm_submit_runner = str(runner_cfg.get("slurm_submit_runner", ""))
     allow_auto_nodes = slurm_submit_runner in {
+        "atomesh-cicd",
         "atomesh-cicd-mi350",
-        "atomesh-cicd-crusoe-mi355",
         "atomesh-cicd-mi355-crusoe",
     }
     requires_explicit_candidate_nodes = slurm_submit_runner == "atomesh-cicd-mi350"
 
-    nodes = resolve_nodes(suite_cfg.get("nodes"))
-    if allow_auto_nodes and not requires_explicit_candidate_nodes:
-        nodes = []
+    single_node_override = os.environ.get("ATOMESH_SINGLE_NODE", "").strip()
+    if single_node_pd and single_node_override not in ("", "auto"):
+        nodes = resolve_nodes(single_node_override)
+        if len(nodes) != 1:
+            raise ValueError("ATOMESH_SINGLE_NODE must specify exactly one node")
+    else:
+        nodes = resolve_nodes(suite_cfg.get("nodes"))
+        if slurm_submit_runner == "atomesh-cicd-mi355-crusoe":
+            nodes = []
     if allow_auto_nodes and requires_explicit_candidate_nodes:
         if not nodes:
             raise ValueError(
@@ -295,17 +345,14 @@ def build_cell(
                 f"{required_nodes} node(s)"
             )
         nodes = nodes[:required_nodes]
-    elif nodes and len(nodes) < required_nodes:
+    elif nodes and len(nodes) < required_nodes or not nodes and not allow_auto_nodes:
         raise ValueError(
             f"{suite_cfg.get('name', model_name)} needs at least "
             f"{required_nodes} node(s)"
         )
-    elif not nodes and not allow_auto_nodes:
-        raise ValueError(
-            f"{suite_cfg.get('name', model_name)} needs at least "
-            f"{required_nodes} node(s)"
-        )
-    num_nodes = required_nodes if allow_auto_nodes else len(nodes)
+    num_nodes = (
+        required_nodes if not nodes or requires_explicit_candidate_nodes else len(nodes)
+    )
 
     server_args = deep_merge(
         model_cfg.get("server", {}).get("common_args", {}),
@@ -343,6 +390,14 @@ def build_cell(
     )
     cell_id = slug(f"{model_name}-{suite_cfg.get('name', topology)}-{suite_name}")
     image = override_image or str(backend_cfg.get("image"))
+    eval_only = bool(suite_cfg.get("eval_only", False))
+    if eval_only and not suite_cfg.get("run_eval", False):
+        raise ValueError("eval_only requires run_eval=true")
+    if eval_only and accuracy_cfg.get("task", "gsm8k") not in {
+        "gsm8k",
+        "swebench_lite",
+    }:
+        raise ValueError("eval_only requires a supported accuracy task")
     return {
         "id": cell_id,
         "suite": suite_name,
@@ -350,11 +405,14 @@ def build_cell(
         "model": model_name,
         "backend": backend_name,
         "image": image,
-        "model_path": resolve_model_path(model_name, model_cfg),
+        "model_path": resolve_model_path(model_name, model_cfg, slurm_submit_runner),
         "precision": str(model_cfg.get("precision", "")),
         "topology": topology,
         "display_topology": display_topology,
         "pd_worker_layout": pd_worker_layout,
+        # Derived, not authored: the layout says where workers run, the topology
+        # says whether there is a prefill/decode split to place at all.
+        "disaggregated": is_disaggregated(topology),
         "nodes": nodes,
         "num_nodes": num_nodes,
         "isl": isl,
@@ -381,6 +439,7 @@ def build_cell(
             "router": role_env(defaults, backend_cfg, model_cfg, suite_cfg, "router"),
         },
         "run_eval": bool(suite_cfg.get("run_eval", False)),
+        "eval_only": eval_only,
         "accuracy": {
             "task": str(accuracy_cfg.get("task", "gsm8k")),
             "fewshot": int(accuracy_cfg.get("fewshot", 3)),

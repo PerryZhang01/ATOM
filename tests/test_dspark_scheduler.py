@@ -11,10 +11,12 @@ import torch
 import torch as _torch
 
 from atom.spec_decode.dspark_scheduler import (
+    apply_q_bucket,
     build_sps_table,
     calibrate_confidence,
     expected_throughput,
     ragged_verify_len,
+    ragged_verify_lens,
     schedule_prefix_lengths,
     survival_probabilities,
 )
@@ -764,11 +766,108 @@ def test_nonpositive_scheduled_len_imposes_no_bound():
 
 def test_both_bounds_hold_across_the_grid():
     for ell in (None, -1, 0, 1, 3, 5, 50):
-        for max_nb in (0, 1, 4):
+        for nb in (0, 1, 4):
             for sched in (1, 2, 3, FULL_Q):
-                li = ragged_verify_len(ell, FULL_Q, max_nb, sched)
+                li = ragged_verify_len(ell, FULL_Q, nb, sched)
                 if li is None:
-                    assert sched < max_nb + 1, (ell, max_nb, sched)
+                    assert sched < nb + 1, (ell, nb, sched)
                     continue
-                assert max_nb + 1 <= li <= FULL_Q, (ell, max_nb, sched, li)
-                assert li <= sched, (ell, max_nb, sched, li)
+                assert nb + 1 <= li <= FULL_Q, (ell, nb, sched, li)
+                assert li <= sched, (ell, nb, sched, li)
+
+
+# ---------------------------------------------------------------------------
+# The batch-level rule. These are about `ragged_verify_lens` refusing to let one
+# request's bonus count set another's floor -- the failure that kept this whole
+# path inert, since the summary a caller reaches for is a batch MAXIMUM and one
+# request accepts every draft on nearly every step at real concurrency.
+# ---------------------------------------------------------------------------
+
+
+def test_each_request_answers_to_its_own_bonus_count():
+    """Two requests, bonuses 2 and 5: 3 + 6 = 9 tokens forwarded, not 6 + 6.
+
+    Under the batch max both floors become 6 == FULL_Q, i.e. no shrink at all.
+    `ells` are stale/absent here so the bonus floor is what decides -- exactly
+    the state a mid-stream decode step is in.
+    """
+    lens = ragged_verify_lens([2, 5], FULL_Q, np.array([2, 5]), np.array([6, 6]))
+    assert lens.tolist() == [3, 6]
+    assert int(lens.sum()) == 9
+
+    # The defect, stated as its own case so the two are read side by side.
+    flattened = ragged_verify_lens([2, 5], FULL_Q, np.array([5, 5]), np.array([6, 6]))
+    assert flattened.tolist() == [FULL_Q, FULL_Q]
+
+
+def test_one_saturated_request_does_not_pin_the_rest():
+    """The concurrency shape that made this inert: 63 short requests beside one
+    that accepted everything. Only the last should be at full length."""
+    bs = 64
+    nb = np.zeros(bs, dtype=np.int32)
+    nb[-1] = FULL_Q - 1  # accepted every draft
+    lens = ragged_verify_lens([1] * bs, FULL_Q, nb, np.full(bs, FULL_Q, dtype=np.int32))
+    assert lens[:-1].tolist() == [2] * (bs - 1)
+    assert int(lens[-1]) == FULL_Q
+    # Under the batch max this sum is bs * FULL_Q and nothing ever shrinks.
+    assert int(lens.sum()) < bs * FULL_Q
+
+
+def test_one_unrepresentable_request_aborts_the_batch():
+    """The layout is chosen once per step, so a single crossing pair has to take
+    the whole batch back to rectangular rather than leaving one seq mis-sized."""
+    assert (
+        ragged_verify_lens([1, 1], FULL_Q, np.array([0, 3]), np.array([6, 2])) is None
+    )
+
+
+def _q_bucket_runner():
+    """The slice of a runner `_dspark_apply_q_bucket` actually reads."""
+    from types import SimpleNamespace
+
+    drafter = SimpleNamespace(
+        uses_confidence_schedule=True,
+        mtp_k=3,
+        verify_scheduler=SimpleNamespace(ell_by_req={7: 1}),
+    )
+    config = SimpleNamespace(dspark=SimpleNamespace(ragged=False, q_buckets="1,2,4"))
+    return SimpleNamespace(drafter=drafter, config=config)
+
+
+def _decode_batch(width, num_spec_step):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        total_tokens_num_prefill=0,
+        total_seqs_num_decode=1,
+        total_tokens_num_decode=width,
+        total_tokens_num=width,
+        num_spec_step=num_spec_step,
+        req_ids=[7],
+        num_scheduled_tokens=np.array([width], dtype=np.int32),
+        scheduled_tokens=np.arange(width, dtype=np.int32),
+        num_bonus=None,
+        scheduled_spec_decode_tokens=np.zeros((1, max(width - 1, 0)), dtype=np.int32),
+    )
+
+
+def test_q_bucket_leaves_a_target_only_decode_at_width_one():
+    """Producer decode is scheduled q=1 while the drafter still says mtp_k=3.
+
+    ell=1 and buckets 1,2,4 would otherwise quantize up to q=2 and read past
+    the one reserved token.
+    """
+    runner = _q_bucket_runner()
+    batch = _decode_batch(width=1, num_spec_step=0)
+    assert apply_q_bucket(batch, runner.drafter, runner.config.dspark) is None
+    assert batch.num_scheduled_tokens.tolist() == [1]
+    assert batch.scheduled_tokens.tolist() == [0]
+
+
+def test_q_bucket_still_shrinks_a_verifying_decode():
+    """The same ell and buckets, on a batch that reserved the full width."""
+    runner = _q_bucket_runner()
+    batch = _decode_batch(width=4, num_spec_step=3)
+    assert apply_q_bucket(batch, runner.drafter, runner.config.dspark) == 2
+    assert batch.num_scheduled_tokens.tolist() == [2]
+    assert batch.total_tokens_num_decode == 2

@@ -88,7 +88,7 @@ def q(value):
     return shlex.quote(str(shell_value(value)))
 
 slurm_submit_runner = runner.get(
-    "slurm_submit_runner", "atom-mi355-8gpu-vllm-sgl-ci"
+    "slurm_submit_runner", "spur-runner-mi355x-8gpu"
 )
 
 default_spur_accounting_addr = "http://crs-m2m-cpu-spur-005.crusoe.amd.com:6819"
@@ -110,7 +110,12 @@ exports = {
     "SLURM_GPUS_PER_NODE": runner.get("gpus_per_node", 8),
     "SLURM_TIME_LIMIT": runner.get("time_limit", "03:00:00"),
     "SLURM_LOG_ROOT": runner.get(
-        "log_root", "/home/junyyang/ATOM_PLUGIN_RUNNER/LOG/"
+        "log_root",
+        os.path.join(
+            os.environ.get("GITHUB_WORKSPACE") or os.getcwd(),
+            "plugin-ci-logs",
+            "vLLM_LOG" if os.environ["PLUGIN"] == "vllm" else "SGLang_LOG",
+        ),
     ),
     "NODE_LIST": node_list,
     "NUM_NODES": cell.get("num_nodes", 1),
@@ -166,7 +171,7 @@ export SLURM_JOB_NAME="${PLUGIN_CI_CELL_ID}-${GITHUB_RUN_ID:-local}-${GITHUB_RUN
 export SLURM_OUTPUT="${LOG_ROOT}/slurm-%j.out"
 export SLURM_ERROR="${LOG_ROOT}/slurm-%j.err"
 export SLURM_CANCEL_HELPER="${RESULT_DIR}/${PLUGIN_CI_CELL_ID}.slurm-cancel.sh"
-SUBMIT_LOCK_FILE="${SLURM_SUBMIT_LOCK_FILE:-/home/junyyang/ATOM_PLUGIN_RUNNER/LOG/.sbatch-submit.lock}"
+SUBMIT_LOCK_FILE="${SLURM_SUBMIT_LOCK_FILE:-${GITHUB_WORKSPACE:-$(pwd)}/plugin-ci-logs/.sbatch-submit.lock}"
 SLURM_LOG_POLL_INTERVAL="${SLURM_LOG_POLL_INTERVAL:-30}"
 
 echo "=== plugin CI cell ==="
@@ -213,6 +218,7 @@ if ! command -v sbatch >/dev/null 2>&1; then
 fi
 
 source "${REPO_ROOT}/.github/scripts/slurm_submit_helpers.sh"
+detect_slurm_backend
 install_slurm_cancel_traps
 
 SBATCH_CMD=(
@@ -236,7 +242,7 @@ fi
 SBATCH_CMD+=(
   --job-name "${SLURM_JOB_NAME}"
 )
-if [[ "${USES_SPUR_CONTROLLER}" == "1" ]]; then
+if [[ "${USES_SPUR_CONTROLLER}" == "1" && -n "${SPUR_CONTROLLER_ADDR}" ]]; then
   SBATCH_CMD+=(--controller "${SPUR_CONTROLLER_ADDR}")
 fi
 SBATCH_CMD+=(
@@ -285,6 +291,8 @@ echo "${JOB_ID}" | tee "${RESULT_DIR}/${PLUGIN_CI_CELL_ID}.slurm-job-id"
 write_slurm_cancel_helper "${JOB_ID}"
 
 set_slurm_job_log_paths "${JOB_ID}"
+SLURM_STATUS_DIR="${LOG_ROOT}/slurm_job-${JOB_ID}"
+SLURM_STATUS_RANKS="${NUM_NODES}"
 monitor_slurm_job "${JOB_ID}"
 read_slurm_exit_code "${JOB_ID}"
 SLURM_STATUS_FILE="${LOG_ROOT}/slurm_job-${JOB_ID}/slurm-job.rc"

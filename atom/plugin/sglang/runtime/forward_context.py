@@ -235,8 +235,7 @@ def _slice_v4_graph_metadata_for_capture(
                 pass
 
     for name in (
-        "batch_id_per_token",
-        "batch_id_per_token_cpu",
+        "batch_id_per_q_token",
         "slot_mapping",
         "kv_indices_swa",
         "kv_indices_csa",
@@ -257,6 +256,7 @@ def _slice_v4_graph_metadata_for_capture(
         "kv_indptr_prefix_swa",
         "kv_indptr_prefix_csa",
         "kv_indptr_prefix_hca",
+        "empty_kv_indptr",
     ):
         _slice_attr(name, num_tokens + 1)
 
@@ -265,8 +265,6 @@ def _slice_v4_graph_metadata_for_capture(
         "state_slot_mapping_cpu",
         "n_committed_csa_per_seq",
         "n_committed_csa_per_seq_cpu",
-        "n_committed_hca_per_seq",
-        "n_committed_hca_per_seq_cpu",
         "context_lens",
     ):
         _slice_attr(name, bs)
@@ -282,7 +280,7 @@ def _slice_v4_graph_metadata_for_capture(
     if isinstance(indexer_meta, dict):
         indexer_meta = dict(indexer_meta)
         for key in (
-            "batch_id_per_token_gpu",
+            "batch_id_per_q_token",
             "seq_base_per_token_gpu",
             "cu_starts_gpu",
             "cu_ends_gpu",
@@ -408,9 +406,14 @@ def _build_glm52_dsa_metadata(
         )
         if is_draft_decode:
             try:
-                from sglang.srt.model_executor.cuda_graph_runner import (
-                    get_is_capture_mode,
-                )
+                try:
+                    from sglang.srt.model_executor.runner_utils import (
+                        get_is_capture_mode,
+                    )
+                except ImportError:
+                    from sglang.srt.model_executor.cuda_graph_runner import (
+                        get_is_capture_mode,
+                    )
 
                 in_graph_warmup = get_is_capture_mode()
             except Exception:  # noqa: BLE001 - SGLang version compatibility
@@ -469,7 +472,7 @@ def stage_glm52_draft_decode_graph_metadata(
         "sparse_kv_indptr",
         "sparse_kv_last_page_lens",
         "sparse_cu_seqlens_q",
-        "token_to_seq_idxs",
+        "batch_id_per_q_token",
         "work_meta_data",
         "work_indptr",
         "work_info_set",
@@ -530,6 +533,7 @@ def _build_minimax_m3_metadata(
         build_atom_minimax_m3_attention_metadata_from_sglang,
         is_minimax_m3_config,
         maybe_get_minimax_m3_pools_from_sglang_batch,
+        minimax_m3_num_idx_heads,
     )
 
     if not is_minimax_m3_config(hf_config):
@@ -547,6 +551,9 @@ def _build_minimax_m3_metadata(
         token_to_kv_pool=token_to_kv_pool,
         req_to_token_pool=req_to_token_pool,
         max_model_len=int(atom_config.max_model_len),
+        num_idx_heads=minimax_m3_num_idx_heads(
+            hf_config, atom_config.tensor_parallel_size
+        ),
     )
 
 
@@ -705,6 +712,7 @@ def _set_atom_forward_context(
     atom_config: Any,
     forward_batch: ForwardBatch,
     positions: torch.Tensor,
+    save_kv_cache: bool | None = None,
 ) -> None:
     """Bridge SGLang batch metadata into ATOM's global forward context."""
 
@@ -760,6 +768,15 @@ def _set_atom_forward_context(
         else:
             max_seqlen_q = 1 if forward_mode.is_decode_or_idle() else 0
         attn_metadata = _build_generic_attention_metadata(forward_batch, max_seqlen_q)
+    # SGLang attention backends normally honor save_kv_cache=False by skipping
+    # their explicit set_kv_buffer call. Native ATOM attention writes K/V inside
+    # its kernel instead, where slot_mapping=-1 is the established no-write
+    # sentinel. Translate the SGLang flag here to preserve the same semantics.
+    if (
+        save_kv_cache is False
+        and getattr(attn_metadata, "slot_mapping", None) is not None
+    ):
+        attn_metadata.slot_mapping = torch.full_like(attn_metadata.slot_mapping, -1)
     batch_size = int(forward_batch.batch_size)
     is_dummy_run = _is_dummy_forward(forward_batch)
     is_prefill = forward_mode.is_prefill()
@@ -840,6 +857,7 @@ class SGLangPluginRuntime:
     input_ids: torch.Tensor | None = None
     input_embeds: torch.Tensor | None = None
     set_forward_context: bool = True
+    save_kv_cache: bool | None = None
     _original_forward_batch: ForwardBatch = field(init=False, repr=False)
     _is_dummy_run: bool = field(init=False, default=False)
     _exit_stack: ExitStack = field(init=False, repr=False)
@@ -868,6 +886,7 @@ class SGLangPluginRuntime:
                 self.atom_config,
                 self.forward_batch,
                 self.positions,
+                save_kv_cache=self.save_kv_cache,
             )
             self._exit_stack.callback(_reset_atom_forward_context)
         return self

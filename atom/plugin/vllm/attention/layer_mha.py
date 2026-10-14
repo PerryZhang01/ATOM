@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 import aiter
 import torch
@@ -11,8 +11,10 @@ from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
 from atom.config import get_current_atom_config
 from atom.model_ops.attention_mla import MLAModules
 from atom.model_ops.base_attention import (
+    PA_ASM_MAX_QUERY_GROUP_SIZE,
     cp_mha_gather_cache,
-    run_pa_decode_gluon,
+    gluon_decode_over_limit,
+    run_pa_decode,
     run_pa_fwd_asm,
 )
 from atom.plugin.vllm.attention.backend import (
@@ -89,17 +91,17 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
         head_dim,
         scale,
         num_kv_heads,
-        alibi_slopes: list[float] = None,
+        alibi_slopes: list[float] | None = None,
         kv_cache_dtype="bf16",
         layer_num=0,
         use_mla: bool = False,
-        mla_modules: Optional[MLAModules] = None,
-        sinks: Optional[nn.Parameter] = None,
-        per_layer_sliding_window: Optional[int] = None,
-        rotary_emb: Optional[torch.nn.Module] = None,
-        prefix: Optional[str] = None,
-        q_norm: Optional[torch.nn.Module] = None,
-        k_norm: Optional[torch.nn.Module] = None,
+        mla_modules: MLAModules | None = None,
+        sinks: nn.Parameter | None = None,
+        per_layer_sliding_window: int | None = None,
+        rotary_emb: torch.nn.Module | None = None,
+        prefix: str | None = None,
+        q_norm: torch.nn.Module | None = None,
+        k_norm: torch.nn.Module | None = None,
         **kwargs,
     ):
         from vllm.v1.attention.backend import AttentionType
@@ -142,7 +144,14 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
             if cache_dtype == "fp8"
             else 1.0
         )
-        self.kv_scale = torch.tensor(self.kv_scale_float, dtype=torch.float32)
+        # On device: this is aliased into self.per_tensor_scale and reaches
+        # fused_qk_rope_reshape_and_cache, which dereferences it in the kernel.
+        self.kv_scale = torch.tensor(
+            self.kv_scale_float, dtype=torch.float32, device=self.device
+        )
+        # Set by _ensure_kv_scale on the first fp8 allocation; stays None for
+        # every other cache dtype, which the triton path relies on.
+        self.per_tensor_scale = None
         self.per_token_quant = True
         self.sinks = sinks
         self.sliding_window = (
@@ -193,7 +202,7 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
         key: torch.Tensor,
         value: torch.Tensor,
         positions: torch.Tensor = None,
-        q_scale: Optional[torch.Tensor] = None,
+        q_scale: torch.Tensor | None = None,
         qkv: torch.Tensor = None,
         **kwargs,
     ):
@@ -210,6 +219,75 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
             qkv,
         )
 
+    def _split_kv_cache(
+        self, kv_cache: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Split vLLM 0.29's ``[B, 2, N, C]`` page view into K/V page planes.
+
+        0.29 gives K and V a head slot each inside the block (see
+        ``AiterMhaBackendForVllm.customize_spec``), so a block's bytes read
+        ``[K page | V page]``. ATOM's kernels instead address K and V with the
+        same page id in two separate tensors, so view the cache as a flat run of
+        ``2 * B`` half-pages and hand out two windows one half-page apart: block
+        ``b`` is row ``2 * b`` of both planes, which is why the metadata builder
+        doubles the block table and rebases the slot mapping.
+        """
+        num_blocks, num_slots, block_size, _ = kv_cache.shape
+        assert (
+            num_slots == 2
+        ), f"ATOM MHA expects a [B, 2, N, C] KV page view, got {tuple(kv_cache.shape)}"
+        flat = kv_cache.view(num_blocks * 2, block_size, self.num_kv_heads, -1)
+        return flat[:-1], flat[1:]
+
+    def _ensure_kv_scale(
+        self, num_pages: int, num_kv_heads: int, block_size: int
+    ) -> None:
+        """Size the per-half-page fp8 scale rows to *this* KV cache.
+
+        One scale row per half-page, windowed exactly like the K/V planes of
+        `_split_kv_cache`, so a page id or a slot indexes cache and scale the
+        same way.
+
+        Keyed on the page count rather than on "not allocated yet": vLLM 0.29
+        captures cudagraphs against a *profiling* KV cache
+        (`profile_cudagraph_memory`, run before `determine_available_memory`
+        decides how much cache fits), so a buffer sized on the first forward
+        belongs to a cache that is thrown away. The real cache has far more
+        pages, and the rope/cache kernel would then index the stale scale rows
+        far out of bounds.
+        """
+        if self.kv_cache_dtype != "fp8":
+            return
+        wanted = (num_pages + 1, num_kv_heads, block_size)
+        if self.k_scale is not None and tuple(self.kv_scale.shape) == wanted:
+            return
+        if self.per_tensor_scale is None:
+            # The original kv_scale is the per-tensor scale, of value one.
+            self.per_tensor_scale = self.kv_scale
+        self.kv_scale = torch.zeros(*wanted, dtype=dtypes.fp32, device=self.device)
+        self.k_scale = self.kv_scale[:-1]
+        self.v_scale = self.kv_scale[1:]
+
+    def bind_kv_cache(self, kv_cache: torch.Tensor) -> None:
+        """Bind the cache and size the fp8 scales against it.
+
+        Allocating the scales here rather than on the first forward keeps them
+        out of the cudagraph pool: vLLM 0.29 runs warmup and graph capture
+        after the KV cache is bound, so a first-forward allocation would land
+        inside a capture and hand out memory the graph replay later reuses.
+        """
+        super().bind_kv_cache(kv_cache)
+        if self.kv_cache_dtype != "fp8":
+            return
+        # Only the `[num_blocks, 2, block_size, ...]` layout customize_spec asks
+        # for can be split here; anything else is left to forward_impl, which
+        # sizes the scales from the views it actually uses.
+        if kv_cache.dim() != 4 or kv_cache.shape[1] != 2:
+            return
+        k_cache, _ = self._split_kv_cache(kv_cache)
+        num_pages, block_size, num_kv_heads, _ = k_cache.shape
+        self._ensure_kv_scale(num_pages, num_kv_heads, block_size)
+
     def rope_cache(
         self,
         q: torch.Tensor,
@@ -224,15 +302,15 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
         v_scale: torch.Tensor,
         flash_layout: bool = False,
     ):
-        num_blocks, block_size, num_kv_heads, head_size = k_cache.shape
+        num_pages, block_size, num_kv_heads, head_size = k_cache.shape
         x = 16 // k_cache.element_size()
 
         if not flash_layout:
             new_key_cache = k_cache.view(
-                num_blocks, num_kv_heads, head_size // x, block_size, x
+                num_pages, num_kv_heads, head_size // x, block_size, x
             )
             new_value_cache = v_cache.view(
-                num_blocks, num_kv_heads, block_size // x, head_size, x
+                num_pages, num_kv_heads, block_size // x, head_size, x
             )
         else:
             new_key_cache = k_cache
@@ -372,7 +450,7 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
             if self.k_norm is not None:
                 k = self.k_norm(k)
             new_value_cache = new_value_cache.view(
-                num_blocks, num_kv_heads, head_size, block_size
+                num_pages, num_kv_heads, head_size, block_size
             )
             if self.kv_cache_dtype == "fp8":
                 aiter.reshape_and_cache_with_pertoken_quant(
@@ -419,9 +497,12 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
         # `num_decodes` (not q.shape[0]) and `query_group_size` must include
         # the max_qlen multiplier — mirroring server-mode `paged_attention_triton`.
         _, num_q_heads_total, head_size = q.shape
-        num_blocks, num_kv_heads, _, block_size, _ = k_cache.shape
+        _, num_kv_heads, _, _, _ = k_cache.shape
+        # Only reached through _dispatch_decode_backend, which asserts
+        # decode_metadata is present and reads the same field to pick this
+        # function -- so no default, and one read per step rather than two.
         decode_metadata = attn_metadata.decode_metadata
-        max_qlen = decode_metadata.max_query_len if decode_metadata is not None else 1
+        max_qlen = decode_metadata.max_query_len
         assert num_q_heads_total % num_kv_heads == 0
 
         seq_lens = attn_metadata.seq_lens[:num_decodes]
@@ -472,7 +553,7 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
         # Internally it derives batch_size = q.shape[0] // query_length and reshapes
         # to [batch, query_length, num_kv_heads, group, head_size]. See
         # aiter/aiter/ops/triton/gluon/pa_decode_gluon.py:5371-5377 and 5542-5544.
-        run_pa_decode_gluon(
+        run_pa_decode(
             output=out,
             q=q,
             k_cache=k_cache,
@@ -508,11 +589,11 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
         attn_metadata: "AiterMhaMetadataForVllm",
         out: torch.Tensor,
     ):
+        # Same as paged_attention_triton: only reached through the decode
+        # dispatcher, which has already asserted decode_metadata is present.
         decode_metadata = attn_metadata.decode_metadata
-        max_qlen = decode_metadata.max_query_len if decode_metadata is not None else 1
-        qo_indptr = (
-            decode_metadata.query_start_loc if decode_metadata is not None else None
-        )
+        max_qlen = decode_metadata.max_query_len
+        qo_indptr = decode_metadata.query_start_loc
         run_pa_fwd_asm(
             q=q,
             k_cache=k_cache,
@@ -527,8 +608,6 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
             high_precision=0,
         )
 
-        return
-
     def extend_for_sliding_window(
         self,
         attn_metadata: "AiterMhaMetadataForVllm",
@@ -539,8 +618,8 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
         cu_seqlens_q: torch.Tensor,
         max_seqlen_q: int,
         block_table: torch.Tensor,
-        k_scale: Optional[torch.Tensor],
-        v_scale: Optional[torch.Tensor],
+        k_scale: torch.Tensor | None,
+        v_scale: torch.Tensor | None,
     ):
         assert attn_metadata.extend_metadata is not None
         assert attn_metadata.extend_metadata.chunk_context_metadata is not None
@@ -549,7 +628,7 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
         assert swa_metadata is not None
         swa_cu_seqlens = swa_metadata.swa_cu_seqlens
         swa_seq_starts = swa_metadata.swa_seq_starts
-        swa_token_to_batch = swa_metadata.swa_token_to_batch
+        swa_batch_id_per_k_token = swa_metadata.swa_batch_id_per_k_token
         swa_max_seqlens = swa_metadata.swa_max_seqlens
         swa_total_tokens = swa_metadata.swa_total_tokens
         key_fetched, value_fetched = (
@@ -566,7 +645,7 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
             k_scales=k_scale,
             v_scales=v_scale,
             cu_seqlens_kv=swa_cu_seqlens,
-            token_to_batch=swa_token_to_batch,
+            batch_id_per_k_token=swa_batch_id_per_k_token,
             seq_starts=swa_seq_starts,
             dequant=self.kv_cache_dtype.startswith("fp8"),
             kv_cache_layout="SHUFFLE",
@@ -613,8 +692,8 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
         min_seqlen_q: int,
         block_table: torch.Tensor,
         slot_mapping: torch.Tensor,
-        k_scale: Optional[torch.Tensor],
-        v_scale: Optional[torch.Tensor],
+        k_scale: torch.Tensor | None,
+        v_scale: torch.Tensor | None,
     ):
         from vllm.v1.attention.ops.merge_attn_states import merge_attn_states
 
@@ -655,7 +734,7 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
         cu_seqlens_kv = chunk_context_metadata.cu_seq_lens_chunk
         max_seqlens = chunk_context_metadata.max_seq_lens
         chunk_starts = chunk_context_metadata.chunk_starts
-        token_to_batch = chunk_context_metadata.token_to_batch
+        batch_id_per_k_token = chunk_context_metadata.batch_id_per_k_token
         total_token_per_batch = chunk_context_metadata.total_token_per_batch
         key_fetched, value_fetched = workspace[0], workspace[1]
         chunked_output = None
@@ -670,7 +749,7 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
                 k_scales=k_scale,
                 v_scales=v_scale,
                 cu_seqlens_kv=cu_seqlens_kv[chunk_idx],
-                token_to_batch=token_to_batch[chunk_idx],
+                batch_id_per_k_token=batch_id_per_k_token[chunk_idx],
                 seq_starts=chunk_starts[chunk_idx],
                 dequant=self.kv_cache_dtype.startswith("fp8"),
                 kv_cache_layout="SHUFFLE",
@@ -713,6 +792,13 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
                 chunked_output = tmp_output
                 chunked_lse = tmp_lse
 
+        if chunked_output is None:
+            # num_chunks == 0: no request in this segment has any KV preceding
+            # its queries, so the causal pass over the new tokens is already the
+            # whole answer and there is no prefix to merge.
+            output.copy_(out)
+            return
+
         merge_attn_states(
             output=output,
             prefix_output=chunked_output,
@@ -721,16 +807,26 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
             suffix_lse=lse,
         )
 
-    def _dispatch_decode_backend(self, num_decodes):
-        # use asm pa for models without setting gluon pa decode bs
+    def _dispatch_decode_backend(self, num_decodes, max_qlen):
+        # No fallback exists here: this bridge has no unified branch, and ASM
+        # tops out lower still, where an unmatched mtp picks a kernel built for
+        # another qlen and computes instead of asserting.
+        if gluon_decode_over_limit(max_qlen, self.num_heads, self.num_kv_heads):
+            raise NotImplementedError(
+                f"query length {max_qlen} is past the gluon decode kernel, and "
+                "this bridge has no fallback that takes it"
+            )
         gluon_pa_decode_bs = _GLUON_PA_DECODE_BS_MAPPING.get(self.model_type, -1)
         if self.use_triton_attn:
             return self.paged_attention_triton
-        else:
-            if ATOM_USE_GLUON_PA_DECODE and num_decodes <= gluon_pa_decode_bs:
-                return self.paged_attention_triton
-            else:
-                return self.paged_attention_asm
+        if ATOM_USE_GLUON_PA_DECODE and num_decodes <= gluon_pa_decode_bs:
+            return self.paged_attention_triton
+        # Past ASM's envelope prefer the wider kernel: ASM would silently fall
+        # back to one built for a different qlen rather than refuse.
+        asm_group = int(max_qlen) * (self.num_heads // self.num_kv_heads)
+        if asm_group > PA_ASM_MAX_QUERY_GROUP_SIZE:
+            return self.paged_attention_triton
+        return self.paged_attention_asm
 
     def forward_impl(
         self,
@@ -778,30 +874,15 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
         output = output.view(-1, self.num_heads, self.head_dim)
 
         num_actual_tokens = attn_metadata.num_actual_tokens
-        k_cache, v_cache = kv_cache.unbind(0)
-        num_blocks, block_size, num_kv_heads, _ = k_cache.shape
+        k_cache, v_cache = self._split_kv_cache(kv_cache)
+        num_pages, block_size, num_kv_heads, _ = k_cache.shape
 
         if self.kv_cache_dtype == "fp8":
             target_dtype = dtypes.d_dtypes[self.kv_cache_dtype]
             k_cache = k_cache.view(target_dtype)
             v_cache = v_cache.view(target_dtype)
 
-        # create kv scale according to the num_blocks
-        # usually it is created when cuda graph capture for decode phase
-        if self.kv_cache_dtype == "fp8":
-            if self.k_scale is None or self.v_scale is None:
-                # origin kv_scale is per tensor scale of value one.
-                self.per_tensor_scale = self.kv_scale
-                self.kv_scale = torch.zeros(
-                    2,
-                    num_blocks,
-                    num_kv_heads,
-                    block_size,
-                    dtype=dtypes.fp32,
-                    device=self.device,
-                )
-                self.k_scale = self.kv_scale[0]
-                self.v_scale = self.kv_scale[1]
+        self._ensure_kv_scale(num_pages, num_kv_heads, block_size)
 
         # as vLLM cuda graph capture padding mechanism, here split the qkvo with
         # the actual tokens
@@ -840,13 +921,13 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
         num_decode_tokens = attn_metadata.num_decode_tokens
         num_extend_tokens = attn_metadata.num_extend_tokens
 
-        num_blocks, block_size, num_kv_heads, head_size = k_cache.shape
+        num_pages, block_size, num_kv_heads, head_size = k_cache.shape
         x = 16 // k_cache.element_size()
         new_key_cache = k_cache.view(
-            num_blocks, num_kv_heads, head_size // x, block_size, x
+            num_pages, num_kv_heads, head_size // x, block_size, x
         )
         new_value_cache = v_cache.view(
-            num_blocks, num_kv_heads, block_size // x, head_size, x
+            num_pages, num_kv_heads, block_size // x, head_size, x
         )
         # calculate for prefills
         if num_prefills > 0:
@@ -916,7 +997,9 @@ class AttentionForVllmMHA(nn.Module, AttentionLayerBase):
         if num_decodes > 0:
             assert attn_metadata.decode_metadata is not None
 
-            decode_backend_func = self._dispatch_decode_backend(num_decodes)
+            decode_backend_func = self._dispatch_decode_backend(
+                num_decodes, attn_metadata.decode_metadata.max_query_len
+            )
             decode_backend_func(
                 q=query[:num_decode_tokens],
                 k_cache=new_key_cache,

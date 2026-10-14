@@ -32,6 +32,7 @@ def _config(tp=1, dp=1, simulated_tp=None):
             data_parallel_size=dp,
             data_parallel_master_ip="127.0.0.1",
             data_parallel_base_port=29501,
+            _managed_distributed_store=False,
         ),
     )
 

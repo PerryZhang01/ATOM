@@ -7,6 +7,32 @@ NODE0_ADDR="${NODE0_ADDR:-127.0.0.1}"
 IPADDRS="${IPADDRS:-127.0.0.1}"
 RUN_DIR="${RUN_DIR:-/run_logs/slurm_job-${SLURM_JOB_ID:-local}}"
 
+# Servers start from this checkout, and `python -m` puts the working directory
+# first on sys.path, so its atom package shadows the image's editable install
+# (/app/ATOM). `image` launches the servers from / instead. PYTHONSAFEPATH would
+# also hide the checkout, but every subprocess inherits it, and scripts that
+# import modules beside themselves (e.g. aiter's JIT gen_instances.py) break.
+ATOMESH_ATOM_SOURCE="${ATOMESH_ATOM_SOURCE:-mounted}"
+case "${ATOMESH_ATOM_SOURCE}" in
+  mounted) ATOM_SOURCE_ENV=() ;;
+  image) ATOM_SOURCE_ENV=(--chdir=/) ;;
+  *)
+    echo "ERROR: ATOMESH_ATOM_SOURCE must be mounted or image, got '${ATOMESH_ATOM_SOURCE}'" >&2
+    exit 1
+    ;;
+esac
+atom_origin="$(env "${ATOM_SOURCE_ENV[@]}" python3 -c \
+  'import importlib.util as u; s = u.find_spec("atom"); print(s.origin if s else "")')"
+atom_version="$(python3 -c \
+  'import importlib.metadata as m; print(m.version("atom"))' 2>/dev/null || echo unknown)"
+echo "[atom] source=${ATOMESH_ATOM_SOURCE} package=${atom_origin:-<missing>} image_dist=${atom_version}"
+if [[ -z "${atom_origin}" ]] \
+  || { [[ "${ATOMESH_ATOM_SOURCE}" == "mounted" ]] && [[ "${atom_origin}" != "${PWD}"/* ]]; } \
+  || { [[ "${ATOMESH_ATOM_SOURCE}" == "image" ]] && [[ "${atom_origin}" == "${PWD}"/* ]]; }; then
+  echo "ERROR: atom resolves to '${atom_origin}', which does not match ATOMESH_ATOM_SOURCE=${ATOMESH_ATOM_SOURCE} (cwd ${PWD})" >&2
+  exit 1
+fi
+
 MODEL_NAME="${MODEL_NAME:?MODEL_NAME is required}"
 MODEL_PATH="${MODEL_PATH:?MODEL_PATH is required}"
 BACKEND="${BACKEND:-atom}"
@@ -16,6 +42,7 @@ ATOMESH_PD_WORKER_LAYOUT="${ATOMESH_PD_WORKER_LAYOUT:-multi_node}"
 SINGLE_NODE_PD=0
 PREFILL_SINGLE_NODE_PD=0
 DECODE_SINGLE_NODE_PD=0
+PACKED_NODES_PD=0
 case "${ATOMESH_PD_WORKER_LAYOUT}" in
   single_node)
     SINGLE_NODE_PD=1
@@ -26,12 +53,24 @@ case "${ATOMESH_PD_WORKER_LAYOUT}" in
   decode_single_node)
     DECODE_SINGLE_NODE_PD=1
     ;;
+  packed_nodes)
+    PACKED_NODES_PD=1
+    ;;
 esac
+
+# The layout above only says where workers go; whether prefill and decode split
+# at all comes from the name: `<P>p<D>d` splits, `agg*` is one server doing both.
+AGGREGATED=0
+if [[ "${TOPOLOGY,,}" == agg* ]]; then
+  AGGREGATED=1
+fi
 
 xP="${xP:-1}"
 yD="${yD:-1}"
 PREFILL_TP_SIZE="${PREFILL_TP_SIZE:-8}"
 DECODE_TP_SIZE="${DECODE_TP_SIZE:-8}"
+PREFILL_DCP_SIZE="${PREFILL_DCP_SIZE:-1}"
+DECODE_DCP_SIZE="${DECODE_DCP_SIZE:-1}"
 PREFILL_ENABLE_DP="${PREFILL_ENABLE_DP:-false}"
 DECODE_ENABLE_DP="${DECODE_ENABLE_DP:-false}"
 
@@ -91,7 +130,7 @@ done
 unset shifted_port_name
 unset -f validate_shifted_port
 USE_EXPLICIT_DP_PORTS=0
-if [[ "${SINGLE_NODE_PD}" == "1" || "${PREFILL_SINGLE_NODE_PD}" == "1" || "${DECODE_SINGLE_NODE_PD}" == "1" ]]; then
+if [[ "${SINGLE_NODE_PD}" == "1" || "${PREFILL_SINGLE_NODE_PD}" == "1" || "${DECODE_SINGLE_NODE_PD}" == "1" || "${PACKED_NODES_PD}" == "1" || "${AGGREGATED}" == "1" ]]; then
   USE_EXPLICIT_DP_PORTS=1
 fi
 
@@ -109,6 +148,8 @@ HF_OVERRIDES="${HF_OVERRIDES:-}"
 SPEC_METHOD="${SPEC_METHOD:-}"
 DRAFT_MODEL_PATH="${DRAFT_MODEL_PATH:-}"
 NUM_SPEC_TOKENS="${NUM_SPEC_TOKENS:-}"
+SPEC_DECODE_ACCEPTANCE_LENGTH="${SPEC_DECODE_ACCEPTANCE_LENGTH:-}"
+STATE_CHECKPOINT_INTERVAL_TOKENS="${STATE_CHECKPOINT_INTERVAL_TOKENS:-}"
 EXTRA_SERVER_ARGS="${EXTRA_SERVER_ARGS:-}"
 PREFILL_EXTRA_SERVER_ARGS="${PREFILL_EXTRA_SERVER_ARGS:-}"
 DECODE_EXTRA_SERVER_ARGS="${DECODE_EXTRA_SERVER_ARGS:-}"
@@ -133,6 +174,19 @@ is_agentic_dpa() {
       has_cli_flag "${PREFILL_EXTRA_SERVER_ARGS}" "--enable-dp-attention" \
         || has_cli_flag "${DECODE_EXTRA_SERVER_ARGS}" "--enable-dp-attention"
     }
+}
+
+# More than one prefill process. Distinct from DPA, which is ranks inside one process.
+is_agentic_multi_prefill() {
+  [[ "${BENCHMARK_KIND}" == "aiperf_agentic" \
+    && "${xP}" =~ ^[0-9]+$ \
+    && "${xP}" -gt 1 ]]
+}
+
+# Agentic traces are multi-turn. A later turn has to reach the worker that kept
+# the prefix: a DP rank under DPA, or one prefill instance when several are up.
+is_agentic_session_affinity() {
+  is_agentic_dpa || is_agentic_multi_prefill
 }
 
 ISL_LIST="${ISL_LIST:-8192}"
@@ -180,6 +234,7 @@ AIPERF_VENV="${AIPERF_VENV:-/tmp/atomesh-aiperf-venv}"
 AIPERF_COMMIT="${AIPERF_COMMIT:-b7b16cf851885567988a643282266bce74e34437}"
 AIPERF_SCENARIO="${AIPERF_SCENARIO:-inferencex-agentx-mvp}"
 AIPERF_PUBLIC_DATASET="${AIPERF_PUBLIC_DATASET:-semianalysis_cc_traces_weka_062126_256k}"
+AIPERF_APPLY_CHAT_TEMPLATE="${AIPERF_APPLY_CHAT_TEMPLATE:-false}"
 AIPERF_MAX_CONTEXT_LENGTH="${AIPERF_MAX_CONTEXT_LENGTH:-262144}"
 AIPERF_NUM_DATASET_ENTRIES="${AIPERF_NUM_DATASET_ENTRIES:-393}"
 AIPERF_BENCHMARK_DURATION="${AIPERF_BENCHMARK_DURATION:-1800}"
@@ -196,6 +251,13 @@ AIPERF_DATASET_WEKA_LIVE_ASSISTANT_RESPONSES="${AIPERF_DATASET_WEKA_LIVE_ASSISTA
 AIPERF_DATASET_CONFIGURATION_TIMEOUT="${AIPERF_DATASET_CONFIGURATION_TIMEOUT:-1800}"
 AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT="${AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT:-1800}"
 AIPERF_UNSAFE_OVERRIDE="${AIPERF_UNSAFE_OVERRIDE:-}"
+# Torch profiler window inside the aiperf Profiling phase; off while DURATION is
+# 0. START counts from the phase start rather than from aiperf launch, so a
+# warmup of any length does not move the window. Once every rank's trace is on
+# disk, aiperf is stopped and the run passes regardless of its exit code.
+ATOMESH_TORCH_PROFILE_START="${ATOMESH_TORCH_PROFILE_START:-300}"
+ATOMESH_TORCH_PROFILE_DURATION="${ATOMESH_TORCH_PROFILE_DURATION:-0}"
+ATOMESH_TORCH_PROFILE_ROLES="${ATOMESH_TORCH_PROFILE_ROLES:-prefill,decode}"
 PREFILL_KV_TRANSFER_CONFIG="${PREFILL_KV_TRANSFER_CONFIG:-}"
 DECODE_KV_TRANSFER_CONFIG="${DECODE_KV_TRANSFER_CONFIG:-}"
 
@@ -211,7 +273,11 @@ fi
 mkdir -p "${RUNTIME_LOG_DIR}" "${RUN_DIR}"/{benchmark_results,eval_results} "${ATOM_TORCH_PROFILER_DIR}"
 
 role_tp="${PREFILL_TP_SIZE}"
-if [[ "${PREFILL_SINGLE_NODE_PD}" == "1" && "${NODE_RANK}" -gt 0 ]]; then
+if [[ "${AGGREGATED}" == "1" ]]; then
+  # The aggregated server launches with decode_parallel, so its GPU count is the
+  # decode TP. Rank 0 would otherwise fall through to the prefill TP below.
+  role_tp="${DECODE_TP_SIZE}"
+elif [[ "${PREFILL_SINGLE_NODE_PD}" == "1" && "${NODE_RANK}" -gt 0 ]]; then
   role_tp="${DECODE_TP_SIZE}"
 elif [[ "${NODE_RANK}" -ge "${xP}" ]]; then
   role_tp="${DECODE_TP_SIZE}"
@@ -231,7 +297,7 @@ dump_launch_info() {
   echo "  ${role} launch info"
   echo "========================================"
   echo "--- environment ---"
-  env | grep -E '^(HIP_|HSA_|AITER_|ATOM_|RCCL_|NCCL_|CUDA_|MOONCAKE_|UCX_)' | sort || true
+  env | grep -E '^(HIP_|HSA_|AITER_|ATOM_|RCCL_|NCCL_|CUDA_|MOONCAKE_|MORI_|UCX_)' | sort || true
   echo "--- command ---"
   printf '%q ' "$@"
   echo ""
@@ -246,8 +312,36 @@ apply_prefixed_env() {
   while IFS='=' read -r name raw; do
     [[ "${name}" == "${prefix}"* ]] || continue
     value="${raw//\$\{ROLE_IP\}/${role_ip}}"
+    value="${value//\$\{HANDSHAKE_PORT\}/${HANDSHAKE_PORT}}"
     export "${name#${prefix}}=${value}"
   done < <(env)
+}
+
+# Names the last apply_role_env() exported for a role.
+ROLE_ENV_NAMES=()
+
+# Both servers are launched from this one shell, so a variable exported for one
+# role stays in the environment the next role inherits. Only names the two roles
+# both define get overwritten; a prefill-only name reaches decode unchanged --
+# VLLM_PP_LAYER_PARTITION from a pp4 prefill aborts a pp1 decode's model build
+# with "len(partitions)=4 does not match pp_size=1". Drop the previous role's
+# names before applying this one's.
+apply_role_env() {
+  local prefix="$1"
+  local role_ip="$2"
+  local name
+  for name in ${ROLE_ENV_NAMES[@]+"${ROLE_ENV_NAMES[@]}"}; do
+    unset "${name}"
+  done
+  ROLE_ENV_NAMES=()
+  while IFS='=' read -r name _; do
+    [[ "${name}" == "${prefix}"* ]] || continue
+    ROLE_ENV_NAMES+=("${name#${prefix}}")
+  done < <(env)
+  # A name the common block also sets was just unset with the previous role's,
+  # so put the common value back before the role overrides it.
+  apply_prefixed_env "ATOMESH_ENV_" "${role_ip}"
+  apply_prefixed_env "${prefix}" "${role_ip}"
 }
 
 host_ip="$(echo "${IPADDRS}" | tr ',' '\n' | sed -n "$((NODE_RANK + 1))p")"
@@ -258,6 +352,12 @@ host_name="$(hostname)"
 
 apply_prefixed_env "ATOMESH_ENV_" "${host_ip}"
 
+# GPU timing is opt-in; agentic reports need it on both service roles.
+if [[ "${BENCHMARK_KIND}" == "aiperf_agentic" ]]; then
+  export ATOMESH_PREFILL_ENV_ATOM_ENABLE_METRICS_DEVICE_TIMER="${ATOMESH_PREFILL_ENV_ATOM_ENABLE_METRICS_DEVICE_TIMER:-${ATOM_ENABLE_METRICS_DEVICE_TIMER:-1}}"
+  export ATOMESH_DECODE_ENV_ATOM_ENABLE_METRICS_DEVICE_TIMER="${ATOMESH_DECODE_ENV_ATOM_ENABLE_METRICS_DEVICE_TIMER:-${ATOM_ENABLE_METRICS_DEVICE_TIMER:-1}}"
+fi
+
 IFS=',' read -r -a IP_ARRAY <<< "${IPADDRS}"
 
 prefill_args=()
@@ -266,7 +366,14 @@ prefill_ports=()
 decode_args=()
 decode_ips=()
 decode_ports=()
-if [[ "${SINGLE_NODE_PD}" == "1" ]]; then
+if [[ "${AGGREGATED}" == "1" ]]; then
+  # One server answers both roles, so both endpoint lists name it. `*_args` stay
+  # empty: they only ever feed the router, which this layout does not start.
+  prefill_ips+=("${IP_ARRAY[0]}")
+  prefill_ports+=("${ROUTER_PORT}")
+  decode_ips+=("${IP_ARRAY[0]}")
+  decode_ports+=("${ROUTER_PORT}")
+elif [[ "${SINGLE_NODE_PD}" == "1" ]]; then
   if [[ "${xP}" != "1" || "${yD}" != "1" ]]; then
     echo "ERROR: single_node PD worker layout currently supports only 1 prefill and 1 decode worker" >&2
     exit 1
@@ -277,6 +384,56 @@ if [[ "${SINGLE_NODE_PD}" == "1" ]]; then
   decode_ips+=("${IP_ARRAY[0]}")
   decode_ports+=("${DECODE_PORT}")
   decode_args+=(--decode "http://${IP_ARRAY[0]}:${DECODE_PORT}")
+elif [[ "${PACKED_NODES_PD}" == "1" ]]; then
+  # PP size is not a top-level env var on this launcher; parse it from extra_args.
+  _pp_from_args() {
+    local args="$1"
+    if [[ "${args}" =~ --pipeline-parallel-size[=\ ]+([0-9]+) ]]; then
+      echo "${BASH_REMATCH[1]}"
+    else
+      echo 1
+    fi
+  }
+  PREFILL_PP_SIZE="$(_pp_from_args "${PREFILL_SERVER_ARGS}")"
+  DECODE_PP_SIZE="$(_pp_from_args "${DECODE_SERVER_ARGS}")"
+  prefill_nodes=()
+  prefill_gpus=()
+  decode_nodes=()
+  decode_gpus=()
+  packed_node=0
+  packed_used=0
+  place_packed_worker() {
+    local width="$1"
+    local -n placed_nodes="$2"
+    local -n placed_gpus="$3"
+    if (( width > 8 )); then
+      echo "ERROR: packed_nodes workers must fit on one 8-GPU node" >&2
+      exit 2
+    fi
+    if (( packed_used + width > 8 )); then
+      packed_node=$((packed_node + 1))
+      packed_used=0
+    fi
+    placed_nodes+=("${packed_node}")
+    placed_gpus+=("$(seq -s, "${packed_used}" "$((packed_used + width - 1))")")
+    packed_used=$((packed_used + width))
+  }
+  for idx in $(seq 0 $((xP - 1))); do
+    place_packed_worker "$((PREFILL_PP_SIZE * PREFILL_TP_SIZE))" prefill_nodes prefill_gpus
+    prefill_ips+=("${IP_ARRAY[${prefill_nodes[$idx]}]:-}")
+    prefill_ports+=("$((PREFILL_PORT + idx))")
+    prefill_args+=(--prefill "http://${prefill_ips[$idx]}:${prefill_ports[$idx]}")
+  done
+  for idx in $(seq 0 $((yD - 1))); do
+    place_packed_worker "$((DECODE_PP_SIZE * DECODE_TP_SIZE))" decode_nodes decode_gpus
+    decode_ips+=("${IP_ARRAY[${decode_nodes[$idx]}]:-}")
+    decode_ports+=("$((DECODE_PORT + idx))")
+    decode_args+=(--decode "http://${decode_ips[$idx]}:${decode_ports[$idx]}")
+  done
+  if (( packed_node + 1 != ${#IP_ARRAY[@]} )); then
+    echo "ERROR: packed_nodes needs $((packed_node + 1)) node(s), got ${#IP_ARRAY[@]}" >&2
+    exit 2
+  fi
 elif [[ "${PREFILL_SINGLE_NODE_PD}" == "1" ]]; then
   for idx in $(seq 0 $((xP - 1))); do
     prefill_port=$((PREFILL_PORT + idx))
@@ -320,33 +477,137 @@ else
   done
 fi
 
-prefill_parallel=(-tp "${PREFILL_TP_SIZE}")
+prefill_parallel=(
+  -tp "${PREFILL_TP_SIZE}"
+  --decode-context-parallel-size "${PREFILL_DCP_SIZE}"
+)
 if [[ "${PREFILL_ENABLE_DP}" == "true" ]]; then
   prefill_parallel+=("--enable-dp-attention")
 fi
 
-decode_parallel=(-tp "${DECODE_TP_SIZE}")
+decode_parallel=(
+  -tp "${DECODE_TP_SIZE}"
+  --decode-context-parallel-size "${DECODE_DCP_SIZE}"
+)
 if [[ "${DECODE_ENABLE_DP}" == "true" ]]; then
   decode_parallel+=("--enable-dp-attention")
 fi
 
+# AgentX captures every query-token count the engine can produce, i.e. the dense
+# range [1, graph_max] with graph_max = seqs * (1 + spec_tokens), where seqs
+# defaults to 2 * CONC. Concurrencies whose in-flight window is wider than
+# 2 * CONC pin seqs explicitly via cudagraph_max_num_seqs.
+auto_cudagraph_capture_sizes() {
+  local role="$1"
+  local seqs="$2"
+  local conc spec graph_max
+  spec="${NUM_SPEC_TOKENS:-0}"
+  [[ "${spec}" =~ ^[0-9]+$ ]] || spec=0
+  if [[ ! "${seqs}" =~ ^[0-9]+$ ]]; then
+    conc="$(echo "${BENCH_MAX_CONCURRENCY}" | tr 'x,' '\n' | sort -n | tail -1)"
+    [[ "${conc}" =~ ^[0-9]+$ ]] || conc=1
+    seqs=$(( 2 * conc ))
+  fi
+  graph_max=$(( seqs * (1 + spec) ))
+  if (( graph_max < 1 )); then
+    graph_max=1
+  fi
+  echo "[${role}] cudagraph auto range 1..${graph_max} (seqs=${seqs} spec=${spec})" >&2
+  echo "[$(seq -s, 1 "${graph_max}")]"
+}
+
 build_cudagraph_args() {
-  local value="$1"
+  local role="$1"
   local -n out="$2"
-  case "${value:-}" in
+  local prefix="${role^^}"
+  local sizes_var="${prefix}_CUDAGRAPH"
+  local mode_var="${prefix}_CUDAGRAPH_MODE"
+  local level_var="${prefix}_COMPILATION_LEVEL"
+  local seqs_var="${prefix}_CUDAGRAPH_MAX_NUM_SEQS"
+  local mode="${!mode_var:-}"
+  local level="${!level_var:-}"
+  case "${!sizes_var:-}" in
     ""|none|None|NONE|false|False|FALSE|off|Off|OFF|disabled|Disabled|DISABLED)
       out=()
       ;;
+    auto|Auto|AUTO)
+      out=(
+        --cudagraph-capture-sizes
+        "$(auto_cudagraph_capture_sizes "${role}" "${!seqs_var:-}")"
+      )
+      ;;
     *)
-      out=(--cudagraph-capture-sizes "${value}")
+      out=(--cudagraph-capture-sizes "${!sizes_var}")
       ;;
   esac
+  if [[ -n "${mode}" ]]; then
+    out+=(--cudagraph-mode "${mode}")
+  fi
+  if [[ -n "${level}" ]]; then
+    out+=(--level "${level}")
+  fi
 }
 
 prefill_cudagraph_args=()
 decode_cudagraph_args=()
-build_cudagraph_args "${PREFILL_CUDAGRAPH:-}" prefill_cudagraph_args
-build_cudagraph_args "${DECODE_CUDAGRAPH:-}" decode_cudagraph_args
+build_cudagraph_args prefill prefill_cudagraph_args
+build_cudagraph_args decode decode_cudagraph_args
+
+# Where a worker's FlyDSL cache lives. Preferred: the node-wide AOT cache
+# pd_slurm_job.sh extracted from the image, used in place (FlyDSL locks each
+# key, so workers share it safely). Fallback: copy the AOT kernels into the
+# worker's private dir, from that shared dir if it is readable but not
+# writable, else from the image itself when this uid can read it. Otherwise the
+# private dir starts empty and every tuned kernel JIT-compiles on first use.
+resolve_flydsl_cache_dir() {
+  local role="$1"
+  local private_dir="$2"
+  local shared="${ATOMESH_FLYDSL_AOT_DIR:-}"
+  local src=""
+
+  if [[ -n "${shared}" && -f "${shared}/.complete" ]]; then
+    if [[ -w "${shared}" ]]; then
+      echo "[runtime] ${role} flydsl cache=${shared} (shared AOT)" >&2
+      echo "${shared}"
+      return 0
+    fi
+    src="${shared}"
+  fi
+  if [[ -z "${src}" ]]; then
+    src="$(python3 -c 'import importlib.util as u, os; s = u.find_spec("aiter"); print(os.path.join(os.path.dirname(s.origin), "jit", "flydsl_cache") if s else "")' 2>/dev/null || true)"
+  fi
+  if [[ -n "${src}" && -d "${src}" ]] && cp -R "${src}/." "${private_dir}/" 2>/dev/null; then
+    echo "[runtime] ${role} flydsl cache=${private_dir} (copied AOT from ${src})" >&2
+  else
+    echo "[runtime] WARN: ${role} flydsl cache=${private_dir} has no AOT kernels; tuned kernels JIT-compile on first use" >&2
+  fi
+  echo "${private_dir}"
+}
+
+# Once AITER_JIT_DIR is set, aiter imports modules only from that dir, so a
+# fresh per-worker dir would JIT-rebuild every module the image already ships
+# (stalling the engine whenever a new one is first needed). Link the image's
+# prebuilt .so files in; modules it lacks still build into the writable dir.
+seed_aiter_jit_dir() {
+  local role="$1"
+  local dir="$2"
+  local src so linked=0
+
+  src="$(python3 -c 'import importlib.util as u, os; s = u.find_spec("aiter"); print(os.path.join(os.path.dirname(s.origin), "jit") if s else "")' 2>/dev/null || true)"
+  if [[ -n "${src}" && -d "${src}" && "${src}" != "${dir}" ]]; then
+    for so in "${src}"/*.so; do
+      [[ -r "${so}" ]] || continue
+      if [[ -e "${dir}/${so##*/}" ]] || ln -s "${so}" "${dir}/"; then
+        linked=$((linked + 1))
+      fi
+    done
+  fi
+  if (( linked > 0 )); then
+    echo "[runtime] ${role} aiter jit=${dir} (linked ${linked} prebuilt modules from ${src})" >&2
+  else
+    echo "[runtime] WARN: ${role} aiter jit=${dir} has no prebuilt modules linked; aiter JIT-builds modules on first use" >&2
+  fi
+}
 
 build_server_cache_env() {
   local role="$1"
@@ -358,6 +619,10 @@ build_server_cache_env() {
   cache_root="${cache_base}/${role}-${server_port}"
   mkdir -p "${cache_root}"/{home,xdg,torchinductor,triton,aiter/jit,flydsl}
 
+  seed_aiter_jit_dir "${role}" "${cache_root}/aiter/jit"
+  local flydsl_dir
+  flydsl_dir="$(resolve_flydsl_cache_dir "${role}" "${cache_root}/flydsl")"
+
   out=(
     "HOME=${cache_root}/home"
     "XDG_CACHE_HOME=${cache_root}/xdg"
@@ -365,10 +630,14 @@ build_server_cache_env() {
     "TRITON_CACHE_DIR=${cache_root}/triton"
     "AITER_CACHE_DIR=${cache_root}/aiter"
     "AITER_JIT_DIR=${cache_root}/aiter/jit"
-    "FLYDSL_RUNTIME_CACHE_DIR=${cache_root}/flydsl"
+    "FLYDSL_RUNTIME_CACHE_DIR=${flydsl_dir}"
   )
   echo "[runtime] ${role} cache root=${cache_root} (port=${server_port})"
 }
+
+if [[ -n "${AITER_JIT_DIR:-}" ]] && mkdir -p "${AITER_JIT_DIR}" 2>/dev/null; then
+  seed_aiter_jit_dir "container" "${AITER_JIT_DIR}"
+fi
 
 server_common=(
   --model "${MODEL_PATH}"
@@ -404,7 +673,21 @@ fi
 if [[ -n "${NUM_SPEC_TOKENS}" ]]; then
   server_common+=(--num-speculative-tokens "${NUM_SPEC_TOKENS}")
 fi
-
+spec_decode_acceptance_for_server="${SPEC_DECODE_ACCEPTANCE_LENGTH}"
+if [[ "${ATOMESH_EXECUTION_PHASE}" == "eval" && "${EVAL_TASK}" == "gsm8k" ]]; then
+  spec_decode_acceptance_for_server=""
+  echo "[runtime] omitting spec-decode-acceptance-length for gsm8k eval phase"
+fi
+if [[ -n "${spec_decode_acceptance_for_server}" ]]; then
+  server_common+=(
+    --spec-decode-acceptance-length "${spec_decode_acceptance_for_server}"
+  )
+fi
+if [[ -n "${STATE_CHECKPOINT_INTERVAL_TOKENS}" ]]; then
+  server_common+=(
+    --state-checkpoint-interval-tokens "${STATE_CHECKPOINT_INTERVAL_TOKENS}"
+  )
+fi
 wait_http() {
   local url="$1"
   local name="$2"
@@ -464,7 +747,14 @@ start_logged_process() {
   local log_file="$2"
   shift 2
 
-  if command -v setsid >/dev/null 2>&1; then
+  if [[ "${PACKED_NODES_PD:-0}" == "1" ]]; then
+    echo "[runtime] logging ${log_file} (file-only, packed layout)"
+    if command -v setsid >/dev/null 2>&1; then
+      setsid "$@" >"${log_file}" 2>&1 &
+    else
+      "$@" >"${log_file}" 2>&1 &
+    fi
+  elif command -v setsid >/dev/null 2>&1; then
     setsid "$@" > >(tee "${log_file}") 2>&1 &
   else
     "$@" > >(tee "${log_file}") 2>&1 &
@@ -503,12 +793,44 @@ terminate_process_group() {
   wait "${pid}" 2>/dev/null || true
 }
 
+# LMCache's disk tier lives on a host bind mount, so unlike the container's own
+# /tmp it survives `docker run --rm`. Every concurrency runs as its own job, and
+# a tier left behind would both serve the previous job's KV and hold its
+# LMCACHE_MAX_LOCAL_DISK_SIZE of disk per rank. Start empty, leave nothing.
+lmcache_disk_dir=""
+
+reset_lmcache_disk() {
+  local dir="${LMCACHE_LOCAL_DISK:-}"
+  [[ -n "${dir}" && "${dir}" != "/" ]] || return 0
+  # The repository working directory is read-only in the container. Resolve
+  # relative paths under the writable logs, isolated by job, phase and node rank.
+  if [[ "${dir}" != /* ]]; then
+    dir="${RUNTIME_LOG_DIR}/rank-${NODE_RANK}/${dir#./}"
+  fi
+  export LMCACHE_LOCAL_DISK="${dir}"
+  # Several prefill workers can share this shell, so only the first one empties
+  # the tier; a later one would delete a running worker's cache underneath it.
+  [[ "${lmcache_disk_dir}" != "${dir}" ]] || return 0
+  lmcache_disk_dir="${dir}"
+  rm -rf -- "${dir}"
+  mkdir -p -- "${dir}"
+  echo "[lmcache] disk tier ${dir} reset (${LMCACHE_MAX_LOCAL_DISK_SIZE:-0}GiB per rank)"
+}
+
+purge_lmcache_disk() {
+  [[ -n "${lmcache_disk_dir}" ]] || return 0
+  rm -rf -- "${lmcache_disk_dir}"
+  echo "[lmcache] disk tier ${lmcache_disk_dir} removed"
+  lmcache_disk_dir=""
+}
+
 cleanup_processes() {
   local rc=$?
   local pid
   for pid in "$@"; do
     terminate_process_group "${pid}"
   done
+  purge_lmcache_disk
   return "${rc}"
 }
 
@@ -537,13 +859,32 @@ write_metadata() {
 EOF
 }
 
+# ATOM_TORCH_PROFILER_DIR above does not reach the engine: EngineArgs always
+# passes its own torch_profiler_dir (None by default), which overrides the env
+# default in Config, so the profiler is off unless the flag is on the command.
+# One directory per worker keeps P/D ranks that share a node apart.
+build_torch_profiler_args() {
+  local log_name="$1"
+  local -n out_args="$2"
+  out_args=()
+  (( ATOMESH_TORCH_PROFILE_DURATION > 0 )) || return 0
+  local dir="${RUN_DIR}/torch_traces/${log_name}"
+  mkdir -p "${dir}"
+  out_args=(--torch-profiler-dir "${dir}")
+}
+
 start_prefill() {
   local log_name="$1"
   local server_port="${2:-${PREFILL_PORT}}"
   local handshake_port="${3:-${HANDSHAKE_PORT}}"
   local dp_master_port="${4:-${PREFILL_DP_MASTER_PORT}}"
   local dp_base_port="${5:-${PREFILL_DP_BASE_PORT}}"
-  apply_prefixed_env "ATOMESH_PREFILL_ENV_" "${host_ip}"
+  local visible_devices="${6:-}"
+  apply_role_env "ATOMESH_PREFILL_ENV_" "${host_ip}"
+  if [[ -n "${visible_devices}" ]]; then
+    export HIP_VISIBLE_DEVICES="${visible_devices}"
+  fi
+  reset_lmcache_disk
   local -a prefill_cache_env=()
   build_server_cache_env "prefill" "${server_port}" prefill_cache_env
   local -a prefill_dp_env=()
@@ -559,7 +900,9 @@ start_prefill() {
   else
     prefill_kv_transfer_config="{\"kv_role\":\"kv_producer\",\"kv_connector\":\"mooncake\",\"proxy_ip\":\"${host_ip}\",\"handshake_port\":${handshake_port}}"
   fi
-  echo "[prefill] rank=${NODE_RANK} host=${host_name} ip=${host_ip} gpu=${HIP_VISIBLE_DEVICES} port=${server_port} handshake=${handshake_port} dp_master=${dp_master_port} dp_base=${dp_base_port} cudagraph=${PREFILL_CUDAGRAPH:-none}"
+  local -a prefill_profiler_args=()
+  build_torch_profiler_args "${log_name}" prefill_profiler_args
+  echo "[prefill] rank=${NODE_RANK} host=${host_name} ip=${host_ip} gpu=${HIP_VISIBLE_DEVICES} port=${server_port} handshake=${handshake_port} dp_master=${dp_master_port} dp_base=${dp_base_port} cudagraph=${prefill_cudagraph_args[*]:-none}"
   local -a prefill_cmd=(
     python3 -m atom.entrypoints.openai_server
     "${server_common[@]}"
@@ -568,10 +911,11 @@ start_prefill() {
     --max-num-seqs "${MAX_NUM_SEQS}"
     --kv-transfer-config "${prefill_kv_transfer_config}"
     "${prefill_cudagraph_args[@]}"
+    "${prefill_profiler_args[@]}"
     ${PREFILL_SERVER_ARGS}
   )
   dump_launch_info "PREFILL" "${prefill_cmd[@]}"
-  start_logged_process server_pid "${RUNTIME_LOG_DIR}/${log_name}.log" env "${prefill_cache_env[@]}" "${prefill_dp_env[@]}" "${prefill_cmd[@]}"
+  start_logged_process server_pid "${RUNTIME_LOG_DIR}/${log_name}.log" env "${ATOM_SOURCE_ENV[@]}" "${prefill_cache_env[@]}" "${prefill_dp_env[@]}" "${prefill_cmd[@]}"
 }
 
 start_decode() {
@@ -580,7 +924,11 @@ start_decode() {
   local handshake_port="${3:-${HANDSHAKE_PORT}}"
   local dp_master_port="${4:-${DECODE_DP_MASTER_PORT}}"
   local dp_base_port="${5:-${DECODE_DP_BASE_PORT}}"
-  apply_prefixed_env "ATOMESH_DECODE_ENV_" "${host_ip}"
+  local visible_devices="${6:-}"
+  apply_role_env "ATOMESH_DECODE_ENV_" "${host_ip}"
+  if [[ -n "${visible_devices}" ]]; then
+    export HIP_VISIBLE_DEVICES="${visible_devices}"
+  fi
   local max_conc
   max_conc="$(echo "${BENCH_MAX_CONCURRENCY}" | tr 'x,' '\n' | sort -n | tail -1)"
   local decode_max_num_seqs="${MAX_NUM_SEQS}"
@@ -611,7 +959,9 @@ start_decode() {
   else
     decode_kv_transfer_config="{\"kv_role\":\"kv_consumer\",\"kv_connector\":\"mooncake\",\"proxy_ip\":\"${host_ip}\",\"handshake_port\":${handshake_port}}"
   fi
-  echo "[decode] rank=${NODE_RANK} host=${host_name} ip=${host_ip} gpu=${HIP_VISIBLE_DEVICES} port=${server_port} handshake=${handshake_port} dp_master=${dp_master_port} dp_base=${dp_base_port} cudagraph=${DECODE_CUDAGRAPH:-none}"
+  local -a decode_profiler_args=()
+  build_torch_profiler_args "${log_name}" decode_profiler_args
+  echo "[decode] rank=${NODE_RANK} host=${host_name} ip=${host_ip} gpu=${HIP_VISIBLE_DEVICES} port=${server_port} handshake=${handshake_port} dp_master=${dp_master_port} dp_base=${dp_base_port} cudagraph=${decode_cudagraph_args[*]:-none}"
   local -a decode_cmd=(
     python3 -m atom.entrypoints.openai_server
     "${server_common[@]}"
@@ -621,14 +971,72 @@ start_decode() {
     "${decode_max_num_batched_tokens_args[@]}"
     --kv-transfer-config "${decode_kv_transfer_config}"
     "${decode_cudagraph_args[@]}"
+    "${decode_profiler_args[@]}"
     ${DECODE_SERVER_ARGS}
   )
   dump_launch_info "DECODE" "${decode_cmd[@]}"
-  start_logged_process server_pid "${RUNTIME_LOG_DIR}/${log_name}.log" env "${decode_cache_env[@]}" "${decode_dp_env[@]}" "${decode_cmd[@]}"
+  start_logged_process server_pid "${RUNTIME_LOG_DIR}/${log_name}.log" env "${ATOM_SOURCE_ENV[@]}" "${decode_cache_env[@]}" "${decode_dp_env[@]}" "${decode_cmd[@]}"
+}
+
+# The aggregated server reads the `decode` service block and `env.decode`: it is
+# the role that decodes, and folding prefill into it changes no decode-side
+# knob. Unlike the P/D roles it gets no default connector -- a lone server has
+# no peer to hand KV to -- so DECODE_KV_TRANSFER_CONFIG is honoured only when a
+# recipe sets one (e.g. standalone lmcache_offload) and omitted otherwise.
+start_aggregated() {
+  local log_name="${1:-server-rank-${NODE_RANK}}"
+  local server_port="${2:-${ROUTER_PORT}}"
+  local dp_master_port="${3:-${DECODE_DP_MASTER_PORT}}"
+  local dp_base_port="${4:-${DECODE_DP_BASE_PORT}}"
+  apply_role_env "ATOMESH_DECODE_ENV_" "${host_ip}"
+  reset_lmcache_disk
+  local max_conc
+  max_conc="$(echo "${BENCH_MAX_CONCURRENCY}" | tr 'x,' '\n' | sort -n | tail -1)"
+  local server_max_num_seqs="${MAX_NUM_SEQS}"
+  if [[ -n "${DECODE_MAX_NUM_SEQS}" ]]; then
+    server_max_num_seqs="${DECODE_MAX_NUM_SEQS}"
+  fi
+  local -a server_max_num_batched_tokens_args=()
+  if [[ -n "${DECODE_MAX_NUM_BATCHED_TOKENS}" ]]; then
+    server_max_num_batched_tokens_args=(
+      --max-num-batched-tokens "${DECODE_MAX_NUM_BATCHED_TOKENS}"
+    )
+  fi
+  if [[ "${ISL_LIST}" == "1024" && "${OSL}" == "1024" ]]; then
+    server_max_num_seqs="${max_conc}"
+  fi
+  local -a server_cache_env=()
+  build_server_cache_env "server" "${server_port}" server_cache_env
+  local -a server_dp_env=(
+    "ATOM_DP_MASTER_PORT=${dp_master_port}"
+    "ATOM_DP_BASE_PORT=${dp_base_port}"
+  )
+  local -a server_kv_transfer_args=()
+  if [[ -n "${DECODE_KV_TRANSFER_CONFIG}" ]]; then
+    server_kv_transfer_args=(--kv-transfer-config "${DECODE_KV_TRANSFER_CONFIG}")
+  fi
+  local -a server_profiler_args=()
+  build_torch_profiler_args "${log_name}" server_profiler_args
+  echo "[server] rank=${NODE_RANK} host=${host_name} ip=${host_ip} gpu=${HIP_VISIBLE_DEVICES} port=${server_port} dp_master=${dp_master_port} dp_base=${dp_base_port} cudagraph=${decode_cudagraph_args[*]:-none}"
+  local -a server_cmd=(
+    python3 -m atom.entrypoints.openai_server
+    "${server_common[@]}"
+    --server-port "${server_port}"
+    "${decode_parallel[@]}"
+    --max-num-seqs "${server_max_num_seqs}"
+    "${server_max_num_batched_tokens_args[@]}"
+    "${server_kv_transfer_args[@]}"
+    "${decode_cudagraph_args[@]}"
+    "${server_profiler_args[@]}"
+    ${DECODE_SERVER_ARGS}
+  )
+  dump_launch_info "SERVER" "${server_cmd[@]}"
+  start_logged_process server_pid "${RUNTIME_LOG_DIR}/${log_name}.log" env "${ATOM_SOURCE_ENV[@]}" "${server_cache_env[@]}" "${server_dp_env[@]}" "${server_cmd[@]}"
 }
 
 start_router() {
   echo "[router] prefill=${prefill_args[*]} decode=${decode_args[*]}"
+  local mesh_binary="${ATOMESH_MESH_BINARY:-/app/ATOM/atom/mesh/target/release/atomesh}"
   case "${ATOM_PD_RANK_MAPPING_POLICY}" in
     none|idx2idx) ;;
     *)
@@ -647,20 +1055,42 @@ start_router() {
     )
   fi
   local -a router_dp_aware_args=()
+  local -a router_prefill_policy_args=()
   if is_agentic_dpa; then
-    router_policy="dp_sticky"
+    # Respect explicit cache-aware routing for DPA workloads.
+    if [[ "${router_policy}" != "cache_aware" ]]; then
+      router_policy="dp_sticky"
+    fi
     router_dp_aware_args=(--dp-aware)
+  elif is_agentic_multi_prefill; then
+    # Pin the session to one prefill. Decode keeps ROUTER_POLICY: a single
+    # decode has nothing to stick, and --dp-aware is only for ranks that share
+    # one endpoint.
+    router_prefill_policy_args=(--prefill-policy dp_sticky)
   elif [[ "${#router_rank_mapping_args[@]}" -gt 0 ]]; then
     router_dp_aware_args=(--dp-aware)
   fi
+  local -a router_policy_args=(--policy "${router_policy}")
+  if [[ "${router_policy}" == "cache_aware" ]]; then
+    # Keep the InferenceX defaults, with a case-level absolute-load override.
+    router_policy_args+=(
+      --prefill-policy cache_aware --decode-policy cache_aware
+      --cache-threshold 0.8
+      --balance-abs-threshold "${ROUTER_BALANCE_ABS_THRESHOLD:-20}"
+      --balance-rel-threshold 2.0
+      --eviction-interval 300
+    )
+    router_rank_mapping_args=(--atom-pd-rank-mapping-policy "${ATOM_PD_RANK_MAPPING_POLICY}")
+  fi
   local -a router_cmd=(
-    /app/ATOM/atom/mesh/target/release/atomesh launch
+    "${mesh_binary}" launch
     --host 0.0.0.0
     --port "${ROUTER_PORT}"
     --pd-disaggregation
     "${prefill_args[@]}"
     "${decode_args[@]}"
-    --policy "${router_policy}"
+    "${router_policy_args[@]}"
+    "${router_prefill_policy_args[@]}"
     "${router_rank_mapping_args[@]}"
     "${router_dp_aware_args[@]}"
     --backend atom
@@ -681,13 +1111,17 @@ run_benchmark() {
   local bench_root="/tmp/atomesh-inferencex"
   local bench_repo_url="https://github.com/SemiAnalysisAI/InferenceX.git"
   local bench_repo_dir="${bench_root}/InferenceX"
-  local bench_serving_dir="${bench_repo_dir}/utils/bench_serving"
-  local bench_script="${bench_serving_dir}/benchmark_serving.py"
+  local bench_pkg_root="${bench_repo_dir}/inferencex-e2e"
+  local bench_script="${bench_pkg_root}/infx/bench_serving/benchmark_serving.py"
   if [[ ! -f "${bench_script}" ]] || [[ "$(git -C "${bench_repo_dir}" config --get remote.origin.url 2>/dev/null || true)" != "${bench_repo_url}" ]]; then
     rm -rf "${bench_root}"
     mkdir -p "${bench_root}"
     git clone --depth 1 --filter=blob:none --sparse "${bench_repo_url}" "${bench_repo_dir}"
-    git -C "${bench_repo_dir}" sparse-checkout set utils/bench_serving
+  fi
+  git -C "${bench_repo_dir}" sparse-checkout set inferencex-e2e/infx
+  if [[ ! -f "${bench_script}" ]]; then
+    echo "[bench][FAIL] ${bench_script} not found in ${bench_repo_url}" >&2
+    return 1
   fi
   IFS=',' read -r -a isls <<< "${ISL_LIST}"
   IFS=',' read -r -a concs <<< "${CONC_LIST}"
@@ -696,7 +1130,9 @@ run_benchmark() {
     for conc in "${concs[@]}"; do
       local result_file="pd-${BACKEND}-${safe_model}-${TOPOLOGY}-isl${isl}-osl${OSL}-conc${conc}-${RANDOM_RANGE_RATIO}.json"
       echo "[bench] ${result_file}"
-      PYTHONDONTWRITEBYTECODE=1 python "${bench_script}" \
+      # benchmark_serving uses package-relative imports, so it must run as a module.
+      PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="${bench_pkg_root}${PYTHONPATH:+:${PYTHONPATH}}" \
+        python -m infx.bench_serving.benchmark_serving \
         --model="${MODEL_PATH}" \
         --backend=vllm \
         --base-url="http://127.0.0.1:${ROUTER_PORT}" \
@@ -712,6 +1148,7 @@ run_benchmark() {
         --ignore-eos \
         --save-result \
         --percentile-metrics='ttft,tpot,itl,e2el' \
+        --metric-percentiles='90,99' \
         --result-dir="${RUN_DIR}/benchmark_results" \
         --result-filename="${result_file}"
     done
@@ -743,119 +1180,199 @@ ensure_aiperf() {
 }
 
 write_aiperf_dashboard_json() {
-  local aiperf_json="$1"
-  local out_json="$2"
-  local conc="$3"
-  python3 - "${aiperf_json}" "${out_json}" "${conc}" <<'PY'
-import json
-import os
-import sys
-from pathlib import Path
-
-src = Path(sys.argv[1])
-dst = Path(sys.argv[2])
-conc = int(sys.argv[3])
-data = json.loads(src.read_text(encoding="utf-8"))
-
-
-def avg(name):
-    value = data.get(name)
-    if isinstance(value, dict):
-        return value.get("avg")
-    return value
-
-
-def pct(name, key):
-    value = data.get(name)
-    if isinstance(value, dict):
-        return value.get(key)
-    return None
-
-
-def total_tokens(name):
-    """Return one of AIPerf's profiling-only aggregate token counters."""
-    value = avg(name)
-    return int(value) if isinstance(value, (int, float)) else None
-
-
-# These aggregates contain successful profiling records only: AIPerf excludes
-# its internal warmup and requests cancelled during grace-period draining.
-cache_hit_tokens = total_tokens("total_usage_prompt_cache_read_tokens")
-cache_total_tokens = total_tokens("total_usage_prompt_tokens")
-
-payload = {
-    "benchmark_backend": "atom",
-    # Directory holding this run's profile_export.jsonl, so process_result.py can
-    # find the per-request records both interactivity definitions are computed
-    # from, without reconstructing the directory name.
-    "aiperf_artifact_dir": src.parent.name,
-    "benchmark_model_name": os.environ.get("MODEL_NAME")
-    or data.get("model")
-    or data.get("model_id"),
-    "backend": "atom",
-    "benchmark_kind": os.environ.get("BENCHMARK_KIND") or "aiperf_agentic",
-    "scenario": os.environ.get("AIPERF_SCENARIO"),
-    "public_dataset": os.environ.get("AIPERF_PUBLIC_DATASET"),
-    "topology": os.environ.get("TOPOLOGY") or data.get("topology"),
-    "display_topology": os.environ.get("DISPLAY_TOPOLOGY")
-    or data.get("display_topology"),
-    "precision": os.environ.get("PRECISION") or data.get("precision"),
-    "random_input_len": int(
-        data.get("max_context_length")
-        or os.environ.get("AIPERF_MAX_CONTEXT_LENGTH")
-        or 0
-    ),
-    "random_output_len": 1024,
-    "max_concurrency": conc,
-    "random_range_ratio": "",
-    "request_throughput": avg("request_throughput"),
-    "mean_ttft_ms": avg("time_to_first_token"),
-    "median_ttft_ms": pct("time_to_first_token", "p50"),
-    "p99_ttft_ms": pct("time_to_first_token", "p99"),
-    "mean_itl_ms": avg("inter_token_latency"),
-    "median_itl_ms": pct("inter_token_latency", "p50"),
-    "p99_itl_ms": pct("inter_token_latency", "p99"),
-    "mean_e2el_ms": avg("request_latency"),
-    "median_e2el_ms": pct("request_latency", "p50"),
-    "p99_e2el_ms": pct("request_latency", "p99"),
-    "input_throughput": avg("input_token_throughput"),
-    "output_throughput": avg("output_token_throughput"),
-    "total_token_throughput": avg("total_token_throughput"),
-    "successful_requests": avg("request_count"),
-    "completed": avg("request_count"),
-    "benchmark_duration_s": avg("benchmark_duration")
-    or data.get("benchmark_duration_s"),
-    "total_input_tokens": avg("total_usage_prompt_tokens"),
-    "total_output_tokens": avg("total_usage_completion_tokens"),
-    "cache_hit_tokens": cache_hit_tokens,
-    "cache_total_tokens": cache_total_tokens,
-    "cache_hit_rate": (
-        round(cache_hit_tokens / cache_total_tokens, 4)
-        if cache_hit_tokens is not None and cache_total_tokens
-        else None
-    ),
+  AGGREGATED="${AGGREGATED}" python3 "${ATOMESH_SCRIPT_DIR}/../aiperf_dashboard.py" "$@"
 }
 
-payload = {key: value for key, value in payload.items() if value is not None}
-dst.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-if cache_hit_tokens is not None and cache_total_tokens:
-    print(
-        f"[aiperf] prefix cache hit: {cache_hit_tokens}/{cache_total_tokens} "
-        f"tokens ({cache_hit_tokens / cache_total_tokens:.2%})"
-    )
-else:
-    print(
-        "[aiperf] prefix cache hit: unavailable "
-        "(AIPerf profiling cache-read counters were not produced)"
-    )
-print(f"[aiperf] dashboard json: {dst}")
-PY
+write_aiperf_chrome_trace() {
+  local out_dir="$1"
+  local generator="${ATOMESH_SCRIPT_DIR}/../generate_aiperf_traces.py"
+  local jsonl="${out_dir}/profile_export.jsonl"
+  if [[ ! -f "${jsonl}" ]]; then
+    echo "[aiperf] skip chrome trace: ${jsonl} was not produced"
+    return 0
+  fi
+  if [[ ! -f "${generator}" ]]; then
+    echo "[aiperf] skip chrome trace: ${generator} not found"
+    return 0
+  fi
+  echo "[aiperf] converting ${jsonl} to Perfetto/Chrome trace"
+  python3 "${generator}" "${out_dir}" \
+    || echo "[aiperf] WARNING: chrome trace conversion failed for ${out_dir}" >&2
+}
+
+# stop_profile holds each engine until its kineto export is on disk, so the tail
+# of the window stalls the run: aiperf numbers from a profiled cell are not
+# comparable to an unprofiled one.
+run_torch_profile_window() {
+  local out_dir="$1"
+  local done_file="$2"
+  local trace_ok_file="$3"
+  local aiperf_pid_file="$4"
+  set +e
+  local -a roles=() targets=()
+  local -A seen=()
+  local role idx target
+  IFS=',' read -r -a roles <<< "${ATOMESH_TORCH_PROFILE_ROLES}"
+  for role in "${roles[@]}"; do
+    role="${role//[[:space:]]/}"
+    case "${role}" in
+      prefill)
+        for idx in "${!prefill_ips[@]}"; do
+          target="${prefill_ips[$idx]}:${prefill_ports[$idx]}"
+          [[ -n "${seen[$target]:-}" ]] || { seen[$target]=1; targets+=("${target}"); }
+        done
+        ;;
+      decode)
+        for idx in "${!decode_ips[@]}"; do
+          target="${decode_ips[$idx]}:${decode_ports[$idx]}"
+          [[ -n "${seen[$target]:-}" ]] || { seen[$target]=1; targets+=("${target}"); }
+        done
+        ;;
+      "") ;;
+      *) echo "[profile] ignoring unknown role '${role}'" ;;
+    esac
+  done
+  if [[ "${#targets[@]}" -eq 0 ]]; then
+    echo "[profile] no targets for roles=${ATOMESH_TORCH_PROFILE_ROLES}; skipping"
+    return 0
+  fi
+
+  # $$ is the launcher shell: under set -e a failed aiperf exits it without
+  # touching done_file, and this watcher must not outlive it.
+  aiperf_gone() { [[ -e "${done_file}" ]] || ! kill -0 "$$" 2>/dev/null; }
+
+  echo "[profile] waiting for the aiperf Profiling phase; targets=${targets[*]}"
+  until grep -qiE 'Phase profiling .*started|Credit phase start: profiling' \
+    "${out_dir}/logs/aiperf.log" "${out_dir}/aiperf.log" 2>/dev/null; do
+    if aiperf_gone; then
+      echo "[profile] aiperf exited before its Profiling phase; no trace taken"
+      return 0
+    fi
+    sleep 2
+  done
+
+  local deadline=$(( $(date +%s) + ATOMESH_TORCH_PROFILE_START ))
+  echo "[profile] Profiling phase started at $(date -Is); window opens in ${ATOMESH_TORCH_PROFILE_START}s"
+  while (( $(date +%s) < deadline )); do
+    if aiperf_gone; then
+      echo "[profile] aiperf exited before the window opened; no trace taken"
+      return 0
+    fi
+    sleep 2
+  done
+
+  # Wait on the curl pids only: a bare `wait` also waits on the caller's tee
+  # process substitution, which cannot end before this function does.
+  local -a pids=()
+  local start_marker="${out_dir}/.torch_trace_start"
+  touch "${start_marker}"
+  echo "[profile] start_profile at $(date -Is)"
+  for target in "${targets[@]}"; do
+    curl -sS -X POST --max-time 120 "http://${target}/start_profile" \
+      | sed "s|^|[profile] ${target} start: |" &
+    pids+=($!)
+  done
+  wait "${pids[@]}"
+
+  deadline=$(( $(date +%s) + ATOMESH_TORCH_PROFILE_DURATION ))
+  while (( $(date +%s) < deadline )) && ! aiperf_gone; do
+    sleep 2
+  done
+
+  # The server waits ATOM_PROFILER_TIMEOUT for its ranks; give curl headroom
+  # past that so the client never abandons an export still being written.
+  local stop_timeout=$(( ${ATOM_PROFILER_TIMEOUT:-300} + 300 ))
+  echo "[profile] stop_profile at $(date -Is) (client timeout ${stop_timeout}s)"
+  pids=()
+  local -a stop_files=()
+  local stop_file
+  for target in "${targets[@]}"; do
+    stop_file="${out_dir}/.stop_profile_${target//[:.]/_}.json"
+    stop_files+=("${stop_file}")
+    {
+      curl -sS -X POST --max-time "${stop_timeout}" "http://${target}/stop_profile" \
+        > "${stop_file}"
+      sed "s|^|[profile] ${target} stop: |" "${stop_file}"
+      echo
+    } &
+    pids+=($!)
+  done
+  wait "${pids[@]}"
+  echo "[profile] stop_profile returned at $(date -Is)"
+
+  if ! wait_for_torch_traces "${start_marker}" "${stop_files[@]}"; then
+    echo "[profile] traces incomplete; leaving aiperf to finish on its own"
+    return 0
+  fi
+  touch "${trace_ok_file}"
+  local aiperf_pid
+  aiperf_pid="$(cat "${aiperf_pid_file}" 2>/dev/null)"
+  if [[ -n "${aiperf_pid}" ]] && kill -0 "${aiperf_pid}" 2>/dev/null; then
+    # SIGTERM, not SIGINT: a background job of a non-interactive shell starts
+    # with SIGINT ignored. collect_metrics forwards it to aiperf's group.
+    echo "[profile] traces complete; stopping aiperf (pid ${aiperf_pid})"
+    kill -TERM "${aiperf_pid}"
+  fi
+}
+
+# stop_profile returns once TP rank 0 has exported, while the other ranks may
+# still be writing. Each rank writes a raw .pt.trace.json, gzips it, then
+# removes the raw file, so a rank is done once it holds a .gz newer than the
+# window start and no raw .json.
+wait_for_torch_traces() {
+  local marker="$1"
+  shift
+  local stop_file trace_dir worker_dir rank_dir
+  local -A worker_dirs=()
+  for stop_file in "$@"; do
+    if ! grep -qE '"status" *: *"success"' "${stop_file}" 2>/dev/null; then
+      echo "[profile] stop_profile failed: $(cat "${stop_file}" 2>/dev/null)"
+      return 1
+    fi
+    while IFS= read -r trace_dir; do
+      [[ -n "${trace_dir}" ]] && worker_dirs["$(dirname "${trace_dir}")"]=1
+    done < <(grep -oE '"trace_dir" *: *"[^"]+"' "${stop_file}" \
+      | sed -E 's/.*"([^"]+)"$/\1/')
+  done
+  if [[ "${#worker_dirs[@]}" -eq 0 ]]; then
+    echo "[profile] stop_profile reported no trace_dir"
+    return 1
+  fi
+
+  local deadline=$(( $(date +%s) + ${ATOM_PROFILER_TIMEOUT:-300} ))
+  local pending ranks
+  while :; do
+    pending=0
+    ranks=0
+    for worker_dir in "${!worker_dirs[@]}"; do
+      for rank_dir in "${worker_dir}"/rank_*/; do
+        ranks=$(( ranks + 1 ))
+        if [[ ! -d "${rank_dir}" ]] \
+          || [[ -n "$(find "${rank_dir}" -maxdepth 1 -name '*.pt.trace.json' -print -quit)" ]] \
+          || [[ -z "$(find "${rank_dir}" -maxdepth 1 -name '*.pt.trace.json.gz' \
+            -newer "${marker}" -print -quit)" ]]; then
+          pending=$(( pending + 1 ))
+        fi
+      done
+    done
+    if (( pending == 0 )); then
+      echo "[profile] all ${ranks} rank traces on disk at $(date -Is): ${!worker_dirs[*]}"
+      return 0
+    fi
+    if (( $(date +%s) >= deadline )); then
+      echo "[profile] ${pending}/${ranks} rank traces still missing after ${ATOM_PROFILER_TIMEOUT:-300}s"
+      return 1
+    fi
+    sleep 5
+  done
 }
 
 run_aiperf_agentic_benchmark() {
   ensure_aiperf
 
-  if is_agentic_dpa; then
+  if is_agentic_session_affinity; then
+    # dp_sticky keys off X-Session-ID. Without it every turn is placed by load
+    # and the prefix written by one turn is invisible to the next.
     export AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID=true
   else
     unset AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID
@@ -863,13 +1380,25 @@ run_aiperf_agentic_benchmark() {
 
   local safe_model="${MODEL_NAME//\//-}"
   local -a server_metrics_args=(--server-metrics)
+  local -a report_args=(--model "${MODEL_NAME} · ${DISPLAY_TOPOLOGY}")
   local idx
-  for idx in "${!prefill_ips[@]}"; do
-    server_metrics_args+=("http://${prefill_ips[$idx]}:${prefill_ports[$idx]}/metrics")
-  done
-  for idx in "${!decode_ips[@]}"; do
-    server_metrics_args+=("http://${decode_ips[$idx]}:${decode_ports[$idx]}/metrics")
-  done
+  if [[ "${AGGREGATED}" == "1" ]]; then
+    # Both endpoint lists name the same server, so scrape it once: naming it
+    # per role would double it in every cross-role total. No --mesh either,
+    # since this layout starts no router to answer on the Prometheus port.
+    server_metrics_args+=("http://${decode_ips[0]}:${decode_ports[0]}/metrics")
+    report_args+=(--standalone "${decode_ips[0]}:${decode_ports[0]}")
+  else
+    report_args+=(--mesh "127.0.0.1:${PROMETHEUS_PORT}")
+    for idx in "${!prefill_ips[@]}"; do
+      server_metrics_args+=("http://${prefill_ips[$idx]}:${prefill_ports[$idx]}/metrics")
+      report_args+=(--prefill "${prefill_ips[$idx]}:${prefill_ports[$idx]}")
+    done
+    for idx in "${!decode_ips[@]}"; do
+      server_metrics_args+=("http://${decode_ips[$idx]}:${decode_ports[$idx]}/metrics")
+      report_args+=(--decode "${decode_ips[$idx]}:${decode_ports[$idx]}")
+    done
+  fi
 
   local conc
   IFS=',' read -r -a concs <<< "${CONC_LIST}"
@@ -881,19 +1410,40 @@ run_aiperf_agentic_benchmark() {
     local aiperf_json="${out_dir}/profile_export_aiperf.json"
     local dashboard_json="${RUN_DIR}/benchmark_results/${result_file}"
     local -a unsafe_args=()
+    local -a chat_template_args=()
     if (( AIPERF_BENCHMARK_DURATION < 900 )) \
       || [[ "${AIPERF_UNSAFE_OVERRIDE}" == "1" || "${AIPERF_UNSAFE_OVERRIDE}" == "true" ]]; then
       unsafe_args+=(--unsafe-override)
     fi
+    if [[ "${AIPERF_APPLY_CHAT_TEMPLATE}" == "1" \
+      || "${AIPERF_APPLY_CHAT_TEMPLATE}" == "true" ]]; then
+      chat_template_args+=(--apply-chat-template)
+    fi
 
     echo "[aiperf] ${result_file}"
     mkdir -p "${out_dir}"
+    local profile_pid=""
+    local profile_done="${out_dir}/.aiperf_done"
+    local trace_ok="${out_dir}/.torch_trace_ok"
+    local aiperf_pid_file="${out_dir}/.aiperf_pid"
+    rm -f "${profile_done}" "${trace_ok}" "${aiperf_pid_file}"
+    if (( ATOMESH_TORCH_PROFILE_DURATION > 0 )); then
+      if (( AIPERF_BENCHMARK_DURATION < ATOMESH_TORCH_PROFILE_START + ATOMESH_TORCH_PROFILE_DURATION )); then
+        echo "[profile] WARNING: benchmark duration ${AIPERF_BENCHMARK_DURATION}s ends before the" \
+          "trace window (${ATOMESH_TORCH_PROFILE_START}s + ${ATOMESH_TORCH_PROFILE_DURATION}s)" >&2
+      fi
+      run_torch_profile_window "${out_dir}" "${profile_done}" "${trace_ok}" "${aiperf_pid_file}" \
+        > >(tee "${out_dir}/torch_profile.log") 2>&1 &
+      profile_pid=$!
+    fi
     AIPERF_TIMING_CANCEL_DRAIN_TIMEOUT="${AIPERF_TIMING_CANCEL_DRAIN_TIMEOUT}" \
     AIPERF_HTTP_TCP_USER_TIMEOUT="${AIPERF_HTTP_TCP_USER_TIMEOUT}" \
     AIPERF_DATASET_WEKA_LIVE_ASSISTANT_RESPONSES="${AIPERF_DATASET_WEKA_LIVE_ASSISTANT_RESPONSES}" \
     AIPERF_DATASET_CONFIGURATION_TIMEOUT="${AIPERF_DATASET_CONFIGURATION_TIMEOUT}" \
     AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT="${AIPERF_SERVICE_PROFILE_CONFIGURE_TIMEOUT}" \
     AIPERF_UI_REALTIME_METRICS_ENABLED=true \
+      python3 "${ATOMESH_SCRIPT_DIR}/observability/collect_metrics.py" \
+      --output "${out_dir}/metrics" "${report_args[@]}" -- \
       "${AIPERF_VENV}/bin/aiperf" profile \
       "${unsafe_args[@]}" \
       --scenario "${AIPERF_SCENARIO}" \
@@ -916,19 +1466,45 @@ run_aiperf_agentic_benchmark() {
       --no-gpu-telemetry \
       --tokenizer "${MODEL_PATH}" \
       --tokenizer-trust-remote-code \
+      "${chat_template_args[@]}" \
       --max-context-length "${AIPERF_MAX_CONTEXT_LENGTH}" \
       --num-dataset-entries "${AIPERF_NUM_DATASET_ENTRIES}" \
       --slice-duration "${AIPERF_SLICE_DURATION}" \
       "${server_metrics_args[@]}" \
       --output-artifact-dir "${out_dir}" \
       --public-dataset "${AIPERF_PUBLIC_DATASET}" \
-      2>&1 | tee "${out_dir}/aiperf.log"
+      > >(tee "${out_dir}/aiperf.log") 2>&1 &
+    local aiperf_pid=$!
+    echo "${aiperf_pid}" > "${aiperf_pid_file}"
+    local aiperf_rc=0
+    wait "${aiperf_pid}" || aiperf_rc=$?
 
+    if [[ -n "${profile_pid}" ]]; then
+      touch "${profile_done}"
+      wait "${profile_pid}" || true
+    fi
+
+    # The trace is the deliverable of a profiled cell; once it is on disk,
+    # aiperf was stopped on purpose and its exit code no longer matters.
+    if [[ -f "${trace_ok}" ]]; then
+      echo "[profile] torch traces captured; treating the run as passed (aiperf rc=${aiperf_rc})"
+      if [[ -f "${aiperf_json}" ]]; then
+        write_aiperf_dashboard_json "${aiperf_json}" "${dashboard_json}" "${conc}" \
+          || echo "[aiperf] WARNING: dashboard JSON skipped for the stopped run" >&2
+        write_aiperf_chrome_trace "${out_dir}"
+      fi
+      continue
+    fi
+    if (( aiperf_rc != 0 )); then
+      echo "[aiperf][FAIL] aiperf exited with code ${aiperf_rc}" >&2
+      return "${aiperf_rc}"
+    fi
     if [[ ! -f "${aiperf_json}" ]]; then
       echo "[aiperf][FAIL] ${aiperf_json} was not produced" >&2
       return 1
     fi
     write_aiperf_dashboard_json "${aiperf_json}" "${dashboard_json}" "${conc}"
+    write_aiperf_chrome_trace "${out_dir}"
   done
 }
 
@@ -1087,6 +1663,7 @@ run_eval() {
       --num_fewshot "${EVAL_FEWSHOT}" \
       "${limit_arg[@]}" \
       "${eval_extra_args[@]}" \
+      --log_samples \
       --output_path "${result_dir}"
 
     python3 - "${result_dir}" "${eval_conc}" <<'PY'
@@ -1128,10 +1705,10 @@ run_benchmark_and_eval() {
     return
   fi
   if [[ "${BENCHMARK_KIND}" == "aiperf_agentic" \
-    && "${EVAL_TASK}" == "swebench_lite" \
+    && ( "${EVAL_TASK}" == "swebench_lite" || "${EVAL_TASK}" == "gsm8k" ) \
     && ( "${RUN_EVAL}" == "true" || "${RUN_EVAL}" == "1" ) ]]; then
-    # Agentic performance cases require a fresh prefix-cache state. Run their
-    # trace benchmark before the independent SWE-bench workload.
+    # Agentic performance cases require a fresh prefix/state-cache state. Run
+    # their trace benchmark before any independent accuracy workload.
     run_benchmark
     run_eval
   else
@@ -1142,7 +1719,20 @@ run_benchmark_and_eval() {
 
 write_metadata
 
-if [[ "${NODE_RANK}" -eq 0 && "${SINGLE_NODE_PD}" == "1" ]]; then
+if [[ "${AGGREGATED}" == "1" ]]; then
+  if [[ "${NODE_RANK}" -ne 0 ]]; then
+    echo "[server] rank=${NODE_RANK} idle: aggregated serves from a single node"
+    exit 0
+  fi
+  start_aggregated "server-rank-0"
+  aggregated_pid="${server_pid}"
+  trap 'cleanup_processes ${aggregated_pid:-}' EXIT
+  # No router to wait on: the server owns ROUTER_PORT, so the benchmark and eval
+  # clients reach it at the same address they use for a P/D cell.
+  wait_http "http://127.0.0.1:${ROUTER_PORT}/health" "server" "${WAIT_SERVER_TIMEOUT}" "${aggregated_pid}"
+  run_benchmark_and_eval
+  cleanup_processes "${aggregated_pid}"
+elif [[ "${NODE_RANK}" -eq 0 && "${SINGLE_NODE_PD}" == "1" ]]; then
   start_prefill "prefill-rank-0"
   prefill_pid="${server_pid}"
   decode_handshake_port=$((HANDSHAKE_PORT + PREFILL_TP_SIZE))
@@ -1159,6 +1749,63 @@ if [[ "${NODE_RANK}" -eq 0 && "${SINGLE_NODE_PD}" == "1" ]]; then
   wait_http "http://127.0.0.1:${ROUTER_PORT}/v1/models" "router" "${WAIT_ROUTER_TIMEOUT}"
   run_benchmark_and_eval
   cleanup_processes "${router_pid}" "${prefill_pid}" "${decode_pid}"
+elif [[ "${PACKED_NODES_PD}" == "1" ]]; then
+  worker_pids=()
+  declare -A local_worker_pid=()
+  # Save the base handshake port; each worker overrides it so
+  # apply_role_env expands ${HANDSHAKE_PORT} to the per-worker value.
+  PACKED_BASE_HANDSHAKE_PORT="${HANDSHAKE_PORT}"
+  for idx in "${!prefill_nodes[@]}"; do
+    [[ "${prefill_nodes[$idx]}" -eq "${NODE_RANK}" ]] || continue
+    gpu_start="${prefill_gpus[$idx]%%,*}"
+    export HANDSHAKE_PORT="$((PACKED_BASE_HANDSHAKE_PORT + gpu_start))"
+    start_prefill "prefill-rank-${NODE_RANK}-worker-${idx}" "${prefill_ports[$idx]}" \
+      "${HANDSHAKE_PORT}" \
+      "$((PREFILL_DP_MASTER_PORT + idx * 400))" "$((PREFILL_DP_BASE_PORT + idx * 400))" \
+      "${prefill_gpus[$idx]}"
+    worker_pids+=("${server_pid}")
+    local_worker_pid["prefill-${idx}"]="${server_pid}"
+  done
+  for idx in "${!decode_nodes[@]}"; do
+    [[ "${decode_nodes[$idx]}" -eq "${NODE_RANK}" ]] || continue
+    gpu_start="${decode_gpus[$idx]%%,*}"
+    export HANDSHAKE_PORT="$((PACKED_BASE_HANDSHAKE_PORT + gpu_start))"
+    start_decode "decode-rank-${NODE_RANK}-worker-${idx}" "${decode_ports[$idx]}" \
+      "${HANDSHAKE_PORT}" \
+      "$((DECODE_DP_MASTER_PORT + idx * 400))" "$((DECODE_DP_BASE_PORT + idx * 400))" \
+      "${decode_gpus[$idx]}"
+    worker_pids+=("${server_pid}")
+    local_worker_pid["decode-${idx}"]="${server_pid}"
+  done
+  trap 'cleanup_processes ${router_pid:-} ${worker_pids[*]:-}' EXIT
+  if [[ "${NODE_RANK}" -eq 0 ]]; then
+    for idx in "${!prefill_ips[@]}"; do
+      wait_http "http://${prefill_ips[$idx]}:${prefill_ports[$idx]}/health" \
+        "prefill-${prefill_ips[$idx]}:${prefill_ports[$idx]}" \
+        "${WAIT_SERVER_TIMEOUT}" "${local_worker_pid["prefill-${idx}"]:-}"
+    done
+    for idx in "${!decode_ips[@]}"; do
+      wait_http "http://${decode_ips[$idx]}:${decode_ports[$idx]}/health" \
+        "decode-${decode_ips[$idx]}:${decode_ports[$idx]}" \
+        "${WAIT_SERVER_TIMEOUT}" "${local_worker_pid["decode-${idx}"]:-}"
+    done
+    start_router
+    wait_http "http://127.0.0.1:${ROUTER_PORT}/v1/models" "router" "${WAIT_ROUTER_TIMEOUT}"
+    run_benchmark_and_eval
+  else
+    wait_http "http://${NODE0_ADDR}:${ROUTER_PORT}/health" "router" "${WAIT_SERVER_TIMEOUT}"
+    # Monitor all local workers while waiting for the router to shut down.
+    for pid in "${worker_pids[@]}"; do
+      if ! kill -0 "${pid}" 2>/dev/null; then
+        set +e; wait "${pid}"; rc=$?; set -e
+        [[ "${rc}" -eq 0 ]] && rc=1
+        echo "[wait][FAIL] packed worker ${pid} exited early rc=${rc}" >&2
+        exit "${rc}"
+      fi
+    done
+    wait_router_closed
+  fi
+  cleanup_processes "${router_pid:-}" "${worker_pids[@]}"
 elif [[ "${NODE_RANK}" -eq 0 && "${PREFILL_SINGLE_NODE_PD}" == "1" ]]; then
   prefill_pids=()
   for idx in $(seq 0 $((xP - 1))); do

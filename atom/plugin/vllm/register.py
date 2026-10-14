@@ -28,6 +28,9 @@ _VLLM_MODEL_REGISTRY_OVERRIDES: dict[str, str] = {
     "Glm4MoeForCausalLM": ATOM_MOE_CAUSAL_LM_MODEL_WRAPPER,
     "GlmMoeDsaForCausalLM": ATOM_MOE_CAUSAL_LM_MODEL_WRAPPER,
     "DeepSeekMTPModel": ATOM_MOE_CAUSAL_LM_MODEL_WRAPPER,
+    # vLLM 0.29 renamed the MTP draft arch of DSA targets (deepseek_v32,
+    # glm_moe_dsa); it is the same draft block as DeepSeekMTPModel.
+    "DeepseekV32MTPModel": ATOM_MOE_CAUSAL_LM_MODEL_WRAPPER,
     "DeepSeekV4MTPModel": ATOM_MOE_CAUSAL_LM_MODEL_WRAPPER,
     "Glm4MoeMTPModel": ATOM_MOE_CAUSAL_LM_MODEL_WRAPPER,
     "Qwen3NextForCausalLM": "atom.plugin.vllm.models.qwen3_next:Qwen3NextForCausalLMVllm",
@@ -36,7 +39,7 @@ _VLLM_MODEL_REGISTRY_OVERRIDES: dict[str, str] = {
     "Qwen3_5MoeForConditionalGeneration": "atom.plugin.vllm.models.qwen3_5:Qwen3_5MoeForConditionalGeneration",
     "KimiK25ForConditionalGeneration": "atom.plugin.vllm.models.kimi_k25:KimiK25ForConditionalGeneration",
     "KimiK3ForConditionalGeneration": (
-        "atom.plugin.vllm.models.kimi_k3:KimiK3ForCausalLMVllm"
+        "atom.plugin.vllm.models.kimi_k3:KimiK3ForConditionalGenerationVllm"
     ),
     # vLLM registers this arch too, but only to its NVIDIA implementation.
     "K3DSparkModel": "atom.plugin.vllm.models.kimi_k3_dspark:KimiK3DSparkVllm",
@@ -154,6 +157,11 @@ def register_platform() -> str | None:
 
     apply_vllm_rocm_dcp_full_graph_patch()
 
+    # aiter's custom all-reduce needs vLLM's rendezvous to stay on a TCPStore.
+    from atom.plugin.vllm.dist_store_patch import apply_vllm_tcp_store_patch
+
+    apply_vllm_tcp_store_patch()
+
     # Do not call _set_plugin_mode() here. SGLang (and other stacks) discover
     # vllm.platform_plugins and would set atom's backbone to "vllm" before
     # importing SGLang plugin modules — then atom.models.qwen3_5's ``if is_vllm():``
@@ -171,8 +179,39 @@ def register_platform() -> str | None:
 
     apply_vllm_v4_block_reuse_patch()
 
+    _register_kv_connectors()
+
     # return the ATOM platform to vllm
     return "atom.plugin.vllm.platform.ATOMPlatform"
+
+
+def _register_kv_connectors() -> None:
+    """Expose ATOM's byte-level LMCache offload to vLLM's connector factory.
+
+    Convenience only. vLLM validates ``kv_transfer_config`` while building
+    VllmConfig, which happens BEFORE platform plugins are invoked, so a run
+    that names the connector by bare name fails config validation before this
+    ever runs. The supported way to select it is vLLM's out-of-tree entry
+    point, which takes priority over the registry and needs no registration:
+
+        --kv-transfer-config '{"kv_connector": "AtomLMCacheOffloadConnector",
+          "kv_connector_module_path": "atom.plugin.vllm.kv_transfer.connector",
+          "kv_role": "kv_both"}'
+
+    Registered by module path so importing the plugin does not drag in the
+    offload stack (and LMCache) for every run.
+    """
+    from vllm.distributed.kv_transfer.kv_connector.factory import KVConnectorFactory
+
+    name = "AtomLMCacheOffloadConnector"
+    if name in getattr(KVConnectorFactory, "_registry", {}):
+        return
+    KVConnectorFactory.register_connector(
+        name,
+        "atom.plugin.vllm.kv_transfer.connector",
+        name,
+    )
+    logger.info("Registered ATOM KV connector: %s", name)
 
 
 def _patch_vllm_attention_process_weights_after_loading(attention) -> None:
@@ -230,7 +269,15 @@ def _patch_vllm_harmony_parser_manager() -> None:
         enable_auto_tools=False,
         model_name=None,
         is_harmony=False,
+        **kwargs,
     ):
+        # **kwargs forwards parameters this wrapper does not know about.
+        # vLLM 0.31 added `tool_strict_level` to ParserManager.get_parser;
+        # enumerating the 0.29 parameter list exactly meant the new keyword hit
+        # this wrapper instead of the real method and raised TypeError on the
+        # serving path, after the model had already loaded. Only `is_harmony`
+        # is read here, so everything else can pass straight through and the
+        # next added parameter will not break the patch.
         parser_cls = original(
             cls,
             tool_parser_name=tool_parser_name,
@@ -238,6 +285,7 @@ def _patch_vllm_harmony_parser_manager() -> None:
             enable_auto_tools=enable_auto_tools,
             model_name=model_name,
             is_harmony=is_harmony,
+            **kwargs,
         )
         if parser_cls is not None or not is_harmony:
             return parser_cls

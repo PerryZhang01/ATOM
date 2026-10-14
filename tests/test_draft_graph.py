@@ -52,6 +52,25 @@ def test_owning_a_recording_says_nothing_about_a_batch_it_is_not_at():
     assert not g.is_captured(44)
 
 
+def test_releasing_the_recordings_leaves_the_pass_runnable_eagerly():
+    """A draft pass WRITES the KV it attends, so its recording holds the base of
+    the pool a decode graph does, and a sleep that frees the pool has to drop
+    these too (`atom/rollout/memory_manager.py`). Nothing else has to be
+    arranged: `is_captured` answers no afterwards, which is exactly the
+    `ATOM_DRAFT_CUDAGRAPH=0` state, and the next warmup records again.
+    """
+    g = _graph()
+    g._cuda_graphs[48] = ("graph", "out")
+    g._cuda_graphs[64] = ("graph", "out")
+
+    assert g.release_graphs() == 2
+    assert not g.is_captured(48)
+    assert not g.is_captured(64)
+    # The staged buffers are ordinary allocations, sized once at `bind` for the
+    # very reason that a capture must not be what allocates them.
+    assert g.stage(2, {"row": torch.zeros(2, dtype=torch.int32)})["row"].shape[0] == 2
+
+
 def test_nothing_recorded_means_no_batch_replays():
     """`ATOM_DRAFT_CUDAGRAPH=0` leaves the inventory empty, and then every
     batch must answer no -- that is what keeps the eager pass unpadded."""
@@ -84,6 +103,61 @@ def test_staged_tail_repeats_a_real_row_rather_than_zero_filling():
     # Fixed storage: a per-step allocation would hand out a new address every
     # step, which a capture cannot follow.
     assert g._buffers["row"].data_ptr() == ptr
+
+
+def test_a_producer_can_fill_fixed_storage_without_a_self_copy():
+    """Direct producers must not launch a redundant copy back onto themselves."""
+    g = _graph()
+    produced = g.buffer("row", 3)
+    produced.copy_(torch.tensor([7, 8, 9], dtype=torch.int32))
+    version_after_produce = g._buffers["row"]._version
+
+    staged = g.stage(3, {"row": produced})["row"]
+
+    assert staged.data_ptr() == produced.data_ptr()
+    assert staged.tolist() == [7, 8, 9]
+    assert g._buffers["row"]._version == version_after_produce
+
+
+def test_direct_fixed_storage_still_gets_a_repeated_pad_tail():
+    """Only real rows are producer-owned; stage still fabricates coherent pads."""
+    g = _graph()
+    produced = g.buffer("row", 2)
+    produced.copy_(torch.tensor([7, 8], dtype=torch.int32))
+
+    staged = g.stage(5, {"row": produced})["row"]
+
+    assert staged.tolist() == [7, 8, 8, 8, 8]
+
+
+def test_fixed_input_and_exported_snapshot_have_separate_lifetimes():
+    """The next replay reuses fixed ids while an owned snapshot may leave the GPU."""
+    g = _graph()
+    fixed_ids = g.buffer("row", 2)
+    fixed_ids.copy_(torch.tensor([7, 8], dtype=torch.int32))
+    exported_ids = fixed_ids.clone()
+
+    staged = g.stage(2, {"row": fixed_ids})["row"]
+    staged.copy_(torch.tensor([9, 10], dtype=torch.int32))
+
+    assert staged.data_ptr() == fixed_ids.data_ptr()
+    assert exported_ids.tolist() == [7, 8]
+    assert staged.tolist() == [9, 10]
+
+
+def test_fixed_storage_accessor_checks_role_and_capacity():
+    g = _graph()
+    with pytest.raises(AssertionError, match="no staged input"):
+        g.buffer("missing", 1)
+    with pytest.raises(AssertionError, match="capacity"):
+        g.buffer("row", 257)
+
+
+def test_staging_rejects_a_wrong_trailing_shape_before_identity_check():
+    g = _graph(inputs={"row": StagedInput(shape=(4,), dtype=torch.int32)})
+    wrong = g._buffers["row"][:2, :1]
+    with pytest.raises(AssertionError, match="fixed storage expects"):
+        g._stage_one("row", 2, wrong)
 
 
 def test_staging_a_wrong_dtype_fails_loudly():
@@ -163,6 +237,30 @@ def test_warmup_inputs_sees_the_pass_own_buffers(monkeypatch):
     g = _graph(warmup_inputs=lambda running_bs, **rows: rows["row"].fill_(7))
     g.warmup(4)
     assert g._buffers["row"][:4].tolist() == [7, 7, 7, 7]
+
+
+def test_a_captured_epilogue_can_feed_output_back_to_fixed_input(monkeypatch):
+    """Serial passes may make the next replay consume the previous output."""
+    monkeypatch.setenv("ATOM_DRAFT_CUDAGRAPH", "0")  # exercise eager equivalent
+
+    def epilogue(out, running_bs, *, row):
+        row.copy_(out[:running_bs])
+        return row
+
+    g = _graph(
+        forward=lambda running_bs, *, row: row + 1,
+        epilogue=epilogue,
+        capture_epilogue=True,
+    )
+    produced = g.buffer("row", 2)
+    produced.copy_(torch.tensor([10, 20], dtype=torch.int32))
+
+    first = g.run(2, **g.stage(2, {"row": produced}))
+    second = g.run(2, **g.stage(2, {"row": first}))
+
+    assert first.data_ptr() == produced.data_ptr()
+    assert second.data_ptr() == produced.data_ptr()
+    assert second.tolist() == [12, 22]
 
 
 def test_run_replays_the_recording_instead_of_the_forward():
@@ -308,3 +406,17 @@ def test_the_capture_gate_reaches_the_env_that_names_it(monkeypatch):
     assert not g.will_capture
     monkeypatch.setenv("ATOM_DRAFT_CUDAGRAPH", "1")
     assert g.will_capture
+
+
+def test_unsupported_capture_still_warms_both_halves(monkeypatch):
+    monkeypatch.setenv("ATOM_DRAFT_CUDAGRAPH", "1")
+    calls = []
+    g = _graph(
+        forward=lambda running_bs, **_: calls.append("backbone"),
+        epilogue=lambda out, running_bs, **_: calls.append("head"),
+        capture_supported=False,
+    )
+    assert not g.will_capture
+    assert g.warmup(2, pool=None, stream=None) is None
+    assert calls == ["backbone", "head"]
+    assert not g.is_captured(2)

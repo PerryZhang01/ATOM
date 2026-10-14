@@ -1,32 +1,93 @@
+from dataclasses import replace
+from typing import ClassVar
+
 import torch
+from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.attention.backend import MultipleOf
 from vllm.v1.attention.backends.mla.prefill.base import MLAPrefillBackend
+from vllm.v1.kv_cache_interface import AttentionSpec
+from vllm.v1.kv_cache_layout import KVCacheLayout
 
 from atom.model_ops.minimax_m3.sparse_attn import SPARSE_BLOCK_SIZE
 
 
-def _indexes_kv_by_block_stride_for_backend(backend_cls) -> bool:
-    try:
-        kv_cache_stride_order = backend_cls.get_kv_cache_stride_order(
-            include_num_layers_dimension=False
-        )
-        layered_kv_cache_stride_order = backend_cls.get_kv_cache_stride_order(
-            include_num_layers_dimension=True
-        )
-    except (AttributeError, NotImplementedError):
+class _VllmAttentionBackendCompat:
+    """Compatibility surface for duck-typed ATOM attention backends."""
+
+    @classmethod
+    def customize_spec(cls, spec: AttentionSpec) -> AttentionSpec:
+        """Publish the logical ``[B, H, N, C]`` page shape ATOM kernels use."""
+        return spec
+
+    @classmethod
+    def supported_kv_cache_layouts(cls) -> tuple[KVCacheLayout, ...]:
+        """ATOM kernels address a block as one dense, contiguous page.
+
+        Every ATOM backend reinterprets its per-layer view with ``.view()`` into
+        a page-16 kernel layout, which needs each block's ``[H, N, C]`` bytes to
+        form a single contiguous run (``is_block_compact``). LBHNC is also the
+        only such layout that keeps a layer contiguous, so the whole plugin
+        pins it rather than negotiating per backend: mixed-HNC models (any
+        hybrid attention/GDN or main/indexer pair) narrow the candidate set to
+        block-compact layouts anyway.
+        """
+        return (KVCacheLayout.LBHNC,)
+
+    @classmethod
+    def supports_device_cpu_query_lens_mismatch(cls) -> bool:
+        """ATOM metadata builders plan from exact CPU query boundaries."""
         return False
 
-    if len(layered_kv_cache_stride_order) != len(kv_cache_stride_order) + 1:
-        return False
+    @classmethod
+    def supports_block_size(cls, block_size: int | None) -> bool:
+        """Does this backend accept ``block_size`` as the framework page?
 
-    return layered_kv_cache_stride_order[0] != 0
+        vLLM 0.29 picked the KV page by asking ONE backend for
+        ``get_preferred_block_size()``. 0.31 negotiates across every attention
+        backend a model uses (``Platform._preferred_block_size_for_backends``):
+        it first asks whether all of them accept the 16-token default, and only
+        on a "no" searches the LCMs of their declared kernel sizes. Duck-typed
+        ATOM backends had no ``supports_block_size`` at all, so any model with
+        two or more of them -- GLM-5.2 is main MLA plus a DSA indexer -- died
+        with AttributeError before the workers came up.
+
+        Answering from ``get_preferred_block_size`` rather than from
+        ``get_supported_kernel_block_sizes`` is deliberate. The sparse MLA
+        backends declare ``[1, 64]`` but prefer 64, because 64 is what takes
+        the indexer's preshuffled path; under vLLM's own rule
+        (``block_size % supported == 0`` against EVERY declared size) the 1
+        makes 16 acceptable, the first branch returns the 16-token default, and
+        the preference is silently dropped. Keying on the preference reproduces
+        what 0.29 actually chose: 16 is rejected, the LCM search runs, and 64
+        wins.
+
+        A backend that declares no preference accepts anything, matching
+        vLLM's "a backend declaring no sizes contributes 1".
+
+        NOTE: ``AiterMhaBackendForVllm.get_preferred_block_size`` calls
+        ``supports_block_size``. That is not a cycle only because that class
+        overrides this method; a future subclass that copies the pattern
+        without its own override would recurse.
+        """
+        if block_size is None:
+            return True
+        get_preferred = getattr(cls, "get_preferred_block_size", None)
+        if get_preferred is None:
+            return True
+        preferred = get_preferred(block_size)
+        if not preferred:
+            return True
+        return block_size % preferred == 0
 
 
-class AiterMhaBackendForVllm:
+class AiterMhaBackendForVllm(_VllmAttentionBackendCompat):
     """vLLM-facing MHA backend surface for ATOM attention layers."""
 
     accept_output_buffer: bool = False
-    supported_dtypes: list = [torch.float16, torch.bfloat16]
+    supported_dtypes: ClassVar[list[torch.dtype]] = [
+        torch.float16,
+        torch.bfloat16,
+    ]
     forward_includes_kv_cache_update: bool = True
 
     @staticmethod
@@ -34,7 +95,7 @@ class AiterMhaBackendForVllm:
         return "CUSTOM"
 
     @staticmethod
-    def get_supported_kernel_block_sizes():
+    def get_supported_kernel_block_sizes(kv_cache_spec=None):
         # Keep the physical kernel page at 16 even when vLLM's hybrid KV manager
         # uses a larger logical page. Advertising arbitrary multiples makes
         # fp8 hybrid models execute cache kernels against the unsplit logical
@@ -48,40 +109,32 @@ class AiterMhaBackendForVllm:
         return block_size % 16 == 0
 
     @classmethod
-    def get_kv_cache_block_dim(
-        cls,
-        block_size: int,
-        num_kv_heads: int,
-        head_size: int,
-        cache_dtype_str: str = "auto",
-    ) -> int:
-        sentinel = 1234567
-        shape = cls.get_kv_cache_shape(
-            sentinel,
-            block_size,
-            num_kv_heads,
-            head_size,
-            cache_dtype_str=cache_dtype_str,
-        )
-        return shape.index(sentinel)
-
-    @classmethod
     def get_preferred_block_size(cls, default_block_size: int) -> int:
         if cls.supports_block_size(default_block_size):
             return default_block_size
         return 16
 
-    @staticmethod
-    def get_kv_cache_shape(
-        num_blocks: int,
-        block_size: int,
-        num_kv_heads: int,
-        head_size: int,
-        cache_dtype_str: str = "auto",
-    ) -> tuple[int, ...]:
-        if block_size % 16 != 0:
-            raise ValueError("Block size must be a multiple of 16.")
-        return (2, num_blocks, block_size, num_kv_heads, head_size)
+    @classmethod
+    def customize_spec(cls, spec: AttentionSpec) -> AttentionSpec:
+        """Give K and V a head slot each so a page is ``[K page | V page]``.
+
+        This is vLLM 0.29's spelling of the ``(2, num_blocks, block_size,
+        num_kv_heads, head_size)`` cache ATOM used through 0.28: the K/V axis
+        moves inside the block, and ``AttentionForVllmMHA._split_kv_cache``
+        re-derives the K and V page planes from it.
+        """
+        if spec.state_content_bytes is not None:
+            return spec
+        assert (
+            spec.head_size == spec.head_size_v
+        ), "ATOM MHA stores K and V as two equally sized head groups."
+        return replace(
+            spec,
+            num_head_slots=2,
+            state_content_bytes=(
+                spec.num_kv_heads * spec.head_size * get_dtype_size(spec.dtype)
+            ),
+        )
 
     @classmethod
     def is_mla(cls) -> bool:
@@ -98,14 +151,6 @@ class AiterMhaBackendForVllm:
     @classmethod
     def supports_pcp(cls) -> bool:
         return False
-
-    @staticmethod
-    def get_required_kv_cache_layout():
-        return None
-
-    @classmethod
-    def indexes_kv_by_block_stride(cls) -> bool:
-        return _indexes_kv_by_block_stride_for_backend(cls)
 
     @classmethod
     def get_supported_head_sizes(cls) -> list[int]:
@@ -136,15 +181,18 @@ class AiterMhaFlexibleBlockBackendForVllm(AiterMhaBackendForVllm):
     """Draft-only backend whose Triton path accepts the logical KV page size."""
 
     @staticmethod
-    def get_supported_kernel_block_sizes():
+    def get_supported_kernel_block_sizes(kv_cache_spec=None):
         return [MultipleOf(16)]
 
 
-class AiterMlaBackendForVllm:
+class AiterMlaBackendForVllm(_VllmAttentionBackendCompat):
     """vLLM-facing dense MLA backend surface for ATOM attention layers."""
 
     accept_output_buffer: bool = True
-    supported_dtypes: list = [torch.float16, torch.bfloat16]
+    supported_dtypes: ClassVar[list[torch.dtype]] = [
+        torch.float16,
+        torch.bfloat16,
+    ]
     forward_includes_kv_cache_update: bool = True
 
     @staticmethod
@@ -152,40 +200,12 @@ class AiterMlaBackendForVllm:
         return "CUSTOM"
 
     @staticmethod
-    def get_supported_kernel_block_sizes():
+    def get_supported_kernel_block_sizes(kv_cache_spec=None):
         return [1]
 
     @classmethod
     def get_preferred_block_size(cls, default_block_size: int) -> int:
         return 1
-
-    @staticmethod
-    def get_kv_cache_shape(
-        num_blocks: int,
-        block_size: int,
-        num_kv_heads: int,
-        head_size: int,
-        cache_dtype_str: str = "auto",
-    ) -> tuple[int, ...]:
-        return (num_blocks, block_size, head_size)
-
-    @classmethod
-    def get_kv_cache_block_dim(
-        cls,
-        block_size: int,
-        num_kv_heads: int,
-        head_size: int,
-        cache_dtype_str: str = "auto",
-    ) -> int:
-        sentinel = 1234567
-        shape = cls.get_kv_cache_shape(
-            sentinel,
-            block_size,
-            num_kv_heads,
-            head_size,
-            cache_dtype_str=cache_dtype_str,
-        )
-        return shape.index(sentinel)
 
     @classmethod
     def is_mla(cls) -> bool:
@@ -203,10 +223,6 @@ class AiterMlaBackendForVllm:
     def supports_pcp(cls) -> bool:
         return False
 
-    @staticmethod
-    def get_required_kv_cache_layout():
-        return None
-
     @classmethod
     def get_supported_head_sizes(cls) -> list[int]:
         return [576]
@@ -214,16 +230,6 @@ class AiterMlaBackendForVllm:
     @classmethod
     def supports_alibi_sqrt(cls) -> bool:
         return False
-
-    @staticmethod
-    def get_kv_cache_stride_order(
-        include_num_layers_dimension: bool = False,
-    ) -> tuple[int, ...]:
-        return (1, 0, 2, 3) if include_num_layers_dimension else (0, 1, 2)
-
-    @classmethod
-    def indexes_kv_by_block_stride(cls) -> bool:
-        return _indexes_kv_by_block_stride_for_backend(cls)
 
     @staticmethod
     def get_builder_cls() -> type:
@@ -243,7 +249,7 @@ class AiterMlaBackendForVllm:
 
 
 class AtomAiterMLAPrefillBackend(MLAPrefillBackend):
-    """vLLM 0.22 MLA prefill interface backed by ATOM's aiter path."""
+    """vLLM MLA prefill interface backed by ATOM's aiter path."""
 
     @staticmethod
     def get_name() -> str:
@@ -306,20 +312,29 @@ class AtomAiterMLAPrefillBackend(MLAPrefillBackend):
             return_softmax_lse,
         )
 
-    def run_prefill_context_chunk(self, chunk_idx: int, q, k, v):
+    def run_prefill_context_chunk(self, chunk, q, k, v, out=None):
         if self._layer is None:
             raise RuntimeError("ATOM MLA prefill backend is not bound to a layer.")
-        return self._layer._run_prefill_context_chunk(
-            self._prefill_metadata,
-            chunk_idx,
-            q,
-            k,
-            v,
+        if out is not None:
+            raise NotImplementedError(
+                "ATOM MLA context prefill does not support an output buffer."
+            )
+        return self._layer._flash_attn_varlen_diff_headdims(
+            q=q,
+            k=k,
+            v=v,
+            cu_seqlens_q=chunk.query_start_loc,
+            cu_seqlens_k=chunk.cu_seq_lens,
+            max_seqlen_q=chunk.max_query_len,
+            max_seqlen_k=chunk.max_seq_len,
+            softmax_scale=self.scale,
+            causal=False,
+            return_softmax_lse=True,
         )
 
 
 def build_vllm_mla_prefill_backend(layer, vllm_config):
-    """Create the vLLM 0.22 MLA prefill backend for an ATOM MLA layer."""
+    """Create the vLLM MLA prefill backend for an ATOM MLA layer."""
     return AtomAiterMLAPrefillBackend(
         layer=layer,
         num_heads=layer.num_heads,
@@ -336,7 +351,7 @@ class AiterSparseMlaBackendForVllm(AiterMlaBackendForVllm):
     """vLLM-facing sparse MLA backend surface for ATOM attention layers."""
 
     @staticmethod
-    def get_supported_kernel_block_sizes():
+    def get_supported_kernel_block_sizes(kv_cache_spec=None):
         return [1, 64]
 
     @classmethod
@@ -369,7 +384,7 @@ class AiterSparseMlaIndexerBackendForVllm(AiterMlaBackendForVllm):
     """vLLM-facing sparse MLA indexer backend surface."""
 
     @staticmethod
-    def get_supported_kernel_block_sizes():
+    def get_supported_kernel_block_sizes(kv_cache_spec=None):
         return [1, 64]
 
     @classmethod
@@ -400,12 +415,19 @@ class AiterSparseMlaIndexerBackendForVllm(AiterMlaBackendForVllm):
         return (cls.__module__, cls.__qualname__)
 
 
-class MiniMaxM3SparseAttentionBackend:
+class MiniMaxM3SparseAttentionBackend(_VllmAttentionBackendCompat):
     """vLLM-facing sparse MHA backend surface for MiniMax-M3."""
 
     accept_output_buffer: bool = True
-    supported_dtypes: list = [torch.float16, torch.bfloat16]
-    supported_kv_cache_dtypes: list = ["bfloat16", "fp8", "fp8_e4m3"]
+    supported_dtypes: ClassVar[list[torch.dtype]] = [
+        torch.float16,
+        torch.bfloat16,
+    ]
+    supported_kv_cache_dtypes: ClassVar[list[str]] = [
+        "bfloat16",
+        "fp8",
+        "fp8_e4m3",
+    ]
     forward_includes_kv_cache_update: bool = True
 
     @staticmethod
@@ -413,7 +435,7 @@ class MiniMaxM3SparseAttentionBackend:
         return "MINIMAX_M3_SPARSE"
 
     @staticmethod
-    def get_supported_kernel_block_sizes():
+    def get_supported_kernel_block_sizes(kv_cache_spec=None):
         return [SPARSE_BLOCK_SIZE]
 
     @classmethod
@@ -421,26 +443,22 @@ class MiniMaxM3SparseAttentionBackend:
         return block_size is None or block_size == SPARSE_BLOCK_SIZE
 
     @classmethod
-    def get_kv_cache_block_dim(
-        cls,
-        block_size: int,
-        num_kv_heads: int,
-        head_size: int,
-        cache_dtype_str: str = "auto",
-    ) -> int:
-        sentinel = 1234567
-        shape = cls.get_kv_cache_shape(
-            sentinel,
-            block_size,
-            num_kv_heads,
-            head_size,
-            cache_dtype_str=cache_dtype_str,
-        )
-        return shape.index(sentinel)
-
-    @classmethod
     def get_preferred_block_size(cls, default_block_size: int) -> int:
         return SPARSE_BLOCK_SIZE
+
+    @classmethod
+    def customize_spec(cls, spec: AttentionSpec) -> AttentionSpec:
+        """K and V as two head slots, matching 0.28's (num_blocks, 2, ...) cache."""
+        if spec.state_content_bytes is not None:
+            return spec
+        assert spec.head_size == spec.head_size_v
+        return replace(
+            spec,
+            num_head_slots=2,
+            state_content_bytes=(
+                spec.num_kv_heads * spec.head_size * get_dtype_size(spec.dtype)
+            ),
+        )
 
     @staticmethod
     def get_builder_cls() -> type:
@@ -474,42 +492,9 @@ class MiniMaxM3SparseAttentionBackend:
     def supports_pcp(cls) -> bool:
         return False
 
-    @staticmethod
-    def get_required_kv_cache_layout():
-        return None
-
     @classmethod
     def supports_alibi_sqrt(cls) -> bool:
         return False
-
-    @staticmethod
-    def get_kv_cache_shape(
-        num_blocks: int,
-        block_size: int,
-        num_kv_heads: int,
-        head_size: int,
-        cache_dtype_str: str = "auto",
-    ) -> tuple[int, ...]:
-        if block_size != SPARSE_BLOCK_SIZE:
-            raise ValueError(
-                f"MiniMax-M3 sparse block size must be {SPARSE_BLOCK_SIZE}."
-            )
-        return (num_blocks, 2, block_size, num_kv_heads, head_size)
-
-    @staticmethod
-    def get_kv_cache_stride_order(
-        include_num_layers_dimension: bool = False,
-    ) -> tuple[int, ...]:
-        if include_num_layers_dimension:
-            raise NotImplementedError
-        # Keep the logical block dimension first so vLLM does not normalize this
-        # cache together with the block-first index cache. Physically place K/V
-        # first so each cache remains contiguous for the page-16 ASM kernels.
-        return (1, 0, 2, 3, 4)
-
-    @classmethod
-    def indexes_kv_by_block_stride(cls) -> bool:
-        return _indexes_kv_by_block_stride_for_backend(cls)
 
     @staticmethod
     def get_impl_cls():
@@ -532,7 +517,7 @@ class SparseMHAIndexerBackend(AiterMlaBackendForVllm):
         return "MINIMAX_M3_SPARSE_INDEXER"
 
     @staticmethod
-    def get_supported_kernel_block_sizes():
+    def get_supported_kernel_block_sizes(kv_cache_spec=None):
         return [SPARSE_BLOCK_SIZE]
 
     @classmethod
@@ -551,26 +536,8 @@ class SparseMHAIndexerBackend(AiterMlaBackendForVllm):
     def get_supported_head_sizes(cls) -> list[int]:
         return [64, 128, 256]
 
-    @staticmethod
-    def get_kv_cache_shape(
-        num_blocks: int,
-        block_size: int,
-        num_kv_heads: int,
-        head_size: int,
-        cache_dtype_str: str = "auto",
-    ) -> tuple[int, ...]:
-        return (num_blocks, block_size, head_size)
 
-    @staticmethod
-    def get_kv_cache_stride_order(
-        include_num_layers_dimension: bool = False,
-    ) -> tuple[int, ...]:
-        if include_num_layers_dimension:
-            raise NotImplementedError
-        return (0, 1, 2)
-
-
-class GDNAttentionBackend:
+class GDNAttentionBackend(_VllmAttentionBackendCompat):
     @staticmethod
     def get_name() -> str:
         return "ROCM_GDN_ATTENTION"

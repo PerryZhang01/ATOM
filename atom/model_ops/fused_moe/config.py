@@ -312,6 +312,11 @@ class FusedMoEConfig:
     in_dtype: torch.dtype | str | None = None
     # activation quant type -- to differentiate triton aiter mxfp4 kernels
     a_quant_dtype: torch.dtype | str | None = None
+    # MXFP4 experts take MXFP8 activations (A8W4) at every token count rather
+    # than aiter's per-arch default (A4W4 on gfx950's separated gate/up layout).
+    # aiter has A8W4 kernels only for interleaved gate/up rows, so this also
+    # interleaves the weights.
+    mxfp4_fp8_activations: bool = False
 
     static_scale: torch.Tensor | None = None
 
@@ -360,6 +365,10 @@ class FusedMoEConfig:
     @property
     def use_mori_kernels(self):
         return self.moe_parallel_config.use_mori_kernels
+
+    @property
+    def use_rccl_kernels(self):
+        return self.moe_parallel_config.use_rccl_kernels
 
 
 def moe_kernel_token_capacity(
