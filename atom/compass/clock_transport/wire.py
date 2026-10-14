@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """The frames between a logical process (LP) and the Clock Authority.
 
-A message is a tuple, one of five shapes:
+A message is a tuple, one of these shapes:
 
 * ``("BIND", lp)`` or ``("BIND", lp, member)`` -- the first frame on a
   connection; every later request on that connection is `lp`'s, made by
