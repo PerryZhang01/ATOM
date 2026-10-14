@@ -486,7 +486,6 @@ class ClockAuthority:
             if self.timeline is not None:
                 self.timeline.record(i, self._now[i], math.inf, NER, False)
             self._now[i] = self._nv[i] = end
-            self._daemon[i] = math.inf
             replies.append((i, math.inf, none))
         return replies
 
