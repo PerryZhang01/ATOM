@@ -9,6 +9,11 @@ log, t_daemon))`` then ``conn.recv() -> (G, released)``, and every request
 carries the sends registered since the previous one, so the authority knows each
 message an LP produced before it moves that LP's clock.
 
+An LP starts from the clock and next sequence numbers its connection's bind
+was answered with (``conn.joined``), 0 for each without one. A grant marked as
+the end of client run ``k`` moves nothing and calls `client_run_ended(k)`,
+where the LP hands in its part of that client run's summary.
+
 A grant to ``+inf`` closes the simulation window (`end_run`) before the process
 begins to shut down: the run is finished, and the owner's loop must exit rather
 than run its timers at ``+inf``. A clock call after it raises; the wrappers send
@@ -124,9 +129,10 @@ class LPRuntime:
         self.lock = threading.Lock()
         self.cv = threading.Condition(self.lock)
         self.in_run = False
-        self.now = 0.0
+        self.now, seqs = getattr(conn, "joined", None) or (0.0, {})
         self.send_log: list[tuple[str, int, float]] = []
-        self.next_seq = {c.name: 0 for c in table.channels_from(me)}
+        self.next_seq = {c.name: seqs.get(c.name, 0) for c in table.channels_from(me)}
+        self.client_run_ended = None  # called with k at the end of client run k
         into = [c.name for c in table.channels_into(me)]
         self.arrived: dict[str, set[int]] = {ch: set() for ch in into}
         self.released: dict[str, set[int]] = {ch: set() for ch in into}
@@ -207,9 +213,11 @@ class LPRuntime:
 
     def take_grant(self) -> float:
         """Wait for the grant of the request `ask_next_event` sent; returns it."""
-        G, released = self.conn.recv()
+        G, released, *ended = self.conn.recv()
         self.asked = False
         self._step_through(G, released)
+        if ended and self.client_run_ended is not None:
+            self.client_run_ended(*ended)
         if G == float("inf"):
             self.end_run()
         return G

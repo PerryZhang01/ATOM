@@ -1,16 +1,19 @@
 # SPDX-License-Identifier: MIT
 """The frames between a logical process (LP) and the Clock Authority.
 
-A message is a tuple, one of four shapes:
+A message is a tuple, one of five shapes:
 
 * ``("BIND", lp)`` or ``("BIND", lp, member)`` -- the first frame on a
   connection; every later request on that connection is `lp`'s, made by
   `member` when `lp` is declared with members;
+* ``("JOINED", now, seqs)`` -- the reply to a bind: the LP's clock and the next
+  sequence number of each channel out of it, ``{channel: seq}``;
 * ``(kind, t, log, t_daemon)`` with `kind` ``TAR`` or ``NER`` -- a request,
   where `log` is ``[(channel, seq, arrival)]``, the requester's sends since its
   previous request, and `t_daemon` an NER's daemon deadline, ``+inf`` for none;
 * ``("GRANT", G, released)`` -- the reply, `released` being
-  ``{channel: [(seq, arrival)]}``;
+  ``{channel: [(seq, arrival)]}``; ``("GRANT", G, released, k)`` also marks
+  the end of client run `k`;
 * ``("REFUSED", error, reason, table)`` -- the request was refused; `error` names
   the exception the requester raises, and `table` is the LP table a `ClockAbort`
   carries, or ``None``.
@@ -34,7 +37,7 @@ from atom.compass.clock import (
     LpRow,
 )
 
-BIND, GRANT, REFUSED = "BIND", "GRANT", "REFUSED"
+BIND, JOINED, GRANT, REFUSED = "BIND", "JOINED", "GRANT", "REFUSED"
 REQUESTS = (TAR, NER)
 UNBOUNDED = {math.inf: "+inf", -math.inf: "-inf"}
 BOUNDS = {name: value for value, name in UNBOUNDED.items()}
@@ -171,29 +174,40 @@ def _bind_in(body) -> tuple:
     return (*bind, _member(body["member"])) if "member" in body else bind
 
 
-_ENCODE = {
-    BIND: _bind_out,
-    GRANT: lambda _, g, released: {
+def _grant_out(_, g, released, *ended) -> dict:
+    body = {
         "kind": GRANT,
         "G": _out(g),
         "released": {
             ch: [[seq, _out(a)] for seq, a in pairs] for ch, pairs in released.items()
         },
-    },
+    }
+    if ended:
+        (body["ended"],) = ended
+    return body
+
+
+def _grant_in(body) -> tuple:
+    released = {
+        ch: [(seq, _in(a)) for seq, a in pairs]
+        for ch, pairs in body["released"].items()
+    }
+    ended = (body["ended"],) if "ended" in body else ()
+    return (GRANT, _in(body["G"]), released, *ended)
+
+
+_ENCODE = {
+    BIND: _bind_out,
+    JOINED: lambda _, now, seqs: {"kind": JOINED, "now": _out(now), "seqs": seqs},
+    GRANT: _grant_out,
     REFUSED: _refused_out,
     **dict.fromkeys(REQUESTS, _request_out),
 }
 
 _DECODE = {
     BIND: _bind_in,
-    GRANT: lambda body: (
-        GRANT,
-        _in(body["G"]),
-        {
-            ch: [(seq, _in(a)) for seq, a in pairs]
-            for ch, pairs in body["released"].items()
-        },
-    ),
+    JOINED: lambda body: (JOINED, _in(body["now"]), dict(body["seqs"])),
+    GRANT: _grant_in,
     REFUSED: _refused_in,
     **dict.fromkeys(
         REQUESTS,

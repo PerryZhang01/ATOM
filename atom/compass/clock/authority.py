@@ -42,6 +42,15 @@ round. When every LP waits and none is grantable, nothing is undelivered and
 no essential target is pending: the run is finished, every LP is granted
 ``+inf``, and the daemon deadlines still held never fire.
 
+An authority built naming a client LP serves `client_runs` client runs, the
+count ``+inf`` for no limit, and that test ends one; only the last one's end is
+the finish. The end of an earlier one grants the client ``+inf``, which resigns
+it, and every other LP its own clock with nothing released, each such reply
+marked with the client run's index. The client's row then runs at the latest
+clock, holding every other LP until the next client binds and asks.
+`on_bind` gives a binding LP its row's clock and the next sequence number of
+each channel out of it. `ended` holds every ended client run.
+
 An LP may be declared with members: processes that each hold a runtime for it,
 as the ranks of a data-parallel group do. A member names itself in each call,
 and each channel into or out of the LP is owned by exactly one member, as the
@@ -62,7 +71,7 @@ carries requests in and replies out.
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .channels import ChannelTable
 from .identity import LpId
@@ -83,6 +92,18 @@ class LpRow:
     undelivered: tuple[tuple[str, int, float], ...]  # (channel, seq, arrival)
     row: tuple[tuple[LpId, float], ...]  # (j, N[j] + D(j->lp)), every other LP
     binding: LpId | None  # the first least term of `row`, None if none is finite
+
+
+@dataclass(frozen=True, slots=True)
+class ClientRun:
+    """One ended client run: its client's clock at binding, the latest LP clock
+    at its end, and each LP's clock and finite grants by name at its end."""
+
+    index: int
+    start: float
+    end: float
+    final_clocks: tuple[tuple[LpId, float], ...]
+    grants: dict = field(repr=False)
 
 
 class ClockAbort(Exception):
@@ -119,7 +140,8 @@ class ClockAuthority:
     finished, and ``None`` until it has. `members` maps an LP to
     ``{member: names of the channels into or out of it that the member owns}``;
     an LP not in it is its own single caller. `bound_s` is the simulated-time
-    bound, ``+inf`` for none.
+    bound, ``+inf`` for none. `client` names the LP that joins and resigns for
+    each of `client_runs` client runs.
     """
 
     def __init__(
@@ -128,7 +150,14 @@ class ClockAuthority:
         timeline=None,
         members=None,
         bound_s: float = math.inf,
+        client: LpId | None = None,
+        client_runs: float = 1,
     ) -> None:
+        if not client_runs >= 1 or client is None and client_runs != 1:
+            raise ValueError(
+                f"{client_runs} client runs over client {client}: a client LP "
+                "serves one or more"
+            )
         self._channels = channels
         self._bound = _seconds(bound_s, False, "the simulated-time bound")
         self._ids = channels.registry.ids()
@@ -158,6 +187,10 @@ class ClockAuthority:
         self.timeline = timeline
         self.grants = {i.name: 0 for i in self._ids}
         self.final_clocks = None
+        self._client = client and self._lp[channels.registry.require(client)]
+        self._client_runs = client_runs
+        self.ended: list[ClientRun] = []
+        self._start = 0.0  # the open client run's start
         self._members = {}  # LP -> its member names, sorted
         self._owner = {}  # LP -> channel into or out of it -> the member owning it
         self._round = {}  # LP -> member -> (kind, t, daemon) of the round being joined
@@ -260,6 +293,12 @@ class ClockAuthority:
         self._nv[lp] = t if kind == TAR else self._n(lp)
         return self._address(self._grant_due())
 
+    def on_bind(self, lp: LpId) -> tuple[float, dict[str, int]]:
+        """What `lp` starts from when it binds: its row's clock, and the next
+        sequence number of each channel out of it."""
+        out = self._channels.channels_from(lp)
+        return self._now[lp], {c.name: self._next_seq[c.name] for c in out}
+
     def _refuse_unjoinable(self, lp: LpId, member: str, kind: str, t: float) -> None:
         joined = self._round[lp]
         reason = None
@@ -284,15 +323,16 @@ class ClockAuthority:
         """One reply per member for an LP with members, each with its own channels."""
         return [
             (
-                (i, g, released)
+                (i, g, released, *ended)
                 if m is None
                 else (
                     (i, m),
                     g,
                     {c: r for c, r in released.items() if self._owner[i][c] == m},
+                    *ended,
                 )
             )
-            for i, g, released in replies
+            for i, g, released, *ended in replies
             for m in self._members.get(i, (None,))
         ]
 
@@ -396,7 +436,7 @@ class ClockAuthority:
             elif len(waiting) < len(self._ids):
                 return replies
             elif not grantable:
-                return replies + self._finish()
+                return replies + self._end_client_run()
             else:
                 replies.append(self._recover(grantable[0][1], grantable[0][0]))
 
@@ -425,6 +465,30 @@ class ClockAuthority:
         # g is N[i], so N[i] is unchanged: a running LP's N is its clock.
         self._now[i], self._state[i], self._target[i] = g, RUNNING, None
         return (i, g, released)
+
+    def _end_client_run(self) -> list:
+        """Every LP waits and none is grantable: the open client run ends, and
+        unless it is the last, the client resigns and every other LP is told."""
+        end, k = max(self._now.values()), len(self.ended)
+        clocks, grants = tuple(self._now.items()), dict(self.grants)
+        self.ended.append(ClientRun(k, self._start, end, clocks, grants))
+        if self._client is None or k + 1 == self._client_runs:
+            return self._finish()
+        self._start = end
+        replies = []
+        for i in self._ids:
+            none = {name: [] for name in self._into[i]}
+            self._state[i], self._target[i] = RUNNING, None
+            if i is not self._client:
+                self._nv[i] = self._now[i]
+                replies.append((i, self._now[i], none, k))
+                continue
+            if self.timeline is not None:
+                self.timeline.record(i, self._now[i], math.inf, NER, False)
+            self._now[i] = self._nv[i] = end
+            self._daemon[i] = math.inf
+            replies.append((i, math.inf, none))
+        return replies
 
     def _finish(self) -> list:
         self.final_clocks = tuple(self._now.items())
