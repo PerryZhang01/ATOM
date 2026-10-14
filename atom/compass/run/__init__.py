@@ -271,7 +271,8 @@ class _RecordingAuthority(ClockAuthority):
     """The authority, recording the step table: a row per reply and a row per
     message each reply releases; and the wall seconds of the run, from its start
     to the finish, which sets `done`. A co-hosting frontend starts the run as it
-    starts its own; otherwise it starts once every server LP has asked once."""
+    starts its own; otherwise it starts once every server LP, and every member of
+    one declared with members, has asked once."""
 
     def __init__(self, run: dict) -> None:
         # The tree that runs, read before the run so an unidentifiable one is
@@ -282,7 +283,7 @@ class _RecordingAuthority(ClockAuthority):
         self.steps = StepTable(json.dumps(configuration(run), sort_keys=True))
         self.started = self.finished = None
         self.done = threading.Event()
-        self._joining = set(_servers(run))
+        self._joining = set(_hand_ins(run))
         # A rerun into the same out_dir starts from none of the last run's files.
         out = Path(run["out_dir"])
         for name in (
@@ -303,11 +304,11 @@ class _RecordingAuthority(ClockAuthority):
     def record(self, lp, time_from, time_to, kind, recovered) -> None:
         self.steps.record(lp, time_from, time_to, kind, detail="recovered" * recovered)
 
-    def on_request(self, *args, **kwargs) -> list:
-        self._joining.discard(args[0].name)
+    def on_request(self, lp, kind, t, log, t_daemon=math.inf, member=None) -> list:
+        self._joining.discard(f"{lp.name}.{member}" if member else lp.name)
         if not self._joining and self.started is None:
             self.started = time.monotonic()
-        replies = super().on_request(*args, **kwargs)
+        replies = super().on_request(lp, kind, t, log, t_daemon, member)
         for to, _, released in replies:
             # A member's reply is addressed (lp, member); its channels name its rank.
             lp = to[0] if isinstance(to, tuple) else to
