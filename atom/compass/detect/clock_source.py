@@ -118,8 +118,15 @@ _LOG_ONLY = "times real work for a log line; nothing in the simulated record rea
 _COMPILE = "torch.compile at startup, before the simulated window"
 _LOAD = "loads or warms up the model at startup, before the simulated window"
 _WORKER_RPC = (
-    "bounds a wait for every worker's reply to a weight-sync or collective RPC; "
-    "a simulated runner answers at once, so the deadline never binds"
+    "a real-time bound on the engine's RPC to its own workers, a wait inside one "
+    "tensor-parallel group; the simulated runner answers within real "
+    "milliseconds, so the bound never fires"
+)
+_CONTROL_DEADLINE = (
+    "the reply deadline of an out-of-band control command, which produces no "
+    "simulated event; it stays real on purpose, because the LP clock moves only "
+    "while its owner takes a grant, so a deadline on it would never expire while "
+    "the owner waits for the reply"
 )
 
 #: Real-clock reads in ATOM's core that stay real, by site: (file, the innermost
@@ -150,17 +157,17 @@ _KEPT_REAL = (
     ("atom/model_engine/engine_core_mgr.py", "close", "time.monotonic",
      "K9", "the engine processes' shutdown grace period, after the simulated window", 2),
     ("atom/model_engine/engine_core_mgr.py", "collective_rpc", "time.monotonic",
-     "K9", _WORKER_RPC, 2),
+     "K8", _CONTROL_DEADLINE, 2),
     ("atom/model_engine/engine_core_mgr.py", "collective_rpc", "time.time",
-     "K9", _WORKER_RPC, 1),
+     "K8", _CONTROL_DEADLINE, 1),
     ("atom/model_engine/engine_core_mgr.py", "_broadcast_and_wait", "time.monotonic",
-     "K9", _WORKER_RPC, 2),
+     "K8", _CONTROL_DEADLINE, 2),
     ("atom/model_engine/engine_core_mgr.py", "_broadcast_and_wait", "time.time",
-     "K9", _WORKER_RPC, 1),
+     "K8", _CONTROL_DEADLINE, 1),
     ("atom/model_engine/engine_utility.py", "_execute_utility_command", "time.monotonic",
      "K9", _LOG_ONLY, 2),
     ("atom/model_engine/engine_utility.py", "_remaining_timeout", "time.time",
-     "K9", _WORKER_RPC, 1),
+     "K8", _CONTROL_DEADLINE, 1),
     ("atom/model_engine/model_runner.py", "_build_and_load_model", "time.perf_counter",
      "K9", _REPLACED_RUNNER, 2),
     ("atom/model_engine/model_runner.py", "_on_trace_ready", "time.time",

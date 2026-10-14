@@ -2413,7 +2413,7 @@
    "peer": "thread",
    "why": "a bound on a utility command's reply that raises a timeout; it detects an unresponsive engine rather than pacing anything",
    "mechanism": "K6",
-   "mechanism_why": "the replies come from the frontend's own output thread, which is where the receive across LPs is; the engines answer within real milliseconds, so the bound never fires"
+   "mechanism_why": "the replies come from the frontend's own output thread, which is where the receive across LPs is; the bound is an out-of-band control command's reply deadline, which stays on the real clock and fires if no engine answers"
   },
   {
    "id": "atom/model_engine/engine_core_mgr.py::CoreManager.collective_rpc::replies.get(timeout=min(1.0, remaining))::queue_get#0",
@@ -2425,7 +2425,7 @@
    "peer": "thread",
    "why": "a bound on a collective RPC's replies that reports the engines that did not answer; it detects an unresponsive engine rather than pacing anything",
    "mechanism": "K6",
-   "mechanism_why": "the replies come from the frontend's own output thread, which is where the receive across LPs is; the engines answer within real milliseconds, so the bound never fires"
+   "mechanism_why": "the replies come from the frontend's own output thread, which is where the receive across LPs is; the bound is an out-of-band control command's reply deadline, which stays on the real clock and fires if no engine answers"
   },
   {
    "id": "atom/model_engine/engine_utility.py::EngineUtilityHandler._handle_configure_hidden_states::self.runner_mgr.call_func( \"configure_hidden_states\", aux_layer_ids, mooncake_config, wait_out=True )::worker_rpc#0",
