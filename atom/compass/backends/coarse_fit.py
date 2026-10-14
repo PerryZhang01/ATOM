@@ -435,7 +435,7 @@ def _slowest(groups, prefill: list[str]) -> tuple[list[tuple], dict]:
     """Each group's row of highest price, by alternating max-affine regression per
     vector, and per vector the error of the fit on every rank's row."""
     rows, report = [g[0] for g in groups], {}
-    for key in {g[0][1] for g in groups if len(g) > 1}:
+    for key in sorted({g[0][1] for g in groups if len(g) > 1}):
         names = prefill if key == "prefill" else list(DECODE)
         at = [j for j, g in enumerate(groups) if g[0][1] == key]
         x = np.array([[r[2] for r in groups[j]] for j in at], dtype=np.float64)
