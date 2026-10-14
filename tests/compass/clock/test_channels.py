@@ -127,6 +127,33 @@ def test_the_prefill_decode_table_is_exactly_its_channel_list(path, delay):
     }
 
 
+def test_the_prefill_decode_table_above_dp_width_one_has_each_ranks_channels_and_each_pairs_write_request():
+    one = _pd()
+    table = prefill_decode_table(
+        admission_path="serving",
+        ipc_s=IPC,
+        stream_s=STREAM,
+        router_s=ROUTER,
+        kv_write_req_s=KV,
+        dp=2,
+    )
+    whole = _whole(table)
+    pairs = [
+        f"engine-D->engine-P:kv_write_req#dp{d}.dp{p}" for d in (0, 1) for p in (0, 1)
+    ]
+    assert {n: whole.pop(n) for n in pairs} == dict.fromkeys(
+        pairs, (ED, EP, KV, "inline")
+    )
+    # Rank 1's channels are rank 0's, renamed; the rest are the width-one table's.
+    rank0 = {n: v for n, v in _whole(one).items() if "kv_write_req" not in n}
+    assert whole == rank0 | {
+        n.replace("#dp0", "#dp1"): v for n, v in rank0.items() if n.endswith("#dp0")
+    }
+    for j in table.registry.ids():
+        for i in table.registry.ids():
+            assert table.distance(j, i) == one.distance(j, i), (j, i)
+
+
 # --- distance ----------------------------------------------------------------
 
 
