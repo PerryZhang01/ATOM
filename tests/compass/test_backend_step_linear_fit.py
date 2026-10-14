@@ -734,6 +734,43 @@ def test_the_command_writes_held_out_errors_and_validates_only_inside_their_hull
     assert not _validated(backend, [(9000, 9000, False)])
 
 
+def test_a_rung_only_one_record_holds_gets_no_held_out_errors(tmp_path):
+    no_fours = [s for s in _steps(7) if s[1] != 4]
+    records = [
+        str(_record(tmp_path / "dp0-6.jsonl", _steps(6))),
+        str(_record(tmp_path / "dp0-7.jsonl", no_fours)),
+    ]
+    main([*records, "--out", str(tmp_path / "law.json")])
+    written = json.loads((tmp_path / "law.json").read_text())
+
+    assert "held_out" in written["decode"]["2"]
+    assert "held_out" not in written["decode"]["4"]
+    backend = StepLinearBackend(StepLinearLaw(written))
+    fours = [rows for rows, rung, _ in _steps(6) if rung == 4]
+    assert not any(_validated(backend, rows, 4) for rows in fours)
+
+
+def test_a_shape_only_a_dropped_outlier_reached_prices_extrapolated_and_validated(
+    tmp_path,
+):
+    # Two rows past every recorded context, three times slower than the law:
+    # the fit drops it, the law fitted on the other record prices it.
+    far = [(1, 150_000, True), (1, 150_000, True)]
+    steps = _steps(6)
+    steps.insert(101, (far, 2, _price(far, 2)))
+    records = [
+        str(_record(tmp_path / "dp0-6.jsonl", steps, stretch={101: 3.0})),
+        str(_record(tmp_path / "dp0-7.jsonl", _steps(7))),
+    ]
+    main([*records, "--out", str(tmp_path / "law.json")])
+    written = json.loads((tmp_path / "law.json").read_text())
+
+    assert written["decode"]["2"]["fit"]["dropped"] == 1
+    cost = StepLinearBackend(StepLinearLaw(written)).price(_view(far, 2))
+    assert {t.provenance.source for t in cost.terms} == {"step-linear-extrapolated"}
+    assert {t.provenance.validated for t in cost.terms} == {True}
+
+
 def test_a_law_without_held_out_errors_prices_every_term_unvalidated(tmp_path):
     record = str(_record(tmp_path / "dp0-6.jsonl", _steps(6)))
     main([record, "--out", str(tmp_path / "law.json")])
