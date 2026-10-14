@@ -119,7 +119,7 @@ def cost_accuracy(record, law) -> dict:
     groups = {"fitted": {}, "extrapolated": {}}
     refused: dict[str, dict] = {}
     warm, priced = [], []
-    for key, counts, seconds, step in labelled:
+    for key, counts, seconds, step, _ in labelled:
         line = by_step[step]
         view = BatchView(
             tuple(RequestShape(q, c, bool(d)) for q, c, d in line["rows"]),

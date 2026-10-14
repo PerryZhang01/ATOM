@@ -593,3 +593,102 @@ def test_a_run_refuses_host_laws_fitted_under_another_key(tmp_path, monkeypatch)
             differ = list(other or key)
             with pytest.raises(ValueError, match=re.escape(f"another {differ}")):
                 compass_run.runner(r)
+
+
+ROWMOD = {"step": 0.02, "context": 1e-8, "graph_padding": 5e-9, "rowmod": 3e-7}
+
+
+def _rowmod_steps(seed, n, k=4, uniform=False, faint=False):
+    """Rung-8 decode steps whose cost reads `rowmod(k)` of their rows in order.
+
+    Every step is wider than 4 rows, so its order moves `rowmod(k)`. With
+    `uniform`, every row of a step holds one context and a step is 1 to 8 rows
+    wide: no order moves `rowmod(k)`, and the rung's three features cannot
+    express it. With `faint`, the `rowmod` term carries 12% of its weight and
+    each step's seconds a 3% scatter: the column cuts the MAD by under a tenth.
+    """
+    rng = np.random.default_rng(seed)
+    out = []
+    for _ in range(n):
+        width = int(rng.integers(1 if uniform else 5, 9))
+        context = rng.integers(1000, 60000, size=width)
+        if uniform:
+            context[:] = context[0]
+        rows = [(1, int(c), True) for c in context]
+        view = _view(rows, 8)
+        modded = max(int(context[r::k].sum()) for r in range(min(k, width)))
+        seconds = (
+            ROWMOD["step"]
+            + ROWMOD["context"] * int(context.sum())
+            + ROWMOD["graph_padding"] * view.graph_padding
+            + ROWMOD["rowmod"] * (0.12 if faint else 1.0) * modded
+        )
+        if faint:
+            seconds *= rng.normal(1.0, 0.03)
+        out.append((rows, 8, seconds))
+    return out
+
+
+def test_a_rung_whose_cost_follows_row_order_adopts_rowmod_and_prices_the_order(
+    tmp_path,
+):
+    records = [
+        _record(tmp_path / f"dp0-{s}.jsonl", _rowmod_steps(s, 150)) for s in (20, 21)
+    ]
+    law = fit(records)
+
+    vector = law["decode"]["8"]
+    assert vector["rowmod"] == 4
+    assert vector["coefficients"] == pytest.approx(ROWMOD, rel=1e-4, abs=1e-12)
+    evidence = vector["fit"]["rowmod"]
+    assert (
+        evidence["shuffled_mad"] > 0.9 * evidence["mad_without"] > vector["fit"]["mad"]
+    )
+    assert set(evidence["held_out_p50"]) == {"0", "1"}
+
+    # One multiset of rows in two orders: rows 0 and 4 share a residue mod 4.
+    backend = CoarseBackend(CoarseLaw(law))
+    rows = [(1, c, True) for c in (50000, 1000, 1000, 1000, 50000, 1000)]
+    apart = rows[:3] + rows[4:5] + rows[3:4] + rows[5:]
+    together = backend.estimate(_view(rows, 8))
+    assert together.terms[-1].name == "decode.rowmod"
+    assert together.seconds - backend.estimate(_view(apart, 8)).seconds == (
+        pytest.approx(ROWMOD["rowmod"] * 49000, rel=1e-3)
+    )
+
+
+@pytest.mark.parametrize(
+    "steps, k, uniform, faint",
+    [
+        ((150, 99), 4, False, False),
+        ((150, 150), 4, True, False),
+        ((150, 150), 2, False, False),
+        ((150, 150), 4, False, True),
+    ],
+    ids=[
+        "a cell under 100 steps",
+        "an order shuffling cannot move",
+        "a held-out cell priced worse",
+        "a column cutting the MAD by under a tenth",
+    ],
+)
+def test_a_rung_keeps_its_law_unless_every_cell_and_the_order_support_rowmod(
+    tmp_path, steps, k, uniform, faint
+):
+    # The second record's cost follows `rowmod(k)`, the first's `rowmod(4)`.
+    records = [
+        _record(
+            tmp_path / "dp0-20.jsonl", _rowmod_steps(20, steps[0], 4, uniform, faint)
+        ),
+        _record(
+            tmp_path / "dp0-21.jsonl", _rowmod_steps(21, steps[1], k, uniform, faint)
+        ),
+    ]
+    law = fit(records)
+
+    assert "rowmod" not in law["decode"]["8"]
+    assert set(law["decode"]["8"]["coefficients"]) == {
+        "step",
+        "context",
+        "graph_padding",
+    }

@@ -50,6 +50,12 @@ prefill plus `Sum (N_KV - N_Q)`, the KV a short chunk reads on a deep history;
 `shared`, decode with the context and padding slopes shared by every rung and
 an intercept per rung.
 
+Outside `shared`, a decode rung may adopt a `rowmod(k)` column (`CoarseLaw`),
+read from its rows in scheduled order, by the rule `_rowmod` states; the
+vector then names `k` and records, under `fit.rowmod`, the MAD without the
+column, the mean MAD with each step's rows shuffled, and per held-out record
+the p50 error without and with it.
+
 With two or more records it also prints, per form, the error on each record of
 a law fitted on the others, warm steps left out: per kind and rung, or prefill
 token band, the p10, p50 and p90 of `predicted / measured - 1`; and the same
@@ -66,7 +72,7 @@ from pathlib import Path
 
 import numpy as np
 
-from atom.compass.backends.coarse import DECODE, EAGER, HISTORY, PREFILL
+from atom.compass.backends.coarse import DECODE, EAGER, HISTORY, PREFILL, ROWMOD, rowmod
 from atom.compass.backends.shape import (
     BatchView,
     RequestShape,
@@ -84,6 +90,13 @@ MAD_PASSES = 20
 #: A step that ran this many times its price is a one-off first touch, not scatter.
 WARM_FACTOR = 5.0
 TOKEN_BANDS = (512, 2048, 8192)
+#: Steps at its rung a record needs before a `rowmod` choice holds it out.
+ROWMOD_CELL_STEPS = 100
+#: The fraction of a rung's scaled MAD a `rowmod` column must cut: a smaller cut is
+#: within the sampling error of a MAD over a few hundred steps.
+ROWMOD_GAIN = 0.1
+#: Seeded shuffles of each step's rows whose mean MAD the `rowmod` column must not beat.
+ROWMOD_SHUFFLES = 8
 #: Token copy wait exits whose tightest bound is a step's host clock lead.
 ANCHORS = 32
 HOST_KINDS = ("decode", "prefill", "middle")
@@ -129,10 +142,12 @@ def _launch_exposed(lines) -> set[int]:
 
 
 def samples(record, form: str = "law") -> tuple[list[tuple], dict]:
-    """One record's fittable steps as (vector, features, seconds, step), and what was cut.
+    """One record's fittable steps as (vector, features, seconds, step, context), and
+    what was cut.
 
     `vector` is `prefill` or a decode rung's key; features are in `CoarseLaw`'s
-    order, plus `history` for that form.
+    order, plus `history` for that form; `context` is the decode rows' N_KV in
+    scheduled order, empty for prefill.
     """
     lines = _lines(record)
     steps = [s for s in lines if not s["is_dummy_run"]]
@@ -169,7 +184,8 @@ def samples(record, form: str = "law") -> tuple[list[tuple], dict]:
                 counts = (1, sum_context(view.decode), view.graph_padding)
             gap = 0 if view.prefill else step.get("d_gap_ns", 0)
             label = (gap + step["d_busy_ns"]) * 1e-9
-            rows.append((key, counts, label, step["step"]))
+            context = tuple(r.context_tokens for r in view.decode)
+            rows.append((key, counts, label, step["step"], context))
     return rows, cut
 
 
@@ -289,6 +305,67 @@ def _solve(x: np.ndarray, y: np.ndarray, names: list[str]) -> dict:
     }
 
 
+def _rowmod(members, rung: int, base: dict) -> tuple | None:
+    """The `rowmod(k)` column decode rung `rung` adopts, or None.
+
+    `members` are the rung's `fit` rows, `base` their solve without the column.
+    `k` runs over the powers of two up to the rung. A `k` qualifies when its
+    solve cuts `base`'s scaled MAD by `ROWMOD_GAIN`, the mean MAD of the same
+    solve over `ROWMOD_SHUFFLES` seeded shuffles of each step's rows does not,
+    and no record (a cell) priced by a solve on the others has a p50 error
+    further from zero than without the column. Every cell
+    needs `ROWMOD_CELL_STEPS` steps at the rung, and a rung needs two cells.
+    The qualifying `k` of smallest MAD is adopted: returned with its column,
+    its solve and the evidence the law records.
+    """
+    cell = np.array([r[0] for r in members])
+    cells = sorted(set(cell.tolist()))
+    if len(cells) < 2 or min((cell == c).sum() for c in cells) < ROWMOD_CELL_STEPS:
+        return None
+    x = np.array([r[2] for r in members], dtype=np.float64)
+    y = np.array([r[3] for r in members])
+    rng = np.random.default_rng(0)
+    shuffles = [
+        [rng.permutation(r[5]) for r in members] for _ in range(ROWMOD_SHUFFLES)
+    ]
+
+    def mad(rows, k):
+        column = [rowmod(r, k) for r in rows]
+        return _solve(np.column_stack([x, column]), y, list(ROWMOD))["mad"]
+
+    def p50(design):
+        names = list(ROWMOD[: design.shape[1]])
+        out = []
+        for c in cells:
+            other = cell != c
+            coef = _solve(design[other], y[other], names)["coef"]
+            out.append(float(np.median(design[~other] @ coef / y[~other] - 1.0)))
+        return out
+
+    without, best, k = p50(x), None, 2
+    target = (1.0 - ROWMOD_GAIN) * base["mad"]
+    while k <= rung:
+        column = np.array([rowmod(r[5], k) for r in members], dtype=np.float64)
+        design = np.column_stack([x, column])
+        solved = _solve(design, y, list(ROWMOD))
+        if solved["mad"] < min(target, best[2]["mad"] if best else target):
+            shuffled_mad = float(np.mean([mad(s, k) for s in shuffles]))
+            held = p50(design)
+            if shuffled_mad >= target and all(
+                abs(w) <= abs(o) for w, o in zip(held, without)
+            ):
+                evidence = {
+                    "mad_without": base["mad"],
+                    "shuffled_mad": shuffled_mad,
+                    "held_out_p50": {
+                        str(c): [o, w] for c, o, w in zip(cells, without, held)
+                    },
+                }
+                best = (k, column, solved, evidence)
+        k *= 2
+    return best
+
+
 def _hull(points: np.ndarray, names: tuple[str, ...]) -> dict:
     """`CoarseLaw`'s hull over the non-intercept features of the fitted steps."""
     from scipy.spatial import ConvexHull
@@ -364,6 +441,13 @@ def fit(records, form: str = "law") -> dict:
             onehot = [[float(r[1] == k) for k in rungs] for r in members]
             x = np.column_stack([counts[:, 1:], onehot])
         solved = _solve(x, np.array([r[3] for r in members]), names)
+        rowmod_k = None
+        if key and key.isdigit():
+            chosen = _rowmod(members, int(key), solved)
+            if chosen:
+                rowmod_k, column, solved, evidence = chosen
+                counts = np.column_stack([counts, column])
+                names = list(ROWMOD)
         slow = ~solved["keep"] & (solved["residual"] < 0)
         once = solved["residual"] < 1 / WARM_FACTOR - 1
         warm = np.zeros(len(members), dtype=bool)
@@ -406,6 +490,9 @@ def fit(records, form: str = "law") -> dict:
                     "zero": solved["zero"],
                 },
             }
+            if rowmod_k:
+                vector["rowmod"] = rowmod_k
+                vector["fit"]["rowmod"] = evidence
             if k == "prefill":
                 law["prefill"] = vector
             else:
@@ -429,7 +516,7 @@ def held_out(records, form: str = "law") -> dict:
     errors: dict[str, list[float]] = {}
     for i, record in enumerate(records):
         law = fit(records[:i] + records[i + 1 :], form)
-        for key, counts, seconds, step in samples(record, form)[0]:
+        for key, counts, seconds, step, context in samples(record, form)[0]:
             if step in warm[i]:
                 continue
             vector = law["decode"].get(key) if key != "prefill" else law.get(key)
@@ -437,6 +524,8 @@ def held_out(records, form: str = "law") -> dict:
             if vector is None:
                 errors.setdefault(f"{band} (no vector)", []).append(float("nan"))
                 continue
+            if "rowmod" in vector:
+                counts += (rowmod(context, vector["rowmod"]),)
             price = np.dot(list(vector["coefficients"].values()), counts)
             errors.setdefault(band, []).append(float(price) / seconds - 1.0)
     return errors
