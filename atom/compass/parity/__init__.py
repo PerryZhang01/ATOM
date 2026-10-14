@@ -5,8 +5,10 @@ A simulated run reuses ATOM's scheduler, so it should build the batches a real
 run builds. This records them where both runs can be read the same way, at the
 model runner's `forward`: one JSON line per call, built before the call runs,
 because a real forward rewrites some batch fields in place. Each line carries
-the batch as the `BatchView` a simulated runner prices it from (`rows`, `rung`);
-a real runner's line also carries `t_enter_ns` and `t_exit_ns`, the worker's
+the batch as the `BatchView` a simulated runner prices it from (`rows`, `rung`,
+and above DP width 1 `moe_rows`); a real runner settles that view from the
+`ForwardMode` its own forward settled, so recording adds no DP collective. Its
+line also carries `t_enter_ns` and `t_exit_ns`, the worker's
 monotonic clock around its forward, and is written once the forward returns.
 Inside the forward it carries `[enter, exit]` on that clock around the staging
 gate (`t_gate_ns`), the launch (`t_launch_ns`) and the wait for the previous
@@ -40,6 +42,7 @@ may then report a step where the twins' rows differ.
 """
 
 import collections
+import copy
 import functools
 import hashlib
 import json
@@ -84,14 +87,18 @@ class StepRecord:
 
         `batch` is recorded as (request id, scheduled tokens, context length)
         per request, and as the `BatchView` `runner` prices it from: `rows`
-        (query tokens, context tokens, decode) and `rung`, the graph width the
-        step replays or None. Each prefill window is added to its request's
+        (query tokens, context tokens, decode), `rung`, the graph width the
+        step replays or None, and `moe_rows`, the rows the DP group's MoE
+        gather carries, absent at DP width 1. The view's mode is the one
+        `forward` settled, stamped by `run_model` under `forward_mode`;
+        without one it is `forward_mode`'s, which runs the DP collective
+        itself. Each prefill window is added to its request's
         digest; the line holding a request's final chunk names it under
         `named`. A dummy batch is fabricated for DP synchronisation and names
         no request, so its `batch` is empty; its `rows` are what it runs.
 
-        The line is built before `forward` runs, since a real forward rewrites
-        batch fields in place, and written after it returns, with `t_enter_ns`
+        The line is built from the batch as handed in, since a real forward
+        rewrites batch fields in place, and written after it returns, with `t_enter_ns`
         and `t_exit_ns` read off `runner.step_clock_ns()` around it and
         `runner.step_stamps()` added; a line with a device window waits in
         `pending` until the window closes. Returns `forward`'s reply, or None
@@ -99,7 +106,10 @@ class StepRecord:
         """
         from atom.compass.runner.projection import batch_view, forward_mode
 
-        view = batch_view(batch, forward_mode(batch, runner), runner)
+        # The view is settled after `forward`, from the fields it was handed.
+        before = copy.copy(batch)
+        before.num_scheduled_tokens = np.copy(batch.num_scheduled_tokens)
+        before.context_lens = np.copy(batch.context_lens)
         rows, named = [], []
         if not batch.is_dummy_run:
             ends = np.cumsum(batch.num_scheduled_tokens)
@@ -139,19 +149,22 @@ class StepRecord:
             "produces_output": bool(batch.produces_output()),
             "batch": rows,
             "named": named,
-            "rows": [
-                [r.query_tokens, r.context_tokens, r.decode] for r in view.requests
-            ],
-            "rung": view.capture_rung,
         }
-        reply = None
-        window = None
+        reply, window, mode = None, None, None
         if forward is not None:
             line["t_enter_ns"] = runner.step_clock_ns()
             reply = forward(batch)
             line["t_exit_ns"] = runner.step_clock_ns()
             stamps, window = runner.step_stamps()
+            mode = stamps.pop("forward_mode", None)
             line.update(stamps)
+        view = batch_view(before, mode or forward_mode(before, runner), runner)
+        line["rows"] = [
+            [r.query_tokens, r.context_tokens, r.decode] for r in view.requests
+        ]
+        line["rung"] = view.capture_rung
+        if view.moe_rows is not None:
+            line["moe_rows"] = view.moe_rows
         self.pending.append((line, window))
         self.flush()
         self.step += 1
@@ -212,7 +225,9 @@ class StepRecording:
 
     A recorded forward is also stamped inside: around `_gate_staging_reuse`,
     `run_model` and the instance's `tokenID_processor.recv_async_output`, with
-    device events at `run_model` entry and at the forward's exit.
+    device events at `run_model` entry and at the forward's exit. At
+    `run_model` entry it also keeps the `ForwardMode` the forward settled,
+    which the line's view is built from.
     """
 
     _recording = False
@@ -248,7 +263,10 @@ class StepRecording:
 
     def run_model(self, *args):
         if getattr(self, "_parity_record", None) is not None:
+            from atom.utils.forward_context import get_forward_context
+
             self._stamps["launch_event"] = self.device_event()
+            self._stamps["forward_mode"] = get_forward_context().context.forward_mode
         return self._stamped("t_launch_ns", super().run_model, *args)
 
     def step_stamps(self) -> tuple:
