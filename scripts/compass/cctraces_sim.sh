@@ -212,7 +212,12 @@ import json, re, sys
 from pathlib import Path
 
 out, benchmark_id, rc = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
-export = json.loads((out / "artifacts/profile_export_aiperf.json").read_text())
+export = out / "artifacts/profile_export_aiperf.json"
+# aiperf exports nothing from a run that failed before any request completed.
+if not export.exists():
+    print(f"cctraces_sim: rc={rc}, aiperf wrote no export")
+    sys.exit(rc or 1)
+export = json.loads(export.read_text())
 avg = lambda k: export[k]["avg"]
 if export["benchmark_id"] != benchmark_id:
     sys.exit(f"cctraces_sim: benchmark id {export['benchmark_id']}, recorded {benchmark_id}")
