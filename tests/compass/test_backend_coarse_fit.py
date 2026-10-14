@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 """Tier a's fit: step records written from a known law, and the law it gives back.
 
-Each record is the JSON lines a real runner writes, its `t_enter_ns` laid out
-so each step's period is the known law's price. The fitted law is read by
+Each record is the JSON lines a real runner writes, each step's device busy
+time (`d_busy_ns`) the known law's price. The fitted law is read by
 `CoarseLaw` and priced by `CoarseBackend.estimate`.
 """
 
@@ -74,14 +74,17 @@ def _steps(seed, n=240, cached=True, history=0.0):
     return out
 
 
-def _record(path, steps, idle_after=(), stretch=None):
-    """Write `steps` as a real record. Steps in `idle_after` share no request with the next."""
+def _record(path, steps, stretch=None):
+    """Write `steps` as a real record whose device busy time is each step's price.
+
+    The host's token copy wait ends as the device finishes, so no step is
+    launch-exposed.
+    """
     stretch = stretch or {}
-    t, lines, owner = 0, [], 0
+    t, lines = 0, []
     for i, (rows, rung, seconds) in enumerate(steps):
-        if i - 1 in idle_after:
-            owner += 1
-        ids = [owner] + [10_000 + i * 10 + j for j in range(len(rows) - 1)]
+        busy = round(seconds * stretch.get(i, 1.0) * 1e9)
+        ids = [0] + [10_000 + i * 10 + j for j in range(len(rows) - 1)]
         lines.append(
             {
                 "step": i,
@@ -93,10 +96,13 @@ def _record(path, steps, idle_after=(), stretch=None):
                 "rows": [list(r) for r in rows],
                 "rung": rung,
                 "t_enter_ns": t,
-                "t_exit_ns": t + 1,
+                "t_launch_ns": [t, t],
+                "t_recv_ns": [t, t],
+                "d_busy_ns": busy,
+                "t_exit_ns": t + busy,
             }
         )
-        t += round(seconds * stretch.get(i, 1.0) * 1e9)
+        t += busy
     path.write_text("".join(json.dumps(line) + "\n" for line in lines))
     return path
 
@@ -158,19 +164,12 @@ def test_a_feature_with_no_variance_returns_zero_named(tmp_path):
     assert cost.terms[-1].seconds == 0.0
 
 
-def test_warm_steps_and_the_period_holding_an_idle_gap_are_not_fitted(tmp_path):
+def test_warm_steps_are_not_fitted(tmp_path):
     steps = _steps(2)
-    # Two leading compiles, then a gap after step 50: its period is cut, step 51's
-    # starts after the gap and is fitted. A later compile (step 90) is warm too;
-    # a later step at four times its price (step 120) is dropped, not warm.
-    stretch = {0: 40.0, 1: 30.0, 50: 9.0, 90: 20.0, 120: 4.0}
-    record = _record(tmp_path / "dp0.jsonl", steps, {50}, stretch)
-    rows, cut = samples(record)
-
-    assert cut == {"idle": 1, "mixed": 0, "last": 1}
-    assert [(r[3], r[2]) for r in rows if r[3] in (50, 51)] == [
-        (51, pytest.approx(steps[51][2], rel=1e-6))
-    ]
+    # Two leading compiles; a later compile (step 90) is warm too; a later step
+    # at four times its price (step 120) is dropped, not warm.
+    stretch = {0: 40.0, 1: 30.0, 90: 20.0, 120: 4.0}
+    record = _record(tmp_path / "dp0.jsonl", steps, stretch)
     law = fit([record])
     assert law["warm_steps"] == [[0, 90, 1]]
     assert law["cut"]["warm"] == 3 and law["cut"]["warm_s"] == pytest.approx(
@@ -269,7 +268,7 @@ def test_a_step_mixing_prefill_and_decode_is_cut_not_fitted(tmp_path):
     steps[20] = ([(100, 100, False), (1, 900, True)], None, 1.0)
     rows, cut = samples(_record(tmp_path / "dp0.jsonl", steps))
 
-    assert cut == {"idle": 0, "mixed": 1, "last": 1}
+    assert cut == {"exposed": 0, "mixed": 1}
     assert 20 not in [r[3] for r in rows]
     law = fit([tmp_path / "dp0.jsonl"])
     assert law["prefill"]["coefficients"] == pytest.approx(PREFILL, rel=1e-6)
@@ -423,8 +422,25 @@ def test_records_under_two_host_keys_are_refused(tmp_path):
         with pytest.raises(ValueError, match="2 host keys"):
             fit(pair)
     assert "host" not in fit([c])
-    with pytest.raises(ValueError, match="one law takes one label"):
-        fit([a, _record(tmp_path / "d.jsonl", _steps(18))])
+
+
+def test_a_record_without_device_windows_is_refused_by_the_fit_and_the_cost_check(
+    tmp_path,
+):
+    (tmp_path / "steps").mkdir()
+    record = _record(tmp_path / "steps" / "dp0.jsonl", _steps(18))
+    lines = [json.loads(x) for x in record.read_text().splitlines()]
+    record.write_text(
+        "".join(
+            json.dumps({k: v for k, v in x.items() if k != "d_busy_ns"}) + "\n"
+            for x in lines
+        )
+    )
+
+    with pytest.raises(ValueError, match="has no device windows"):
+        fit([record])
+    with pytest.raises(ValueError, match="has no device windows"):
+        cost_accuracy(tmp_path / "steps", {"provenance": "planted", "decode": {}})
 
 
 def test_the_command_writes_host_laws_a_run_file_takes_and_scores_them_held_out(

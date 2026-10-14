@@ -558,9 +558,6 @@ lists its environment.
 Given two or more records, the command also prints each form's error on every
 record under a law fitted on the others, per decode rung and prefill token band.
 
-`scripts/compass/laws/qwen3.8-27b-tp1-mi308x-hjbog18.json` is the `history` form
-fitted on the five stage-2 calibration cells (concurrency 1, 4, 16, 64 and 256)
-on node 18; a stage-2 run file holds it under `law`.
 `scripts/compass/laws/qwen3.8-27b-tp1-mi308x-hjbog39.json` is the `history` form
 with the host laws (`host`), labelled by device time, fitted on these
 hjbog-srdc-39 records in this order: concurrency 1, 4, 16, 64 and 256 as
