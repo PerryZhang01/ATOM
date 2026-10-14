@@ -14,8 +14,14 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from atom.compass.runner.overrides import HostStream, RunnerRefusal, start_on_host
+from atom.compass.runner.overrides import (
+    HostEvent,
+    HostStream,
+    RunnerRefusal,
+    start_on_host,
+)
 from atom.utils import CpuGpuBuffer
+from atom.utils.h2d import PublicationOwner
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
@@ -54,6 +60,7 @@ def started(monkeypatch):
         ),
     )
     monkeypatch.setattr(torch.cuda, "Stream", torch.cuda.Stream)
+    monkeypatch.setattr(torch.cuda, "Event", torch.cuda.Event)
     monkeypatch.setattr(CpuGpuBuffer, "__init__", CpuGpuBuffer.__init__)
     monkeypatch.delenv("MASTER_ADDR", raising=False)
     monkeypatch.delenv("MASTER_PORT", raising=False)
@@ -96,14 +103,30 @@ def test_a_stream_built_after_it_is_a_host_stand_in_that_cannot_queue_work(start
         stream.synchronize()
 
 
+def test_an_event_built_after_it_records_and_waits_on_the_host(started):
+    """`ModelRunner._init_h2d_publication` records each slot's event in
+    `__init__`, and ATOM's publication owner records and waits on it per step."""
+    started(_config())
+    event = torch.cuda.Event()
+    assert isinstance(event, HostEvent)
+    event.record()
+    owner = PublicationOwner(torch.device("cpu"), event)
+    owner.begin()
+    owner.finish()
+    owner.begin()
+    owner._wait_sources()
+
+
 @pytest.mark.parametrize("width", [{"tp": 2}, {"simulated_tp": 2}])
 def test_a_start_wider_than_one_rank_is_refused_before_anything_is_replaced(
     started, width
 ):
     stream = torch.cuda.Stream
+    event = torch.cuda.Event
     with pytest.raises(RunnerRefusal, match="2 ranks wide"):
         started(_config(**width))
     assert torch.cuda.Stream is stream
+    assert torch.cuda.Event is event
 
 
 def test_atoms_init_builds_streams_and_buffers_only_after_the_replaced_setup():

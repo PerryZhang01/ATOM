@@ -304,15 +304,29 @@ class HostStream:
         pass
 
 
+class HostEvent:
+    """Stands in for a device event on a host start: nothing to order or wait on."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
+    def record(self, stream: Any = None) -> None:
+        pass
+
+    def synchronize(self) -> None:
+        pass
+
+
 def start_on_host(runner: Any, rank: int, config: Any) -> None:
     """Start a TP1 runner on the host: no device set, its groups on gloo.
 
     Replaces ATOM's `_setup_device_and_distributed`, which
     `ModelRunner.__init__` calls before it builds any buffer, so every buffer
-    the rest of `__init__` builds on `runner.device` lands on the host. Two touches there do not follow the
-    device: `torch.cuda.Stream` refuses `cpu`, and `CpuGpuBuffer` pins its host
-    half, which is a driver allocation. Both are replaced for the life of the
-    worker process, which hosts this runner and nothing else.
+    the rest of `__init__` builds on `runner.device` lands on the host. Three
+    touches there do not follow the device: `torch.cuda.Stream` refuses `cpu`,
+    `torch.cuda.Event` records on a device, and `CpuGpuBuffer` pins its host
+    half, a driver allocation. All are replaced for the life of the worker
+    process, which hosts this runner and nothing else.
 
     The groups are the ones ATOM's own call builds, on gloo. At one rank
     aiter builds no device communicator. At data-parallel width the DP and EP
@@ -345,6 +359,7 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
 
     CpuGpuBuffer.__init__ = unpinned
     torch.cuda.Stream = HostStream
+    torch.cuda.Event = HostEvent
     runner.device = torch.device("cpu")
     os.environ["MASTER_ADDR"] = config.master_addr
     os.environ["MASTER_PORT"] = str(config.port)
@@ -402,11 +417,12 @@ def _config_field(runner: Any, name: str) -> Any:
 
 
 class UnbuiltModel(torch.nn.Module):
-    """Stands in for the module tree a non-allocating runner never builds.
+    """Stands in for the model a non-allocating runner never loads.
 
-    It registers no parameter and no buffer, so it costs nothing on any device,
-    and calling it raises instead of returning something a caller could mistake
-    for a forward pass.
+    It holds the model's module tree as `tree`, built on the meta device, so
+    ATOM can walk its attention modules to size the KV pool while no parameter
+    or buffer has a byte on any device. Calling it raises instead of returning
+    something a caller could mistake for a forward pass.
     """
 
     def __init__(self, model_class: Any) -> None:
@@ -415,7 +431,7 @@ class UnbuiltModel(torch.nn.Module):
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
         raise RunnerRefusal(
-            f"{self.model_class_name} was never built: this runner predicts what a "
+            f"{self.model_class_name} was never loaded: this runner predicts what a "
             "forward pass costs instead of running one, so there are no weights "
             "to call."
         )
@@ -514,11 +530,12 @@ class NonAllocatingRunner(
     """Overrides that construct a model runner without touching device memory."""
 
     def _build_and_load_model(self, model_class: Any) -> None:
-        """Build nothing and read no checkpoint.
+        """Build the module tree on the meta device and read no checkpoint.
 
         The base class constructs the model with the default device set to this
-        rank's GPU and then fills it from disk. Both halves are skipped here, so
-        no weight byte reaches the device and no checkpoint is read.
+        rank's GPU and then fills it from disk. Here it is built on the meta
+        device, shapes and no bytes, because ATOM sizes the KV pool by walking
+        its attention modules; the load is skipped, so no checkpoint is read.
 
         A speculative config is refused here, because on the last pipeline rank
         the base goes on to build the drafter on this rank's GPU and load its
@@ -544,11 +561,13 @@ class NonAllocatingRunner(
                 "nothing about it; speculative decoding has no step semantics "
                 "here yet."
             )
+        with torch.device("meta"):
+            self.model.tree = model_class(self.config)
         from atom.compass import run
 
         run.runner(self)
         logger.info(
-            "%s not built and no checkpoint read; no weight bytes on the device.",
+            "%s built on meta and no checkpoint read; no weight bytes on a device.",
             self.model.model_class_name,
         )
 
