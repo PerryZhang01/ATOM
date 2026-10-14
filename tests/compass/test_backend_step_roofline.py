@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: MIT
 """The step-level fallback: a step the law cannot price is priced by the roofline.
 
-The roofline's answer is `analytical` and carries what the law declined. Steps
+The roofline's answer takes its method from the origins of the spec fields it
+reads, and carries what the law declined. Steps
 reach the backends through the runner's own `dummy_execution` and
 `_group_step_seconds`, and the backends reach the runner through `run.runner`
 from a run file's `step_linear` and `roofline_floor_s` keys.
 """
 
+import copy
 import json
 import math
 import types
@@ -21,11 +23,15 @@ from atom.compass.backends import (
     CostRefused,
     Granularity,
     KvGeometry,
+    Method,
     ProvenanceMix,
-    Species,
     StepLinearBackend,
 )
-from atom.compass.backends.step_roofline import StepFallbackBackend, StepRooflineBackend
+from atom.compass.backends.step_roofline import (
+    FIELDS,
+    StepFallbackBackend,
+    StepRooflineBackend,
+)
 from atom.compass.spec import MachineSpec
 
 MACHINE = MachineSpec.from_mapping(DOCUMENT)
@@ -68,7 +74,7 @@ def test_a_step_is_the_largest_of_its_compute_memory_and_host_bounds(
 
     assert term.name == f"roofline.{bound}"
     assert term.seconds == seconds
-    assert term.provenance.species is Species.ANALYTICAL
+    assert term.provenance.method is Method.DECLARED
     assert roofline().granularity is Granularity.STEP
 
 
@@ -83,7 +89,7 @@ def test_a_step_the_law_prices_is_the_laws_answer(batch):
     [view((1, 10, True), rung=4), view((8, 8, False), (1, 10, True))],
     ids=["no-rung", "mixed"],
 )
-def test_a_step_the_law_refuses_is_priced_analytical_naming_what_declined(batch):
+def test_a_step_the_law_refuses_is_priced_by_the_roofline_naming_what_declined(batch):
     with pytest.raises(CostRefused) as refused:
         backend().price(batch)
     cost = fallback().price(batch)
@@ -92,7 +98,7 @@ def test_a_step_the_law_refuses_is_priced_analytical_naming_what_declined(batch)
 
     assert cost.seconds == roofline().price(batch).seconds
     assert cost.refusals == refused.value.declined
-    assert mix.seconds_by_species() == {Species.ANALYTICAL: cost.seconds}
+    assert mix.seconds_by_method() == {(Method.DECLARED, False): cost.seconds}
 
 
 def test_a_fallback_across_granularities_is_refused():
@@ -105,7 +111,7 @@ def test_a_fallback_across_granularities_is_refused():
         StepFallbackBackend(OpLevel(backend().law), roofline())
 
 
-def test_a_runner_whose_law_lacks_its_rung_prices_the_step_analytical():
+def test_a_runner_whose_law_lacks_its_rung_prices_the_step_by_the_roofline():
     priced = graphed(fallback()).dummy_execution().predicted_s
 
     assert priced == roofline().price(view((1, 1, True), rung=1)).seconds
@@ -138,3 +144,48 @@ def test_a_run_file_floor_puts_the_roofline_under_the_law(monkeypatch, tmp_path)
     assert installed.roofline.parameters == 8_000_000_000
     assert installed.roofline.weight_bytes == 2 * 8_000_000_000
     assert installed.roofline.kv_token_bytes == kv.layers * kv.bytes_per_token_per_layer
+
+
+def _spec(origin, origins=None):
+    document = copy.deepcopy(DOCUMENT)
+    document["provenance"]["origin"] = origin
+    if origins is not None:
+        document["provenance"]["origins"] = origins
+    return MachineSpec.from_mapping(document)
+
+
+@pytest.mark.parametrize(
+    "spec,method,named",
+    [
+        (_spec("datasheet"), Method.ANALYTICAL, []),
+        (_spec("probed"), Method.ANALYTICAL, []),
+        (_spec("assumed"), Method.DECLARED, list(FIELDS)),
+        (_spec("transferred-from:mi308x-hjbog18"), Method.DECLARED, list(FIELDS)),
+        (
+            _spec(
+                "mixed",
+                {p: {"origin": "datasheet"} for p in FIELDS}
+                | {"device.memory.derate": {"origin": "assumed"}},
+            ),
+            Method.DECLARED,
+            ["device.memory.derate"],
+        ),
+    ],
+    ids=["datasheet", "probed", "assumed", "transferred", "one-derate-assumed"],
+)
+def test_the_roofline_is_declared_iff_a_spec_field_it_reads_is_not_its_own(
+    spec, method, named
+):
+    backend = StepRooflineBackend(
+        spec,
+        parameters=PARAMETERS,
+        weight_bytes=WEIGHTS,
+        kv_token_bytes=KV,
+        host_floor_s=0.0,
+    )
+    (term,) = backend.price(view((1, 900, True))).terms
+
+    assert term.provenance.method is method
+    assert [p for p in FIELDS if p in term.provenance.note] == named
+    if named:
+        assert "no successor" in term.provenance.note

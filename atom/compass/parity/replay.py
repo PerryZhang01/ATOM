@@ -15,7 +15,7 @@ from pathlib import Path
 
 from atom.compass.backends.base import CostBackend, Granularity
 from atom.compass.backends.cost import CostTerm, StepCost
-from atom.compass.backends.provenance import Provenance, Refusal, Species
+from atom.compass.backends.provenance import Method, Provenance, Refusal
 from atom.compass.backends.resolver import CostRefused
 from atom.compass.parity import ARRIVALS, read
 
@@ -45,7 +45,7 @@ class ReplayBackend(CostBackend):
             why = f"{self.path} has {len(self.seconds)} steps, and this is step {i}"
             raise CostRefused(batch_view, [Refusal(SOURCE, why)])
         detail = f"real step {i}'s forward"
-        measured = Provenance(Species.MEASURED, detail, SOURCE)
+        measured = Provenance(Method.MEASURED, detail, SOURCE)
         return StepCost([CostTerm("forward", self.seconds[i], measured)])
 
     def charge(self, batch, device_s: float) -> float:

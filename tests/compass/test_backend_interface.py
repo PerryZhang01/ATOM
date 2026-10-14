@@ -33,9 +33,9 @@ from atom.compass.backends import (
     FakeModel,
     Granularity,
     HfConfig,
+    Method,
     Provenance,
     RequestShape,
-    Species,
     StepCost,
     SyntheticStack,
 )
@@ -51,7 +51,9 @@ class TwoTermBackend(CostBackend):
         return Granularity.STEP
 
     def price(self, batch_view):
-        declared = Provenance(Species.FITTED, "declared coefficients")
+        declared = Provenance(
+            Method.DECLARED, "stated coefficients", note="stated in this test; none"
+        )
         return StepCost(
             [
                 CostTerm("launch", 0.001, declared),

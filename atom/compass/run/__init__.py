@@ -59,7 +59,7 @@ file written as the LP leaves its loop. It holds the LP's refusals: an
 engine's are the worker's refused commands and the engine's refused clock
 calls, a frontend's its executor's refused jobs and its refused clock calls.
 An engine's also holds what its worker's steps cost, for the summary's
-predicted seconds and its analytical and extrapolated shares.
+predicted seconds and their shares by method (`backends.cost.GROUPS`).
 It holds the memory the worker predicts too, for
 ``python -m atom.compass.memory.check``, and under ``step_grid`` the bundle's
 key, digest and ``describe()`` line, which the summary carries. The authority
@@ -136,7 +136,7 @@ LP_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
 #: Wall seconds the summary's writer waits for the server LPs' refusals.
 HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field changes meaning or goes.
-SUMMARY_SCHEMA_VERSION = 2
+SUMMARY_SCHEMA_VERSION = 3
 #: Compass source the host-law key leaves out, by path under the package: all
 #: of it (None), or the top-level names only an installed LP runtime reaches.
 COMPASS_ONLY = {
@@ -856,6 +856,8 @@ def frontend_done(llm_engine) -> bool:
 def _write_summary(run: dict, a: _RecordingAuthority, ended: bool = False) -> None:
     """Write the step table, then the run summary once every server LP has
     handed in its refusals, or after an early end, from those handed in so far."""
+    from atom.compass.backends.cost import GROUPS
+
     out = Path(run["out_dir"])
     _write_whole(out / STEP_TABLE_FILE, a.steps.text())
     files = {n: out / LP_FILE.format(n) for n in _hand_ins(run)}
@@ -880,20 +882,22 @@ def _write_summary(run: dict, a: _RecordingAuthority, ended: bool = False) -> No
     summary = RunSummary.of(a, end - (a.started or end), refusals=tally).as_record()
     schedule = summary["schedule"]
     schedule["predicted_seconds"] = seconds
-    # Answers no measurement backs: diagnostics, never refusals.
-    for species in ("analytical", "extrapolated"):
-        schedule[species] = {
-            "steps": total(f"{species}_steps"),
+    # How the seconds were obtained: reported, never gated.
+    schedule["seconds_by_method"] = {
+        g: {
+            "steps": total(f"{g}_steps"),
             "fraction_of_predicted_seconds": (
-                total(f"{species}_seconds") / seconds if seconds else 0.0
+                total(f"{g}_seconds") / seconds if seconds else 0.0
             ),
         }
+        for g in GROUPS
+    }
     # An engine whose workers died, or that never handed in, priced steps no
     # one counted: they are absent, not 0.
     if any(
         "priced" not in hand_ins.get(n, {}) for n in files if n.startswith("engine")
     ):
-        schedule.update(predicted_seconds=None, analytical=None, extrapolated=None)
+        schedule.update(predicted_seconds=None, seconds_by_method=None)
         schedule["refusals"].update(steps=None, fraction_of_steps=None)
     summary["configuration"] = configuration(run)
     summary["schema_version"] = SUMMARY_SCHEMA_VERSION

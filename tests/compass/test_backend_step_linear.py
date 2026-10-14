@@ -23,8 +23,8 @@ from atom.compass.backends import (
     Coefficients,
     CostRefused,
     Granularity,
+    Method,
     RequestShape,
-    Species,
     StepLinearBackend,
     StepLinearLaw,
     StepStubBackend,
@@ -88,7 +88,7 @@ IN_HULL = [
 
 
 @pytest.mark.parametrize("batch", IN_HULL, ids=range(len(IN_HULL)))
-def test_a_step_in_its_hull_prices_as_the_stub_with_one_fitted_term_per_feature(
+def test_a_step_in_its_hull_prices_as_the_stub_with_one_estimated_term_per_feature(
     batch,
 ):
     cost = backend().price(batch)
@@ -101,7 +101,9 @@ def test_a_step_in_its_hull_prices_as_the_stub_with_one_fitted_term_per_feature(
         else ["step", "context", "graph_padding"]
     )
     assert [t.name for t in cost.terms] == [f"{kind}.{f}" for f in features]
-    assert {t.provenance.species for t in cost.terms} == {Species.FITTED}
+    assert {t.provenance.method for t in cost.terms} == {Method.ESTIMATED}
+    assert {t.provenance.source for t in cost.terms} == {"step-linear"}
+    assert not any(t.provenance.validated for t in cost.terms)
     assert not cost.is_refused
 
 
@@ -131,11 +133,51 @@ def test_a_step_outside_its_hull_is_priced_by_the_same_law_extrapolated(batch, h
     cost = backend().price(batch)
 
     assert cost.seconds == StepStubBackend(STAGE1).price(batch).seconds
-    assert {t.provenance.species for t in cost.terms} == {Species.EXTRAPOLATED}
+    assert {t.provenance.method for t in cost.terms} == {Method.ESTIMATED}
+    assert {t.provenance.source for t in cost.terms} == {"step-linear-extrapolated"}
     assert all(
         t.provenance.detail.endswith(f"outside the {hull} hull") for t in cost.terms
     )
     assert not cost.is_refused
+
+
+# The square (0, 0) to (2000, 2000) over (context, graph_padding): it holds
+# TRIANGLE and two rows of 600 context, (1200, 0), and not two of 1500.
+SQUARE = {"facets": [[-1, 0, 0], [0, -1, 0], [1, 0, -2000], [0, 1, -2000]]}
+
+
+@pytest.mark.parametrize(
+    "batch,validated,source",
+    [
+        (view((1, 400, True), rung=2), True, "step-linear"),
+        (
+            view((1, 600, True), (1, 600, True), rung=2),
+            True,
+            "step-linear-extrapolated",
+        ),
+        (
+            view((1, 1500, True), (1, 1500, True), rung=2),
+            False,
+            "step-linear-extrapolated",
+        ),
+        (view((1, 900, True)), False, "step-linear"),
+    ],
+    ids=[
+        "inside-both",
+        "outside-the-fit-inside-held-out",
+        "outside-both",
+        "no-held-out",
+    ],
+)
+def test_a_term_is_validated_iff_its_step_is_inside_its_vectors_held_out_hull(
+    batch, validated, source
+):
+    written = law()
+    written["decode"]["2"]["held_out"] = {"hull": SQUARE, "bands": {}}
+    cost = StepLinearBackend(StepLinearLaw(written)).price(batch)
+
+    assert {t.provenance.validated for t in cost.terms} == {validated}
+    assert {t.provenance.source for t in cost.terms} == {source}
 
 
 def test_a_rung_with_no_vector_is_refused_by_name():

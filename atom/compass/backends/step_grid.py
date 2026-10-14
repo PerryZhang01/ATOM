@@ -28,10 +28,10 @@ replays no graph, being wider than the widest rung or eager.
 
 The answer is the lookup times the residual's factor for the batch's ordered
 rows (`step_grid_residual.py`), which the residual may refuse. It is one
-`fitted` term for the whole forward, never multiplied by the TP width, since
-the measurement already holds the collectives. Its detail keeps the lookup's
-own species, `measured` only for a homogeneous batch on a node and
-`interpolated` otherwise, and each member's output.
+`estimated` term for the whole forward, unvalidated, never multiplied by the TP
+width, since the measurement already holds the collectives. Its detail calls
+the lookup `measured` for a homogeneous batch on a node and `interpolated`
+otherwise, and gives each member's output.
 
 The grid is a mapping, as a bundle holds it:
 
@@ -57,7 +57,7 @@ from typing import TYPE_CHECKING
 
 from atom.compass.backends.base import CostBackend, Granularity
 from atom.compass.backends.cost import CostTerm, StepCost
-from atom.compass.backends.provenance import Provenance, Refusal, Species
+from atom.compass.backends.provenance import Method, Provenance, Refusal
 from atom.compass.backends.resolver import CostRefused
 from atom.compass.backends.shape import (
     BatchView,
@@ -304,15 +304,15 @@ class StepGridBackend(CostBackend):
         cells, at = self.grid.locate(view)
         value, on_node, cell = cells.lookup(view, at)
         homogeneous = len({(r.query_tokens, r.context_tokens) for r in rows}) == 1
-        species = Species.MEASURED if on_node and homogeneous else Species.INTERPOLATED
+        looked_up = "measured" if on_node and homogeneous else "interpolated"
         lookup = float(value * self.grid.unit)
         factor, summed = self.residual.factor(view)
         detail = (
-            f"lookup {lookup!r} s, {species}; {cells.name} cell {cell}; "
+            f"lookup {lookup!r} s, {looked_up}; {cells.name} cell {cell}; "
             f"residual {factor!r} = {summed}"
         )
-        fitted = Provenance(Species.FITTED, detail, SOURCE)
-        return StepCost([CostTerm("forward", lookup * factor, fitted)])
+        estimated = Provenance(Method.ESTIMATED, detail, SOURCE)
+        return StepCost([CostTerm("forward", lookup * factor, estimated)])
 
     def describe(self) -> str:
         return (

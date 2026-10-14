@@ -17,12 +17,13 @@ import sys
 from pathlib import Path
 from statistics import median
 
+from atom.compass.backends.cost import GROUPS
 from atom.compass.memory.check import MemoryRefusal, parts
 from atom.compass.run import LP_FILE, refuse_renamed_keys
 from atom.compass.validate import cost, runs
 
 BANDS = {0: "0-512", 512: "512-2048", 2048: "2048-8192", 8192: "8192+"}
-HULL = {"fitted": ("in hull", "-"), "extrapolated": ("outside hull", "not gated")}
+HULL = {"validated": ("validated", "-"), "unvalidated": ("unvalidated", "not gated")}
 GATED_COUNTS = {"preemptions", "prefill tokens"}
 
 
@@ -111,8 +112,9 @@ def _summary(run: Path, summary: dict):
         else f"cost refused {n['fraction_of_steps']:.1%} of {n['steps']} steps"
     )
     yield where, "refusals", f"{n['count']} {json.dumps(dict(n['by_source']))}; {cost}", verdict
-    for species in ("analytical", "extrapolated"):
-        yield where, species, json.dumps(schedule.get(species)), "not gated"
+    by_method = schedule["seconds_by_method"] or {}
+    for g in GROUPS:
+        yield where, g, json.dumps(by_method.get(g)), "not gated"
     ratio = c["speed_refused"] or f"{c['speed_ratio']:.1f}x"
     value = f"{ratio}: {c['simulated_seconds']:.0f} simulated s in {c['wall_seconds']:.0f} wall s"
     met = {True: "meets", False: "below"}.get(c["meets_speed_target"], "no result for")

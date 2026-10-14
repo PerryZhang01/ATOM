@@ -13,8 +13,10 @@ the machine's derated peaks:
 P is the parameter count one rank holds. The weights are read once per step,
 the KV each row attends over is read and the KV of the tokens computed is
 written, one token's KV spanning every paged layer. The host floor is the
-declared launches x h of one step. Nothing here was measured on the model, so
-the step's one term is `analytical`, named by the bound that won.
+stated launches x h of one step. The step's one term is named by the bound
+that won. Its method follows the origins of the machine spec fields it reads
+(`FIELDS`): `analytical` when each is from a datasheet or probed, `declared`,
+with a note naming the others, when any is assumed or transferred.
 
 `StepFallbackBackend` asks a backend first and the roofline only for a step
 that backend refuses, so a law with no vector for a step still prices it. The
@@ -31,11 +33,23 @@ import math
 
 from atom.compass.backends.base import CostBackend, Granularity
 from atom.compass.backends.cost import CostTerm, StepCost
-from atom.compass.backends.provenance import Provenance, Species
+from atom.compass.backends.provenance import Method, Provenance, combine
 from atom.compass.backends.resolver import CostRefused
 from atom.compass.backends.shape import BatchView, sum_context, sum_tokens
 
 SOURCE = "step-roofline"
+#: The machine spec fields a roofline reads, whose origins decide its method.
+FIELDS = (
+    "device.compute.bf16_flops",
+    "device.compute.derate",
+    "device.memory.bandwidth_bytes_per_s",
+    "device.memory.derate",
+)
+
+
+def _method(origin: str) -> Method:
+    """A spec field's method as a roofline parameter."""
+    return Method.ANALYTICAL if origin in ("datasheet", "probed") else Method.DECLARED
 
 
 class StepRooflineBackend(CostBackend):
@@ -72,6 +86,18 @@ class StepRooflineBackend(CostBackend):
         self.weight_bytes = weight_bytes
         self.kv_token_bytes = kv_token_bytes
         self.host_floor_s = float(host_floor_s)
+        origins = {path: machine.origin(path)["origin"] for path in FIELDS}
+        self.method = combine(map(_method, origins.values()))
+        stated = [
+            f"{p} {o}" for p, o in origins.items() if _method(o) is Method.DECLARED
+        ]
+        self.note = (
+            f"{', '.join(stated)} in the machine spec {machine.value('name')}; "
+            "no successor: the roofline is the last step-level source, and "
+            "reads analytical once these fields are from a datasheet or probed"
+            if stated
+            else ""
+        )
 
     @property
     def granularity(self) -> Granularity:
@@ -93,7 +119,7 @@ class StepRooflineBackend(CostBackend):
                 CostTerm(
                     f"roofline.{bound}",
                     bounds[bound],
-                    Provenance(Species.ANALYTICAL, detail, SOURCE),
+                    Provenance(self.method, detail, SOURCE, note=self.note),
                 )
             ]
         )

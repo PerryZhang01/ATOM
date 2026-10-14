@@ -36,7 +36,7 @@ vector reports, under `fit.all_rows`, the centre and scaled MAD of the fit on
 every rank's row, each step priced as its max over ranks, and under
 `fit.passes` the refits the alternation took, null when the picks still moved
 after `MAD_PASSES` refits. Held-out errors are
-printed at `--dp 1` only.
+printed and written at `--dp 1` only.
 
 Records with a host key (`dp0.key.json`, from the real runner) also give the
 host laws as a run file's `host` entry: `key`, and `laws[kind][segment]`,
@@ -76,7 +76,10 @@ the p50 error without and with it.
 With two or more records it also prints, per form, the error on each record of
 a law fitted on the others, warm steps left out: per kind and rung, or prefill
 token band, the p10, p50 and p90 of `predicted / measured - 1`; and the same
-per host law.
+per host law. The law's own form's errors are written into it: under each
+vector's `held_out`, the convex hull of the steps they were measured on and
+their percentiles per band, which `StepLinearLaw` reads to mark a term
+validated. A vector whose held-out steps span no hull gets none.
 """
 
 from __future__ import annotations
@@ -84,6 +87,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from collections import deque
 from pathlib import Path
 
@@ -602,25 +606,65 @@ def _band(key: str, counts) -> str:
     return f"prefill tokens {lo}-{hi}"
 
 
-def held_out(records, form: str = "base") -> dict:
-    """Per band, the relative errors on each record of the law fitted on the others."""
-    warm = fit(records, form)["warm_steps"]
-    errors: dict[str, list[float]] = {}
+def _held_out(records, form: str, warm=None):
+    """Each step of each record, warm steps left out, priced by the law fitted
+    on the other records: (vector, band, counts, context, relative error), the
+    error nan where that law has no vector for the step."""
+    if warm is None:
+        warm = fit(records, form)["warm_steps"]
     for i, record in enumerate(records):
         law = fit(records[:i] + records[i + 1 :], form)
         for key, counts, seconds, step, context in samples(record, form)[0]:
             if step in warm[i]:
                 continue
             vector = law["decode"].get(key) if key != "prefill" else law.get(key)
-            band = _band(key, counts)
-            if vector is None:
-                errors.setdefault(f"{band} (no vector)", []).append(float("nan"))
-                continue
-            if "rowmod" in vector:
-                counts += (rowmod(context, vector["rowmod"]),)
-            price = np.dot(list(vector["coefficients"].values()), counts)
-            errors.setdefault(band, []).append(float(price) / seconds - 1.0)
+            error = float("nan")
+            if vector is not None:
+                x = counts + _rowmod_count(vector, context)
+                price = np.dot(list(vector["coefficients"].values()), x)
+                error = float(price) / seconds - 1.0
+            yield key, _band(key, counts), counts, context, error
+
+
+def _rowmod_count(vector: dict, context) -> tuple:
+    return (rowmod(context, vector["rowmod"]),) if "rowmod" in vector else ()
+
+
+def held_out(records, form: str = "base") -> dict:
+    """Per band, the relative errors on each record of the law fitted on the others."""
+    errors: dict[str, list[float]] = {}
+    for _, band, _, _, error in _held_out(records, form):
+        band = band if not math.isnan(error) else f"{band} (no vector)"
+        errors.setdefault(band, []).append(error)
     return errors
+
+
+def mark_held_out(law: dict, records, form: str = "base") -> None:
+    """Write under each of `law`'s vectors, as `held_out`, the hull of its steps
+    `_held_out` priced and their errors per band."""
+    from scipy.spatial import QhullError
+
+    rows = [
+        r for r in _held_out(records, form, law["warm_steps"]) if not math.isnan(r[4])
+    ]
+    for key, vector in [("prefill", law.get("prefill")), *law["decode"].items()]:
+        mine = [r for r in rows if r[0] == key]
+        if vector is None or not mine:
+            continue
+        points = [c + _rowmod_count(vector, x) for _, _, c, x, _ in mine]
+        try:
+            hull = _hull(
+                np.array(points, dtype=np.float64)[:, 1:],
+                tuple(vector["coefficients"])[1:],
+            )
+        except (ValueError, QhullError):
+            continue
+        bands = {}
+        for band in sorted({r[1] for r in mine}):
+            e = [r[4] for r in mine if r[1] == band]
+            p10, p50, p90 = np.percentile(e, (10, 50, 90)).tolist()
+            bands[band] = {"steps": len(e), "p10": p10, "p50": p50, "p90": p90}
+        vector["held_out"] = {"hull": hull, "bands": bands}
 
 
 def host_held_out(records) -> dict:
@@ -663,6 +707,8 @@ def main(argv=None) -> None:
     )
     args = parser.parse_args(argv)
     law = fit(args.records, args.form, args.dp)
+    if len(args.records) > 1 and args.dp == 1:
+        mark_held_out(law, args.records, args.form)
     Path(args.out).write_text(json.dumps(law) + "\n")
     print(f"cut: {json.dumps(law['cut'])}")
     for name, vector in [("prefill", law.get("prefill"))] + list(law["decode"].items()):
