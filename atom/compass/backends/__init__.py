@@ -5,13 +5,16 @@
 
 The pieces, and the rule each exists to make structural rather than customary:
 
-- `CostBackend` -- `estimate(batch_view) -> StepCost` plus `describe()`. Takes a
-  projection of the batch, so nothing here imports the engine.
+- `CostBackend` -- `price(batch_view) -> StepCost` plus `describe()`, and a
+  `Granularity`, step or op. Takes a projection of the batch, so nothing here
+  imports the engine.
 - `StepCost` / `CostTerm` -- a total folded from its parts on every read, with
   the parts re-checked on every read, so it cannot drift from them; a breakdown
   that cannot be empty; and no subclass that can shadow either.
-- `Provenance` / `Species` / `Refusal` -- every number says how it was obtained
-  and what produced it, with no default that would let one avoid saying.
+- `Provenance` / `Method` / `Refusal` -- every number says how it was obtained
+  (analytical, declared, measured or estimated, and whether an estimate is
+  validated) and what produced it, with no default that would let one avoid
+  saying.
 - `Resolver` / `CostSource` -- sources consulted in a fixed order, with every
   refusal on the way down recorded on the answer rather than inferred from it.
 - `KvGeometry` / `Parallelism` -- what a KV block costs and how each parallel
@@ -21,18 +24,21 @@ The pieces, and the rule each exists to make structural rather than customary:
   row per request, with the batch-level sums derived from those rows and no way
   to hand them in instead. It lives here so the no-engine-imports scan, which
   reads this package and nothing else, covers it.
-- `ShapeStubBackend` / `Coefficients` -- a stand-in that multiplies declared
+- `StepStubBackend` / `Coefficients` -- a stand-in that multiplies stated
   coefficients into a step's shapes, so a longer chunk costs longer and the
-  scheduler can be caught reacting to the price. Every number it emits says it
-  was declared rather than obtained, in the record and not only in the source.
-- `CoarseLaw` / `CoarseBackend` -- tier a: a fitted prefill vector and a decode
-  vector per capture rung, each with the convex hull it was fitted on; a step
-  outside its hull is priced and its terms say `extrapolated`.
-- `StepFitGrid` / `StepFitBackend` -- tier a: a grid of measured whole
+  scheduler can be caught reacting to the price. Every number it emits is
+  `declared`, in the record and not only in the source.
+- `StepLinearLaw` / `StepLinearBackend` -- step-level: a fitted prefill vector
+  and a decode vector per capture rung, each with the convex hull it was
+  fitted on; its terms are `estimated`, a step outside its hull is priced
+  with the extrapolation named in their source, and a term is validated only
+  inside the hull of the law's held-out steps.
+- `StepGrid` / `StepGridBackend` -- step-level: a grid of measured whole
   forwards, read at a batch's equivalent homogeneous shape, answering only
   inside a cell whose every corner was measured and refusing elsewhere.
-- `ProvenanceMix` -- the run-level mixture, and refusals counted by number, by
-  fraction of steps and by fraction of predicted seconds. A run with nothing in
+- `ProvenanceMix` -- the run-level mixture by method and validated, and
+  refusals counted by number, by fraction of steps and by fraction of
+  predicted seconds. A run with nothing in
   it has no fractions and says so, rather than reporting a reassuring zero.
 - `FakeModel` / `SyntheticStack` / `HfConfig` -- the stand-in itself: the
   widths are declared once and reach the geometry and the price together, so
@@ -41,8 +47,7 @@ The pieces, and the rule each exists to make structural rather than customary:
   has, and both are read through the same attributes.
 """
 
-from atom.compass.backends.base import CostBackend, Tier
-from atom.compass.backends.coarse import CoarseBackend, CoarseLaw
+from atom.compass.backends.base import CostBackend, Granularity
 from atom.compass.backends.cost import (
     CostTerm,
     ProvenanceMix,
@@ -51,39 +56,36 @@ from atom.compass.backends.cost import (
     fold_step,
 )
 from atom.compass.backends.geometry import KvGeometry, Parallelism
-from atom.compass.backends.ladder import (
-    CostRefused,
-    CostSource,
-    Resolution,
-    Resolver,
-)
 from atom.compass.backends.model import (
     FakeModel,
     HfConfig,
     SyntheticStack,
     hf_config,
 )
-from atom.compass.backends.provenance import Provenance, Refusal, Species
-from atom.compass.backends.shape import (
-    BatchView,
-    Coefficients,
-    RequestShape,
-    ShapeStubBackend,
+from atom.compass.backends.provenance import Method, Provenance, Refusal, combine
+from atom.compass.backends.resolver import (
+    CostRefused,
+    CostSource,
+    Resolution,
+    Resolver,
 )
-from atom.compass.backends.step_fit import StepFitBackend, StepFitGrid
+from atom.compass.backends.shape import BatchView, RequestShape
+from atom.compass.backends.step_grid import StepGrid, StepGridBackend
+from atom.compass.backends.step_linear import StepLinearBackend, StepLinearLaw
+from atom.compass.backends.step_stub import Coefficients, StepStubBackend
 
 __all__ = [
     "BatchView",
-    "CoarseBackend",
-    "CoarseLaw",
     "Coefficients",
     "CostBackend",
     "CostRefused",
     "CostSource",
     "CostTerm",
     "FakeModel",
+    "Granularity",
     "HfConfig",
     "KvGeometry",
+    "Method",
     "Parallelism",
     "Provenance",
     "ProvenanceMix",
@@ -91,13 +93,14 @@ __all__ = [
     "RequestShape",
     "Resolution",
     "Resolver",
-    "ShapeStubBackend",
-    "Species",
     "StepCost",
-    "StepFitBackend",
-    "StepFitGrid",
+    "StepGrid",
+    "StepGridBackend",
+    "StepLinearBackend",
+    "StepLinearLaw",
+    "StepStubBackend",
     "SyntheticStack",
-    "Tier",
+    "combine",
     "fold_seconds",
     "fold_step",
     "hf_config",

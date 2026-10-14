@@ -7,10 +7,12 @@ Request k's prompt starts with k, and it asks for a fixed number of tokens
 with ``ignore_eos``, streamed. On a real run (`ATOM_COMPASS_RUN` unset)
 request k is sent GAP_S * k wall seconds after the first and not before the
 server has admitted request k - 1, each on its own thread; the worker clock's
-reading as each was sent goes to `ARRIVALS` in RECORD, the real run's parity
-record directory. On a simulated run this process is the traffic LP: it sends
-request k at that reading less the first one, on the run's clock, and takes
-every stream event the authority releases until the finish.
+reading as each was sent, and as its response headers arrived (the server
+answers once it has handed the request to the engine), goes to `ARRIVALS` in
+RECORD, the real run's parity record directory. On a simulated run this
+process is the traffic LP: it sends request k at its send reading less the
+first one, on the run's clock, and takes every stream event the authority
+releases until the finish.
 """
 
 import http.client
@@ -66,6 +68,7 @@ def real(port: int, requests: list[dict], gap_s: float, record: Path) -> None:
     end, write `ARRIVALS`."""
     sent, start = [0] * len(requests), time.monotonic()
     admitted = [threading.Event() for _ in requests]
+    admitted_ns = [0] * len(requests)
 
     def one(k: int) -> None:
         time.sleep(max(0.0, start + k * gap_s - time.monotonic()))
@@ -74,6 +77,7 @@ def real(port: int, requests: list[dict], gap_s: float, record: Path) -> None:
                 admitted[k - 1].wait()
             sent[k] = time.monotonic_ns()
             lines = post(port, requests[k], {})
+            admitted_ns[k] = time.monotonic_ns()
         finally:
             admitted[k].set()
         if DONE not in lines:
@@ -81,7 +85,8 @@ def real(port: int, requests: list[dict], gap_s: float, record: Path) -> None:
 
     with ThreadPoolExecutor(len(requests)) as pool:
         list(pool.map(one, range(len(requests))))
-    (record / ARRIVALS).write_text(json.dumps({"sent_ns": sent}))
+    arrivals = {"sent_ns": sent, "admitted_ns": admitted_ns}
+    (record / ARRIVALS).write_text(json.dumps(arrivals))
 
 
 class Traffic:

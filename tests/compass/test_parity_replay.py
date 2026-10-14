@@ -14,7 +14,7 @@ import time
 
 import pytest
 from test_parity_record import BLOCK, _config, _prompt, _Runner
-from test_run_step_fit import B37, decode, deployment
+from test_run_step_grid import B37, decode, deployment
 from test_vertical_slice import _run_file
 
 from atom.compass import run as compass_run
@@ -136,7 +136,7 @@ def test_a_run_file_naming_a_record_replays_it_on_the_engine_clock(
     monkeypatch.delenv(ENV)
     r = deployment(tmp_path)
     run = json.loads(_run_file(tmp_path).read_text())
-    del run["coefficients"]
+    del run["step_stub"]
     (tmp_path / "run.json").write_text(json.dumps(run | {"replay": str(directory)}))
     monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
     monkeypatch.setenv(compass_run.NOW_ENV, str(tmp_path / "now.bin"))
@@ -170,3 +170,22 @@ def test_a_real_workload_is_sent_in_order_and_its_send_times_written(tmp_path):
     sent = json.loads((tmp_path / ARRIVALS).read_text())["sent_ns"]
     assert seen == [(str(k), k) for k in range(6)]
     assert sent == sorted(sent) and len(set(sent)) == 6
+
+
+def test_a_real_workload_writes_when_each_request_was_admitted(tmp_path):
+    class Server(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["content-length"]))
+            time.sleep(0.02)  # the admission
+            self.send_response(200)
+            self.end_headers()
+            time.sleep(0.2)  # the stream, after the headers
+            self.wfile.write(b"data: [DONE]\n\n")
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Server)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    traffic.real(server.server_port, traffic.bodies("m", 3), 0.0, tmp_path)
+    server.shutdown()
+    arrivals = json.loads((tmp_path / ARRIVALS).read_text())
+    waits = [a - s for s, a in zip(arrivals["sent_ns"], arrivals["admitted_ns"])]
+    assert len(waits) == 3 and all(0.02e9 <= w < 0.2e9 for w in waits), waits

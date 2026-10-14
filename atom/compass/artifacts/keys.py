@@ -48,7 +48,7 @@ class Kind(enum.Enum):
     REGION_TERMS = "region_terms"
     MEMORY_READINGS = "memory_readings"
     COVERAGE_HULL = "coverage_hull"
-    STEP_FIT_BUNDLE = "step_fit_bundle"
+    STEP_GRID_BUNDLE = "step_grid_bundle"
 
     def __str__(self) -> str:
         return self.value
@@ -73,7 +73,7 @@ KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
     Kind.COVERAGE_HULL: ("price_list",),
     # `engine_config` names the one the grid was planned for; `grid` names
     # the grid definition with its margin.
-    Kind.STEP_FIT_BUNDLE: (
+    Kind.STEP_GRID_BUNDLE: (
         "model",
         "device",
         "parallel",

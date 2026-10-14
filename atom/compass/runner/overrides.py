@@ -494,21 +494,20 @@ class PricedSteps:
 
     def priced_steps(self) -> dict[str, Any]:
         """This rank's own steps, folded into one `ProvenanceMix` as each was
-        priced, before the max over the DP group, with the analytical and the
-        extrapolated steps and seconds apart. A dict even before the first
-        step, since a None reply parks the engine that asks.
+        priced, before the max over the DP group, with the steps and seconds
+        of each of `GROUPS` apart. A dict even before the first step, since a
+        None reply parks the engine that asks.
         """
-        from atom.compass.backends.cost import ProvenanceMix
-        from atom.compass.backends.provenance import Species
+        from atom.compass.backends.cost import GROUPS, ProvenanceMix, group
 
         mix = vars(self).get("_priced") or ProvenanceMix()
-        steps, seconds = mix.steps_by_species(), mix.seconds_by_species()
-        apart = (Species.ANALYTICAL, Species.EXTRAPOLATED)
+        steps = {group(*k): n for k, n in mix.steps_by_method().items()}
+        seconds = {group(*k): s for k, s in mix.seconds_by_method().items()}
         return {
             "steps": mix.steps,
             "seconds": mix.seconds,
-            **{f"{s}_steps": steps.get(s, 0) for s in apart},
-            **{f"{s}_seconds": seconds.get(s, 0.0) for s in apart},
+            **{f"{g}_steps": steps.get(g, 0) for g in GROUPS},
+            **{f"{g}_seconds": seconds.get(g, 0.0) for g in GROUPS},
         }
 
 
@@ -520,17 +519,17 @@ class PredictedMemory:
         return vars(self).get("compass_memory", {})
 
 
-class StepFitBundle:
-    """The step fit bundle a runner prices with, read by the engine's hand-in."""
+class StepGridBundle:
+    """The step grid bundle a runner prices with, read by the engine's hand-in."""
 
-    def step_fit_bundle(self) -> dict[str, Any]:
-        """`compass_step_fit` as a step fit run installed it; empty before
+    def step_grid_bundle(self) -> dict[str, Any]:
+        """`compass_step_grid` as a step grid run installed it; empty before
         one is, since a None reply parks the engine."""
-        return vars(self).get("compass_step_fit", {})
+        return vars(self).get("compass_step_grid", {})
 
 
 class NonAllocatingRunner(
-    RefusedControlCommands, PricedSteps, PredictedMemory, StepFitBundle
+    RefusedControlCommands, PricedSteps, PredictedMemory, StepGridBundle
 ):
     """Overrides that construct a model runner without touching device memory."""
 
@@ -877,7 +876,7 @@ class NonAllocatingRunner(
         from atom.compass.parity import record_step
         from atom.model_engine.scheduler import ScheduledBatchOutput
 
-        record_step(self, batch)
+        mode = record_step(self, batch)
 
         stream = getattr(self, "_token_stream", None)
         if stream is None:
@@ -910,12 +909,17 @@ class NonAllocatingRunner(
             self._token_stream = stream
         return ScheduledBatchOutput(
             **stream.step(batch),
-            predicted_s=_group_step_seconds(self, batch, backend),
+            predicted_s=_group_step_seconds(self, batch, backend, mode),
         )
 
 
-def _group_step_seconds(runner: Any, batch: Any, backend: CostBackend) -> float:
+def _group_step_seconds(
+    runner: Any, batch: Any, backend: CostBackend, mode: Any = None
+) -> float:
     """This rank's step priced from its own batch, then the max over its DP group.
+
+    `mode` is the step's `ForwardMode` when the step record already settled
+    it; without one it is settled here, which runs the DP collective.
 
     In a run, `compass_host` composes the price, device seconds, with host time.
     The `all_reduce(MAX)` stands in for the cross-rank collectives a real
@@ -940,12 +944,13 @@ def _group_step_seconds(runner: Any, batch: Any, backend: CostBackend) -> float:
             "stage the whole model would count it once per stage"
         )
     from atom.compass.backends.cost import ProvenanceMix
-    from atom.compass.backends.ladder import CostRefused
+    from atom.compass.backends.resolver import CostRefused
 
-    mode = forward_mode(batch, runner)
+    if mode is None:
+        mode = forward_mode(batch, runner)
     mix = vars(runner).setdefault("_priced", ProvenanceMix())
     try:
-        cost = backend.estimate(batch_view(batch, mode, runner))
+        cost = backend.price(batch_view(batch, mode, runner))
     except CostRefused as refused:
         if getattr(runner, "compass_abort", False):
             raise

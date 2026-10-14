@@ -58,7 +58,7 @@ class Rule(enum.Enum):
     NO_DEFAULTS = "a runtime constant has no default"
     DERATE = "a spec-peak number carries a derate"
     PINNED_STACK = "the constants are pinned to a software stack"
-    TOKENIZER_IDENTITY = "a tokenizer is measured or it is refused"
+    TOKENIZER_IDENTITY = "a tokenizer is probed or it is refused"
     SHAPE = "the document has the shape the schema declares"
     TOTALITY = "a spec resolves every field the document was required to state"
     ADDRESSING = "a field is asked for by the path of the field itself"
@@ -93,11 +93,11 @@ class SpecRefusal(Exception):
 
 
 class StackMismatch(UserWarning):
-    """The stack a spec was measured against is not the stack now loaded."""
+    """The stack a spec was probed against is not the stack now loaded."""
 
 
 class FingerprintMismatch(UserWarning):
-    """The tokenizer now loaded is not the one whose rates were measured."""
+    """The tokenizer now loaded is not the one whose rates were probed."""
 
 
 def refuse_block(path: str, holds: tuple[str, ...]) -> NoReturn:
@@ -162,17 +162,17 @@ def refuse_absent_fields(paths: tuple[str, ...]) -> NoReturn:
     """
     one = len(paths) == 1
     named = ", ".join(f"`{path}`" for path in paths)
-    are, them, measures = (
-        ("is", "it", "fragment that measures this field")
+    are, them, suppliers = (
+        ("is", "it", "fragment that supplies this field")
         if one
-        else ("are", "them", "fragments that measure these fields")
+        else ("are", "them", "fragments that supply these fields")
     )
     raise SpecRefusal(
         Rule.TOTALITY,
         f"{named} {are} declared by this schema, and this spec carries no value "
         f"for {them}",
         "a spec read with `MachineSpec.from_mapping` resolves every required "
-        f"field, so this one was assembled from parts; merge the {measures} "
+        f"field, so this one was assembled from parts; merge the {suppliers} "
         f"before asking for {them}",
     )
 

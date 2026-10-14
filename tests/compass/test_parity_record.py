@@ -22,7 +22,7 @@ from conftest import MockConfig
 from test_dp_step_max import dp2  # noqa: F401  the dp2 fixture
 
 from atom.compass import run
-from atom.compass.backends.shape import ShapeStubBackend
+from atom.compass.backends.step_stub import StepStubBackend
 from atom.compass.parity import (
     ENV,
     RUNNER,
@@ -68,6 +68,13 @@ def _config(dp_rank=0, pipeline_parallel_size=1, budget=BUDGET, blocks=4096):
         parallel_config=SimpleNamespace(
             data_parallel_rank=dp_rank, data_parallel_size=1
         ),
+        # The engine fields a record states, which a real Config always has.
+        enforce_eager=False,
+        capture_sizes=list(LADDER),
+        kv_cache_dtype="bf16",
+        quant_config=SimpleNamespace(compute_hash=lambda: "q"),
+        tensor_parallel_size=1,
+        kv_transfer_config={},
     )
 
 
@@ -76,10 +83,14 @@ class _Runner(NonAllocatingRunner):
 
     def __init__(self, config, rank=0):
         self.config, self.rank = config, rank
-        install_cost_backend(self, ShapeStubBackend())
+        install_cost_backend(self, StepStubBackend())
         self.capture_sizes_np, self.enforce_eager = np.array(LADDER), False
         self.attn_metadata_builder = GRAPHABLE
         self._token_stream = DeferredTokenStream([0])
+
+
+#: The pricing step, kept before `_unpriced` stubs it for the module.
+GROUP_STEP_SECONDS = overrides._group_step_seconds
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -424,6 +435,84 @@ def test_pipeline_parallelism_is_refused(tmp_path, monkeypatch):
         runner.forward(batches[0])
 
 
+def _engine(blocks):
+    """The engine `_config` resolves at `max_num_seqs` 4 with `blocks` KV blocks."""
+    return {
+        "ladder": [1, 2, 4],
+        "kv_cache_block_size": BLOCK,
+        "kv_cache_dtype": "bf16",
+        "quantization": "q",
+        "tensor_parallel_size": 1,
+        "max_num_seqs": 4,
+        "max_num_batched_tokens": BUDGET,
+        "max_model_len": 2048,
+        "num_kvcache_blocks": blocks,
+    }
+
+
+def test_a_simulated_record_states_the_engine_its_runner_resolved(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv(ENV, str(tmp_path))
+    path = tmp_path / "dp1.engine.json"
+    path.write_text("an earlier run's")
+    config = _config(dp_rank=1)
+    config.max_num_seqs = 4
+    runner = _Runner(config)
+    # As `EngineCore.__init__` does: size the pool, capture, then schedule.
+    runner.allocate_kv_cache(300)
+    runner.capture_cudagraph()
+    scheduler = Scheduler(config)
+    params = SamplingParams(max_tokens=3, ignore_eos=True)
+    for i in range(6):
+        scheduler.add(Sequence(_prompt(i)[:20], BLOCK, sampling_params=params))
+
+    def step():
+        batch, seqs = scheduler.schedule()
+        reply = runner.forward(batch)
+        scheduler.postprocess(
+            list(seqs.values()), reply, stream_output_queue=queue.Queue(), batch=batch
+        )
+
+    step()
+    assert json.loads(path.read_text()) == _engine(300)
+    # Written once, by the first step.
+    path.unlink()
+    step()
+    assert not path.exists()
+
+
+def test_a_real_record_states_the_engine_its_runner_resolved(tmp_path, monkeypatch):
+    batches = _drive(tmp_path / "simulated", monkeypatch, {0: [0]})[0][0]
+
+    class _Base:
+        """ATOM's runner: `allocate_kv_cache` sets the count on its own config."""
+
+        def __init__(self, rank, config):
+            self.rank, self.config = rank, config
+            self.capture_sizes_np, self.enforce_eager = np.array(LADDER), False
+            self.attn_metadata_builder = GRAPHABLE
+
+        def allocate_kv_cache(self, num_kvcache_blocks):
+            self.config.num_kvcache_blocks = num_kvcache_blocks
+            return True
+
+        def forward(self, batch):
+            return "ran"
+
+    class _Recorded(StepRecording, _Base):
+        step_clock_ns = staticmethod(time.monotonic_ns)
+
+    monkeypatch.setenv(ENV, str(tmp_path / "real"))
+    config = _config()
+    config.max_num_seqs = 4
+    runner = _Recorded(0, config)
+    runner.allocate_kv_cache(300)
+    assert runner.forward(batches[0]) == "ran"
+    path = tmp_path / "real" / "dp0.engine.json"
+    assert json.loads(path.read_text()) == _engine(300)
+
+
 def test_the_mixin_records_from_the_first_forward_after_construction(
     tmp_path, monkeypatch
 ):
@@ -561,6 +650,39 @@ def test_a_dp2_real_runner_records_moe_rows_from_its_forwards_one_collective(
             2 * step["rung"] if step["rung"] else sum(b.total_tokens_num for b in pair)
             for step, pair in zip(simulated[rank], zip(*batches))
         ]
+
+
+def test_a_dp2_simulated_runner_records_and_prices_from_one_collective(
+    tmp_path, monkeypatch, dp2  # noqa: F811
+):
+    built = _drive(tmp_path / "source", monkeypatch, {0: [0], 1: [1]})
+    batches = [built[rank][0] for rank in (0, 1)]
+    calls = {}  # thread -> sync_dp_metadata calls
+    sync = ubatching.sync_dp_metadata
+
+    def counted(**kwargs):
+        calls[threading.get_ident()] = calls.get(threading.get_ident(), 0) + 1
+        return sync(**kwargs)
+
+    monkeypatch.setattr(ubatching, "sync_dp_metadata", counted)
+    monkeypatch.setattr(overrides, "_group_step_seconds", GROUP_STEP_SECONDS)
+    monkeypatch.setenv(ENV, str(tmp_path / "simulated"))
+    runners = []
+    for rank in (0, 1):
+        runners.append(_Runner(_config(rank)))
+        runners[-1].config.parallel_config.data_parallel_size = 2
+    replies = dp2(
+        *(
+            lambda r=r, bs=bs: [r.forward(b).predicted_s for b in bs]
+            for r, bs in zip(runners, batches)
+        )
+    )
+
+    assert len(batches[0]) == len(batches[1])
+    assert list(calls.values()) == [len(batches[0])] * 2
+    record = read(tmp_path / "simulated")
+    assert [len(record[rank]) for rank in (0, 1)] == [len(batches[0])] * 2
+    assert replies[0] == replies[1]
 
 
 @pytest.mark.parametrize(

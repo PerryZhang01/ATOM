@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 #
-# The real cells tier a's law and the host laws are fitted from: cc-traces 256
+# The real cells the step linear law and the host laws are fitted from: cc-traces 256
 # to 392 on a real TP1 server through `REAL=1 cctraces_sim.sh`, at each
 # concurrency in CELLS, one cell at a time, since a cell run beside another
 # moves the host time the host laws measure. Each cell is stopped STEPS_S
@@ -23,7 +23,7 @@
 # status, 143 for a stopped cell: aiperf, stopped by SIGTERM, writes no export,
 # and cctraces_sim.sh exits with aiperf's status. Fit the
 # records with
-#   python -m atom.compass.backends.coarse_fit --form history \
+#   python -m atom.compass.backends.step_linear_fit --form history \
 #       OUT_DIR/c{1,4,16,64,256}/steps/dp0.jsonl --out LAW
 set -uo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/_lib.sh"

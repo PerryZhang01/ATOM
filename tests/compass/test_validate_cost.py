@@ -3,7 +3,7 @@
 
 Each record is the JSON lines a real runner writes, each step's device busy
 time (`d_busy_ns`) the law's price, times a stretch where one is planted. It
-is read by `parity.read` and priced by `CoarseBackend.estimate`.
+is read by `parity.read` and priced by `StepLinearBackend.price`.
 """
 
 import json
@@ -24,11 +24,18 @@ LAW = {
             "query_cached": 1e-9,
         },
         "hull": {"facets": BOX + [[0, 0, -1, 0], [0, 0, 1, -1e7]]},
+        "held_out": {"hull": {"facets": BOX + [[0, 0, -1, 0], [0, 0, 1, -1e7]]}},
     },
     "decode": {
         "1": {
             "coefficients": {"step": 0.02, "context": 1e-7, "graph_padding": 0.0},
             "hull": {"equal": {"graph_padding": 0}, "facets": [[-1, 100], [1, -1e5]]},
+            "held_out": {
+                "hull": {
+                    "equal": {"graph_padding": 0},
+                    "facets": [[-1, 100], [1, -1e5]],
+                }
+            },
         }
     },
 }
@@ -85,8 +92,8 @@ def test_the_step_that_moves_the_total_is_held_out_and_the_spread_reported(tmp_p
     report = cost_accuracy(record, LAW)
 
     assert report["cut"] == {"exposed": 0, "mixed": 0}
-    assert report["extrapolated"] == {} and report["refused"] == {}
-    prefill = report["fitted"]["prefill"]
+    assert report["unvalidated"] == {} and report["refused"] == {}
+    prefill = report["validated"]["prefill"]
     assert prefill["steps"] == 10
     assert prefill["on_totals"] > 0.05
     assert prefill["held_out_step"] == 4
@@ -96,17 +103,17 @@ def test_the_step_that_moves_the_total_is_held_out_and_the_spread_reported(tmp_p
     assert low["steps"] == 5 and low["within_10pct"] == 0.8
     assert low["p90"] > 0.2 and low["p50"] == pytest.approx(0.0, abs=1e-9)
     assert prefill["bands"]["prefill tokens 512-2048"]["within_10pct"] == 1.0
-    decode = report["fitted"]["decode"]
+    decode = report["validated"]["decode"]
     assert decode["steps"] == 10 and set(decode["bands"]) == {"decode rung 1"}
-    assert decode["measured_s"] == pytest.approx(decode["priced_s"], rel=1e-9)
+    assert decode["real_s"] == pytest.approx(decode["priced_s"], rel=1e-9)
 
     # Two under-priced steps after one at its price, so neither leads: step 5
     # is short by the most seconds, step 1 by the largest ratio.
     record = _record(tmp_path / "under", _steps(), stretch={1: 2.2, 5: 1.8})
-    assert cost_accuracy(record, LAW)["fitted"]["prefill"]["held_out_step"] == 5
+    assert cost_accuracy(record, LAW)["validated"]["prefill"]["held_out_step"] == 5
 
 
-def test_extrapolated_and_refused_steps_are_reported_apart(tmp_path):
+def test_unvalidated_and_refused_steps_are_reported_apart(tmp_path):
     steps = _steps()
     wide = ([(5000, 5000, False)], None)  # tokens beyond the hull's 1000
     rung2 = ([(1, 3000, True), (1, 4000, True)], 2)  # no vector for rung 2
@@ -116,16 +123,16 @@ def test_extrapolated_and_refused_steps_are_reported_apart(tmp_path):
     report = cost_accuracy(record, LAW)
 
     assert report["cut"] == {"exposed": 0, "mixed": 0}
-    (extrapolated,) = report["extrapolated"].values()
+    (extrapolated,) = report["unvalidated"].values()
     assert extrapolated["steps"] == 1
-    assert extrapolated["measured_s"] == pytest.approx(2 * _price(wide[0]), rel=1e-9)
+    assert extrapolated["real_s"] == pytest.approx(2 * _price(wide[0]), rel=1e-9)
     assert extrapolated["on_totals"] == pytest.approx(-0.5, rel=1e-9)
     assert extrapolated["bands"]["prefill tokens 2048-8192"]["within_10pct"] == 0.0
-    fitted = report["fitted"]["prefill"]
+    fitted = report["validated"]["prefill"]
     assert fitted["steps"] == 10
     assert fitted["on_totals"] == pytest.approx(0.0, abs=1e-9)
     assert report["refused"] == {
-        "decode rung 2": {"steps": 1, "measured_s": pytest.approx(_price(rung2[0]))}
+        "decode rung 2": {"steps": 1, "real_s": pytest.approx(_price(rung2[0]))}
     }
 
 
@@ -154,14 +161,14 @@ def test_a_one_off_slow_step_is_named_warm_mid_record_and_enters_no_total(
         {
             "step": 5,
             "band": "prefill tokens 512-2048",
-            "measured_s": pytest.approx(40 * _price(steps[5][0]), rel=1e-6),
+            "real_s": pytest.approx(40 * _price(steps[5][0]), rel=1e-6),
             "priced_s": pytest.approx(_price(steps[5][0]), rel=1e-9),
         }
     ]
-    prefill = report["fitted"]["prefill"]
+    prefill = report["validated"]["prefill"]
     assert prefill["steps"] == 9 and prefill["held_out_step"] == 6
     assert prefill["held_out"] == pytest.approx(0.0, abs=1e-9)
-    assert report["extrapolated"] == {}
+    assert report["unvalidated"] == {}
 
     law = tmp_path / "law.json"
     law.write_text(json.dumps(LAW))
@@ -177,19 +184,19 @@ def test_a_leading_slow_step_under_the_factor_is_warm_and_mid_record_is_not(tmp_
     report = cost_accuracy(_record(tmp_path / "steps", steps, stretch), LAW)
 
     assert [w["step"] for w in report["warm"]] == [0, 1, 10]
-    assert report["warm"][0]["measured_s"] == pytest.approx(
+    assert report["warm"][0]["real_s"] == pytest.approx(
         2 * _price(steps[0][0]), rel=1e-6
     )
-    prefill, decode = report["fitted"]["prefill"], report["fitted"]["decode"]
+    prefill, decode = report["validated"]["prefill"], report["validated"]["decode"]
     assert prefill["steps"] == 8 and prefill["held_out_step"] == 4
     assert prefill["held_out"] == pytest.approx(0.0, abs=1e-9)
     assert decode["steps"] == 9
-    assert decode["measured_s"] == pytest.approx(decode["priced_s"], rel=1e-9)
+    assert decode["real_s"] == pytest.approx(decode["priced_s"], rel=1e-9)
 
     # A leading step that ran in half its price is fast, not warm: it stays in the totals.
     report = cost_accuracy(_record(tmp_path / "fast", steps, {10: 0.5}), LAW)
     assert report["warm"] == []
-    assert report["fitted"]["decode"]["steps"] == 10
+    assert report["validated"]["decode"]["steps"] == 10
 
 
 def test_a_leading_slow_step_is_judged_by_the_law_s_scatter_not_the_record_s(
@@ -205,3 +212,17 @@ def test_a_leading_slow_step_is_judged_by_the_law_s_scatter_not_the_record_s(
     law = json.loads(json.dumps(LAW))
     law["prefill"]["fit"] = {"centre": 0.0, "mad": 0.01}
     assert [w["step"] for w in cost_accuracy(record, law)["warm"]] == [0]
+
+
+def test_a_law_without_held_out_errors_reports_every_priced_step_unvalidated(tmp_path):
+    record = _record(tmp_path / "steps", _steps())
+    bare = json.loads(json.dumps(LAW))
+    for vector in (bare["prefill"], bare["decode"]["1"]):
+        del vector["held_out"]
+    report = cost_accuracy(record, bare)
+
+    assert report["validated"] == {}
+    assert {k: v["steps"] for k, v in report["unvalidated"].items()} == {
+        "prefill": 10,
+        "decode": 10,
+    }

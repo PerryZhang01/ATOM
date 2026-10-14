@@ -3,8 +3,8 @@
 file says ``on_refusal: abort``.
 
 Requests are driven through ATOM's own `Scheduler` and the runner's own
-`forward`, priced by a coarse law with no decode vector for the eager rung, so
-every decode step is refused. The worker's answers are read back as
+`forward`, priced by a step linear law with no decode vector for the eager
+rung, so every decode step is refused. The worker's answers are read back as
 `engine_done` reads them, and `frontend_done` writes ``summary.json``.
 """
 
@@ -16,15 +16,15 @@ from types import SimpleNamespace
 import pytest
 import torch
 from conftest import MockConfig
-from test_backend_coarse import backend, law
+from test_backend_step_linear import backend, law
 from test_dp_slice import _deployment
 from test_dp_step_max import BLOCK, dp2, runner  # noqa: F401  the dp2 fixture
 from test_run_graph_pool import _reserved
 from test_runner_control_refusals import Worker
 
 from atom.compass import run as compass_run
-from atom.compass.backends import CoarseBackend, CoarseLaw
-from atom.compass.backends.ladder import CostRefused
+from atom.compass.backends import StepLinearBackend, StepLinearLaw
+from atom.compass.backends.resolver import CostRefused
 from atom.compass.runner import overrides
 from atom.model_engine.scheduler import Scheduler
 from atom.model_engine.sequence import Sequence
@@ -33,13 +33,13 @@ from atom.utils import clock
 from atom.utils.clock import LPRuntime
 
 MAX_TOKENS = 4
-REFUSED = "cost:coarse-law: no decode vector for rung eager"
+REFUSED = "cost:step-linear: no decode vector for rung eager"
 
 
 def no_eager_rung():
     without = law()
     del without["decode"]["eager"]
-    return CoarseBackend(CoarseLaw(without))
+    return StepLinearBackend(StepLinearLaw(without))
 
 
 def run_file(tmp_path, monkeypatch, **keys):
@@ -234,8 +234,7 @@ def test_a_run_that_ends_mid_run_counts_what_live_workers_priced_and_no_zeros(
     if isinstance(error, SystemExit):
         assert sorted(hand_in) == ["refusals"]
         assert schedule["predicted_seconds"] is None
-        assert schedule["analytical"] is None
-        assert schedule["extrapolated"] is None
+        assert schedule["seconds_by_method"] is None
         assert (refusals["steps"], refusals["fraction_of_steps"]) == (None, None)
         assert refusals["reasons"] == [[ended, 1]]
         return
@@ -244,8 +243,8 @@ def test_a_run_that_ends_mid_run_counts_what_live_workers_priced_and_no_zeros(
     assert sorted(hand_in) == ["memory", "priced", "refusals"]
     assert priced["seconds"] > 0
     assert schedule["predicted_seconds"] == pytest.approx(priced["seconds"])
-    assert schedule["analytical"]["steps"] == priced["analytical_steps"]
-    assert schedule["extrapolated"]["steps"] == priced["extrapolated_steps"]
+    for g, share in schedule["seconds_by_method"].items():
+        assert share["steps"] == priced[f"{g}_steps"]
     assert refusals["steps"] == len(replies)
     assert refusals["fraction_of_steps"] == refused / len(replies)
     assert refusals["reasons"] == sorted([[REFUSED, refused], [ended, 1]])

@@ -31,12 +31,15 @@ class ReceiveMode(StrEnum):
 
 
 #: Measured admission delay from the traffic source into the serving stack, per
-#: path, in seconds. Earlier work measured 13.7 ms end-to-end -- worth around
-#: four points of time-to-first-token -- and found the two paths differ enough
-#: that one number for both would misprice whichever was not measured.
+#: path, in seconds; a run charges tokenization on top. ``serving`` was measured
+#: on hjbog-srdc-18 with the parity workload (`atom/compass/parity/traffic.py`,
+#: Qwen3-30B-A3B at TP2 with DP attention): the median, over its requests, of
+#: send to response headers less the prompt's encode time on that host.
+#: ``offline_batch`` is from earlier work, which measured 13.7 ms end-to-end and
+#: found the two paths differ enough that one number would misprice one of them.
 ADMISSION_DELAY_S = {
     "offline_batch": 13.0e-3,
-    "serving": 9.0e-3,
+    "serving": 1.6e-3,
 }
 
 
