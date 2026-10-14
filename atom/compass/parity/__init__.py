@@ -23,11 +23,12 @@ the first step where they part; timestamps are not part of a step's decision.
 
 Setting `ATOM_COMPASS_PARITY_RECORD` to a directory turns recording on: TP rank 0
 of each DP rank writes `dp<rank>.jsonl` there, replacing any earlier file.
-Unset, nothing is recorded. A runner with a `host_key` also writes it to
-`dp<rank>.key.json`. The simulated runner records from
-`NonAllocatingRunner.forward`; a real one records through `StepRecording`,
-composed into `RUNNER`, which the frontend names on a real run with the
-variable set.
+Unset, nothing is recorded. On its first step it also writes the engine its
+runner resolved to `dp<rank>.engine.json` (`README.md` says what it holds), and
+a runner with a `host_key` writes that to `dp<rank>.key.json`. The simulated
+runner records from `NonAllocatingRunner.forward`; a real one records through
+`StepRecording`, composed into `RUNNER`, which the frontend names on a real run
+with the variable set.
 
 A request is named by its key, because request ids are numbered per run: a
 digest of its whole prompt as its prefill windows carry it, taken when its final
@@ -210,8 +211,16 @@ def record_step(runner, batch, forward=None):
                     f"{ENV} records one file per DP rank, and under pipeline "
                     "parallelism each stage would write it."
                 )
+            from atom.compass.run.step_grid import BOUNDS, keyed
+
             dp_rank = runner.config.parallel_config.data_parallel_rank
             record = StepRecord(directory, dp_rank)
+            # By its first forward the runner has resolved its engine.
+            engine = keyed(runner.config) | {
+                name: getattr(runner.config, name)
+                for name in (*BOUNDS, "num_kvcache_blocks")
+            }
+            record.path.with_suffix(".engine.json").write_text(json.dumps(engine))
             key = getattr(runner, "host_key", None)
             if key is not None:
                 record.path.with_suffix(".key.json").write_text(json.dumps(key))
