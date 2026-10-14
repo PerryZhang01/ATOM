@@ -233,7 +233,7 @@ class ModelTerms:
             # data pointer is zero.
             storages = {
                 p.untyped_storage()._cdata: p.untyped_storage().nbytes()
-                for p in tree.parameters(remove_duplicate=False)
+                for _, p in tree.named_parameters(remove_duplicate=False)
             }
             weights = Term(
                 "weights",
