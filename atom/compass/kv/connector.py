@@ -112,9 +112,9 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
                 "when it is non-empty, so process_completions never runs there, "
                 "and Mooncake's MSG_RELEASE channel is not modelled"
             )
-        self._hash_block_size = (
-            config.kv_cache_block_size * config.decode_context_parallel_size
-        )
+        self._block_size = config.kv_cache_block_size
+        self._dcp_size = config.decode_context_parallel_size
+        self._hash_block_size = self._block_size * self._dcp_size
         self._transfer = _bound_transfer(kv_config)
         self._rt = clock.installed()
         if self._rt is None:
@@ -194,7 +194,8 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
             tp_size=self._tp_size,
             dp_rank=self._dp_rank,
             pp_size=self._pp_size,
-            hash_block_size=self._hash_block_size,
+            block_size=self._block_size,
+            dcp_size=self._dcp_size,
         )
 
     def should_defer_free(self, seq) -> bool:

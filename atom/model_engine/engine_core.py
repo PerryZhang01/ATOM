@@ -692,7 +692,7 @@ class EngineCore:
                 for sock, _ in poller.poll():
                     # (RequestType, RequestData)
                     obj = sock.recv(copy=False)
-                    received_at = time.perf_counter()
+                    received_at = clock.now(time.perf_counter)
                     try:
                         request_type, reqs = pickle.loads(obj)
                     except Exception:

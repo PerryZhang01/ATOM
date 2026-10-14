@@ -8,6 +8,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
+from atom.utils import clock
+
 
 def _has_text(fields: Any, keys: tuple[str, ...]) -> bool:
     return isinstance(fields, dict) and any(
@@ -66,7 +68,7 @@ class RequestTiming:
     def first_output(self, *, streaming: bool) -> None:
         if not self.recorded:
             self.recorded = True
-            self.observe(time.perf_counter() - self.started_at, streaming)
+            self.observe(clock.now(time.perf_counter) - self.started_at, streaming)
 
 
 _request_timing: ContextVar[RequestTiming | None] = ContextVar(
@@ -115,7 +117,7 @@ class RequestTimingMiddleware:
             await self.app(scope, receive, send)
             return
 
-        timing = RequestTiming(time.perf_counter(), self.observe_ttft)
+        timing = RequestTiming(clock.now(time.perf_counter), self.observe_ttft)
         context_token = _request_timing.set(timing)
 
         async def timed_send(message):
