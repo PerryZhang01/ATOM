@@ -43,7 +43,7 @@ from aiperf.timing import phase_orchestrator
 from aiperf.timing.config import CreditPhaseConfig
 from aiperf.timing.trajectory_source import TrajectorySource
 from compass_harness.scheduler import ClockPacedLoopScheduler
-from compass_harness.timesource import EPOCH_NS, ClockTimer, sim_ns
+from compass_harness.timesource import EPOCH_NS, ClockAsyncio, ClockTimer, sim_ns
 from compass_harness.traffic_lp import TrafficLP
 
 DURATION = 1800.0
@@ -312,3 +312,12 @@ def test_the_accelerated_warmup_is_refused_by_name(tmp_path, monkeypatch):
 
 def test_the_benchmark_id_repeats_from_run_to_run():
     assert aiperf.cli_runner.uuid4().hex[:12] == "000000000000"
+
+
+def test_a_runner_name_clockasyncio_does_not_pin_resolves_to_the_real_asyncio():
+    """``_cancel_accelerated_warmup_drain`` (an unpinned runner method) catches
+    ``asyncio.TimeoutError`` after an ``asyncio.wait_for`` that did not return
+    in time; ``ClockAsyncio`` defines ``wait_for`` but not ``TimeoutError``, so
+    the rebound module must still produce the real one."""
+    assert ClockAsyncio.TimeoutError is asyncio.TimeoutError
+    assert ClockAsyncio.Event is asyncio.Event

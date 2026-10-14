@@ -72,9 +72,18 @@ class ClockTimer:
             self._clock.withdraw(self._wait)
 
 
-class ClockAsyncio:
-    """``asyncio`` for the phase runner: ``wait_for`` times out on the clock. Its
-    one caller ``ClockPhaseRunner`` does not override is the cancel drain."""
+class _FallsThroughToAsyncio(type):
+    """A name ``ClockAsyncio`` does not override resolves to the real ``asyncio``."""
+
+    def __getattr__(cls, name):
+        return getattr(asyncio, name)
+
+
+class ClockAsyncio(metaclass=_FallsThroughToAsyncio):
+    """``asyncio`` for the phase runner: ``wait_for`` times out on the clock, and
+    every other name passes through to the real ``asyncio``. Callers that reach
+    it beyond the cancel drain include the accelerated-warmup methods' own
+    ``wait_for`` calls."""
 
     sleep = staticmethod(asyncio.sleep)
     CancelledError = asyncio.CancelledError
