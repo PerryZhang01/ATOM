@@ -13,6 +13,10 @@ shapes feed a law), `07` D36 (the tier and the resolver ladder).
 **Revised 2026-10-10 for `16` D95:** tier 0 is on M2's critical path, and D68 names the
 DeepSeek-V4-Pro operator families whose laws M2 needs.
 
+**Revised 2026-10-14 on [#937](https://github.com/jgong5/ATOM/pull/937):** D67's Class-C
+memory constants are a `memory_readings` entry, declared and marked assumed for a device
+never run (`07` D38).
+
 **Scope.** Cost and memory derived from device parameters and model geometry, with **no
 measurement of the subject**. Serves three purposes: a standalone roofline tier usable on
 day zero, rung 4 of the resolver ladder where empirical data is missing, and the only route
@@ -197,14 +201,14 @@ This is where tier 0 is strongest, because most terms are Class A.
 | **buffers** | A-ish | the declared formula over stated `config.json` fields, labelled declared, until a recording exists ([`03` D16's source table](03_memory_and_kv_model.md#the-source-of-each-term)) | the first formula matched the 0.6B and was **4× wrong** on the 27B |
 | **activations** | B | `k_model × tokens`, k measured on one real run per model and width; from geometry where no run exists | linear scaling is **validated** — a 3,494-token trace scaled to an independently measured 4,096-token peak at **+0.0% at TP=1/2/4**. Whether `k` itself is derivable from geometry is **untested**. |
 | **invisible scratch** | **C** | inside the measured `k` | kernel-internal. **0.1 KB/token on the 0.6B, 39.6 KB/token on the 27B** — worth the difference between −35.0% and +3.4% held out |
-| **`non_torch`, load residue** | **C** | — | no form fits; declared per width in the spec |
+| **`non_torch`, load residue** | **C** | — | no form fits; a `memory_readings` entry, declared and marked assumed for a device never run (`07` D38) |
 | **graph pool** | C | — | measured line at W=1, flat 104 MiB above |
 
 So an analytic memory model gets weights and KV **exactly**, activations **approximately**,
-and needs Class-C constants from the machine spec for the rest — which is precisely the
-arrangement docs 03 and 05 already describe. Tier 0 memory is therefore *not* a new design;
-it is the existing memory model (`03` D16) with the activation coefficient measured or
-derived rather than walked.
+and needs Class-C constants from a `memory_readings` entry for the rest — which is
+precisely the arrangement doc 03 already describes. Tier 0 memory is therefore *not* a new
+design; it is the existing memory model (`03` D16) with the activation coefficient
+measured or derived rather than walked.
 
 **Revised 2026-10-10: the measured coefficient comes first.** `k_model` is one real
 run's `peak - current` after warmup over the warmup tokens, per model and width, so the
@@ -403,7 +407,7 @@ what tier b exists for.
 | D65 | Tier 0 is a smooth model and says so: it reports a band where a known discontinuity lies in range, and is not promoted for such leaves without a measured band table. | 2026-09-19 |
 | D66 | Two-regime collective model with the algorithm named in the spec. Textbook ring/log models are refuted on this fabric. | 2026-09-19 |
 | D67.1 | Tier-0 accuracy goals declared per quantity: ≤5% on weights and on KV capacity/block count (the empirical gate for KV, tighter than it for weights), ≤25% each other non-KV memory term, ≤30% step time, ≤40% end-to-end. **Configuration ranking (top-1 and top-3 set) is the primary gate**; no false "fits". Checked against the empirical campaign at no extra GPU cost. | 2026-09-19 |
-| D67 | Analytic memory is the existing memory model with the activation coefficient derived rather than walked. Weights and KV exact; scratch, `non_torch` and load residue stay declared constants. Revised: the coefficient is measured on one real run per model and width, with the scratch inside it rather than a declared constant; a geometry form is the fallback for a model nobody has run (T34). | 2026-09-19; revised 2026-10-10 |
+| D67 | Analytic memory is the existing memory model with the activation coefficient derived rather than walked. Weights and KV exact; scratch stays a declared constant, and `non_torch` and load residue come from a `memory_readings` entry, declared and marked assumed for a device never run. Revised: the coefficient is measured on one real run per model and width, with the scratch inside it rather than a declared constant; a geometry form is the fallback for a model nobody has run (T34). | 2026-09-19; revised 2026-10-10 and 2026-10-14 (#937) |
 | D68 | Tier 0's laws are authored **during** the empirical campaign, because that campaign is their only validation set. Promotion to rung 4 is per leaf, requires tracking the measured price within ~2%, and is revocable. Revised for `16` D95: the laws for DeepSeek-V4-Pro's operator families are on M2's critical path, for the MI455 projection. | 2026-09-19; revised 2026-10-10 |
 | D69 | On an unmeasured device, tier 0 is derate-dominated. Report the derate and a ±20% sensitivity band; prefer ranking claims to absolute ones. | 2026-09-19 |
 | D70 | Expected accuracy is declared in advance, per use. Single-digit latency error is not a tier-0 target. | 2026-09-19 |

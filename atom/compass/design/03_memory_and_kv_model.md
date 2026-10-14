@@ -4,6 +4,13 @@
 interview and reviewed by jgong5 across two review rounds on PR #3. No code has been
 written against it yet; implementation follows the execution plan in `16`.
 
+**Revised 2026-10-14 by the owner's
+[ruling on #937](https://github.com/jgong5/ATOM/pull/937#issuecomment-6161726104), which
+[#851](https://github.com/jgong5/ATOM/issues/851)'s decisions carry:** the runtime and
+library memory constants leave the device specification. `compass measure memory` takes
+them on the target for each configuration, and a run reads that `memory_readings` entry
+and refuses without it (D14, D15, D16; `07` D38, Phase 2).
+
 **Depends on:** `02_model_runner_and_cost_backend.md` (the runner that must answer
 `get_num_blocks` and `allocate_kv_cache`).
 
@@ -221,7 +228,7 @@ Where each reading comes from:
 |---|---|
 | `total` | the device spec's HBM capacity |
 | `peak_torch` | weights + buffers + load residue + persistent + activations, each from the source D16 names |
-| `non_torch` | a spec constant per width (D15) |
+| `non_torch` | the run's `memory_readings` entry (D15) |
 | `cudagraph_overhead` | mirror ATOM's own `_estimate_cudagraph_overhead`, because that is the number that actually reserves |
 | `free` | derived as a **clean box**: `total - peak_torch - non_torch` |
 
@@ -231,7 +238,8 @@ Where each reading comes from:
   and `total - free` counts every process on the card. Six prior runs died at start-up
   with `available_for_kv = -103667.58 MB (budget=57.60GB, peak_torch=2.94GB,
   non_torch=152.01GB, ...)` because a neighbour held 152 GB while this rank had reserved
-  2.9 GB. Reading it from a spec removes the contamination by construction.
+  2.9 GB. Reading it from a `memory_readings` entry, taken on a machine checked quiet
+  before and after (`07` D38, Phase 2), keeps the contamination out of the run.
 - **The `min(budget, free)` clamp becomes inert.** With `free` derived as a clean box it
   cannot bind. The prior design needed a `free_was_binding()` guard to refuse records
   where it had; that guard is unnecessary here.
@@ -349,9 +357,9 @@ not own cannot measure any of them.
 
 ### Decision
 
-**Option 4: a device specification is an input artifact.** A user or a separate tool
-authors it beforehand and passes it to Compass; Compass consumes it and does not derive
-it.
+**Option 4: a device specification is an input artifact.** Developers author it, one per
+supported machine (`05` D26), and a user passes it to Compass; Compass consumes it and
+does not derive it.
 
 It carries, in one object serving **both** the memory model and the cost model — the
 project requires compute, memory size, bandwidth and interconnect all configurable and
@@ -360,9 +368,14 @@ none read from a runtime:
 - HBM capacity
 - peak compute and memory bandwidth
 - interconnect topology, per-link bandwidth and latency
-- the runtime/library memory constants above, per TP width
 - **derate factors** bridging spec peak numbers and achievable ones — the standard
   roofline practice, since no kernel reaches spec peak
+
+The runtime and library memory constants above are not in it (revised 2026-10-14):
+`compass measure memory` takes them on the target per configuration, and a run reads that
+`memory_readings` entry and refuses without it (`07` D38, Phase 2). For a card nobody has
+run, developer tooling outside the CLI declares the entry, every reading marked assumed,
+and a run records that it is.
 
 ### The one honesty measure retained
 
@@ -380,11 +393,10 @@ KV gate, a spec that cannot be recovered from the artifact makes an error unattr
   generation, and not across software upgrades.** The reading behind the assumption: they
   depend on the ROCm/RCCL/AITER build more than on the die — the +5980 MiB at width > 1 is
   collective buffer sizing, and the 926 MiB at TP1 is HIP context plus libraries. Adopted
-  as a working assumption rather than left open, and made *enforceable* by
-  `software_pinned_to` (doc `05` D25 rule 3): reusing a spec across a stack change warns by
-  default (`check_stack`) and refuses under `validate(strict=True)`, and moving constants
-  across stacks, by a transfer or a merge, always refuses. Still untested across dies;
-  recorded as **T50** and cheap to settle with one startup on a second card type.
+  as a working assumption rather than left open, and made *enforceable* by `07` D43's row
+  for `memory_readings`, which a ROCm, AITER or RCCL change invalidates. Still untested
+  across dies; recorded as **T50** and cheap to settle with one startup on a second card
+  type.
 - **`non_torch` and the load residue under DP-attention: which width keys them is open**
   (2026-10-10). Both tables are keyed by `tensor_parallel_size`, which `CoreManager`
   rewrites to 1 under DP-attention, yet every rank there sits in DP-wide and EP-wide
@@ -402,10 +414,10 @@ KV gate, a spec that cannot be recovered from the artifact makes an error unattr
   above W=1" is well supported as a *shape*; what rests on one point is the claim that the
   transition happens at W=2 rather than being a function that merely looks flat over the
   widths measured. A fourth width would not help; a second *model* would.
-- The spec-authoring tool is specified in doc `05` D26 (probe tiers emitting fragments,
-  `merge`/`validate`/`explain`) and scheduled as doc `07`'s Phase 2. It probes a real card
-  where one is available and falls back to declared datasheet values plus a mandatory
-  derate where one is not.
+- The spec-authoring tools are doc `05` D26's (probe tiers emitting fragments,
+  `merge`/`validate`/`explain`); the memory readings are doc `07`'s Phase 2,
+  `measure memory`. The tools probe a real card where one is available and fall back to
+  declared datasheet values plus a mandatory derate where one is not.
 
 ---
 
@@ -442,8 +454,8 @@ source per term; the bullets below say why each is what it is.
 | buffers | the declared formula over fields the model's `config.json` states, labelled declared, until a recording exists | [#701](https://github.com/jgong5/ATOM/issues/701) |
 | activations | one coefficient per model and width, from a machine-spec entry keyed by architecture, `config.json` sha256 and tensor-parallel width: a real run's `peak - current` after warmup over the warmup tokens, times the deployment's warmup tokens. A model with no entry takes a geometry form, labelled declared. The liveness walk replaces both once capture lands | [#704](https://github.com/jgong5/ATOM/issues/704), [#705](https://github.com/jgong5/ATOM/issues/705) |
 | invisible scratch | inside the activation coefficient; a term of its own only under the liveness walk (`04` T4) | [#704](https://github.com/jgong5/ATOM/issues/704) |
-| persistent | the spec constant `persistent_forward_buffer_bytes` | — |
-| load residue, `non_torch` | the spec's width tables; the width under DP-attention is open (D15) | [#702](https://github.com/jgong5/ATOM/issues/702) |
+| persistent | `persistent_forward_buffer_bytes` in the run's `memory_readings` entry | — |
+| load residue, `non_torch` | the run's `memory_readings` entry; the width under DP-attention is open (D15) | [#702](https://github.com/jgong5/ATOM/issues/702) |
 | graph pool | `graph_pool.reserves()` for the deployment's own `enforce_eager`; when it captures, the runner's `_piecewise_cg_active()` picks the branch, whole-graph from the activations term, piecewise from `piecewise_per_token_bytes` and `capture_token_shapes` over the deployment's ladder | [#700](https://github.com/jgong5/ATOM/issues/700) |
 
 **The per-term check** is `memory/compare.py` with `graph_pool.predicts`: each predicted
@@ -537,5 +549,5 @@ for the model — which is the per-term rule above, not the aggregate.
 |---|---|---|
 | D13 | Do not simulate the KV pool. Stub `allocate_kv_cache`; ATOM's real `BlockManager`, `BlockPool`, prefix index and `plan_pools` run unmodified. | 2026-09-18 |
 | D14 | Substitute the five device readings, reuse ATOM's budget arithmetic and `plan_pools`. Compass models a dedicated device; that is a declared scope boundary. | 2026-09-18 |
-| D15 | The device specification is an input artifact authored outside Compass, carrying capacity, compute, bandwidth, interconnect, runtime memory constants and derate factors. It is echoed into every run artifact. | 2026-09-18 |
+| D15 | The device specification is an input artifact authored outside Compass, carrying capacity, compute, bandwidth, interconnect and derate factors. It is echoed into every run artifact. The runtime memory constants are `measure memory`'s `memory_readings` entries, per configuration, which a run refuses without. | 2026-09-18; revised 2026-10-14 (#851) |
 | D16 | Validate every non-KV memory term individually, never as a sum. Keep ATOM's graph-pool estimator and the measured one as two separate functions. Revised: one source per term. Weights come from a meta build in the simulated runner at the deployment's group widths. Activations come from a coefficient keyed by architecture, `config.json` sha256 and tensor-parallel width, with the scratch inside it and a geometry form as fallback, until the liveness walk lands. The graph pool reserves for the deployment's own capture mode, and the per-term check is wired. | 2026-09-18; revised 2026-10-10 |
