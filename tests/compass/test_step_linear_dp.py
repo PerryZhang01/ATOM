@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""The step linear law under DP-attention with EP off: one law per rank, keyed
+"""The coarse law under DP-attention with EP off: one law per rank, keyed
 `(dp, ep)`, the group's step the max over its ranks.
 
 Each rank's record is written from a known per-rank law, every line labelled
