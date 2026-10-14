@@ -43,7 +43,7 @@ from aiperf.timing import phase_orchestrator
 from aiperf.timing.config import CreditPhaseConfig
 from aiperf.timing.trajectory_source import TrajectorySource
 from compass_harness.scheduler import ClockPacedLoopScheduler
-from compass_harness.timesource import EPOCH_NS, ClockTimer, sim_ns
+from compass_harness.timesource import EPOCH_NS, ClockAsyncio, ClockTimer, sim_ns
 from compass_harness.traffic_lp import TrafficLP
 
 DURATION = 1800.0
@@ -312,3 +312,12 @@ def test_the_accelerated_warmup_is_refused_by_name(tmp_path, monkeypatch):
 
 def test_the_benchmark_id_repeats_from_run_to_run():
     assert aiperf.cli_runner.uuid4().hex[:12] == "000000000000"
+
+
+def test_a_runner_name_clockasyncio_does_not_pin_resolves_to_the_real_asyncio():
+    """Every public ``asyncio`` name ``ClockAsyncio`` does not define itself
+    resolves to the real ``asyncio`` object."""
+    unpinned = [n for n in asyncio.__all__ if n not in vars(ClockAsyncio)]
+    assert [
+        n for n in unpinned if getattr(ClockAsyncio, n) is not getattr(asyncio, n)
+    ] == []

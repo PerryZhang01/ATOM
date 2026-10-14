@@ -839,3 +839,65 @@ def test_a_report_the_reader_rejects_fails_the_run(tmp_path):
 
     with pytest.raises(Straggler, match="seq 1 arrives at 0.5, now 1.0"):
         _run(main())
+
+
+def test_a_failed_traffic_lp_tells_aiperf_the_run_failed_before_it_stops(
+    tmp_path, monkeypatch
+):
+    """The reader rejects a report, as above, under the router. Before the loop
+    stops, the router publishes an error the controller keeps as an exit error,
+    then the cancel the records manager finishes on."""
+    from aiperf.common.messages import ProfileCancelCommand
+    from aiperf.controller.result_join_coordinator import ResultJoinCoordinator
+    from aiperf.controller.system_controller import SystemController
+
+    sent = []
+
+    class Bus:
+        async def publish(self, message):
+            message.to_json_bytes()  # as the pub client sends it
+            sent.append(message)
+
+    def init(self, **kw):
+        self.comms = SimpleNamespace(create_pub_client=lambda address: Bus())
+        self._init_credit_channels(None)
+
+    monkeypatch.setattr(StickyCreditRouter, "__init__", init)
+    monkeypatch.setattr(StickyCreditRouter, "_init_credit_channels", lambda s, c: None)
+    monkeypatch.setattr(CompassCreditRouter, "exception", lambda self, msg: None)
+
+    async def main():
+        rt = StragglerRuntime([(1.0, {0})])
+        lp = str(tmp_path / "lp")
+        monkeypatch.setattr(TrafficLP, "from_env", classmethod(lambda cls: cls(rt, lp)))
+        traffic = CompassCreditRouter(run=None, service_id="timing_manager").traffic
+        push = zmq.Context.instance().socket(zmq.PUSH)
+        push.connect(addresses(lp)[1])
+        traffic.send(_key(0))
+        while traffic.now() < 1.0:
+            await traffic.wait(1.0)
+        push.send_pyobj((_key(0), 1, 0.5, False))
+        try:
+            await asyncio.Event().wait()  # only the router stops the loop
+        finally:
+            push.close(linger=0)
+
+    with pytest.raises(RuntimeError, match="Event loop stopped before Future"):
+        _run(main())
+    error, cancel = sent
+    assert isinstance(cancel, ProfileCancelCommand)
+    assert cancel.service_id == error.service_id == "timing_manager"
+
+    async def shutdown_check():
+        pass
+
+    controller = SimpleNamespace(
+        _exit_errors=[],
+        _result_join_coordinator=ResultJoinCoordinator(),
+        error=lambda msg: None,
+        _check_and_trigger_shutdown=shutdown_check,
+    )
+    asyncio.run(SystemController._process_service_error_message(controller, error))
+    (exit_error,) = controller._exit_errors
+    assert exit_error.error_details.type == "Straggler"
+    assert "seq 1 arrives at 0.5, now 1.0" in exit_error.error_details.message

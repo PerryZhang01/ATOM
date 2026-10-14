@@ -1101,6 +1101,10 @@ The rules that settle the boundaries #53's categories left in the wrong place:
   (`AsyncIOProcManager.process_output_sockets`, `process_kv_output_sockets` and
   `call_func_with_aggregation`) are K6: real-time bounds on in-LP transport that the
   simulated runner answers in real milliseconds, so they never fire and stay as they are.
+  The one exception is the non-blocking drain in `call_func_with_aggregation`: a reply
+  still in flight would move a transfer's report to a later step, so on a simulated run
+  `clock.reply_queue` (`atom/utils/clock.py`) makes each worker's reply queue wait for
+  it, up to `REPLY_WAIT_S`.
 - **Sends are counted.** #53 ignored sends because they do not park. Under D3 a send is
   one end of the in-transit message count: it carries the timestamp and is logged on the
   clock owner, so the sends are K4. A direct send (the clock owner calls `send`:
@@ -1560,9 +1564,10 @@ The ABC is small and has **no `send_kv` / `recv_kv` verb** to fake
 - worker (`KVConnectorBase`): `register_kv_caches`, `start_load_kv`, `get_finished`,
   `get_finished_recv_blocks`
 - scheduler (`KVConnectorSchedulerBase`): `get_num_new_matched_tokens`, `build_connector_meta`,
-  `update_state_after_alloc`, `request_finished`
+  `update_state_after_alloc`, `request_finished`, and the send-claim hooks
+  `should_defer_free`, `send_finished`, `source_blocks_released`
 
-A fifth scheduler-side hook is not on the ABC: `process_completions`, which the scheduler
+Another scheduler-side hook is not on the ABC: `process_completions`, which the scheduler
 calls on each completion report when the connector defines it
 (`scheduler.py::Scheduler._update_from_kv_xfer_finished`).
 The offload and `multi` connectors define it; Mooncake and MoRI-IO do not.
@@ -1597,12 +1602,18 @@ and receives both run on the engine's step loop, and no worker takes part.
   event of engine-D.
 - **Prefill** records the data-ready time `r` in `request_finished` and takes the write
   request in `process_completions`, which the step loop receives inline.
-  `Scheduler.postprocess` calls `request_finished` twice for one finished request, at
-  the same virtual time, so the first call records `r` and the second changes nothing.
-  At `max(a, r) + T` it reports `finished_sending`, and
-  `Scheduler._update_from_kv_xfer_finished` frees the blocks `Scheduler.postprocess`
-  parked in `deferred_free_blocks`. A local event of engine-P. Scheduler code is
-  unchanged.
+  `Scheduler._mark_finished` calls `request_finished` once per finished request. There
+  the producer takes Mooncake's send claim
+  (`mooncake_connector.py::MooncakeConnectorScheduler.request_finished`), owner ruling
+  (a) on #858: it adds the request to `_awaiting_send` when the request is not aborted
+  and its `kv_transfer_params` carry `do_remote_decode`, which the router sets on every
+  request it sends to prefill (`atom/mesh/src/core/placement/backend/atom.rs`).
+  `Scheduler.postprocess` parks a finished request in `deferred_free_blocks` only while
+  `should_defer_free` finds the claim; any other finished request frees at once. At
+  `max(a, r) + T` prefill reports `finished_sending`, and
+  `Scheduler._update_from_kv_xfer_finished` retires the claim through `send_finished`
+  and frees the parked blocks. `source_blocks_released` does nothing. A local event of
+  engine-P. Scheduler code is unchanged.
 - **Write-done is not a message.** Real Mooncake sends `MSG_WRITE_DONE` when the write
   ends (`mooncake_connector.py::MooncakeConnector._send_write_done`). Both ends compute
   that time instead, for two reasons: the router forwards strictly in sequence (D2), so

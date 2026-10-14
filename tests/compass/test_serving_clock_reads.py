@@ -197,15 +197,11 @@ class TestASubstitutedReadTakesTheLpClock:
 
         assert asyncio.run(api_server.responses_create(Request())) == 7
 
-    @pytest.mark.parametrize("which", ["response", "stream"])
-    def test_the_responses_default_created_at(self, lp_clock, which):
-        if which == "response":
-            created_at = build_responses_response(
-                "r", "m", [], context=CodexToolContext(), request=ResponsesRequest()
-            )["created_at"]
-        else:
-            created_at = ResponseStreamEmitter("r", "m").created_at
-        assert created_at == 7
+    def test_the_responses_default_created_at(self, lp_clock):
+        response = build_responses_response(
+            "r", "m", [], context=CodexToolContext(), request=ResponsesRequest()
+        )
+        assert response["created_at"] == ResponseStreamEmitter("r", "m").created_at == 7
 
     def test_the_stream_delivery_intervals(self, lp_clock):
         """The interval's end, and the next interval's start after the observer ran."""

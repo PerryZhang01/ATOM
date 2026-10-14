@@ -4,9 +4,9 @@
 # A read of a device value makes the host wait for every kernel queued before
 # it, so a prefill launch would return only when the device is nearly through
 # the forward. The GDN chunk indices come from the builder's host copy of
-# `cu_seqlens_q`, and the prefix-cache KV gather sizes its token map from the
-# host `total_kv`. Here the device copy is stale or on the meta device, where
-# a read gets the wrong answer or raises.
+# `cu_seqlens_q`; the prefix-cache KV gather sizes its buffers from the host
+# `total_kv` and builds no token map of its own. Here the device copy is stale
+# or on the meta device, where a read gets the wrong answer or raises.
 
 import importlib.abc
 import importlib.machinery
@@ -125,7 +125,7 @@ def test_chunk_indices_without_a_host_copy_read_the_device_lengths():
     ]
 
 
-def test_prefix_kv_gather_sizes_its_token_map_on_the_host(monkeypatch):
+def test_prefix_kv_gather_takes_its_token_map_from_the_metadata(monkeypatch):
     calls = []
     monkeypatch.setattr(
         attention_mha, "cp_mha_gather_cache", lambda **kw: calls.append(kw)
@@ -135,7 +135,7 @@ def test_prefix_kv_gather_sizes_its_token_map_on_the_host(monkeypatch):
     meta = {"device": "meta", "dtype": torch.bfloat16}
     k = torch.empty(5, 2, 64, **meta)
     context_lens = torch.empty(3, dtype=torch.int32, device="meta")
-    # The prefill builder's map, built once per step from the host `total_kv`.
+    # Handed its total, the map builds without reading the meta lengths.
     token_map = build_batch_ids_device(context_lens, total=40)
     attn_metadata = SimpleNamespace(
         cu_seqlens_k=torch.empty(4, dtype=torch.int32, device="meta"),
