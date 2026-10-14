@@ -1101,6 +1101,10 @@ The rules that settle the boundaries #53's categories left in the wrong place:
   (`AsyncIOProcManager.process_output_sockets`, `process_kv_output_sockets` and
   `call_func_with_aggregation`) are K6: real-time bounds on in-LP transport that the
   simulated runner answers in real milliseconds, so they never fire and stay as they are.
+  The one exception is the non-blocking drain in `call_func_with_aggregation`: a reply
+  still in flight would move a transfer's report to a later step, so on a simulated run
+  `clock.reply_queue` (`atom/utils/clock.py`) makes each worker's reply queue wait for
+  it, up to `REPLY_WAIT_S`.
 - **Sends are counted.** #53 ignored sends because they do not park. Under D3 a send is
   one end of the in-transit message count: it carries the timestamp and is logged on the
   clock owner, so the sends are K4. A direct send (the clock owner calls `send`:

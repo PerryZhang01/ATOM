@@ -11,6 +11,7 @@ into the engine's input queue, as the input thread would.
 
 import queue
 import random
+import threading
 from itertools import accumulate
 from types import SimpleNamespace
 
@@ -26,6 +27,8 @@ from atom.utils.clock import LPRuntime
 from tests.compass.clock.test_lp_runtime import _owner
 
 with stubbed_aiter():
+    from atom.kv_transfer.disaggregation import KVConnectorOutput
+    from atom.model_engine import async_proc
     from atom.model_engine.async_proc import AsyncIOProcManager
     from atom.model_engine.engine_core import (
         KV_IDLE_DRAIN_INTERVAL_S,
@@ -248,6 +251,38 @@ def test_with_pending_kv_work_an_idle_point_waits_one_drain_interval(installed):
         call(clock.idle, engine._idle_deadline, 5.0)
     D = KV_IDLE_DRAIN_INTERVAL_S
     assert ca.calls == [("NER", 0.0, D, D), ("NER", D, 2 * D, 2 * D)]
+
+
+@pytest.mark.parametrize("simulated", [True, False])
+def test_a_kv_poll_waits_for_its_reply_only_on_a_simulated_run(
+    installed, simulated, monkeypatch
+):
+    """A poll that finds a reply missing returns None, and the scheduler then skips
+    that poll's `process_completions`: a simulated transfer would be reported at
+    a step set by how fast a worker answered in wall time."""
+    if simulated:
+        clock.install(LPRuntime(LpId("engine"), TABLE, conn=None))
+
+    def answer(msg):  # 50 wall ms after each request, as a worker process would
+        reply = mgr.kv_outputs_queues[0].put
+        threading.Timer(0.05, reply, (KVConnectorOutput(),)).start()
+
+    # The manager's own constructor, with no worker process, socket or signal.
+    process = SimpleNamespace(start=lambda: None)
+    ctx = SimpleNamespace(Barrier=lambda n: None, Process=lambda **kw: process)
+    mq = SimpleNamespace(export_handle=lambda: None, enqueue=answer)
+    for name, value in {
+        "get_mp_context": lambda: ctx,
+        "MessageQueue": lambda *args, **kwargs: mq,
+        "init_exit_handler": lambda self: None,
+    }.items():
+        monkeypatch.setattr(async_proc, name, value)
+    for name in ("process_output_sockets", "process_kv_output_sockets"):
+        monkeypatch.setattr(AsyncIOProcManager, name, lambda *args: None)
+    monkeypatch.setattr(AsyncIOProcManager, "monitor_procs", lambda self: None)
+    mgr = AsyncIOProcManager(None, 1, "workers.Runner")
+    got = mgr.call_func_with_aggregation("async_proc_aggregation")
+    assert (got is not None) == simulated
 
 
 def test_with_no_runtime_the_hooks_read_nothing():

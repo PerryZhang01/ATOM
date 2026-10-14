@@ -149,7 +149,7 @@ RPC_SURFACE: dict[str, bool] = {
     "exit": False,  # EngineCore.exit, the last call of the process's life
     "freeze_gc_heap": True,  # EngineCore._freeze_after_startup catches a raise, not a None
     "process_kvconnector_output": False,  # EngineCore does not wait
-    "async_proc_aggregation": True,  # EngineCore drains it each step, never blocking
+    "async_proc_aggregation": True,  # EngineCore polls it; a simulated run waits for it
     "flush_pp_send": True,  # PPEngineCoreProc waits before the next send
     "poll_forward_metrics": False,  # EngineUtilityHandler does not wait
     "release_multimodal_requests": False,  # EngineCore does not wait

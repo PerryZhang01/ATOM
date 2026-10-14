@@ -592,6 +592,30 @@ def relay_queue(dp: int):
     return rt.relays[ch]
 
 
+#: Wall seconds a simulated run waits for one worker's KV aggregation reply.
+REPLY_WAIT_S = 10.0
+
+
+class _WaitingReplyQueue(queue.Queue):
+    """A worker's KV aggregation replies on a simulated run: `get_nowait` waits.
+
+    The aggregation drains each worker's reply without waiting and returns None
+    while one is missing, and the scheduler then skips that poll's
+    `process_completions`. Whether a transfer is reported at this step or a
+    later one would turn on how fast a worker process answered in wall time. A
+    simulated worker answers in wall milliseconds and costs no simulated time,
+    so the poll waits for it, up to `REPLY_WAIT_S`.
+    """
+
+    def get_nowait(self):
+        return self.get(timeout=REPLY_WAIT_S)
+
+
+def reply_queue() -> queue.Queue:
+    """A worker's KV aggregation reply queue, which waits on a simulated run."""
+    return queue.Queue() if _installed is None else _WaitingReplyQueue()
+
+
 # ---- the engine step loop: hooks ATOM calls, each a no-op on a real run ----
 
 
