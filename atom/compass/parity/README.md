@@ -3,6 +3,11 @@
 
 Record a run by setting `ATOM_COMPASS_PARITY_RECORD` to a directory before
 starting it, real or simulated; `__init__.py` says what each line holds.
+Beside each `dp<r>.jsonl`, the rank's first step writes `dp<r>.engine.json`,
+the engine its runner resolved: `keyed` (`atom/compass/run/step_fit.py`),
+which holds the ladder the runner replays; the scheduler's bounds
+`max_num_seqs`, `max_num_batched_tokens` and `max_model_len`; and
+`num_kvcache_blocks`, the KV block count the runner's `allocate_kv_cache` set.
 Compare two records with
 
 ```

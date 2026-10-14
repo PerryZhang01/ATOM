@@ -68,6 +68,13 @@ def _config(dp_rank=0, pipeline_parallel_size=1, budget=BUDGET, blocks=4096):
         parallel_config=SimpleNamespace(
             data_parallel_rank=dp_rank, data_parallel_size=1
         ),
+        # The engine fields a record states, which a real Config always has.
+        enforce_eager=False,
+        capture_sizes=list(LADDER),
+        kv_cache_dtype="bf16",
+        quant_config=SimpleNamespace(compute_hash=lambda: "q"),
+        tensor_parallel_size=1,
+        kv_transfer_config={},
     )
 
 
@@ -422,6 +429,84 @@ def test_pipeline_parallelism_is_refused(tmp_path, monkeypatch):
     runner = _Runner(_config(pipeline_parallel_size=2))
     with pytest.raises(ValueError, match="each stage would write it"):
         runner.forward(batches[0])
+
+
+def _engine(blocks):
+    """The engine `_config` resolves at `max_num_seqs` 4 with `blocks` KV blocks."""
+    return {
+        "ladder": [1, 2, 4],
+        "kv_cache_block_size": BLOCK,
+        "kv_cache_dtype": "bf16",
+        "quantization": "q",
+        "tensor_parallel_size": 1,
+        "max_num_seqs": 4,
+        "max_num_batched_tokens": BUDGET,
+        "max_model_len": 2048,
+        "num_kvcache_blocks": blocks,
+    }
+
+
+def test_a_simulated_record_states_the_engine_its_runner_resolved(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv(ENV, str(tmp_path))
+    path = tmp_path / "dp1.engine.json"
+    path.write_text("an earlier run's")
+    config = _config(dp_rank=1)
+    config.max_num_seqs = 4
+    runner = _Runner(config)
+    # As `EngineCore.__init__` does: size the pool, capture, then schedule.
+    runner.allocate_kv_cache(300)
+    runner.capture_cudagraph()
+    scheduler = Scheduler(config)
+    params = SamplingParams(max_tokens=3, ignore_eos=True)
+    for i in range(6):
+        scheduler.add(Sequence(_prompt(i)[:20], BLOCK, sampling_params=params))
+
+    def step():
+        batch, seqs = scheduler.schedule()
+        reply = runner.forward(batch)
+        scheduler.postprocess(
+            list(seqs.values()), reply, stream_output_queue=queue.Queue(), batch=batch
+        )
+
+    step()
+    assert json.loads(path.read_text()) == _engine(300)
+    # Written once, by the first step.
+    path.unlink()
+    step()
+    assert not path.exists()
+
+
+def test_a_real_record_states_the_engine_its_runner_resolved(tmp_path, monkeypatch):
+    batches = _drive(tmp_path / "simulated", monkeypatch, {0: [0]})[0][0]
+
+    class _Base:
+        """ATOM's runner: `allocate_kv_cache` sets the count on its own config."""
+
+        def __init__(self, rank, config):
+            self.rank, self.config = rank, config
+            self.capture_sizes_np, self.enforce_eager = np.array(LADDER), False
+            self.attn_metadata_builder = GRAPHABLE
+
+        def allocate_kv_cache(self, num_kvcache_blocks):
+            self.config.num_kvcache_blocks = num_kvcache_blocks
+            return True
+
+        def forward(self, batch):
+            return "ran"
+
+    class _Recorded(StepRecording, _Base):
+        step_clock_ns = staticmethod(time.monotonic_ns)
+
+    monkeypatch.setenv(ENV, str(tmp_path / "real"))
+    config = _config()
+    config.max_num_seqs = 4
+    runner = _Recorded(0, config)
+    runner.allocate_kv_cache(300)
+    assert runner.forward(batches[0]) == "ran"
+    path = tmp_path / "real" / "dp0.engine.json"
+    assert json.loads(path.read_text()) == _engine(300)
 
 
 def test_the_mixin_records_from_the_first_forward_after_construction(
