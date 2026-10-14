@@ -949,7 +949,7 @@ def _group_step_seconds(
 
     if mode is None:
         mode = forward_mode(batch, runner)
-    mix =vars(runner).setdefault("_priced", ProvenanceMix())
+    mix = vars(runner).setdefault("_priced", ProvenanceMix())
     try:
         cost = backend.estimate(batch_view(batch, mode, runner))
     except CostRefused as refused:
