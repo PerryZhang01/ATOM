@@ -2,7 +2,7 @@
 """The step grid in a run: its bundle loaded from the artifact store by key, and
 checked against the resolved ATOM config before the first step.
 
-The run file's ``step_fit`` is the store's root and the bundle's key fields:
+The run file's ``step_grid`` is the store's root and the bundle's key fields:
 
     {"store": <root directory>, "model": ..., "device": ..., "parallel": ...,
      "engine_config": ..., "grid": ..., "source_root": ...}
@@ -95,18 +95,18 @@ def load(spec: Mapping, config, machine) -> tuple[StepGridBackend, dict]:
     dp = config.parallel_config.data_parallel_size
     if dp != 1:
         raise ValueError(
-            "a step fit bundle is measured at data-parallel width 1, and this "
+            "a step grid bundle is measured at data-parallel width 1, and this "
             f"run has data_parallel_size {dp}"
         )
     fields = dict(spec)
     store = ArtifactStore(fields.pop("store"))
-    key = Key.of(Kind.STEP_FIT_BUNDLE, **fields)
+    key = Key.of(Kind.STEP_GRID_BUNDLE, **fields)
     entry = store.read(key)
     try:
         member = json.loads(entry.read_member(*MEMBER))
         grid, residual = StepGrid(member["grid"]), Residual(member["residual"])
         bounds = {name: member["bounds"][name] for name in BOUNDS}
-        row = dict(entry.fingerprints[Row.STEP_FIT_BUNDLE].cells)
+        row = dict(entry.fingerprints[Row.STEP_GRID_BUNDLE].cells)
         recorded = json.loads(row[Axis.ENGINE_CONFIG].value)
     except (KeyError, TypeError, ValueError) as error:
         raise ValueError(

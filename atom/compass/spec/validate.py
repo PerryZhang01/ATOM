@@ -53,7 +53,7 @@ can never ask that condition however the document was built, and the same spec
 is refused as a `Merge` and clear as a document. That is not a wrong number,
 but it must be visible, because a caller that holds only the document cannot
 ask it. Merging the document again does not recover the pin: a merge whose
-fragments disagree on a method states `mixed`, so a `Merge` holding the saved
+fragments disagree on an origin states `mixed`, so a `Merge` holding the saved
 document reports the transfer as not asked too, or as asked only in part when
 another fragment states a transfer and a stack pin resolved. No command
 validates a machine file: a per-machine script such as
@@ -276,10 +276,10 @@ def _reach(
             reached(TRANSFERS, STACK_PINS)
         # Where a transfer is stated and a pin did not resolve, `reached` has
         # already reported the condition once.
-        hidden = [repr(f.source) for f in merged.fragments if f.method == "mixed"]
+        hidden = [repr(f.source) for f in merged.fragments if f.origin == "mixed"]
         if hidden and not any(c.startswith(TRANSFERS) for c in unasked + partial):
             why = (
-                f"{TRANSFERS} -- method `mixed` in {', '.join(hidden)} does not "
+                f"{TRANSFERS} -- origin `mixed` in {', '.join(hidden)} does not "
                 "say whether a transfer went into it, and a transfer's source "
                 "pin is in no field of a document"
             )

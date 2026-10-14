@@ -119,7 +119,7 @@ def test_the_term_is_fitted_and_its_detail_holds_the_lookup_and_each_member():
         "lookup 0.004261 s, interpolated; decode cell B=32, c 512..1024; "
         f"residual {factor!r} = 1.0 x o 1.3046875 + 1.0 x e {math.exp(0.484375)!r}"
     )
-    assert backend.describe().endswith("; recipe step-fit-residual v1, members o, e")
+    assert backend.describe().endswith("; recipe step-grid-residual v1, members o, e")
 
 
 # Both hulls bound order <= 1/4; the second also holds raggedness at 1, so its
@@ -155,7 +155,7 @@ def test_a_step_outside_the_residuals_hull_refuses_naming_it(
         0.0,
         (
             (
-                "cost:step-fit: the step at tokens=0.03125, "
+                "cost:step-grid: the step at tokens=0.03125, "
                 "query_square=3.05176e-05, query_context=0.0234375, "
                 f"{named} is outside the residual's hull"
             ),
@@ -201,7 +201,7 @@ def test_a_member_or_factor_that_is_not_positive_and_finite_refuses(members, sai
     seconds, refused = price(ALTERNATING, backend)
     assert seconds == 0.0
     assert refused == (
-        f"cost:step-fit: the residual's {said}, which is not a positive finite factor",
+        f"cost:step-grid: the residual's {said}, which is not a positive finite factor",
     )
 
 

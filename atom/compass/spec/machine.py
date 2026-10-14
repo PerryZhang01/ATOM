@@ -101,6 +101,43 @@ from .rules import (
 from .tokenizers import Backend, TokenizerEntry, TokenizerTable, table
 
 ACTIVATIONS = "device.activations"
+#: The tokenizer table, combined and given an origin per entry.
+TOKENIZERS = "host.tokenizers"
+
+
+def entry_label(identity: str, backend: object) -> str:
+    """How one tokenizer entry is named, by the two fields that select it."""
+    return f"{TOKENIZERS}[{identity} {backend}]"
+
+
+def field_origin(values: Mapping[str, Any], label: str, holder: str) -> dict:
+    """Where the value under `label` came from: the origin recorded for it in
+    `provenance.origins`, or the document's own when it states one origin."""
+    recorded = values.get("provenance.origins", {}).get(label)
+    if recorded is not None:
+        return dict(recorded)
+    stated = values["provenance.origin"]
+    if stated == "mixed":
+        raise SpecRefusal(
+            Rule.TOTALITY,
+            f"{holder} is `mixed` and records no origin for `{label}`",
+            "rebuild it with `merge`, which writes `provenance.origins`; a "
+            "document of several origins cannot say which one a field has",
+        )
+    return {"origin": stated, **values.get("provenance.subject", {})}
+
+
+def check_subject(values: Mapping[str, Any], holder: str) -> None:
+    """Refuse a subject on anything but a probed document."""
+    stated = values["provenance.origin"]
+    if "provenance.subject" in values and stated != "probed":
+        raise SpecRefusal(
+            Rule.SHAPE,
+            f"{holder} states `provenance.subject` and its origin is {stated!r}",
+            "a subject is what a probe ran on; state it on a probed document only",
+        )
+
+
 #: An activation entry: the model it was measured on, keyed by its
 #: architectures and its config.json's sha256 (one architecture serves every
 #: size of a family), and per tensor-parallel width one real run's warmup
@@ -235,6 +272,13 @@ def _survey(node: Mapping, prefix: str, found: dict):
                     f"`{path}` holds {value!r}, where the schema has a block",
                     "write the block's fields there",
                 )
+        elif path == "provenance.method":
+            yield SpecRefusal(
+                Rule.SHAPE,
+                "`provenance.method` is now `provenance.origin`",
+                "rename the key; `merge` writes each field's own origin under "
+                "`provenance.origins`",
+            )
         else:
             try:
                 refuse_unknown_key(path)
@@ -274,7 +318,8 @@ class MachineSpec:
                 continue
             values[field.path] = check(field, found[field.path], field.path)
         _check_activations(values.get(ACTIVATIONS, ()))
-        return cls(values, table(values["host.tokenizers"]))
+        check_subject(values, "this spec")
+        return cls(values, table(values[TOKENIZERS]))
 
     def value(self, path: str) -> Any:
         """One checked field by its dotted path, or the refusal that fits."""
@@ -284,6 +329,37 @@ class MachineSpec:
                 _unresolved(path)
             refuse_absent_field(path, field.required)
         return self.values[path]
+
+    def origin(self, path: str, width: int | None = None) -> dict:
+        """Where one field came from: its origin and, when probed, the subject
+        the probe ran on. A width-keyed constant is asked at one width, and a
+        tokenizer entry by its label, `host.tokenizers[<id> <backend>]`."""
+        if path in ("name", "schema_version") or path.startswith("provenance."):
+            raise SpecRefusal(
+                Rule.ADDRESSING,
+                f"`{path}` describes the document, so it has no origin",
+                "ask for a field of host, device or interconnect",
+            )
+        labels = [
+            entry_label(e.key.id, e.key.backend.value) for e in self.tokenizers.entries
+        ]
+        label = path
+        if (
+            path == TOKENIZERS
+            or path.startswith(f"{TOKENIZERS}[")
+            and path not in labels
+        ):
+            raise SpecRefusal(
+                Rule.ADDRESSING,
+                f"`{path}` is not one tokenizer entry of this spec",
+                f"a tokenizer entry has its own origin; ask for one of {labels}",
+            )
+        if path not in labels:
+            self.value(path)
+            if BY_PATH[path].kind is Kind.WIDTH_TABLE:
+                self.runtime_constant(path.rsplit(".", 1)[-1], width)
+                label = f"{path}[{width}]"
+        return field_origin(self.values, label, "this spec")
 
     def echo(self) -> dict:
         """The whole resolved spec, for a run artifact to carry verbatim."""

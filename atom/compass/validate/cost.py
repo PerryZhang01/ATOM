@@ -11,20 +11,20 @@ from schedule error: both sides run the same batches.
 Each step is labelled as the fit labels it, by its device time
 (`step_linear_fit.samples`, which also says which steps carry no label and refuses a
 record without device windows), and priced by `StepLinearBackend`. The
-error of a step is `priced / measured - 1`. Per kind the report gives the error
+error of a step is `priced / real - 1`. Per kind the report gives the error
 on totals, on totals holding out the step that contributes most to their error,
 and the median per step; per decode rung or prefill token band, the p10, p50
 and p90 of the per-step error and the fraction of steps within 10%.
 
 A step outside its vector's hull is priced, but its error describes the
-extrapolation, not the law: those steps are reported apart, with their measured
+extrapolation, not the law: those steps are reported apart, with their real
 and priced seconds, and enter none of the in-hull figures. A step that ran more
 than `step_linear_fit.WARM_FACTOR` times its price is warm, a one-off first touch the
 law does not model: it is named with its seconds and enters no figure. So are
 the steps that lead a vector's priced steps, each slower than its price by more
 than `step_linear_fit.MAD_K` scaled MADs of the errors the law's vector was fitted
 on, as the fit names them; of that vector's errors here if the law records no
-`fit.mad`. A step the law refuses is counted with its measured seconds.
+`fit.mad`. A step the law refuses is counted with its real seconds.
 """
 
 from __future__ import annotations
@@ -73,11 +73,11 @@ def _leading_slow(priced: list[tuple], law: dict) -> set[int]:
 
 
 def _summary(steps: list[tuple]) -> dict:
-    """(band, step, measured, priced) rows of one kind as the report's figures."""
-    measured = np.array([s[2] for s in steps])
+    """(band, step, real, priced) rows of one kind as the report's figures."""
+    real = np.array([s[2] for s in steps])
     priced = np.array([s[3] for s in steps])
-    error = priced / measured - 1.0
-    largest = int(np.argmax(np.abs(priced - measured)))
+    error = priced / real - 1.0
+    largest = int(np.argmax(np.abs(priced - real)))
     rest = np.arange(len(steps)) != largest
     bands = {}
     for band in sorted({s[0] for s in steps}):
@@ -92,14 +92,12 @@ def _summary(steps: list[tuple]) -> dict:
         }
     return {
         "steps": len(steps),
-        "measured_s": float(measured.sum()),
+        "real_s": float(real.sum()),
         "priced_s": float(priced.sum()),
-        "on_totals": float(priced.sum() / measured.sum() - 1.0),
+        "on_totals": float(priced.sum() / real.sum() - 1.0),
         "held_out_step": steps[largest][1],
         "held_out": (
-            float(priced[rest].sum() / measured[rest].sum() - 1.0)
-            if rest.any()
-            else None
+            float(priced[rest].sum() / real[rest].sum() - 1.0) if rest.any() else None
         ),
         "median": float(np.median(error)),
         "bands": bands,
@@ -130,9 +128,9 @@ def cost_accuracy(record, law) -> dict:
         try:
             cost = backend.price(view)
         except CostRefused:
-            r = refused.setdefault(band, {"steps": 0, "measured_s": 0.0})
+            r = refused.setdefault(band, {"steps": 0, "real_s": 0.0})
             r["steps"] += 1
-            r["measured_s"] += seconds
+            r["real_s"] += seconds
             continue
         priced.append((key, band, step, seconds, cost))
     leading = _leading_slow(priced, law)
@@ -142,7 +140,7 @@ def cost_accuracy(record, law) -> dict:
                 {
                     "step": step,
                     "band": band,
-                    "measured_s": seconds,
+                    "real_s": seconds,
                     "priced_s": cost.seconds,
                 }
             )
@@ -173,7 +171,7 @@ def _text(report: dict) -> str:
             held = "-" if s["held_out"] is None else f"{s['held_out']:+.2%}"
             out += [
                 (
-                    f"{kind}  {s['steps']} steps  measured {s['measured_s']:.2f} s"
+                    f"{kind}  {s['steps']} steps  real {s['real_s']:.2f} s"
                     f"  priced {s['priced_s']:.2f} s"
                 ),
                 f"  on totals              {s['on_totals']:+.2%}",
@@ -188,13 +186,11 @@ def _text(report: dict) -> str:
                 )
     for w in report["warm"]:
         out.append(
-            f"\nwarm step {w['step']} ({w['band']}): measured {w['measured_s']:.2f} s,"
+            f"\nwarm step {w['step']} ({w['band']}): real {w['real_s']:.2f} s,"
             f" priced {w['priced_s']:.2f} s"
         )
     for band, r in report["refused"].items():
-        out.append(
-            f"\nrefused {band}: {r['steps']} steps, measured {r['measured_s']:.2f} s"
-        )
+        out.append(f"\nrefused {band}: {r['steps']} steps, real {r['real_s']:.2f} s")
     return "\n".join(out)
 
 

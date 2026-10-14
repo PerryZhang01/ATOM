@@ -72,7 +72,7 @@ HISTORY = PREFILL + ("history",)
 DECODE = ("step", "context", "graph_padding")
 ROWMOD = DECODE + ("rowmod",)
 EAGER = "eager"
-SOURCE = "coarse-law"
+SOURCE = "step-linear"
 
 
 class _Vector:
@@ -207,4 +207,4 @@ class StepLinearBackend(CostBackend):
         )
 
     def describe(self) -> str:
-        return f"tier-a coarse law; {self.law.fitted_on}"
+        return f"step linear law; {self.law.fitted_on}"

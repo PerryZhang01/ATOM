@@ -35,7 +35,7 @@ from atom.compass.backends.provenance import Provenance, Species
 from atom.compass.backends.resolver import CostRefused
 from atom.compass.backends.shape import BatchView, sum_context, sum_tokens
 
-SOURCE = "roofline"
+SOURCE = "step-roofline"
 
 
 class StepRooflineBackend(CostBackend):
@@ -100,7 +100,7 @@ class StepRooflineBackend(CostBackend):
 
     def describe(self) -> str:
         return (
-            f"tier-0 roofline; {self.parameters} parameters, "
+            f"step roofline; {self.parameters} parameters, "
             f"{self.host_floor_s:g} s host floor"
         )
 

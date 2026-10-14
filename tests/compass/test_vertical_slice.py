@@ -205,7 +205,7 @@ def _run_file(out: Path, **overrides) -> Path:
         "admission_path": "serving",
         "ipc_s": 2.0**-14,
         "stream_s": 2.0**-12,
-        "coefficients": dataclasses.asdict(Coefficients()),
+        "step_stub": dataclasses.asdict(Coefficients()),
         "machine": DOCUMENT,
         "parameter_count": 8_000_000_000,
         "out_dir": str(out),

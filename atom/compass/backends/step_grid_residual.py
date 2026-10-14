@@ -28,7 +28,7 @@ A residual fitted under another recipe name, version or digest fails loading.
 
 A residual is a mapping, as a bundle holds it:
 
-    {"recipe": {"name": "step-fit-residual", "version": 1, "digest": <hex>},
+    {"recipe": {"name": "step-grid-residual", "version": 1, "digest": <hex>},
      "hull": {"equal": {<feature>: value, ...}, "facets": [[a_1, ..., a_k, c], ...]},
      "members": {<name>: MEMBER, ...},
      "selected": {<name>: <weight>, ...}}
@@ -114,7 +114,7 @@ class Recipe:
 
 
 V1 = Recipe(
-    "step-fit-residual", 1, (tokens, query_square, query_context, order, raggedness)
+    "step-grid-residual", 1, (tokens, query_square, query_context, order, raggedness)
 )
 
 
