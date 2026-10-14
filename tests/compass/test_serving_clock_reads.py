@@ -184,7 +184,7 @@ class TestASubstitutedReadTakesTheLpClock:
             ),
             "tokenizer": SimpleNamespace(encode=lambda text: [1]),
             "apply_chat_template": lambda *args, **kwargs: "prompt",
-            "generate_async": lambda *args: None,
+            "generate_async": lambda *args, **kwargs: None,
             "_run_nonstream_with_disconnect": nonstream,
             "read_whole_blocks": lambda *args, **kwargs: [],
             "build_responses_response": lambda **kwargs: kwargs["created_at"],

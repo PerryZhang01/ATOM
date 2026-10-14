@@ -117,6 +117,10 @@ _REPLACED_TRANSFER = "a transfer backend the simulator replaces with a priced on
 _LOG_ONLY = "times real work for a log line; nothing in the simulated record reads it"
 _COMPILE = "torch.compile at startup, before the simulated window"
 _LOAD = "loads or warms up the model at startup, before the simulated window"
+_WORKER_RPC = (
+    "bounds a wait for every worker's reply to a weight-sync or collective RPC; "
+    "a simulated runner answers at once, so the deadline never binds"
+)
 
 #: Real-clock reads in ATOM's core that stay real, by site: (file, the innermost
 #: def holding the read, the call) -> (class, reason, how many such reads the
@@ -133,6 +137,10 @@ _KEPT_REAL = (
      "K9", _LOG_ONLY, 1),
     ("atom/model_engine/async_proc.py", "call_func_with_aggregation", "time.monotonic",
      "K9", _LOG_ONLY, 1),
+    ("atom/model_engine/async_proc.py", "_collective_rpc", "time.monotonic",
+     "K9", _WORKER_RPC, 1),
+    ("atom/model_engine/async_proc.py", "_await_rank_reply", "time.monotonic",
+     "K9", _WORKER_RPC, 1),
     ("atom/model_engine/engine_core.py", "exit", "time.monotonic",
      "K9", "the runner processes' shutdown grace period, after the simulated window", 2),
     ("atom/model_engine/engine_core.py", "_drain_kv_work_at_exit", "time.monotonic",
@@ -141,8 +149,18 @@ _KEPT_REAL = (
      "K9", _LOG_ONLY, 4),
     ("atom/model_engine/engine_core_mgr.py", "close", "time.monotonic",
      "K9", "the engine processes' shutdown grace period, after the simulated window", 2),
+    ("atom/model_engine/engine_core_mgr.py", "collective_rpc", "time.monotonic",
+     "K9", _WORKER_RPC, 2),
+    ("atom/model_engine/engine_core_mgr.py", "collective_rpc", "time.time",
+     "K9", _WORKER_RPC, 1),
+    ("atom/model_engine/engine_core_mgr.py", "_broadcast_and_wait", "time.monotonic",
+     "K9", _WORKER_RPC, 2),
+    ("atom/model_engine/engine_core_mgr.py", "_broadcast_and_wait", "time.time",
+     "K9", _WORKER_RPC, 1),
     ("atom/model_engine/engine_utility.py", "_execute_utility_command", "time.monotonic",
      "K9", _LOG_ONLY, 2),
+    ("atom/model_engine/engine_utility.py", "_remaining_timeout", "time.time",
+     "K9", _WORKER_RPC, 1),
     ("atom/model_engine/model_runner.py", "_build_and_load_model", "time.perf_counter",
      "K9", _REPLACED_RUNNER, 2),
     ("atom/model_engine/model_runner.py", "_on_trace_ready", "time.time",
@@ -219,6 +237,39 @@ _KEPT_REAL = (
      "K9", _REPLACED_TRANSFER, 1),
     ("atom/kv_transfer/offload/mp/transfer.py", "_enforce_transfer_deadline", "time.monotonic",
      "K9", _REPLACED_TRANSFER, 1),
+    *(
+        (f"atom/kv_transfer/{path}", scope, f"time.{call}", "K9", _REPLACED_TRANSFER, n)
+        for path, scopes in (
+            ("disaggregation/mooncake/mla_landing.py", (
+                ("acquire", "monotonic", 2), ("begin", "monotonic", 1),
+                ("__init__", "monotonic", 1), ("quarantine", "monotonic", 1),
+                ("_retire_locked", "monotonic", 1), ("_scatter", "monotonic", 2),
+                ("sweep", "monotonic", 1), ("_unquarantine_locked", "monotonic", 1))),
+            ("disaggregation/mooncake/mooncake_connector.py", (
+                ("_complete_recv", "monotonic", 1), ("_expire_pending_recvs", "monotonic", 1),
+                ("get_finished", "monotonic", 1), ("_rdma_write", "monotonic", 3),
+                ("record_kv_cache_ready", "monotonic", 1), ("_record_write_ack", "monotonic", 1),
+                ("_report_held_failures", "monotonic", 1), ("start_load_kv", "monotonic", 1),
+                ("_write_listener", "monotonic", 1), ("_write_mla_slot", "monotonic", 1))),
+            ("offload/mooncake_store/client.py", (
+                ("__init__", "monotonic", 1), ("__init__", "time", 1),
+                ("seconds", "monotonic", 1), ("seconds", "time", 1))),
+            ("offload/mooncake_store/scheduler.py", (
+                ("_build_save_request", "monotonic", 1), ("_connect", "monotonic", 1),
+                ("_count_lookup", "monotonic", 1), ("_ensure_lookup_pin", "monotonic", 1),
+                ("_exists_on", "monotonic", 1), ("_fresh_tier_lookup", "monotonic", 1),
+                ("__init__", "monotonic", 1), ("lookup", "perf_counter", 2),
+                ("_may_emit_save", "monotonic", 1), ("_pause", "monotonic", 1),
+                ("_pools_to_ask", "monotonic", 1),
+                ("_retry_or_retire_failed_save", "monotonic", 1), ("_warn", "monotonic", 1))),
+            ("offload/mooncake_store/worker.py", (
+                ("_do_load_req", "perf_counter", 6), ("_do_save_req", "monotonic", 1),
+                ("_do_save_req", "perf_counter", 8), ("_maybe_log_store_stats", "monotonic", 1),
+                ("register_kv_caches", "monotonic", 1), ("start_load_kv", "monotonic", 1),
+                ("_warn_rate_limited", "monotonic", 1))),
+        )
+        for scope, call, n in scopes
+    ),
     ("atom/model_loader/expert_staging.py", "_ensure_staging", "time.perf_counter",
      "K9", _LOAD, 2),
     ("atom/model_loader/loader.py", "load_model", "time.perf_counter", "K9", _LOAD, 2),
