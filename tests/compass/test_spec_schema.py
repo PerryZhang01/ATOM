@@ -91,7 +91,7 @@ DOCUMENT = {
     "provenance": {
         "authored_by": "a person",
         "date": "2026-09-18",
-        "method": "probed",
+        "origin": "probed",
     },
     "host": {
         "cpu": {"cores_physical": 96, "cores_logical": 192},
@@ -407,6 +407,19 @@ BREAKAGES = {
         "device.memory.capacity_bytes", "lots"
     ),
     "one field written under two spellings": lambda: both_spellings(True),
+    "an origin nobody defined": lambda: written("provenance.origin", "guessed"),
+    "the key the origin used to be written under": lambda: written(
+        "provenance.method", "probed"
+    ),
+    "a subject on a document nobody probed": lambda: dict(
+        document(),
+        provenance={
+            "authored_by": "a",
+            "date": "d",
+            "origin": "assumed",
+            "subject": {"model": "m"},
+        },
+    ),
 }
 
 #: The same rule named by the verbs other than the reader, each driven through

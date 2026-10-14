@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: MIT
-"""Where a number came from: the spec fields under it, and who measured them.
+"""Where a number came from: the spec fields under it, and the origin of each.
 
 A run artifact carries the whole resolved spec, which makes every number it
 reports recoverable in principle. This is what makes it recoverable in practice.
 The reader has one quantity and one question -- what is this built out of -- and
 the answer is the fields that feed it, each with the value the document holds,
-the haircut applied to it, and the fragment that supplied it.
+the haircut applied to it, the fragment that supplied it, and its origin as
+`MachineSpec.origin` answers it -- so a spec that cannot say where a field came
+from is refused here too.
 
 **It is a decomposition and never a total.** A summed check over these terms
 once read +13.8% while hiding three separate errors, two of which cancelled and
@@ -58,8 +60,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from .fields import BY_PATH, SCHEMA, Kind
-from .machine import MachineSpec
-from .merge import Merge, entry_label
+from .machine import MachineSpec, entry_label
+from .merge import Merge
 from .rules import Rule, SpecRefusal, refuse_absent_field, refuse_absent_fields
 from .tokenizers import ENTRY_FIELDS
 
@@ -106,6 +108,9 @@ class Contribution:
     derate: float | None
     effective: Any
     supplied_by: tuple[str, ...]
+    #: Where the field came from, as `MachineSpec.origin` answers it; None for
+    #: the provenance block, which is the record rather than a value.
+    origin: dict | None = None
 
     def __str__(self) -> str:
         line = f"{self.path} = {self.value!r}"
@@ -113,6 +118,11 @@ class Contribution:
             line += f" x {self.derate!r} = {self.effective!r}"
         if self.supplied_by:
             line += f"  [{', '.join(self.supplied_by)}]"
+        if self.origin is not None:
+            subject = ", ".join(
+                f"{k} {v}" for k, v in self.origin.items() if k != "origin"
+            )
+            line += f"  {self.origin['origin']}" + (f" on {subject}" if subject else "")
         return line
 
 
@@ -144,12 +154,16 @@ def _supplied(origin: Merge | None, *labels: str) -> tuple[str, ...]:
 
 
 def _row(
-    path: str, value: Any, derate: float | None, supplied: tuple[str, ...]
+    path: str,
+    value: Any,
+    derate: float | None,
+    supplied: tuple[str, ...],
+    origin: dict | None = None,
 ) -> Contribution:
     effective = value
     if derate is not None and isinstance(value, (int, float)):
         effective = value * derate
-    return Contribution(path, value, derate, effective, supplied)
+    return Contribution(path, value, derate, effective, supplied, origin)
 
 
 def _rows(
@@ -167,6 +181,7 @@ def _rows(
                 spec.runtime_constant(name, width),
                 None,
                 _supplied(origin, f"{path}[{width}]", path),
+                spec.origin(path, width),
             )
             for width in widths
         ]
@@ -183,10 +198,13 @@ def _rows(
                         getattr(entry, rate.path),
                         entry.derate if rate.peak else None,
                         _supplied(origin, label, path),
+                        spec.origin(label),
                     )
                 )
         return rows
-    return [_row(path, value, derate, _supplied(origin, path))]
+    document = path in ("name", "schema_version") or path.startswith("provenance.")
+    found = None if document else spec.origin(path)
+    return [_row(path, value, derate, _supplied(origin, path), found)]
 
 
 def explain(
