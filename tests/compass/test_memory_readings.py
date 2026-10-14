@@ -799,6 +799,22 @@ def test_a_config_naming_a_shared_expert_otherwise_is_refused(
     assert named in refusal.value.remedy
 
 
+def test_an_unstated_count_the_class_defaults_is_refused_without_disowning_it(
+    tmp_path,
+):
+    # DeepseekV3Config defaults n_shared_experts, so the class names it: the
+    # remedy names it as the shared-expert field, not as one left unread.
+    config, config_json = loaded(
+        tmp_path, {k: v for k, v in V4_PRO.items() if k != "n_shared_experts"}
+    )
+    with pytest.raises(MemoryRefusal) as refusal:
+        terms_of(config, config_json)
+    assert refusal.value.remedy == (
+        "state it in the model's config.json; this config names a shared "
+        "expert as n_shared_experts"
+    )
+
+
 def test_a_dense_model_through_atoms_loader_keeps_its_terms(tmp_path, qwen):
     # Qwen3.8-27B loads as a text config class that has a default for every
     # field read here; its config.json states them all, under `text_config`.

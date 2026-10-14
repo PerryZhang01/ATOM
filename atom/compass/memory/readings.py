@@ -205,8 +205,7 @@ class ModelTerms:
                         "this config states no `n_shared_experts`, and the "
                         "memory model reads it",
                         "state it in the model's config.json; this config "
-                        f"names a shared expert as {', '.join(named)}, which "
-                        "the memory model does not read as a count",
+                        f"names a shared expert as {', '.join(named)}",
                     )
                 if not klass.model_type:
                     # A bare PretrainedConfig names no architecture.
