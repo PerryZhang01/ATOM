@@ -54,7 +54,8 @@ from itertools import zip_longest
 import numpy as np
 
 ENV = "ATOM_COMPASS_PARITY_RECORD"
-#: The file in a real run's record directory holding when its workload was sent.
+#: The file in a real run's record directory holding when its workload was sent
+#: and when the server admitted each request.
 ARRIVALS = "arrivals.json"
 RUNNER = "atom.compass.parity.runner.RecordingModelRunner"
 #: Line keys that time a step rather than describe its decision.

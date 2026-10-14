@@ -18,7 +18,8 @@
 #   WAIT_S           seconds a server has to start, and to stop (default 1800)
 # The real run uses HIP_VISIBLE_DEVICES as set. OUT_DIR gets real/ and sim/,
 # each with its server log and step record (sim/ also has the run file, step
-# table and summary), and compare.json; the last lines are per DP rank.
+# table and summary), and compare.json; the last lines are the real run's
+# admission, send to response headers, and the compare per DP rank.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/_lib.sh"
 
@@ -96,10 +97,13 @@ leave sim
 wait $server
 
 python3 -m atom.compass.parity "$OUT/real/record" "$OUT/sim/record" >"$OUT/compare.json"
-python3 - "$OUT/compare.json" <<'EOF'
-import json, sys
+python3 - "$OUT/compare.json" "$OUT/real/record/arrivals.json" <<'EOF'
+import json, statistics, sys
 
-report = json.loads(open(sys.argv[1]).read())
+report, arrivals = (json.loads(open(path).read()) for path in sys.argv[1:])
+ms = [(a - s) / 1e6 for s, a in zip(arrivals["sent_ns"], arrivals["admitted_ns"])]
+print(f"parity_one_node: real admission ms min={min(ms):.2f} "
+      f"median={statistics.median(ms):.2f} max={max(ms):.2f}")
 for rank, n in report["steps"].items():
     first = report["first_divergence"][rank]
     print(f"parity_one_node: dp{rank} compared={n['compared']} "
