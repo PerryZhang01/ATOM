@@ -133,6 +133,9 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
         self._sock = clock.WrappedSocket(self._rt, raw, channel)
         self._ready: dict = {}  # prefill: request -> r
         self._due: dict = {}  # request -> when it is reported finished
+        # Mooncake's send claim: a producer keeps a request's blocks from the
+        # pool from `request_finished` until its write is reported done.
+        self._awaiting_send: set[str] = set()
 
     def get_num_new_matched_tokens(self, seq) -> tuple[int, bool]:
         """Claim a remote-filled prompt whole, so the engine parks it."""
@@ -177,11 +180,15 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
     def request_finished(self, seq) -> None:
         """Record prefill's data-ready time, once, and attach the relayed blob.
 
-        The engine calls this twice for one finished request; the first call
-        is the time the data was ready.
+        A producer claims the blocks of a request it will send, on Mooncake's
+        condition: not aborted, and `do_remote_decode` set.
         """
         if self.is_producer:
             self._ready.setdefault(seq.id, self._rt.read_clock())
+            if getattr(seq, "leave_reason", None) != "aborted" and (
+                getattr(seq, "kv_transfer_params", None) or {}
+            ).get("do_remote_decode"):
+                self._awaiting_send.add(str(seq.id))
         seq.kv_transfer_params_output = transfer_params(
             seq,
             tp_size=self._tp_size,
@@ -189,6 +196,15 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
             pp_size=self._pp_size,
             hash_block_size=self._hash_block_size,
         )
+
+    def should_defer_free(self, seq) -> bool:
+        return str(seq.id) in self._awaiting_send
+
+    def send_finished(self, req_id) -> None:
+        self._awaiting_send.discard(str(req_id))
+
+    def source_blocks_released(self, seq) -> None:
+        """No block-lifetime state remains after the send claim is retired."""
 
     def process_completions(self, output):
         """Take the write requests released so far; report what the clock reached."""
