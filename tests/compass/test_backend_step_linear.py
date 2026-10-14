@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 import test_run_graph_pool
 from test_dp_step_max import prefill, runner
+from test_memory_readings import META_8B
 from test_run_graph_pool import _reserved
 from test_vertical_slice import _run_file
 
@@ -345,4 +346,4 @@ def test_a_run_file_step_linear_is_refused_above_tensor_parallel_width_one(monke
     monkeypatch.setattr(run, "spec", lambda: {"step_linear": law()})
     tp2 = SimpleNamespace(config=SimpleNamespace(tensor_parallel_size=2))
     with pytest.raises(ValueError, match="tensor_parallel_size 2"):
-        run.runner(tp2)
+        run.runner(tp2, META_8B)

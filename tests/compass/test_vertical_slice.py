@@ -29,7 +29,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from test_memory_readings import DOCUMENT, TOKENIZER
+from test_memory_readings import DOCUMENT, META_8B, TOKENIZER
 
 from atom.compass import run as compass_run
 from atom.compass.backends.step_stub import Coefficients
@@ -343,7 +343,7 @@ def test_with_no_run_file_nothing_is_installed(monkeypatch):
     monkeypatch.delenv(compass_run.ENV, raising=False)
     config, model_runner = _config(), SimpleNamespace()
     with compass_run.frontend(config), compass_run.engine(config):
-        compass_run.runner(model_runner)
+        compass_run.runner(model_runner, META_8B)
     assert clock.installed() is None
     assert config.runner_qualname == compass_run.ATOM_RUNNER
     assert vars(model_runner) == {}

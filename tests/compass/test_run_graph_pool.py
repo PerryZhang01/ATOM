@@ -22,6 +22,7 @@ from test_memory_readings import (
     GPU_MEMORY_UTILIZATION,
     GRAPH_POOL_BY_DTYPE,
     MAX_NUM_BATCHED_TOKENS,
+    META_8B,
     MODEL_TERMS_BY_DTYPE,
     WARMUP_TOKENS,
     overridden,
@@ -78,7 +79,7 @@ def _installed(
         ),
         _piecewise_cg_active=lambda: piecewise,
     )
-    compass_run.runner(runner)
+    compass_run.runner(runner, META_8B)
     return runner
 
 

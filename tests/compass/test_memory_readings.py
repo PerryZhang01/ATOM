@@ -74,9 +74,22 @@ WARMUP_TOKENS = 8192
 MAX_NUM_BATCHED_TOKENS = 8192
 CAPTURE_SIZES = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512)
 GPU_MEMORY_UTILIZATION = 0.9
-#: The model's stated parameter count. A meta build replaces it; see the note
-#: the weights term carries.
+#: The model's stated parameter count, which sizes the meta builds below.
 PARAMETERS = 27_000_000_000
+
+
+def meta_tree(nbytes):
+    """A meta build whose parameter storages hold `nbytes`, none of it resident."""
+    tree = torch.nn.Module()
+    tree.weight = torch.nn.Parameter(
+        torch.empty(nbytes, dtype=torch.uint8, device="meta"), requires_grad=False
+    )
+    return tree
+
+
+#: An 8B model at two bytes a parameter, the 8B the vertical slice's run file
+#: states.
+META_8B = meta_tree(16_000_000_000)
 
 STACK = {"rocm": "7.2.4", "aiter": "f4e7c7509", "rccl": "2.22.3"}
 
@@ -241,7 +254,7 @@ def readings_at(spec, qwen, tp_width):
         tp_width=tp_width,
         model=ModelTerms.from_config(
             qwen,
-            parameter_count=PARAMETERS,
+            tree=meta_tree(PARAMETERS * element_bytes(qwen.dtype) // tp_width),
             tp_size=tp_width,
             warmup_tokens=WARMUP_TOKENS,
         ),
@@ -329,11 +342,11 @@ def test_every_term_names_where_it_came_from(spec, qwen, tp_width):
                 assert term.note.strip(), f"{name}.{term.name}"
 
 
-def test_the_declared_terms_are_exactly_weights_buffers_and_activations(spec, qwen):
-    # Each is a declared formula until its source exists: a meta build for
-    # weights, a recording for buffers, a liveness walk for activations.
+def test_the_declared_terms_are_exactly_buffers_and_activations(spec, qwen):
+    # Each is a declared formula until its source exists: a recording for
+    # buffers, a liveness walk for activations. The weights come off a meta build.
     readings = readings_at(spec, qwen, 1)
-    assert set(readings.peak_torch.declared) == {"weights", "buffers", "activations"}
+    assert set(readings.peak_torch.declared) == {"buffers", "activations"}
 
 
 @pytest.mark.parametrize("tp_width", [1, 2])
@@ -390,7 +403,7 @@ def test_a_configuration_that_does_not_fit_refuses_rather_than_clamping(spec, qw
             tp_width=1,
             model=ModelTerms.from_config(
                 qwen,
-                parameter_count=400_000_000_000,
+                tree=meta_tree(800_000_000_000),
                 tp_size=1,
                 warmup_tokens=WARMUP_TOKENS,
             ),
@@ -411,7 +424,7 @@ def test_the_predicting_function_cannot_be_spent_as_the_reserving_one(spec, qwen
             tp_width=1,
             model=ModelTerms.from_config(
                 qwen,
-                parameter_count=PARAMETERS,
+                tree=META_8B,
                 tp_size=1,
                 warmup_tokens=WARMUP_TOKENS,
             ),
@@ -505,10 +518,10 @@ def test_an_absent_partial_rotary_factor_says_so_in_the_table(qwen):
     full = copy.deepcopy(qwen)
     del full.partial_rotary_factor
     stated = ModelTerms.from_config(
-        qwen, parameter_count=PARAMETERS, tp_size=1, warmup_tokens=WARMUP_TOKENS
+        qwen, tree=META_8B, tp_size=1, warmup_tokens=WARMUP_TOKENS
     )
     assumed = ModelTerms.from_config(
-        full, parameter_count=PARAMETERS, tp_size=1, warmup_tokens=WARMUP_TOKENS
+        full, tree=META_8B, tp_size=1, warmup_tokens=WARMUP_TOKENS
     )
     assert "absent from config, assumed" in assumed.buffers.source
     assert "absent from config, assumed" not in stated.buffers.source
@@ -520,7 +533,7 @@ def test_the_model_dtype_sizes_the_model_terms(qwen):
     # the tensors are resident in bf16 is twice what the model holds.
     assert str(qwen.dtype).endswith("bfloat16")
     terms = ModelTerms.from_config(
-        qwen, parameter_count=PARAMETERS, tp_size=1, warmup_tokens=WARMUP_TOKENS
+        qwen, tree=META_8B, tp_size=1, warmup_tokens=WARMUP_TOKENS
     )
     assert terms.buffers.nbytes == 262_144 * 64 * 2
     assert " x 2 B" in terms.buffers.source
@@ -557,7 +570,7 @@ def test_a_measured_entry_prices_the_activations_only_for_its_model_and_width(qw
     def activations(architecture, fingerprint, tp_width):
         return ModelTerms.from_config(
             qwen,
-            parameter_count=PARAMETERS,
+            tree=META_8B,
             tp_size=tp_width,
             warmup_tokens=WARMUP_TOKENS,
             activations_entry=measured_spec.activations_for(
@@ -594,7 +607,7 @@ def test_a_config_with_no_dtype_refuses_rather_than_assuming_one(qwen):
     with pytest.raises(MemoryRefusal, match="states no `dtype`, and every byte"):
         ModelTerms.from_config(
             nameless,
-            parameter_count=PARAMETERS,
+            tree=META_8B,
             tp_size=1,
             warmup_tokens=WARMUP_TOKENS,
         )
@@ -609,7 +622,7 @@ def test_a_config_missing_a_geometry_field_refuses_naming_that_field(qwen, field
     with pytest.raises(MemoryRefusal) as refusal:
         ModelTerms.from_config(
             shapeless,
-            parameter_count=PARAMETERS,
+            tree=META_8B,
             tp_size=1,
             warmup_tokens=WARMUP_TOKENS,
         )
@@ -628,7 +641,7 @@ def test_the_negative_box_refusal_carries_its_decomposition(spec, qwen):
             tp_width=1,
             model=ModelTerms.from_config(
                 qwen,
-                parameter_count=400_000_000_000,
+                tree=meta_tree(800_000_000_000),
                 tp_size=1,
                 warmup_tokens=WARMUP_TOKENS,
             ),
@@ -681,7 +694,7 @@ def loaded(tmp_path, raw):
 def terms_of(config, config_json):
     return ModelTerms.from_config(
         config,
-        parameter_count=PARAMETERS,
+        tree=META_8B,
         tp_size=1,
         warmup_tokens=WARMUP_TOKENS,
         config_json=config_json,

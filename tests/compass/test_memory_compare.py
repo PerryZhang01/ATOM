@@ -72,6 +72,7 @@ from tests.compass.test_memory_readings import (
     MAX_NUM_BATCHED_TOKENS,
     PARAMETERS,
     WARMUP_TOKENS,
+    meta_tree,
 )
 
 MIB = 1 << 20
@@ -450,7 +451,7 @@ def live_readings(spec, qwen, tp_width=1):
         tp_width=tp_width,
         model=ModelTerms.from_config(
             qwen,
-            parameter_count=PARAMETERS,
+            tree=meta_tree(PARAMETERS * element_bytes(qwen.dtype) // tp_width),
             tp_size=tp_width,
             warmup_tokens=WARMUP_TOKENS,
         ),
@@ -530,34 +531,27 @@ def test_an_absent_term_is_not_a_term_of_zero_bytes(spec, qwen):
     )
 
 
-def test_the_two_terms_that_cannot_discharge_their_gate_while_agreeing_exactly(
-    spec, qwen
-):
-    """Every recorded term equals its prediction, and two gates still do not close.
+def test_the_term_that_cannot_discharge_its_gate_while_agreeing_exactly(spec, qwen):
+    """Every recorded term equals its prediction, and one gate still does not close.
 
-    `weights` is a declared coefficient over a **round 27e9**, and the note it
-    carries names a second reason that a better parameter count would not
-    touch: it shards every parameter, where a real stack replicates its norms.
     `activations` is a declared formula over one live layer, and even a traced
     graph without the invisible-scratch table would not be enough to discharge
-    the 10% gate on it.
+    the 10% gate on it. `weights`, read off a meta build, discharges its gate.
     """
     prediction = live_prediction(spec, qwen)
     comparison = compare(prediction, agreeing_recording(prediction))
 
     by_name = {t.name: t for t in comparison.compared}
     assert all(t.delta_bytes == 0 for t in comparison.compared)
-    assert {t.name for t in comparison.not_discharged()} == {"weights", "activations"}
+    assert {t.name for t in comparison.not_discharged()} == {"activations"}
     assert not comparison.failures()
     assert {t.name for t in comparison.compared if t.verdict is Verdict.PASS} == {
+        "weights",
         "load residue",
         "persistent",
         "driver and collective reserve",
     }
 
-    weights = by_name["weights"].why
-    assert "27000000000 stated parameters" in weights
-    assert "shards every parameter, where a real stack replicates its norms" in weights
     activations = by_name["activations"].why
     assert "liveness walk" in activations and "invisible-scratch" in activations
 

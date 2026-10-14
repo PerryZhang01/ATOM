@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 from test_backend_step_linear import law, view
 from test_backend_step_linear_fit import _record
+from test_memory_readings import META_8B
 
 from atom.compass.backends import (
     BatchView,
@@ -152,7 +153,7 @@ def test_a_keyed_law_refuses_another_width_and_one_one_prices_as_tp1(monkeypatch
         parallel_config=SimpleNamespace(data_parallel_size=8),
     )
     with pytest.raises(ValueError, match=r"\(dp, ep\) \(1, 1\) .* at \(8, 1\)"):
-        run.runner(SimpleNamespace(config=dpa))
+        run.runner(SimpleNamespace(config=dpa), META_8B)
 
 
 @pytest.mark.parametrize("cap, decode", [(20, 4), (4, 4), (3, None)])
