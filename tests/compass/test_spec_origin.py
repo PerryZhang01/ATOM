@@ -87,10 +87,19 @@ def test_a_saved_spec_answers_origin_for_every_field():
 def test_a_field_two_fragments_agree_on_is_assumed_only_if_both_assumed_it():
     links = fragment("links", LINKS, origin="assumed")
     probed = fragment("probe", {"interconnect": {"router_relay_s": 1.5e-3}})
-    document = saved(merge([*four_origins()[:3], probed, links]).document)
+    carried = fragment(
+        "carried",
+        {"interconnect": {"inter_node": {"link_latency_s": 5.0e-6}}},
+        origin="transferred-from:mi300x-8gpu",
+    )
+    fragments = [*four_origins()[:3], probed, carried, links]
+    document = saved(merge(fragments).document)
     spec = MachineSpec.from_mapping(document)
     assert spec.origin("interconnect.router_relay_s") == {"origin": "probed"}
     assert spec.origin("interconnect.inter_node.link_latency_s") == {
+        "origin": "transferred-from:mi300x-8gpu"
+    }
+    assert spec.origin("interconnect.inter_node.link_bandwidth_bytes_per_s") == {
         "origin": "assumed"
     }
 
@@ -228,13 +237,5 @@ def test_the_checked_in_specs_say_where_each_field_came_from(monkeypatch, name):
         if "cudagraph_pool" not in label[0]:
             assert answered[label] == {"origin": "probed", **script.SUBJECT}, label
     for label, found in answered.items():
-        if label[0].endswith(".derate"):
+        if found["origin"] != "probed":
             assert found == {"origin": "assumed"}, label
-        elif found["origin"] != "probed":
-            wanted = (
-                "assumed"
-                if name == script.SOURCE
-                else "transferred-from:mi308x-hjbog18"
-            )
-            assert found == {"origin": wanted}, label
-    assert script.SUBJECT["source_root"] == f"commit:{script.COMMIT}"

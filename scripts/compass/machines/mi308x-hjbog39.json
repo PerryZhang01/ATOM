@@ -82,6 +82,51 @@
         "width": 1,
         "source_root": "commit:a1cac25a6"
       },
+      "host.ipc.zmq_roundtrip_s": {
+        "origin": "assumed"
+      },
+      "host.ipc.shm_broadcast_s": {
+        "origin": "assumed"
+      },
+      "host.admission_fixed_s": {
+        "origin": "assumed"
+      },
+      "device.memory.bandwidth_bytes_per_s": {
+        "origin": "assumed"
+      },
+      "device.compute.bf16_flops": {
+        "origin": "assumed"
+      },
+      "device.compute.fp8_flops": {
+        "origin": "assumed"
+      },
+      "device.runtime_constants.cudagraph_pool.w1_base_bytes": {
+        "origin": "assumed"
+      },
+      "device.runtime_constants.cudagraph_pool.w1_bytes_per_captured_token": {
+        "origin": "assumed"
+      },
+      "device.runtime_constants.cudagraph_pool.w_gt1_flat_bytes": {
+        "origin": "assumed"
+      },
+      "interconnect.intra_node.topology": {
+        "origin": "assumed"
+      },
+      "interconnect.intra_node.link_bandwidth_bytes_per_s": {
+        "origin": "assumed"
+      },
+      "interconnect.intra_node.link_latency_s": {
+        "origin": "assumed"
+      },
+      "interconnect.inter_node.link_bandwidth_bytes_per_s": {
+        "origin": "assumed"
+      },
+      "interconnect.inter_node.link_latency_s": {
+        "origin": "assumed"
+      },
+      "interconnect.router_relay_s": {
+        "origin": "assumed"
+      },
       "device.memory.derate": {
         "origin": "assumed"
       },
@@ -94,51 +139,6 @@
       "interconnect.inter_node.derate": {
         "origin": "assumed"
       },
-      "host.ipc.zmq_roundtrip_s": {
-        "origin": "transferred-from:mi308x-hjbog18"
-      },
-      "host.ipc.shm_broadcast_s": {
-        "origin": "transferred-from:mi308x-hjbog18"
-      },
-      "host.admission_fixed_s": {
-        "origin": "transferred-from:mi308x-hjbog18"
-      },
-      "device.memory.bandwidth_bytes_per_s": {
-        "origin": "transferred-from:mi308x-hjbog18"
-      },
-      "device.compute.bf16_flops": {
-        "origin": "transferred-from:mi308x-hjbog18"
-      },
-      "device.compute.fp8_flops": {
-        "origin": "transferred-from:mi308x-hjbog18"
-      },
-      "device.runtime_constants.cudagraph_pool.w1_base_bytes": {
-        "origin": "transferred-from:mi308x-hjbog18"
-      },
-      "device.runtime_constants.cudagraph_pool.w1_bytes_per_captured_token": {
-        "origin": "transferred-from:mi308x-hjbog18"
-      },
-      "device.runtime_constants.cudagraph_pool.w_gt1_flat_bytes": {
-        "origin": "transferred-from:mi308x-hjbog18"
-      },
-      "interconnect.intra_node.topology": {
-        "origin": "transferred-from:mi308x-hjbog18"
-      },
-      "interconnect.intra_node.link_bandwidth_bytes_per_s": {
-        "origin": "transferred-from:mi308x-hjbog18"
-      },
-      "interconnect.intra_node.link_latency_s": {
-        "origin": "transferred-from:mi308x-hjbog18"
-      },
-      "interconnect.inter_node.link_bandwidth_bytes_per_s": {
-        "origin": "transferred-from:mi308x-hjbog18"
-      },
-      "interconnect.inter_node.link_latency_s": {
-        "origin": "transferred-from:mi308x-hjbog18"
-      },
-      "interconnect.router_relay_s": {
-        "origin": "transferred-from:mi308x-hjbog18"
-      },
       "host.tokenizers[qwen3.8-27b fast]": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
@@ -148,10 +148,9 @@
     "fragments": [
       "tokenizer",
       "device",
-      "assumed",
-      "mi308x-hjbog18"
+      "assumed"
     ],
-    "notes": "one Qwen3.8-27B TP1 start at a1cac25a6 | no probe fills these | node 18's values; both hosts carry the same MI308X part"
+    "notes": "one Qwen3.8-27B TP1 start at a1cac25a6 | no probe fills these"
   },
   "host": {
     "cpu": {
