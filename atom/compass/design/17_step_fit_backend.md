@@ -12,6 +12,11 @@ follows the execution plan in `16`.
 residual's targets are real-run step times, bench replays, or both (D100); a point's value
 is `07` D39's bench window (D98); `compass run`'s flags select the backend (D103).
 
+**Revised 2026-10-14 by the owner's
+[ruling on #937](https://github.com/jgong5/ATOM/pull/937#issuecomment-6161726104):** the
+planner runs inside `measure steps` (D98), and grading reads the coverage check's result
+from `run.json` (D99).
+
 **Depends on:** `02` (the backend interface, the forward's interval, the provenance
 species), `07` (the tiers, the bench, artifact identity and invalidation), `08` (stage 2's
 protocol and the refusal rule), `09` (the hull and law
@@ -194,9 +199,10 @@ raggedness are covered before grading.
 
 ### Planning: nodes from shapes, cells from the planned population
 
-- **The planner is step fit's own**, beside the backend, with the coverage check (D99);
-  no toolchain command plans the grid (`07` D37). It writes its points as step-record
-  lines, which `measure steps` reads (`13` D80).
+- **The planner is step fit's own**, beside the backend, with the coverage check (D99).
+  It runs inside `measure steps`, over the `shape_population` entries and `record`
+  directories `--grid` names, and the bench measures the points it places (`13` D80); no
+  command plans on its own (`07` D37).
 - **Sparse, and placed from shapes.** A definition's nodes come first from `07` Phase 0's
   population on the registered case set, then from the real runs' step tables. Never from
   timings: a node placed where an error looked large is a node chosen by the answer. The
@@ -311,8 +317,8 @@ is the residual's job (D100).
 - **A pre-run coverage check** covers the grid cells and the residual's hull (D100) for
   every real step and every Phase 0 step of the registered case set:
   `compass run --coverage` reads `record` directories and `shape_population` entries and
-  calls it before a graded run (`13` D80). A graded run starts only after it passes
-  (D102).
+  calls it before the run starts, refuses a run that fails it, and records the result in
+  `run.json` (`13` D80). Grading takes a step fit run only when its check passed (D102).
 - **Lookups are deterministic**: one batch and one bundle give one bit-identical answer
   (`08` D50's reproducibility assertion, `01` D3.4).
 
@@ -594,7 +600,7 @@ After stage 2, step fit gets one evaluation on DeepSeek-V4-Pro (`16` W4.13):
 |---|---|---|
 | D96 | Step fit (`StepFitBackend`, `step_fit`) is a tier-a `CostBackend`: grid lookup plus a residual. A candidate for #627's stage 2, graded by stage 2's protocol after `09` D59's validation, a use beyond `07` D36 by ruling; which backend passes stage 2 is #627's ruling, which chose `09` D54's law and keeps step fit off the stage-2 path for now, so step fit's evaluation runs off that critical path. Grading reads #743's registered real runs, or step fit's own named apart; the residual, validation and grid comparisons use traces 256 to 392, grading traces 0 to 255. Not a stage-3 backend, not the source of the per-family MI308X tables; Kimi-K3 and DCP after v1. | 2026-10-10 (#696); #627's rulings applied 2026-10-11 (#626) |
 | D97 | One term per step, the forward's device busy time over its whole interval, priced once per logical forward by the backend; the runner composes it with the host laws by `01` D4's recurrence and the engine charges the result. Rows in order; mixed phases and speculative decode refuse; a DP run refuses by key and a PP stage refuses. The backend imports nothing from ATOM. | 2026-10-10 (#696); revised 2026-10-11 (#815) |
-| D98 | A synthetic homogeneous grid, departing from `07` D39 for the baseline only. Its definition (a node list per axis and the planning margin) is a calibration input recorded in the bundle's identity; a cell is the box between adjacent nodes; warm-up, repeats and statistic are fixed in code; measurements are stored per point. Nodes are placed from shapes, and only the cells the planned shapes fall in, plus the margin, are measured; the planner adds boundary nodes from the bounds the bundle records, and a corner past a limit or at a non-integer `N_Q` is reported, never measured. Decode in replay on the target's own ladder, per rung at `B = R`, `B = previous rung + 1` and each `B` between them that shapes reach past `c_max(R)`, over c nodes per rung that add each B node's KV limit `c_max(B)` and `max_model_len - 1`; prefill eager on `(B, T, c)`, `T = B·N_Q`, by whether a chunk produces output, with the token budget a T node, `max_num_seqs` B's top node and `max_model_len - max_num_batched_tokens` c's. `02` D10's interval, `07` D42's timing, `07` D39's bench window, a point left with no counted repeat refusing its cell; a bundle declares that value kind, and a narrower declared scope or another value kind refuses. The planner and coverage check are step fit's own, beside the backend. | 2026-10-10 (#696); grid definition 2026-10-11 (#626); device time 2026-10-11 (#815); boundary nodes and prefill on `(B, T, c)` 2026-10-13 (#830); bench window and planner 2026-10-13 (#851) |
+| D98 | A synthetic homogeneous grid, departing from `07` D39 for the baseline only. Its definition (a node list per axis and the planning margin) is a calibration input recorded in the bundle's identity; a cell is the box between adjacent nodes; warm-up, repeats and statistic are fixed in code; measurements are stored per point. Nodes are placed from shapes, and only the cells the planned shapes fall in, plus the margin, are measured; the planner adds boundary nodes from the bounds the bundle records, and a corner past a limit or at a non-integer `N_Q` is reported, never measured. Decode in replay on the target's own ladder, per rung at `B = R`, `B = previous rung + 1` and each `B` between them that shapes reach past `c_max(R)`, over c nodes per rung that add each B node's KV limit `c_max(B)` and `max_model_len - 1`; prefill eager on `(B, T, c)`, `T = B·N_Q`, by whether a chunk produces output, with the token budget a T node, `max_num_seqs` B's top node and `max_model_len - max_num_batched_tokens` c's. `02` D10's interval, `07` D42's timing, `07` D39's bench window, a point left with no counted repeat refusing its cell; a bundle declares that value kind, and a narrower declared scope or another value kind refuses. The planner and coverage check are step fit's own, beside the backend, and the planner runs inside `measure steps`. | 2026-10-10 (#696); grid definition 2026-10-11 (#626); device time 2026-10-11 (#815); boundary nodes and prefill on `(B, T, c)` 2026-10-13 (#830); bench window and planner 2026-10-13 and 2026-10-14 (#851) |
 | D99 | An answer only from a complete cell, by exact hit or interpolation; otherwise refuse, naming the missing corners. No extrapolation, clamp, recovery or fallback. A pre-run coverage check over cells and the residual hull, which `compass run --coverage` calls on `record` directories and `shape_population` entries; deterministic lookups; `02` D11 species. | 2026-10-10 (#696); prefill coordinates `(B, T, c)` 2026-10-13 (#830); `run --coverage` 2026-10-13 (#851) |
 | D100 | The residual is in the first version, fitted on traces 256 to 392 in `14` D85's form plus order and raggedness, graded on traces 0 to 255, refusing outside its hull. Its targets are real-run step times labelled as tier a labels them, replayed bench measurements, or both, pooled with no source term; the grid stays bench points only; the fit report breaks counts, residual centre and spread, and held-out error down by source, and the bundle records its sources; grid definitions compared on traces 256 to 392 only, each one tried recorded. Members are bundle data; each output checked. Recipes are fixed functions with injected geometry and hardware constants, versioned only when a function changes; optional recipes, DCP's first. | 2026-10-10 (#696); grid comparison 2026-10-11 (#626); targets 2026-10-13 (#882) |
 | D101 | A bundle is a `07` D41 key plus a digest, immutable, with a row in `07` D43 invalidated by every column. Keyed conditions refuse; derived values go to provenance; #626's asserted and record-only grades are dropped. Conditions come from the resolved ATOM config; the stack, torch included, is checked against the target's as the machine spec records it. At startup, unmeasured rungs and bounds beyond the planned grid refuse. | 2026-10-10 (#696); target stack 2026-10-13 (#851) |

@@ -51,7 +51,7 @@ width-keyed material has one index.
 | **Q1 LPs** | **None added.** A TP group is one LP (`01` D3) — it already barriers on every collective. Rank-0 single-sourcing of the clock is measured correct: TP=2 over 1,727 steps, per-step rank difference median **0.03%**, worst 0.82%; TP=4 over 2,295 steps, rank totals within **±0.02%**, and charging every step to its *slowest* rank adds **0.06%**. |
 | **Q2 scheduling** | **None.** One scheduler, one batch. |
 | **Q3 cost** | Collectives priced per width, never scaled by a law — measured `cross_device_reduce_1stage` **9.08 / 10.40 / 10.95 µs** at TP 2/4/8 (+20.6%) while `allgather_lastdim` went **29.00 / 23.73 / 16.39 µs (−43.5%)** (`07` D40, `10` D66). Some structures exist only at width. |
-| **Q4 memory** | Weights shard; `runtime_constants` are **tabulated per width and do not fit a law** — 926 / 6906 / 7266 / 10704 MiB at 1/2/4/8 (`03` D14, `05` D25). |
+| **Q4 memory** | Weights shard; `runtime_constants` are **tabulated per width and do not fit a law** — 926 / 6906 / 7266 / 10704 MiB at 1/2/4/8 (`03` D14, `07` D41's `memory_readings`). |
 | **Open** | **T21** — whether the in-situ calibration transfers across width. The one unproven assumption in the recipe. |
 
 **What TP supplies to the others:** the per-width discipline. Every strategy below inherits
@@ -488,7 +488,7 @@ the ones where the paged period of this model, 4, divides every span.
 The Class-C `runtime_constants` scale by neither key, since HIP context and collective
 buffers are per-process; that half of the sentence this replaces was already right.
 **Memory readings must be keyed by PP degree as well as TP width**, and that is a new
-dimension on `05` D25's table rather than a derivation.
+dimension on `07` D41's `memory_readings` key rather than a derivation.
 
 The per-stage *block count* these paged counts produce, and the `all_reduce(MIN)` that
 picks one of them for the whole deployment, are `03` D14's question and not this one's.
@@ -781,7 +781,7 @@ CPU-only path (`08` D43.1).
   configurations, one of them documented) and **T85** (multi-node EP rank-to-node
   mapping, unverified; after v1 by `16` D95). **T84** (which EP2 D94's parity test means)
   is answered by `16` D95, and D94 states its answer.
-- **PP degree is a new key on the memory readings table** (`05` D25), and nothing has
+- **PP degree is a new key on the memory readings** (`07` D41), and nothing has
   measured whether the Class-C constants move with it. One startup per PP degree settles
   it; recorded as **T66**.
 - **The DP `max`-over-ranks rule is unmeasured.** `01`'s 0.06% figure is a TP result. What

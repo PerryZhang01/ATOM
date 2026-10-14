@@ -20,7 +20,9 @@ sketch that followed Wave 3.
 **Revised 2026-10-13 by the owner's ruling on
 [#851](https://github.com/jgong5/ATOM/issues/851#issuecomment-6140384791).** The
 toolchain's steps half (`13` D80) is stage 2's, S2.7, built ahead of the ops half, which
-stays W4.1's; the module layout names where each piece goes.
+stays W4.1's; the module layout names where each piece goes. Revised 2026-10-14 by the
+owner's [ruling on #937](https://github.com/jgong5/ATOM/pull/937#issuecomment-6161726104):
+S2.7 adds `measure memory`, and grading decides whether a run is gradeable.
 
 **Scope.** How the work is organised, allocated and gated; what happens first; and what
 each stage must produce. It is **detailed through M2**. Work after v1 is listed, not
@@ -126,10 +128,10 @@ atom/compass/
   capture/    FakeTensorMode capture, guard domains
   spec/       machine-spec schema, probes, merge / validate / explain
   artifacts/  store, keys, digests, invalidation matrix
-  drive/      serving ATOM for record, trace steps and run; run.json; the GPU checks
+  drive/      serving ATOM for record, trace steps and run; measure memory; run.json; the GPU checks
   bench/      the measurement bench: replay by rule, the window, measure
   fit/        samples for fit and publishing; each backend owns its fit
-  validate/   grading: the separable results, gradeable runs only
+  validate/   grading: whether a client run is gradeable, the separable results
   metrics/    per-step sampling, backfill
   kv/         simulated KV connector
 tests/compass/          mirrors the above
@@ -519,12 +521,12 @@ it.
 | ID | Task | Module | Effort | Depends on |
 |---|---|---|---|---|
 | **S2.1** | The real side: Qwen3.8-27B TP1 on MI308X, aggregated, driven by cc-traces at `08` D50's stage-2 client counts; three or more spaced runs per client count (`08` D45), with per-request records and per-step tables, each forward's batch and unprofiled seconds (`08` D49 item 1). Filed under #627's stage-2 plan; step fit reads #743's registered runs read only, or, if they do not exist when it is ready, runs its own under the same rules, named apart from stage 2's (`17` D96) | `scripts/compass/` | 150–300 | GPU queue |
-| **S2.2** | Step fit's grid: a grid definition with its margin, and the boundary nodes the planner adds from the target's bounds (per decode rung, each B node's KV limit and `max_model_len - 1` as c nodes and B nodes where shapes cross the rung's limit; prefill on `(B, T, c)` with the token budget, `max_num_seqs` and `max_model_len - max_num_batched_tokens` as nodes), planned by step fit's planner beside its backend (#909) from Phase 0 on the registered case set, then from the shapes of S2.1's step tables, any trace's shapes and never its timings; the cells the planned shapes fall in measured on MI308X per point by `measure steps` while node 18 is idle from the critical path, then topped up in the cells real batches fall in (`17` D98) | `backends/`, calibration | 300–500 | S2.7, S2.1, T27, GPU queue |
+| **S2.2** | Step fit's grid: a grid definition with its margin, and the boundary nodes the planner adds from the target's bounds (per decode rung, each B node's KV limit and `max_model_len - 1` as c nodes and B nodes where shapes cross the rung's limit; prefill on `(B, T, c)` with the token budget, `max_num_seqs` and `max_model_len - max_num_batched_tokens` as nodes), planned by step fit's planner, beside its backend and run inside `measure steps` (#909) from Phase 0 on the registered case set, then from the shapes of S2.1's step tables, any trace's shapes and never its timings; the cells the planned shapes fall in measured on MI308X per point by `measure steps` while node 18 is idle from the critical path, then topped up in the cells real batches fall in (`17` D98) | `backends/`, calibration | 300–500 | S2.7, S2.1, T27, GPU queue |
 | **S2.3** | Step fit's residual, fitted on real-run step times, bench replays or both, of traces 256 to 392, pooled with no source term and reported by source; the bundle from `fit steps --backend step-fit` (`17` D100; #907, #919) | `backends/`, calibration | 250–400 | S2.2 |
 | **S2.4** | `StepFitBackend` with its production wiring, built on the tier-a backend #738 delivered (#759): lookup, residual, bundle and startup checks, the run record and the `step_fit` run-file key (`17` D99–D104) | `backends/`, wiring | 500–800 | W2.4, S2.3 |
 | **S2.5** | `09` D59's validation of the residual: data held out from the fit within traces 256 to 392, three or more candidate families, a second axis (`17` D96) | calibration | 150–250 | S2.3 |
 | **S2.6** | Grading step fit by stage 2's protocol: `08` D44's three results on traces 0 to 255 of S2.1's real runs, no ranking gate; a run with any refusal is a coverage report (`17` D102) | `validate/` | 150–250 | S2.4, S2.5 |
-| **S2.7** | The toolchain's steps half (`13` D80): `record`, `trace steps`, `measure steps` on the bench of `07` D39, `fit steps` and `fit host`, `run` with `--coverage` and `gradeable`, the artifact kinds and rows of `07` D41 and D43, and the one entry; its tasks are #901 to #920 but for #909 (S2.2's) and #907 and #919 (S2.3's) | `drive/`, `bench/`, `fit/`, `artifacts/` | 2700–3800 | W2.4, GPU queue |
+| **S2.7** | The toolchain's steps half (`13` D80): `record`, `trace steps`, `measure steps` on the bench of `07` D39, `measure memory`, `fit steps` and `fit host`, `run` with `--coverage` and what grading reads, the artifact kinds and rows of `07` D41 and D43, and the one entry; its tasks are #901 to #920 but for #909 (S2.2's) and #907 and #919 (S2.3's), and an issue for `measure memory` | `drive/`, `bench/`, `fit/`, `artifacts/` | 2700–3800 | W2.4, GPU queue |
 
 ### Wave 4 — DeepSeek-V4-Pro on MI355X
 

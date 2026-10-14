@@ -11,6 +11,13 @@ toolchain's commands are `13` D80's, and D38 says which phase each runs; plannin
 to the backend that needs the measurements (D37); the bench is drawn and its window
 defined (D39); new artifact kinds and invalidation rows (D41, D43).
 
+**Revised 2026-10-14 by the owner's
+[ruling on #937](https://github.com/jgong5/ATOM/pull/937#issuecomment-6161726104), which
+[#851](https://github.com/jgong5/ATOM/issues/851)'s decisions carry:** Phase 2 is
+`compass measure memory`, whose `memory_readings` entry a run reads, so the readings leave
+the machine spec (D38, D41, D43); step fit's planner runs inside `measure steps` (D37); no
+command starts the client, and grading decides whether a run is gradeable (D38.1).
+
 **Depends on:** `04_model_capture_and_cost_ir.md` (what is traced and priced),
 `05_machine_spec_and_probes.md` (the machine artifact and its probes).
 
@@ -74,9 +81,11 @@ Expecting a user to know which of those they need is how coverage rots quietly.
 [#851](https://github.com/jgong5/ATOM/issues/851#issuecomment-6140384791):** no single
 command plans the whole campaign. A backend that needs measurements plans them itself,
 beside its own code, and owns the coverage check over them. Step fit's grid planner and
-coverage check are the first (`17` D98, D99). `compass run --coverage` calls the
-backend's check before a graded run and refuses a run that fails it; a backend with no
-check refuses `--coverage`. The commands, with their inputs and outputs, are `13` D80's.
+coverage check are the first (`17` D98, D99): `measure steps --grid` runs the planner
+over a `shape_population`, and `compass run --coverage` calls the check before the run
+starts, refuses a run that fails it, and records the result for grading; a backend with
+no check refuses `--coverage`. The commands, with their inputs and outputs, are `13`
+D80's.
 
 ### The cases the commands cover
 
@@ -84,9 +93,9 @@ check refuses `--coverage`. The commands, with their inputs and outputs, are `13
 |---|---|
 | new model, on hardware I have | D39's recommended flow: its steps half for tier a and step fit, and its ops half too for tier b |
 | new workload, same model and hardware | `trace steps` and the coverage check; a GPU only for steps outside what was measured |
-| new parallel width | the machine spec's memory readings at that width, from its per-machine script (`05` D26); `measure` at that width, since collectives are per width (D40) |
+| new parallel width | `measure memory` and `measure` at that width, since memory readings and collectives are per width (D40) |
 | software upgrade | each entry whose D43 row the change invalidates refuses at load, naming its key; only those are re-measured |
-| configuration sweep | `run` per configuration, then rank |
+| configuration sweep | `measure memory` and `run` per configuration, then rank |
 | day zero, nothing measured | tier 0 (`10`), with no measurement |
 
 The upgrade case is the one the invalidation matrix (D43) exists to make cheap. Day zero
@@ -128,25 +137,25 @@ a **(sweep, workload) pair**.
            price collectives    GPU, each W   real process groups, minutes
  Phase 1c  in-situ calibrate    GPU, TP1      full-engine steps
            ...plus ONCE         GPU, TP2      not to calibrate, but to TEST transfer
- Phase 2   memory readings      GPU, each W   one engine startup, no workload
+ Phase 2   memory readings      GPU, each cfg one engine start, no workload
  (there is no Phase 3 - see "What is NOT a calibration axis" below)
 ```
 
 `13` D80's commands run them. Phase 0 is `trace steps`; 1a is `trace ops`; 1b is
 `measure ops`, collectives included (D40), then `fit ops`; 1c is `record` for real runs
-and `measure steps` on the bench, then `fit steps` and `fit host`. Phase 2 has no command:
-the machine spec's per-machine scripts and the `spec` package carry its readings (`05`
-D26). A `measure` command writes measurements per point, and a `fit` command makes the
-laws, bundles and leaves from them.
+and `measure steps` on the bench, then `fit steps` and `fit host`; 2 is `measure memory`.
+A `measure` command writes measurements per point, and a `fit` command makes the laws,
+bundles and leaves from them.
 
 Every phase gets a section. Phases 1a and 2 were named but not elaborated in the first
 draft; they are below, after 0, 1b and 1c.
 
 ### Phase 0 — discovery
 
-`trace steps` runs ATOM's real scheduler device-free, priced by the backend it names,
-and writes the step record (`13` D80): each step's batch, its rows in order with their
-query and context tokens, and its rung. It yields the distinct **structure keys**, the
+`trace steps` runs ATOM's real scheduler device-free, serving as `run` does, priced by
+the backend it names and driven by a client started apart, and writes the step record
+(`13` D80): each step's batch, its rows in order with their query and context tokens, and
+its rung. It yields the distinct **structure keys**, the
 **shape population** actually reached (batch widths, context multisets, raggedness, rung
 histogram), and which structures exist only at width, published as one `shape_population`
 entry (D41).
@@ -248,25 +257,28 @@ predicted; if not, that is the finding and the recipe grows.
 
 ### Phase 2 — memory readings
 
-**One engine startup per TP width, no workload at all.** No toolchain command takes these
-readings, `record` included (`13` D80): a per-machine script takes them and merges them
-into the machine spec with the `spec` package (doc `05` D26). This phase exists because
-five memory quantities cannot be derived from geometry and have no law behind them (doc
-`05` D25, `runtime_constants`). It is the cheapest phase in the campaign
-and the one with the tightest acceptance gate behind it — KV block count at **≤5%**.
+**One engine start per configuration, no workload at all.**
+`compass measure memory -- <ATOM args>` starts the real engine, reads the readings below
+once the KV cache is allocated and the graphs are captured, publishes one
+`memory_readings` entry (D41), and exits (`13` D80); `record` takes none. A run reads the
+entry for its configuration and refuses when it is absent, so the readings leave the
+machine spec (doc `05` D25). This phase exists because five memory quantities cannot be
+derived from geometry and have no law behind them. It is the cheapest phase in the
+campaign and the one with the tightest acceptance gate behind it — KV block count at
+**≤5%**.
 
 | | |
 |---|---|
-| **Input** | model, TP width, and the engine config that fixes the capture ladder |
-| **Output** | a `memory_readings` fragment per width, merged into the machine spec by the `spec` package's `merge` (doc `05` D26) in a per-machine script |
-| **Cost** | one startup per width. Minutes, no workload, no traffic |
+| **Input** | ATOM's arguments: the model, its widths, and the engine config that fixes the capture ladder |
+| **Output** | one `memory_readings` entry for that configuration (D41) |
+| **Cost** | one start per configuration. Minutes, no workload, no traffic |
 | **Needs a GPU** | **yes**, and a **quiet** one |
 
 **What is read, and where it comes from:**
 
 | Reading | Source |
 |---|---|
-| `capacity_bytes` | the device, once |
+| `capacity_bytes` | the device, once; the capacity a run sizes against stays the machine spec's configured one (`13` D78) |
 | `driver_and_collective_reserve_bytes[W]` | ATOM's own `get_num_blocks` `non_torch` term at that width |
 | `allocator_retained_after_load_bytes[W]` | torch allocator, after weight load completes and before the first forward |
 | `persistent_forward_buffer_bytes` | allocator delta across `allocate_forward_vars` + attention metadata setup |
@@ -282,9 +294,12 @@ and the one with the tightest acceptance gate behind it — KV block count at **
 2. **Reset the allocator high-water mark around the measured step.** Otherwise
    `peak_torch` belongs to the warmup prefill, whose shape is nobody's choice — measured
    at **−14.7%** on one configuration.
-3. **Every width refuses rather than defaults.** A missing width is named. This is the
-   one place in the schema with no fallback, because a silently defaulted memory
-   constant produces a plausible KV block count against a 5% gate.
+3. **A configuration with no entry refuses rather than defaults.** `run` names it. This
+   is the one place with no fallback, because a silently defaulted memory constant
+   produces a plausible KV block count against a 5% gate.
+
+**The checkpoint is loaded.** ATOM's `--load_dummy` skips it, and `measure memory`
+refuses it until its readings match a real load's on Qwen3.8-27B TP1 on MI308X (T100).
 
 **Why it is per width and not fitted across widths:** because it does not fit. The
 measured `non_torch` sequence is 926 / 6906 / 7266 / 10704 MiB at widths 1/2/4/8, and
@@ -358,8 +373,8 @@ without a scheduler: `model_runner.py::ModelRunner.dummy_execution` and
   version. Whether that reproduces the recorded step's forward context is T18.
 
 ```
-  record, trace steps,              the bench (GPU): EngineCore's runner
-  a backend's planner               manager, every TP rank, no scheduler
+  record, trace steps;              the bench (GPU): EngineCore's runner
+  step fit's planner, in measure    manager, every TP rank, no scheduler
   +-------------------+  step-     +--------------------------------+
   | batch: its rows   |  record    | RecordingModelRunner, per rank |
   | in order, their   |  lines     |  .forward(replayed by rule)    |--> step measurement
@@ -407,32 +422,36 @@ settles is *which process* each phase runs in, which was previously implicit.
 | 1a trace | `trace ops` | any CPU process, **or** lazily inside a sim run | device-free (with the ROCm caveat above) |
 | 1b price ops | `measure ops` | **the bench** | AITER registers kernels lazily *in the worker process*; paged-KV ops need a live KV cache |
 | 1c in-situ | `measure steps`; `record` for real runs | **the bench**; a real serve | needs whole real steps; the bench replays recorded and planned batches into them |
-| 2 memory | none; a per-machine script (`05` D26) | **a plain engine startup**, not the bench | it measures startup, so a bench that skips parts of startup would measure the wrong thing |
+| 2 memory | `measure memory` | **a plain engine startup**, not the bench | it measures startup, so a bench that skips parts of startup would measure the wrong thing |
 
-So: one bench covers 1b and 1c; Phase 2 is an ordinary startup a per-machine script runs;
+So: one bench covers 1b and 1c; Phase 2 is an ordinary startup `measure memory` runs;
 Phases 0 and 1a need neither.
 
 ### The recommended flow
 
-One canonical sequence per half of the toolchain. For a new (model, machine) pair:
+One canonical sequence per half of the toolchain. For a new (model, machine) pair, where
+each server in steps 2, 3 and 6 serves the client runs a client started apart sends
+(`13` D80):
 
 ```
  Steps half: tier a and step fit (16 S2.7)
- 1.  compass record ... -- <ATOM args>                     [GPU, a real run per repeat]
-       -> step records; run.json with the engine's bounds
- 2.  compass trace steps <backend> ... -- <ATOM args>      [CPU]
+ 1.  compass measure memory -- <ATOM args>                 [GPU, one start]
+       -> memory_readings for this configuration
+ 2.  compass record ... -- <ATOM args>                     [GPU, a server]
+       -> step records, split per client run; run.json with the engine's bounds
+ 3.  compass trace steps <backend> --machine M ... -- <ATOM args>   [CPU, a server]
        -> shape_population, keyed by the backend that priced it
- 3.  the backend's planner, over 1 and 2                   [CPU]
-       -> the points to measure, as step-record lines (step fit, 17 D98)
- 4.  compass measure steps <points, records> ...           [GPU]
-       -> one step_measurement per distinct batch
+ 4.  compass measure steps <records> --grid <populations> ...       [GPU]
+       -> step fit's planner over 3 (17 D98); one step_measurement per distinct batch
  5.  compass fit host <records>; compass fit steps --backend law|step-fit ...   [CPU]
        -> host_laws; a step_law or a step fit bundle
- 6.  compass run <backend> [--coverage <populations, records>] ...   [CPU]
+ 6.  compass run <backend> --machine M [--coverage <populations, records>] ...  [CPU, a server]
        -> with a backend that has a coverage check, refuses before it starts
-          if coverage fails; run.json says if gradeable
- 7.  python -m atom.compass.validate; python -m atom.compass.memory.check   [CPU]
-       -> the separable results (08 D44); the memory terms, one at a time
+          if coverage fails; run.json records what grading reads
+ 7.  python -m atom.compass.validate; python -m atom.compass.memory.check,
+     outside the CLI                                       [CPU]
+       -> whether each client run is gradeable, the separable results (08 D44);
+          the memory terms, one at a time
 
  Ops half: tier b (16 W4.1)
  1.  compass trace ops ...                                 [CPU, seconds]
@@ -607,7 +626,7 @@ its own, and a population is keyed by the backend that priced it.
 | `op_graph` | Phase 1a, `trace ops` | **structure** — not shape |
 | `price_list` | Phase 1b, `fit ops` | **(model, width, source-root digest)** — a triple, never a path |
 | `region_terms` | Phase 1c, `fit ops` | (model, width) |
-| `memory_readings` | Phase 2, a per-machine script (`05` D26); no command | (model, width, utilization, max_num_seqs, max_model_len, kv dtype, block size) |
+| `memory_readings` | Phase 2, `measure memory` | (model, device, width, utilization, max_num_seqs, max_model_len, kv dtype, block size) |
 | `coverage_hull` | derived | the price list it was built from |
 | `step_measurement` | Phase 1c, `measure steps` | (model, device, parallel, engine config, source-root digest, sampling, step kind, the batch's digest) |
 | `step_law` | `fit steps --backend law` | (model, device, parallel, engine config, source-root digest, form) |
@@ -693,7 +712,7 @@ High-occupancy signatures repeat to ~1-3%.
 | Phase 1a trace | **JIT on first use of a structure**, then cached | **no** |
 | Phase 1b op pricing | offline campaign, or opt-in `--measure` | yes |
 | Phase 1c in-situ | offline campaign | yes |
-| Phase 2 memory readings | offline, one startup per width | yes |
+| Phase 2 memory readings | offline, `measure memory`, one start per configuration | yes |
 
 This follows the project's own note: the runner has no modes, every run simulates, trace
 happens on demand at first use and is cached, and `--measure` is a separate flag that does
@@ -751,7 +770,6 @@ mismatch **refuses** (warn only under an explicit flag).
 | `host_laws` | - | - | **X** | **X** | - | **X** | **X** |
 | `memory_readings` | **X** | X | X | X | **X** | - | **X** |
 | `machine_spec`: capacity | - | - | - | - | **X** | - | - |
-| `machine_spec`: runtime constants | **X** | - | - | - | **X** | - | - |
 | `machine_spec`: tokenizer terms | - | - | - | **X** *(tokenizer)* | - | - *(T53)* | - |
 
 Consequences worth noting:
@@ -763,11 +781,10 @@ Consequences worth noting:
 - `host_laws` time the host, so the host CPU invalidates them and the device does not;
   `step_measurement` and `step_law` hold device time, so the host CPU does not invalidate
   them.
-- The device runtime constants depend on the **library build** as much as the silicon,
-  which is why doc 05's schema carries `software_pinned_to` and why a mismatch warns
-  loudly by default, refusing under `validate(strict=True)` or when a transfer or merge
-  moves constants across stacks. The +5980 MiB appearing the moment width exceeds one is
-  collective buffer sizing; the 926 MiB at TP1 is HIP context plus libraries.
+- The memory readings depend on the **library build** as much as the silicon, which is
+  why ROCm, AITER and RCCL invalidate them. The +5980 MiB appearing the moment width
+  exceeds one is collective buffer sizing; the 926 MiB at TP1 is HIP context plus
+  libraries.
 
 ### The gate must be verifiable from the artifact, not from the flag
 
@@ -789,14 +806,14 @@ So: every gate's state is written into the artifact and checked there.
 | # | Decision | Date |
 |---|---|---|
 | D36 | Three tiers: analytic/roofline, coarse empirical, op-level empirical. Compass models a device it has been measured on; cross-hardware transfer of empirical data is out of scope, and doc 05 D26's `transfer` probe is deferred. | 2026-09-18 |
-| D37 | The tool tells the user what to measure: a backend that needs measurements plans them beside its own code and owns the coverage check that `compass run --coverage` calls before a graded run; no single command plans the campaign. Coverage checks use a convex hull or k-NN distance, never a bounding box. | 2026-09-18; revised 2026-10-13 (#851) |
-| D38 | Phase 0 discovery (shapes only) -> 1a trace -> 1b price -> 1c in-situ (+ one TP2 transfer test) -> Phase 2 memory. Client count and workload are not calibration axes. `13` D80's commands run them: `trace steps`, `trace ops`, `measure ops` and `fit ops`, `record` and `measure steps` then `fit steps\|host`, and no command for Phase 2, whose readings per-machine scripts carry; `measure` writes per point, `fit` makes laws, bundles and leaves. | 2026-09-18; commands 2026-10-13 (#851) |
+| D37 | The tool tells the user what to measure: a backend that needs measurements plans them beside its own code and owns the coverage check that `compass run --coverage` calls before the run starts; step fit's planner runs inside `measure steps`; no single command plans the campaign. Coverage checks use a convex hull or k-NN distance, never a bounding box. | 2026-09-18; revised 2026-10-13 and 2026-10-14 (#851) |
+| D38 | Phase 0 discovery (shapes only) -> 1a trace -> 1b price -> 1c in-situ (+ one TP2 transfer test) -> Phase 2 memory. Client count and workload are not calibration axes. `13` D80's commands run them: `trace steps`, `trace ops`, `measure ops` and `fit ops`, `record` and `measure steps` then `fit steps\|host`, and `measure memory` for Phase 2, one engine start per configuration whose `memory_readings` a run reads and refuses without; `measure` writes per point, `fit` makes laws, bundles and leaves. | 2026-09-18; commands 2026-10-13 (#851); Phase 2 2026-10-14 (#851) |
 | D39 | The bench is `EngineCore` without its scheduler: every TP rank's `RecordingModelRunner` started through its runner manager in its order, at any TP width, a step charged to its slowest rank, fed **replayed** batches rebuilt from step records by a versioned rule. One window for both step kinds: device time from an event at the forward's entry to one at its exit, with device work queued ahead, a repeat counting only if the entry event is still pending when the forward returns; whatever is fitted on it declares that value kind. Op prices may use synthetic shapes; step and region measurements may not, step fit's grid excepted (`17` D98). | 2026-09-18; revised 2026-10-13 (#851) |
 | D40 | Four classes of communication, priced separately. Scaling is measured per width, never modelled. A collective's measured duration is an upper bound on device work. | 2026-09-18 |
-| D41 | Artifacts, each with key, digest, fingerprint and provenance. Keys are tuples; source roots are `git archive` digests; resolution names its answer; handed-off artifacts are immutable. `step_measurement`, `step_law` and `host_laws` added, and `shape_population` keyed by its pricing backend. | 2026-09-18; kinds 2026-10-13 (#851) |
+| D41 | Artifacts, each with key, digest, fingerprint and provenance. Keys are tuples; source roots are `git archive` digests; resolution names its answer; handed-off artifacts are immutable. `step_measurement`, `step_law` and `host_laws` added, and `shape_population` keyed by its pricing backend. `memory_readings` from `measure memory`, keyed by device too. | 2026-09-18; kinds 2026-10-13 (#851); `memory_readings` 2026-10-14 (#851) |
 | D42 | Trace is JIT and cached; pricing is offline or opt-in `--measure`. A `--measure` run is never an acceptance run. New shape is fine; new operator kind refuses. | 2026-09-18 |
 | D43 | Per-artifact invalidation matrix, not a global fingerprint. Every gate's state is written into the artifact and checked there. Rows for `shape_population`, `step_measurement`, `step_law` and `host_laws`, and a host-CPU axis. | 2026-09-18; rows 2026-10-13 (#851) |
-| D38.1 | One recommended flow per half: steps (`record`, `trace steps`, the backend's planner, `measure steps`, `fit host` and `fit steps`, `run --coverage`, then grading) and ops (`trace ops`, `measure ops`, `fit ops`). Phases unchanged; the bench hosts 1b and 1c, Phase 2 is a plain startup a per-machine script runs. | 2026-09-19; revised 2026-10-13 (#851) |
+| D38.1 | One recommended flow per half: steps (`measure memory`, `record`, `trace steps`, `measure steps` with step fit's planner, `fit host` and `fit steps`, `run --coverage`, then grading outside the CLI), each server driven by a client started apart, and ops (`trace ops`, `measure ops`, `fit ops`). Phases unchanged; the bench hosts 1b and 1c, Phase 2 is a plain startup `measure memory` runs. | 2026-09-19; revised 2026-10-13 and 2026-10-14 (#851) |
 | D40.1 | Classes (a) and p2p ride `measure ops` unchanged. Classes (b) and (c) share one new declared-entry-point benchmark inside the same bench, also run by `measure ops`. KV transfer is never priced. Collective prices are labelled upper bounds. | 2026-09-19; one command 2026-10-13 (#851) |
 
 ---
@@ -815,3 +832,4 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 | T20 | Build the declared-node + standalone benchmark for invisible collectives | custom all-gather is the default path and is entirely invisible |
 | T21 | Establish whether Phase 1c transfers across width (the TP2 test run) | it is the recipe's one unproven assumption |
 | T22 | Analytic laws as their own design topic | deferred by decision; rung 4 of the resolver ladder reserves its slot |
+| T100 | Compare `measure memory`'s readings under ATOM's `--load_dummy` with a real load's on Qwen3.8-27B TP1 on MI308X; until they match, `measure memory` refuses `--load_dummy` (D38, Phase 2) | needs `measure memory` built |

@@ -18,6 +18,13 @@ needs: an FP4 matrix-core rate, the size of the domain the in-node fabric joins,
 scripts, with no `compass` command (D26, `13` D80); `software_pinned_to` states torch, and
 a step fit bundle's stack is checked against it (D25).
 
+**Revised 2026-10-14 by the owner's
+[ruling on #937](https://github.com/jgong5/ATOM/pull/937#issuecomment-6161726104), which
+[#851](https://github.com/jgong5/ATOM/issues/851)'s decisions carry:** machine specs are
+developers', one per supported machine, and a user passes one by `--machine`; the memory
+readings of an engine start leave the spec for the `memory_readings` entries
+`compass measure memory` takes per configuration (D25, D26, `07` D38).
+
 **Scope.** The single input artifact that tells Compass what machine it is simulating,
 its schema, and the tools that fill it in. A project requirement is that compute, memory
 size, bandwidth and interconnect are **configured and not read from a device runtime**, so
@@ -119,28 +126,14 @@ device:
     fp8_flops:                 5.0e15
     fp4_flops:                 10.0e15  # optional: absent where there is no FP4 matrix core
     derate:                    0.70
-  runtime_constants:           # the "table, not a law" terms, keyed by TP width
-    # Device memory held OUTSIDE the torch allocator: HIP context, loaded code
-    # objects, RCCL/AITER collective staging buffers. Device-wide, not per-process.
-    driver_and_collective_reserve_bytes: {1: 970.0e6, 2: 7.2e9, 4: 7.6e9, 8: 11.2e9}
-    # Torch-allocator bytes still resident after weight loading finishes, i.e. not
-    # weights and not freed: AITER CustomAllreduce pool + its two-stage kernel.
-    allocator_retained_after_load_bytes: {1: 1.1e6, 2: 2.17e9, 4: 2.17e9, 8: 2.17e9}
-    # Buffers allocated once and alive for the whole run: allocate_forward_vars,
-    # attention metadata. Flat in TP width; differs only by model.
-    persistent_forward_buffer_bytes: 124.0e6
-    # Memory the CUDA-graph private pool holds, on top of the captured activations.
-    cudagraph_pool:
-      w1_base_bytes:                   95.5e6
-      w1_bytes_per_captured_token:     0.318e6
-      w_gt1_flat_bytes:                109.0e6
+  # no memory readings: they are `compass measure memory`'s entries (07 D38, Phase 2)
   activations:                 # optional: per model, keyed by architecture and config.json
     - id: qwen3.8-27b
       applies_to: [Qwen3_5ForConditionalGeneration]
       fingerprint: sha256:<config.json>
       # warmup `peak - current` over the warmup tokens, by TP width
       bytes_per_token: {1: 180480}
-  software_pinned_to:          # these constants belong to the stack as much as the silicon
+  software_pinned_to:          # the stack this spec's numbers were taken on
     rocm:  "7.2.4"
     aiter: "<commit>"
     rccl:  "<version>"
@@ -164,15 +157,16 @@ interconnect:
 
 Names are chosen to say what the quantity *is*, not where it was first observed. Several
 of these feed ATOM variables whose own names are terser; the third column records that
-mapping so a reader can follow the term into ATOM's code without guessing.
+mapping so a reader can follow the term into ATOM's code without guessing. The
+`memory_readings` rows are fields of `07` D41's entry, not of the spec.
 
 | Term | Feeds (ATOM name) | Evidence it is needed |
 |---|---|---|
 | `memory.capacity_bytes` | `get_num_blocks` → `total` | the one reading that cannot be derived |
-| `runtime_constants.driver_and_collective_reserve_bytes` | `get_num_blocks` → `non_torch` | 926 / 6906 / 7266 / 10704 MiB at widths 1/2/4/8. **No fixed-plus-per-peer form fits** 5980 / 6340 / 9138. A table, not a law. Note ATOM's `non_torch` is a **device-wide** reading, so on a shared box it includes neighbours — see D14's dedicated-device scope boundary. |
-| `runtime_constants.allocator_retained_after_load_bytes` | `peak_torch` | AITER `CustomAllreduce` 1 GiB pool plus the two-stage kernel's: 1.1 MiB at TP1, **2069 MiB flat** at TP2/4/8 |
-| `runtime_constants.persistent_forward_buffer_bytes` | `peak_torch` | `allocate_forward_vars` + attention metadata; ~118 MiB, flat in width, differs only by model |
-| `runtime_constants.cudagraph_pool` | `graph_pool.predicts`, the per-term check of the pool's real cost; not `cudagraph_overhead`, which mirrors ATOM's estimator (`03` D16) | measured `91.1 MiB + 0.3033 MiB per captured token` at W=1; flat **104 MiB** above W=1, where the allocated delta was byte-identical (79,692,800) across three widths and three ladders |
+| `memory_readings.driver_and_collective_reserve_bytes` | `get_num_blocks` → `non_torch` | 926 / 6906 / 7266 / 10704 MiB at widths 1/2/4/8. **No fixed-plus-per-peer form fits** 5980 / 6340 / 9138. A table, not a law. Note ATOM's `non_torch` is a **device-wide** reading, so on a shared box it includes neighbours — see D14's dedicated-device scope boundary. |
+| `memory_readings.allocator_retained_after_load_bytes` | `peak_torch` | AITER `CustomAllreduce` 1 GiB pool plus the two-stage kernel's: 1.1 MiB at TP1, **2069 MiB flat** at TP2/4/8 |
+| `memory_readings.persistent_forward_buffer_bytes` | `peak_torch` | `allocate_forward_vars` + attention metadata; ~118 MiB, flat in width, differs only by model |
+| `memory_readings.cudagraph_pool` | `graph_pool.predicts`, the per-term check of the pool's real cost; not `cudagraph_overhead`, which mirrors ATOM's estimator (`03` D16) | measured `91.1 MiB + 0.3033 MiB per captured token` at W=1; flat **104 MiB** above W=1, where the allocated delta was byte-identical (79,692,800) across three widths and three ladders |
 | `activations[].bytes_per_token` | `peak_torch`, `cudagraph_overhead` | Qwen3.8-27B TP1 on MI308X: **180,480 B/token** fitted at 16384 warmup tokens predicts the held-out 8192 at **+0.000%**; the declared geometry form gives 98,304 (-45.5%). A model, config or width with no entry keeps the declared form |
 | `tokenizers[].*` | admission queue | cc-traces p50 input is **88,768 tokens**; at 2 M tok/s that is ~44 ms, **3x take2's entire admission constant**, and it scales with prompt length while a constant does not |
 | `ipc.*`, `interconnect.*_latency_s` | **Clock Authority lookahead floors** (doc 01 D3) | a zero lookahead serializes the whole simulation |
@@ -199,18 +193,17 @@ Mooncake's KV transfer between the prefill and the decode node (`01` D6).
 
 ### Schema rules
 
-1. **No defaults for `runtime_constants`.** A missing TP width **refuses and names it**.
-   These are the terms with no law behind them; a silent default is the worst kind of
-   wrong.
+1. **No default for a memory reading.** A configuration with no `memory_readings` entry
+   **refuses and names it** (`07` D38). These are the terms with no law behind them; a
+   silent default is the worst kind of wrong.
 2. **`derate` is mandatory wherever a spec-peak number appears**, so nobody can quietly
    use a datasheet FLOP as an achievable one.
-3. **`software_pinned_to` is checked, not decorative.** The plausible reading of the
-   evidence is that these constants track the ROCm/RCCL/AITER build more than the die —
-   the +5980 MiB at width > 1 is collective buffer sizing, the 926 MiB at TP1 is HIP
-   context plus libraries. A stack mismatch warns loudly by default and refuses under
-   `validate(strict=True)`; constants moved across stacks, by a transfer or a merge,
-   always refuse. It is the target's stack: a step fit bundle's stack, torch included, is
-   checked against it, never against the stack of the process that simulates (`17` D101).
+3. **`software_pinned_to` is checked, not decorative.** Device numbers track the
+   ROCm/RCCL/AITER build as well as the die (`07` D43). A stack mismatch warns loudly by
+   default and refuses under `validate(strict=True)`; constants moved across stacks, by a
+   transfer or a merge, always refuse. It is the target's stack: a step fit bundle's
+   stack, torch included, is checked against it, never against the stack of the process
+   that simulates (`17` D101).
 4. **The whole resolved spec is echoed into every run artifact.** The KV gate is **≤5%**;
    a number whose spec cannot be recovered from the artifact is unattributable.
 5. **Every field is *sourced* or *assumed*, and the document says which.** A fragment
@@ -261,8 +254,8 @@ measured on different CPUs must not be merged into one spec — that is what
 
 - **Runtime-constant transfer across dies is untested** (**T50**). The working assumption
   — transfers within a software generation, not across one — is now recorded in doc `03`
-  and enforced by `software_pinned_to`, but it has not been measured on a second card
-  type. One engine startup settles it.
+  and enforced by `07` D43's row for `memory_readings`, but it has not been measured on a
+  second card type. One engine startup settles it.
 - Three topologies of one model is interpolation, not a law. The cudagraph-pool width
   scaling rests on **one** point above W=1: the shape "flat above W=1" is well supported
   (byte-identical 79,692,800 deltas across three widths and three capture ladders), but
@@ -296,9 +289,10 @@ explain(spec, term)      -> the fields behind one quantity, and how much each co
 Each is a function of the `spec` package, and a per-machine script runs them:
 `scripts/compass/mi308x_spec.py` sweeps the tokenizer, merges its fragment with the
 device's and the declared ones, validates the result and prints `explain`'s rows. No
-`compass` command wraps them (`13` D80). The readings of an engine start, which the
-`device-memory` and `device-runtime-constants` probes take, are the per-machine script's
-too: no command produces them, `record` included (`07` D38, Phase 2).
+`compass` command wraps them (`13` D80). Machine specs are developers', one per supported
+machine (`scripts/compass/machines/`), and a user passes one by `--machine`. The readings
+of an engine start are not the spec's: `compass measure memory` takes them per
+configuration into a `memory_readings` entry (`07` D38, Phase 2).
 
 ### The probes, by what hardware they need
 
@@ -313,14 +307,13 @@ too: no command produces them, `record` included (`07` D38, Phase 2).
 
 | Probe | Fills | Notes |
 |---|---|---|
-| `device-memory`, at TP1 | `capacity_bytes`, `driver_and_collective_reserve_bytes[1]`, `persistent_forward_buffer_bytes`, `cudagraph_pool.w1_*` | start an engine, read the five readings. Sweep >=5 capture ladders for the graph-pool fit; the prior fit predicted a held-out sixth at **+6.4%** |
+| `device-memory`, at TP1 | `capacity_bytes` | the device's capacity; the readings of an engine start are `measure memory`'s |
 | `device-compute` | `bandwidth_bytes_per_s`, `*_flops`, their `derate`s | GEMM and bandwidth sweeps; derate is achieved/datasheet |
 
 **Tier 2 — N GPUs of the target type.**
 
 | Probe | Fills | Notes |
 |---|---|---|
-| `device-runtime-constants`, at TP 2, 4, 8 | `driver_and_collective_reserve_bytes`, `allocator_retained_after_load_bytes`, `cudagraph_pool.w_gt1_flat_bytes` | one engine start per width |
 | `interconnect-intra` | `intra_node.*` | collectives in **real groups**, several sizes |
 
 **Tier 3 — two nodes.**
@@ -334,11 +327,12 @@ too: no command produces them, `record` included (`07` D38, Phase 2).
 | Probe | Fills | Provenance stamped |
 |---|---|---|
 | `from-datasheet` | `capacity_bytes`, `bandwidth`, `flops` | `method: datasheet`, derates left blank so `validate` refuses until declared |
-| `transfer`, from another spec | `runtime_constants.*` | `method: transferred-from:<spec>`, carrying **both** specs' `software_pinned_to` so a later mismatch is visible |
+| `transfer`, from another spec | nothing since the memory readings left the spec; deferred (`07` D36) | `method: transferred-from:<spec>`, carrying **both** specs' `software_pinned_to` so a later mismatch is visible |
 
 ### Two refusals every hardware probe must implement
 
-Both come from failures that cost real time:
+Both come from failures that cost real time, and `measure memory` holds them too (`07`
+D38):
 
 1. **`non_torch` is a device-wide reading.** It is `(total - free) - reserved`, and
    `total - free` counts every process on the card. Six prior runs died at start-up with
@@ -359,7 +353,6 @@ with them.
 ### `validate` refuses on
 
 - a missing required field
-- a TP width absent from `runtime_constants` that the deployment will use
 - a `derate` missing beside a spec-peak number
 - `software_pinned_to` not matching the running stack (warn, or refuse under a strict flag)
 - a `transfer` fragment whose source spec pinned a different stack
@@ -396,6 +389,6 @@ which cancelled — the largest being 25% of a single term.
 | # | Decision | Date |
 |---|---|---|
 | D24 | The spec describes the machine; ATOM's config describes the deployment. Thread-pool width becomes an ATOM config option, not a Compass one. | 2026-09-18 |
-| D25 | Four-section schema: `provenance`, `host`, `device`, `interconnect`. Mandatory derates, no defaults for `runtime_constants`, `software_pinned_to` checked, torch included, as the target's stack, whole spec echoed into every artifact. Revised for the MI455 projection: an optional dense `fp4_flops`, `intra_node.domain_devices` for a scale-up fabric wider than a node, and every field *sourced* or *assumed* by the fragments that supplied it, which a `mixed` spec records in `provenance.assumed`. | 2026-09-18; revised 2026-10-10; torch 2026-10-13 (#851) |
-| D26 | Probes emit fragments; `merge` / `validate` / `explain` combine and check them. Four hardware tiers plus datasheet and transfer paths. Every hardware probe implements the contamination refusals. All are the `spec` package's functions, run by per-machine scripts, with no `compass` command; those scripts also carry an engine start's memory readings, which no command produces. | 2026-09-18; revised 2026-10-13 (#851) |
+| D25 | Four-section schema: `provenance`, `host`, `device`, `interconnect`. Mandatory derates, no memory readings (`measure memory`'s entries, 2026-10-14), `software_pinned_to` checked, torch included, as the target's stack, whole spec echoed into every artifact. Revised for the MI455 projection: an optional dense `fp4_flops`, `intra_node.domain_devices` for a scale-up fabric wider than a node, and every field *sourced* or *assumed* by the fragments that supplied it, which a `mixed` spec records in `provenance.assumed`. | 2026-09-18; revised 2026-10-10; torch 2026-10-13 (#851) |
+| D26 | Probes emit fragments; `merge` / `validate` / `explain` combine and check them. Four hardware tiers plus datasheet and transfer paths. Every hardware probe implements the contamination refusals. All are the `spec` package's functions, run by per-machine scripts, with no `compass` command. Machine specs are developers', one per supported machine, passed by `--machine`; an engine start's memory readings are `measure memory`'s, not the spec's. | 2026-09-18; revised 2026-10-13 and 2026-10-14 (#851) |
 | D25.1 | Runtime-constant fields renamed to say what they are; ATOM's own term recorded as a mapping column. `host.tokenizer` becomes `host.tokenizers[]`, keyed by tokenizer identity (id + backend + fingerprint) with `applies_to` model architectures. | 2026-09-19 |

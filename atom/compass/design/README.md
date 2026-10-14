@@ -70,7 +70,7 @@ ATOM's real code owns still never touch a device.
 | **Prefix caching** | **REUSED, unmodified** | The hit *is* ATOM's hit, at ATOM's 64-token block granularity. Its effect on prefill cost is a cost-model term, not an inference. `03` |
 | **Scheduler / admission / chunking** | **REUSED, unmodified** | The whole point. Same decisions as a real run. `01`, `03` |
 | **API server, tokenizer** | **REUSED, real** | Real HTTP, real uvicorn, real tokenizer — run for its *effect*, with a modelled duration charged for its *time*. `06` D33 |
-| **Device memory readings** | **SUBSTITUTED** | Five readings come from the machine spec instead of the runtime, so an MI308X host can model an MI355X. The budget *arithmetic* around them is ATOM's. `03` D14, `05` |
+| **Device memory readings** | **SUBSTITUTED** | The five readings are built from the machine spec, the model and a `memory_readings` entry `compass measure memory` took on the target, instead of the runtime, so a host without the device can model it. The budget *arithmetic* around them is ATOM's. `03` D14, `07` D38 |
 | **Wall-clock time** | **SUBSTITUTED** | Every clock read and timer the Clock Authority can reach runs on virtual time, failure detectors and metrics cadence included. Only the Atomesh router's bounds and health check, set by its flags, and OS-level process-death detection stay real. `01` D5, `11` D72 |
 | **Collectives / comms** | **SIMULATED** (cost only) | Priced from measurements or the spec; no collective actually runs on a device. `07` D40 |
 | **Atomesh router** | **REUSED, configured** | No Compass change beyond the `--worker-request-timeout-secs` option (#478); a simulated launch sets it large and switches the health check and circuit breaker off. The simulated timeline rides carriers the router already relays: the `compass` entry of the `tracestate` header on requests, a field in `kv_transfer_params` on the prefill-to-decode forward, and SSE comment lines on streamed output. `01` D7, `06` D30 |
@@ -153,8 +153,9 @@ document that owns it. Nothing in `01`–`11` is outside this diagram.
 ```
   +=====================================================================+
   |  L5  TOOLING          compass record | trace {steps,ops} |          |
-  |                       measure {steps,ops} | fit {steps,ops,host} |  |
-  |                       run; the bench; each backend's planner        |
+  |                       measure {steps,ops,memory} |                  |
+  |                       fit {steps,ops,host} | run; the bench;        |
+  |                       step fit's planner, inside measure steps      |
   |                       spec package: probes . merge . validate .     |
   |                       explain, run by per-machine scripts           |
   |                       flags, precedence, the `compass` entry        |
@@ -523,7 +524,7 @@ The documents use these precisely; a reader will bounce off without them.
 
 | Doc | Title | What it settles |
 |---|---|---|
-| [`07`](07_calibration_toolchain.md) | Calibration and Benchmarking Toolchain | The phases and the commands that run them; the backend that needs a measurement plans it; the bench is `EngineCore` without its scheduler, with one window for every step. One recommended flow per half, steps and ops. The minimal recipe: one full-engine run at TP1, plus one TP2 transfer test, plus a startup per width. Four classes of communication pricing. The artifact store, its keys and its invalidation matrix. |
+| [`07`](07_calibration_toolchain.md) | Calibration and Benchmarking Toolchain | The phases and the commands that run them; the backend that needs a measurement plans it; the bench is `EngineCore` without its scheduler, with one window for every step. One recommended flow per half, steps and ops. The minimal recipe: one full-engine run at TP1, plus one TP2 transfer test, plus an engine start per configuration (`measure memory`). Four classes of communication pricing. The artifact store, its keys and its invalidation matrix. |
 | [`09`](09_fitting_and_law_selection.md) | Fitting and Law Selection | How measurements become a model: fit relative error, per-rung decode, hull guards not bounding boxes, and why leave-one-out cannot choose a family. Owns coverage geometry for every other document. |
 
 ### Part IV — How it is driven and judged
@@ -538,7 +539,7 @@ The documents use these precisely; a reader will bounce off without them.
 
 | Doc | Title | What it settles |
 |---|---|---|
-| [`13`](13_configuration_surface.md) | The Configuration Surface | Three homes for a setting, and the test that assigns them. Precedence is CLI > env > artifact > **refuse**. `compass run`'s flags, handed to ATOM in a run file; one `compass` entry whose commands, with their inputs and outputs, run the toolchain, the original ones deprecated; and an audit of what is deliberately *not* a flag. |
+| [`13`](13_configuration_surface.md) | The Configuration Surface | Three homes for a setting, and the test that assigns them. Precedence is CLI > artifact > **refuse**, with no environment tier. `compass run`'s flags, handed to ATOM in a run file; one `compass` entry, the only way users reach Compass, whose commands, with their inputs and outputs, run the toolchain, the original ones deprecated; one instance per `record` or `run`, serving client runs started apart; and an audit of what is deliberately *not* a flag. |
 | [`14`](14_speculative_decoding.md) | Speculative Decoding and MTP | Three of the four changes are routine. Acceptance is a **declared input** through ATOM's existing flags, fed the *measured per-position distribution* rather than a mean. No new cost form — decode becomes the `N_Q = 1` case of the general one. |
 | [`15`](15_parallelism_support.md) | Parallelism Support | One frame of four questions per strategy. **Only PP adds logical processes** - TP, DP and EP each sit behind a barrier ATOM already has. DP is the one that couples *scheduling decisions*, through a per-forward collective that rewrites the batch; both its collectives run for real, because both reduce over scheduling metadata rather than model outputs. Explicit M1/M2 split; PP after v1. |
 
