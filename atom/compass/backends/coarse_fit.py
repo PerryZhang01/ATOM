@@ -13,8 +13,14 @@ launch end is launch-exposed, counted and not fitted; a prefill step is never
 cut, so a host bubble inside it stays in its label. The exit of each wait for the
 previous output's token copy (`t_recv_ns`) bounds the host clock's lead over
 the device's (that forward had finished by then); the tightest of the last
-`ANCHORS` bounds is the lead. A record without device windows is refused. A
-step mixing prefill and decode rows is counted and not fitted.
+`ANCHORS` bounds is the lead. The copy itself lands on its own stream after the
+exit event the bound reads, by 14 to 29 us measured on one host (median 17 us),
+so each bound carries that much more lead than the clocks actually have; on
+this law's records the gap never moves a decode step across the
+launch-exposed cut, so it is left in the bound rather than corrected by a
+host-specific number with no record or law of its own to carry it. A record
+without device windows is refused. A step mixing prefill and decode rows is
+counted and not fitted.
 
 Records with a host key (`dp0.key.json`, from the real runner) also give the
 host laws as a run file's `host` entry: `key`, and `laws[kind][segment]`,
