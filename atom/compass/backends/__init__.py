@@ -11,8 +11,10 @@ The pieces, and the rule each exists to make structural rather than customary:
 - `StepCost` / `CostTerm` -- a total folded from its parts on every read, with
   the parts re-checked on every read, so it cannot drift from them; a breakdown
   that cannot be empty; and no subclass that can shadow either.
-- `Provenance` / `Species` / `Refusal` -- every number says how it was obtained
-  and what produced it, with no default that would let one avoid saying.
+- `Provenance` / `Method` / `Refusal` -- every number says how it was obtained
+  (analytical, declared, measured or estimated, and whether an estimate is
+  validated) and what produced it, with no default that would let one avoid
+  saying.
 - `Resolver` / `CostSource` -- sources consulted in a fixed order, with every
   refusal on the way down recorded on the answer rather than inferred from it.
 - `KvGeometry` / `Parallelism` -- what a KV block costs and how each parallel
@@ -22,19 +24,21 @@ The pieces, and the rule each exists to make structural rather than customary:
   row per request, with the batch-level sums derived from those rows and no way
   to hand them in instead. It lives here so the no-engine-imports scan, which
   reads this package and nothing else, covers it.
-- `StepStubBackend` / `Coefficients` -- a stand-in that multiplies declared
+- `StepStubBackend` / `Coefficients` -- a stand-in that multiplies stated
   coefficients into a step's shapes, so a longer chunk costs longer and the
-  scheduler can be caught reacting to the price. Every number it emits says it
-  was declared rather than obtained, in the record and not only in the source.
+  scheduler can be caught reacting to the price. Every number it emits is
+  `declared`, in the record and not only in the source.
 - `StepLinearLaw` / `StepLinearBackend` -- step-level: a fitted prefill vector
   and a decode vector per capture rung, each with the convex hull it was
-  fitted on; a step outside its hull is priced and its terms say
-  `extrapolated`.
+  fitted on; its terms are `estimated`, a step outside its hull is priced
+  with the extrapolation named in their source, and a term is validated only
+  inside the hull of the law's held-out steps.
 - `StepGrid` / `StepGridBackend` -- step-level: a grid of measured whole
   forwards, read at a batch's equivalent homogeneous shape, answering only
   inside a cell whose every corner was measured and refusing elsewhere.
-- `ProvenanceMix` -- the run-level mixture, and refusals counted by number, by
-  fraction of steps and by fraction of predicted seconds. A run with nothing in
+- `ProvenanceMix` -- the run-level mixture by method and validated, and
+  refusals counted by number, by fraction of steps and by fraction of
+  predicted seconds. A run with nothing in
   it has no fractions and says so, rather than reporting a reassuring zero.
 - `FakeModel` / `SyntheticStack` / `HfConfig` -- the stand-in itself: the
   widths are declared once and reach the geometry and the price together, so
@@ -58,7 +62,7 @@ from atom.compass.backends.model import (
     SyntheticStack,
     hf_config,
 )
-from atom.compass.backends.provenance import Provenance, Refusal, Species
+from atom.compass.backends.provenance import Method, Provenance, Refusal, combine
 from atom.compass.backends.resolver import (
     CostRefused,
     CostSource,
@@ -81,6 +85,7 @@ __all__ = [
     "Granularity",
     "HfConfig",
     "KvGeometry",
+    "Method",
     "Parallelism",
     "Provenance",
     "ProvenanceMix",
@@ -88,7 +93,6 @@ __all__ = [
     "RequestShape",
     "Resolution",
     "Resolver",
-    "Species",
     "StepCost",
     "StepGrid",
     "StepGridBackend",
@@ -96,6 +100,7 @@ __all__ = [
     "StepLinearLaw",
     "StepStubBackend",
     "SyntheticStack",
+    "combine",
     "fold_seconds",
     "fold_step",
     "hf_config",

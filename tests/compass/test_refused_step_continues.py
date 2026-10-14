@@ -234,8 +234,7 @@ def test_a_run_that_ends_mid_run_counts_what_live_workers_priced_and_no_zeros(
     if isinstance(error, SystemExit):
         assert sorted(hand_in) == ["refusals"]
         assert schedule["predicted_seconds"] is None
-        assert schedule["analytical"] is None
-        assert schedule["extrapolated"] is None
+        assert schedule["seconds_by_method"] is None
         assert (refusals["steps"], refusals["fraction_of_steps"]) == (None, None)
         assert refusals["reasons"] == [[ended, 1]]
         return
@@ -244,8 +243,8 @@ def test_a_run_that_ends_mid_run_counts_what_live_workers_priced_and_no_zeros(
     assert sorted(hand_in) == ["memory", "priced", "refusals"]
     assert priced["seconds"] > 0
     assert schedule["predicted_seconds"] == pytest.approx(priced["seconds"])
-    assert schedule["analytical"]["steps"] == priced["analytical_steps"]
-    assert schedule["extrapolated"]["steps"] == priced["extrapolated_steps"]
+    for g, share in schedule["seconds_by_method"].items():
+        assert share["steps"] == priced[f"{g}_steps"]
     assert refusals["steps"] == len(replies)
     assert refusals["fraction_of_steps"] == refused / len(replies)
     assert refusals["reasons"] == sorted([[REFUSED, refused], [ended, 1]])

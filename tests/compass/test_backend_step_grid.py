@@ -28,8 +28,8 @@ from atom.compass.backends import (
     BatchView,
     CostRefused,
     Granularity,
+    Method,
     RequestShape,
-    Species,
     StepGrid,
     StepGridBackend,
 )
@@ -228,7 +228,7 @@ def test_a_hole_under_a_roofline_floor_is_priced_by_the_roofline():
         roofline().price(view(*rows, rung=48)).seconds
     )
     assert r.refused_commands() == ()
-    assert r.priced_steps()["analytical_steps"] == 1
+    assert r.priced_steps()["declared_steps"] == 1
     reason = (
         "the decode rung 48 cell holding B=37, c=600 has no measurement at "
         "B=48, c=1024"
@@ -324,24 +324,23 @@ INSIDE = [(1, 601, True)] * 32
 
 # f(32, 512) = 1000 + 960 + 512 + 1024; f(32, 600) = 1000 + 960 + 600 + 1200.
 @pytest.mark.parametrize(
-    "rows,species,seconds",
+    "rows,lookup,seconds",
     [
-        (ON_NODE, Species.MEASURED, 3496e-6),
-        (RAGGED, Species.INTERPOLATED, 3496e-6),
-        (INSIDE, Species.INTERPOLATED, 3760e-6),
+        (ON_NODE, "measured", 3496e-6),
+        (RAGGED, "interpolated", 3496e-6),
+        (INSIDE, "interpolated", 3760e-6),
     ],
     ids=["homogeneous-on-a-node", "ragged-on-a-node", "inside-a-cell"],
 )
-def test_only_a_homogeneous_batch_on_a_node_is_a_measured_lookup(
-    rows, species, seconds
-):
+def test_only_a_homogeneous_batch_on_a_node_is_a_measured_lookup(rows, lookup, seconds):
     cost = eager().price(view(*rows, rung=32))
 
     (term,) = cost.terms
     assert term.name == "forward"
-    assert term.provenance.species is Species.FITTED
+    assert term.provenance.method is Method.ESTIMATED
+    assert not term.provenance.validated
     assert term.seconds == seconds
-    assert term.provenance.detail.startswith(f"lookup {term.seconds!r} s, {species};")
+    assert term.provenance.detail.startswith(f"lookup {term.seconds!r} s, {lookup};")
     assert eager().price(view(*rows, rung=32)) == cost
 
 

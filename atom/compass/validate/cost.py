@@ -16,9 +16,10 @@ on totals, on totals holding out the step that contributes most to their error,
 and the median per step; per decode rung or prefill token band, the p10, p50
 and p90 of the per-step error and the fraction of steps within 10%.
 
-A step outside its vector's hull is priced, but its error describes the
-extrapolation, not the law: those steps are reported apart, with their real
-and priced seconds, and enter none of the in-hull figures. A step that ran more
+A step whose terms are not validated (outside the hull of the law's held-out
+steps, every step of a law that records none) is priced, but its error was
+not measured where the law's was: those steps are reported apart, with their
+real and priced seconds, and enter none of the validated figures. A step that ran more
 than `step_linear_fit.WARM_FACTOR` times its price is warm, a one-off first touch the
 law does not model: it is named with its seconds and enters no figure. So are
 the steps that lead a vector's priced steps, each slower than its price by more
@@ -40,7 +41,6 @@ from atom.compass.backends import (
     BatchView,
     CostRefused,
     RequestShape,
-    Species,
     StepLinearBackend,
     StepLinearLaw,
     step_linear_fit,
@@ -115,7 +115,7 @@ def cost_accuracy(record, law) -> dict:
     labelled, cut = samples(Path(record) / f"dp{rank}.jsonl")
     by_step = {s["step"]: s for s in steps}
     backend = StepLinearBackend(StepLinearLaw(law))
-    groups = {"fitted": {}, "extrapolated": {}}
+    groups = {"validated": {}, "unvalidated": {}}
     refused: dict[str, dict] = {}
     warm, priced = [], []
     for key, counts, seconds, step, _ in labelled:
@@ -145,8 +145,8 @@ def cost_accuracy(record, law) -> dict:
                 }
             )
             continue
-        species = {t.provenance.species for t in cost.terms}
-        group = "extrapolated" if Species.EXTRAPOLATED in species else "fitted"
+        validated = all(t.provenance.validated for t in cost.terms)
+        group = "validated" if validated else "unvalidated"
         kind = "prefill" if key == "prefill" else "decode"
         groups[group].setdefault(kind, []).append((band, step, seconds, cost.seconds))
     report = {"record": str(record), "law": backend.law.fitted_on, "cut": cut}
@@ -163,8 +163,8 @@ def _text(report: dict) -> str:
     out = [f"record {report['record']}", f"law {report['law']}"]
     out.append(f"not labelled: {json.dumps(report['cut'])}")
     for group, title in (
-        ("fitted", "inside the hull"),
-        ("extrapolated", "outside the hull, apart"),
+        ("validated", "validated: inside the held-out hull"),
+        ("unvalidated", "unvalidated, apart"),
     ):
         out.append(f"\n{title}")
         for kind, s in report[group].items():

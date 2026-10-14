@@ -20,29 +20,29 @@ from atom.compass.backends import (
     CostRefused,
     CostSource,
     CostTerm,
+    Method,
     Provenance,
     ProvenanceMix,
     Refusal,
     Resolver,
-    Species,
     StepCost,
 )
 
 
 class Answers(CostSource):
-    """A source that always answers, at a stated species."""
+    """A source that always answers, at a stated method."""
 
-    def __init__(self, name, seconds, species):
+    def __init__(self, name, seconds, method):
         self._name = name
         self._seconds = seconds
-        self._species = species
+        self._method = method
 
     @property
     def name(self):
         return self._name
 
     def price(self, request):
-        return CostTerm(request, self._seconds, Provenance(self._species))
+        return CostTerm(request, self._seconds, Provenance(self._method))
 
 
 class Declines(CostSource):
@@ -75,9 +75,9 @@ class Layered(CostSource):
         return self._inner.resolve(request).term
 
 
-PRICED = Answers("price_list", 0.004, Species.MEASURED)
-LAW = Answers("analytic_law", 0.005, Species.ANALYTICAL)
-ROOFLINE = Answers("roofline", 0.006, Species.ANALYTICAL)
+PRICED = Answers("price_list", 0.004, Method.MEASURED)
+LAW = Answers("analytic_law", 0.005, Method.ANALYTICAL)
+ROOFLINE = Answers("roofline", 0.006, Method.ANALYTICAL)
 UNPRICED = Declines("price_list", "no entry for this leaf")
 OUTSIDE = Declines("nearest_key", "outside the measured range")
 
@@ -103,7 +103,7 @@ def test_a_fall_through_is_stamped_on_the_answer():
 
 
 def test_the_artifact_names_the_source_that_answered():
-    """A row that names only a species cannot say which source to go and fix."""
+    """A row that names only a method cannot say which source to go and fix."""
     step = StepCost([Resolver([UNPRICED, OUTSIDE, LAW]).resolve("attention").term])
     ((_, _, rendered),) = step.rows()
     assert "via analytic_law" in rendered
@@ -214,7 +214,7 @@ def test_a_resolver_needs_sources():
 
 def test_sources_are_read_by_name_so_names_are_unique():
     with pytest.raises(ValueError, match="duplicate source"):
-        Resolver([PRICED, Answers("price_list", 0.009, Species.FITTED)])
+        Resolver([PRICED, Answers("price_list", 0.009, Method.ESTIMATED)])
 
 
 def test_the_resolver_reports_the_order_it_will_consult():

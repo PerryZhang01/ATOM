@@ -14,11 +14,12 @@ from test_memory_check import GIB, _log
 from test_validate_cost import LAW, _record, _steps
 from test_validate_runs import EXPORT
 
+from atom.compass.backends.cost import GROUPS
 from atom.compass.run import LP_FILE
 from atom.compass.validate.__main__ import main
 
 TERM = {"basis": "spec", "source": "planted"}
-SPECIES = {"steps": 3, "fraction_of_predicted_seconds": 0.4}
+SHARE = {"steps": 3, "fraction_of_predicted_seconds": 0.4}
 
 
 def _run(
@@ -91,8 +92,7 @@ def _run(
                 "steps": 20,
                 "fraction_of_steps": dict(refusals).get("cost", 0) / 20,
             },
-            "analytical": SPECIES,
-            "extrapolated": SPECIES,
+            "seconds_by_method": {g: SHARE for g in GROUPS},
         },
     }
     (d / "summary.json").write_text(json.dumps(summary))
@@ -121,7 +121,7 @@ def _rows(capsys, tmp_path, law=(), law_run=None, **p97):
     return {tuple(r.split(" | ")[1:3]): r.split(" | ")[3:] for r in out[1:]}
 
 
-def test_a_cell_is_graded_from_every_source_and_its_extrapolated_share_grades_nothing(
+def test_a_cell_is_graded_from_every_source_and_its_method_shares_grade_nothing(
     capsys, tmp_path
 ):
     rows = _rows(capsys, tmp_path)
@@ -137,19 +137,19 @@ def test_a_cell_is_graded_from_every_source_and_its_extrapolated_share_grades_no
     # The warmup request is in no band.
     assert rows["end to end", "ttft p50 8192+ uncached"][0].startswith("no request")
     assert rows["end to end", "ttft mean"][1] == "outside, inadmissible"
-    assert rows["cost real0", "decode rung 1 in hull"][0].endswith("within 10% 100.0%")
+    assert rows["cost real0", "decode rung 1 validated"][0].endswith(
+        "within 10% 100.0%"
+    )
     # Every step the cost rows leave out is named, a warm one with its real seconds.
     assert rows["cost real0", "left out"][0] == (
         'not labelled {"exposed": 0, "mixed": 0}; warm steps, real s {5: 0.81}'
     )
-    assert rows["cost real0", "prefill in hull"][0].startswith("9 steps")
+    assert rows["cost real0", "prefill validated"][0].startswith("9 steps")
     assert rows["cost real1", "left out"][0].endswith("warm steps, real s {}")
     assert rows["memory real0", "non_torch"][1] == "pass"
     assert rows["memory real1", "non_torch"] == ["-33.33% (-536,870,912 B)", "fail"]
-    assert rows["summary step_linear", "extrapolated"] == [
-        json.dumps(SPECIES),
-        "not gated",
-    ]
+    for g in GROUPS:
+        assert rows["summary step_linear", g] == [json.dumps(SHARE), "not gated"]
     assert rows["summary p97", "speed"] == [
         "20.0x: 900 simulated s in 45 wall s",
         "meets 5x",
@@ -216,7 +216,7 @@ def test_a_run_that_ended_without_its_memory_reads_refused_and_the_cell_goes_on(
     ended = {"refusals": ["ended:engine raised RuntimeError('the step raised')"]}
     (law / LP_FILE.format("engine")).write_text(json.dumps(ended))
     summary = json.loads((law / "summary.json").read_text())
-    summary["schedule"].update(analytical=None, extrapolated=None)
+    summary["schedule"].update(seconds_by_method=None)
     summary["schedule"]["refusals"].update(steps=None, fraction_of_steps=None)
     (law / "summary.json").write_text(json.dumps(summary))
 
@@ -231,7 +231,7 @@ def test_a_run_that_ended_without_its_memory_reads_refused_and_the_cell_goes_on(
         ]
     memory = {k for k in whole if k[0].startswith("memory ")}
     assert set(rows) - {k for k in rows if k[1] == "memory"} == set(whole) - memory
-    assert rows["summary step_linear", "extrapolated"] == ["null", "not gated"]
+    assert rows["summary step_linear", "unvalidated"] == ["null", "not gated"]
     assert rows["summary step_linear", "refusals"] == [
         '1 {"ended": 1}; steps not counted',
         "coverage report",
