@@ -11,7 +11,12 @@ decode one per capture rung, each over the features `ShapeStubBackend` reads:
 
 A prefill vector may add `history`, Sum (N_KV - N_Q): the KV a chunk reads
 on its cached history, which a short chunk on a deep history pays apart from
-its attention arithmetic.
+its attention arithmetic, and then `moe_rows`, the rows the data-parallel
+group's MoE gather carries (`BatchView.moe_rows`), which every rank's MoE runs on.
+
+A law is keyed by the `(dp, ep)` it was fitted at, `(1, 1)` when it states
+none, and prices one rank's step; the runner takes the group's step as the max
+over its ranks. A backend built for another key is refused, naming both.
 
 A decode vector may add `rowmod`, `rowmod(k)` over its rows in scheduled
 order: the largest summed N_KV over the rows `i = r (mod k)`, with `k` the
@@ -27,9 +32,10 @@ a detail naming the hull; it is not refused. A step the law has no vector for
 is refused: prefill when the law has no prefill vector, a decode rung with
 none, or a step mixing prefill and decode rows.
 
-The law is a mapping, as a run file holds it, `prefill` optional:
+The law is a mapping, as a run file holds it, `key` and `prefill` optional:
 
     {"provenance": "<what it was fitted on>",
+     "key": [dp, ep],
      "prefill": VECTOR,
      "decode": {"eager": VECTOR, "1": VECTOR, "2": VECTOR, ...}}
 
@@ -151,11 +157,12 @@ class CoarseLaw:
         self.provenance = str(law.get("provenance", "")).strip()
         if not self.provenance:
             raise ValueError("a law states what it was fitted on, under provenance")
+        self.key = tuple(law.get("key", (1, 1)))
         self.prefill = None
         if "prefill" in law:
             prefill = law["prefill"]
-            features = HISTORY if "history" in prefill["coefficients"] else PREFILL
-            self.prefill = _Vector("prefill", features, prefill)
+            extra = [f for f in ("history", "moe_rows") if f in prefill["coefficients"]]
+            self.prefill = _Vector("prefill", PREFILL + tuple(extra), prefill)
         self.decode = {
             None if rung == EAGER else int(rung): _Vector(
                 f"decode rung {rung}",
@@ -169,7 +176,12 @@ class CoarseLaw:
 class CoarseBackend(CostBackend):
     """Prices a step as its features times the law's coefficients, one term each."""
 
-    def __init__(self, law: CoarseLaw) -> None:
+    def __init__(self, law: CoarseLaw, key: tuple[int, int] = (1, 1)) -> None:
+        if law.key != tuple(key):
+            raise ValueError(
+                f"the law was fitted at (dp, ep) {law.key} and this deployment "
+                f"runs at {tuple(key)}; a law at one width is no evidence about another"
+            )
         self.law = law
 
     @property
@@ -201,8 +213,12 @@ class CoarseBackend(CostBackend):
                 sum_query_square(prefill),
                 sum_query_cached(prefill),
             )
-            if len(vector.features) == len(HISTORY):
+            if "history" in vector.features:
                 counts += (sum_context(prefill) - sum_tokens(prefill),)
+            if "moe_rows" in vector.features:
+                if batch_view.moe_rows is None:
+                    raise self._refuse(batch_view, "no MoE gather rows on this step")
+                counts += (batch_view.moe_rows,)
         else:
             rung, kind = batch_view.capture_rung, "decode"
             vector = self.law.decode.get(rung)

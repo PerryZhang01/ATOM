@@ -485,7 +485,11 @@ def runner(model_runner) -> None:
                 f"a law is fitted on one rank of tensor-parallel width 1, and this "
                 f"run has tensor_parallel_size {tp}"
             )
-        backend = CoarseBackend(CoarseLaw(run["law"]))
+        # Under DP-attention every rank runs at TP 1, and experts shard over the group.
+        dpa = config.enable_dp_attention
+        dp = config.parallel_config.data_parallel_size if dpa else 1
+        ep = dp if config.enable_expert_parallel else 1
+        backend = CoarseBackend(CoarseLaw(run["law"]), (dp, ep))
     elif "coefficients" in run:
         backend = ShapeStubBackend(
             Coefficients(**run["coefficients"]),

@@ -60,6 +60,8 @@ def _installed(
             hf_config=hf,
             hf_overrides=hf_overrides,
             tensor_parallel_size=1,
+            enable_dp_attention=False,
+            enable_expert_parallel=False,
             parallel_config=SimpleNamespace(
                 data_parallel_size=dp, data_parallel_rank=0
             ),
