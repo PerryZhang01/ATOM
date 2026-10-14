@@ -38,8 +38,8 @@ one reading that is taken per rank, keeping the smallest and reporting how far
 the ranks disagreed.
 
 A probe fills part of the document for them to work over. `tokenizer_fragment`
-is the tier that needs no device: it takes the rates somebody measured, checks
-them against the table a tokenizer entry has, and emits them together with the
+is the probe class that needs no device: it takes the rates somebody measured,
+checks them against the table a tokenizer entry has, and emits them with the
 core counts of the processor it read here -- which is what makes a fragment
 composed somewhere other than its target contradict the target rather than
 merge quietly into it. How the rates were obtained is the caller's to state,
@@ -59,8 +59,8 @@ that sees a card every rank shares with the same neighbour, and it can be asked
 only because free and total arrived apart.
 """
 
-from .explain import QUANTITIES, Basis, Contribution, explain
-from .fields import DECLARED, SCHEMA, SCHEMA_VERSION, Field, Kind
+from .explain import QUANTITIES, Contribution, Explanation, explain
+from .fields import FIELDS, SCHEMA, SCHEMA_VERSION, Field, Kind
 from .machine import MachineSpec
 from .memory import ABSOLUTE_LIMIT, DeviceMemory, non_torch_across_ranks
 from .merge import Fragment, Merge, merge
@@ -78,16 +78,16 @@ from .validate import Validation, validate
 
 __all__ = [
     "ABSOLUTE_LIMIT",
-    "DECLARED",
     "DEPLOYMENT_OWNED",
+    "FIELDS",
     "QUANTITIES",
     "SCHEMA",
     "SCHEMA_VERSION",
     "SPREAD_LIMIT",
     "Backend",
-    "Basis",
     "Contribution",
     "DeviceMemory",
+    "Explanation",
     "Field",
     "FingerprintMismatch",
     "Fragment",

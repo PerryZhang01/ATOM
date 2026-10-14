@@ -11,8 +11,8 @@ The refusal rendering is asserted too. It is not cosmetic: the string is what
 lands in a run record, and a stand-in answer that renders the same as a
 first-choice one would hide exactly the fall-through the record exists to
 show. So is the composition rule -- a provenance that is resolved twice keeps
-both refusals and both names, because a rung that is itself a ladder is the
-ordinary shape and dropping half the chain there names the wrong rung.
+both refusals and both names, because a source that is itself a resolver is
+the ordinary shape and dropping half the chain there names the wrong source.
 """
 
 import pytest
@@ -92,7 +92,7 @@ def test_a_stand_in_answer_renders_the_refusal_it_replaced():
     )
 
 
-def test_every_rung_that_declined_is_kept_not_just_the_first():
+def test_every_source_that_declined_is_kept_not_just_the_first():
     """A count of reasons that drops the middle of the chain undercounts."""
     p = Provenance(Species.ANALYTICAL).resolved(
         "analytic_law",
@@ -110,7 +110,7 @@ def test_every_rung_that_declined_is_kept_not_just_the_first():
 
 
 def test_resolving_twice_composes_rather_than_collapses():
-    """A rung that is itself a ladder: outer refusals are the earlier ones."""
+    """A source that is itself a resolver: outer refusals are the earlier ones."""
     inner = Provenance(Species.ANALYTICAL).resolved(
         "inner_law", [Refusal("inner_price_list", "unpriced leaf")]
     )

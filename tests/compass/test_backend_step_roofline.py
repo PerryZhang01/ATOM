@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Tier 0 under tier a: a step the law cannot price is priced by the roofline.
+"""The step-level fallback: a step the law cannot price is priced by the roofline.
 
 The roofline's answer is `analytical` and carries what the law declined. Steps
 reach the backends through the runner's own `dummy_execution` and
@@ -13,19 +13,19 @@ import types
 
 import pytest
 import test_run_graph_pool
-from test_backend_coarse import IN_HULL, _installed, backend, graphed, law, view
+from test_backend_step_linear import IN_HULL, _installed, backend, graphed, law, view
 from test_memory_readings import CONFIG_JSON, DOCUMENT
 from transformers import PretrainedConfig
 
 from atom.compass.backends import (
-    CoarseBackend,
     CostRefused,
+    Granularity,
     KvGeometry,
     ProvenanceMix,
     Species,
-    Tier,
+    StepLinearBackend,
 )
-from atom.compass.backends.analytic import Roofline, Tiered
+from atom.compass.backends.step_roofline import StepFallbackBackend, StepRooflineBackend
 from atom.compass.spec import MachineSpec
 
 MACHINE = MachineSpec.from_mapping(DOCUMENT)
@@ -39,7 +39,7 @@ PARAMETERS, WEIGHTS, KV = 10**9, 2 * 10**9, 1000
 
 
 def roofline(floor=0.0):
-    return Roofline(
+    return StepRooflineBackend(
         MACHINE,
         parameters=PARAMETERS,
         weight_bytes=WEIGHTS,
@@ -48,8 +48,8 @@ def roofline(floor=0.0):
     )
 
 
-def tiered():
-    return Tiered(backend(), roofline())
+def fallback():
+    return StepFallbackBackend(backend(), roofline())
 
 
 @pytest.mark.parametrize(
@@ -64,18 +64,18 @@ def tiered():
 def test_a_step_is_the_largest_of_its_compute_memory_and_host_bounds(
     batch, floor, bound, seconds
 ):
-    (term,) = roofline(floor).estimate(batch).terms
+    (term,) = roofline(floor).price(batch).terms
 
     assert term.name == f"roofline.{bound}"
     assert term.seconds == seconds
     assert term.provenance.species is Species.ANALYTICAL
-    assert roofline().tier is Tier.ANALYTIC
+    assert roofline().granularity is Granularity.STEP
 
 
 @pytest.mark.parametrize("batch", IN_HULL, ids=range(len(IN_HULL)))
 def test_a_step_the_law_prices_is_the_laws_answer(batch):
-    assert tiered().estimate(batch) == backend().estimate(batch)
-    assert tiered().tier is Tier.COARSE
+    assert fallback().price(batch) == backend().price(batch)
+    assert fallback().granularity is Granularity.STEP
 
 
 @pytest.mark.parametrize(
@@ -85,20 +85,30 @@ def test_a_step_the_law_prices_is_the_laws_answer(batch):
 )
 def test_a_step_the_law_refuses_is_priced_analytical_naming_what_declined(batch):
     with pytest.raises(CostRefused) as refused:
-        backend().estimate(batch)
-    cost = tiered().estimate(batch)
+        backend().price(batch)
+    cost = fallback().price(batch)
     mix = ProvenanceMix()
     mix.record(cost)
 
-    assert cost.seconds == roofline().estimate(batch).seconds
+    assert cost.seconds == roofline().price(batch).seconds
     assert cost.refusals == refused.value.declined
     assert mix.seconds_by_species() == {Species.ANALYTICAL: cost.seconds}
 
 
-def test_a_runner_whose_law_lacks_its_rung_prices_the_step_analytical():
-    priced = graphed(tiered()).dummy_execution().predicted_s
+def test_a_fallback_across_granularities_is_refused():
+    class OpLevel(StepLinearBackend):
+        @property
+        def granularity(self):
+            return Granularity.OP
 
-    assert priced == roofline().estimate(view((1, 1, True), rung=1)).seconds
+    with pytest.raises(ValueError, match="inside one granularity"):
+        StepFallbackBackend(OpLevel(backend().law), roofline())
+
+
+def test_a_runner_whose_law_lacks_its_rung_prices_the_step_analytical():
+    priced = graphed(fallback()).dummy_execution().predicted_s
+
+    assert priced == roofline().price(view((1, 1, True), rung=1)).seconds
 
 
 @pytest.mark.parametrize("floor", [-1e-3, math.nan, math.inf])
@@ -120,8 +130,8 @@ def test_a_run_file_floor_puts_the_roofline_under_the_law(monkeypatch, tmp_path)
     hf = PretrainedConfig.from_dict(json.loads(CONFIG_JSON.read_text())["text_config"])
     kv = KvGeometry.from_hf_config(hf, block_size=16, kv_dtype="bf16")
 
-    assert isinstance(installed, Tiered)
-    assert isinstance(installed.first, CoarseBackend)
+    assert isinstance(installed, StepFallbackBackend)
+    assert isinstance(installed.first, StepLinearBackend)
     assert installed.roofline.host_floor_s == 0.004
     assert installed.roofline.parameters == 8_000_000_000
     assert installed.roofline.weight_bytes == 2 * 8_000_000_000

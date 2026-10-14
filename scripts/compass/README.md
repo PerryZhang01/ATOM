@@ -540,10 +540,10 @@ Against the server log of the paired real run, with the same deployment flags,
 prints the per-term comparison of the non-KV memory and the graph pool. It takes
 the log of one rank.
 
-## Tier a's law from real cells — `coarse_fit`
+## Tier a's law from real cells — `step_linear_fit`
 
-`python -m atom.compass.backends.coarse_fit RECORD... --out LAW [--form FORM] [--dp N]`
-fits the law a run file's `law` key holds (`atom/compass/backends/coarse.py`) from
+`python -m atom.compass.backends.step_linear_fit RECORD... --out LAW [--form FORM] [--dp N]`
+fits the law a run file's `law` key holds (`atom/compass/backends/step_linear.py`) from
 the step records of real cells, `OUT_DIR/steps/dp0.jsonl` of `REAL=1
 cctraces_sim.sh` runs. The module's docstring states the label, what is cut and
 how outliers are dropped; the written law also carries, per vector, its samples,
@@ -573,7 +573,7 @@ earlier records were fitted with that key in place of the one they carry.
 
 `python -m atom.compass.validate.cost RECORD LAW` prices each step of a real
 cell's record (`OUT_DIR/steps` of a `REAL=1 cctraces_sim.sh` run) with a law
-file as `coarse_fit` writes it, and prints the error per kind, per decode rung
+file as `step_linear_fit` writes it, and prints the error per kind, per decode rung
 and per prefill token band. The module's docstring states what each figure is.
 Grade a law only on cells whose traces its calibration cells do not replay.
 

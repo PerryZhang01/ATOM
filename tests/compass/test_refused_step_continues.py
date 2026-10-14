@@ -3,8 +3,8 @@
 file says ``on_refusal: abort``.
 
 Requests are driven through ATOM's own `Scheduler` and the runner's own
-`forward`, priced by a coarse law with no decode vector for the eager rung, so
-every decode step is refused. The worker's answers are read back as
+`forward`, priced by a step linear law with no decode vector for the eager
+rung, so every decode step is refused. The worker's answers are read back as
 `engine_done` reads them, and `frontend_done` writes ``summary.json``.
 """
 
@@ -16,15 +16,15 @@ from types import SimpleNamespace
 import pytest
 import torch
 from conftest import MockConfig
-from test_backend_coarse import backend, law
+from test_backend_step_linear import backend, law
 from test_dp_slice import _deployment
 from test_dp_step_max import BLOCK, dp2, runner  # noqa: F401  the dp2 fixture
 from test_run_graph_pool import _reserved
 from test_runner_control_refusals import Worker
 
 from atom.compass import run as compass_run
-from atom.compass.backends import CoarseBackend, CoarseLaw
-from atom.compass.backends.ladder import CostRefused
+from atom.compass.backends import StepLinearBackend, StepLinearLaw
+from atom.compass.backends.resolver import CostRefused
 from atom.compass.runner import overrides
 from atom.model_engine.scheduler import Scheduler
 from atom.model_engine.sequence import Sequence
@@ -39,7 +39,7 @@ REFUSED = "cost:coarse-law: no decode vector for rung eager"
 def no_eager_rung():
     without = law()
     del without["decode"]["eager"]
-    return CoarseBackend(CoarseLaw(without))
+    return StepLinearBackend(StepLinearLaw(without))
 
 
 def run_file(tmp_path, monkeypatch, **keys):

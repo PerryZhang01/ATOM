@@ -13,17 +13,17 @@ returns. A step the record has no line for is refused.
 import json
 from pathlib import Path
 
-from atom.compass.backends.base import CostBackend, Tier
+from atom.compass.backends.base import CostBackend, Granularity
 from atom.compass.backends.cost import CostTerm, StepCost
-from atom.compass.backends.ladder import CostRefused
 from atom.compass.backends.provenance import Provenance, Refusal, Species
+from atom.compass.backends.resolver import CostRefused
 from atom.compass.parity import ARRIVALS, read
 
 SOURCE = "replay"
 
 
 class ReplayBackend(CostBackend):
-    """One DP rank's real steps, in order: `estimate` prices step i at its real
+    """One DP rank's real steps, in order: `price` prices step i at its real
     forward's duration, and `charge` makes it end when that forward returned."""
 
     def __init__(self, directory, dp_rank: int) -> None:
@@ -36,10 +36,10 @@ class ReplayBackend(CostBackend):
         self.now = None  # the engine LP's clock, set where the run installs it
 
     @property
-    def tier(self) -> Tier:
-        return Tier.COARSE
+    def granularity(self) -> Granularity:
+        return Granularity.STEP
 
-    def estimate(self, batch_view) -> StepCost:
+    def price(self, batch_view) -> StepCost:
         i, self.step = self.step, self.step + 1
         if i >= len(self.seconds):
             why = f"{self.path} has {len(self.seconds)} steps, and this is step {i}"
@@ -49,7 +49,7 @@ class ReplayBackend(CostBackend):
         return StepCost([CostTerm("forward", self.seconds[i], measured)])
 
     def charge(self, batch, device_s: float) -> float:
-        """Seconds from now to the real return of the step `estimate` just priced."""
+        """Seconds from now to the real return of the step `price` just priced."""
         i = min(self.step, len(self.ends)) - 1
         return max(0.0, self.ends[i] - self.now())
 

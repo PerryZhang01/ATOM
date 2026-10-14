@@ -22,7 +22,7 @@ from conftest import MockConfig
 from test_dp_step_max import dp2  # noqa: F401  the dp2 fixture
 
 from atom.compass import run
-from atom.compass.backends.shape import ShapeStubBackend
+from atom.compass.backends.step_stub import StepStubBackend
 from atom.compass.parity import (
     ENV,
     RUNNER,
@@ -76,7 +76,7 @@ class _Runner(NonAllocatingRunner):
 
     def __init__(self, config, rank=0):
         self.config, self.rank = config, rank
-        install_cost_backend(self, ShapeStubBackend())
+        install_cost_backend(self, StepStubBackend())
         self.capture_sizes_np, self.enforce_eager = np.array(LADDER), False
         self.attn_metadata_builder = GRAPHABLE
         self._token_stream = DeferredTokenStream([0])

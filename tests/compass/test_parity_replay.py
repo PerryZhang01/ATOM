@@ -14,7 +14,7 @@ import time
 
 import pytest
 from test_parity_record import BLOCK, _config, _prompt, _Runner
-from test_run_step_fit import B37, decode, deployment
+from test_run_step_grid import B37, decode, deployment
 from test_vertical_slice import _run_file
 
 from atom.compass import run as compass_run

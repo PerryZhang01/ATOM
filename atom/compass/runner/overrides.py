@@ -520,17 +520,17 @@ class PredictedMemory:
         return vars(self).get("compass_memory", {})
 
 
-class StepFitBundle:
-    """The step fit bundle a runner prices with, read by the engine's hand-in."""
+class StepGridBundle:
+    """The step grid bundle a runner prices with, read by the engine's hand-in."""
 
     def step_fit_bundle(self) -> dict[str, Any]:
-        """`compass_step_fit` as a step fit run installed it; empty before
+        """`compass_step_fit` as a step grid run installed it; empty before
         one is, since a None reply parks the engine."""
         return vars(self).get("compass_step_fit", {})
 
 
 class NonAllocatingRunner(
-    RefusedControlCommands, PricedSteps, PredictedMemory, StepFitBundle
+    RefusedControlCommands, PricedSteps, PredictedMemory, StepGridBundle
 ):
     """Overrides that construct a model runner without touching device memory."""
 
@@ -945,13 +945,13 @@ def _group_step_seconds(
             "stage the whole model would count it once per stage"
         )
     from atom.compass.backends.cost import ProvenanceMix
-    from atom.compass.backends.ladder import CostRefused
+    from atom.compass.backends.resolver import CostRefused
 
     if mode is None:
         mode = forward_mode(batch, runner)
     mix = vars(runner).setdefault("_priced", ProvenanceMix())
     try:
-        cost = backend.estimate(batch_view(batch, mode, runner))
+        cost = backend.price(batch_view(batch, mode, runner))
     except CostRefused as refused:
         if getattr(runner, "compass_abort", False):
             raise

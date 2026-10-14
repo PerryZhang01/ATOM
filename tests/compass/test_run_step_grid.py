@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: MIT
-"""Step fit selected by a run file's ``step_fit`` key: its bundle published to
+"""The step grid selected by a run file's ``step_fit`` key: its bundle published to
 and loaded from an `ArtifactStore` by `run.runner`, checked against the
 deployment's config, and named in the summary `_write_summary` writes.
 
 The deployment is the Qwen3.5-27B config at TP1 on the suite's machine
-document, replaying graphs on `test_backend_step_fit`'s ladder; the bundle is
+document, replaying graphs on `test_backend_step_grid`'s ladder; the bundle is
 that file's replay grid and a unit residual, published under the readings
-`step_fit.conditions` takes of the same deployment unless a test moves one.
+`step_grid.conditions` takes of the same deployment unless a test moves one.
 """
 
 import copy
@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from test_artifact_invalidation import STANZA, moved
-from test_backend_step_fit import (
+from test_backend_step_grid import (
     B37,
     C_NODES,
     LADDER,
@@ -51,10 +51,10 @@ from atom.compass.artifacts import (
     Topology,
     member_name,
 )
-from atom.compass.backends import StepFitBackend
-from atom.compass.backends.analytic import Tiered
-from atom.compass.backends.ladder import CostRefused
-from atom.compass.run import step_fit
+from atom.compass.backends import StepGridBackend
+from atom.compass.backends.resolver import CostRefused
+from atom.compass.backends.step_roofline import StepFallbackBackend
+from atom.compass.run import step_grid
 from atom.compass.spec import MachineSpec
 from atom.utils import clock
 from atom.utils.clock import LPRuntime
@@ -104,7 +104,7 @@ def deployment(tmp_path, **config):
 
 
 def readings(r):
-    return step_fit.conditions(r.config, MachineSpec.from_mapping(DOCUMENT))
+    return step_grid.conditions(r.config, MachineSpec.from_mapping(DOCUMENT))
 
 
 def publish(tmp_path, r, member=BUNDLE, conditions=None, **key):
@@ -115,7 +115,7 @@ def publish(tmp_path, r, member=BUNDLE, conditions=None, **key):
         topology=Topology(),
         conditions=conditions or readings(r),
         gates=GateState.of(),
-        members={member_name(*step_fit.MEMBER): json.dumps(member).encode()},
+        members={member_name(*step_grid.MEMBER): json.dumps(member).encode()},
     )
 
 
@@ -158,8 +158,8 @@ def test_a_run_file_bundle_prices_the_runs_steps_and_the_summary_names_it(
 
     compass_run.runner(r)
 
-    assert isinstance(r.compass_backend, StepFitBackend)
-    # Rung 48's cell, as `test_backend_step_fit` reads it from the same grid.
+    assert isinstance(r.compass_backend, StepGridBackend)
+    # Rung 48's cell, as `test_backend_step_grid` reads it from the same grid.
     assert r.forward(decode(B37)).predicted_s == 8897.5e-6
     out = summary(monkeypatch, run, r)
     assert out["step_fit"] == {
@@ -218,8 +218,8 @@ def test_a_roofline_floor_still_prices_below_step_fit(monkeypatch, tmp_path):
 
     compass_run.runner(r)
 
-    assert isinstance(r.compass_backend, Tiered)
-    assert isinstance(r.compass_backend.first, StepFitBackend)
+    assert isinstance(r.compass_backend, StepFallbackBackend)
+    assert isinstance(r.compass_backend.first, StepGridBackend)
 
 
 def test_step_fit_is_one_of_the_three_backend_keys(monkeypatch, tmp_path):
@@ -323,7 +323,7 @@ def test_a_capture_size_past_max_num_seqs_is_not_on_the_ladder(monkeypatch, tmp_
 
     compass_run.runner(r)
 
-    assert isinstance(r.compass_backend, StepFitBackend)
+    assert isinstance(r.compass_backend, StepGridBackend)
 
 
 def test_a_timing_scope_narrower_than_the_forward_refuses(monkeypatch, tmp_path):

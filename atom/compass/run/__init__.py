@@ -37,13 +37,13 @@ member, the frontend's included, connects to.
 
 Run file keys: ``clock_endpoint``, ``bound_s`` (finite), ``admission_path``,
 ``ipc_s``, ``stream_s``, one of ``coefficients`` (a `Coefficients` mapping,
-priced by `ShapeStubBackend`), ``law`` (a `CoarseLaw` mapping, priced by
-`CoarseBackend`), ``step_fit`` (an artifact store's root and a bundle's key,
-priced by `StepFitBackend`; see `step_fit`) and ``replay`` (a real run's parity
-record directory: each step ends when the real one did, by
+priced by `StepStubBackend`), ``law`` (a `StepLinearLaw` mapping, priced by
+`StepLinearBackend`), ``step_fit`` (an artifact store's root and a bundle's
+key, priced by `StepGridBackend`; see `step_grid`) and ``replay`` (a real
+run's parity record directory: each step ends when the real one did, by
 `atom.compass.parity.replay`),
-``roofline_floor_s`` (optional: a tier-0 `Roofline` with this host floor prices
-the steps the backend refuses),
+``roofline_floor_s`` (optional: a `StepRooflineBackend` with this host floor
+prices the steps the backend refuses, through `StepFallbackBackend`),
 ``on_refusal`` (optional: ``mark``, the default, prices a step no cost source
 answers at 0 s, hands in its ``cost:`` reason and continues; ``abort`` ends
 the run there, which still writes the summary),
@@ -478,10 +478,13 @@ def runner(model_runner, tree=None) -> None:
     run = spec()
     if run is None:
         return
-    from atom.compass.backends.analytic import Roofline, Tiered
-    from atom.compass.backends.coarse import CoarseBackend, CoarseLaw
     from atom.compass.backends.geometry import KvGeometry, Parallelism
-    from atom.compass.backends.shape import Coefficients, ShapeStubBackend
+    from atom.compass.backends.step_linear import StepLinearBackend, StepLinearLaw
+    from atom.compass.backends.step_roofline import (
+        StepFallbackBackend,
+        StepRooflineBackend,
+    )
+    from atom.compass.backends.step_stub import Coefficients, StepStubBackend
     from atom.compass.memory import ModelTerms, device_readings, predicts
     from atom.compass.memory.check import record
     from atom.compass.runner.overrides import (
@@ -515,9 +518,9 @@ def runner(model_runner, tree=None) -> None:
         dpa = config.enable_dp_attention
         dp = config.parallel_config.data_parallel_size if dpa else 1
         ep = dp if config.enable_expert_parallel else 1
-        backend = CoarseBackend(CoarseLaw(run["law"]), (dp, ep))
+        backend = StepLinearBackend(StepLinearLaw(run["law"]), (dp, ep))
     elif "coefficients" in run:
-        backend = ShapeStubBackend(
+        backend = StepStubBackend(
             Coefficients(**run["coefficients"]),
             Parallelism(tp_size=tp),
             stack_layers=config.hf_config.num_hidden_layers,
@@ -525,17 +528,17 @@ def runner(model_runner, tree=None) -> None:
     machine = MachineSpec.from_mapping(_width_keys(run["machine"]))
     bundle = None
     if "step_fit" in run:
-        from atom.compass.run.step_fit import load
+        from atom.compass.run.step_grid import load
 
         backend, bundle = load(run["step_fit"], config, machine)
     config_json = _config_json(config)
-    model = ModelTerms.from_declared_config(
+    model = ModelTerms.from_config(
         config.hf_config,
         parameter_count=run.get("parameter_count"),
         tp_size=tp,
         warmup_tokens=config.max_num_batched_tokens,
         config_json=config_json,
-        measured_activations=machine.activations_for(
+        activations_entry=machine.activations_for(
             (config_json.get("architectures") or [None])[0],
             _file_digest(config.model, "config.json"),
             tp,
@@ -549,14 +552,14 @@ def runner(model_runner, tree=None) -> None:
             parallelism=Parallelism(tp_size=tp),
             kv_dtype=config.kv_cache_dtype,
         )
-        roofline = Roofline(
+        roofline = StepRooflineBackend(
             machine,
             parameters=run["parameter_count"] // tp,
             weight_bytes=model.weights.nbytes,
             kv_token_bytes=kv.layers * kv.bytes_per_token_per_layer,
             host_floor_s=run["roofline_floor_s"],
         )
-        backend = Tiered(backend, roofline)
+        backend = StepFallbackBackend(backend, roofline)
     install_cost_backend(model_runner, backend)
     if NOW_ENV in os.environ:
         slot = np.memmap(os.environ[NOW_ENV], np.float64, "r", shape=(1,))
@@ -664,9 +667,9 @@ def _fingerprint(tok) -> str | None:
 
 def host_key(config) -> dict:
     """What host laws are keyed by: this host's CPU, ATOM's source less
-    `COMPASS_ONLY`, the served config.json and the engine config a step fit
+    `COMPASS_ONLY`, the served config.json and the engine config a step grid
     bundle is keyed by."""
-    from atom.compass.run.step_fit import keyed
+    from atom.compass.run.step_grid import keyed
 
     cpu = re.search(
         r"^model name\s*:\s*(.+)$", Path("/proc/cpuinfo").read_text(), re.MULTILINE
