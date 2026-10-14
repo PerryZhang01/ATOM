@@ -54,6 +54,8 @@ from itertools import zip_longest
 import numpy as np
 
 ENV = "ATOM_COMPASS_PARITY_RECORD"
+#: The file in a real run's record directory holding when its workload was sent.
+ARRIVALS = "arrivals.json"
 RUNNER = "atom.compass.parity.runner.RecordingModelRunner"
 #: Line keys that time a step rather than describe its decision.
 TIMESTAMPS = (
@@ -304,12 +306,20 @@ def read(directory) -> dict[int, list[dict]]:
 
     A request the record never named keeps its request id, so a record that
     ends inside a request's prefill parts from a full one at that request's
-    first step.
+    first step. With `ARRIVALS`, the worker-clock times a workload was sent,
+    the steps entered before the first send are the engine's start, not the
+    workload's: they are left out and the rest renumbered from 0.
     """
-    record = {}
-    for path in sorted(pathlib.Path(directory).glob("dp*.jsonl")):
+    directory, record, start = pathlib.Path(directory), {}, None
+    if (directory / ARRIVALS).exists():
+        start = min(json.loads((directory / ARRIVALS).read_text())["sent_ns"])
+    for path in sorted(directory.glob("dp*.jsonl")):
         steps = [json.loads(line) for line in path.read_text().splitlines()]
         keys = dict(pair for step in steps for pair in step.pop("named"))
+        if start is not None:
+            steps = [s for s in steps if s["t_enter_ns"] >= start]
+            for i, step in enumerate(steps):
+                step["step"] = i
         for step in steps:
             for row in step["batch"]:
                 row[0] = keys.get(row[0], row[0])
@@ -337,7 +347,8 @@ def compare(real, simulated) -> dict:
     A rank's entry is None where its steps all agree, else the step index and
     both steps, None for a record that has already ended. A record with no
     steps is refused: two runs that scheduled nothing agree, and that means
-    nothing. Steps are compared and reported without their timestamps.
+    nothing. Steps are compared and reported without their timestamps. Under
+    `steps`, each rank's count of step pairs compared and of identical ones.
     """
     records = {"real": read(real), "simulated": read(simulated)}
     for name, record in records.items():
@@ -347,10 +358,12 @@ def compare(real, simulated) -> dict:
             for step in steps:
                 for key in TIMESTAMPS:
                     step.pop(key, None)
-    first = {}
+    first, counts = {}, {}
     for rank in sorted(records["real"].keys() | records["simulated"].keys()):
-        pairs = zip_longest(
-            records["real"].get(rank, []), records["simulated"].get(rank, [])
+        pairs = list(
+            zip_longest(
+                records["real"].get(rank, []), records["simulated"].get(rank, [])
+            )
         )
         first[rank] = next(
             (
@@ -360,8 +373,13 @@ def compare(real, simulated) -> dict:
             ),
             None,
         )
+        counts[rank] = {
+            "compared": len(pairs),
+            "identical": sum(a == b for a, b in pairs),
+        }
     return {
         "first_divergence": first,
+        "steps": counts,
         "request_dp_rank": {
             name: _request_ranks(name, record) for name, record in records.items()
         },

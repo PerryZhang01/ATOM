@@ -38,8 +38,10 @@ member, the frontend's included, connects to.
 Run file keys: ``clock_endpoint``, ``bound_s`` (finite), ``admission_path``,
 ``ipc_s``, ``stream_s``, one of ``coefficients`` (a `Coefficients` mapping,
 priced by `ShapeStubBackend`), ``law`` (a `CoarseLaw` mapping, priced by
-`CoarseBackend`) and ``step_fit`` (an artifact store's root and a bundle's key,
-priced by `StepFitBackend`; see `step_fit`),
+`CoarseBackend`), ``step_fit`` (an artifact store's root and a bundle's key,
+priced by `StepFitBackend`; see `step_fit`) and ``replay`` (a real run's parity
+record directory: each step ends when the real one did, by
+`atom.compass.parity.replay`),
 ``roofline_floor_s`` (optional: a tier-0 `Roofline` with this host floor prices
 the steps the backend refuses),
 ``on_refusal`` (optional: ``mark``, the default, prices a step no cost source
@@ -478,12 +480,18 @@ def runner(model_runner, tree=None) -> None:
 
     config = model_runner.config
     tp = config.tensor_parallel_size
-    keys = [k for k in ("coefficients", "law", "step_fit") if k in run]
+    keys = [k for k in ("coefficients", "law", "step_fit", "replay") if k in run]
     if len(keys) != 1:
         raise ValueError(
-            "a run file prices its steps from one of coefficients, law and "
-            f"step_fit, and this one has {' and '.join(keys) or 'none'}"
+            "a run file prices its steps from one of coefficients, law, "
+            f"step_fit and replay, and this one has {' and '.join(keys) or 'none'}"
         )
+    replay = None
+    if "replay" in run:
+        from atom.compass.parity.replay import ReplayBackend
+
+        dp_rank = config.parallel_config.data_parallel_rank
+        backend = replay = ReplayBackend(run["replay"], dp_rank)
     if "law" in run:
         if tp != 1:
             raise ValueError(
@@ -547,9 +555,11 @@ def runner(model_runner, tree=None) -> None:
                 f"the run file's host laws were fitted under another {differ}; "
                 f"this run's key is {ours}"
             )
-        model_runner.compass_host = HostDeviceRecurrence(
+        model_runner.compass_host = replay or HostDeviceRecurrence(
             host.get("laws", {}), host.get("skip", ()), lambda: float(slot[0])
         )
+        if replay is not None:
+            replay.now = lambda: float(slot[0])
     model_runner.compass_abort = run.get("on_refusal") == "abort"
     reserved, captured = _graph_pool(model_runner, machine, model)
     readings = device_readings(
