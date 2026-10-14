@@ -33,7 +33,9 @@ is the max over its ranks, so each vector is fitted by alternating max-affine
 regression: from the fit on every rank's row, take each step's row the law
 prices highest and refit on those rows, until no step changes rank. Each
 vector reports, under `fit.all_rows`, the centre and scaled MAD of the fit on
-every rank's row, each step priced as its max over ranks. Held-out errors are
+every rank's row, each step priced as its max over ranks, and under
+`fit.passes` the refits the alternation took, null when the picks still moved
+after `MAD_PASSES` refits. Held-out errors are
 printed at `--dp 1` only.
 
 Records with a host key (`dp0.key.json`, from the real runner) also give the
@@ -445,14 +447,17 @@ def _slowest(groups, prefill: list[str]) -> tuple[list[tuple], dict]:
         error = (x @ coef).max(axis=1) / y - 1.0
         centre = float(np.median(error))
         mad = float(1.4826 * np.median(np.abs(error - centre)))
-        report[key] = {"centre": centre, "mad": mad}
         pick = None
-        for _ in range(MAD_PASSES):
+        for passes in range(MAD_PASSES + 1):
             now = np.argmax(x @ coef, axis=1)
             if pick is not None and (now == pick).all():
                 break
+            if passes == MAD_PASSES:
+                passes = None
+                break
             pick = now
             coef = _solve(x[np.arange(len(x)), pick], y, names)["coef"]
+        report[key] = {"all_rows": {"centre": centre, "mad": mad}, "passes": passes}
         for j, p in zip(at, pick):
             rows[j] = groups[j][p]
     return rows, report
@@ -475,7 +480,7 @@ def fit(records, form: str = "law", dp: int = 1) -> dict:
         for k, v in c.items():
             cut[k] = cut.get(k, 0) + v
     prefill = list(HISTORY if form == "history" else PREFILL) + ["moe_rows"] * (dp > 1)
-    rows, all_rows = _slowest(groups, prefill)
+    rows, alternation = _slowest(groups, prefill)
     digests = [
         f"{Path(r).name}:{hashlib.sha256(Path(r).read_bytes()).hexdigest()[:12]}"
         for r in records
@@ -567,8 +572,8 @@ def fit(records, form: str = "law", dp: int = 1) -> dict:
                     "zero": solved["zero"],
                 },
             }
-            if k in all_rows:
-                vector["fit"]["all_rows"] = all_rows[k]
+            if k in alternation:
+                vector["fit"].update(alternation[k])
             if rowmod_k:
                 vector["rowmod"] = rowmod_k
                 vector["fit"]["rowmod"] = evidence

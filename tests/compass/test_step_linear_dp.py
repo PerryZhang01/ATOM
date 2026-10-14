@@ -153,3 +153,15 @@ def test_a_keyed_law_refuses_another_width_and_one_one_prices_as_tp1(monkeypatch
     )
     with pytest.raises(ValueError, match=r"\(dp, ep\) \(1, 1\) .* at \(8, 1\)"):
         run.runner(SimpleNamespace(config=dpa))
+
+
+@pytest.mark.parametrize("cap, decode", [(20, 4), (4, 4), (3, None)])
+def test_the_fit_records_whether_the_alternation_settled(
+    tmp_path, monkeypatch, cap, decode
+):
+    from atom.compass.backends import coarse_fit
+
+    monkeypatch.setattr(coarse_fit, "MAD_PASSES", cap)
+    law_ = fit(_records(tmp_path, _groups(0)), dp=DP)
+    assert law_["prefill"]["fit"]["passes"] == 1
+    assert law_["decode"]["4"]["fit"]["passes"] == decode
