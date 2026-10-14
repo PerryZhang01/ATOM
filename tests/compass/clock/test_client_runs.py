@@ -16,7 +16,8 @@ import math
 
 import pytest
 
-from atom.compass.clock import NER, ClockAuthority, LpId, single_engine_table
+from atom.compass import run as compass_run
+from atom.compass.clock import NER, TAR, ClockAuthority, LpId, single_engine_table
 from atom.compass.clock_transport import connect, serve
 from atom.utils.clock import LPRuntime
 
@@ -186,11 +187,74 @@ def test_nothing_is_granted_between_client_runs(served):
             assert row.state == NER and row.n > end and not row.undelivered
 
 
-def test_a_server_with_no_client_serves_one_client_run():
+def test_client_runs_is_1_without_a_client_and_at_least_1_with_one():
     table = DEPLOYMENTS["single-deployment"]()
     for client, runs in [(None, 2), (TRAFFIC, 0), (TRAFFIC, math.nan)]:
         with pytest.raises(ValueError, match="a client LP serves one or more"):
             ClockAuthority(table, client=client, client_runs=runs)
+
+
+# --- the end's clock, and the marked grant to an LP with members -------------
+
+
+def _single(dp=1):
+    return single_engine_table(
+        admission_path="serving", ipc_s=IPC_S, stream_s=STREAM_S, dp=dp
+    )
+
+
+def test_a_client_run_ends_at_the_latest_clock_a_server_lp_ran_to():
+    table = _single()
+    http, stream = "traffic->frontend:http", "frontend->traffic:stream"
+    L, S = table.lookahead(http), table.lookahead(stream)
+    engine, frontend = LpId("engine"), LpId("frontend")
+    ca = ClockAuthority(table, client=TRAFFIC, client_runs=2)
+    assert ca.on_request(engine, NER, INF, [], 8.0) == []
+    assert ca.on_request(frontend, NER, INF, []) == []
+    granted = ca.on_request(TRAFFIC, NER, INF, [(http, 0, L)])
+    assert [(i, g) for i, g, _ in granted] == [(frontend, L)]
+    # The frontend streams the answer, then works on past its arrival.
+    replies = ca.on_request(frontend, TAR, L + 2 * S, [(stream, 0, L + S)])
+    replies += ca.on_request(TRAFFIC, NER, INF, [])
+    assert [(i, g) for i, g, _ in replies] == [(TRAFFIC, L + S), (frontend, L + 2 * S)]
+    end = ca.on_request(frontend, NER, INF, [])
+    assert [(i, g, *k) for i, g, _, *k in end] == [
+        (engine, 0.0, 0),
+        (frontend, L + 2 * S, 0),
+        (TRAFFIC, INF),
+    ]
+    (first,) = ca.ended
+    clocks = dict(first.final_clocks)
+    print(f"\nend {first.end}, client's clock {clocks[TRAFFIC]}")
+    assert first.end == clocks[frontend] == L + 2 * S > clocks[TRAFFIC] == L + S
+    assert ca.on_bind(TRAFFIC) == (L + 2 * S, {http: 1})
+
+
+def test_every_member_of_an_lp_is_marked_with_the_client_run():
+    table = _single(dp=2)
+    engine, frontend = LpId("engine"), LpId("frontend")
+    ca = ClockAuthority(
+        table, members=compass_run._members(table, 2), client=TRAFFIC, client_runs=2
+    )
+    assert ca.on_request(frontend, NER, INF, []) == []
+    assert ca.on_request(engine, NER, INF, [], INF, "dp0") == []
+    assert ca.on_request(engine, NER, INF, [], INF, "dp1") == []
+    end = ca.on_request(TRAFFIC, NER, INF, [])
+    members = {
+        to[1]: (g, released, k)
+        for to, g, released, *k in end
+        if isinstance(to, tuple) and to[0] == engine
+    }
+    print(f"\nmembers' replies: {members}")
+    assert {m: (g, k) for m, (g, _, k) in members.items()} == {
+        "dp0": (0.0, [0]),
+        "dp1": (0.0, [0]),
+    }
+    for m, (_, released, _) in members.items():
+        assert released and all(ch.endswith(f"#{m}") for ch in released)
+    # Each member hands in and asks again; nothing is granted without a client.
+    assert ca.on_request(engine, NER, INF, [], INF, "dp0") == []
+    assert ca.on_request(engine, NER, INF, [], INF, "dp1") == []
 
 
 # --- over TCP: the client resigns, its socket closes, the next one binds ------
