@@ -570,7 +570,7 @@ class NonAllocatingRunner(
             self.model.tree = model_class(self.config)
         from atom.compass import run
 
-        run.runner(self)
+        run.runner(self, self.model.tree)
         logger.info(
             "%s built on meta and no checkpoint read; no weight bytes on a device.",
             self.model.model_class_name,

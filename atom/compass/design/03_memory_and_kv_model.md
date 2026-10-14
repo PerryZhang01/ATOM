@@ -438,7 +438,7 @@ source per term; the bullets below say why each is what it is.
 
 | Term | Source | Issue |
 |---|---|---|
-| weights | a meta build in the simulated runner's `_build_and_load_model`: the model class under `torch.device("meta")` with ATOM's own quantisation config and groups at the deployment's widths, bytes summed over unique storages, a tied `lm_head` added; the tree is dropped after counting | [#699](https://github.com/jgong5/ATOM/issues/699) |
+| weights | the meta build the simulated runner's `_build_and_load_model` already makes for the KV-pool walk: the model class under `torch.device("meta")` with ATOM's own quantisation config and groups at the deployment's widths, bytes summed over unique parameter storages, so a tied `lm_head`, which shares the embedding's storage, counts once | [#699](https://github.com/jgong5/ATOM/issues/699) |
 | buffers | the declared formula over fields the model's `config.json` states, labelled declared, until a recording exists | [#701](https://github.com/jgong5/ATOM/issues/701) |
 | activations | one coefficient per model and width, from a machine-spec entry keyed by architecture, `config.json` sha256 and tensor-parallel width: a real run's `peak - current` after warmup over the warmup tokens, times the deployment's warmup tokens. A model with no entry takes a geometry form, labelled declared. The liveness walk replaces both once capture lands | [#704](https://github.com/jgong5/ATOM/issues/704), [#705](https://github.com/jgong5/ATOM/issues/705) |
 | invisible scratch | inside the activation coefficient; a term of its own only under the liveness walk (`04` T4) | [#704](https://github.com/jgong5/ATOM/issues/704) |
@@ -455,8 +455,10 @@ term against the same term of a recorded real run, wired for stage 2's paired ru
 - **Weights** — ask a meta build, deduped by storage. Exact at every width on both models
   tested. Two prerequisites: dtype comes from the **config**, or every byte is twice what
   the model holds; and the width must be *simulated*, or asking for a world of two from
-  one process hangs. One known correction: a meta-built model has not been through the
-  loader, so a **tied `lm_head` is invisible** — worth one embedding, 0.290 GiB on the
+  one process hangs. A tied `lm_head` needs no correction: ATOM ties it in the model's
+  `__init__`, so the meta build already shares the embedding's storage, and the loader
+  copies into that storage, so the head is resident once and counting each storage once
+  counts it once. Counting it per parameter instead adds one embedding, 0.290 GiB on the
   0.6B, which was the whole of a gap once. A declared `parameter_count × dtype / TP`
   is not a substitute: one dtype cannot state FP4 experts with e8m0 scales beside FP8
   and bf16 parameters, and under DP-attention TP is 1 while the experts shard over the
