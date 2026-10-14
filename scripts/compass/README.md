@@ -562,8 +562,14 @@ record under a law fitted on the others, per decode rung and prefill token band.
 fitted on the five stage-2 calibration cells (concurrency 1, 4, 16, 64 and 256)
 on node 18; a stage-2 run file holds it under `law`.
 `scripts/compass/laws/qwen3.8-27b-tp1-mi308x-hjbog39.json` is the `history` form
-with the host laws (`host`), labelled by device time, fitted on the five cells
-`calib_capture.sh` captured at f454bc71a on hjbog-srdc-39.
+with the host laws (`host`), labelled by device time, fitted on these
+hjbog-srdc-39 records in this order: concurrency 1, 4, 16, 64 and 256 as
+`calib_capture.sh` captured them at f454bc71a, then 64 and 256 captured at
+3b32a9bd5 with `AIPERF_EXTRA_ARGS="--trajectory-start-min-ratio 0
+--trajectory-start-max-ratio 0"`, which start every trajectory at its first
+turn so those cells decode at rungs 16 and up. Its host key is the one at
+3b32a9bd5: `host_key` gives f454bc71a's tree the same `atom` digest, so the
+earlier records were fitted with that key in place of the one they carry.
 
 ## Cost accuracy on a real run's own steps — `validate.cost`
 
