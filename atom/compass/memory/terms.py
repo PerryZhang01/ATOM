@@ -26,20 +26,17 @@ term's bytes came from* -- a named field of the machine spec, a knob ATOM's
 own config states, arithmetic over other readings, or a coefficient somebody
 wrote down. There is deliberately no `GEOMETRY` member: a serving knob is a
 property of the deployment rather than of the machine or the model, and
-nothing on the model side is *obtained* yet -- every term
-read off a model config here is a declared formula, and labelling one
-`GEOMETRY` would say it was not.
+every term read off a model config here is a declared formula, and labelling
+one `GEOMETRY` would say it was not.
 
-`OBTAINED` is the one that was missing, and it is the word the paragraph above
-already uses for what a declared term is not: **the number was read off the
+`OBTAINED` is what a declared term is not: **the number was read off the
 thing it describes** -- a meta build of the model, a recording of a card, a
 traced graph. That is the whole of the definition, and it is deliberately not
 "a recording": a term on either side of a comparison can carry it, and the
 predicted side does whenever a meta build or a liveness walk produced the
 number. It is the successor every `DECLARED` term names, so a term that carries
-it is a term that no longer owes one. Nothing this package produces carries it
-*today* -- every model-side term it computes is a declared formula -- which is
-a statement about what has been built, not about who may use the member.
+it is a term that no longer owes one. The weights term read off the simulated
+runner's meta build carries it.
 
 `OBTAINED` is also not `Species.MEASURED` under another name, for the same
 reason the paragraph above separates the two enums at all. `Species` answers

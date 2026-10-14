@@ -192,7 +192,7 @@ def test_a_step_reports_its_mixture_and_its_refused_share():
 
 
 def test_a_step_reports_every_refusal_behind_it():
-    """Two rungs declined on one term; both are the record, and both count."""
+    """Two sources declined on one term; both are the record, and both count."""
     chained = ANALYTIC.resolved(
         "analytic_law", [UNPRICED, Refusal("nearest_key", "outside the range")]
     )

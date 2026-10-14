@@ -68,7 +68,7 @@ def _enumerated(table, source, target):
 
 # --- the shipped tables ------------------------------------------------------
 
-ADMISSION = [("serving", 9.0e-3), ("offline_batch", 13.0e-3)]
+ADMISSION = [("serving", 1.6e-3), ("offline_batch", 13.0e-3)]
 
 
 def _whole(table):
@@ -127,11 +127,38 @@ def test_the_prefill_decode_table_is_exactly_its_channel_list(path, delay):
     }
 
 
+def test_the_prefill_decode_table_above_dp_width_one_has_each_ranks_channels_and_each_pairs_write_request():
+    one = _pd()
+    table = prefill_decode_table(
+        admission_path="serving",
+        ipc_s=IPC,
+        stream_s=STREAM,
+        router_s=ROUTER,
+        kv_write_req_s=KV,
+        dp=2,
+    )
+    whole = _whole(table)
+    pairs = [
+        f"engine-D->engine-P:kv_write_req#dp{d}.dp{p}" for d in (0, 1) for p in (0, 1)
+    ]
+    assert {n: whole.pop(n) for n in pairs} == dict.fromkeys(
+        pairs, (ED, EP, KV, "inline")
+    )
+    # Rank 1's channels are rank 0's, renamed; the rest are the width-one table's.
+    rank0 = {n: v for n, v in _whole(one).items() if "kv_write_req" not in n}
+    assert whole == rank0 | {
+        n.replace("#dp0", "#dp1"): v for n, v in rank0.items() if n.endswith("#dp0")
+    }
+    for j in table.registry.ids():
+        for i in table.registry.ids():
+            assert table.distance(j, i) == one.distance(j, i), (j, i)
+
+
 # --- distance ----------------------------------------------------------------
 
 
 def test_the_prefill_decode_distances_match_the_hand_computed_paths():
-    A, S, I, R, K = 9.0e-3 + ROUTER, STREAM + ROUTER, IPC, ROUTER, KV
+    A, S, I, R, K = 1.6e-3 + ROUTER, STREAM + ROUTER, IPC, ROUTER, KV
     expected = {
         (T, FP): A, (T, EP): A + I, (T, FD): A + R, (T, ED): A + R + I,
         (FP, T): R + S, (FP, EP): I, (FP, FD): R, (FP, ED): R + I,
@@ -149,7 +176,7 @@ def test_the_prefill_decode_distances_match_the_hand_computed_paths():
 def test_the_single_engine_distances_match_the_hand_computed_paths():
     table = _single()
     F, E = LpId("frontend"), LpId("engine")
-    assert table.distance(T, E) == pytest.approx(9.0e-3 + IPC)
+    assert table.distance(T, E) == pytest.approx(1.6e-3 + IPC)
     assert table.distance(E, T) == pytest.approx(IPC + STREAM)
     assert table.distance(F, E) == IPC
 

@@ -12,24 +12,34 @@ import queue
 import runpy
 import shutil
 import sys
+import threading
 import time
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from conftest import MockConfig
+from test_dp_step_max import dp2  # noqa: F401  the dp2 fixture
 
 from atom.compass import run
-from atom.compass.backends.shape import ShapeStubBackend
-from atom.compass.parity import ENV, RUNNER, StepRecording, compare, read
-from atom.compass.runner import overrides
+from atom.compass.backends.step_stub import StepStubBackend
+from atom.compass.parity import (
+    ENV,
+    RUNNER,
+    TIMESTAMPS,
+    StepRecording,
+    compare,
+    read,
+)
+from atom.compass.runner import overrides, projection
 from atom.compass.runner.overrides import NonAllocatingRunner, install_cost_backend
 from atom.compass.runner.step_output import DeferredTokenStream
 from atom.model_engine.prefill_delayer import PrefillDelayer
 from atom.model_engine.scheduler import ScheduledBatch, Scheduler
 from atom.model_engine.sequence import Sequence, SequenceType
 from atom.sampling_params import SamplingParams
-from atom.utils import clock
+from atom.utils import clock, forward_context
+from atom.utils.tbo import ubatching
 
 PROMPT, BUDGET, BLOCK = 200, 64, 16
 #: The capture ladder every runner here replays decode steps from.
@@ -66,10 +76,14 @@ class _Runner(NonAllocatingRunner):
 
     def __init__(self, config, rank=0):
         self.config, self.rank = config, rank
-        install_cost_backend(self, ShapeStubBackend())
+        install_cost_backend(self, StepStubBackend())
         self.capture_sizes_np, self.enforce_eager = np.array(LADDER), False
         self.attn_metadata_builder = GRAPHABLE
         self._token_stream = DeferredTokenStream([0])
+
+
+#: The pricing step, kept before `_unpriced` stubs it for the module.
+GROUP_STEP_SECONDS = overrides._group_step_seconds
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -482,6 +496,108 @@ def test_a_real_runner_records_the_batch_it_was_handed_and_times_its_forward(
     monkeypatch.setattr(sys, "argv", [*argv, str(tmp_path / "simulated")])
     runpy.run_module("atom.compass.parity", run_name="__main__")
     assert json.loads(capsys.readouterr().out) == json.loads(json.dumps(report))
+
+
+def test_a_dp2_real_runner_records_moe_rows_from_its_forwards_one_collective(
+    tmp_path, monkeypatch, dp2  # noqa: F811
+):
+    built = _drive(tmp_path / "simulated", monkeypatch, {0: [0], 1: [1]})
+    simulated = read(tmp_path / "simulated")
+    batches = [built[rank][0] for rank in (0, 1)]
+    calls = {}  # thread -> sync_dp_metadata calls
+    sync = ubatching.sync_dp_metadata
+
+    def counted(**kwargs):
+        calls[threading.get_ident()] = calls.get(threading.get_ident(), 0) + 1
+        return sync(**kwargs)
+
+    monkeypatch.setattr(ubatching, "sync_dp_metadata", counted)
+
+    class _Base:
+        """ATOM's forward: settle the step's mode once, then run the model under it."""
+
+        def __init__(self, dp_rank):
+            self.rank, self.config = 0, _config(dp_rank)
+            self.config.parallel_config.data_parallel_size = 2
+            self.capture_sizes_np, self.enforce_eager = np.array(LADDER), False
+            self.attn_metadata_builder = GRAPHABLE
+
+        def forward(self, batch):
+            mode = projection.forward_mode(batch, self)
+            context = SimpleNamespace(forward_mode=mode)
+            forward_context._forward_context_local.ctx = SimpleNamespace(
+                context=context
+            )
+            return self.run_model()
+
+        def run_model(self):
+            return "ran"
+
+    class _Recorded(StepRecording, _Base):
+        step_clock_ns = staticmethod(time.monotonic_ns)
+
+        @staticmethod
+        def device_event():
+            return SimpleNamespace(query=lambda: True, elapsed_time=lambda _: 1.0)
+
+    monkeypatch.setenv(ENV, str(tmp_path / "real"))
+    runners = [_Recorded(rank) for rank in (0, 1)]
+    dp2(
+        *(
+            lambda r=r, bs=bs: [r.forward(b) for b in bs]
+            for r, bs in zip(runners, batches)
+        )
+    )
+
+    real = read(tmp_path / "real")
+    assert len(batches[0]) == len(batches[1])
+    assert list(calls.values()) == [len(batches[0])] * 2
+    for rank in (0, 1):
+        moe_rows = []
+        for step in real[rank]:
+            moe_rows.append(step.pop("moe_rows"))
+            for key in TIMESTAMPS:
+                step.pop(key, None)
+        assert real[rank] == simulated[rank]
+        # A prefilling rank sends its own rows through the gather; a decoding
+        # group pads every rank to the rung.
+        assert moe_rows == [
+            2 * step["rung"] if step["rung"] else sum(b.total_tokens_num for b in pair)
+            for step, pair in zip(simulated[rank], zip(*batches))
+        ]
+
+
+def test_a_dp2_simulated_runner_records_and_prices_from_one_collective(
+    tmp_path, monkeypatch, dp2  # noqa: F811
+):
+    built = _drive(tmp_path / "source", monkeypatch, {0: [0], 1: [1]})
+    batches = [built[rank][0] for rank in (0, 1)]
+    calls = {}  # thread -> sync_dp_metadata calls
+    sync = ubatching.sync_dp_metadata
+
+    def counted(**kwargs):
+        calls[threading.get_ident()] = calls.get(threading.get_ident(), 0) + 1
+        return sync(**kwargs)
+
+    monkeypatch.setattr(ubatching, "sync_dp_metadata", counted)
+    monkeypatch.setattr(overrides, "_group_step_seconds", GROUP_STEP_SECONDS)
+    monkeypatch.setenv(ENV, str(tmp_path / "simulated"))
+    runners = []
+    for rank in (0, 1):
+        runners.append(_Runner(_config(rank)))
+        runners[-1].config.parallel_config.data_parallel_size = 2
+    replies = dp2(
+        *(
+            lambda r=r, bs=bs: [r.forward(b).predicted_s for b in bs]
+            for r, bs in zip(runners, batches)
+        )
+    )
+
+    assert len(batches[0]) == len(batches[1])
+    assert list(calls.values()) == [len(batches[0])] * 2
+    record = read(tmp_path / "simulated")
+    assert [len(record[rank]) for rank in (0, 1)] == [len(batches[0])] * 2
+    assert replies[0] == replies[1]
 
 
 @pytest.mark.parametrize(

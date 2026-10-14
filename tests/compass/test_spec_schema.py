@@ -49,8 +49,8 @@ import pytest
 
 from atom.compass import spec as spec_package
 from atom.compass.spec import (
-    DECLARED,
     DEPLOYMENT_OWNED,
+    FIELDS,
     SCHEMA,
     SCHEMA_VERSION,
     Backend,
@@ -892,7 +892,7 @@ def test_a_measured_width_answers():
 def test_no_derate_is_declared_by_hand():
     # Each one is derived from a field marked as a spec peak, so a peak number
     # added later cannot arrive without one.
-    assert not [f for f in DECLARED if f.kind is Kind.DERATE]
+    assert not [f for f in FIELDS if f.kind is Kind.DERATE]
     derated = {f.block for f in SCHEMA if f.kind is Kind.DERATE}
     assert derated == {f.block for f in SCHEMA if f.peak}
     assert len(derated) == 4

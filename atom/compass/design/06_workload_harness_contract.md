@@ -472,7 +472,7 @@ service time, and nothing else on the loop runs until it ends. Outside the simul
 window it is charged nothing.
 
 Terms come from `host.tokenizers[]` in the machine spec (doc 05 D25), populated by the
-`compass spec probe tokenizer` Tier-0 probe.
+`spec` package's Tier-0 tokenizer probe (doc 05 D26).
 
 **The encode and decode stages are resource stations** (revised 2026-09-28, #443; PDES
 term: a multi-server FIFO queue). The simulated run installs its own default executor on

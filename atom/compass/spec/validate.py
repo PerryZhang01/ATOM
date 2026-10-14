@@ -55,12 +55,12 @@ but it must be visible, because a caller that holds only the document cannot
 ask it. Merging the document again does not recover the pin: a merge whose
 fragments disagree on an origin states `mixed`, so a `Merge` holding the saved
 document reports the transfer as not asked too, or as asked only in part when
-another fragment states a transfer and a stack pin resolved. A `validate` verb
-over a machine file -- `compass spec validate machine.yaml` -- is not built
-yet: no entry point names it, and nothing in this package reads a spec file.
-This module is what it would call. `CONDITIONS` is what a count of reach is a
-count of; a condition added to the check set and not to it is one no result
-can report on.
+another fragment states a transfer and a stack pin resolved. No command
+validates a machine file: a per-machine script such as
+`scripts/compass/mi308x_spec.py` merges its fragments and calls this module,
+and nothing in this package reads a spec file. `CONDITIONS` is what a count of
+reach is a count of; a condition added to the check set and not to it is one
+no result can report on.
 
 **The reach of a document is `ASKABLE_OF_A_DOCUMENT`, which is a value and not
 a sentence.** Writing the number down in prose here puts a person between the

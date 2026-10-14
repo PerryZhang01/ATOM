@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Step fit's lookup: a batch's equivalent homogeneous shape, read in a grid of
+"""The step grid's lookup: a batch's equivalent homogeneous shape, read in a grid of
 measured whole forwards, answered only inside a cell whose every corner was
 measured.
 
@@ -21,21 +21,21 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from conftest import MockConfig
-from test_analytic_rung import roofline
+from test_backend_step_roofline import roofline
 from test_dp_step_max import BLOCK, runner
 
 from atom.compass.backends import (
     BatchView,
     CostRefused,
+    Granularity,
     RequestShape,
     Species,
-    StepFitBackend,
-    StepFitGrid,
-    Tier,
+    StepGrid,
+    StepGridBackend,
 )
-from atom.compass.backends.analytic import Tiered
-from atom.compass.backends.step_fit import equivalent_shape
-from atom.compass.backends.step_fit_residual import V1, Residual
+from atom.compass.backends.step_grid import equivalent_shape
+from atom.compass.backends.step_grid_residual import V1, Residual
+from atom.compass.backends.step_roofline import StepFallbackBackend
 from atom.model_engine.scheduler import ScheduledBatchOutput, Scheduler
 from atom.model_engine.sequence import Sequence
 from atom.sampling_params import SamplingParams
@@ -113,12 +113,12 @@ UNIT = Residual(fitted({"unit": linear()}, {"unit": 1.0}))
 
 
 def replay(points=REPLAY, residual=UNIT):
-    return StepFitBackend(StepFitGrid(bundle("replay", points)), residual, "replay")
+    return StepGridBackend(StepGrid(bundle("replay", points)), residual, "replay")
 
 
 def eager(points=EAGER, residual=UNIT, **prefill):
-    grid = StepFitGrid(bundle("eager", points, **prefill))
-    return StepFitBackend(grid, residual, "eager")
+    grid = StepGrid(bundle("eager", points, **prefill))
+    return StepGridBackend(grid, residual, "eager")
 
 
 def view(*rows, rung=None, produces_output=None):
@@ -214,18 +214,18 @@ def test_a_hole_refuses_only_the_steps_that_need_it():
     rows = [(1, 601, True)] * 20
 
     # Rung 32 is complete: f(20, 600) + 3200 = 1000 + 600 + 600 + 750 + 3200.
-    assert holed.estimate(view(*rows, rung=32)).seconds == 6150e-6
+    assert holed.price(view(*rows, rung=32)).seconds == 6150e-6
     with pytest.raises(CostRefused, match="no measurement at B=48, c=1024"):
-        holed.estimate(view(*[(1, 601, True)] * 37, rung=48))
+        holed.price(view(*[(1, 601, True)] * 37, rung=48))
 
 
 def test_a_hole_under_a_roofline_floor_is_priced_by_the_roofline():
     holed = replay([p for p in REPLAY if p["at"] != [48, 48, 1024]])
-    r = graphed(Tiered(holed, roofline()))
+    r = graphed(StepFallbackBackend(holed, roofline()))
     rows = [(1, 501, True)] * 18 + [(1, 701, True)] * 18 + [(1, 601, True)]
 
     assert r.forward(decode(B37)).predicted_s == (
-        roofline().estimate(view(*rows, rung=48)).seconds
+        roofline().price(view(*rows, rung=48)).seconds
     )
     assert r.refused_commands() == ()
     assert r.priced_steps()["analytical_steps"] == 1
@@ -335,14 +335,14 @@ INSIDE = [(1, 601, True)] * 32
 def test_only_a_homogeneous_batch_on_a_node_is_a_measured_lookup(
     rows, species, seconds
 ):
-    cost = eager().estimate(view(*rows, rung=32))
+    cost = eager().price(view(*rows, rung=32))
 
     (term,) = cost.terms
     assert term.name == "forward"
     assert term.provenance.species is Species.FITTED
     assert term.seconds == seconds
     assert term.provenance.detail.startswith(f"lookup {term.seconds!r} s, {species};")
-    assert eager().estimate(view(*rows, rung=32)) == cost
+    assert eager().price(view(*rows, rung=32)) == cost
 
 
 @pytest.mark.parametrize(
@@ -360,14 +360,14 @@ def test_only_a_homogeneous_batch_on_a_node_is_a_measured_lookup(
 )
 def test_a_step_the_grid_cannot_answer_is_refused_by_name(batch, reason):
     with pytest.raises(CostRefused, match=reason):
-        eager().estimate(batch)
+        eager().price(batch)
 
 
 def test_a_replay_bundle_refuses_a_rung_it_has_no_grid_for():
     with pytest.raises(CostRefused, match="no decode rung 16"):
-        replay().estimate(view(*[(1, 601, True)] * 10, rung=16))
+        replay().price(view(*[(1, 601, True)] * 10, rung=16))
     with pytest.raises(CostRefused, match="replays no graph"):
-        replay().estimate(view(*INSIDE))
+        replay().price(view(*INSIDE))
 
 
 def test_a_negative_count_never_reaches_the_backend():
@@ -376,7 +376,7 @@ def test_a_negative_count_never_reaches_the_backend():
 
 
 def test_it_is_one_tier_a_line():
-    assert replay().tier is Tier.COARSE
+    assert replay().granularity is Granularity.STEP
     assert replay().describe() == (
         "tier-a step fit, bundle replay; replay decode grid, timing scope forward; "
         "recipe step-fit-residual v1, members unit"
@@ -462,4 +462,4 @@ def _edited(edit, mode="eager"):
 )
 def test_a_bundle_that_cannot_be_read_fails_loading(mapping, match):
     with pytest.raises(ValueError, match=match):
-        StepFitGrid(mapping)
+        StepGrid(mapping)

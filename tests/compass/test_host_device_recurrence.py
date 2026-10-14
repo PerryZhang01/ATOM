@@ -3,7 +3,7 @@
 
 Batches are ATOM's own, from `test_runner_step_semantics`' driven streak: each
 request prefills in three middle chunks and a final chunk, then decodes.
-Each is priced by `ShapeStubBackend` through the runner's `_group_step_seconds`;
+Each is priced by `StepStubBackend` through the runner's `_group_step_seconds`;
 `clock` stands in for the engine LP, advanced by each charge as
 `atom.utils.clock.charge` advances it.
 """
@@ -15,17 +15,17 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from test_dp_step_max import runner
-from test_run_step_fit import B37, decode, deployment, publish, run_file
+from test_run_step_grid import B37, decode, deployment, publish, run_file
 from test_runner_step_semantics import _drive
 from test_validate_runs import _cell, _schedule
 
 from atom.compass import run as compass_run
-from atom.compass.backends.shape import ShapeStubBackend
+from atom.compass.backends.step_stub import StepStubBackend
 from atom.compass.runner import overrides
 from atom.compass.runner.overrides import HOST_SEGMENTS, HostDeviceRecurrence
 from atom.compass.validate import runs
 
-BACKEND = ShapeStubBackend()
+BACKEND = StepStubBackend()
 
 
 @pytest.fixture(scope="module")
@@ -113,7 +113,7 @@ def test_a_runs_runner_charges_at_the_clock_its_engine_publishes(tmp_path, monke
         compass_run.ENGINE, compass_run.channel_table(run), None
     )
     compass_run.runner(r)
-    price = 8897.5e-6  # `test_run_step_fit`'s price of this batch
+    price = 8897.5e-6  # `test_run_step_grid`'s price of this batch
     # The first output forward waits for nothing; the next, called at the same
     # time, for the first one's device work.
     assert [r.forward(decode(B37)).predicted_s for _ in "ab"] == [0.0, price]
