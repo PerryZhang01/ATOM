@@ -141,7 +141,8 @@ class ModelTerms:
         field `config`'s class has a default for is refused, since the
         default cannot be told from a stated value. An MoE model, one that
         states `moe_intermediate_size`, takes its live intermediate from its
-        expert fields.
+        expert fields, or from `intermediate_size` when it states dense layers
+        wider than that.
 
         `tree` is the model's module tree built on the meta device, with
         ATOM's own quantisation config and process groups; the weights are the
@@ -205,7 +206,16 @@ class ModelTerms:
             klass = type(text)
             named = sorted(k for k in vars(text) if "shared" in k)
             shared, why = _stated(config, file, "n_shared_experts"), ""
-            if shared is None:
+            if shared is None and hasattr(klass, "shared_expert_intermediate_size"):
+                # One shared expert sized by its own width (Qwen2MoeConfig and
+                # its successors), live beside the routed ones.
+                width = int(_geometry(config, file, "shared_expert_intermediate_size"))
+                intermediate = routed * int(experts) + width
+                live = (
+                    f"({routed} num_experts_per_tok x {experts} moe_intermediate_size"
+                    f" + {width} shared_expert_intermediate_size)"
+                )
+            elif shared is None:
                 if named:
                     raise MemoryRefusal(
                         "this config states no `n_shared_experts`, and the "
@@ -220,12 +230,23 @@ class ModelTerms:
                 # expert, in its fields or in config.json (Qwen3MoeConfig),
                 # has none: 0 is its geometry.
                 shared, why = 0, f" ({klass.__name__} has none)"
-            shared = int(shared)
-            intermediate = (routed + shared) * int(experts)
-            live = (
-                f"({routed} num_experts_per_tok + {shared} n_shared_experts{why}) "
-                f"x {experts} moe_intermediate_size"
-            )
+            if shared is not None:
+                shared = int(shared)
+                intermediate = (routed + shared) * int(experts)
+                live = (
+                    f"({routed} num_experts_per_tok + {shared} n_shared_experts{why}) "
+                    f"x {experts} moe_intermediate_size"
+                )
+            # ATOM builds a dense MLP in these layers instead; the wider form
+            # is the one live at the peak.
+            if (
+                _stated(config, file, "first_k_dense_replace")
+                or _stated(config, file, "mlp_only_layers")
+                or (_stated(config, file, "decoder_sparse_step") or 1) > 1
+            ):
+                dense = int(_geometry(config, file, "intermediate_size"))
+                intermediate = max(dense, intermediate)
+                live = f"max({dense} intermediate_size, {live})"
         if tree is not None:
             # Parameters that share a storage (a tied head, a view) are one
             # allocation; `_cdata` names the storage even on meta, where every
