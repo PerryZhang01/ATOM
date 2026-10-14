@@ -18,6 +18,7 @@
 # BEGIN GENERATED
 tests/attentions/deepseek_v41/test_cache.py
 tests/attentions/deepseek_v41/test_metadata.py
+tests/attentions/deepseek_v41/test_tbo.py
 tests/model_ops/test_balance_router_logits.py
 tests/model_ops/test_blockscale_dispatch.py
 tests/model_ops/test_fused_rmsnorm_mxfp8.py
@@ -64,7 +65,6 @@ tests/test_eplb_unplaced_layer.py
 tests/test_fp4_indexer_kv_transfer_gate.py
 tests/test_gdn_state_relocation.py
 tests/test_glm5_next_kpool_state.py
-tests/test_graph_marker.py
 tests/test_kda_checkpoint_slot_copy.py
 tests/test_kda_layout_id.py
 tests/test_lm_head_argmax.py
@@ -82,6 +82,7 @@ tests/test_mla_index_cache.py
 tests/test_model_runner_decode_padding.py
 tests/test_moe_online_quant_batch.py
 tests/test_mori_dispatch_trim_bound.py
+tests/test_mori_v2_mask_pad_rows.py
 tests/test_mtp_deferred_status_queue.py
 tests/test_mtp_draft_warmup_workplan.py
 tests/test_mxfp4_moe_has_bias.py
