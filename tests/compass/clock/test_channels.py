@@ -68,7 +68,7 @@ def _enumerated(table, source, target):
 
 # --- the shipped tables ------------------------------------------------------
 
-ADMISSION = [("serving", 9.0e-3), ("offline_batch", 13.0e-3)]
+ADMISSION = [("serving", 1.6e-3), ("offline_batch", 13.0e-3)]
 
 
 def _whole(table):
@@ -158,7 +158,7 @@ def test_the_prefill_decode_table_above_dp_width_one_has_each_ranks_channels_and
 
 
 def test_the_prefill_decode_distances_match_the_hand_computed_paths():
-    A, S, I, R, K = 9.0e-3 + ROUTER, STREAM + ROUTER, IPC, ROUTER, KV
+    A, S, I, R, K = 1.6e-3 + ROUTER, STREAM + ROUTER, IPC, ROUTER, KV
     expected = {
         (T, FP): A, (T, EP): A + I, (T, FD): A + R, (T, ED): A + R + I,
         (FP, T): R + S, (FP, EP): I, (FP, FD): R, (FP, ED): R + I,
@@ -176,7 +176,7 @@ def test_the_prefill_decode_distances_match_the_hand_computed_paths():
 def test_the_single_engine_distances_match_the_hand_computed_paths():
     table = _single()
     F, E = LpId("frontend"), LpId("engine")
-    assert table.distance(T, E) == pytest.approx(9.0e-3 + IPC)
+    assert table.distance(T, E) == pytest.approx(1.6e-3 + IPC)
     assert table.distance(E, T) == pytest.approx(IPC + STREAM)
     assert table.distance(F, E) == IPC
 
