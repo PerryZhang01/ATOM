@@ -37,12 +37,12 @@ second cost on top: keeping one of the two would keep whichever the mapping
 yielded last, silently, and differently on a document whose keys were written
 in another order.
 
-**A runtime constant has no default.** The widths that were measured are the
-widths that can be asked for; a width that was not measured is refused by name,
+**A runtime constant has no default.** The widths that were probed are the
+widths that can be asked for; a width that was not probed is refused by name,
 because these terms fit no law and there is nothing to interpolate along.
 
 **A stack pin is checked.** `check_stack` compares the versions the constants
-were measured against with the versions now loaded and warns, naming both, for
+were probed against with the versions now loaded and warns, naming both, for
 every component that differs. The evidence says these constants track the
 compute stack at least as much as the die, so a spec transferred across a stack
 upgrade is a plausible-looking wrong answer.
@@ -381,7 +381,7 @@ class MachineSpec:
         return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
 
     def runtime_constant(self, name: str, tp_width: int | None = None) -> Any:
-        """A measured constant, refusing a width nobody measured."""
+        """A probed constant, refusing a width nobody probed."""
         path = f"{RUNTIME_CONSTANTS}.{name}"
         field = BY_PATH.get(path)
         if field is None:
@@ -392,16 +392,16 @@ class MachineSpec:
         if tp_width is None:
             raise SpecRefusal(
                 Rule.NO_DEFAULTS,
-                f"`{name}` is measured per tensor-parallel width and none was given",
-                f"ask for one of the measured widths {sorted(measured)}",
+                f"`{name}` is probed per tensor-parallel width and none was given",
+                f"ask for one of the probed widths {sorted(measured)}",
             )
         if tp_width not in measured:
             raise SpecRefusal(
                 Rule.NO_DEFAULTS,
-                f"`{name}` was not measured at tensor-parallel width {tp_width}; "
+                f"`{name}` was not probed at tensor-parallel width {tp_width}; "
                 f"this spec has {sorted(measured)}",
                 "measure the engine at that width and add the entry; the "
-                "measured widths fit no fixed-plus-per-peer form, so there is "
+                "probed widths fit no fixed-plus-per-peer form, so there is "
                 "nothing here to interpolate along",
             )
         return measured[tp_width]
@@ -409,7 +409,7 @@ class MachineSpec:
     def tokenizer_for(
         self, architecture: str, backend: Backend, fingerprint: str | None = None
     ) -> TokenizerEntry:
-        """The measured tokenizer for a model architecture, or a refusal."""
+        """The probed tokenizer for a model architecture, or a refusal."""
         return self.tokenizers.resolve(architecture, backend, fingerprint)
 
     def activations_for(
@@ -449,7 +449,7 @@ class MachineSpec:
         differences = tuple(found)
         if differences:
             warnings.warn(
-                "this spec's constants were measured against "
+                "this spec's constants were probed against "
                 + ", ".join(
                     f"{component} {pinned} (now {seen!r})"
                     for component, pinned, seen in differences

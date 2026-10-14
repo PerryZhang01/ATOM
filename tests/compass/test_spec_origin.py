@@ -189,9 +189,7 @@ def test_origin_is_asked_at_a_measured_width_and_per_tokenizer_entry():
     reserve = "device.runtime_constants.driver_and_collective_reserve_bytes"
     with pytest.raises(SpecRefusal, match="none was given"):
         spec.origin(reserve)
-    with pytest.raises(
-        SpecRefusal, match="was not measured at tensor-parallel width 3"
-    ):
+    with pytest.raises(SpecRefusal, match="was not probed at tensor-parallel width 3"):
         spec.origin(reserve, 3)
     for path in ("host.tokenizers", "host.tokenizers[nope fast]"):
         with pytest.raises(SpecRefusal, match="not one tokenizer entry"):

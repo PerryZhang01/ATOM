@@ -4,7 +4,7 @@
 A spec is authored by hand against a schema most of whose terms cannot be looked
 up anywhere, so the document a person first writes is nearly always incomplete.
 The whole value of checking it is that an incomplete one is refused rather than
-quietly completed: a term nobody measured has no default, because a default here
+quietly completed: a term nobody probed has no default, because a default here
 is a guess with a number's authority, and it will be discovered by a run rather
 than by the person who could still go and measure it.
 
@@ -18,7 +18,7 @@ exception raises the first.
 The check has two halves. The first asks whether the document is a complete
 instance of the schema -- every required field present and every value the shape
 its field declares. The second asks whether what it describes is consistent:
-whether the widths the deployment will actually use were measured, whether the
+whether the widths the deployment will actually use were probed, whether the
 stack the constants were taken on is the stack now loaded, and whether constants
 carried over from another spec came from one pinned to the same stack.
 
@@ -28,7 +28,7 @@ their implementation was: both width tables are present and schema-valid in a
 document that the first half refuses for a single missing derate, and that
 derate is a value its author types in at a desk. Running the second half only
 when the first came back clear therefore hid the expensive refusal -- a width
-nobody measured, which costs an eight-GPU reservation to fix -- behind the cheap
+nobody probed, which costs an eight-GPU reservation to fix -- behind the cheap
 one, and reintroduced at the halfway line exactly the one-refusal-per-attempt
 this module opens by rejecting. So each question is asked of the fields that did
 check out, and a question that reads a field which did not resolve says so by
@@ -40,7 +40,7 @@ has fields, is one refusal about one key -- and reading the document stops
 there, which would leave every other field unchecked and every consistency
 question with nothing resolved to be asked of. A typo in a hand-authored
 document is the cheapest fix there is, and it would have hidden the width
-nobody measured behind itself. So the walk yields its refusals and carries on,
+nobody probed behind itself. So the walk yields its refusals and carries on,
 and the document is checked field by field whatever it holds elsewhere.
 
 **The same record makes the opt-in conditions legible.** Four of the six in
@@ -78,9 +78,9 @@ one resolved *was* asked, and can already have earned a refusal; filing it under
 and would subtract it from the count of what the run reached. Both are results
 and neither is the other, so they are two fields of the record.
 
-**A width nobody measured is two questions, not one.** The first is whether the
+**A width nobody probed is two questions, not one.** The first is whether the
 document carries it, and the remedy that refusal offers is to go and measure it.
-The second is whether anything here would measure it, and for one entry -- the
+The second is whether a probe here would fill it, and for one entry -- the
 allocator's retained bytes on a single card -- the answer is no: the single-card
 probe fills the other width-keyed term, and the multi-rank one starts above
 width one. So for that entry the first remedy cannot be followed with the tools
@@ -95,7 +95,7 @@ about widths need the same thing.
 **The widths a deployment will use are ATOM's, not the spec's.** The spec
 describes a machine and says nothing about how the engine was launched, so the
 widths come in as an argument, from the engine's own configuration. A spec that
-measured widths 1 and 2 is complete and correct, and is still the wrong spec for
+probed widths 1 and 2 is complete and correct, and is still the wrong spec for
 a run at width 8 -- which is a fact about the pair, not about the document.
 
 **A transferred constant is checked against its source's stack pin.** The
@@ -104,7 +104,7 @@ is why the merge keeps that declaration aside instead of contributing it. Here
 the two are compared, and a transfer out of a differently-pinned spec is refused
 by name. A transfer that declares no stack at all is refused too: the evidence
 that these constants move with the compute stack is the whole reason a transfer
-is allowed to be cheap, and a transfer that does not say what it was measured
+is allowed to be cheap, and a transfer that does not say what it was probed
 against cannot be checked by anyone, ever. A document saved from a merge of
 transfers from one spec reads back as such a transfer, since a merge keeps a
 transfer's pin out of what it writes, so its refusal names that merge rather
@@ -132,8 +132,8 @@ from .tokenizers import TokenizerTable
 #: is not one; each of the rest names itself there when a run could not reach it.
 MISSING = "whether every required field is present and every value its declared shape"
 DERATES = "whether a spec-peak number carries the derate it obliges"
-WIDTHS = "whether the widths this deployment will use were measured"
-PROBES = "whether a probe fills the widths this deployment uses and nobody measured"
+WIDTHS = "whether the widths this deployment will use were probed"
+PROBES = "whether a probe fills the widths this deployment uses and nobody probed"
 STACK = "whether the constants' stack pin is the stack now loaded"
 TRANSFERS = "whether a transferred constant came from a spec pinned to this stack"
 #: The whole check set, in the order a run asks it. What `not_asked` is measured
@@ -199,7 +199,7 @@ class Validation:
             [f"{'ok' if self.ok else 'refused'}: {len(self.refusals)} refusal(s)"]
             + [f"  {refusal}" for refusal in self.refusals]
             + [
-                f"  stack moved: the constants were measured against "
+                f"  stack moved: the constants were probed against "
                 f"{component} {pinned!r} (now {seen!r})"
                 for component, pinned, seen in self.stack_differences
             ]
@@ -369,7 +369,7 @@ def _transfers(resolved: Mapping[str, Any], merged: Merge):
                 f"{fragment.transferred_from!r}, and its provenance names the "
                 "fragments an earlier merge built it from; a merge keeps a "
                 "transfer's source stack pin out of the document it writes, so "
-                "this one cannot say which stack they were measured against",
+                "this one cannot say which stack they were probed against",
                 "merge the fragments it was built from "
                 f"({', '.join(map(repr, listed))}) in its place, since a "
                 "transfer states its source's stack pin there and nowhere else; "
@@ -382,7 +382,7 @@ def _transfers(resolved: Mapping[str, Any], merged: Merge):
                 Rule.PINNED_STACK,
                 f"{fragment.stanza()} carried constants over from "
                 f"{fragment.transferred_from!r} without saying which stack they "
-                "were measured against",
+                "were probed against",
                 "a transfer carries both specs' stack pins; these constants "
                 "move with the compute stack, so one that cannot name its own "
                 "stack cannot be checked against this machine's",
@@ -396,7 +396,7 @@ def _transfers(resolved: Mapping[str, Any], merged: Merge):
                 yield SpecRefusal(
                     Rule.PINNED_STACK,
                     f"{fragment.stanza()} carried constants over from "
-                    f"{fragment.transferred_from!r}, measured against "
+                    f"{fragment.transferred_from!r}, probed against "
                     f"{component} {version!r}, into a spec pinned to "
                     f"{component} {here!r}",
                     "transfer from a spec pinned to this stack, or measure the "
@@ -437,7 +437,7 @@ def validate(
             refusals.append(
                 SpecRefusal(
                     Rule.PINNED_STACK,
-                    "this spec's constants were measured against "
+                    "this spec's constants were probed against "
                     + ", ".join(
                         f"{component} {pinned!r} (now {seen!r})"
                         for component, pinned, seen in differences

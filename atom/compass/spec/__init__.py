@@ -14,9 +14,9 @@ claims to describe, because the engine was launched with its own.
 
 The rule is kept by the schema being closed rather than by a list of exclusions,
 so it holds for knobs nobody has thought of yet. Everything else here is a
-refusal: a missing runtime constant names itself and the width nobody measured,
+refusal: a missing runtime constant names itself and the width nobody probed,
 a spec-peak number without its derate is declined, a stack pin that no longer
-matches what is loaded warns and names both versions, and an unmeasured
+matches what is loaded warns and names both versions, and an unprobed
 tokenizer is refused rather than guessed. A refusal is read by whoever hit it,
 so a path that does not resolve says which of the three it is: a key the schema
 never declared, a declared field the spec in hand was assembled without, or a
@@ -29,7 +29,7 @@ can declare the parser they need.
 
 Three verbs work over that mapping. `merge` combines the fragments separate
 probes produce and refuses the ones that name different machines, which
-is the hazard the schema cannot see: two tokenizers measured on two machines
+is the hazard the schema cannot see: two tokenizers probed on two machines
 contradict nothing in their shape. `validate` reports everything a document is
 missing or inconsistent about, rather than completing it. `explain` takes a
 predicted quantity back to the spec fields under it, which is what makes echoing

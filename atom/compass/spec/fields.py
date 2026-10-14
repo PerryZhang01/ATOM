@@ -19,8 +19,8 @@ entry, and none of them is written down.
 
 **A runtime constant keyed by tensor-parallel width is a table, not a law.** The
 measured values at widths 1, 2, 4 and 8 fit no fixed-plus-per-peer form, so
-there is nothing to interpolate along and a width that was not measured cannot
-be produced from the widths that were. `WIDTH_TABLE` holds what was measured and
+there is nothing to interpolate along and a width that was not probed cannot
+be produced from the widths that were. `WIDTH_TABLE` holds what was probed and
 the accessor refuses the rest by name.
 
 **A checked value is the spec's own.** Every kind returns a copy rather than

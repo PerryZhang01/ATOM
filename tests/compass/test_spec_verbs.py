@@ -548,7 +548,7 @@ def test_a_stack_difference_is_rendered_by_the_run_that_refused_nothing():
     assert checked.ok
     assert str(checked) == (
         "ok: 0 refusal(s)\n"
-        "  stack moved: the constants were measured against rocm '7.2.4' "
+        "  stack moved: the constants were probed against rocm '7.2.4' "
         "(now '7.3.0')"
     )
 
@@ -572,7 +572,7 @@ def test_a_transfer_keeps_the_source_stack_out_of_this_machines_pin():
     assert checked.refusals[0].what == (
         "'tier2' (machine 'mi355x-8gpu-2node', transferred-from:mi300x-8gpu, "
         "by a person on 2026-09-18) carried constants over from 'mi300x-8gpu', "
-        "measured against rocm '7.0.2', into a spec pinned to rocm '7.2.4'"
+        "probed against rocm '7.0.2', into a spec pinned to rocm '7.2.4'"
     )
 
 
@@ -612,7 +612,7 @@ def test_a_saved_transfer_merged_again_names_the_merge_that_dropped_its_pin():
     assert first_hand.refusals[0].what == (
         "'tier2' (machine 'mi355x-8gpu-2node', transferred-from:mi300x-8gpu, "
         "by a person on 2026-09-18) carried constants over from 'mi300x-8gpu' "
-        "without saying which stack they were measured against"
+        "without saying which stack they were probed against"
     )
     twice = Fragment.from_mapping(merge([saved]).document, "t2.yaml")
     (refused,) = validate(merge([twice] + rest)).refusals
@@ -972,7 +972,7 @@ def refused_by_condition():
             (
                 validate(merged(), tp_widths=(16,)),
                 Rule.NO_DEFAULTS,
-                "was not measured at tensor-parallel width 16",
+                "was not probed at tensor-parallel width 16",
             )
         ],
         PROBES_ASKED: [
@@ -986,13 +986,13 @@ def refused_by_condition():
             )
         ],
         STACK_ASKED: [
-            (moved, Rule.PINNED_STACK, "this spec's constants were measured against")
+            (moved, Rule.PINNED_STACK, "this spec's constants were probed against")
         ],
         TRANSFERS_ASKED: [
             (
                 validate(transferred),
                 Rule.PINNED_STACK,
-                "measured against rocm '7.0.2', into a spec pinned to rocm '7.2.4'",
+                "probed against rocm '7.0.2', into a spec pinned to rocm '7.2.4'",
             )
         ],
     }
@@ -1272,7 +1272,7 @@ def test_every_missing_field_under_a_quantity_is_named_and_not_only_the_first():
         "`host.admission_fixed_s`, `host.ipc.shm_broadcast_s` are declared by "
         "this schema, and this spec carries no value for them"
     )
-    assert "fragments that measure these fields" in refused.value.remedy
+    assert "fragments that supply these fields" in refused.value.remedy
 
 
 def test_a_block_an_assembled_spec_holds_nothing_under_names_every_field():
@@ -1911,7 +1911,7 @@ def test_a_term_that_is_not_keyed_by_width_has_no_probe_to_ask_for():
     with pytest.raises(SpecRefusal) as refused:
         probe_for("persistent_forward_buffer_bytes", 1)
     assert refused.value.rule is Rule.NO_DEFAULTS
-    assert "not one of the constants measured per" in refused.value.what
+    assert "not one of the constants probed per" in refused.value.what
 
 
 def test_a_missing_entry_no_probe_fills_is_two_refusals_and_not_one():
@@ -1929,7 +1929,7 @@ def test_a_missing_entry_no_probe_fills_is_two_refusals_and_not_one():
         Rule.NO_DEFAULTS,
     ]
     measured, filled = (refusal.what for refusal in checked.refusals)
-    assert "was not measured at tensor-parallel width 1" in measured
+    assert "was not probed at tensor-parallel width 1" in measured
     assert "no probe here fills" in filled
 
 
@@ -1971,7 +1971,7 @@ def test_the_probe_question_is_asked_of_the_tables_it_says_it_reads(monkeypatch)
     unmeasured = [
         refusal
         for refusal in checked.refusals
-        if "was not measured at tensor-parallel width 16" in refusal.what
+        if "was not probed at tensor-parallel width 16" in refusal.what
     ]
     assert len(unmeasured) == len(WIDTH_TABLES) > len(PROBE_TABLES)
     assert asked, "the probe question asked nothing"

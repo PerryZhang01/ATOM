@@ -7,7 +7,7 @@ Combining fragments is arithmetic over dotted paths and would need very little
 said about it. The conflict check is why this module exists.
 
 **One spec describes one host, and nothing about a fragment's shape says which
-host it came from.** Two tokenizers measured on two different CPUs contradict
+host it came from.** Two tokenizers probed on two different CPUs contradict
 nothing: they have different identities, they occupy different entries, no field
 of one overlaps a field of the other, and a merge that only compared values
 would combine them into a single document that describes no machine at all. The
@@ -21,7 +21,7 @@ comparison failed.
 **What that arm compares is the declared name, not the host.** `name` is the
 machine the spec is being *authored for* -- `mi355x-8gpu-2node` is a class, not
 a host -- and no field of a fragment records where a probe actually ran. So a
-tokenizer fragment measured on a laptop and a device fragment measured on the
+tokenizer fragment probed on a laptop and a device fragment probed on the
 node, both authored `name: node-18`, pass this arm: it compares what they claim
 and a claim is not evidence. The claim it can carry is therefore narrower than
 the one above -- the fragments agree about which machine they are *for*,
@@ -46,11 +46,11 @@ part of one is what a probe does:
 
 * a **runtime constant keyed by width** is combined per width, since the widths
   come from different probe runs -- one rank's engine start fills width 1, and
-  the multi-rank run fills the rest. Two fragments measuring the same width
-  differently are still a conflict.
+  the multi-rank run fills the rest. Two fragments that probed the same width
+  to different values are still a conflict.
 * the **tokenizer table** is combined per entry, keyed by the identity and the
-  implementation the rates were measured on. Two entries sharing an identity
-  must agree about the file they measured; one name over two files is the drift
+  implementation the rates were probed on. Two entries sharing an identity
+  must agree about the file they probed; one name over two files is the drift
   that keying by tokenizer exists to prevent.
 * the **provenance** block is rebuilt rather than merged. It names every
   fragment that went in, carries the latest date, and records each field's
@@ -88,9 +88,9 @@ from .fields import BY_PATH, SCHEMA, TRANSFERRED, Kind, check
 from .machine import TOKENIZERS, _walk, check_subject, entry_label, field_origin
 from .rules import Rule, SpecRefusal
 
-#: The block holding the stack the device constants were measured against.
+#: The block holding the stack the device constants were probed against.
 PINNED_BLOCK = "device.software_pinned_to"
-#: What every fragment states, whatever else it measured.
+#: What every fragment states, whatever else it carries.
 STATED = (
     "schema_version",
     "name",
@@ -104,7 +104,7 @@ STRENGTH = ("probed", "datasheet", TRANSFERRED, "assumed")
 
 @dataclass(frozen=True, slots=True)
 class Fragment:
-    """What one probe measured, and the stanza saying which machine it is for."""
+    """What one probe read, and the stanza saying which machine it is for."""
 
     source: str
     values: Mapping[str, Any]
@@ -157,7 +157,7 @@ class Fragment:
         return None
 
     def stanza(self) -> str:
-        """Who measured what, for which machine and when, as a refusal names it."""
+        """Who probed what, for which machine and when, as a refusal names it."""
         return (
             f"{self.source!r} (machine {self.machine!r}, {self.origin}, "
             f"by {self.values['provenance.authored_by']} "
@@ -267,8 +267,8 @@ def merge(fragments: Sequence[Fragment]) -> Merge:
         raise SpecRefusal(
             Rule.ONE_MACHINE,
             "there are no fragments to merge",
-            "a spec is built from what was measured; with nothing measured "
-            "there is nothing to build it from",
+            "a spec is built from fragments; with none there is nothing "
+            "to build it from",
         )
     _one_machine(fragments)
     values: dict[str, Any] = {}
@@ -313,7 +313,7 @@ def merge(fragments: Sequence[Fragment]) -> Merge:
                     Rule.TOKENIZER_IDENTITY,
                     f"{identity[0]!r} is {named[0]!r} in {named[1].stanza()} and "
                     f"{raw.get('fingerprint')!r} in {fragment.stanza()}",
-                    "one identity names one measured file; two fingerprints "
+                    "one identity names one probed file; two fingerprints "
                     "under one id are two revisions nothing will ever compare",
                 )
             claim(entry_label(*identity), entries, identity, raw, fragment)
