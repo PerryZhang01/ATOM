@@ -4,7 +4,7 @@
 This is the one file in `tests/compass/` that needs a driver, and it needs one
 for a reason that has nothing to do with reading a device: importing
 `atom.model_engine.model_runner` runs aiter's architecture probe, which shells
-out to `rocminfo`. So the tier is decided by an import, not by the test --
+out to `rocminfo`. So the gate it runs in is decided by an import, not by the test --
 which is why every device reading is patched to raise for every test here. The
 pool is sized on a machine that has a card, from a spec describing a different
 one, and the card that is present is never asked anything.

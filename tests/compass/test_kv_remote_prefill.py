@@ -428,8 +428,8 @@ def test_a_parked_request_is_not_counted_as_admittable_work(pd, seq_factory):
 def relayed_fields() -> frozenset:
     """The keys of Mooncake's own transfer blob, read from its source.
 
-    Parsed rather than imported: the module reaches for an RDMA library this
-    tier does not have. Exactly one assignment is expected.
+    Parsed rather than imported: the module reaches for an RDMA library the
+    CPU gate does not have. Exactly one assignment is expected.
     """
     tree = ast.parse(MOONCAKE_SOURCE.read_text())
     found = []

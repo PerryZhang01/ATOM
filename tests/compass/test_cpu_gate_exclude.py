@@ -24,7 +24,7 @@ from a literal, and a parametrisation of nothing is a pass -- so each carries
 something that states its own non-empty case, without which this file reports
 green with its pins asserting nothing. The two statements are deliberately
 different assertions. The trigger list must *exist*: a tree with no
-`gpu_gate_triggers.txt` has lost the record of what the CPU tier cannot see, so
+`gpu_gate_triggers.txt` has lost the record of what the CPU gate cannot see, so
 that guard refuses outright. The manual section is *allowed* to be empty --
 nothing obliges a tree to hand-exclude anything -- so its guard pins the count,
 which is what separates an emptiness somebody chose from one that arrived.
@@ -205,9 +205,9 @@ def test_every_manual_entry_states_why(entry):
 
 def test_the_trigger_list_exists_and_is_not_empty():
     # Not a count, unlike the manual section: there is no legitimate tree in
-    # which this file is absent or says nothing. It records what the CPU tier
+    # which this file is absent or says nothing. It records what the CPU gate
     # cannot see, and gate_cpu.sh matches a diff against it to decide whether
-    # the GPU tier is required. Empty, that decision is always "not required".
+    # the GPU gate is required. Empty, that decision is always "not required".
     assert TRIGGERS.is_file(), (
         f"{TRIGGERS} is missing; regenerate with "
         "scripts/compass/regen_gpu_gate_triggers.sh"

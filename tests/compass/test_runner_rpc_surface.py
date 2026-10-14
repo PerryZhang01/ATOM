@@ -560,7 +560,7 @@ def test_a_runner_with_a_hole_is_reported_by_name():
 
 
 def test_the_binding_module_refuses_rather_than_composing_a_hole():
-    """Two greps, and this is as far as a CPU tier can go.
+    """Two greps, and this is as far as the CPU gate can go.
 
     Executing the device means importing the composed class, which imports
     `ModelRunner`, which runs aiter's architecture probe and needs a driver.
