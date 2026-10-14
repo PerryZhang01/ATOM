@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from statistics import median
 
-from atom.compass.memory.check import parts
+from atom.compass.memory.check import MemoryRefusal, parts
 from atom.compass.run import LP_FILE
 from atom.compass.validate import cost, runs
 
@@ -84,8 +84,14 @@ def _cost(run: Path, law: dict):
 
 
 def _memory(law: Path, real: Path):
-    comparison, *_, graph = parts(law / LP_FILE.format("engine"), real / "server.log")
     where = f"memory {real.name}"
+    try:
+        comparison, *_, graph = parts(
+            law / LP_FILE.format("engine"), real / "server.log"
+        )
+    except MemoryRefusal as e:
+        yield where, "memory", e.what, "refused"
+        return
     for t in comparison.compared:
         yield where, t.name, f"{t.relative:+.2%} ({t.delta_bytes:+,} B)", str(t.verdict)
     for r in comparison.refused:
@@ -99,7 +105,12 @@ def _summary(run: Path, summary: dict):
     schedule, c, where = summary["schedule"], summary["cost"], f"summary {run.name}"
     n = schedule["refusals"]
     verdict = "coverage report" if summary["coverage_report"] else "none"
-    yield where, "refusals", f"{n['count']} {json.dumps(dict(n['by_source']))}; cost refused {n['fraction_of_steps']:.1%} of {n['steps']} steps", verdict
+    cost = (
+        "steps not counted"
+        if n["steps"] is None
+        else f"cost refused {n['fraction_of_steps']:.1%} of {n['steps']} steps"
+    )
+    yield where, "refusals", f"{n['count']} {json.dumps(dict(n['by_source']))}; {cost}", verdict
     for species in ("analytical", "extrapolated"):
         yield where, species, json.dumps(schedule.get(species)), "not gated"
     ratio = c["speed_refused"] or f"{c['speed_ratio']:.1f}x"

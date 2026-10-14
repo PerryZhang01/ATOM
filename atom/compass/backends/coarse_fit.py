@@ -13,9 +13,8 @@ launch end is launch-exposed, counted and not fitted; a prefill step is never
 cut, so a host bubble inside it stays in its label. The exit of each wait for the
 previous output's token copy (`t_recv_ns`) bounds the host clock's lead over
 the device's (that forward had finished by then); the tightest of the last
-`ANCHORS` bounds is the lead. A record without device windows labels a step by
-its period, `t_enter_ns` to the next step's, cutting a period that may hold an
-idle gap. A step mixing prefill and decode rows is counted and not fitted.
+`ANCHORS` bounds is the lead. A record without device windows is refused. A
+step mixing prefill and decode rows is counted and not fitted.
 
 Records with a host key (`dp0.key.json`, from the real runner) also give the
 host laws as a run file's `host` entry: `key`, and `laws[kind][segment]`,
@@ -57,7 +56,6 @@ import argparse
 import hashlib
 import json
 from collections import deque
-from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
@@ -136,23 +134,20 @@ def samples(record, form: str = "law") -> tuple[list[tuple], dict]:
         raise ValueError(
             f"{record} has no timed steps; a fit needs a real run's record"
         )
-    busy = "d_busy_ns" in steps[0]
-    if busy:
-        exposed = _launch_exposed(lines)
-        cut = {"exposed": 0, "mixed": 0}
-        pairs = zip(steps, steps[1:] + [None])
-    else:
-        exposed, cut, pairs = set(), {"idle": 0, "mixed": 0, "last": 1}, pairwise(steps)
+    if "d_busy_ns" not in steps[0]:
+        raise ValueError(
+            f"{record} has no device windows (`d_busy_ns`); a fit labels a step "
+            "by its device time"
+        )
+    exposed = _launch_exposed(lines)
+    cut = {"exposed": 0, "mixed": 0}
     rows = []
-    for step, nxt in pairs:
-        idle = not busy and not _shared(step, nxt)
+    for step in steps:
         view = BatchView(
             tuple(RequestShape(q, c, bool(d)) for q, c, d in step["rows"]),
             capture_rung=step["rung"],
         )
-        if idle:
-            cut["idle"] += 1
-        elif view.prefill and view.decode:
+        if view.prefill and view.decode:
             cut["mixed"] += 1
         elif not view.prefill and step["step"] in exposed:
             cut["exposed"] += 1
@@ -166,11 +161,8 @@ def samples(record, form: str = "law") -> tuple[list[tuple], dict]:
             else:
                 key = _rung_key(view.capture_rung)
                 counts = (1, sum_context(view.decode), view.graph_padding)
-            if busy:
-                gap = 0 if view.prefill else step.get("d_gap_ns", 0)
-                label = (gap + step["d_busy_ns"]) * 1e-9
-            else:
-                label = (nxt["t_enter_ns"] - step["t_enter_ns"]) * 1e-9
+            gap = 0 if view.prefill else step.get("d_gap_ns", 0)
+            label = (gap + step["d_busy_ns"]) * 1e-9
             rows.append((key, counts, label, step["step"]))
     return rows, cut
 
@@ -317,17 +309,12 @@ def fit(records, form: str = "law") -> dict:
 
     if form not in FORMS:
         raise ValueError(f"form {form!r} is not one of {FORMS}")
-    rows, cut, labels = [], {"warm": 0, "warm_s": 0.0}, set()
+    rows, cut = [], {"warm": 0, "warm_s": 0.0}
     for i, record in enumerate(records):
         got, c = samples(record, form)
         rows += [(i, *r) for r in got]
-        labels.add("exposed" in c)
         for k, v in c.items():
             cut[k] = cut.get(k, 0) + v
-    if len(labels) > 1:
-        raise ValueError(
-            "some records carry device windows and some do not; one law takes one label"
-        )
     digests = [
         f"{Path(r).name}:{hashlib.sha256(Path(r).read_bytes()).hexdigest()[:12]}"
         for r in records

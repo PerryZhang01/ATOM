@@ -10,11 +10,17 @@ transport reports each one to the traffic LP as it arrives, ``[DONE]`` marked
 final, and rewrites the record's times from the stamps, so aiperf's TTFT, ITL
 and latency read simulated time measured from the send.
 
+When the traffic LP closes a request aiperf is cancelling, it publishes a
+stamp for the cancel; the worker that sent the request POSTs it to the
+request's URL, with the request's own seq in its body, reports it written, and
+reads the frontend's answer before it stops.
+
 The two sockets live under the path prefix in ``COMPASS_HARNESS_IPC``.
 """
 
 import asyncio
 import os
+from urllib.parse import urlsplit
 
 import zmq
 import zmq.asyncio
@@ -22,7 +28,7 @@ from aiperf.common.hooks import on_init, on_stop
 from aiperf.common.models import ErrorDetails
 from aiperf.transports.aiohttp_transport import AioHttpTransport
 
-from atom.compass.carriers import sse_stamp, tracestate_with
+from atom.compass.carriers import cancel_body, sse_stamp, tracestate_with
 from compass_harness import ADDRESS_ENV
 from compass_harness.timesource import sim_ns as _ns
 
@@ -44,6 +50,8 @@ class CompassTransport(AioHttpTransport):
         super().__init__(**kwargs)
         self._stamps: dict[tuple, asyncio.Future] = {}
         self._sending: dict[tuple, tuple[float, int]] = {}
+        self._sent: dict[tuple, tuple[str, int]] = {}  # key -> (url, seq)
+        self._cancels: list[asyncio.Task] = []
 
     @on_init
     async def _connect_traffic_lp(self) -> None:
@@ -67,6 +75,7 @@ class CompassTransport(AioHttpTransport):
 
     @on_stop
     async def _close_traffic_lp(self) -> None:
+        await asyncio.gather(*self._cancels)
         self._reader.cancel()
         self._sub.close(linger=0)
         self._push.close(linger=0)
@@ -75,10 +84,32 @@ class CompassTransport(AioHttpTransport):
         # ponytail: every worker keeps every stamp, its own and the others'; drop
         # a phase's stamps at its end if memory matters.
         while True:
-            key, arrival, seq = await self._sub.recv_pyobj()
+            key, arrival, seq, *cancel = await self._sub.recv_pyobj()
+            if cancel:
+                if key in self._sent:
+                    self._cancels.append(
+                        asyncio.create_task(self._cancel(key, arrival, seq))
+                    )
             # A request that timed out waiting cancelled its future.
-            if not (fut := self._stamp(key)).done():
+            elif not (fut := self._stamp(key)).done():
                 fut.set_result((arrival, seq))
+
+    async def _cancel(self, key: tuple, arrival: float, seq: int) -> None:
+        """Write `key`'s stamped cancel, report it, and read the answer."""
+        url, cancelled = self._sent[key]
+        u, body = urlsplit(url), cancel_body(cancelled)
+        reader, writer = await asyncio.open_connection(u.hostname, u.port or 80)
+        writer.write(
+            f"POST {u.path} HTTP/1.1\r\nHost: {u.netloc}\r\n"
+            f"tracestate: {tracestate_with(None, arrival, seq)}\r\n"
+            f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n"
+            "Connection: close\r\n\r\n".encode() + body
+        )
+        await writer.drain()
+        await self._push.send_pyobj((key,))
+        # Closing first would let the frontend read a hang-up instead of the body.
+        await asyncio.wait_for(reader.read(), self.model_endpoint.endpoint.timeout)
+        writer.close()
 
     def _stamp(self, key: tuple) -> asyncio.Future:
         if key not in self._stamps:
@@ -103,13 +134,14 @@ class CompassTransport(AioHttpTransport):
     async def send_request(self, request_info, payload, *, first_token_callback=None):
         key = self._key(request_info)
         try:
-            sent, _ = self._sending[key] = await asyncio.wait_for(
+            sent, seq = self._sending[key] = await asyncio.wait_for(
                 self._stamp(key), self.model_endpoint.endpoint.timeout
             )
         except TimeoutError:
             raise RuntimeError(
                 f"credit {key}: no send stamp from the traffic LP"
             ) from None
+        self._sent[key] = (self.get_url(request_info), seq)
         stamped, done = [], False
         first_token = first_token_callback
 

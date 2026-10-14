@@ -135,7 +135,7 @@ def test_a_cell_is_graded_from_every_source_and_its_extrapolated_share_grades_no
     assert rows["cost real0", "decode rung 1 in hull"][0].endswith("within 10% 100.0%")
     # Every step the cost rows leave out is named, a warm one with its measured seconds.
     assert rows["cost real0", "left out"][0] == (
-        'not labelled {"idle": 0, "mixed": 0, "last": 1}; warm steps, measured s {5: 0.81}'
+        'not labelled {"exposed": 0, "mixed": 0}; warm steps, measured s {5: 0.81}'
     )
     assert rows["cost real0", "prefill in hull"][0].startswith("9 steps")
     assert rows["cost real1", "left out"][0].endswith("warm steps, measured s {}")
@@ -197,3 +197,35 @@ def test_counts_but_preemptions_and_prefill_tokens_are_not_gated(capsys, tmp_pat
     assert rows["counts", "decode tokens"][1] == "outside, admissible, not gated"
     assert rows["counts", "prefill tokens"][1] == "exact, inadmissible"
     assert rows["counts", "preemptions"][1] == "exact, inadmissible"
+
+
+def test_a_run_that_ended_without_its_memory_reads_refused_and_the_cell_goes_on(
+    capsys, tmp_path
+):
+    whole = _rows(capsys, tmp_path / "whole")
+    _rows(capsys, tmp_path, law=[("ended", 1)])
+    law = tmp_path / "c4" / "law"
+    ended = {"refusals": ["ended:engine raised RuntimeError('the step raised')"]}
+    (law / LP_FILE.format("engine")).write_text(json.dumps(ended))
+    summary = json.loads((law / "summary.json").read_text())
+    summary["schedule"].update(analytical=None, extrapolated=None)
+    summary["schedule"]["refusals"].update(steps=None, fraction_of_steps=None)
+    (law / "summary.json").write_text(json.dumps(summary))
+
+    main([str(tmp_path / "c4")])
+    out = capsys.readouterr().out.splitlines()
+    rows = {tuple(r.split(" | ")[1:3]): r.split(" | ")[3:] for r in out[1:]}
+
+    for real in ("real0", "real1", "real2"):
+        assert rows[f"memory {real}", "memory"] == [
+            f"{law / LP_FILE.format('engine')} has no memory section",
+            "refused",
+        ]
+    memory = {k for k in whole if k[0].startswith("memory ")}
+    assert set(rows) - {k for k in rows if k[1] == "memory"} == set(whole) - memory
+    assert rows["summary law", "extrapolated"] == ["null", "not gated"]
+    assert rows["summary law", "refusals"] == [
+        '1 {"ended": 1}; steps not counted',
+        "coverage report",
+    ]
+    assert rows["summary p97", "speed"][1] == "meets 5x"

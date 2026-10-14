@@ -112,7 +112,9 @@ ruling 2 of
 That ruling labelled a step with its period, from one forward's host entry to the next,
 with host gaps in the intercepts. A pure middle chunk's device tail then lands in the next
 step's period: about +4% after idle and -8% after a pure middle chunk, at c1 and c4
-(#801).
+(#801). That label and the law fitted under it are retired
+([#845](https://github.com/jgong5/ATOM/issues/845)): a record without device windows has
+no label, and the fit and the cost check refuse it.
 
 **The tier-a label is one forward's device time**, built from the window from a device
 event at `run_model` entry to one at the forward's exit (`01` D4, *Measured, not hooked*),

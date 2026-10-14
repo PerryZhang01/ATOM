@@ -2234,9 +2234,10 @@ def test_a_tokenizer_with_no_tokenizer_json_is_refused_before_the_merge(tmp_path
         _swept_on(script, tmp_path, 112, fingerprint=None)
 
 
-def test_the_checked_in_node_18_spec_validates_and_prices_its_activations():
+def test_the_checked_in_node_18_spec_validates_and_prices_its_activations(monkeypatch):
     from atom.compass.run import _width_keys
 
+    monkeypatch.delenv("COMPASS_MACHINE", raising=False)
     script = _node18_script()
     path = SPEC_ROOT / "scripts" / "compass" / "machines" / f"{script.NAME}.json"
     document = _width_keys(json.loads(path.read_text()))
@@ -2248,3 +2249,17 @@ def test_the_checked_in_node_18_spec_validates_and_prices_its_activations():
     assert spec.activations_for(
         "Qwen3_5ForConditionalGeneration", script.CONFIG_JSON, 1
     ) == ("qwen3.8-27b", 180480.0)
+
+
+def test_the_checked_in_hjbog39_spec_holds_that_hosts_start(monkeypatch):
+    from atom.compass.run import _width_keys
+
+    monkeypatch.setenv("COMPASS_MACHINE", "mi308x-hjbog39")
+    script = _node18_script()
+    path = SPEC_ROOT / "scripts" / "compass" / "machines" / "mi308x-hjbog39.json"
+    spec = validate(_width_keys(json.loads(path.read_text())), tp_widths=(1,))
+    values = spec.raise_first().values
+    for fragment in script.device_fragments():
+        for key, value in fragment.values.items():
+            if not key.startswith("provenance."):
+                assert values[key] == value, key
