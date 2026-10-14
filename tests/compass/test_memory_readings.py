@@ -35,6 +35,7 @@ import json
 import pathlib
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -55,6 +56,7 @@ from atom.compass.memory import (
     predicts,
     reserves,
 )
+from atom.compass.run import _config_json
 from atom.compass.spec import MachineSpec, SpecRefusal
 from atom.config import get_hf_config
 
@@ -821,6 +823,39 @@ def test_a_dense_model_through_atoms_loader_keeps_its_terms(tmp_path, qwen):
     config, config_json = loaded(tmp_path, json.loads(CONFIG_JSON.read_text()))
     assert type(config).__name__ != "PretrainedConfig"
     assert terms_of(config, config_json) == terms_of(qwen, None)
+
+
+def overridden(tmp_path, raw, overrides):
+    """`raw` as a model's config.json under `hf_overrides`: the config as
+    `Config` applies them, and the file as `run.runner` reads it."""
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    config = get_hf_config(str(tmp_path))
+    config.update(overrides)
+    deployment = SimpleNamespace(model=str(tmp_path), hf_overrides=overrides)
+    return config, _config_json(deployment)
+
+
+def without_positions(raw):
+    raw = copy.deepcopy(raw)
+    raw.get("text_config", raw).pop("max_position_embeddings")
+    return raw
+
+
+@pytest.mark.parametrize("name", ["v4_pro", "qwen3_5_text_config"])
+def test_a_field_only_hf_overrides_sets_is_read_from_the_override(tmp_path, name):
+    raw = V4_PRO if name == "v4_pro" else json.loads(CONFIG_JSON.read_text())
+    config, config_json = overridden(
+        tmp_path, without_positions(raw), {"max_position_embeddings": 65536}
+    )
+    assert terms_of(config, config_json).buffers.source.startswith("65536 positions")
+
+
+def test_a_field_neither_the_file_nor_hf_overrides_states_is_refused(tmp_path):
+    config, config_json = overridden(
+        tmp_path, without_positions(V4_PRO), {"num_hidden_layers": 4}
+    )
+    with pytest.raises(MemoryRefusal, match="states no `max_position_embeddings`"):
+        terms_of(config, config_json)
 
 
 # --- no device, structurally -------------------------------------------------

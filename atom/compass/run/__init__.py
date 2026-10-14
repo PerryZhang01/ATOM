@@ -458,8 +458,6 @@ def runner(model_runner) -> None:
     run = spec()
     if run is None:
         return
-    from transformers import PretrainedConfig
-
     from atom.compass.backends.analytic import Roofline, Tiered
     from atom.compass.backends.coarse import CoarseBackend, CoarseLaw
     from atom.compass.backends.geometry import KvGeometry, Parallelism
@@ -500,7 +498,7 @@ def runner(model_runner) -> None:
         from atom.compass.run.step_fit import load
 
         backend, bundle = load(run["step_fit"], config, machine)
-    config_json = PretrainedConfig.get_config_dict(config.model)[0]
+    config_json = _config_json(config)
     model = ModelTerms.from_declared_config(
         config.hf_config,
         parameter_count=run["parameter_count"],
@@ -660,6 +658,17 @@ def host_key(config) -> dict:
         "model": _file_digest(config.model, "config.json"),
         "engine": keyed(config),
     }
+
+
+def _config_json(config) -> dict:
+    """The model's config.json as loading reads it, with `config.hf_overrides`
+    set over its text-level keys, as `Config` sets them over `hf_config`, so
+    an overridden field counts as stated."""
+    from transformers import PretrainedConfig
+
+    file = PretrainedConfig.get_config_dict(config.model)[0]
+    file.get("text_config", file).update(getattr(config, "hf_overrides", None) or {})
+    return file
 
 
 def _file_digest(name: str, filename: str) -> str | None:
