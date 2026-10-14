@@ -397,7 +397,8 @@ from a file is still `measured`** — what changes is whether the key matched ex
 - Whether `measure` and `trace` are CLI flags, env vars, or both. Settled in part by the
   table above: `measure` is an operator-facing switch and belongs on the command line;
   `trace` needs at most a *disable*, one of the ops-half settings of `13` D80, for runs
-  that want a refusal instead of a stall. The full flag surface is `13`'s.
+  that want a refusal instead of a stall. Neither is an env var: there is no environment
+  tier (`13` D79). The full flag surface is `13`'s.
 - A backend asked about a step kind it has no samples of must **raise**, not fall back.
   The prior fallback was the mean of an empty list, i.e. zero — "a confident, precise,
   entirely fictional answer", a TTFT of 0 ms against a real 7.6 s.
