@@ -60,10 +60,10 @@ NODE18 = {
     "peak": 58034271744,
     "warmup_tokens": 16384,
 }
-#: The same readings on card 6 of hjbog-srdc-39 at commit ce625ddd9.
+#: The same readings on card 5 of hjbog-srdc-39 at commit ce625ddd9.
 HJBOG39 = dict(
     NODE18,
-    non_torch=1291845632,
+    non_torch=1277165568,
     loaded=54761861632,
     current=55145206784,
     peak=58102190592,
