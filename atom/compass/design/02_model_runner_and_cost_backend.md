@@ -326,7 +326,7 @@ phases rather than describe a second workflow:
 | Needs a device | no | **yes** |
 | Offline home | doc `07` **Phase 1a** — trace the structures Phase 0 discovered | doc `07` **Phase 1b/1c/2** — op pricing, in-situ steps, memory constants |
 | Allowed during a simulated run | **yes**, lazily, on a structure miss | **never** |
-| Who triggers it | the runner, automatically | the operator, by the toolchain's `record` and `measure` commands (`13` D80) |
+| Who triggers it | the runner, automatically | the operator: the toolchain's `record` and `measure` commands for Phases 1b and 1c (`13` D80), and the machine's per-machine script for Phase 2's memory constants (`05` D26) |
 | Artifact written | the IR graph for that structure key | a price / region / memory-constant entry |
 
 **Recommended path is offline for both.** Doc `07` D39's recommended flow runs the whole
