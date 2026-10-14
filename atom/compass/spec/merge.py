@@ -267,8 +267,8 @@ def merge(fragments: Sequence[Fragment]) -> Merge:
         raise SpecRefusal(
             Rule.ONE_MACHINE,
             "there are no fragments to merge",
-            "a spec is built from what was probed; with nothing probed "
-            "there is nothing to build it from",
+            "a spec is built from fragments; with none there is nothing "
+            "to build it from",
         )
     _one_machine(fragments)
     values: dict[str, Any] = {}
