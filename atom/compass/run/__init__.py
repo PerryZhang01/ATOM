@@ -487,9 +487,9 @@ def runner(model_runner) -> None:
                 f"run has tensor_parallel_size {tp}"
             )
         # Under DP-attention every rank runs at TP 1, and experts shard over the group.
-        dpa = getattr(config, "enable_dp_attention", False)
+        dpa = config.enable_dp_attention
         dp = config.parallel_config.data_parallel_size if dpa else 1
-        ep = dp if getattr(config, "enable_expert_parallel", False) else 1
+        ep = dp if config.enable_expert_parallel else 1
         backend = CoarseBackend(CoarseLaw(run["law"]), (dp, ep))
     elif "coefficients" in run:
         backend = ShapeStubBackend(

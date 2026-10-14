@@ -44,6 +44,8 @@ def _installed(
             model=str(tmp_path),
             hf_config=hf,
             tensor_parallel_size=1,
+            enable_dp_attention=False,
+            enable_expert_parallel=False,
             parallel_config=SimpleNamespace(
                 data_parallel_size=dp, data_parallel_rank=0
             ),
