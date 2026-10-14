@@ -49,7 +49,9 @@ the run there, which still writes the summary),
 on ``(1, tokens, seqs)``, zero where absent; ``key``, the `host_key` they were
 fitted under, which a run with laws must match; ``skip``, segments zeroed for
 a what-if run, which the graders refuse),
-``machine`` (a machine spec mapping), ``parameter_count``, and ``out_dir``,
+``machine`` (a machine spec mapping), ``parameter_count`` (read with
+``roofline_floor_s``, and for the weights when the runner hands in no meta
+build), and ``out_dir``,
 where the step table, the run summary and each server LP's hand-in go, one
 file written as the LP leaves its loop. It holds the LP's refusals: an
 engine's are the worker's refused commands and the engine's refused clock
@@ -453,8 +455,11 @@ def _named(inner):
         del os.environ[NOW_ENV]
 
 
-def runner(model_runner) -> None:
-    """Install the cost backend and the device readings from the run file."""
+def runner(model_runner, tree=None) -> None:
+    """Install the cost backend and the device readings from the run file.
+
+    `tree` is the model built on the meta device, which the weights are read
+    off; without it they are the run file's ``parameter_count``."""
     run = spec()
     if run is None:
         return
@@ -503,7 +508,7 @@ def runner(model_runner) -> None:
     config_json = PretrainedConfig.get_config_dict(config.model)[0]
     model = ModelTerms.from_declared_config(
         config.hf_config,
-        parameter_count=run["parameter_count"],
+        parameter_count=run.get("parameter_count"),
         tp_size=tp,
         warmup_tokens=config.max_num_batched_tokens,
         config_json=config_json,
@@ -512,6 +517,7 @@ def runner(model_runner) -> None:
             _file_digest(config.model, "config.json"),
             tp,
         ),
+        tree=tree,
     )
     if "roofline_floor_s" in run:
         kv = KvGeometry.from_hf_config(
