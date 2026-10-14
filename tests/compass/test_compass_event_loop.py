@@ -13,6 +13,7 @@ import importlib.util
 import logging
 import math
 import queue
+import socket
 import threading
 import time
 import uuid
@@ -337,7 +338,6 @@ def test_a_body_that_arrives_after_the_next_timer_is_handed_on_at_its_release(ru
         while got[-1]["more_body"]:
             got.append(await receive())
         handled.append((loop.time(), b"".join(m["body"] for m in got)))
-        assert (await receive())["type"] == "http.disconnect"
 
     def deliver():
         # The rest of the body comes once the clock passes the arrival, or
@@ -557,3 +557,193 @@ def test_http_channel_refuses_a_plain_asyncio_loop():
     scope = {"type": "http", "headers": [(b"x-test-stamp", b"0.5 0")]}
     with pytest.raises(TypeError, match="on a CompassEventLoop, not on"):
         asyncio.run(HttpChannel(None, _stamp)(scope, None, None))
+
+
+CONTROL = "frontend->engine:control#dp0"
+
+
+def _frontend_on_tcp(monkeypatch, poke, main):
+    """Runs `main(loop)` on a frontend whose clock connection is tcp, so its
+    loop serves its sockets while its next-event request is out.
+
+    The frontend has an essential timer at 1. Traffic idles from the start; the
+    engine joins only once `poke(loop)`, called while the frontend's request is
+    out, has returned, so no grant reaches the frontend before then. Returns
+    the frontend's runtime, the engine's control releases, and the loop's LP
+    time at the finish.
+    """
+    authority = clock_transport.serve(ClockAuthority(TABLE), "tcp://127.0.0.1:0")
+    clock_transport.connect(TRAFFIC, authority.endpoint).send((NER, INF, [], INF))
+    engine = clock_transport.connect(ENGINE, authority.endpoint)
+    rt = LPRuntime(
+        FRONTEND, TABLE, clock_transport.connect(FRONTEND, authority.endpoint)
+    )
+    rt.start_run()
+    monkeypatch.setattr(clock, "_installed", rt)
+    loop = CompassEventLoop()
+    loop.call_at(1.0, lambda: None)
+    released = []
+
+    def engine_lp():
+        _until(lambda: rt.asked)
+        poke(loop)
+        g = None
+        while g != INF:
+            engine.send((NER, INF, [], INF))
+            g, got = engine.recv()
+            released.extend(got[CONTROL])
+
+    thread = threading.Thread(target=engine_lp, daemon=True)
+    thread.start()
+    # A loop the finish does not stop is stopped after 20 wall seconds.
+    guard = threading.Timer(20, lambda: loop.call_soon_threadsafe(loop.stop))
+    guard.start()
+    try:
+        main(loop)
+        thread.join(10)
+        return rt, released, loop.ended and loop.ended[0]
+    finally:
+        guard.cancel()
+        authority.close()
+        if loop.ended:
+            loop.close()
+
+
+def test_a_send_while_the_request_is_out_is_refused_naming_its_channel(monkeypatch):
+    """A client hangs up while the frontend's request is out, and the handler
+    stamps a control send, as the frontend's abort of that request does. The
+    send is refused and the run goes on to its finish."""
+    client, peer = socket.socketpair()
+    refused, handling = [], threading.Event()
+
+    def main(loop):
+        def hang_up():
+            loop.remove_reader(peer)
+            handling.set()
+            try:
+                loop.rt.stamp_send(CONTROL)
+            except RuntimeError as e:
+                refused.append(str(e))
+
+        loop.add_reader(peer, hang_up)
+        loop.run_forever()
+
+    def poke(loop):
+        client.send(b"x")
+        handling.wait(10)
+
+    try:
+        rt, released, end = _frontend_on_tcp(monkeypatch, poke, main)
+    finally:
+        client.close()
+        peer.close()
+    assert len(refused) == 1 and CONTROL in refused[0]
+    assert rt.refusals == [
+        f"clock:stamp_send on {CONTROL} while a next-event request is out"
+    ]
+    assert released == [] and end == 1.0
+
+
+def test_a_keep_alive_timer_set_while_the_request_is_out_holds_no_finish(
+    monkeypatch,
+):
+    """An unstamped GET is served while the frontend's request is out, as
+    ``/health`` is before the traffic LP joins, and its connection stays open,
+    so uvicorn's keep-alive timer is set. The run still finishes at the
+    frontend's essential timer."""
+    served, got = [], {}
+
+    async def app(scope, receive, send):
+        served.append(clock.installed().asked)
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    server = uvicorn.Server(
+        uvicorn.Config(
+            app, host="127.0.0.1", port=0, lifespan="off", log_level="warning"
+        )
+    )
+
+    def poke(loop):
+        _until(lambda: server.started)
+        port = server.servers[0].sockets[0].getsockname()[1]
+        got["conn"] = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        got["conn"].request("GET", "/health")
+        got["body"] = got["conn"].getresponse().read()
+
+    try:
+        _, _, end = _frontend_on_tcp(
+            monkeypatch, poke, lambda loop: loop.run_until_complete(server.serve())
+        )
+    finally:
+        if "conn" in got:
+            got["conn"].close()
+    assert got["body"] == b"ok" and served == [True]
+    # The timer at 1 fires at the server tick that reaches it within asyncio's
+    # clock resolution; the keep-alive timer, due at 5, never moves the clock.
+    assert end == pytest.approx(1.0)
+
+
+def test_a_stamped_cancel_hangs_its_request_up_at_its_arrival_never_the_socket(run):
+    """Request 0 is stamped at 0 and its socket closes as soon as its body is
+    read; the cancel naming it is stamped at 1. The app serving request 0
+    reads ``http.disconnect`` at the cancel's arrival, and the cancel reaches
+    no app: it is answered 204."""
+    stamps = queue.Queue()
+
+    def traffic():
+        rt = LPRuntime(TRAFFIC, TABLE, clock_transport.connect(TRAFFIC, run.endpoint))
+        rt.start_run()
+        stamps.put(rt.stamp_send(HTTP))
+        rt.advance_to(1.0)
+        stamps.put(rt.stamp_send(HTTP))
+        rt.next_event(INF)
+        rt.close()
+
+    thread = threading.Thread(target=traffic, name="traffic", daemon=True)
+    thread.start()
+    arrival, seq = TABLE.lookahead(HTTP), 0
+    cancel_at, cancel = 1.0 + arrival, 1
+    loop = CompassEventLoop()
+    served, answered = [], []
+
+    async def app(scope, receive, send):
+        served.append((await receive())["body"])
+        served.append(((await receive())["type"], loop.time()))
+
+    def wire(body: bytes):
+        parts = [{"type": "http.request", "body": body, "more_body": False}]
+
+        async def receive():
+            return parts.pop(0) if parts else {"type": "http.disconnect"}
+
+        return receive
+
+    async def answer(message):
+        answered.append(message)
+
+    def scope(a, s):
+        return {"type": "http", "headers": [(b"x-test-stamp", b"%r %d" % (a, s))]}
+
+    async def go():
+        channel = HttpChannel(app, _stamp)
+        await asyncio.gather(
+            channel(scope(arrival, seq), wire(b"{}"), None),
+            channel(scope(cancel_at, cancel), wire(carriers.cancel_body(seq)), answer),
+        )
+
+    try:
+        loop.run_until_complete(go())
+        loop.run_forever()
+    finally:
+        thread.join(10)
+    loop.close()
+    assert [stamps.get(timeout=10) for _ in range(2)] == [
+        (arrival, seq),
+        (cancel_at, cancel),
+    ]
+    assert served == [b"{}", ("http.disconnect", cancel_at)]
+    assert answered == [
+        {"type": "http.response.start", "status": 204},
+        {"type": "http.response.body", "body": b""},
+    ]

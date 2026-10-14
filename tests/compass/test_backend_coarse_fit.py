@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 """Tier a's fit: step records written from a known law, and the law it gives back.
 
-Each record is the JSON lines a real runner writes, its `t_enter_ns` laid out
-so each step's period is the known law's price. The fitted law is read by
+Each record is the JSON lines a real runner writes, each step's device busy
+time (`d_busy_ns`) the known law's price. The fitted law is read by
 `CoarseLaw` and priced by `CoarseBackend.estimate`.
 """
 
@@ -21,7 +21,7 @@ from atom.compass.backends import (
     RequestShape,
     Species,
 )
-from atom.compass.backends.coarse_fit import fit, held_out, main, samples
+from atom.compass.backends.coarse_fit import _solve, fit, held_out, main, samples
 from atom.compass.validate.cost import cost_accuracy
 
 PREFILL = {"step": 0.02, "tokens": 6e-5, "query_square": 2e-10, "query_cached": 3e-10}
@@ -74,14 +74,17 @@ def _steps(seed, n=240, cached=True, history=0.0):
     return out
 
 
-def _record(path, steps, idle_after=(), stretch=None):
-    """Write `steps` as a real record. Steps in `idle_after` share no request with the next."""
+def _record(path, steps, stretch=None):
+    """Write `steps` as a real record whose device busy time is each step's price.
+
+    The host's token copy wait ends as the device finishes, so no step is
+    launch-exposed.
+    """
     stretch = stretch or {}
-    t, lines, owner = 0, [], 0
+    t, lines = 0, []
     for i, (rows, rung, seconds) in enumerate(steps):
-        if i - 1 in idle_after:
-            owner += 1
-        ids = [owner] + [10_000 + i * 10 + j for j in range(len(rows) - 1)]
+        busy = round(seconds * stretch.get(i, 1.0) * 1e9)
+        ids = [0] + [10_000 + i * 10 + j for j in range(len(rows) - 1)]
         lines.append(
             {
                 "step": i,
@@ -93,10 +96,13 @@ def _record(path, steps, idle_after=(), stretch=None):
                 "rows": [list(r) for r in rows],
                 "rung": rung,
                 "t_enter_ns": t,
-                "t_exit_ns": t + 1,
+                "t_launch_ns": [t, t],
+                "t_recv_ns": [t, t],
+                "d_busy_ns": busy,
+                "t_exit_ns": t + busy,
             }
         )
-        t += round(seconds * stretch.get(i, 1.0) * 1e9)
+        t += busy
     path.write_text("".join(json.dumps(line) + "\n" for line in lines))
     return path
 
@@ -158,19 +164,12 @@ def test_a_feature_with_no_variance_returns_zero_named(tmp_path):
     assert cost.terms[-1].seconds == 0.0
 
 
-def test_warm_steps_and_the_period_holding_an_idle_gap_are_not_fitted(tmp_path):
+def test_warm_steps_are_not_fitted(tmp_path):
     steps = _steps(2)
-    # Two leading compiles, then a gap after step 50: its period is cut, step 51's
-    # starts after the gap and is fitted. A later compile (step 90) is warm too;
-    # a later step at four times its price (step 120) is dropped, not warm.
-    stretch = {0: 40.0, 1: 30.0, 50: 9.0, 90: 20.0, 120: 4.0}
-    record = _record(tmp_path / "dp0.jsonl", steps, {50}, stretch)
-    rows, cut = samples(record)
-
-    assert cut == {"idle": 1, "mixed": 0, "last": 1}
-    assert [(r[3], r[2]) for r in rows if r[3] in (50, 51)] == [
-        (51, pytest.approx(steps[51][2], rel=1e-6))
-    ]
+    # Two leading compiles; a later compile (step 90) is warm too; a later step
+    # at four times its price (step 120) is dropped, not warm.
+    stretch = {0: 40.0, 1: 30.0, 90: 20.0, 120: 4.0}
+    record = _record(tmp_path / "dp0.jsonl", steps, stretch)
     law = fit([record])
     assert law["warm_steps"] == [[0, 90, 1]]
     assert law["cut"]["warm"] == 3 and law["cut"]["warm_s"] == pytest.approx(
@@ -208,6 +207,26 @@ def test_three_forms_are_scored_on_a_record_held_out_of_their_fit(tmp_path):
     cost = CoarseBackend(CoarseLaw(fit(records, "history"))).estimate(_view(rows))
     assert cost.seconds == pytest.approx(seconds, rel=1e-6)
     assert cost.terms[-1].name == "prefill.history"
+
+
+def test_a_rung_a_mad_pass_drops_entirely_gets_coefficient_zero():
+    # `shared` gives each rung its own intercept column (named `step@...`).
+    # Rung B's two rows share a context feature but carry labels no single
+    # non-negative intercept reconciles with rung A's tight fit, so a MAD
+    # pass drops both: rung B's column is then all zero among kept rows.
+    names = ["context", "step@A", "step@B"]
+    rng = np.random.default_rng(1)
+    context_a = rng.uniform(1, 2, 60)
+    y_a = 0.02 * context_a + 0.03 + rng.normal(0, 1e-5, 60)
+    x_a = np.column_stack([context_a, np.ones(60), np.zeros(60)])
+    x_b = np.column_stack([[1.5, 1.5], [0, 0], [1, 1]])
+    y_b = np.array([3.0, 30.0])
+
+    solved = _solve(np.vstack([x_a, x_b]), np.concatenate([y_a, y_b]), names)
+
+    assert not solved["keep"][-2:].any()
+    assert solved["coef"][2] == 0.0
+    assert np.isfinite(solved["coef"]).all()
 
 
 def test_the_command_writes_a_law_a_run_file_can_carry(tmp_path, capsys):
@@ -269,7 +288,7 @@ def test_a_step_mixing_prefill_and_decode_is_cut_not_fitted(tmp_path):
     steps[20] = ([(100, 100, False), (1, 900, True)], None, 1.0)
     rows, cut = samples(_record(tmp_path / "dp0.jsonl", steps))
 
-    assert cut == {"idle": 0, "mixed": 1, "last": 1}
+    assert cut == {"exposed": 0, "mixed": 1}
     assert 20 not in [r[3] for r in rows]
     law = fit([tmp_path / "dp0.jsonl"])
     assert law["prefill"]["coefficients"] == pytest.approx(PREFILL, rel=1e-6)
@@ -423,8 +442,25 @@ def test_records_under_two_host_keys_are_refused(tmp_path):
         with pytest.raises(ValueError, match="2 host keys"):
             fit(pair)
     assert "host" not in fit([c])
-    with pytest.raises(ValueError, match="one law takes one label"):
-        fit([a, _record(tmp_path / "d.jsonl", _steps(18))])
+
+
+def test_a_record_without_device_windows_is_refused_by_the_fit_and_the_cost_check(
+    tmp_path,
+):
+    (tmp_path / "steps").mkdir()
+    record = _record(tmp_path / "steps" / "dp0.jsonl", _steps(18))
+    lines = [json.loads(x) for x in record.read_text().splitlines()]
+    record.write_text(
+        "".join(
+            json.dumps({k: v for k, v in x.items() if k != "d_busy_ns"}) + "\n"
+            for x in lines
+        )
+    )
+
+    with pytest.raises(ValueError, match="has no device windows"):
+        fit([record])
+    with pytest.raises(ValueError, match="has no device windows"):
+        cost_accuracy(tmp_path / "steps", {"provenance": "planted", "decode": {}})
 
 
 def test_the_command_writes_host_laws_a_run_file_takes_and_scores_them_held_out(
@@ -480,6 +516,54 @@ def test_the_host_key_reads_atom_outside_compass_and_the_real_runner_writes_it(
     runner.host_key = key
     runner.forward(batches[0])
     assert json.loads((tmp_path / "out" / "dp0.key.json").read_text()) == key
+
+
+def test_the_host_key_leaves_out_what_only_a_simulated_run_reaches(
+    tmp_path, monkeypatch
+):
+    import shutil
+    from pathlib import Path
+
+    import atom
+    from atom.compass.run import host_key
+
+    src, tree = Path(atom.__file__).parent, tmp_path / "atom"
+    (tree / "utils").mkdir(parents=True)
+    (tree / "model_engine").mkdir()
+    for name in ("clock", "compass_loop", "zmq_shim"):
+        shutil.copy(src / f"utils/{name}.py", tree / f"utils/{name}.py")
+    shutil.copy(src / "model_engine/scheduler.py", tree / "model_engine/scheduler.py")
+    monkeypatch.setattr(atom, "__file__", str(tree / "__init__.py"))
+    config = SimpleNamespace(
+        model=str(tmp_path / "model"),
+        enforce_eager=True,
+        kv_cache_block_size=16,
+        kv_cache_dtype="bf16",
+        quant_config=SimpleNamespace(compute_hash=lambda: "q"),
+        tensor_parallel_size=1,
+    )
+    key = host_key(config)["atom"]
+
+    def edited(name, old, new):
+        text = (src / name).read_text()
+        assert old in text
+        (tree / name).write_text(text.replace(old, new, 1))
+        try:
+            return host_key(config)["atom"]
+        finally:
+            shutil.copy(src / name, tree / name)
+
+    body = "\n    edited = 1\n"
+    assert (
+        edited("utils/clock.py", "class LPRuntime:\n", "class LPRuntime:" + body) == key
+    )
+    assert (
+        edited("utils/zmq_shim.py", "class _Socket:\n", "class _Socket:" + body) == key
+    )
+    assert edited("utils/compass_loop.py", "\n", "\nedited = 1\n") == key
+    assert edited("utils/clock.py", "\ndef now(", "\nedited = 1\ndef now(") != key
+    assert edited("utils/zmq_shim.py", "def __getattr__", "def _getattr") != key
+    assert edited("model_engine/scheduler.py", "\n", "\nedited = 1\n") != key
 
 
 def test_a_run_refuses_host_laws_fitted_under_another_key(tmp_path, monkeypatch):

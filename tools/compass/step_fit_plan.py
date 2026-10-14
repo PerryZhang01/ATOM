@@ -8,6 +8,7 @@ the cell's corners), so the plan and the backend never disagree on a cell.
 """
 
 import argparse
+import bisect
 import itertools
 import json
 import sys
@@ -72,23 +73,27 @@ def _reason(refused: CostRefused) -> str:
     return "; ".join(r.reason for r in refused.declined)
 
 
-def _span(home, nodes, corners, axis: int, margin: int) -> list:
-    """`nodes` from the cell's low corner's index on `home` less the margin to
-    its high corner's plus the margin."""
-    low = home.index(corners[0][0][axis])
-    high = home.index(corners[-1][0][axis])
-    return nodes[max(0, low - margin) : high + margin + 1]
+def _span(nodes, low, high, margin: int) -> list:
+    """`nodes` from the last at or below `low` to the first at or above `high`,
+    widened by `margin` nodes either way."""
+    first = bisect.bisect_right(nodes, low) - 1
+    last = bisect.bisect_left(nodes, high)
+    return nodes[max(0, first - margin) : last + margin + 1]
 
 
-def _infeasible(target: dict, b: int, n_q: int, c: int, prefill: bool) -> str:
-    """Why the target cannot run B rows of N_Q tokens on c cached, or ''."""
+def _infeasible(target: dict, b: int, t: int, c: int, prefill: bool) -> str:
+    """Why the target cannot run B rows of T tokens in all on c cached each,
+    or ''."""
+    n_q = t // b
     blocks = b * -(-(c + n_q) // target["kv_cache_block_size"])
     checks = [
         (b > target["max_num_seqs"], f"B {b} is above max_num_seqs"),
         (
-            prefill and b * n_q > target["max_num_batched_tokens"],
-            f"B.N_Q {b * n_q} is above max_num_batched_tokens",
+            prefill and t > target["max_num_batched_tokens"],
+            f"T {t} is above max_num_batched_tokens",
         ),
+        (t < b, f"T {t} is below B {b}, under one token a row"),
+        (t % b, f"N_Q = T/B = {t}/{b} is not an integer"),
         (
             c + n_q > target["max_model_len"],
             f"c + N_Q {c + n_q} is above max_model_len",
@@ -101,29 +106,86 @@ def _infeasible(target: dict, b: int, n_q: int, c: int, prefill: bool) -> str:
     return next((why for over, why in checks if over), "")
 
 
+def _c_max(target: dict, b: int) -> int:
+    """The largest cached context at which B decode rows fit the KV pool."""
+    return target["kv_cache_block_size"] * (target["num_kvcache_blocks"] // b) - 1
+
+
+def _capped(nodes, top: int) -> list:
+    """`nodes` below `top`, then `top`."""
+    return sorted({n for n in nodes if n < top} | {top})
+
+
+def _layout(definition: dict, b_nodes: dict) -> dict:
+    """The grid `definition` makes with these decode B nodes per rung, its
+    nodes past a bound dropped and the bounds added: the token budget T's top,
+    ``max_num_seqs`` B's and ``max_model_len`` less the budget c's for
+    prefill; per decode rung, each B node's KV limit and ``max_model_len - 1``
+    as c nodes."""
+    budget = definition["max_num_batched_tokens"]
+    tops = {
+        "B": definition["max_num_seqs"],
+        "T": budget,
+        "c": definition["max_model_len"] - budget,
+    }
+    c, top = definition["decode"]["c"], definition["max_model_len"] - 1
+    return {
+        "graph_mode": "replay",
+        "scope": SCOPE,
+        "bounds": {name: definition[name] for name in BOUNDS},
+        "prefill": {
+            "nodes": {a: _capped(definition["prefill"][a], t) for a, t in tops.items()},
+            "output": [],
+            "no_output": [],
+        },
+        "decode": {
+            "nodes": {
+                "B": {str(r): sorted(bs) for r, bs in b_nodes.items()},
+                "c": {
+                    str(r): _capped(c + [_c_max(definition, b) for b in bs], top)
+                    for r, bs in b_nodes.items()
+                },
+            },
+            "points": [],
+        },
+    }
+
+
 def plan(definition: dict, steps) -> dict:
     """The points to measure for `steps` in the grid `definition` makes."""
+    if sorted(definition["prefill"]) != ["B", "T", "c"]:
+        raise SystemExit(
+            f"the grid definition's prefill nodes are on "
+            f"{', '.join(definition['prefill'])}, not B, T, c"
+        )
     nodes = [*definition["prefill"].values(), definition["decode"]["c"]]
     counts = [definition[k] for k in TARGET[:-1]] + [definition["margin"]]
     counts += definition["capture_sizes"] + [n for axis in nodes for n in axis]
     odd = [n for n in counts if type(n) is not int or n < 0]
     if odd:
         raise SystemExit(f"the grid definition's {odd[0]!r} is not a count")
+    if definition["max_model_len"] < definition["max_num_batched_tokens"]:
+        raise SystemExit(
+            "the grid definition's max_model_len is below its "
+            "max_num_batched_tokens, so prefill's top c node, max_model_len "
+            "less the token budget, would be negative"
+        )
     ladder = schedulable_ladder(SimpleNamespace(**definition))
     margin = definition["margin"]
-    out = {
-        "graph_mode": "replay",
-        "scope": SCOPE,
-        "bounds": {name: definition[name] for name in BOUNDS},
-        "prefill": {"nodes": definition["prefill"], "output": [], "no_output": []},
-        "decode": {
-            "nodes": {
-                "B": {str(r): sorted({p + 1, r}) for p, r in zip([0, *ladder], ladder)},
-                "c": definition["decode"]["c"],
-            },
-            "points": [],
-        },
-    }
+    b_nodes = {r: {p + 1, r} for p, r in zip([0, *ladder], ladder)}
+    # A B at which a recorded step reaches past its rung's KV limit is a B node
+    # of the rung, so that its own limit is a c node there.
+    grid = StepFitGrid({**_layout(definition, b_nodes), "unit": "s"})
+    for _, view in steps:
+        if view.prefill or view.capture_rung not in b_nodes:
+            continue
+        try:
+            _, (b, c) = grid.locate(view)
+        except CostRefused:
+            continue
+        if c > _c_max(definition, view.capture_rung):
+            b_nodes[view.capture_rung].add(int(b))
+    out = _layout(definition, b_nodes)
     grid = StepFitGrid({**out, "unit": "s"})
     planned, unplaced = defaultdict(set), []
     for where, view in steps:
@@ -133,30 +195,33 @@ def plan(definition: dict, steps) -> dict:
         except CostRefused as refused:
             unplaced.append({"step": where, "reason": _reason(refused)})
             continue
+        low, high = corners[0][0], corners[-1][0]
         if view.prefill:
-            spans = [_span(n, n, corners, i, margin) for i, n in enumerate(cells.nodes)]
+            spans = [
+                _span(n, low[i], high[i], margin) for i, n in enumerate(cells.nodes)
+            ]
             key = "output" if view.produces_output else "no_output"
             planned["prefill", key].update(itertools.product(*spans))
             continue
+        # On a rung either side, every B node, at the c nodes spanning the cell's.
         k = ladder.index(view.capture_rung)
         for rung in ladder[max(0, k - margin) : k + margin + 1]:
-            near = grid.decode[rung].nodes
-            spans = [
-                _span(h, n, corners, i, margin)
-                for i, (h, n) in enumerate(zip(cells.nodes, near))
-            ]
+            bs, cs = grid.decode[rung].nodes
+            if rung == view.capture_rung:
+                bs = _span(bs, low[0], high[0], margin)
             planned["decode", "points"].update(
-                (rung, *p) for p in itertools.product(*spans)
+                (rung, *p)
+                for p in itertools.product(bs, _span(cs, low[1], high[1], margin))
             )
     # A bundle whose measured rungs skip one of the ladder's does not load.
     decode = planned["decode", "points"]
     rungs = sorted({p[0] for p in decode})
-    c_nodes = sorted({p[2] for p in decode})
+    c_planned = [p[2] for p in decode]
     for rung in ladder:
         if rungs and rungs[0] < rung < rungs[-1] and rung not in rungs:
-            decode.update(
-                itertools.product([rung], grid.decode[rung].nodes[0], c_nodes)
-            )
+            bs, cs = grid.decode[rung].nodes
+            spanned = _span(cs, min(c_planned), max(c_planned), 0)
+            decode.update(itertools.product([rung], bs, spanned))
     out |= {"counts": {}, "infeasible": [], "unplaced": unplaced}
     for (phase, key), points in sorted(planned.items()):
         for point in sorted(points):
@@ -165,7 +230,7 @@ def plan(definition: dict, steps) -> dict:
                 name, why = f"prefill {key}", _infeasible(definition, *at, prefill=True)
             else:
                 name = f"decode rung {at[0]}"
-                why = _infeasible(definition, at[1], 1, at[2], prefill=False)
+                why = _infeasible(definition, at[1], at[1], at[2], prefill=False)
             if why:
                 out["infeasible"].append({"grid": name, "at": at, "reason": why})
                 continue
@@ -176,12 +241,14 @@ def plan(definition: dict, steps) -> dict:
 
 def coverage(backend, steps) -> dict:
     """Per step, whether every corner of its cell was measured and the
-    residual answers it, over the grid and residual of `backend`."""
-    covered, missing, refused = 0, defaultdict(set), []
+    residual answers it, over the grid and residual of `backend`; and, apart,
+    how many prefill steps are cached past the top c node."""
+    covered, missing, refused, above = 0, defaultdict(set), [], 0
     for where, view in steps:
         gaps, reasons = (), []
         try:
             cells, at = backend.grid.locate(view)
+            above += bool(view.prefill) and at[-1] > cells.nodes[-1][-1]
             corners = cells.corners(view, at)
             gaps = {c for c, _ in corners if c not in cells.points}
             missing[cells.name] |= gaps
@@ -204,6 +271,7 @@ def coverage(backend, steps) -> dict:
             if corners
         },
         "refused": refused,
+        "prefill_above_top_c": above,
     }
 
 

@@ -194,9 +194,17 @@ in the first version (D100), so row order and raggedness are covered before grad
 - **Only the cells the planned shapes fall in are measured, plus the declared margin**
   around them, `07` D38's "over-cover with a declared margin". A cell outside both is not
   measured, stays incomplete, and refuses the step that needs it (D99).
-- **The feasible region's boundary is in the grid.** Its boundary nodes, the KV capacity
-  and the token budget, are grid nodes. The bundle records the configuration bounds its
-  grid was planned for (D101 checks them).
+- **The feasible region's boundary is in the grid.** The definition's node lists stay the
+  input; the planner adds the boundary nodes, given per step kind below, from the bounds
+  the bundle records: the scheduler's `max_num_seqs`, `max_num_batched_tokens` and
+  `max_model_len` (D101 checks them), and the block size and KV block count the grid was
+  planned for. A planned corner past a limit is reported, never measured, not even with
+  the limit raised or the KV pool enlarged, which measures shapes the target never runs;
+  its cell stays incomplete and refuses (D99).
+  The measurement this rests on ([#830](https://github.com/jgong5/ATOM/issues/830)):
+  on #740's Qwen3.8-27B records of traces 256 to 392, nodes `2^(k/2)` alone leave up to
+  43.5% of a record's steps in a cell with a corner past a limit, and with these boundary
+  nodes none.
 - **Order.** The real runs first (D96); then top-up measurement of the cells real
   batches fall in; then grading. Planning waits for the case set's registration (`08`
   D50), which waits for T27.
@@ -205,10 +213,17 @@ in the first version (D100), so row order and raggedness are covered before grad
 
 Decode is measured in replay mode on the target's own capture ladder, read from ATOM's
 config (`05` D24, `13` D78). For each rung `R`, at `B = R` and at `B = previous rung + 1`,
-over the context nodes. `B` is interpolated only inside one rung, never across: a batch
-replays its rung's graph and pays its rung's time, as `09` D54's per-rung decode fit also
-holds. A decode step that replays no graph, being wider than the widest rung, is not on
-this grid and refuses (D99).
+over the rung's own context nodes. `B` is interpolated only inside one rung, never across:
+a batch replays its rung's graph and pays its rung's time, as `09` D54's per-rung decode
+fit also holds. A decode step that replays no graph, being wider than the widest rung, is
+not on this grid and refuses (D99).
+
+**Decode's boundary nodes, per rung `R`.** Each B node's KV limit,
+`c_max(B) = block_size · floor(num_kvcache_blocks / B) - 1`, the largest cached context at
+which `B` decode rows fit the KV pool, is a c node of the rung, and so is
+`max_model_len - 1`. A B node, with its own `c_max`, is added at each `B` between the
+previous rung + 1 and `R` that planned shapes reach past `c_max(R)`, so a step past
+`c_max(R)` sits on its own B node, below its own limit.
 
 **The lookup axis follows the graph mode at measurement.** The measurement this rests on
 (#626 at `1139bbca`, recomputed from the reference bundle of serving_simulator `2ce181d`):
@@ -219,11 +234,26 @@ reading by `B`, or interpolating across rungs, underestimates in one direction, 
 sparser the ladder. The axis is a property of the measurement, so the bundle declares its
 graph mode and a mismatched target refuses (D101); it is never inferred at run time.
 
-### Prefill: eager on `(B, N_Q, cached context)`
+### Prefill: eager on `(B, T, cached context)`
 
 Measured eager, distinguishing whether a chunk produces output. ATOM skips logits and
 sampling for a pure middle chunk (`02` D10), so a chunk that produces no output is never
 priced from one that does.
+
+`T = B·N_Q` is the step's token count, so the token budget `max_num_batched_tokens` is a
+T node; with `N_Q` the axis instead, the budget bounds `B·N_Q`, a curve no node follows,
+and cells crossed it. `max_num_seqs` is B's top node and
+`max_model_len - max_num_batched_tokens` c's. A corner is `B` rows of `N_Q = T/B` tokens;
+a planned corner whose `N_Q` is not an integer is no such batch, and is reported, not
+measured. On #740's records, nodes `2^(k/2)` leave up to 88 prefill steps per record
+with such a corner, and nodes `2^k` none.
+
+A prefill step cached past the top c node refuses (D99). Two kinds reach it: a prefix hit
+near `max_model_len`, with large c and small `N_Q`; and a long prompt's last chunk when
+`max_model_len` is not a multiple of the budget (at 200000 and 16384, a chunk at
+c = 196608 is past a top node of 183616). #740's records hold neither: 262144 is a
+multiple of 16384, and a cc-traces replay reuses no prefix. The coverage check counts
+these steps apart, on a run with prefix caching, for T98's trigger.
 
 ### Scope and timing
 
@@ -254,9 +284,10 @@ on (`08` D49 item 2). MoE time reflects the routing the measurement saw; uniform
 A batch maps to grid coordinates by a deterministic function of its ordered rows: an
 equivalent homogeneous shape that keeps the batch's token count and its attention work,
 `Σ (N_Q·c + N_Q(N_Q+1)/2)` over requests with `c` the cached context, in exact arithmetic
-so a lookup reproduces bit for bit. Prefill reads `(B, N_Q, c)` of that shape and whether
-the batch produces output; decode reads `(rung, B, c)`. What the equivalent shape loses,
-the raggedness and the order of the rows, is the residual's job (D100).
+so a lookup reproduces bit for bit. Prefill reads `(B, T, c)` of that shape, `T = B·N_Q`
+the batch's token count, and whether the batch produces output; decode reads
+`(rung, B, c)`. What the equivalent shape loses, the raggedness and the order of the rows,
+is the residual's job (D100).
 
 ### Decision
 
@@ -518,9 +549,15 @@ After stage 2, step fit gets one evaluation on DeepSeek-V4-Pro (`16` W4.13):
   ruled 2026-10-11 on #815: serial on the host timeline, inside `01` D4's `E` (D104).
   **T93** is closed.
 - **Whether step fit should extrapolate out-of-cell steps** as the tier-a law does under
-  #627's ruling 3 is untried; today it declines them (D102). Recorded as **T95**.
+  #627's ruling 3 is untried; today it declines them (D102). Recorded as **T95**, which
+  includes extrapolation within rounding distance.
 - **`13` does not describe the run file** that selects a backend (D103). Recorded as
   **T96**.
+- **A step whose cell crosses the feasible boundary despite the boundary nodes** (D98) has
+  an unmeasured corner and refuses, as does a prefill step cached past the top c node.
+  Interpolating them over points measured on the boundary waits until the pre-run coverage
+  check finds such steps, the prefill ones counted on a run with prefix caching. Recorded
+  as **T98**.
 
 ---
 
@@ -530,8 +567,8 @@ After stage 2, step fit gets one evaluation on DeepSeek-V4-Pro (`16` W4.13):
 |---|---|---|
 | D96 | Step fit (`StepFitBackend`, `step_fit`) is a tier-a `CostBackend`: grid lookup plus a residual. A candidate for #627's stage 2, graded by stage 2's protocol after `09` D59's validation, a use beyond `07` D36 by ruling; which backend passes stage 2 is #627's ruling, which chose `09` D54's law and keeps step fit off the stage-2 path for now, so step fit's evaluation runs off that critical path. Grading reads #743's registered real runs, or step fit's own named apart; the residual, validation and grid comparisons use traces 256 to 392, grading traces 0 to 255. Not a stage-3 backend, not the source of the per-family MI308X tables; Kimi-K3 and DCP after v1. | 2026-10-10 (#696); #627's rulings applied 2026-10-11 (#626) |
 | D97 | One term per step, the forward's device busy time over its whole interval, priced once per logical forward by the backend; the runner composes it with the host laws by `01` D4's recurrence and the engine charges the result. Rows in order; mixed phases and speculative decode refuse; a DP run refuses by key and a PP stage refuses. The backend imports nothing from ATOM. | 2026-10-10 (#696); revised 2026-10-11 (#815) |
-| D98 | A synthetic homogeneous grid, departing from `07` D39 for the baseline only. Its definition (a node list per axis and the planning margin) is a calibration input recorded in the bundle's identity; a cell is the box between adjacent nodes; warm-up, repeats and statistic are fixed in code; measurements are stored per point. Nodes are placed from shapes, and only the cells the planned shapes fall in, plus the margin, are measured; boundary nodes sit at the feasible region's edge. Decode in replay on the target's own ladder, per rung at `B = R` and `B = previous rung + 1`; prefill eager on `(B, N_Q, c)` by whether a chunk produces output. `02` D10's interval, `07` D42's timing, device busy time with device work queued ahead and launch-exposed repeats cut, a point left with none refusing its cell; a narrower declared scope refuses. | 2026-10-10 (#696); grid definition 2026-10-11 (#626); device time 2026-10-11 (#815) |
-| D99 | An answer only from a complete cell, by exact hit or interpolation; otherwise refuse, naming the missing corners. No extrapolation, clamp, recovery or fallback. A pre-run coverage check over cells and the residual hull; deterministic lookups; `02` D11 species. | 2026-10-10 (#696) |
+| D98 | A synthetic homogeneous grid, departing from `07` D39 for the baseline only. Its definition (a node list per axis and the planning margin) is a calibration input recorded in the bundle's identity; a cell is the box between adjacent nodes; warm-up, repeats and statistic are fixed in code; measurements are stored per point. Nodes are placed from shapes, and only the cells the planned shapes fall in, plus the margin, are measured; the planner adds boundary nodes from the bounds the bundle records, and a corner past a limit or at a non-integer `N_Q` is reported, never measured. Decode in replay on the target's own ladder, per rung at `B = R`, `B = previous rung + 1` and each `B` between them that shapes reach past `c_max(R)`, over c nodes per rung that add each B node's KV limit `c_max(B)` and `max_model_len - 1`; prefill eager on `(B, T, c)`, `T = B·N_Q`, by whether a chunk produces output, with the token budget a T node, `max_num_seqs` B's top node and `max_model_len - max_num_batched_tokens` c's. `02` D10's interval, `07` D42's timing, device busy time with device work queued ahead and launch-exposed repeats cut, a point left with none refusing its cell; a narrower declared scope refuses. | 2026-10-10 (#696); grid definition 2026-10-11 (#626); device time 2026-10-11 (#815); boundary nodes and prefill on `(B, T, c)` 2026-10-13 (#830) |
+| D99 | An answer only from a complete cell, by exact hit or interpolation; otherwise refuse, naming the missing corners. No extrapolation, clamp, recovery or fallback. A pre-run coverage check over cells and the residual hull; deterministic lookups; `02` D11 species. | 2026-10-10 (#696); prefill coordinates `(B, T, c)` 2026-10-13 (#830) |
 | D100 | The residual is in the first version, fitted on replayed batches of traces 256 to 392 in `14` D85's form plus order and raggedness, graded on traces 0 to 255, refusing outside its hull; grid definitions compared on traces 256 to 392 only, each one tried recorded. Members are bundle data; each output checked. Recipes are fixed functions with injected geometry and hardware constants, versioned only when a function changes; optional recipes, DCP's first. | 2026-10-10 (#696); grid comparison 2026-10-11 (#626) |
 | D101 | A bundle is a `07` D41 key plus a digest, immutable, with a row in `07` D43 invalidated by every column. Keyed conditions refuse; derived values go to provenance; #626's asserted and record-only grades are dropped. Conditions come from the resolved ATOM config. At startup, unmeasured rungs and bounds beyond the planned grid refuse. | 2026-10-10 (#696) |
 | D102 | Refusal follows `08` D50.1 as ruled on #765, with no departure: when step fit cannot answer a step, the step goes to the next rung and is refused only when none answers; a refused step costs 0 s and the run continues under `13` D80's default `mark`; any refusal makes the run a coverage report. Where the tier-a law extrapolates under #627's ruling 3, step fit declines; T95 records trying that rule later. | 2026-10-10 (#696); ruling 3 contrast 2026-10-11 (#626); revised 2026-10-11 (#765) |
@@ -550,5 +587,6 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 |---|---|---|
 | ~~T93~~ | ~~Measure in ATOM whether the scheduler's CPU segments add serially to the forward or overlap it, before `fitted` is usable~~ — ruled 2026-10-11 on #815: serial, inside `01` D4's `E` | needs a real run with per-segment timing |
 | T94 | Record the kernels each grid point ran, and treat a cell whose corners ran different kernels as crossing a dispatch band (`09` D60): refused or split | needs the grid measurement (`16` S2.2) to record kernel identity |
-| T95 | Trial, not this design: extrapolate an out-of-cell step as #627's ruling 3 has the tier-a law do, by one method only, extending the nearest complete cell's interpolation, tagged `extrapolated` with the distance and reported apart, which is not a refusal. It would answer out-of-cell steps, which step fit now declines (D102) | decide after step fit's stage-2 evaluation shows how often steps fall outside complete cells |
+| T95 | Trial, not this design: extrapolate an out-of-cell step as #627's ruling 3 has the tier-a law do, by one method only, extending the nearest complete cell's interpolation, tagged `extrapolated` with the distance and reported apart, which is not a refusal. It includes extrapolation within rounding distance: a step outside every complete cell, and every T98 simplex, only by integer or block rounding (an equivalent shape's mean context can sit past `c_max(B)` while its ragged batch fits) is extrapolated that far, and a farther one declined. It would answer out-of-cell steps, which step fit now declines (D102) | decide after step fit's stage-2 evaluation shows how often steps fall outside complete cells |
 | T96 | Reconcile `13` D79 and D80 with the run file the code selects a backend by (`--compass-run`, `atom/compass/run/__init__.py::runner`): `13` rejects a Compass config file, the code reads one | needs an owner choice between describing the run file in `13` and moving selection to flags |
+| T98 | Interpolate a step whose cell has a corner past a limit, or a prefill step cached past the top c node, in the simplex of measured points holding it, those points measured where the cell's edges cross the feasible boundary (D98) | taken up when the pre-run coverage check (D99) finds steps the boundary nodes miss, the prefill steps past the top c node counted on a run with prefix caching; #830's counts find none on #740's records, which hold neither kind |

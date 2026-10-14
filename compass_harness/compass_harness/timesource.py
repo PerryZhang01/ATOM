@@ -72,6 +72,34 @@ class ClockTimer:
             self._clock.withdraw(self._wait)
 
 
+class _FallsThroughToAsyncio(type):
+    """A name ``ClockAsyncio`` does not override resolves to the real ``asyncio``."""
+
+    def __getattr__(cls, name):
+        return getattr(asyncio, name)
+
+
+class ClockAsyncio(metaclass=_FallsThroughToAsyncio):
+    """``asyncio`` for the phase runner: ``wait_for`` times out on the clock, and
+    every other name passes through to the real ``asyncio``. Callers that reach
+    it beyond the cancel drain include the accelerated-warmup methods' own
+    ``wait_for`` calls."""
+
+    @staticmethod
+    async def wait_for(aw, timeout: float):
+        task = asyncio.ensure_future(aw)
+        expired = []
+        deadline = ClockTimer(timeout, lambda: expired.append(task.cancel()))
+        try:
+            return await task
+        except asyncio.CancelledError:
+            if expired:
+                raise TimeoutError from None
+            raise
+        finally:
+            deadline.cancel()
+
+
 def fixed_uuid4() -> uuid.UUID:
     """``uuid4`` for ``aiperf.cli_runner``: a fixed benchmark id, so the cache-bust
     marker, and with it every prompt's token count, repeats from run to run."""

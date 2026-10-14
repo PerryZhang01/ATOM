@@ -376,6 +376,7 @@ def test_a_dp_rank_starts_on_the_host_with_no_device_communicator(monkeypatch):
             data_parallel_rank=1,
             data_parallel_master_ip="127.0.0.1",
             data_parallel_base_port=29501,
+            _managed_distributed_store=False,
         ),
     )
     runner = SimpleNamespace()
@@ -393,3 +394,53 @@ def test_a_dp_rank_starts_on_the_host_with_no_device_communicator(monkeypatch):
     assert calls["world"] == ((), world)
     groups = {"data_parallel_size": 2, "custom_group_config": {}}
     assert calls["groups"] == ((1, 1), groups)
+
+
+def test_a_dp_rank_under_a_managed_store_joins_it_before_aiter_builds_groups(
+    monkeypatch,
+):
+    """The engine core manager listens on the base port; the rank joins as a client."""
+    calls = []
+
+    def record(name):
+        return lambda *a, **k: calls.append((name, a, k)) or name
+
+    monkeypatch.setitem(
+        sys.modules,
+        "aiter.dist.parallel_state",
+        SimpleNamespace(
+            init_distributed_environment=record("world"),
+            initialize_model_parallel=record("groups"),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "aiter.dist.utils",
+        SimpleNamespace(get_distributed_init_method=lambda ip, p: f"tcp://{ip}:{p}"),
+    )
+    monkeypatch.setattr(torch.distributed, "TCPStore", record("store"))
+    monkeypatch.setattr(torch.distributed, "init_process_group", record("group"))
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: False)
+    monkeypatch.setattr(torch.cuda, "Stream", torch.cuda.Stream)
+    monkeypatch.setattr(CpuGpuBuffer, "__init__", CpuGpuBuffer.__init__)
+    monkeypatch.delenv("MASTER_ADDR", raising=False)
+    monkeypatch.delenv("MASTER_PORT", raising=False)
+    config = SimpleNamespace(
+        tensor_parallel_size=1,
+        prefill_context_parallel_size=1,
+        pipeline_parallel_size=1,
+        master_addr="127.0.0.1",
+        port=29500,
+        parallel_config=SimpleNamespace(
+            data_parallel_size=2,
+            data_parallel_rank=1,
+            data_parallel_master_ip="127.0.0.1",
+            data_parallel_base_port=29501,
+            _managed_distributed_store=True,
+        ),
+    )
+    start_on_host(SimpleNamespace(), 0, config)
+    assert [name for name, _, _ in calls] == ["store", "group", "world", "groups"]
+    assert calls[0][1:] == (("127.0.0.1", 29501), {"is_master": False})
+    group = {"backend": "gloo", "store": "store", "rank": 1, "world_size": 2}
+    assert calls[1][1:] == ((), group)

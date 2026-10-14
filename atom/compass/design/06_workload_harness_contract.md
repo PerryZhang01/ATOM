@@ -486,7 +486,10 @@ summary's refusals, so a job ATOM later adds to the pool is reported rather than
 charged zero; the multimodal preprocessing hand-off in `api_server.py::chat_completions`
 (`_prepare_multimodal_inputs`) is refused today. A service job runs for real to get its
 result, takes a server in submission order, and its result reaches the coroutine at its
-completion time. On the decode side, each frame an output thread takes is one job on
+completion time. Service jobs run for real one at a time, in submission order: jobs
+submitted at one instant share side effects, such as the request id each `Sequence` draws
+from a process-wide counter, and run side by side those would follow thread scheduling
+(`01` D3.4; #889). On the decode side, each frame an output thread takes is one job on
 that thread's width-1 station, from when it takes the frame to when it is back at its
 wait point, starting at the later of the frame's arrival and the previous job's
 completion; the callbacks it posts to the event loop

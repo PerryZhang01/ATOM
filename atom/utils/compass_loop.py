@@ -5,7 +5,10 @@ Tokenization runs for real, for its result, and is charged a modelled duration
 for its time. A `Station` is a multi-server FIFO over that charged time: job k,
 submitted at ``t_k``, starts at ``s_k = max(t_k, earliest free server)`` and
 completes at ``c_k = s_k + its charged service``. Jobs are placed in submission
-order, whatever order their real threads finish in.
+order, whatever order their real threads finish in. `SimExecutor` also runs its
+service jobs for real one at a time, in submission order, so a side effect two
+jobs at one instant share, such as the request id each `Sequence` draws, follows
+the station's order and not the threads'.
 
 `SimExecutor` is the event loop's default executor. From `SimExecutor.start_run`
 on, `classify` sorts every job by name: ``do_preprocess`` is a service job on
@@ -37,10 +40,13 @@ reached the caller's timeout. The ``+inf`` grant ends the run: from then on
 on the loop is asked to exit, as a signal would ask it, and shuts down with
 nothing pending; with none, the loop cancels its timers and stops. Over a
 clock connection with a socket, it waits for the grant and its own sockets at
-once, so a request from outside the run, such as a router's health check, is
-served while the grant is out; a timer that request sets earlier than the time
-asked for fires at the grant. `HttpChannel` is the inline receive of HTTP
-requests.
+once, so HTTP that reaches a frontend already in its run without a stamp, such
+as atomesh's worker registration at startup, is served while the grant is out.
+A timer such a request sets earlier than the time asked for fires at the grant;
+a daemon one, such as uvicorn's keep-alive timeout, keeps the run alive no more
+than any other daemon timer. A cross-LP send such a handler makes is refused
+(`LPRuntime.stamp_send`).
+`HttpChannel` is the inline receive of HTTP requests.
 """
 
 import asyncio
@@ -57,7 +63,7 @@ import weakref
 from concurrent.futures import Future, ThreadPoolExecutor
 from functools import partial
 
-from atom.compass.carriers import relay_stamp, with_relay_stamp
+from atom.compass.carriers import cancel_seq, relay_stamp, with_relay_stamp
 from atom.utils import clock
 from atom.utils.clock import DIAG_S, job
 
@@ -153,6 +159,11 @@ class SimExecutor(ThreadPoolExecutor):
         self.passthrough = 0  # wait jobs in flight
         self.refusals: list[str] = []  # run-summary reasons, ``executor:<name>``
         self.settle: dict[int, partial | None] = {}  # finished, not yet placed
+        self.serial = ThreadPoolExecutor(1)  # service jobs, in submission order
+
+    def shutdown(self, wait=True, *, cancel_futures=False):
+        self.serial.shutdown(wait, cancel_futures=cancel_futures)
+        super().shutdown(wait, cancel_futures=cancel_futures)
 
     def start_run(self) -> None:
         """Freeze the width: the pool's, less the wait jobs resident now."""
@@ -171,7 +182,7 @@ class SimExecutor(ThreadPoolExecutor):
             return cf
         k = self.station.enqueue(self.loop.time())
         out = Future()
-        super().submit(self._serve, k, partial(fn, *args, **kwargs), out)
+        self.serial.submit(self._serve, k, partial(fn, *args, **kwargs), out)
         return out
 
     def _waited(self) -> None:
@@ -386,7 +397,7 @@ class CompassSelector(selectors.DefaultSelector):
         # The wait the loop cannot ask time through: (what, wall time to warn
         # at, or None once warned). It outlives the selects an fd event ends.
         self.stall = None
-        self.asked = False  # a next-event request is out, its grant not taken
+        self.end = 0.0  # the LP clock when the request out was sent
 
     def select(self, timeout=None):
         loop, rt = self.loop, self.loop.rt
@@ -432,7 +443,7 @@ class CompassSelector(selectors.DefaultSelector):
                     self.stall = (what, None)
                 continue
             self.stall = None
-            if not self.asked:
+            if not rt.asked:
                 t = t_daemon = math.inf
                 for h in loop._scheduled:
                     if h.cancelled():
@@ -446,16 +457,14 @@ class CompassSelector(selectors.DefaultSelector):
                     if self._granted(end, rt.next_event(t, t_daemon)):
                         return super().select(0)
                     continue
+                self.end = rt.now
                 rt.ask_next_event(t, t_daemon)
-                self.asked = True
             waiting = select.poll()
             for fd in (self, rt.conn):
                 waiting.register(fd, select.POLLIN)
-            if rt.conn.fileno() in {fd for fd, _ in waiting.poll()}:
-                self.asked = False
-                end = rt.now
-                if self._granted(end, rt.take_grant()):
-                    return super().select(0)
+            polled = {fd for fd, _ in waiting.poll()}
+            if rt.conn.fileno() in polled and self._granted(self.end, rt.take_grant()):
+                return super().select(0)
 
     def _granted(self, end: float, g: float) -> bool:
         """Whether grant `g` is ``+inf``, which ends the run at LP time `end`."""
@@ -475,6 +484,12 @@ class HttpChannel:
     count as handled once their body has been received. The app gets the
     received body messages again from its ``receive``.
 
+    A stamped request on the ``http`` channel whose body is a cancel
+    (`atom.compass.carriers.cancel_seq`) goes to no app: it is answered 204,
+    and the request it names, if the app is still serving it, reads
+    ``http.disconnect`` from its ``receive`` then. That is the only hang-up a
+    stamped ``http`` request reads; its socket closing is never handed on.
+
     An LP whose requests come in on a ``relay`` channel reads each one's stamp
     from its body's ``kv_transfer_params`` instead. An LP that sends on one
     stamps a send on it for each JSON response whose ``kv_transfer_params`` is an
@@ -483,10 +498,12 @@ class HttpChannel:
 
     def __init__(self, app, stamp) -> None:
         self.app, self.stamp = app, stamp
+        # http seq -> its hang-up, for each stamped request the app is serving
+        self.hangups: dict[int, asyncio.Event] = {}
 
     async def __call__(self, scope, receive, send):
         rt = clock.installed()
-        relay_in = relay_out = None
+        relay_in = relay_out = hangup = None
         if rt is not None and scope["type"] == "http":
             relay_in = _relay(rt.table.channels_into(rt.me))
             relay_out = _relay(rt.table.channels_from(rt.me))
@@ -523,12 +540,30 @@ class HttpChannel:
                     body.append(await receive())
                 with rt.lock:
                     rt.count_done_locked(ch, seq)
+            if relay_in is None:
+                cancelled = cancel_seq(body[0].get("body", b""))
+                if cancelled is not None:
+                    if (hangup := self.hangups.get(cancelled)) is not None:
+                        hangup.set()
+                    await send({"type": "http.response.start", "status": 204})
+                    await send({"type": "http.response.body", "body": b""})
+                    return
+                hangup = self.hangups[seq] = asyncio.Event()
             inner = receive
 
             async def receive():
-                return body.pop(0) if body else await inner()
+                if body:
+                    return body.pop(0)
+                if hangup is None:
+                    return await inner()
+                await hangup.wait()
+                return {"type": "http.disconnect"}
 
-        await self.app(scope, receive, send)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            if hangup is not None:
+                del self.hangups[seq]
 
 
 def _relay(channels) -> str | None:

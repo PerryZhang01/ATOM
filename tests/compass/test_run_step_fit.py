@@ -357,6 +357,7 @@ def test_an_unmeasured_rung_between_measured_ones_refuses_listing_it(
     rung16 = [point(16, b, c, time=1000) for b in (9, 16) for c in C_NODES]
     sparse["grid"] = bundle("replay", [p for p in REPLAY if p["at"][0] == 48] + rung16)
     sparse["grid"]["decode"]["nodes"]["B"] = {"16": [9, 16], **REPLAY_B}
+    sparse["grid"]["decode"]["nodes"]["c"]["16"] = C_NODES
     r = deployment(tmp_path)
     publish(tmp_path, r, member=sparse)
     run_file(tmp_path, monkeypatch)
@@ -394,8 +395,20 @@ def test_a_bound_past_the_one_the_grid_was_planned_for_refuses(
             lambda m: m["residual"]["members"]["unit"].update(transform="log"),
             "the residual's member unit does not load",
         ),
+        # The layout before prefill was read on (B, T, c) and decode's c nodes
+        # were kept per rung.
+        (
+            lambda m: m["grid"]["prefill"].update(
+                nodes={"B": [1], "N_Q": [8], "c": [0]}
+            ),
+            "KeyError: 'T'",
+        ),
+        (
+            lambda m: m["grid"]["decode"]["nodes"].update(c=C_NODES),
+            "the decode c nodes are one list per rung, not a list",
+        ),
     ],
-    ids=["bounds", "member"],
+    ids=["bounds", "member", "prefill-n-q", "decode-c-list"],
 )
 def test_a_bundle_that_does_not_load_names_itself(monkeypatch, tmp_path, edit, named):
     broken = copy.deepcopy(BUNDLE)

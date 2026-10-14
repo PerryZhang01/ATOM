@@ -18,7 +18,7 @@ on, because until 2026-09-20 it was not — see "Which tree a script acts on" be
 | `regen_gpu_gate_triggers.sh` | CPU container | Re-derive `gpu_gate_triggers.txt` from the exclusion list and the tree. Run after **any** change to `cpu_gate_exclude.txt` — the two files are derived from the same tree and are wrong separately. Writes the whole file, **header counts included**; nothing in it is maintained by hand. |
 | `snapshot.sh` | either | Build the `git archive` tarball a gate runs against (never `rsync`). Stamps `.compass-commit` (so output names its tree, and a `COMPASS_GPU_GATE_DONE` attestation can be checked) and `.compass-changed` (so the blind-spot question is answerable without `.git`). Refuses a dirty tree. |
 | `pd_sim.sh` | GPU container | A simulated 1P1D run: the standalone clock authority (`python -m atom.compass.run`), a prefill and a decode API server on the simulated KV connector, and `atomesh` in PD mode between them. `tests/compass/test_pd_slice.py` drives one request through it. Its variables are in its header. |
-| `mi308x_spec.py` | GPU container, node 18 | `python3 scripts/compass/mi308x_spec.py`: rebuild `machines/mi308x-hjbog18.json`, the node-18 MI308X machine spec, by sweeping Qwen3.8-27B's tokenizer on this host and merging it with the device readings of one real engine start recorded in the script. Prints `validate`'s verdict and `explain`'s fields split into measured and declared. |
+| `mi308x_spec.py` | GPU container, node 18 or hjbog-srdc-39 | `python3 scripts/compass/mi308x_spec.py`: rebuild `machines/mi308x-hjbog18.json`, the node-18 MI308X machine spec, by sweeping Qwen3.8-27B's tokenizer on this host and merging it with the device readings of one real engine start recorded in the script; with `COMPASS_MACHINE=mi308x-hjbog39`, the same for hjbog-srdc-39 into `machines/mi308x-hjbog39.json`. Prints `validate`'s verdict and `explain`'s fields split into measured and declared. |
 | `cpu_gate_exclude.txt` | — | **29** excluded test files in two marked sections: **28 GENERATED** (`# BEGIN GENERATED`, driver-dependent at *collection* time; never hand-edit — `regen_cpu_gate_exclude.sh` rewrites it wholesale) + **1 MANUAL** (`# BEGIN MANUAL`, collects cleanly then fails on a driver call, so the regenerator cannot see it). The MANUAL section **is** hand-edited; every entry must carry its observed failure above it. |
 | `gpu_gate_triggers.txt` | — | **30** source paths that no *running* CPU-tier test names. Generated, not hand-written; matched by `gate_cpu.sh`. A trailing `/` matches a subtree. |
 | `gpu_gate_known_failures.txt` | — | The known-failing GPU node-ids at `gate_gpu.sh`'s `BASE_COMMIT`, verbatim. Its line count and `BASE_FAILED` are two statements of one fact; `gate_gpu.sh` refuses to run if they disagree. |
@@ -552,12 +552,21 @@ fit under `unfitted`.
 Calibration cells replay traces the graded cells do not: `FIRST_SESSION=256
 SESSIONS=137` against graded traces 0 to 255, by the
 [owner's ruling on #627](https://github.com/jgong5/ATOM/issues/627#issuecomment-6096543740).
+`calib_capture.sh RUN_FILE OUT_DIR` captures them: the real cells one at a time,
+each with the host load and the GPU's processes at its start and end; its header
+lists its environment.
 Given two or more records, the command also prints each form's error on every
 record under a law fitted on the others, per decode rung and prefill token band.
 
-`scripts/compass/laws/qwen3.8-27b-tp1-mi308x-hjbog18.json` is the `history` form
-fitted on the five stage-2 calibration cells (concurrency 1, 4, 16, 64 and 256)
-on node 18; a stage-2 run file holds it under `law`.
+`scripts/compass/laws/qwen3.8-27b-tp1-mi308x-hjbog39.json` is the `history` form
+with the host laws (`host`), labelled by device time, fitted on these
+hjbog-srdc-39 records in this order: concurrency 1, 4, 16, 64 and 256 as
+`calib_capture.sh` captured them at f454bc71a, then 64 and 256 captured at
+3b32a9bd5 with `AIPERF_EXTRA_ARGS="--trajectory-start-min-ratio 0
+--trajectory-start-max-ratio 0"`, which start every trajectory at its first
+turn so those cells decode at rungs 16 and up. Its host key is the one at
+3b32a9bd5: `host_key` gives f454bc71a's tree the same `atom` digest, so the
+earlier records were fitted with that key in place of the one they carry.
 
 ## Cost accuracy on a real run's own steps — `validate.cost`
 

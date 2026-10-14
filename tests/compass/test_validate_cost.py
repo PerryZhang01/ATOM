@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
-"""Cost accuracy: a known law priced on a record whose periods it wrote.
+"""Cost accuracy: a known law priced on a record whose device windows it wrote.
 
-Each record is the JSON lines a real runner writes, its `t_enter_ns` laid out
-so each step's period is the law's price, times a stretch where one is
-planted. It is read by `parity.read` and priced by `CoarseBackend.estimate`.
+Each record is the JSON lines a real runner writes, each step's device busy
+time (`d_busy_ns`) the law's price, times a stretch where one is planted. It
+is read by `parity.read` and priced by `CoarseBackend.estimate`.
 """
 
 import json
@@ -56,6 +56,7 @@ def _record(directory, steps, stretch=None, idle_after=()):
     for i, (rows, rung) in enumerate(steps):
         if i - 1 in idle_after:
             owner += 1
+        busy = round(_price(rows) * stretch.get(i, 1.0) * 1e9)
         lines.append(
             {
                 "step": i,
@@ -67,10 +68,13 @@ def _record(directory, steps, stretch=None, idle_after=()):
                 "rows": [list(r) for r in rows],
                 "rung": rung,
                 "t_enter_ns": t,
-                "t_exit_ns": t + 1,
+                "t_launch_ns": [t, t],
+                "t_recv_ns": [t, t],
+                "d_busy_ns": busy,
+                "t_exit_ns": t + busy,
             }
         )
-        t += round(_price(rows) * stretch.get(i, 1.0) * 1e9)
+        t += busy
     (directory / "dp0.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
     return directory
 
@@ -80,7 +84,7 @@ def test_the_step_that_moves_the_total_is_held_out_and_the_spread_reported(tmp_p
     record = _record(tmp_path / "steps", _steps(), stretch={4: 0.2})
     report = cost_accuracy(record, LAW)
 
-    assert report["cut"] == {"idle": 0, "mixed": 0, "last": 1}
+    assert report["cut"] == {"exposed": 0, "mixed": 0}
     assert report["extrapolated"] == {} and report["refused"] == {}
     prefill = report["fitted"]["prefill"]
     assert prefill["steps"] == 10
@@ -93,7 +97,7 @@ def test_the_step_that_moves_the_total_is_held_out_and_the_spread_reported(tmp_p
     assert low["p90"] > 0.2 and low["p50"] == pytest.approx(0.0, abs=1e-9)
     assert prefill["bands"]["prefill tokens 512-2048"]["within_10pct"] == 1.0
     decode = report["fitted"]["decode"]
-    assert decode["steps"] == 9 and set(decode["bands"]) == {"decode rung 1"}
+    assert decode["steps"] == 10 and set(decode["bands"]) == {"decode rung 1"}
     assert decode["measured_s"] == pytest.approx(decode["priced_s"], rel=1e-9)
 
     # Two under-priced steps after one at its price, so neither leads: step 5
@@ -108,17 +112,17 @@ def test_extrapolated_and_refused_steps_are_reported_apart(tmp_path):
     rung2 = ([(1, 3000, True), (1, 4000, True)], 2)  # no vector for rung 2
     steps[3:3] = [wide]
     steps[14:14] = [rung2]
-    record = _record(tmp_path / "steps", steps, stretch={3: 2.0}, idle_after={8})
+    record = _record(tmp_path / "steps", steps, stretch={3: 2.0})
     report = cost_accuracy(record, LAW)
 
-    assert report["cut"] == {"idle": 1, "mixed": 0, "last": 1}
+    assert report["cut"] == {"exposed": 0, "mixed": 0}
     (extrapolated,) = report["extrapolated"].values()
     assert extrapolated["steps"] == 1
     assert extrapolated["measured_s"] == pytest.approx(2 * _price(wide[0]), rel=1e-9)
     assert extrapolated["on_totals"] == pytest.approx(-0.5, rel=1e-9)
     assert extrapolated["bands"]["prefill tokens 2048-8192"]["within_10pct"] == 0.0
     fitted = report["fitted"]["prefill"]
-    assert fitted["steps"] == 9  # step 9, after the idle gap, is fitted
+    assert fitted["steps"] == 10
     assert fitted["on_totals"] == pytest.approx(0.0, abs=1e-9)
     assert report["refused"] == {
         "decode rung 2": {"steps": 1, "measured_s": pytest.approx(_price(rung2[0]))}
@@ -179,13 +183,13 @@ def test_a_leading_slow_step_under_the_factor_is_warm_and_mid_record_is_not(tmp_
     prefill, decode = report["fitted"]["prefill"], report["fitted"]["decode"]
     assert prefill["steps"] == 8 and prefill["held_out_step"] == 4
     assert prefill["held_out"] == pytest.approx(0.0, abs=1e-9)
-    assert decode["steps"] == 8
+    assert decode["steps"] == 9
     assert decode["measured_s"] == pytest.approx(decode["priced_s"], rel=1e-9)
 
     # A leading step that ran in half its price is fast, not warm: it stays in the totals.
     report = cost_accuracy(_record(tmp_path / "fast", steps, {10: 0.5}), LAW)
     assert report["warm"] == []
-    assert report["fitted"]["decode"]["steps"] == 9
+    assert report["fitted"]["decode"]["steps"] == 10
 
 
 def test_a_leading_slow_step_is_judged_by_the_law_s_scatter_not_the_record_s(

@@ -17,6 +17,11 @@ pacing timer, a phase deadline, the idle watchdog) is pending or the run is
 finishing; between phases aiperf works on the wall clock and the simulation
 waits for it.
 
+When aiperf cancels the requests in flight at its grace deadline, the traffic
+LP closes them at that time (`cancel`): each one's cancel is a stamped request
+of its own, which its worker sends and the frontend answers by hanging the
+cancelled request up at the cancel's arrival.
+
 A request that errors mid-stream never reports the events after its last read.
 When released events stay unreported for ``DIAG_S`` wall seconds while an
 errored request is still open, the hold fails, naming those requests.
@@ -53,9 +58,14 @@ class UnansweredRequests(RuntimeError):
 
 class TrafficLP:
     def __init__(
-        self, rt: LPRuntime, prefix: str, http: str = HTTP, stream: str = STREAM
+        self,
+        rt: LPRuntime,
+        prefix: str,
+        http: str = HTTP,
+        stream: str = STREAM,
+        cancels: bool = True,
     ) -> None:
-        self.rt, self.http, self.stream = rt, http, stream
+        self.rt, self.http, self.stream, self.cancels = rt, http, stream, cancels
         stamps, reports = addresses(prefix)
         ctx = zmq.asyncio.Context.instance()
         self._pub = ctx.socket(zmq.XPUB)
@@ -65,6 +75,10 @@ class TrafficLP:
         self._pull.bind(reports)
         self._subscribers = 0
         self.open: dict[tuple, None] = {}  # sent, return not yet passed to aiperf
+        self.cancelled: set[tuple] = set()  # closed by `cancel`
+        self.closed: dict[tuple, None] = {}  # cancelled, return not yet passed
+        self._written: set[tuple] = set()  # cancels a worker has written
+        self._caught_up: list[asyncio.Future] = []
         self._reports: dict[int, tuple] = {}  # stream seq -> (key, final)
         # key -> its return, for aiperf; None once passed
         self._held: dict[tuple, object] = {}
@@ -99,6 +113,9 @@ class TrafficLP:
             os.environ[ADDRESS_ENV],
             http.name,
             stream.name,
+            # ponytail: behind a PD router a cancel would reach frontend-P, not
+            # the frontend-D that streams, so aiperf's hang-up stays unstamped.
+            http.target == stream.source,
         )
 
     # ---- the clock ClockPacedLoopScheduler paces on ----
@@ -133,6 +150,31 @@ class TrafficLP:
         self._pub.send_pyobj((key, arrival, seq))
         self._changed.set()
 
+    async def cancel(self) -> None:
+        """aiperf cancels what is in flight: close every open request.
+
+        Once aiperf has caught up with the clock, stamps one cancel per open
+        request, publishes it for the worker that sent the request, and returns
+        once every one is written. The hold passes each closed request's return
+        before the next clock call; its stream events still to come are dropped.
+        """
+        if not self.cancels:
+            return
+        fut = asyncio.get_running_loop().create_future()
+        self._caught_up.append(fut)
+        self._changed.set()
+        await fut
+        keys = list(self.open)
+        self.open.clear()
+        self.cancelled.update(keys)
+        self.closed.update(dict.fromkeys(keys))
+        for key in keys:
+            arrival, seq = self.rt.stamp_send(self.http)
+            self._pub.send_pyobj((key, arrival, seq, "cancel"))
+        while not self._written.issuperset(keys):
+            self._changed.clear()
+            await self._changed.wait()
+
     def hold(self, callback):
         """aiperf's return callback, behind the hold."""
 
@@ -165,10 +207,16 @@ class TrafficLP:
 
     async def _read_reports(self) -> None:
         while True:
-            key, seq, arrival, final = await self._pull.recv_pyobj()
-            self.rt.check_arrival(self.stream, arrival, seq)
-            self._reports[seq] = (key, final)
+            report = await self._pull.recv_pyobj()
             self._changed.set()
+            if len(report) == 1:  # a worker wrote this request's cancel
+                self._written.add(report[0])
+                continue
+            key, seq, arrival, final = report
+            # A cancelled request's seq may be dropped already, before its report.
+            if key not in self.cancelled:
+                self.rt.check_arrival(self.stream, arrival, seq)
+            self._reports[seq] = (key, final)
 
     async def _pass_returns(self) -> None:
         while True:
@@ -201,22 +249,35 @@ class TrafficLP:
         self._waiters.clear()
         spins = 0
         while True:
+            # A reader that raised fails the run instead of leaving the hold waiting.
+            for task in self._tasks:
+                if task.done():
+                    task.result()
             unreported, unreturned = [], []
             # A handled seq leaves the runtime's released set, so a pass scans
-            # only the open events, not every event of the run.
+            # only the open events, not every event of the run. It stops at the
+            # first event it cannot handle yet, so returns pass in stream order
+            # whatever order they reach the hold in.
             for seq in sorted(self.rt.released[self.stream]):
-                if seq not in self._reports:
+                key, final = self._reports.get(seq, (None, False))
+                if key is None and self.open:
                     unreported.append(seq)
-                    continue
-                key, final = self._reports[seq]
-                if final and key not in self._held:
-                    unreturned.append(key)
-                    continue
-                self.rt.released[self.stream].discard(seq)
-                if final:
+                    break
+                # With no request open, an unreported event is a closed one's.
+                if final and key not in self.cancelled:
+                    if key not in self._held:
+                        unreturned.append(key)
+                        break
                     self.open.pop(key, None)
                     if (ret := self._held.pop(key)) is not None:
                         self._returns.put_nowait(ret)
+                self.rt.released[self.stream].discard(seq)
+            unreturned += [key for key in self.closed if key not in self._held]
+            if self.closed and not unreturned:
+                for key in self.closed:
+                    if (ret := self._held.pop(key)) is not None:
+                        self._returns.put_nowait(ret)
+                self.closed.clear()
             if unreported or unreturned or self._passing:
                 self._changed.clear()
                 try:
@@ -241,7 +302,12 @@ class TrafficLP:
                 continue
             ready = _ready_tasks()
             if not ready:
-                return
+                if not self._caught_up:
+                    return
+                for fut in self._caught_up:
+                    fut.set_result(None)
+                self._caught_up.clear()
+                continue
             spins += 1
             if spins == SPIN_DIAG:
                 logger.warning("traffic: tasks %s never block; still waiting", ready)

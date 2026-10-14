@@ -138,12 +138,13 @@ class LPRuntime:
         self.endpoints: dict[str, str] = {}  # address -> channel kind it carries
         self.relays: dict[str, RelayQueue] = {}  # channel -> the engine's output relay
         self.calls = 0  # clock calls made, TAR and NER
+        self.asked = False  # a next-event request is out, its grant not taken
         self.idle_calls = 0  # `calls` when the step loop last passed its idle point
         # The frontend's event loop, once built: a frame a thread takes is a job on it.
         self.loop = None
-        # Clock calls refused off the owner thread, as run-summary reasons
-        # ``clock:<call> from <thread>``: a caller such as an output thread may
-        # log and drop the exception.
+        # Clock calls refused, as run-summary reasons ``clock:<call> ...``: a
+        # caller such as an output thread or an HTTP handler may log and drop
+        # the exception.
         self.refusals: list[str] = []
 
     def start_run(self) -> None:
@@ -160,8 +161,19 @@ class LPRuntime:
         return self.now if t is None else t
 
     def stamp_send(self, ch: str) -> tuple[float, int]:
-        """Register one message on `ch` as produced now; returns its ``(arrival, seq)``."""
+        """Register one message on `ch` as produced now; returns its ``(arrival, seq)``.
+
+        Refused while a next-event request is out, as a run-summary reason
+        ``clock:stamp_send on <channel> while a next-event request is out``: the
+        authority may already have granted other LPs past this LP's clock, so
+        the send could only be backdated, or stamped at whichever grant is out
+        when, in wall time, the handler that sends runs.
+        """
         self._require_owner("stamp_send")
+        if self.asked:
+            why = f"stamp_send on {ch} while a next-event request is out"
+            self.refusals.append(f"clock:{why}")
+            raise RuntimeError(f"{self.me}: {why}, so no time can be given to it")
         with self.lock:
             seq = self.next_seq[ch]
             self.next_seq[ch] = seq + 1
@@ -191,10 +203,12 @@ class LPRuntime:
         clock stands still between the two."""
         self._require_open("next_event")
         self._ca_send("NER", t, t_daemon)
+        self.asked = True
 
     def take_grant(self) -> float:
         """Wait for the grant of the request `ask_next_event` sent; returns it."""
         G, released = self.conn.recv()
+        self.asked = False
         self._step_through(G, released)
         if G == float("inf"):
             self.end_run()

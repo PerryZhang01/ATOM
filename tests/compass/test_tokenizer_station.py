@@ -173,27 +173,43 @@ def test_five_jobs_at_width_two_predicted_beside_observed(loop):
     assert [row[2] for row in rows] == pytest.approx([p[1] for p in predicted])
 
 
-def test_a_job_finishing_before_an_earlier_one_gets_its_own_completion(loop):
+def test_jobs_at_one_instant_draw_request_ids_in_submission_order(loop):
+    # Job 0's real thread is the slow one: a job run beside it would finish
+    # first and draw the lower request id.
     encode = wrap_encode(lambda text: list(range(int(text))), _entry())
-    ex, release = _executor(loop, width=2)
+
+    def slow_first(text):
+        if text == "100":
+            time.sleep(0.2)
+        return encode(text)
+
+    config = SimpleNamespace(
+        hf_config=SimpleNamespace(model_type="llama"), speculative_config=None
+    )
+    proc = llm_engine.InputOutputProcessor(
+        config, SimpleNamespace(encode=slow_first), 16
+    )
+    _, release = _executor(loop, width=2)
 
     async def request(n):
         def do_preprocess():
-            jobs = ex.station.jobs  # job 0 ends after job 1 is marked done
-            while n == 100 and not (len(jobs) > 1 and jobs[1][2]):
-                time.sleep(0.001)
-            return encode(str(n))
+            return proc.preprocess(str(n), SamplingParams())
 
-        await loop.run_in_executor(None, do_preprocess)
-        return loop.time()
+        seq = await loop.run_in_executor(None, do_preprocess)
+        return loop.time(), seq.id
 
     async def run():
         return await asyncio.wait_for(asyncio.gather(*map(request, (100, 50))), 10)
 
     try:
-        assert loop.run_until_complete(run()) == pytest.approx([0.201, 0.101])
+        clock.install(loop.rt)
+        (c0, id0), (c1, id1) = loop.run_until_complete(run())
     finally:
+        clock.install(None)
         release()
+    # Both start at 0 on the two servers: each completes at its own charge.
+    assert [c0, c1] == pytest.approx([0.201, 0.101])
+    assert id0 < id1
 
 
 def test_a_wait_job_submitted_during_the_run_passes_through(loop):

@@ -3,7 +3,7 @@
 
 Each run drives the real `Scheduler` and the simulated runner's `forward` in the
 engine's order -- schedule, forward, postprocess -- one scheduler per DP rank,
-with every prompt distinct.
+with every prompt distinct unless a test says otherwise.
 """
 
 import hashlib
@@ -299,9 +299,29 @@ def test_requests_behind_one_system_prompt_keep_their_keys_at_every_budget(
     assert keys[0] == keys[1] == keys[2] == {_key(prompt(i)) for i in range(4)}
 
 
-def test_two_requests_with_one_prompt_are_refused(tmp_path, monkeypatch):
-    with pytest.raises(ValueError, match="with the same prompt"):
-        _drive(tmp_path, monkeypatch, {0: [0, 1]}, lambda i: _prompt(0))
+def test_two_requests_with_one_prompt_are_named_in_final_chunk_order(
+    tmp_path, monkeypatch
+):
+    for side in ("real", "simulated"):
+        built = _drive(tmp_path / side, monkeypatch, {0: [0, 1]}, lambda i: _prompt(0))
+    batches, sequences, _ = built[0]
+    finals = list(
+        dict.fromkeys(
+            req_id
+            for b in batches
+            for i, req_id in enumerate(b.req_ids)
+            if b.is_final_chunk is not None and b.is_final_chunk[i]
+        )
+    )
+    key = _key(_prompt(0))
+    lines = (tmp_path / "simulated" / "dp0.jsonl").read_text().splitlines()
+    named = [pair for line in lines for pair in json.loads(line)["named"]]
+    assert named == [[finals[0], key], [finals[1], f"{key}.1"]]
+    assert sorted(finals) == sorted(sequences)
+    steps = read(tmp_path / "simulated")[0]
+    assert {row[0] for step in steps for row in step["batch"]} == {key, f"{key}.1"}
+    report = compare(tmp_path / "real", tmp_path / "simulated")
+    assert report["first_divergence"] == {0: None}
 
 
 def test_a_window_that_does_not_continue_the_last_is_refused(tmp_path, monkeypatch):

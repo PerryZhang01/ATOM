@@ -10,6 +10,9 @@ unchanged. A prefill response the router relays to decode carries its stamp as
 the ``compass`` field of its ``kv_transfer_params``, ``a:<arrival>;s:<seq>``,
 which the router copies onto the decode request. The arrival is written as
 ``repr(float)``, so it parses back exactly.
+
+A client's cancel of a request is itself a stamped request to the same URL,
+whose body names the cancelled request's seq: ``{"compass_cancel": <seq>}``.
 """
 
 import json
@@ -108,3 +111,17 @@ def with_relay_stamp(body: bytes, stamp) -> bytes:
     arrival, seq = stamp()
     doc["kv_transfer_params"]["compass"] = f"a:{arrival!r};s:{seq}"
     return json.dumps(doc).encode()
+
+
+_CANCEL = re.compile(rb'\{"compass_cancel": (\d+)\}')
+
+
+def cancel_body(seq: int) -> bytes:
+    """The body of a stamped cancel of the request with http seq `seq`."""
+    return b'{"compass_cancel": %d}' % seq
+
+
+def cancel_seq(body: bytes) -> int | None:
+    """The http seq a cancel's body names; None for any other body."""
+    m = _CANCEL.fullmatch(body)
+    return None if m is None else int(m[1])

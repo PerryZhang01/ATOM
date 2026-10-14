@@ -83,8 +83,9 @@ class CompassAgenticReplay(AgenticReplayStrategy):
 class ClockPhaseRunner(PhaseRunner):
     """``PhaseRunner`` whose sending and grace deadlines fall on the Compass clock.
 
-    The cancel-drain timeouts stay on the wall clock: they bound a wedged
-    drain, not the simulated phase.
+    So does the drain after the cancel, through ``ClockAsyncio``: it ends early
+    only once no branch work is pending, so a run whose subagent children are
+    still tracked drains for the full timeout, real or simulated.
     """
 
     async def _wait_for_event_with_timeout(
