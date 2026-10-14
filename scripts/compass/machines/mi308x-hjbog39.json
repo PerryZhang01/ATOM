@@ -26,10 +26,10 @@
         "applies_to": [
           "Qwen3_5ForConditionalGeneration"
         ],
-        "encode_fixed_s": 1.5608247097135237e-05,
-        "encode_tokens_per_s": 658885.0727878775,
-        "decode_fixed_s": 1.9072049329058643e-06,
-        "decode_tokens_per_s": 4174064.0793044483,
+        "encode_fixed_s": 1.405392759881926e-05,
+        "encode_tokens_per_s": 650137.476371095,
+        "decode_fixed_s": 2.078464423903795e-06,
+        "decode_tokens_per_s": 4248418.429588303,
         "derate": 1.0
       }
     ],
@@ -55,7 +55,7 @@
     },
     "runtime_constants": {
       "driver_and_collective_reserve_bytes": {
-        "1": 1291845632
+        "1": 1277165568
       },
       "allocator_retained_after_load_bytes": {
         "1": 14850080
