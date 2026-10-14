@@ -50,8 +50,8 @@ it would travel into a spec looking exactly like a measurement.
 obtained.** This function composes a fragment and reads a topology. It does not
 encode or decode anything, so it cannot know whether the rates it was handed
 were swept on a loaded tokenizer, copied out of an older spec or typed in -- and
-`provenance.method` is what a merge refusal quotes and what a run artifact
-carries as the numbers' source. A method stamped here would be this function
+`provenance.origin` is what a merge refusal quotes and what a run artifact
+carries as the numbers' source. An origin stamped here would be this function
 asserting a measurement it did not take, over data it received. So the caller
 states it, with no default to fall through to, and the core counts read here
 ride along under whatever the caller states about its own rates.
@@ -210,14 +210,15 @@ def tokenizer_fragment(
     machine: str,
     authored_by: str,
     date: str,
-    method: str,
+    origin: str,
+    subject: Mapping[str, Any] | None = None,
     source: str = "tokenizer",
     processors: str = PROCESSORS,
 ) -> Fragment:
     """A fragment of the entries a caller measured and the processor read here.
 
-    `method` is how those entries were obtained, and it has no default because
-    nothing in this function establishes one.
+    `origin` is how those entries were obtained, and it has no default because
+    nothing in this function establishes one; `subject` is what a probe ran on.
     """
     if not entries:
         raise SpecRefusal(
@@ -233,7 +234,8 @@ def tokenizer_fragment(
     document = {
         "schema_version": SCHEMA_VERSION,
         "name": machine,
-        "provenance": {"authored_by": authored_by, "date": date, "method": method},
+        "provenance": {"authored_by": authored_by, "date": date, "origin": origin}
+        | ({"subject": dict(subject)} if subject else {}),
         "host": {"cpu": cpu_counts(processors), "tokenizers": list(entries)},
     }
     return Fragment.from_mapping(document, source)

@@ -4,11 +4,151 @@
   "provenance": {
     "authored_by": "compass agent for jgong5",
     "date": "2026-10-12",
-    "method": "mixed",
+    "origin": "mixed",
+    "origins": {
+      "host.cpu.cores_physical": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "source_root": "commit:e575211fa"
+      },
+      "host.cpu.cores_logical": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "source_root": "commit:e575211fa"
+      },
+      "device.name": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "width": 1,
+        "source_root": "commit:a1cac25a6"
+      },
+      "device.arch": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "width": 1,
+        "source_root": "commit:a1cac25a6"
+      },
+      "device.count_per_node": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "width": 1,
+        "source_root": "commit:a1cac25a6"
+      },
+      "device.memory.capacity_bytes": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "width": 1,
+        "source_root": "commit:a1cac25a6"
+      },
+      "device.runtime_constants.driver_and_collective_reserve_bytes[1]": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "width": 1,
+        "source_root": "commit:a1cac25a6"
+      },
+      "device.runtime_constants.allocator_retained_after_load_bytes[1]": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "width": 1,
+        "source_root": "commit:a1cac25a6"
+      },
+      "device.runtime_constants.persistent_forward_buffer_bytes": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "width": 1,
+        "source_root": "commit:a1cac25a6"
+      },
+      "device.activations": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "width": 1,
+        "source_root": "commit:a1cac25a6"
+      },
+      "device.software_pinned_to.rocm": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "width": 1,
+        "source_root": "commit:a1cac25a6"
+      },
+      "device.software_pinned_to.aiter": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "width": 1,
+        "source_root": "commit:a1cac25a6"
+      },
+      "device.software_pinned_to.rccl": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "width": 1,
+        "source_root": "commit:a1cac25a6"
+      },
+      "host.ipc.zmq_roundtrip_s": {
+        "origin": "assumed"
+      },
+      "host.ipc.shm_broadcast_s": {
+        "origin": "assumed"
+      },
+      "host.admission_fixed_s": {
+        "origin": "assumed"
+      },
+      "device.memory.bandwidth_bytes_per_s": {
+        "origin": "assumed"
+      },
+      "device.compute.bf16_flops": {
+        "origin": "assumed"
+      },
+      "device.compute.fp8_flops": {
+        "origin": "assumed"
+      },
+      "device.runtime_constants.cudagraph_pool.w1_base_bytes": {
+        "origin": "assumed"
+      },
+      "device.runtime_constants.cudagraph_pool.w1_bytes_per_captured_token": {
+        "origin": "assumed"
+      },
+      "device.runtime_constants.cudagraph_pool.w_gt1_flat_bytes": {
+        "origin": "assumed"
+      },
+      "interconnect.intra_node.topology": {
+        "origin": "assumed"
+      },
+      "interconnect.intra_node.link_bandwidth_bytes_per_s": {
+        "origin": "assumed"
+      },
+      "interconnect.intra_node.link_latency_s": {
+        "origin": "assumed"
+      },
+      "interconnect.inter_node.link_bandwidth_bytes_per_s": {
+        "origin": "assumed"
+      },
+      "interconnect.inter_node.link_latency_s": {
+        "origin": "assumed"
+      },
+      "interconnect.router_relay_s": {
+        "origin": "assumed"
+      },
+      "device.memory.derate": {
+        "origin": "assumed"
+      },
+      "device.compute.derate": {
+        "origin": "assumed"
+      },
+      "interconnect.intra_node.derate": {
+        "origin": "assumed"
+      },
+      "interconnect.inter_node.derate": {
+        "origin": "assumed"
+      },
+      "host.tokenizers[qwen3.8-27b fast]": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "source_root": "commit:e575211fa"
+      }
+    },
     "fragments": [
       "tokenizer",
       "device",
-      "declared"
+      "assumed"
     ],
     "notes": "one Qwen3.8-27B TP1 start at a1cac25a6 | no probe fills these"
   },

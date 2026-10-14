@@ -99,7 +99,7 @@ DOCUMENT = {
     "provenance": {
         "authored_by": "tests/compass/test_memory_readings.py",
         "date": "2026-09-22",
-        "method": "declared",
+        "origin": "assumed",
     },
     "host": {
         "cpu": {"cores_physical": 96, "cores_logical": 192},
