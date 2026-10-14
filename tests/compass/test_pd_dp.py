@@ -50,6 +50,13 @@ def run_pd_dp(out: Path, seed: str) -> dict:
     """One run under `pd_sim.sh` at DP width 2 on each side."""
     out.mkdir()
     ports = {name: _free_port() for name in PORTS}
+    # The write requests take DP * DP ports from KV_WRITE_REQ_PORT; successive
+    # free ports are often a step of 2 apart, so the next one may be among them.
+    kv = "KV_WRITE_REQ_PORT"
+    while {p for n, p in ports.items() if n != kv} & set(
+        range(ports[kv], ports[kv] + DP * DP)
+    ):
+        ports[kv] = _free_port()
     run_file = _run_file(
         out,
         clock_endpoint=f"tcp://127.0.0.1:{ports['CLOCK_PORT']}",
