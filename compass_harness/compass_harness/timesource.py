@@ -85,9 +85,6 @@ class ClockAsyncio(metaclass=_FallsThroughToAsyncio):
     it beyond the cancel drain include the accelerated-warmup methods' own
     ``wait_for`` calls."""
 
-    sleep = staticmethod(asyncio.sleep)
-    CancelledError = asyncio.CancelledError
-
     @staticmethod
     async def wait_for(aw, timeout: float):
         task = asyncio.ensure_future(aw)

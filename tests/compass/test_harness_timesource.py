@@ -315,9 +315,9 @@ def test_the_benchmark_id_repeats_from_run_to_run():
 
 
 def test_a_runner_name_clockasyncio_does_not_pin_resolves_to_the_real_asyncio():
-    """``_cancel_accelerated_warmup_drain`` (an unpinned runner method) catches
-    ``asyncio.TimeoutError`` after an ``asyncio.wait_for`` that did not return
-    in time; ``ClockAsyncio`` defines ``wait_for`` but not ``TimeoutError``, so
-    the rebound module must still produce the real one."""
-    assert ClockAsyncio.TimeoutError is asyncio.TimeoutError
-    assert ClockAsyncio.Event is asyncio.Event
+    """Every public ``asyncio`` name ``ClockAsyncio`` does not define itself
+    resolves to the real ``asyncio`` object."""
+    unpinned = [n for n in asyncio.__all__ if n not in vars(ClockAsyncio)]
+    assert [
+        n for n in unpinned if getattr(ClockAsyncio, n) is not getattr(asyncio, n)
+    ] == []
