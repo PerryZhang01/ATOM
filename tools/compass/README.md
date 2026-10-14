@@ -62,7 +62,7 @@ a `unit`, and put `bounds` beside the grid in the bundle
 (`atom/compass/run/step_grid.py`).
 
 **`coverage`** loads the bundle with `run/step_grid.py::load`. **RUN** is the run
-file the graded run will use, for its `step_fit` key and its `machine`.
+file the graded run will use, for its `step_grid` key and its `machine`.
 **CONFIG** is that run's resolved ATOM config as `load` reads it, a JSON
 object with the `Config` fields `model`, `tensor_parallel_size`,
 `enforce_eager`, `capture_sizes`, `max_num_seqs`, `max_num_batched_tokens`,

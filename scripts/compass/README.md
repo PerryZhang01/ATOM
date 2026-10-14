@@ -543,7 +543,7 @@ the log of one rank.
 ## Tier a's law from real cells — `step_linear_fit`
 
 `python -m atom.compass.backends.step_linear_fit RECORD... --out LAW [--form FORM] [--dp N]`
-fits the law a run file's `law` key holds (`atom/compass/backends/step_linear.py`) from
+fits the law a run file's `step_linear` key holds (`atom/compass/backends/step_linear.py`) from
 the step records of real cells, `OUT_DIR/steps/dp0.jsonl` of `REAL=1
 cctraces_sim.sh` runs. The module's docstring states the label, what is cut and
 how outliers are dropped; the written law also carries, per vector, its samples,
@@ -589,5 +589,5 @@ metrics, their distances and the verdicts.
 ## A cell graded from every source — `python -m atom.compass.validate`
 
 `python -m atom.compass.validate CELL...` joins the commands above and the run
-summaries into one table per cell directory: `law/`, `p97/` and two or more
+summaries into one table per cell directory: `step_linear/`, `p97/` and two or more
 `real*/` runs of one workload. Its docstring lists the rows.

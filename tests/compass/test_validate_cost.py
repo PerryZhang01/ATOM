@@ -98,7 +98,7 @@ def test_the_step_that_moves_the_total_is_held_out_and_the_spread_reported(tmp_p
     assert prefill["bands"]["prefill tokens 512-2048"]["within_10pct"] == 1.0
     decode = report["fitted"]["decode"]
     assert decode["steps"] == 10 and set(decode["bands"]) == {"decode rung 1"}
-    assert decode["measured_s"] == pytest.approx(decode["priced_s"], rel=1e-9)
+    assert decode["real_s"] == pytest.approx(decode["priced_s"], rel=1e-9)
 
     # Two under-priced steps after one at its price, so neither leads: step 5
     # is short by the most seconds, step 1 by the largest ratio.
@@ -118,14 +118,14 @@ def test_extrapolated_and_refused_steps_are_reported_apart(tmp_path):
     assert report["cut"] == {"exposed": 0, "mixed": 0}
     (extrapolated,) = report["extrapolated"].values()
     assert extrapolated["steps"] == 1
-    assert extrapolated["measured_s"] == pytest.approx(2 * _price(wide[0]), rel=1e-9)
+    assert extrapolated["real_s"] == pytest.approx(2 * _price(wide[0]), rel=1e-9)
     assert extrapolated["on_totals"] == pytest.approx(-0.5, rel=1e-9)
     assert extrapolated["bands"]["prefill tokens 2048-8192"]["within_10pct"] == 0.0
     fitted = report["fitted"]["prefill"]
     assert fitted["steps"] == 10
     assert fitted["on_totals"] == pytest.approx(0.0, abs=1e-9)
     assert report["refused"] == {
-        "decode rung 2": {"steps": 1, "measured_s": pytest.approx(_price(rung2[0]))}
+        "decode rung 2": {"steps": 1, "real_s": pytest.approx(_price(rung2[0]))}
     }
 
 
@@ -154,7 +154,7 @@ def test_a_one_off_slow_step_is_named_warm_mid_record_and_enters_no_total(
         {
             "step": 5,
             "band": "prefill tokens 512-2048",
-            "measured_s": pytest.approx(40 * _price(steps[5][0]), rel=1e-6),
+            "real_s": pytest.approx(40 * _price(steps[5][0]), rel=1e-6),
             "priced_s": pytest.approx(_price(steps[5][0]), rel=1e-9),
         }
     ]
@@ -177,14 +177,14 @@ def test_a_leading_slow_step_under_the_factor_is_warm_and_mid_record_is_not(tmp_
     report = cost_accuracy(_record(tmp_path / "steps", steps, stretch), LAW)
 
     assert [w["step"] for w in report["warm"]] == [0, 1, 10]
-    assert report["warm"][0]["measured_s"] == pytest.approx(
+    assert report["warm"][0]["real_s"] == pytest.approx(
         2 * _price(steps[0][0]), rel=1e-6
     )
     prefill, decode = report["fitted"]["prefill"], report["fitted"]["decode"]
     assert prefill["steps"] == 8 and prefill["held_out_step"] == 4
     assert prefill["held_out"] == pytest.approx(0.0, abs=1e-9)
     assert decode["steps"] == 9
-    assert decode["measured_s"] == pytest.approx(decode["priced_s"], rel=1e-9)
+    assert decode["real_s"] == pytest.approx(decode["priced_s"], rel=1e-9)
 
     # A leading step that ran in half its price is fast, not warm: it stays in the totals.
     report = cost_accuracy(_record(tmp_path / "fast", steps, {10: 0.5}), LAW)

@@ -182,22 +182,23 @@ def test_warm_steps_are_not_fitted(tmp_path):
 
 
 def test_three_forms_are_scored_on_a_record_held_out_of_their_fit(tmp_path):
-    # Prefill pays a history term the law's form cannot see.
+    # Prefill pays a history term the base form cannot see.
     records = [
         _record(tmp_path / f"dp0-{s}.jsonl", _steps(s, history=2e-7)) for s in (3, 4, 5)
     ]
-    scores = {form: held_out(records, form) for form in ("law", "history", "shared")}
+    scores = {form: held_out(records, form) for form in ("base", "history", "shared")}
 
     history = np.abs(
         np.concatenate([e for b, e in scores["history"].items() if "prefill" in b])
     )
     plain = np.abs(
-        np.concatenate([e for b, e in scores["law"].items() if "prefill" in b])
+        np.concatenate([e for b, e in scores["base"].items() if "prefill" in b])
     )
     assert history.max() < 1e-6 < np.median(plain)
-    assert {b for b in scores["law"]} == {b for b in scores["shared"]}
+    assert {b for b in scores["base"]} == {b for b in scores["shared"]}
     assert (
-        "decode rung 2" in scores["law"] and "prefill tokens 2048-8192" in scores["law"]
+        "decode rung 2" in scores["base"]
+        and "prefill tokens 2048-8192" in scores["base"]
     )
 
     shared = fit(records, "shared")
@@ -237,7 +238,7 @@ def test_the_command_writes_a_law_a_run_file_can_carry(tmp_path, capsys):
     law = StepLinearLaw(json.loads((tmp_path / "law.json").read_text()))
     assert "2 real records" in law.fitted_on
     out = capsys.readouterr().out
-    for form in ("law", "history", "shared"):
+    for form in ("base", "history", "shared"):
         assert f"held out, form {form}" in out
 
 

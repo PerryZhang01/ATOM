@@ -64,7 +64,7 @@ def _template(path: Path, **extra) -> Path:
         "admission_path": "serving",
         "ipc_s": 2.0**-14,
         "stream_s": 2.0**-12,
-        "coefficients": dataclasses.asdict(Coefficients()),
+        "step_stub": dataclasses.asdict(Coefficients()),
         "machine": machine,
         "parameter_count": 8_000_000_000,
         **extra,

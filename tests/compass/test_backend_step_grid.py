@@ -203,7 +203,7 @@ def test_with_one_corner_removed_the_step_refuses_naming_it(make, points, gone, 
     b, c = gone[-2:]
     assert r.refused_commands() == (
         (
-            f"cost:step-fit: the {named} holding B=37, c=600 has no measurement "
+            f"cost:step-grid: the {named} holding B=37, c=600 has no measurement "
             f"at B={b}, c={c}"
         ),
     )
@@ -233,7 +233,7 @@ def test_a_hole_under_a_roofline_floor_is_priced_by_the_roofline():
         "the decode rung 48 cell holding B=37, c=600 has no measurement at "
         "B=48, c=1024"
     )
-    assert r._priced.reasons() == {("step-fit", reason): 1}
+    assert r._priced.reasons() == {("step-grid", reason): 1}
 
 
 def test_a_decode_step_wider_than_the_widest_rung_refuses_under_a_replay_bundle():
@@ -242,7 +242,7 @@ def test_a_decode_step_wider_than_the_widest_rung_refuses_under_a_replay_bundle(
     assert r.forward(decode(B37)).predicted_s == 0.0
     assert r.refused_commands() == (
         (
-            "cost:step-fit: a decode step of 37 rows replays no graph, and a "
+            "cost:step-grid: a decode step of 37 rows replays no graph, and a "
             "replay bundle has no eager decode"
         ),
     )
@@ -280,7 +280,7 @@ def test_a_middle_chunk_is_priced_from_the_no_output_grid_and_a_final_one_never_
     assert steps == [(False, 1e-3)] * 3 + [(True, 0.0)]
     assert refused == (
         (
-            "cost:step-fit: the prefill output cell holding B=1, T=8, c=192 "
+            "cost:step-grid: the prefill output cell holding B=1, T=8, c=192 "
             "has no measurement at B=1, T=8, c=192"
         ),
     )
@@ -378,8 +378,8 @@ def test_a_negative_count_never_reaches_the_backend():
 def test_it_is_one_tier_a_line():
     assert replay().granularity is Granularity.STEP
     assert replay().describe() == (
-        "tier-a step fit, bundle replay; replay decode grid, timing scope forward; "
-        "recipe step-fit-residual v1, members unit"
+        "step grid, bundle replay; replay decode grid, timing scope forward; "
+        "recipe step-grid-residual v1, members unit"
     )
 
 

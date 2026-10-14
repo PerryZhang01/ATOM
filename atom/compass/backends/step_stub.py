@@ -89,6 +89,8 @@ from atom.compass.backends.shape import (
     sum_tokens,
 )
 
+SOURCE = "step-stub"
+
 # Carried into every term's provenance and into `describe()`, so the record an
 # artifact writes says it and not only the source that produced the record.
 DECLARED_NOTE = "declared, not measured -- a plumbing figure, not an accuracy claim"
@@ -302,7 +304,7 @@ class StepStubBackend(CostBackend):
             Provenance(
                 Species.FITTED,
                 f"{detail}; {qualifier}" if qualifier else detail,
-                "shape-stub",
+                SOURCE,
             ),
         )
 
