@@ -877,7 +877,7 @@ class NonAllocatingRunner(
         from atom.compass.parity import record_step
         from atom.model_engine.scheduler import ScheduledBatchOutput
 
-        record_step(self, batch)
+        mode = record_step(self, batch)
 
         stream = getattr(self, "_token_stream", None)
         if stream is None:
@@ -910,12 +910,17 @@ class NonAllocatingRunner(
             self._token_stream = stream
         return ScheduledBatchOutput(
             **stream.step(batch),
-            predicted_s=_group_step_seconds(self, batch, backend),
+            predicted_s=_group_step_seconds(self, batch, backend, mode),
         )
 
 
-def _group_step_seconds(runner: Any, batch: Any, backend: CostBackend) -> float:
+def _group_step_seconds(
+    runner: Any, batch: Any, backend: CostBackend, mode: Any = None
+) -> float:
     """This rank's step priced from its own batch, then the max over its DP group.
+
+    `mode` is the step's `ForwardMode` when the step record already settled
+    it; without one it is settled here, which runs the DP collective.
 
     In a run, `compass_host` composes the price, device seconds, with host time.
     The `all_reduce(MAX)` stands in for the cross-rank collectives a real
@@ -942,7 +947,8 @@ def _group_step_seconds(runner: Any, batch: Any, backend: CostBackend) -> float:
     from atom.compass.backends.cost import ProvenanceMix
     from atom.compass.backends.ladder import CostRefused
 
-    mode = forward_mode(batch, runner)
+    if mode is None:
+        mode = forward_mode(batch, runner)
     mix = vars(runner).setdefault("_priced", ProvenanceMix())
     try:
         cost = backend.estimate(batch_view(batch, mode, runner))
