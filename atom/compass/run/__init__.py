@@ -666,7 +666,7 @@ def _config_json(config) -> dict:
     from transformers import PretrainedConfig
 
     file = PretrainedConfig.get_config_dict(config.model)[0]
-    file.get("text_config", file).update(config.hf_overrides or {})
+    file.get("text_config", file).update(getattr(config, "hf_overrides", None) or {})
     return file
 
 
