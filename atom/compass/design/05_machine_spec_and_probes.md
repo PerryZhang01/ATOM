@@ -297,8 +297,8 @@ Each is a function of the `spec` package, and a per-machine script runs them:
 `scripts/compass/mi308x_spec.py` sweeps the tokenizer, merges its fragment with the
 device's and the declared ones, validates the result and prints `explain`'s rows. No
 `compass` command wraps them (`13` D80). The readings of an engine start, which the
-`device-memory` and `device-runtime-constants` probes take, are the ones `record` writes
-(`07` D38, Phase 2).
+`device-memory` and `device-runtime-constants` probes take, are the per-machine script's
+too: no command produces them, `record` included (`07` D38, Phase 2).
 
 ### The probes, by what hardware they need
 
@@ -397,5 +397,5 @@ which cancelled — the largest being 25% of a single term.
 |---|---|---|
 | D24 | The spec describes the machine; ATOM's config describes the deployment. Thread-pool width becomes an ATOM config option, not a Compass one. | 2026-09-18 |
 | D25 | Four-section schema: `provenance`, `host`, `device`, `interconnect`. Mandatory derates, no defaults for `runtime_constants`, `software_pinned_to` checked, torch included, as the target's stack, whole spec echoed into every artifact. Revised for the MI455 projection: an optional dense `fp4_flops`, `intra_node.domain_devices` for a scale-up fabric wider than a node, and every field *sourced* or *assumed* by the fragments that supplied it, which a `mixed` spec records in `provenance.assumed`. | 2026-09-18; revised 2026-10-10; torch 2026-10-13 (#851) |
-| D26 | Probes emit fragments; `merge` / `validate` / `explain` combine and check them. Four hardware tiers plus datasheet and transfer paths. Every hardware probe implements the contamination refusals. All are the `spec` package's functions, run by per-machine scripts, with no `compass` command; an engine start's readings are `record`'s. | 2026-09-18; revised 2026-10-13 (#851) |
+| D26 | Probes emit fragments; `merge` / `validate` / `explain` combine and check them. Four hardware tiers plus datasheet and transfer paths. Every hardware probe implements the contamination refusals. All are the `spec` package's functions, run by per-machine scripts, with no `compass` command; those scripts also carry an engine start's memory readings, which no command produces. | 2026-09-18; revised 2026-10-13 (#851) |
 | D25.1 | Runtime-constant fields renamed to say what they are; ATOM's own term recorded as a mapping column. `host.tokenizer` becomes `host.tokenizers[]`, keyed by tokenizer identity (id + backend + fingerprint) with `applies_to` model architectures. | 2026-09-19 |

@@ -163,7 +163,7 @@ compass run            <backend>   --machine M [workload] --out D --store S \
 
 | Command | Phase (`07` D38) | Device | Reads | Writes |
 |---|---|---|---|---|
-| `record` | 1c's real runs; 2 | GPU | a workload, ATOM's arguments | `--out`: the step record with its cost lines; `run.json` with the engine ATOM resolved and its startup memory readings; the client's export; logs |
+| `record` | 1c's real runs | GPU | a workload, ATOM's arguments | `--out`: the step record with its cost lines; `run.json` with the engine's bounds as ATOM resolved them; the client's export; logs |
 | `trace steps` | 0 | none | a backend, a workload, ATOM's arguments | `--store`: one `shape_population`, keyed by the backend that priced it; `--out`: the step record, `run.json`, logs |
 | `trace ops` | 1a | none | the structures Phase 0 found | `--store`: one `op_graph` per structure |
 | `measure steps` | 1c, on the bench | GPU | batches as step-record lines: `record` and `trace steps` directories, `shape_population` keys, a backend planner's points | `--store`: one `step_measurement` per distinct batch |
@@ -201,10 +201,12 @@ compass run            <backend>   --machine M [workload] --out D --store S \
 
 - **`record`** runs one node, aggregated, at any TP and DP width, one record per DP rank;
   prefill-decode refuses for now. One run per invocation; repeats are separate
-  directories. `run.json`'s `engine` entry holds the KV block count, block size and
-  ladder, `max_num_seqs`, `max_num_batched_tokens`, `max_model_len`, and the startup
-  memory readings. Steps are timed unprofiled; op times come only from a separate profiled
-  pass (`--profile-ops`, ops half), which splits a step and never prices one (`07` D42).
+  directories. `run.json`'s `engine` entry holds the engine's bounds only: the KV block
+  count, block size and ladder, `max_num_seqs`, `max_num_batched_tokens` and
+  `max_model_len`. It takes no memory readings; the machine spec's come from per-machine
+  scripts (`05` D26). Steps are timed unprofiled; op times come only from a separate
+  profiled pass (`--profile-ops`, ops half), which splits a step and never prices one
+  (`07` D42).
 - **`trace steps`** takes the backend as `run` does, exactly one with no default, and
   charges host time as `run` does. It reads shapes only, so any sessions may be traced,
   and it records the range it consumed. It needs no GPU device.
@@ -236,8 +238,8 @@ was built, and an entry asked for one refuses, naming where its work went.
 |---|---|
 | `compass plan` | Nowhere as one command (`07` D37). Step fit's grid planning and coverage check sit beside its backend (`17` D98, D99), and `run --coverage` calls a backend's check before a graded run |
 | `compass validate` | Grading stays `python -m atom.compass.validate` (`08`); `run` marks in `run.json` whether a run is gradeable |
-| `compass explain`, `compass probe`, `compass spec` | The machine spec stays the `spec` package (`05` D26) and per-machine scripts such as `scripts/compass/mi308x_spec.py` |
-| `compass measure memory` | `record` writes the engine's startup memory readings (`07` D38, Phase 2) |
+| `compass explain`, `compass probe`, `compass spec` | The machine spec stays the `spec` package (`05` D26) and per-machine scripts such as `scripts/compass/mi308x_spec.py`, which also carry its memory readings |
+| `compass measure memory` | No command replaces it: the machine spec's memory readings come from per-machine scripts and the `spec` package (`05` D26, `07` D38 Phase 2), and neither `record` nor any other command produces them. Stage-2 grading's `python -m atom.compass.memory.check` is outside the CLI and unchanged |
 | `compass measure collectives` | `measure ops` (`07` D40) |
 | `compass discover` | renamed `trace steps` |
 | `compass trace`, alone | renamed `trace ops`; there is no bare `trace`, only `trace steps` and `trace ops` |

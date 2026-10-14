@@ -84,7 +84,7 @@ check refuses `--coverage`. The commands, with their inputs and outputs, are `13
 |---|---|
 | new model, on hardware I have | D39's recommended flow: its steps half for tier a and step fit, and its ops half too for tier b |
 | new workload, same model and hardware | `trace steps` and the coverage check; a GPU only for steps outside what was measured |
-| new parallel width | `record` at that width for its startup readings; `measure` at that width, since collectives are per width (D40) |
+| new parallel width | the machine spec's memory readings at that width, from its per-machine script (`05` D26); `measure` at that width, since collectives are per width (D40) |
 | software upgrade | each entry whose D43 row the change invalidates refuses at load, naming its key; only those are re-measured |
 | configuration sweep | `run` per configuration, then rank |
 | day zero, nothing measured | tier 0 (`10`), with no measurement |
@@ -134,9 +134,10 @@ a **(sweep, workload) pair**.
 
 `13` D80's commands run them. Phase 0 is `trace steps`; 1a is `trace ops`; 1b is
 `measure ops`, collectives included (D40), then `fit ops`; 1c is `record` for real runs
-and `measure steps` on the bench, then `fit steps` and `fit host`; Phase 2 is the startup
-of a `record` run. A `measure` command writes measurements per point, and a `fit` command
-makes the laws, bundles and leaves from them.
+and `measure steps` on the bench, then `fit steps` and `fit host`. Phase 2 has no command:
+the machine spec's per-machine scripts and the `spec` package carry its readings (`05`
+D26). A `measure` command writes measurements per point, and a `fit` command makes the
+laws, bundles and leaves from them.
 
 Every phase gets a section. Phases 1a and 2 were named but not elaborated in the first
 draft; they are below, after 0, 1b and 1c.
@@ -247,17 +248,18 @@ predicted; if not, that is the finding and the recipe grows.
 
 ### Phase 2 — memory readings
 
-**One engine startup per TP width.** `record` writes the readings of its engine's
-startup, taken before its workload starts, into its `run.json` (`13` D80). This phase
-exists because five memory quantities cannot be derived from geometry and have no law
-behind them (doc `05` D25, `runtime_constants`). It is the cheapest phase in the campaign
+**One engine startup per TP width, no workload at all.** No toolchain command takes these
+readings, `record` included (`13` D80): a per-machine script takes them and merges them
+into the machine spec with the `spec` package (doc `05` D26). This phase exists because
+five memory quantities cannot be derived from geometry and have no law behind them (doc
+`05` D25, `runtime_constants`). It is the cheapest phase in the campaign
 and the one with the tightest acceptance gate behind it — KV block count at **≤5%**.
 
 | | |
 |---|---|
 | **Input** | model, TP width, and the engine config that fixes the capture ladder |
-| **Output** | the readings in `record`'s `run.json`, per width; as a `memory_readings` fragment, merged into the machine spec with the `spec` package's `merge` (doc `05` D26) |
-| **Cost** | one startup per width, the start of a `record` run. Minutes |
+| **Output** | a `memory_readings` fragment per width, merged into the machine spec by the `spec` package's `merge` (doc `05` D26) in a per-machine script |
+| **Cost** | one startup per width. Minutes, no workload, no traffic |
 | **Needs a GPU** | **yes**, and a **quiet** one |
 
 **What is read, and where it comes from:**
@@ -405,9 +407,9 @@ settles is *which process* each phase runs in, which was previously implicit.
 | 1a trace | `trace ops` | any CPU process, **or** lazily inside a sim run | device-free (with the ROCm caveat above) |
 | 1b price ops | `measure ops` | **the bench** | AITER registers kernels lazily *in the worker process*; paged-KV ops need a live KV cache |
 | 1c in-situ | `measure steps`; `record` for real runs | **the bench**; a real serve | needs whole real steps; the bench replays recorded and planned batches into them |
-| 2 memory | `record` | **a plain engine startup**, not the bench | it measures startup, so a bench that skips parts of startup would measure the wrong thing |
+| 2 memory | none; a per-machine script (`05` D26) | **a plain engine startup**, not the bench | it measures startup, so a bench that skips parts of startup would measure the wrong thing |
 
-So: one bench covers 1b and 1c; Phase 2 is the startup of an ordinary `record` run;
+So: one bench covers 1b and 1c; Phase 2 is an ordinary startup a per-machine script runs;
 Phases 0 and 1a need neither.
 
 ### The recommended flow
@@ -417,7 +419,7 @@ One canonical sequence per half of the toolchain. For a new (model, machine) pai
 ```
  Steps half: tier a and step fit (16 S2.7)
  1.  compass record ... -- <ATOM args>                     [GPU, a real run per repeat]
-       -> step records; run.json with the engine's startup readings
+       -> step records; run.json with the engine's bounds
  2.  compass trace steps <backend> ... -- <ATOM args>      [CPU]
        -> shape_population, keyed by the backend that priced it
  3.  the backend's planner, over 1 and 2                   [CPU]
@@ -605,7 +607,7 @@ its own, and a population is keyed by the backend that priced it.
 | `op_graph` | Phase 1a, `trace ops` | **structure** — not shape |
 | `price_list` | Phase 1b, `fit ops` | **(model, width, source-root digest)** — a triple, never a path |
 | `region_terms` | Phase 1c, `fit ops` | (model, width) |
-| `memory_readings` | Phase 2, `record` | (model, width, utilization, max_num_seqs, max_model_len, kv dtype, block size) |
+| `memory_readings` | Phase 2, a per-machine script (`05` D26); no command | (model, width, utilization, max_num_seqs, max_model_len, kv dtype, block size) |
 | `coverage_hull` | derived | the price list it was built from |
 | `step_measurement` | Phase 1c, `measure steps` | (model, device, parallel, engine config, source-root digest, sampling, step kind, the batch's digest) |
 | `step_law` | `fit steps --backend law` | (model, device, parallel, engine config, source-root digest, form) |
@@ -788,13 +790,13 @@ So: every gate's state is written into the artifact and checked there.
 |---|---|---|
 | D36 | Three tiers: analytic/roofline, coarse empirical, op-level empirical. Compass models a device it has been measured on; cross-hardware transfer of empirical data is out of scope, and doc 05 D26's `transfer` probe is deferred. | 2026-09-18 |
 | D37 | The tool tells the user what to measure: a backend that needs measurements plans them beside its own code and owns the coverage check that `compass run --coverage` calls before a graded run; no single command plans the campaign. Coverage checks use a convex hull or k-NN distance, never a bounding box. | 2026-09-18; revised 2026-10-13 (#851) |
-| D38 | Phase 0 discovery (shapes only) -> 1a trace -> 1b price -> 1c in-situ (+ one TP2 transfer test) -> Phase 2 memory. Client count and workload are not calibration axes. `13` D80's commands run them: `trace steps`, `trace ops`, `measure ops` and `fit ops`, `record` and `measure steps` then `fit steps\|host`, and `record`'s startup; `measure` writes per point, `fit` makes laws, bundles and leaves. | 2026-09-18; commands 2026-10-13 (#851) |
+| D38 | Phase 0 discovery (shapes only) -> 1a trace -> 1b price -> 1c in-situ (+ one TP2 transfer test) -> Phase 2 memory. Client count and workload are not calibration axes. `13` D80's commands run them: `trace steps`, `trace ops`, `measure ops` and `fit ops`, `record` and `measure steps` then `fit steps\|host`, and no command for Phase 2, whose readings per-machine scripts carry; `measure` writes per point, `fit` makes laws, bundles and leaves. | 2026-09-18; commands 2026-10-13 (#851) |
 | D39 | The bench is `EngineCore` without its scheduler: every TP rank's `RecordingModelRunner` started through its runner manager in its order, at any TP width, a step charged to its slowest rank, fed **replayed** batches rebuilt from step records by a versioned rule. One window for both step kinds: device time from an event at the forward's entry to one at its exit, with device work queued ahead, a repeat counting only if the entry event is still pending when the forward returns; whatever is fitted on it declares that value kind. Op prices may use synthetic shapes; step and region measurements may not, step fit's grid excepted (`17` D98). | 2026-09-18; revised 2026-10-13 (#851) |
 | D40 | Four classes of communication, priced separately. Scaling is measured per width, never modelled. A collective's measured duration is an upper bound on device work. | 2026-09-18 |
 | D41 | Artifacts, each with key, digest, fingerprint and provenance. Keys are tuples; source roots are `git archive` digests; resolution names its answer; handed-off artifacts are immutable. `step_measurement`, `step_law` and `host_laws` added, and `shape_population` keyed by its pricing backend. | 2026-09-18; kinds 2026-10-13 (#851) |
 | D42 | Trace is JIT and cached; pricing is offline or opt-in `--measure`. A `--measure` run is never an acceptance run. New shape is fine; new operator kind refuses. | 2026-09-18 |
 | D43 | Per-artifact invalidation matrix, not a global fingerprint. Every gate's state is written into the artifact and checked there. Rows for `shape_population`, `step_measurement`, `step_law` and `host_laws`, and a host-CPU axis. | 2026-09-18; rows 2026-10-13 (#851) |
-| D38.1 | One recommended flow per half: steps (`record`, `trace steps`, the backend's planner, `measure steps`, `fit host` and `fit steps`, `run --coverage`, then grading) and ops (`trace ops`, `measure ops`, `fit ops`). Phases unchanged; the bench hosts 1b and 1c, Phase 2 is a `record` run's startup. | 2026-09-19; revised 2026-10-13 (#851) |
+| D38.1 | One recommended flow per half: steps (`record`, `trace steps`, the backend's planner, `measure steps`, `fit host` and `fit steps`, `run --coverage`, then grading) and ops (`trace ops`, `measure ops`, `fit ops`). Phases unchanged; the bench hosts 1b and 1c, Phase 2 is a plain startup a per-machine script runs. | 2026-09-19; revised 2026-10-13 (#851) |
 | D40.1 | Classes (a) and p2p ride `measure ops` unchanged. Classes (b) and (c) share one new declared-entry-point benchmark inside the same bench, also run by `measure ops`. KV transfer is never priced. Collective prices are labelled upper bounds. | 2026-09-19; one command 2026-10-13 (#851) |
 
 ---
