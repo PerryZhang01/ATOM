@@ -60,11 +60,24 @@ NODE18 = {
     "peak": 58034271744,
     "warmup_tokens": 16384,
 }
-#: The same readings on card 6 of hjbog-srdc-39 at commit a1cac25a6.
-HJBOG39 = dict(NODE18, non_torch=1254096896, current=55077418496, peak=58034402816)
-DATE, COMMIT, READ = {
-    "mi308x-hjbog18": ("2026-10-11", "983e42973", NODE18),
-    "mi308x-hjbog39": ("2026-10-12", "a1cac25a6", HJBOG39),
+#: The same readings on card 6 of hjbog-srdc-39 at commit ce625ddd9.
+HJBOG39 = dict(
+    NODE18,
+    non_torch=1291845632,
+    loaded=54761861632,
+    current=55145206784,
+    peak=58102190592,
+)
+#: The software stack each host's readings were taken under.
+STACK = {"rocm": "7.2.4", "aiter": "f4e7c7509", "rccl": "2.27.7"}
+DATE, COMMIT, READ, PIN = {
+    "mi308x-hjbog18": ("2026-10-11", "983e42973", NODE18, STACK),
+    "mi308x-hjbog39": (
+        "2026-10-14",
+        "ce625ddd9",
+        HJBOG39,
+        dict(STACK, aiter="9205e1059"),
+    ),
 }[NAME]
 CONFIG_JSON = "sha256:191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab"
 
@@ -92,7 +105,7 @@ DEVICE = {
                 },
             }
         ],
-        "software_pinned_to": {"rocm": "7.2.4", "aiter": "f4e7c7509", "rccl": "2.27.7"},
+        "software_pinned_to": PIN,
     },
 }
 
