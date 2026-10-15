@@ -4,8 +4,9 @@
 The authority serves LPs ``traffic`` and ``router``. ``traffic`` runs here; the
 router is the cargo test ``python_authority_releases_a_message_to_the_router``
 in ``atom/mesh/tests/compass_clock_test.rs``, which cargo builds and runs. A
-relay between the router and the authority records every frame. Skips without
-cargo on PATH.
+relay between the router and the authority records every frame. Skips where
+cargo cannot resolve atomesh's dependencies: no cargo, or, as in a gate run in a
+network namespace, no registry to reach and no lockfile.
 """
 
 import contextlib
@@ -60,8 +61,16 @@ def _relay(endpoint: str, frames: list) -> tuple[str, threading.Thread]:
     return f"tcp://127.0.0.1:{listener.getsockname()[1]}", relay
 
 
-@pytest.mark.skipif(not shutil.which("cargo"), reason="builds atomesh with cargo")
 def test_the_rust_router_binds_is_granted_and_is_released_a_message():
+    resolved = shutil.which("cargo") and subprocess.run(
+        ["cargo", "metadata", "--format-version", "1"],
+        cwd=MESH,
+        capture_output=True,
+        check=False,
+        timeout=600,
+    )
+    if not resolved or resolved.returncode:
+        pytest.skip("cargo cannot resolve atomesh's dependencies here")
     registry = LpRegistry()
     for lp in (TRAFFIC, ROUTER):
         registry.register(lp)
