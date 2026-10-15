@@ -143,7 +143,9 @@ def test_a_field_only_hf_overrides_sets_reaches_the_installed_readings(
     assert buffers["source"].startswith("65536 positions")
 
 
-@pytest.mark.parametrize(("dpa", "dp", "key"), [(True, 8, "1x8"), (False, 2, 1)])
+@pytest.mark.parametrize(
+    ("dpa", "dp", "key"), [(True, 8, "1x8"), (False, 2, 1), (True, 1, 1)]
+)
 def test_dp_attention_reads_its_layout_and_plain_dp_its_width(
     monkeypatch, tmp_path, dpa, dp, key
 ):
