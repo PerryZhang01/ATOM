@@ -1,4 +1,4 @@
-# Test files excluded from the CPU tier run by gate_cpu.sh.
+# Test files excluded from the CPU gate run by gate_cpu.sh.
 #
 # Two sections. They have different provenance and different rules, and the
 # difference is the whole point of the file: one section is reproducible from
@@ -119,11 +119,11 @@ tests/models/deepseek_v41/test_weights.py
 # test_agentic_dispatch_replay_preserves_profile fails: build_agentic_benchmark_matrix
 # runs `git rev-parse HEAD`, and the gate's git-archive snapshot has no .git; 12849025b
 tests/test_benchmark_catalog.py
-# passes alone, fails in this tier: the unstrided case with dynamo `KeyError: aiter`
+# passes alone, fails in this gate: the unstrided case with dynamo `KeyError: aiter`
 # (the aiter.utility namespace package, as for test_sparse_indexer_side_effect_op.py);
 # new-image CPU container, nightly 20261013, b5452da1a
 tests/test_graph_marker.py
-# passes alone, fails in this tier: one test with dynamo `KeyError: aiter` (the
+# passes alone, fails in this gate: one test with dynamo `KeyError: aiter` (the
 # aiter.utility namespace package, as for test_sparse_indexer_side_effect_op.py),
 # the other re-registering `vllm::all_reduce`; new-image CPU container, 2026-10-13
 tests/test_lmcache_offload_disk_integration.py
@@ -131,7 +131,7 @@ tests/test_lmcache_offload_disk_integration.py
 tests/test_mla_kv_shuffled.py
 # fails at setup or call in aiter chip_info, `No gfx arch found in rocminfo output.` (no driver); new-image CPU container, 12849025b
 tests/test_sparse_indexer_fp4.py
-# passes alone, fails in this tier with dynamo `KeyError: aiter`: with no driver
+# passes alone, fails in this gate with dynamo `KeyError: aiter`: with no driver
 # aiter's import fails and leaves the namespace package aiter.utility in
 # sys.modules without aiter, and torch's first custom-op registration under
 # torch.compile walks sys.modules through inspect.getmodule; 25740469b

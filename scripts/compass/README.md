@@ -11,8 +11,8 @@ on, because until 2026-09-20 it was not — see "Which tree a script acts on" be
 
 | Script | Where | What |
 |---|---|---|
-| `gate_cpu.sh` | CPU container | The CPU test tier, run per task: every test file outside `tests/plugin/` and `cpu_gate_exclude.txt`, no driver **as a batch**: run alone, a tier file can still reach `rocminfo` (`tests/test_postprocess_width.py` did, through `atom.model_engine.model_runner`'s `from aiter import …`, measured on node 18 at `bdd244c57` while it was a tier file). **Must be green.** Also exits 98 when the diff is in the blind spot below and the GPU tier has not run on *this* tree. Refuses a caller-supplied `-r`. |
-| `gate_gpu.sh` | GPU container | The GPU test tier, run per wave — and per task for a blind-spot diff. Superset (`--ignore=tests/plugin`), judged as a **delta** against pure upstream `661ef7661` on the nightly 20261013 image (the `BASE_*` constants), with torch, HIP, ROCm and AITER recorded and compared. The failing node-ids are on file in `gpu_gate_known_failures.txt` and compared **by name**. Calls `preflight.sh` itself, before and after. |
+| `gate_cpu.sh` | CPU container | The CPU gate, run per task: every test file outside `tests/plugin/` and `cpu_gate_exclude.txt`, no driver **as a batch**: run alone, a file in it can still reach `rocminfo` (`tests/test_postprocess_width.py` did, through `atom.model_engine.model_runner`'s `from aiter import …`, measured on node 18 at `bdd244c57` while it was in the gate). **Must be green.** Also exits 98 when the diff is in the blind spot below and the GPU gate has not run on *this* tree. Refuses a caller-supplied `-r`. |
+| `gate_gpu.sh` | GPU container | The GPU gate, run per wave — and per task for a blind-spot diff. Superset (`--ignore=tests/plugin`), judged as a **delta** against pure upstream `661ef7661` on the nightly 20261013 image (the `BASE_*` constants), with torch, HIP, ROCm and AITER recorded and compared. The failing node-ids are on file in `gpu_gate_known_failures.txt` and compared **by name**. Calls `preflight.sh` itself, before and after. |
 | `preflight.sh` | GPU container | `rocminfo` reachability, compute use and VRAM use (checks 1–3), plus a D-state census (check 0), and a list of bookable devices. Run **before and after**. The census states its own scope: in a container it can only see this PID namespace, and says so rather than reporting a clear node. Also worth running for a CPU-only task that imports ATOM's model layer: `import aiter` runs `rocminfo`, and so does any module that imports aiter at load time (`atom.model_engine.model_runner`, `atom.model_ops.linear`), so on a wedged node that import hangs. A bare `import atom` and `atom.compass` run no `rocminfo` and load no torch; `atom.config`, `atom.model_engine.llm_engine` and `atom.entrypoints.openai_server` load torch but run no `rocminfo`. Measured on node 18, 2026-09-23. |
 | `regen_cpu_gate_exclude.sh` | CPU container | Regenerate the **GENERATED** section of the exclusion list by iterating `--collect-only` to a fixed point (three passes at `83daf636d`: 37 errors, 1, clean). Preserves the MANUAL section verbatim. |
 | `regen_gpu_gate_triggers.sh` | CPU container | Re-derive `gpu_gate_triggers.txt` from the exclusion list and the tree. Run after **any** change to `cpu_gate_exclude.txt` — the two files are derived from the same tree and are wrong separately. Writes the whole file, **header counts included**; nothing in it is maintained by hand. |
@@ -21,7 +21,7 @@ on, because until 2026-09-20 it was not — see "Which tree a script acts on" be
 | `parity_one_node.sh` | GPU container, two devices | The scheduling-parity test: one workload (`python -m atom.compass.parity.traffic`) on a real `-tp 2 --enable-dp-attention` server with the step record on, then on a simulated one whose steps each end when the real one's did (`atom/compass/parity/replay.py`), and `python -m atom.compass.parity` over the two records. The last lines are the real run's admission (send to response headers: minimum, median, maximum) and, per DP rank, the steps compared, the steps identical and the first divergence. Its variables are in its header. |
 | `mi308x_spec.py` | GPU container, node 18 or hjbog-srdc-39 | `python3 scripts/compass/mi308x_spec.py`: rebuild `machines/mi308x-hjbog18.json`, the node-18 MI308X machine spec, by sweeping Qwen3.8-27B's tokenizer on this host and merging it with the device readings of one real engine start recorded in the script; with `COMPASS_MACHINE=mi308x-hjbog39`, the same for hjbog-srdc-39 into `machines/mi308x-hjbog39.json`. Prints `validate`'s verdict and `explain`'s fields grouped by origin; on either host a value no probe fills reads `assumed`. |
 | `cpu_gate_exclude.txt` | — | Excluded test files in two marked sections: **GENERATED** (`# BEGIN GENERATED`, driver-dependent at *collection* time; never hand-edit — `regen_cpu_gate_exclude.sh` rewrites it wholesale) and **MANUAL** (`# BEGIN MANUAL`, collects cleanly then fails on a driver call or for want of a `.git`, so the regenerator cannot see it). The MANUAL section **is** hand-edited; every entry must carry its observed failure above it. |
-| `gpu_gate_triggers.txt` | — | The source paths that no *running* CPU-tier test names. Generated, not hand-written; matched by `gate_cpu.sh`. A trailing `/` matches a subtree. |
+| `gpu_gate_triggers.txt` | — | The source paths that no *running* CPU-gate test names. Generated, not hand-written; matched by `gate_cpu.sh`. A trailing `/` matches a subtree. |
 | `gpu_gate_known_failures.txt` | — | The known-failing GPU node-ids at `gate_gpu.sh`'s `BASE_COMMIT`, verbatim. Its line count and `BASE_FAILED` are two statements of one fact; `gate_gpu.sh` refuses to run if they disagree. |
 | `_lib.sh` | — | Tree resolution, `PYTHONPATH`, the `import atom` assertion, commit stamp, and the `tests/compass` pass count the GPU gate derives its allowed surplus from. |
 
@@ -64,7 +64,7 @@ not exclude any of them.** A red gate here is the tests working, and it is the
 only signal that says the instrument was swapped.
 
 The overlay costs a second thing on the same path: the older `gate_cpu.sh` it
-brings with it prints `Baseline is 4030 passed, 0 failed` when the tier fails, a
+brings with it prints `Baseline is 4030 passed, 0 failed` when the gate fails, a
 figure removed at `186d12829` because a script line cannot name its own commit —
 **564** behind the 4594 `b1dca15da` reads with its own scripts, **540** behind
 `83ef2a094`'s 4570 and **471** behind `cf6429387`'s 4501. It is stale by a
@@ -88,10 +88,10 @@ they move in both directions as branches are pushed and rebased. The `26` is the
 exposed population and is the figure that justifies this section. "Every tree is
 identical now" is what made the overlay look free.
 
-## Baselines — two tiers, two commits, two provenances
+## Baselines — two gates, two commits, two provenances
 
 Not one baseline. The rows below were measured at different commits by different
-tasks, so each row names its own commit and the tier it was measured in.
+tasks, so each row names its own commit and the gate it was measured in.
 
 **Read them as history, not as a current expectation — the CPU total above all.**
 It moves whenever `tests/compass/` grows, which is most tasks, so the recorded
@@ -111,10 +111,10 @@ below before attributing either to a diff. They are alternatives: the
 skip-variant is `rc=0` with the total conserved, the hard failure is `1 failed`
 with a non-zero rc and no ±1.
 
-| Tier | Result | Measured |
+| Gate | Result | Measured |
 |---|---|---|
 | CPU gate, at `105ca4197` | **4030 passed, 0 failed**, 149 skipped, 3 xfailed, rc=0 — decomposing as **3956 ATOM + 74 `tests/compass`**; the 3956 is PR #6's control, `042aad97d` with PR #6's `scripts/compass/` copied in, since `042aad97d` has none. Six runs at `d737f15e7` and `7ff80cc4b`, before PR #6's restack, read the same counts and **25.6-30.8 s of pytest inside 31.6-36.9 s of wall (`time` real) — a measured spread, not a bound** (`8c0ee374f`) | `105ca4197`, PR #6's head, landed as `4c16792d9` (same tree) — PR #6's gate table; node 18, container `xiaobizh_n18_cpu`, 2026-09-21, against a `git archive` snapshot with `PYTHONPATH` asserted and pytest's own rc captured before any pipe |
-| CPU gate, same tier, at `186d12829` | **4501 passed, 0 failed**, 149 skipped, 3 xfailed, rc=0 — three runs, identical, 28.8-34.4 s of pytest inside 35-40 s of wall. The **4030** above and the **4380** in the paragraph above are this same gate at earlier trees; all three are history, and this one will be too | `186d12829` — the commit this branch forks from, which is its merge-base with the integration head, **read 2026-09-21T19:21Z**, node 18's own clock — node 18, container `xiaobizh_n18_cpu`, `git archive` snapshot staged by `snapshot.sh`, `PYTHONPATH` asserted, pytest's own rc captured before any pipe |
+| CPU gate, at `186d12829` | **4501 passed, 0 failed**, 149 skipped, 3 xfailed, rc=0 — three runs, identical, 28.8-34.4 s of pytest inside 35-40 s of wall. The **4030** above and the **4380** in the paragraph above are this same gate at earlier trees; all three are history, and this one will be too | `186d12829` — the commit this branch forks from, which is its merge-base with the integration head, **read 2026-09-21T19:21Z**, node 18's own clock — node 18, container `xiaobizh_n18_cpu`, `git archive` snapshot staged by `snapshot.sh`, `PYTHONPATH` asserted, pytest's own rc captured before any pipe |
 | GPU superset (`--ignore=tests/plugin`), the baseline until the upstream merge | **4779 passed, 5 failed**, 0 errors, 105 skipped, 3 xfailed, **72.6 s**; two runs, byte-identical failing sets | `fe9ea043c`, node 18, container `xiaobizh_n18`, `HIP_VISIBLE_DEVICES=1`, 2026-09-20, torch **2.10.0+rocm7.2.4.git3d3aa833**, `torch.version.hip` **7.2.53211**, ROCm release **7.2.4**, AITER **v0.1.21.dev0-49-gf4e7c7509** (`git describe`) |
 | `ruff check .` | 1003 errors, 640 fixable — the gate is *no new* error, not zero | `83daf636d` |
 | `black --check .` | clean, 660 files | `83daf636d` |
@@ -285,12 +285,12 @@ a tree that is not its own. Being invoked by path from outside any checkout is
 still allowed — there nothing contradicts the caller, and it is how
 `snapshot.sh`'s own extract instructions say to run a gate.
 
-## The CPU tier's blind spot — a file, and a gate
+## The CPU gate's blind spot — a file, and a gate
 
 `gpu_gate_triggers.txt` is the blind spot stated as paths a script can match,
 generated by `regen_gpu_gate_triggers.sh`. The rule it applies:
 
-> an `atom` module named by an excluded test is a blind spot **unless a CPU-tier
+> an `atom` module named by an excluded test is a blind spot **unless a CPU-gate
 > test that actually runs names it too**.
 
 Four decisions make that sentence operational. Three were forced by a defect or a
@@ -321,31 +321,31 @@ and is kept as a forward guard:
    replaces — plus `aiter_mla.py` and `topK.py`. Measured at `236abfd9a` in
    `xiaobizh_n18_cpu`.
 4. **Collection.** A file that collects nothing covers nothing, so coverage is
-   credited only from a CPU-tier file `--collect-only` shows collecting at least one
+   credited only from a CPU-gate file `--collect-only` shows collecting at least one
    test. At `236abfd9a` that probe removed no path: **30 triggers with it, 30
    without, difference empty** (measured in `xiaobizh_n18_cpu`; it
    withheld 15 coverage paths, of which the only candidate,
    `atom/model_ops/v4_kernels/state_writes.py`, was absorbed either way by the
    candidate subtree entry `atom/model_ops/v4_kernels/`). It is a forward guard for
    trees that one does not represent, not the thing that keeps `model_runner.py`, and
-   it costs a full `pytest --collect-only` over the CPU tier plus a refusal path
+   it costs a full `pytest --collect-only` over the CPU gate plus a refusal path
    (exit 97).
 
 So the two sides are **asymmetric on purpose**: candidates come from any import in
 an excluded test; coverage is subtracted only for a **module-level** import in a
-CPU-tier file that collects at least one test, because those are the only imports
+CPU-gate file that collects at least one test, because those are the only imports
 that provably execute (collection imports the module). Making both sides
 indentation-tolerant would undo point 3 and re-delete `topK.py`.
 
 **It errs in both directions, so it is not a floor.** Toward *firing*: an indented
-import in a CPU-tier test that does run is not credited, so its module can be listed
-although the CPU tier reaches it; and coverage subtraction is exact-string, so a
+import in a CPU-gate test that does run is not credited, so its module can be listed
+although the CPU gate reaches it; and coverage subtraction is exact-string, so a
 candidate **subtree** entry is never cancelled by coverage of the files beneath it,
 nor a candidate file by coverage of its package. Toward *silence*: imports are read as text, not
 resolved as a graph, so a module reached only transitively is invisible to both
-sides. A path **absent** from the file is not a claim that the CPU tier covers it,
+sides. A path **absent** from the file is not a claim that the CPU gate covers it,
 and a path **present** is not proof that it does not. Of the two mistakes, firing
-spuriously is the one to prefer: running the GPU tier when in doubt is never the
+spuriously is the one to prefer: running the GPU gate when in doubt is never the
 wrong one, and the asymmetry above is that preference written down.
 
 `gate_cpu.sh` **enforces** that preference rather than restating it. It takes the
@@ -359,11 +359,11 @@ the run ends 98 unless `COMPASS_GPU_GATE_DONE` discharges it:
 |---|---|
 | unset | **98** — run `gate_gpu.sh`, then re-run with that tree's HEAD |
 | set, but this tree has no commit (no `.git`, no `.compass-commit`) | **98** — an attestation names a tree; accepting an uncheckable one makes the rule bypassable in exactly the snapshot where the gate normally runs. Rebuild with `snapshot.sh`. |
-| set to a sha other than this tree's HEAD | **98** — the GPU tier passed on a different tree |
+| set to a sha other than this tree's HEAD | **98** — the GPU gate passed on a different tree |
 | equal to this tree's HEAD | discharged |
 
 The trigger match is *reported* before pytest and *enforced* after it, so one run
-yields both answers instead of trading one for the other. Green at the CPU tier is
+yields both answers instead of trading one for the other. Green at the CPU gate is
 not green at the test gate when the diff is in the blind spot.
 
 ## Which integration ref resolves, and which step refused
@@ -540,7 +540,7 @@ Against the server log of the paired real run, with the same deployment flags,
 prints the per-term comparison of the non-KV memory and the graph pool. It takes
 the log of one rank.
 
-## Tier a's law from real cells — `step_linear_fit`
+## The step linear law from real cells — `step_linear_fit`
 
 `python -m atom.compass.backends.step_linear_fit RECORD... --out LAW [--form FORM] [--dp N]`
 fits the law a run file's `step_linear` key holds (`atom/compass/backends/step_linear.py`) from

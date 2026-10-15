@@ -82,7 +82,7 @@ if _UNANSWERED:
     # name rather than any reply. Skipping `process_kvconnector_output` means a
     # KV transfer is silently never started. Both are real failures; neither is a park.
     #
-    # Two things about this raise itself. No CPU test tier can execute it:
+    # Two things about this raise itself. The CPU gate cannot execute it:
     # importing this module imports `ModelRunner`, which runs aiter's
     # architecture probe and needs a driver, so a green CPU gate is not
     # evidence that the composed class answers the surface -- only an import on
