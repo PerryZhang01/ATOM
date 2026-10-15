@@ -6,8 +6,6 @@
 //! `NER`, carries the sends logged since the previous one and is answered
 //! `GRANT`, with the messages it releases, or `REFUSED`. Times are seconds, and
 //! the two infinities travel as the strings `+inf` and `-inf`.
-//!
-//! Nothing connects unless `ATOM_COMPASS_CLOCK_ENDPOINT` is set.
 
 use std::collections::HashMap;
 
@@ -52,20 +50,11 @@ pub struct Grant {
 /// One LP's bound connection to the authority.
 pub struct ClockClient {
     stream: TcpStream,
-    /// The LP clock the authority gave at bind.
-    pub joined_at: f64,
     next_seq: HashMap<String, u64>,
     log: Vec<(String, u64, f64)>,
 }
 
 impl ClockClient {
-    /// Binds `lp` at the endpoint `ATOM_COMPASS_CLOCK_ENDPOINT` names, or
-    /// returns `None` when it is unset.
-    pub async fn from_env(lp: &str) -> Option<Result<Self, ClockError>> {
-        let endpoint = std::env::var(ENDPOINT_ENV).ok()?;
-        Some(Self::bind(&endpoint, lp).await)
-    }
-
     /// Connects to the authority at `tcp://<host>:<port>` and binds `lp`.
     pub async fn bind(endpoint: &str, lp: &str) -> Result<Self, ClockError> {
         let address = endpoint.strip_prefix("tcp://").ok_or_else(|| {
@@ -73,13 +62,11 @@ impl ClockClient {
         })?;
         let mut client = Self {
             stream: TcpStream::connect(address).await?,
-            joined_at: 0.0,
             next_seq: HashMap::new(),
             log: Vec::new(),
         };
         client.write(&json!({"kind": "BIND", "lp": lp})).await?;
         let joined = client.reply("JOINED").await?;
-        client.joined_at = time_in(&joined["now"])?;
         let seqs = joined["seqs"].as_object().into_iter().flatten();
         client.next_seq = seqs
             .map(|(ch, seq)| Ok((ch.clone(), seq_in(seq)?)))
