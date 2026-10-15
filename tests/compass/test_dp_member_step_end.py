@@ -147,6 +147,21 @@ def test_a_tar_past_the_owed_rounds_joins_them_first():
     assert rt.conn.sent == [("TAR", TARGETS[0]), ("TAR", TARGETS[1]), ("TAR", 0.3)]
 
 
+def test_after_settling_a_pass_that_ran_nothing_waits_at_its_idle_point(monkeypatch):
+    # As both members' step loops: a pass after the step, which settles in its
+    # collective and runs no step, then a pass that must wait for its next event.
+    rt = LPRuntime(ENGINE, TABLE, Conn())
+    rt.start_run()
+    monkeypatch.setattr(clock, "_installed", rt)
+    rt.advance_group(TARGETS, TARGETS[0])
+    clock.idle(lambda: math.inf)
+    rt.settle()
+
+    clock.idle(lambda: 1.0)
+
+    assert rt.conn.sent[-1] == (NER, 1.0)
+
+
 def test_an_idle_ranks_dummy_returns_at_its_own_seconds_a_busy_rank_at_the_max(
     dp2,  # noqa: F811
 ):

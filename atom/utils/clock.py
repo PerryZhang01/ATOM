@@ -208,9 +208,11 @@ class LPRuntime:
         self.owed = [t for t in rounds if t > mine]
 
     def settle(self) -> None:
-        """Join the owed group rounds, in order."""
+        """Join the owed group rounds, in order. They end the step that owed
+        them, so the step loop's idle point does not count them as calls."""
         while self.owed:
             self._step_through(*self._ca_call("TAR", self.owed.pop(0)))
+            self.calls -= 1
 
     def next_event(self, t: float, t_daemon: float = float("inf")) -> float:
         """Idle until `t`, the daemon deadline `t_daemon` or the earliest arrival,
