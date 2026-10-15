@@ -13,6 +13,7 @@ import threading
 import time
 
 import pytest
+from test_memory_readings import META_8B
 from test_parity_record import BLOCK, _config, _prompt, _Runner
 from test_run_step_grid import B37, decode, deployment
 from test_vertical_slice import _run_file
@@ -143,7 +144,7 @@ def test_a_run_file_naming_a_record_replays_it_on_the_engine_clock(
     engine = compass_run._PublishedClock(
         compass_run.ENGINE, compass_run.channel_table(run), None
     )
-    compass_run.runner(r)
+    compass_run.runner(r, META_8B)
     engine.now = 0.002
     charged = [r.forward(decode(B37)).predicted_s for _ in "ab"]
     ends = [(ENTER * n + EXIT - SENT[0]) / 1e9 for n in (1, 2)]

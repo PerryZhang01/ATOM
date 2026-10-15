@@ -20,13 +20,17 @@ member, the frontend's included, connects to.
 - `engine(config)` wraps the engine's construction in its own process the
   same way, and maps every DP rank to the engine LP for the process-group
   check.
-- `runner(runner)` installs the cost backend and the device readings on a
+- `runner(runner, tree)` installs the cost backend and the device readings on a
   `CompassModelRunner` where it would build its model, in the worker process.
 - `tokenizer(tokenizer, config)` charges the served tokenizer's ``encode`` and
   ``decode`` to the frontend's clock, at the rates the machine spec measured.
 - `engine_done(engine)` and `frontend_done(engine)` close each side after the
   finish, each handing in its LP's refusals; the frontend's, when it co-hosts
-  the authority, then writes the step table and the run summary.
+  the authority, then writes the step table and the run summary. A SIGINT or
+  SIGTERM that stopped the frontend's event loop
+  (`atom.utils.compass_loop.CompassEventLoop.stopped`) is an early end:
+  `frontend_done` hands it in as an ``ended:`` reason, and the server leaves
+  once the summary is written from every hand-in.
 - `engine_loop(engine)` wraps the engine's loop: under ``step_grid`` it asks the
   workers for the bundle before it, `engine_done` after it, and if either
   raises, the engine hands in the exception as an ``ended:`` reason, with the
@@ -55,8 +59,7 @@ on ``(1, tokens, seqs)``, zero where absent; ``key``, the `host_key` they were
 fitted under, which a run with laws must match; ``skip``, segments zeroed for
 a what-if run, which the graders refuse),
 ``machine`` (a machine spec mapping), ``parameter_count`` (read with
-``roofline_floor_s``, and for the weights when the runner hands in no meta
-build), and ``out_dir``,
+``roofline_floor_s``), and ``out_dir``,
 where the step table, the run summary and each server LP's hand-in go, one
 file written as the LP leaves its loop. It holds the LP's refusals: an
 engine's are the worker's refused commands and the engine's refused clock
@@ -149,7 +152,8 @@ HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field changes meaning or goes.
 SUMMARY_SCHEMA_VERSION = 3
 #: Compass source the host-law key leaves out, by path under the package: all
-#: of it (None), or the top-level names only an installed LP runtime reaches.
+#: of it (None), or the top-level names only an installed LP runtime reaches
+#: (with the module docstring, which describes them).
 COMPASS_ONLY = {
     "compass": None,
     "utils/compass_loop.py": None,
@@ -172,6 +176,8 @@ def refuse_renamed_keys(run: dict, where) -> None:
 
 
 _authority: "_RecordingAuthority | None" = None
+#: The co-hosted authority's early-end writer.
+_early_end: threading.Thread | None = None
 #: This engine process's member name in the engine LP, None at DP width one.
 _member: str | None = None
 
@@ -427,7 +433,7 @@ def frontend(config):
     through the recording one, and refuses any other runner, which would
     record nothing.
     """
-    global _authority
+    global _authority, _early_end
     run = spec()
     if run is None:
         from atom.compass import parity
@@ -482,9 +488,10 @@ def frontend(config):
         serve(_authority, run["clock_endpoint"])
         # Not a daemon: the API server's main thread may die of the early end
         # before this thread has written the summary.
-        threading.Thread(
+        _early_end = threading.Thread(
             target=_write_on_early_end, args=(run, authority), name="compass early end"
-        ).start()
+        )
+        _early_end.start()
     rt = _runtime(lp, run)
     rt.client_run_ended = lambda k: _frontend_hand_in(run, rt, k)
     return _start_on_leaving(rt, authority)
@@ -494,7 +501,7 @@ def engine(config):
     """Around the engine's construction in its process; a no-op context on a real run.
 
     At DP width above one, the process joins the engine LP as the member of its
-    DP rank.
+    DP rank, and its host collectives first join the group rounds it owes.
     """
     global _member
     run = spec()
@@ -511,6 +518,7 @@ def engine(config):
     _member = f"dp{pc.data_parallel_rank}" if pc.data_parallel_size > 1 else None
     name = lp.name if _member is None else f"{lp.name}.{_member}"
     os.environ[NOW_ENV] = str(Path(run["out_dir"]) / f"now-{name}.bin")
+    clock.settle_before_collectives()
     return _named(_start_on_leaving(_runtime(lp, run, _member, _PublishedClock)))
 
 
@@ -524,16 +532,15 @@ def _named(inner):
         del os.environ[NOW_ENV]
 
 
-def runner(model_runner, tree=None) -> None:
+def runner(model_runner, tree) -> None:
     """Install the cost backend and the device readings from the run file.
 
     `tree` is the model built on the meta device, which the weights are read
-    off; without it they are the run file's ``parameter_count``."""
+    off."""
     run = spec()
     if run is None:
         return
     from atom.compass.backends.geometry import KvGeometry, Parallelism
-    from atom.compass.backends.provenance import Method
     from atom.compass.backends.step_linear import StepLinearBackend, StepLinearLaw
     from atom.compass.backends.step_roofline import (
         StepFallbackBackend,
@@ -590,7 +597,6 @@ def runner(model_runner, tree=None) -> None:
     config_json = _config_json(config)
     model = ModelTerms.from_config(
         config.hf_config,
-        parameter_count=run.get("parameter_count"),
         tp_size=tp,
         warmup_tokens=config.max_num_batched_tokens,
         config_json=config_json,
@@ -608,13 +614,10 @@ def runner(model_runner, tree=None) -> None:
             parallelism=Parallelism(tp_size=tp),
             kv_dtype=config.kv_cache_dtype,
         )
-        w = model.weights
-        stated = f"{w.source} ({w.note})" if w.method is Method.DECLARED else ""
         roofline = StepRooflineBackend(
             machine,
             parameters=run["parameter_count"] // tp,
             weight_bytes=model.weights.nbytes,
-            weights_stated=stated,
             kv_token_bytes=kv.layers * kv.bytes_per_token_per_layer,
             host_floor_s=run["roofline_floor_s"],
         )
@@ -637,8 +640,12 @@ def runner(model_runner, tree=None) -> None:
             replay.now = lambda: float(slot[0])
     model_runner.compass_abort = run.get("on_refusal") == "abort"
     reserved, captured = _graph_pool(model_runner, machine, model)
+    # Under DP-attention the reserve and the residue are keyed by the layout;
+    # one rank of it is a TP1 engine.
+    dp = config.parallel_config.data_parallel_size
+    layout = f"{tp}x{dp}" if dp > 1 and config.enable_dp_attention else tp
     readings = device_readings(
-        machine, tp_width=tp, model=model, cudagraph_overhead=reserved
+        machine, tp_width=layout, model=model, cudagraph_overhead=reserved
     )
     install_device_readings(model_runner, readings)
     pool = (
@@ -743,8 +750,10 @@ def host_key(config) -> dict:
         if skip is None:
             continue
         lines = path.read_bytes().splitlines(keepends=True)
-        for node in reversed(ast.parse(b"".join(lines)).body if skip else []):
-            if getattr(node, "name", None) in skip:
+        tree = ast.parse(b"".join(lines)) if skip else None
+        doc = tree.body[0] if tree and ast.get_docstring(tree) is not None else None
+        for node in reversed(tree.body if tree else []):
+            if node is doc or getattr(node, "name", None) in skip:
                 del lines[node.lineno - 1 : node.end_lineno]
         digest.update(f"{relative}\0".encode() + b"".join(lines))
     return {
@@ -893,23 +902,32 @@ def _write_on_early_end(run: dict, a: "_RecordingAuthority") -> None:
 
 
 def frontend_done(llm_engine) -> bool:
-    """Whether the stopped server was a simulated run's finish. If it was, stop
-    the engines, hand in the frontend's refusals and, with the authority
-    co-hosted, write the step table and the run summary."""
+    """Whether the server left at a simulated run's finish, or at a stop: a
+    signal that ended its event loop's run. At either, stop the engines and
+    hand in the frontend's refusals, at a stop with an ``ended:`` reason naming
+    the signal. With the authority co-hosted, then write the step table and the
+    run summary; at a stop, once the early end's writer has written its own at
+    the first hand-in, so the summary left counts every hand-in."""
     rt = clock.installed()
-    if rt is None or rt.now != math.inf:
+    stop = None if rt is None else getattr(rt.loop, "stopped", None)
+    if rt is None or (rt.now != math.inf and stop is None):
         return False
     llm_engine.close()
     run = spec()
-    _frontend_hand_in(run, rt)
+    ended = [] if stop is None else [f"ended:{rt.me.name} stopped by {stop}"]
+    _frontend_hand_in(run, rt, ended=ended)
     if _authority is not None:
-        _write_summary(run, _authority)
+        if stop is not None:
+            _early_end.join()
+        _write_summary(run, _authority, ended=stop is not None)
     return True
 
 
-def _frontend_hand_in(run: dict, rt, client_run=None) -> None:
-    """Hand in the frontend's executor's refused jobs and its refused clock calls."""
-    _hand_in(run, rt.me.name, rt.loop.executor.refusals + rt.refusals, client_run)
+def _frontend_hand_in(run: dict, rt, client_run=None, ended=()) -> None:
+    """Hand in the frontend's executor's refused jobs, its refused clock calls
+    and the ``ended:`` reasons in `ended`."""
+    reasons = rt.loop.executor.refusals + rt.refusals + list(ended)
+    _hand_in(run, rt.me.name, reasons, client_run)
 
 
 def _read_hand_ins(run: dict, where: Path, wait: bool) -> dict:

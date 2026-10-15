@@ -7,7 +7,7 @@ import pathlib
 import pytest
 from test_memory_readings import (
     CONFIG_JSON,
-    PARAMETERS,
+    META_8B,
     WARMUP_TOKENS,
     readings_at,
     spec_of,
@@ -101,12 +101,11 @@ def test_the_piecewise_reservation_is_analytical(qwen):
     assert {t.method for t in reading.terms} == {Method.ANALYTICAL}
 
 
-def test_stated_weights_and_the_activation_formula_are_declared(qwen):
+def test_meta_build_weights_are_analytical_and_the_activation_formula_declared(qwen):
     model = ModelTerms.from_config(
-        qwen, parameter_count=PARAMETERS, tp_size=1, warmup_tokens=WARMUP_TOKENS
+        qwen, tree=META_8B, tp_size=1, warmup_tokens=WARMUP_TOKENS
     )
-    assert model.weights.method is Method.DECLARED
-    assert "states the parameter count" in model.weights.note
+    assert model.weights.method is Method.ANALYTICAL
     assert model.activations.method is Method.DECLARED
 
 
@@ -125,7 +124,7 @@ def test_a_reading_as_one_term_combines_its_terms_methods(qwen):
     peak = readings_at(spec_of("probed"), qwen, 1).peak_torch
     term = peak.as_term()
     assert term.method is Method.DECLARED
-    assert "It sums weights, activations, which are declared" in term.note
+    assert "It sums activations, which are declared" in term.note
     measured = readings_at(spec_of("probed"), qwen, 1).non_torch.as_term()
     assert measured.method is Method.MEASURED and not measured.note
 

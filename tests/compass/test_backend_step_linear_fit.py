@@ -585,7 +585,38 @@ def test_the_host_key_leaves_out_what_only_a_simulated_run_reaches(
     assert edited("model_engine/scheduler.py", "\n", "\nedited = 1\n") != key
 
 
+def test_the_host_key_leaves_out_a_listed_files_module_docstring(tmp_path, monkeypatch):
+    import atom
+    from atom.compass.run import host_key
+
+    tree = tmp_path / "atom"
+    (tree / "utils").mkdir(parents=True)
+    monkeypatch.setattr(atom, "__file__", str(tree / "__init__.py"))
+    config = SimpleNamespace(
+        model=str(tmp_path / "model"),
+        enforce_eager=True,
+        kv_cache_block_size=16,
+        kv_cache_dtype="bf16",
+        quant_config=SimpleNamespace(compute_hash=lambda: "q"),
+        tensor_parallel_size=1,
+    )
+
+    def key(name, doc, now=0):
+        body = f"class LPRuntime:\n    x = 1\n\ndef now():\n    return {now}\n"
+        (tree / "utils" / name).write_text(f'"""{doc}"""\n\n{body}')
+        try:
+            return host_key(config)["atom"]
+        finally:
+            (tree / "utils" / name).unlink()
+
+    base = key("clock.py", "One.")
+    assert key("clock.py", "One,\nthen\ntwo.") == base
+    assert key("clock.py", "One.", now=1) != base
+    assert key("other.py", "One.") != key("other.py", "Two.")
+
+
 def test_a_run_refuses_host_laws_fitted_under_another_key(tmp_path, monkeypatch):
+    from test_memory_readings import META_8B
     from test_run_step_grid import deployment, publish, run_file
 
     from atom.compass import run as compass_run
@@ -606,12 +637,12 @@ def test_a_run_refuses_host_laws_fitted_under_another_key(tmp_path, monkeypatch)
             compass_run.ENGINE, compass_run.channel_table(run), None
         )
         if other == {}:
-            compass_run.runner(r)
+            compass_run.runner(r, META_8B)
             assert r.compass_host.laws == laws
         else:
             differ = list(other or key)
             with pytest.raises(ValueError, match=re.escape(f"another {differ}")):
-                compass_run.runner(r)
+                compass_run.runner(r, META_8B)
 
 
 ROWMOD = {"step": 0.02, "context": 1e-8, "graph_padding": 5e-9, "rowmod": 3e-7}

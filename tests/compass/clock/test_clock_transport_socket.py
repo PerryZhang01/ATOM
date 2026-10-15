@@ -21,6 +21,7 @@ from atom.compass.clock import (
     TAR,
     BackdatedEvent,
     ChannelTable,
+    ClockAbort,
     ClockAuthority,
     LpId,
     LpRegistry,
@@ -282,3 +283,27 @@ def test_a_refusal_crosses_tcp_as_itself_and_the_connection_serves_on(served):
 def test_a_tcp_endpoint_without_host_and_port_is_refused(endpoint):
     with pytest.raises(ValueError, match="is not tcp://<host>:<port>"):
         _connect(LpId("a"), endpoint)
+
+
+def test_an_engine_closed_while_it_waits_in_ner_ends_the_run_for_every_lp(served):
+    """engine-P's connection ends with its NER out, as when its process exits
+    waiting for a grant. Traffic is bound and busy, so no finish can come."""
+    ca = ClockAuthority(prefill_decode_table(**FIVE_LP))
+    endpoint = served(ca, LOCAL)
+    conns = {name: _connect(LpId(name), endpoint) for name in PREFILL_DECODE_SCRIPTS}
+    waiting = [name for name in conns if name != "traffic"]
+    for name in waiting:
+        _result(_later(conns[name].send, (NER, INF, [], INF)))
+    pending = [_later(conns[name].recv) for name in waiting if name != "engine-P"]
+    conns["engine-P"].close()
+    named = "^engine-P closed its connection"
+    for box in pending:
+        with pytest.raises(ClockAbort, match=named) as abort:
+            _result(box)
+        assert abort.value.table == ca.lp_table()
+    # The busy LP's next request gets the same refusal.
+    with pytest.raises(ClockAbort, match=named):
+        _ask(conns["traffic"], (NER, INF, [], INF))
+    for name, conn in conns.items():
+        if name != "engine-P":
+            conn.close()
