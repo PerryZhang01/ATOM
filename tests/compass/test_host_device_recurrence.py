@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from test_dp_step_max import runner
+from test_memory_readings import META_8B
 from test_parity_record import _config, _Runner
 from test_run_step_grid import B37, decode, deployment, publish, run_file
 from test_runner_step_semantics import _drive
@@ -61,7 +62,8 @@ def charges(batches, laws=None, skip=()):
 
 def cost_lines(batches, directory, monkeypatch, laws=None, skip=(), rank=0):
     """A runner recording to `directory`: its charge of each batch, under
-    `laws` when given, and the cost lines it wrote there."""
+    `laws` when given, and the cost lines it wrote there, below the version
+    line."""
     monkeypatch.setenv(parity.ENV, str(directory))
     r, clock = _Runner(_config(), rank), [0.0]
     if laws is not None:
@@ -72,7 +74,7 @@ def cost_lines(batches, directory, monkeypatch, laws=None, skip=(), rank=0):
         clock[0] += charged[-1]
     path = directory / "dp0.cost.jsonl"
     lines = path.read_text().splitlines() if path.exists() else []
-    return [json.loads(line) for line in lines], charged
+    return [json.loads(line) for line in lines[1:]], charged
 
 
 def law(kind, seconds):
@@ -135,7 +137,7 @@ def test_a_runs_runner_charges_at_the_clock_its_engine_publishes(tmp_path, monke
     engine = compass_run._PublishedClock(
         compass_run.ENGINE, compass_run.channel_table(run), None
     )
-    compass_run.runner(r)
+    compass_run.runner(r, META_8B)
     price = 8897.5e-6  # `test_run_step_grid`'s price of this batch
     # The first output forward waits for nothing; the next, called at the same
     # time, for the first one's device work.

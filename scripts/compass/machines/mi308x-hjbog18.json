@@ -3,7 +3,7 @@
   "name": "mi308x-hjbog18",
   "provenance": {
     "authored_by": "compass agent for jgong5",
-    "date": "2026-10-11",
+    "date": "2026-10-14",
     "origin": "mixed",
     "origins": {
       "host.cpu.cores_physical": {
@@ -148,6 +148,34 @@
       "interconnect.inter_node.derate": {
         "origin": "assumed"
       },
+      "device.runtime_constants.driver_and_collective_reserve_bytes[1x8]": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3-30B-A3B",
+        "width": 8,
+        "source_root": "commit:7370fbe47",
+        "record": "sha256:72a76cc8907cf77ae9c22583583b5d6ac5a6e2acb94d396e1df08b4ddd001d55"
+      },
+      "device.runtime_constants.allocator_retained_after_load_bytes[1x8]": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3-30B-A3B",
+        "width": 8,
+        "source_root": "commit:7370fbe47",
+        "record": "sha256:72a76cc8907cf77ae9c22583583b5d6ac5a6e2acb94d396e1df08b4ddd001d55"
+      },
+      "device.runtime_constants.driver_and_collective_reserve_bytes[8]": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3-30B-A3B",
+        "width": 8,
+        "source_root": "commit:7370fbe47",
+        "record": "sha256:21991eab509e154ac6da9a2c3d769603da9a9ed492e52a0a9ec18d2f4e18caa2"
+      },
+      "device.runtime_constants.allocator_retained_after_load_bytes[8]": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3-30B-A3B",
+        "width": 8,
+        "source_root": "commit:7370fbe47",
+        "record": "sha256:21991eab509e154ac6da9a2c3d769603da9a9ed492e52a0a9ec18d2f4e18caa2"
+      },
       "host.tokenizers[qwen3.8-27b fast]": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B"
@@ -156,9 +184,11 @@
     "fragments": [
       "tokenizer",
       "device",
-      "assumed"
+      "assumed",
+      "start 1x8",
+      "start 8"
     ],
-    "notes": "one Qwen3.8-27B TP1 start at 983e42973 | no probe fills these"
+    "notes": "one Qwen3.8-27B TP1 start at 983e42973 | no probe fills these | one Qwen/Qwen3-30B-A3B -tp 8 --enable-dp-attention --enable-expert-parallel --all2all-backend none start at commit:7370fbe47 | one Qwen/Qwen3-30B-A3B -tp 8 --enable-expert-parallel --all2all-backend none start at commit:7370fbe47"
   },
   "host": {
     "cpu": {
@@ -203,10 +233,14 @@
     },
     "runtime_constants": {
       "driver_and_collective_reserve_bytes": {
-        "1": 1249902592
+        "1": 1249902592,
+        "1x8": 8189378560,
+        "8": 9485418496
       },
       "allocator_retained_after_load_bytes": {
-        "1": 14924832
+        "1": 14924832,
+        "1x8": 2165604480,
+        "8": 2165604480
       },
       "persistent_forward_buffer_bytes": 315351040,
       "cudagraph_pool": {

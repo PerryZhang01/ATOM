@@ -291,12 +291,14 @@ def test_the_count_reports_the_footprint_by_method(qwen, capsys):
     def bytes_of(*names):
         return sum(expected[r][t] for r, t in (n.split(".") for n in names))
 
-    declared = ("peak_torch.weights", "peak_torch.activations")
+    declared = ("peak_torch.activations",)
     assert set(sizing.declared_terms) == set(declared)
     assert sizing.bytes_by_method == {
         Method.DECLARED: bytes_of(*declared),
         Method.ANALYTICAL: bytes_of(
-            "peak_torch.buffers", "cudagraph_overhead.per-token x captured tokens"
+            "peak_torch.weights",
+            "peak_torch.buffers",
+            "cudagraph_overhead.per-token x captured tokens",
         ),
         Method.MEASURED: bytes_of(
             "peak_torch.load residue",

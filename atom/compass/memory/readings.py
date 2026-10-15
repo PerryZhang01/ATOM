@@ -36,9 +36,8 @@ box produces and will not reproduce a neighbour-induced admission cliff.
 
 **The weights are not derivable here.** They are exact from a meta build
 deduped by storage, which needs a module tree, which needs the engine, which
-this package does not import; the simulated runner builds one and hands it in.
-`from_config` reads the weights off that tree's parameter storages when it is
-given one, and otherwise declares them from a stated parameter count. Each term
+this package does not import; the simulated runner builds one and hands it in,
+and `from_config` reads the weights off that tree's parameter storages. Each term
 carries its own method: the buffers are analytical unless the rotary fraction
 is assumed, and the activations are a declared formula unless a real run
 measured their bytes per token in the machine spec. The spec fields used as
@@ -128,13 +127,12 @@ class ModelTerms:
         cls,
         config,
         *,
-        parameter_count: int | None = None,
         tp_size: int,
         warmup_tokens: int,
         dtype_bytes: int | None = None,
         config_json: dict | None = None,
         activations_entry: tuple[str, float, tuple[str, ...]] | None = None,
-        tree=None,
+        tree,
     ) -> ModelTerms:
         """All three, each labelled with where its bytes came from.
 
@@ -149,12 +147,11 @@ class ModelTerms:
         ATOM's own quantisation config and process groups; the weights are the
         bytes of its parameter storages, each storage once, so a tied
         `lm_head` that shares the embedding's storage counts once, as it is
-        resident once. Without it, the weights are `parameter_count` at one
-        dtype, sharded by `tp_size`.
+        resident once.
 
-        Every declared term below names its successor: stated weights are
-        owed a meta build, assumed buffers a config that states the rotary
-        fraction, and the activation formula an entry measured on the model
+        Every declared term below names its successor: assumed buffers are
+        owed a config that states the rotary fraction, and the activation
+        formula an entry measured on the model
         or a liveness walk over a traced op graph *plus* the per-leaf
         invisible-scratch constants -- and the second is the one with no law
         behind it. The measured spread that makes it load-bearing is
@@ -249,33 +246,20 @@ class ModelTerms:
                 dense = int(_geometry(config, file, "intermediate_size"))
                 intermediate = max(dense, intermediate)
                 live = f"max({dense} intermediate_size, {live})"
-        if tree is not None:
-            # Parameters that share a storage (a tied head, a view) are one
-            # allocation; `_cdata` names the storage even on meta, where every
-            # data pointer is zero.
-            storages = {
-                p.untyped_storage()._cdata: p.untyped_storage().nbytes()
-                for p in tree.parameters()
-            }
-            weights = Term(
-                "weights",
-                sum(storages.values()),
-                Method.ANALYTICAL,
-                f"{len(storages)} parameter storages of a meta build of "
-                f"{type(tree).__name__}",
-            )
-        else:
-            weights = Term(
-                "weights",
-                parameter_count * dtype_bytes // tp_size,
-                Method.DECLARED,
-                f"{parameter_count} stated parameters x {dtype_bytes} B / "
-                f"TP{tp_size}",
-                "the run file states the parameter count; "
-                "a meta build deduped by storage replaces this and is "
-                "exact at every width; this shards every parameter, where a "
-                "real stack replicates its norms",
-            )
+        # Parameters that share a storage (a tied head, a view) are one
+        # allocation; `_cdata` names the storage even on meta, where every
+        # data pointer is zero.
+        storages = {
+            p.untyped_storage()._cdata: p.untyped_storage().nbytes()
+            for p in tree.parameters()
+        }
+        weights = Term(
+            "weights",
+            sum(storages.values()),
+            Method.ANALYTICAL,
+            f"{len(storages)} parameter storages of a meta build of "
+            f"{type(tree).__name__}",
+        )
         buffers = Term(
             "buffers",
             positions * rotary_dim * dtype_bytes,
@@ -338,7 +322,7 @@ class DeviceReadings:
     non_torch: Reading
     cudagraph_overhead: Reading
     free: Reading
-    tp_width: int
+    tp_width: int | str
     spec_digest: str
 
     def as_dict(self) -> dict[str, Reading]:
@@ -372,7 +356,7 @@ class DeviceReadings:
 def device_readings(
     spec,
     *,
-    tp_width: int,
+    tp_width: int | str,
     model: ModelTerms,
     cudagraph_overhead: Reading,
 ) -> DeviceReadings:
@@ -389,8 +373,12 @@ def device_readings(
     `allocator_retained_after_load_bytes` are `Kind.WIDTH_TABLE` because no
     fixed-plus-per-peer form fits 5980/6340/9138 at widths 2/4/8, so there is
     nothing to interpolate along. Nothing here catches that refusal.
+
+    Under DP-attention `tp_width` is the layout key, `"<tp>x<dp>"`: every rank
+    runs attention at TP 1 inside DP-wide groups, which reserve what neither
+    width alone does.
     """
-    if tp_width < 1:
+    if isinstance(tp_width, int) and tp_width < 1:
         raise ValueError(f"tensor-parallel width is at least 1: {tp_width}")
     if cudagraph_overhead.name != graph_pool.RESERVES:
         raise MemoryRefusal(

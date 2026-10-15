@@ -545,10 +545,12 @@ the log of one rank.
 `python -m atom.compass.backends.step_linear_fit RECORD... --out LAW [--form FORM] [--dp N]`
 fits the law a run file's `step_linear` key holds (`atom/compass/backends/step_linear.py`) from
 the step records of real cells, `OUT_DIR/steps/dp0.jsonl` of `REAL=1
-cctraces_sim.sh` runs. The module's docstring states the label, what is cut and
-how outliers are dropped; the written law also carries, per vector, its samples,
-warm and dropped counts and condition number, and names any vector it could not
-fit under `unfitted`.
+cctraces_sim.sh` runs. `atom/compass/backends/step_labels.py` states the label
+and what is cut, and the command writes each record's labels beside it for
+reading, `dp0.cost.jsonl`; the module's docstring states how outliers are
+dropped. The written law also carries, per vector, its samples, warm and dropped
+counts and condition number, and names any vector it could not fit under
+`unfitted`.
 
 Calibration cells replay traces the graded cells do not: `FIRST_SESSION=256
 SESSIONS=137` against graded traces 0 to 255, by the
@@ -570,9 +572,12 @@ turn so those cells decode at rungs 16 and up. Its host key is the one at
 earlier records were fitted with that key in place of the one they carry.
 
 `scripts/compass/laws/qwen3.8-27b-tp1-mi308x-hjbog39-661ef7661.json` is the
-same fit, in the same order and with the same arguments, on seven records
-captured on hjbog-srdc-39 at ce625ddd9 (ROCm/ATOM 661ef7661) in the
-nightly-20261013 image, under the host key they carry.
+same fit, with the same arguments, on records captured on hjbog-srdc-39 at
+ce625ddd9 (ROCm/ATOM 661ef7661) in the nightly-20261013 image: seven cells in
+the order above, then first-turn cells at concurrency 8 and 14, which give it
+its rung-8 vector. It carries the host key the records carry with its `atom`
+digest replaced by the one `host_key` gives ce625ddd9's tree since it leaves
+out the module docstring of a file `COMPASS_ONLY` lists with names.
 
 ## Cost accuracy on a real run's own steps — `validate.cost`
 

@@ -135,7 +135,7 @@ def test_each_reading_is_one_row_with_its_own_verdict(
     )
     assert rows["non_torch"].endswith(verdict)
     # The predicted readings' own terms are printed under the table.
-    assert rows["weights"].split()[2] == "declared"
+    assert rows["weights"].split()[2] == "analytical"
     assert "graph pool against pool(reserved)" in rows["out"]
     assert rows["reserves()"].split()[-2] == f"{saved['reserved']:,}"
 
