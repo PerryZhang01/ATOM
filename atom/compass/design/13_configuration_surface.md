@@ -285,7 +285,7 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
   whether host segments were skipped (`01` D4's what-if), the refusals, the coverage check's result, and the
   backend's provenance, its fitted traces and profiled inputs included.
   `python -m atom.compass.validate` decides from them whether a client run is gradeable:
-  not when the run skipped host segments, composed the step roofline, priced with a backend
+  not when the run skipped host segments, priced with a backend
   fitted on the traces it grades or on profiled inputs, ran the step grid without a passed
   coverage check, or refused a step of that client run (`08` D50.1). A backend fitted
   under another engine configuration refuses to run: that is a mismatch, not a reason.
