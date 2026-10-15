@@ -24,8 +24,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
         println!("cargo:rerun-if-changed=proto");
     }
-    // Rebuild triggers
-    println!("cargo:rerun-if-changed=Cargo.toml");
+    // Rebuild triggers: every top-level entry but `target`, which each build
+    // writes, and the git files a commit, checkout or `git add` rewrites, so
+    // the commit and status below are re-read when they change. A new file
+    // directly in this directory is not seen: watching `.` would include
+    // `target` and rerun this script, and recompile the crate, on every build.
+    for entry in std::fs::read_dir(".")?.flatten() {
+        if entry.file_name() != "target" {
+            println!("cargo:rerun-if-changed={}", entry.path().display());
+        }
+    }
+    let git_paths = run_cmd(
+        "git",
+        &[
+            "rev-parse",
+            "--git-path",
+            "HEAD",
+            "--git-path",
+            "index",
+            "--git-path",
+            "logs/HEAD",
+        ],
+    );
+    for path in git_paths.iter().flat_map(|p| p.lines()) {
+        if std::path::Path::new(path).exists() {
+            println!("cargo:rerun-if-changed={path}");
+        }
+    }
 
     // Set version info environment variables
     let version = read_cargo_version().unwrap_or_else(|_| DEFAULT_VERSION.to_string());
@@ -99,9 +124,15 @@ fn git_commit() -> Option<String> {
     run_cmd("git", &["rev-parse", "--short", "HEAD"])
 }
 
+/// Status of this package's directory only, the source the binary is built
+/// from. `--no-optional-locks` keeps git from rewriting the index, which the
+/// rebuild triggers watch.
 fn git_status() -> Option<String> {
-    run_cmd("git", &["status", "--porcelain"])
-        .map(|s| if s.is_empty() { "clean" } else { "dirty" }.into())
+    run_cmd(
+        "git",
+        &["--no-optional-locks", "status", "--porcelain", "--", "."],
+    )
+    .map(|s| if s.is_empty() { "clean" } else { "dirty" }.into())
 }
 
 fn rustc_version() -> Option<String> {
