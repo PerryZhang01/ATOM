@@ -16,7 +16,11 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from test_dp_slice import MAX_TOKENS, device_classes_put_back, run_dp_slice  # noqa: F401
+from test_dp_slice import (  # noqa: F401
+    MAX_TOKENS,
+    device_classes_put_back,
+    run_dp_slice,
+)
 from test_dp_step_max import prefill, runner
 from test_pd_slice import NEEDS_A_PD_RUN, run_pd
 from test_vertical_slice import MAX_TOKENS as ONE_REQUEST
