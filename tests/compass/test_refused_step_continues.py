@@ -22,6 +22,7 @@ from test_dp_step_max import BLOCK, dp2, runner  # noqa: F401  the dp2 fixture
 from test_run_graph_pool import _reserved
 from test_runner_control_refusals import Worker
 
+from atom.compass import parity
 from atom.compass import run as compass_run
 from atom.compass.backends import StepLinearBackend, StepLinearLaw
 from atom.compass.backends.resolver import CostRefused
@@ -55,6 +56,21 @@ def run_file(tmp_path, monkeypatch, **keys):
     (tmp_path / "run.json").write_text(json.dumps(run))
     monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
     return run
+
+
+def recording(r, directory, monkeypatch):
+    """`r`, keeping the parity record in `directory`, with the engine fields
+    its first step states."""
+    monkeypatch.setenv(parity.ENV, str(directory))
+    quant = SimpleNamespace(compute_hash=lambda: "q")
+    fields = {"kv_cache_dtype": "bf16", "quant_config": quant}
+    vars(r.config).update(fields, enforce_eager=True, tensor_parallel_size=1)
+    return r
+
+
+def cost_lines(directory, dp_rank=0):
+    text = (directory / f"dp{dp_rank}.cost.jsonl").read_text()
+    return [json.loads(line) for line in text.splitlines()]
 
 
 def drive(r, requests=3):
@@ -130,6 +146,44 @@ def test_a_refused_step_costs_nothing_and_every_request_is_answered(
         sum(reply.predicted_s for reply in replies)
     )
     assert out["coverage_report"] is True
+
+
+def test_a_refused_steps_cost_line_holds_its_reason_and_no_device_time(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(torch.distributed, "all_reduce", None)
+    r = recording(runner(no_eager_rung()), tmp_path, monkeypatch)
+
+    _, replies = drive(r)
+
+    lines = cost_lines(tmp_path)
+    steps = [s["step"] for s in parity.read(tmp_path)[0]]
+    assert [line["step"] for line in lines] == steps == list(range(len(replies)))
+    assert [line["group_s"] for line in lines] == [x.predicted_s for x in replies]
+    refused = [line for line in lines if line["refused"]]
+    assert 0 < len(refused) < len(lines)
+    assert [line["refused"] for line in refused] == list(r.refused_commands())
+    for line in refused:
+        assert (line["refused"], line["device_s"], line["terms"]) == (REFUSED, 0.0, [])
+    for line in lines:
+        if line["refused"] is None:
+            assert line["device_s"] > 0 and line["terms"]
+
+
+def test_a_refused_ranks_cost_line_charges_nothing_and_leaves_at_the_group_max(
+    dp2, tmp_path, monkeypatch  # noqa: F811
+):
+    ranks = [
+        recording(runner(no_eager_rung(), dp_size=2, dp_rank=0), tmp_path, monkeypatch),
+        recording(runner(backend(), dp_size=2, dp_rank=1), tmp_path, monkeypatch),
+    ]
+
+    _, priced = dp2(ranks[0].dummy_execution, ranks[1].dummy_execution)
+
+    [refused], [line] = cost_lines(tmp_path, 0), cost_lines(tmp_path, 1)
+    assert [refused[k] for k in ("refused", "device_s", "charge_s")] == [REFUSED, 0, 0]
+    assert refused["group_s"] == line["group_s"] == priced.predicted_s > 0
+    assert line["charge_s"] == line["device_s"] == priced.predicted_s
 
 
 def test_under_abort_the_refused_step_ends_the_run_and_the_summary_is_written(
