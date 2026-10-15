@@ -282,17 +282,21 @@ def test_both_filters_in_the_derivation_drop_nothing():
     tripwire -- an f-string call site, or a compass-side broadcast, fails here
     and has to be accounted for rather than vanishing.
 
-    The compass-side broadcasts accounted for: the run bootstrap reads the
-    Compass runner's refusal tally, `refused_commands`, what its steps cost,
-    `priced_steps`, the memory it predicts, `predicted_memory`, and its step
-    grid bundle, `step_grid_bundle`. No ATOM site sends any of them, so no
-    `ModelRunner` is ever asked for them.
+    The compass-side broadcasts accounted for: the bench starts its runner as
+    `EngineCore` does, sending `get_num_blocks`, `allocate_kv_cache`,
+    `capture_cudagraph` and `exit`, and asks it for a measurement,
+    `bench_step`; the run bootstrap reads the Compass runner's refusal tally,
+    `refused_commands`, what its steps cost, `priced_steps`, the memory it
+    predicts, `predicted_memory`, and its step grid bundle,
+    `step_grid_bundle`. No ATOM site sends `bench_step` or the bootstrap's
+    names, so no `ModelRunner` is ever asked for them.
     """
     assert NON_LITERAL == []
-    assert [where.rsplit(":", 1)[0] for where in FROM_COMPASS] == 4 * [
-        "atom/compass/run/__init__.py"
-    ]
+    assert [where.rsplit(":", 1)[0] for where in FROM_COMPASS] == 5 * [
+        "atom/compass/bench/engine.py"
+    ] + 4 * ["atom/compass/run/__init__.py"]
     compass = {
+        "bench_step",
         "refused_commands",
         "priced_steps",
         "predicted_memory",
