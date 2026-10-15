@@ -29,7 +29,8 @@ fn session(id: &str) -> http::HeaderMap {
     headers
 }
 
-/// One run: cache_aware breaking four-way load ties, dp_sticky sessions
+/// One run: cache_aware breaking four-way load ties, then two-way ties when
+/// imbalanced, and placing at random with no tree; dp_sticky sessions
 /// idling past expiry on the simulated clock, and radix-tree owner picks
 /// after each node's cached owner leaves. A random wall-clock pause precedes
 /// every request.
@@ -67,6 +68,34 @@ async fn run(seed: u64) -> Vec<String> {
         let rank = sticky.select_worker(&sticky_workers, &info).await.unwrap();
         sticky_workers[rank].increment_load();
         picks.push(format!("dp_sticky {rank}"));
+    }
+
+    // Ranks 0 and 1 past balance_abs_threshold: the imbalanced branch breaks
+    // a tie between ranks 2 and 3. A policy that never ran init_workers has
+    // no tree and places idle ranks at random.
+    for worker in &workers[..2] {
+        for _ in 0..33 {
+            worker.increment_load();
+        }
+    }
+    let idle = ranks();
+    let unseeded = CacheAwarePolicy::with_config(CacheAwareConfig {
+        eviction_interval_secs: 0,
+        ..Default::default()
+    });
+    let info = SelectWorkerInfo {
+        request_text: Some("imbalanced"),
+        ..Default::default()
+    };
+    for _ in 0..16 {
+        picks.push(format!(
+            "imbalanced {:?}",
+            cache_aware.select_worker(&workers, &info).await
+        ));
+        picks.push(format!(
+            "no tree {:?}",
+            unseeded.select_worker(&idle, &info).await
+        ));
     }
 
     let tree = Tree::new();
