@@ -96,10 +96,12 @@ from pathlib import Path
 
 run, out, machine, model, port, width = sys.argv[1:]
 machine = json.loads(Path(machine).read_text())
-# ponytail: prices the model's tokenizer as the spec's first entry measured it;
-# only arrival latency reads it. Measure the model's own to drop this.
+# ponytail: a spec that measured no tokenizer for the model prices it as its
+# first entry; only arrival latency reads it. Measure the model's own to drop this.
 arch = json.loads((Path(model) / "config.json").read_text())["architectures"][0]
-machine["host"]["tokenizers"][0]["applies_to"].append(arch)
+tokenizers = machine["host"]["tokenizers"]
+if not any(arch in entry["applies_to"] for entry in tokenizers):
+    tokenizers[0]["applies_to"].append(arch)
 Path(run).write_text(json.dumps({
     "clock_endpoint": f"tcp://127.0.0.1:{port}", "bound_s": 1e7,
     "admission_path": "serving", "ipc_s": 2.0**-14, "stream_s": 2.0**-12,

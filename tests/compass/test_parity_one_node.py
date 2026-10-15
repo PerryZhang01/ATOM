@@ -112,3 +112,19 @@ def test_dsv4_dpa8_without_a_machine_starts_nothing(tmp_path):
     assert r.returncode != 0
     assert "needs MACHINE" in r.stderr
     assert servers == []
+
+
+@pytest.mark.skipif(BASH is None, reason="no bash on PATH")
+def test_a_spec_that_measured_the_models_tokenizer_names_it_once(tmp_path):
+    arch = "DeepseekV4ForCausalLM"
+    machine = json.loads(
+        (ROOT / "scripts/compass/machines/mi308x-hjbog18.json").read_text()
+    )
+    machine["host"]["tokenizers"][0]["applies_to"].append(arch)
+    (tmp_path / "spec.json").write_text(json.dumps(machine))
+    r, _, run = _parity(
+        tmp_path, CONFIG="dsv4-dpa8", MACHINE=str(tmp_path / "spec.json")
+    )
+    assert r.returncode == 0, r.stderr
+    tokenizers = json.loads(run.read_text())["machine"]["host"]["tokenizers"]
+    assert [a for t in tokenizers for a in t["applies_to"]].count(arch) == 1
