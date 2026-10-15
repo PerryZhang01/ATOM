@@ -31,7 +31,7 @@ from test_backend_step_grid import (
 )
 from test_dp_step_max import runner
 
-from atom.compass.backends import RequestShape, Species
+from atom.compass.backends import Method, RequestShape
 from atom.compass.backends.shape import sum_context
 from atom.compass.backends.step_grid import equivalent_shape
 from atom.compass.backends.step_grid_residual import V1, Recipe, Residual
@@ -114,7 +114,7 @@ def test_the_term_is_fitted_and_its_detail_holds_the_lookup_and_each_member():
     (term,) = backend.price(view(*rows)).terms
     factor = 1.3046875 + math.exp(0.484375)
     assert term.seconds == 4261e-6 * factor
-    assert term.provenance.species is Species.FITTED
+    assert term.provenance.method is Method.ESTIMATED
     assert term.provenance.detail == (
         "lookup 0.004261 s, interpolated; decode cell B=32, c 512..1024; "
         f"residual {factor!r} = 1.0 x o 1.3046875 + 1.0 x e {math.exp(0.484375)!r}"

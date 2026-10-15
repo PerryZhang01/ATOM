@@ -22,15 +22,16 @@ from atom.compass.backends import (
     BatchView,
     Coefficients,
     CostTerm,
+    Method,
     Provenance,
     Refusal,
     RequestShape,
-    Species,
     StepCost,
     StepLinearBackend,
     StepLinearLaw,
     StepStubBackend,
 )
+from atom.compass.backends.cost import GROUPS
 from atom.utils import clock
 from atom.utils.clock import LPRuntime
 
@@ -47,6 +48,11 @@ SHORT_PREFILL_HULL = {
 NONE_APART = {"steps": 0, "fraction_of_predicted_seconds": 0.0}
 
 
+def by_method(**groups):
+    """`seconds_by_method` with `groups` and every other group at none."""
+    return {g: groups.get(g, NONE_APART) for g in GROUPS}
+
+
 class AnalyticBelow(StepStubBackend):
     """The stub's seconds, answered by an analytical source after two sources above
     it declined a prefill of `tokens` or more."""
@@ -59,7 +65,7 @@ class AnalyticBelow(StepStubBackend):
         cost = super().price(batch_view)
         if sum(r.query_tokens for r in batch_view.prefill) < self.tokens:
             return cost
-        analytic = Provenance(Species.ANALYTICAL, "roofline", "tier0", CHAIN)
+        analytic = Provenance(Method.ANALYTICAL, "roofline", "tier0", CHAIN)
         return StepCost(
             [CostTerm(t.name, t.seconds, analytic) for t in cost.terms if t.seconds]
         )
@@ -115,11 +121,18 @@ def test_a_step_a_lower_rung_answered_is_not_refused_and_its_answer_is_apart(
     short, long = seconds(backend, 8), seconds(backend, 40)
     schedule = out["schedule"]
     assert schedule["predicted_seconds"] == pytest.approx(3 * short + long)
-    assert schedule["analytical"] == {
-        "steps": 1,
-        "fraction_of_predicted_seconds": pytest.approx(long / (3 * short + long)),
-    }
-    assert schedule["extrapolated"] == NONE_APART
+    assert schedule["seconds_by_method"] == by_method(
+        analytical={
+            "steps": 1,
+            "fraction_of_predicted_seconds": pytest.approx(long / (3 * short + long)),
+        },
+        declared={
+            "steps": 3,
+            "fraction_of_predicted_seconds": pytest.approx(
+                3 * short / (3 * short + long)
+            ),
+        },
+    )
     refusals = schedule["refusals"]
     assert (refusals["count"], refusals["steps"], refusals["reasons"]) == (0, 4, [])
     assert refusals["fraction_of_steps"] == 0.0
@@ -145,27 +158,38 @@ def test_any_refusal_of_any_source_is_a_coverage_report(
     assert out["coverage_report"] is True
 
 
-def test_steps_outside_the_hull_are_extrapolated_and_never_refused(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize("held_out", [False, True], ids=["no-held-out", "held-out"])
+def test_steps_outside_the_held_out_hull_are_unvalidated_and_never_refused(
+    monkeypatch, tmp_path, held_out
 ):
-    backend = StepLinearBackend(StepLinearLaw(law(prefill_hull=SHORT_PREFILL_HULL)))
+    written = law(prefill_hull=SHORT_PREFILL_HULL)
+    if held_out:
+        written["prefill"]["held_out"] = {"hull": SHORT_PREFILL_HULL, "bands": {}}
+    backend = StepLinearBackend(StepLinearLaw(written))
     out = summary(monkeypatch, tmp_path, backend, 8, 8, 8, 40)
 
     short, long = seconds(backend, 8), seconds(backend, 40)
     schedule = out["schedule"]
-    assert schedule["extrapolated"] == {
+    unvalidated = {
         "steps": 1,
         "fraction_of_predicted_seconds": pytest.approx(long / (3 * short + long)),
     }
-    assert schedule["analytical"] == NONE_APART
+    estimated = {
+        "steps": 3,
+        "fraction_of_predicted_seconds": pytest.approx(3 * short / (3 * short + long)),
+    }
+    if not held_out:
+        unvalidated = {"steps": 4, "fraction_of_predicted_seconds": pytest.approx(1.0)}
+        estimated = NONE_APART
+    assert schedule["seconds_by_method"] == by_method(
+        estimated=estimated, unvalidated=unvalidated
+    )
     refusals = schedule["refusals"]
     assert (refusals["count"], refusals["steps"]) == (0, 4)
     assert out["coverage_report"] is False
 
 
-def test_a_run_with_neither_reports_zero_of_both_beside_its_seconds(
-    monkeypatch, tmp_path
-):
+def test_a_stub_run_reports_all_its_seconds_declared(monkeypatch, tmp_path):
     backend = StepStubBackend(STAGE1)
     out = summary(monkeypatch, tmp_path, backend, 8, 40)
 
@@ -173,7 +197,10 @@ def test_a_run_with_neither_reports_zero_of_both_beside_its_seconds(
     assert schedule["predicted_seconds"] == pytest.approx(
         seconds(backend, 8) + seconds(backend, 40)
     )
-    assert schedule["analytical"] == schedule["extrapolated"] == NONE_APART
+    assert schedule["seconds_by_method"] == by_method(
+        declared={"steps": 2, "fraction_of_predicted_seconds": pytest.approx(1.0)}
+    )
+    assert out["schema_version"] == compass_run.SUMMARY_SCHEMA_VERSION == 3
     assert schedule["refusals"]["count"] == 0
     assert schedule["refusals"]["fraction_of_steps"] == 0.0
     assert out["coverage_report"] is False

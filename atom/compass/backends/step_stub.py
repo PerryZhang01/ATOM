@@ -80,7 +80,7 @@ from dataclasses import dataclass, fields
 from atom.compass.backends.base import CostBackend, Granularity
 from atom.compass.backends.cost import CostTerm, StepCost
 from atom.compass.backends.geometry import KvGeometry, Parallelism
-from atom.compass.backends.provenance import Provenance, Species
+from atom.compass.backends.provenance import Method, Provenance
 from atom.compass.backends.shape import (
     BatchView,
     sum_context,
@@ -91,9 +91,14 @@ from atom.compass.backends.shape import (
 
 SOURCE = "step-stub"
 
-# Carried into every term's provenance and into `describe()`, so the record an
-# artifact writes says it and not only the source that produced the record.
-DECLARED_NOTE = "declared, not measured -- a plumbing figure, not an accuracy claim"
+# The note on every term's provenance, and repeated by `describe()`, so the
+# record an artifact writes says it and not only the source that produced it:
+# where the coefficients came from, and what replaces them.
+DECLARED_NOTE = (
+    "coefficients stated in the run file, not measured -- a plumbing figure, "
+    "not an accuracy claim; successor: the step linear law fitted on real "
+    "step records (step_linear)"
+)
 
 # Added to a collective's own provenance. The widths rule a collective out
 # conclusively and rule it in only conditionally, so a charge for one states
@@ -297,14 +302,15 @@ class StepStubBackend(CostBackend):
         it came from, and it goes in the record beside the count rather than
         in a note somewhere else.
         """
-        detail = f"{coefficient:g} s x {count}; {DECLARED_NOTE}"
+        detail = f"{coefficient:g} s x {count}"
         return CostTerm(
             name,
             count * coefficient,
             Provenance(
-                Species.FITTED,
+                Method.DECLARED,
                 f"{detail}; {qualifier}" if qualifier else detail,
                 SOURCE,
+                note=DECLARED_NOTE,
             ),
         )
 

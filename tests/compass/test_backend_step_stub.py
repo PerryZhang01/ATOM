@@ -37,9 +37,9 @@ from atom.compass.backends import (
     CostBackend,
     Granularity,
     KvGeometry,
+    Method,
     Parallelism,
     RequestShape,
-    Species,
     StepStubBackend,
     fold_step,
 )
@@ -408,12 +408,14 @@ class TestWhatTheOutputSays:
         assert "5e-07 s x 128" in rows["prefill.tokens"]
         assert "x 16384" in rows["prefill.query_square"]
 
-    def test_the_species_is_not_analytical(self):
-        """Reserved for something computed without measuring the subject, and
-        a declared coefficient has not computed anything."""
-        step = StepStubBackend().price(BatchView((prefill(128),)))
-        for _, _, provenance in step.rows():
-            assert str(Species.ANALYTICAL) not in provenance
+    def test_every_term_is_declared_with_its_origin_and_successor(self):
+        """A coefficient nobody measured is an assumed input: the method is
+        declared, and the note names the step linear law as its successor."""
+        step = StepStubBackend().price(BatchView((prefill(128), decode(500))))
+        for term in step.terms:
+            assert term.provenance.method is Method.DECLARED, term.name
+            assert term.provenance.note == DECLARED_NOTE
+        assert "successor: the step linear law" in DECLARED_NOTE
 
     def test_the_description_says_it_and_which_pricing_produced_it(self):
         assert DECLARED_NOTE in StepStubBackend().describe()

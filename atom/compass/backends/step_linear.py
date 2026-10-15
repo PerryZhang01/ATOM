@@ -26,9 +26,13 @@ take at a different cost; `rowmod(1)` is Sum N_KV.
 A decode step that replays no graph (an eager runner, or a batch wider than
 the widest captured size) is the rung named `eager`, whose padding is zero.
 
-Each vector carries the convex hull of the features it was fitted on. A step
-outside it is priced by the same vector and its terms are `extrapolated`, with
-a detail naming the hull; it is not refused. A step the law has no vector for
+Every term is `estimated`. Each vector carries the convex hull of the features
+it was fitted on. A step outside it is priced by the same vector, its terms'
+source is `EXTRAPOLATED` and their detail names the hull; it is not refused.
+A vector may also carry, under `held_out`, the hull of the steps
+`step_linear_fit` priced with a law fitted on the other records and their
+errors per band: a term is validated iff its step lies inside that hull, so a
+law without one prices every term unvalidated. A step the law has no vector for
 is refused: prefill when the law has no prefill vector, a decode rung with
 none, or a step mixing prefill and decode rows.
 
@@ -40,8 +44,12 @@ The law is a mapping, as a run file holds it, `key` and `prefill` optional:
      "decode": {"eager": VECTOR, "1": VECTOR, "2": VECTOR, ...}}
 
     VECTOR = {"coefficients": {<feature>: seconds, ...},
-              "hull": {"equal": {<feature>: value, ...}, "facets": [[a_1, ..., a_k, c], ...]},
-              "rowmod": k}    # a decode vector with a `rowmod` coefficient only
+              "hull": HULL,
+              "rowmod": k,    # a decode vector with a `rowmod` coefficient only
+              "held_out": {"hull": HULL, "bands": {<band>: ERRORS, ...}}}  # optional
+
+    HULL = {"equal": {<feature>: value, ...}, "facets": [[a_1, ..., a_k, c], ...]}
+    ERRORS = {"steps": n, "p10": e, "p50": e, "p90": e}, e = priced / real - 1
 
 `coefficients` names every feature of its kind, `step` for the intercept.
 `equal` holds each feature that was constant over the fit and the value a step
@@ -57,7 +65,7 @@ from collections.abc import Mapping
 from atom.compass.backends.base import CostBackend, Granularity
 from atom.compass.backends.cost import CostTerm, StepCost
 from atom.compass.backends.hull import Hull
-from atom.compass.backends.provenance import Provenance, Refusal, Species
+from atom.compass.backends.provenance import Method, Provenance, Refusal
 from atom.compass.backends.resolver import CostRefused
 from atom.compass.backends.shape import (
     BatchView,
@@ -73,6 +81,7 @@ DECODE = ("step", "context", "graph_padding")
 ROWMOD = DECODE + ("rowmod",)
 EAGER = "eager"
 SOURCE = "step-linear"
+EXTRAPOLATED = "step-linear-extrapolated"
 
 
 class _Vector:
@@ -95,6 +104,10 @@ class _Vector:
         self.coefficients = tuple(float(coefficients[f]) for f in features)
         # The intercept, first in `features`, is not a hull coordinate.
         self.hull = Hull(f"the {name} hull", features[1:], spec["hull"])
+        held = spec.get("held_out")
+        self.held_out = held and Hull(
+            f"the {name} held-out hull", features[1:], held["hull"]
+        )
         self.features = features
         self.rowmod = int(spec["rowmod"]) if "rowmod" in features else None
         if self.rowmod is not None and self.rowmod < 1:
@@ -186,18 +199,21 @@ class StepLinearBackend(CostBackend):
             counts = (1, sum_context(decode), batch_view.graph_padding)
             if vector.rowmod:
                 counts += (rowmod([r.context_tokens for r in decode], vector.rowmod),)
-        detail = self.law.fitted_on
-        species = Species.FITTED
+        detail, source = self.law.fitted_on, SOURCE
         if not vector.hull.contains(counts[1:]):
-            species = Species.EXTRAPOLATED
+            source = EXTRAPOLATED
             detail = f"{detail}; outside the {vector.name} hull"
+        validated = bool(vector.held_out and vector.held_out.contains(counts[1:]))
         return StepCost(
             [
                 CostTerm(
                     f"{kind}.{feature}",
                     count * coefficient,
                     Provenance(
-                        species, f"{coefficient:g} s x {count}; {detail}", SOURCE
+                        Method.ESTIMATED,
+                        f"{coefficient:g} s x {count}; {detail}",
+                        source,
+                        validated=validated,
                     ),
                 )
                 for feature, count, coefficient in zip(

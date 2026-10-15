@@ -141,9 +141,11 @@ def _warmup(cell: Path) -> list:
 )
 def test_a_real_cell_warms_up_on_the_simulated_cells_requests(cells, tmp_path):
     (sim, _), _ = cells
-    # A rocm-smi that lists pid 4242 on the cell's GPU and pid 1337009 on another,
-    # padded as rocm-smi pads a pid shorter than the PID column.
-    gpu = (os.environ.get("HIP_VISIBLE_DEVICES") or "0").split(",")[0]
+    # A rocm-smi that lists pid 4242 on the cell's GPU and pid 1337009 on one
+    # outside HIP_VISIBLE_DEVICES, padded as rocm-smi pads a pid shorter than the
+    # PID column.
+    gpus = [int(g) for g in (os.environ.get("HIP_VISIBLE_DEVICES") or "0").split(",")]
+    gpu, other = gpus[0], max(gpus) + 1
     listing = (
         "KFD process information:\n"
         "PID    \tPROCESS NAME\tGPU(s)\tVRAM USED\tSDMA USED\tCU OCCUPANCY\t\n"
@@ -151,7 +153,7 @@ def test_a_real_cell_warms_up_on_the_simulated_cells_requests(cells, tmp_path):
         "1337009\tUNKNOWN     \t1     \t1024     \t0        \t0           \t\n"
         "=== GPUs Indexed by PID ===\n"
         f"PID 4242 is using 1 DRM device(s):\n{gpu} \n"
-        f"PID 1337009 is using 1 DRM device(s):\n{int(gpu) + 1} \n"
+        f"PID 1337009 is using 1 DRM device(s):\n{other} \n"
     )
     stub = tmp_path / "bin/rocm-smi"
     stub.parent.mkdir()

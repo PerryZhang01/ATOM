@@ -62,7 +62,7 @@ file written as the LP leaves its loop. It holds the LP's refusals: an
 engine's are the worker's refused commands and the engine's refused clock
 calls, a frontend's its executor's refused jobs and its refused clock calls.
 An engine's also holds what its worker's steps cost, for the summary's
-predicted seconds and its analytical and extrapolated shares.
+predicted seconds and their shares by method (`backends.cost.GROUPS`).
 It holds the memory the worker predicts too, for
 ``python -m atom.compass.memory.check``, and under ``step_grid`` the bundle's
 key, digest and ``describe()`` line, which the summary carries. The authority
@@ -147,7 +147,7 @@ CLIENT_DIR = "client-{}"
 #: Wall seconds the summary's writer waits for the server LPs' refusals.
 HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field changes meaning or goes.
-SUMMARY_SCHEMA_VERSION = 2
+SUMMARY_SCHEMA_VERSION = 3
 #: Compass source the host-law key leaves out, by path under the package: all
 #: of it (None), or the top-level names only an installed LP runtime reaches.
 COMPASS_ONLY = {
@@ -954,6 +954,8 @@ def _write_client_run(run: dict, a: _RecordingAuthority, k: int, hand_ins=None):
 def _summary(run: dict, a, record, wall: float, hand_ins: dict, since: dict) -> dict:
     """The summary of `record`, the authority or one client run, over the steps
     the hand-ins count beyond those in `since`."""
+    from atom.compass.backends.cost import GROUPS
+
     reasons = Counter(r for h in hand_ins.values() for r in h["refusals"])
     reasons -= Counter(r for h in since.values() for r in h["refusals"])
     reasons = sorted(reasons.elements())
@@ -968,14 +970,16 @@ def _summary(run: dict, a, record, wall: float, hand_ins: dict, since: dict) -> 
     summary = RunSummary.of(record, wall, refusals=tally).as_record()
     schedule = summary["schedule"]
     schedule["predicted_seconds"] = seconds
-    # Answers no measurement backs: diagnostics, never refusals.
-    for species in ("analytical", "extrapolated"):
-        schedule[species] = {
-            "steps": total(f"{species}_steps"),
+    # How the seconds were obtained: reported, never gated.
+    schedule["seconds_by_method"] = {
+        g: {
+            "steps": total(f"{g}_steps"),
             "fraction_of_predicted_seconds": (
-                total(f"{species}_seconds") / seconds if seconds else 0.0
+                total(f"{g}_seconds") / seconds if seconds else 0.0
             ),
         }
+        for g in GROUPS
+    }
     # An engine whose workers died, or that never handed in, priced steps no
     # one counted: they are absent, not 0.
     if any(
@@ -983,7 +987,7 @@ def _summary(run: dict, a, record, wall: float, hand_ins: dict, since: dict) -> 
         for n in _hand_ins(run)
         if n.startswith("engine")
     ):
-        schedule.update(predicted_seconds=None, analytical=None, extrapolated=None)
+        schedule.update(predicted_seconds=None, seconds_by_method=None)
         schedule["refusals"].update(steps=None, fraction_of_steps=None)
     summary["configuration"] = configuration(run)
     summary["schema_version"] = SUMMARY_SCHEMA_VERSION

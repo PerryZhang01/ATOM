@@ -17,12 +17,19 @@ import pytest
 from atom.compass.backends import (
     BatchView,
     CostRefused,
+    Method,
     RequestShape,
-    Species,
     StepLinearBackend,
     StepLinearLaw,
 )
-from atom.compass.backends.step_linear_fit import _solve, fit, held_out, main, samples
+from atom.compass.backends.step_linear_fit import (
+    _solve,
+    fit,
+    held_out,
+    main,
+    mark_held_out,
+    samples,
+)
 from atom.compass.validate.cost import cost_accuracy
 
 PREFILL = {"step": 0.02, "tokens": 6e-5, "query_square": 2e-10, "query_cached": 3e-10}
@@ -136,9 +143,10 @@ def test_the_fit_recovers_its_law_and_drops_planted_outliers_by_name(tmp_path):
             continue
         cost = backend.price(_view(rows, rung))
         assert cost.seconds == pytest.approx(seconds, rel=1e-6)
-        assert {t.provenance.species for t in cost.terms} == {Species.FITTED}
+        assert {t.provenance.method for t in cost.terms} == {Method.ESTIMATED}
     far = backend.price(_view([(1, 10**6, True), (1, 10**6, True)], 2))
-    assert {t.provenance.species for t in far.terms} == {Species.EXTRAPOLATED}
+    assert {t.provenance.method for t in far.terms} == {Method.ESTIMATED}
+    assert {t.provenance.source for t in far.terms} == {"step-linear-extrapolated"}
 
 
 def test_a_feature_with_no_variance_returns_zero_named(tmp_path):
@@ -694,3 +702,97 @@ def test_a_rung_keeps_its_law_unless_every_cell_and_the_order_support_rowmod(
         "context",
         "graph_padding",
     }
+
+
+def _validated(backend, rows, rung=None):
+    """Whether every term of the step is validated; one answer per step."""
+    flags = {t.provenance.validated for t in backend.price(_view(rows, rung)).terms}
+    assert len(flags) == 1
+    return flags.pop()
+
+
+def test_the_command_writes_held_out_errors_and_validates_only_inside_their_hull(
+    tmp_path,
+):
+    records = [str(_record(tmp_path / f"dp0-{s}.jsonl", _steps(s))) for s in (6, 7)]
+    main([*records, "--out", str(tmp_path / "law.json")])
+    written = json.loads((tmp_path / "law.json").read_text())
+
+    bands = written["decode"]["2"]["held_out"]["bands"]
+    assert set(bands) == {"decode rung 2"}
+    assert bands["decode rung 2"]["steps"] == sum(
+        rung == 2 for s in (6, 7) for _, rung, _ in _steps(s)
+    )
+    assert abs(bands["decode rung 2"]["p50"]) < 1e-6
+    assert written["prefill"]["held_out"]["bands"]
+    backend = StepLinearBackend(StepLinearLaw(written))
+    # Every step of both records was priced held out, so every one is inside.
+    for s in (6, 7):
+        for rows, rung, _ in _steps(s):
+            assert _validated(backend, rows, rung)
+    assert not _validated(backend, [(1, 10**6, True), (1, 10**6, True)], 2)
+    assert not _validated(backend, [(9000, 9000, False)])
+
+
+def test_a_rung_only_one_record_holds_gets_no_held_out_errors(tmp_path):
+    no_fours = [s for s in _steps(7) if s[1] != 4]
+    records = [
+        str(_record(tmp_path / "dp0-6.jsonl", _steps(6))),
+        str(_record(tmp_path / "dp0-7.jsonl", no_fours)),
+    ]
+    main([*records, "--out", str(tmp_path / "law.json")])
+    written = json.loads((tmp_path / "law.json").read_text())
+
+    assert "held_out" in written["decode"]["2"]
+    assert "held_out" not in written["decode"]["4"]
+    backend = StepLinearBackend(StepLinearLaw(written))
+    fours = [rows for rows, rung, _ in _steps(6) if rung == 4]
+    assert not any(_validated(backend, rows, 4) for rows in fours)
+
+
+def test_a_shape_only_a_dropped_outlier_reached_prices_extrapolated_and_validated(
+    tmp_path,
+):
+    # Two rows past every recorded context, three times slower than the law:
+    # the fit drops it, the law fitted on the other record prices it.
+    far = [(1, 150_000, True), (1, 150_000, True)]
+    steps = _steps(6)
+    steps.insert(101, (far, 2, _price(far, 2)))
+    records = [
+        str(_record(tmp_path / "dp0-6.jsonl", steps, stretch={101: 3.0})),
+        str(_record(tmp_path / "dp0-7.jsonl", _steps(7))),
+    ]
+    main([*records, "--out", str(tmp_path / "law.json")])
+    written = json.loads((tmp_path / "law.json").read_text())
+
+    assert written["decode"]["2"]["fit"]["dropped"] == 1
+    cost = StepLinearBackend(StepLinearLaw(written)).price(_view(far, 2))
+    assert {t.provenance.source for t in cost.terms} == {"step-linear-extrapolated"}
+    assert {t.provenance.validated for t in cost.terms} == {True}
+
+
+def test_a_law_without_held_out_errors_prices_every_term_unvalidated(tmp_path):
+    record = str(_record(tmp_path / "dp0-6.jsonl", _steps(6)))
+    main([record, "--out", str(tmp_path / "law.json")])
+    written = json.loads((tmp_path / "law.json").read_text())
+
+    assert "held_out" not in json.dumps(written)
+    backend = StepLinearBackend(StepLinearLaw(written))
+    assert not any(_validated(backend, rows, rung) for rows, rung, _ in _steps(6))
+
+
+def test_a_rowmod_rung_is_validated_on_its_rowmod_coordinate_too(tmp_path):
+    records = [
+        _record(tmp_path / f"dp0-{s}.jsonl", _rowmod_steps(s, 150)) for s in (20, 21)
+    ]
+    law = fit(records)
+    mark_held_out(law, records)
+    backend = StepLinearBackend(StepLinearLaw(law))
+
+    assert law["decode"]["8"]["rowmod"] == 4
+    assert all(_validated(backend, rows, 8) for rows, _, _ in _rowmod_steps(20, 150))
+    # Five rows the records' contexts span, ordered so rowmod(4) holds 98% of
+    # their context, which no recorded order came near.
+    lopsided = [(1, c, True) for c in (60000, 1000, 1000, 1000, 60000)]
+    assert backend.price(_view(lopsided, 8)).terms[-1].name == "decode.rowmod"
+    assert not _validated(backend, lopsided, 8)
