@@ -15,10 +15,13 @@ import types
 
 import pytest
 import test_run_graph_pool
+import torch
 from test_backend_step_linear import IN_HULL, _installed, backend, graphed, law, view
 from test_memory_readings import CONFIG_JSON, DOCUMENT
+from test_weights_meta_build import TiedPacked
 from transformers import PretrainedConfig
 
+from atom.compass import run as compass_run
 from atom.compass.backends import (
     CostRefused,
     Granularity,
@@ -31,7 +34,6 @@ from atom.compass.backends.step_roofline import (
     StepFallbackBackend,
     StepRooflineBackend,
 )
-from atom.compass.memory import Basis, Term
 from atom.compass.spec import MachineSpec
 
 MACHINE = MachineSpec.from_mapping(DOCUMENT)
@@ -42,14 +44,14 @@ BANDWIDTH = MACHINE.value("device.memory.bandwidth_bytes_per_s") * MACHINE.value
     "device.memory.derate"
 )
 PARAMETERS, WEIGHTS, KV = 10**9, 2 * 10**9, 1000
-META_WEIGHTS = Term("weights", WEIGHTS, Basis.OBTAINED, "a meta build")
 
 
 def roofline(floor=0.0):
     return StepRooflineBackend(
         MACHINE,
         parameters=PARAMETERS,
-        weights=META_WEIGHTS,
+        weight_bytes=WEIGHTS,
+        weights_stated="",
         kv_token_bytes=KV,
         host_floor_s=floor,
     )
@@ -202,7 +204,8 @@ def test_a_roofline_term_is_declared_iff_an_input_its_bound_reads_is_stated(
     backend = StepRooflineBackend(
         spec,
         parameters=PARAMETERS,
-        weights=META_WEIGHTS,
+        weight_bytes=WEIGHTS,
+        weights_stated="",
         kv_token_bytes=KV,
         host_floor_s=floor,
     )
@@ -220,8 +223,16 @@ def test_a_roofline_term_is_declared_iff_an_input_its_bound_reads_is_stated(
     assert [p for p in READS if p in note] == fields
 
 
-def test_stated_weights_make_a_memory_bound_step_declared(monkeypatch, tmp_path):
+@pytest.mark.parametrize("meta", [False, True], ids=["stated", "meta-build"])
+def test_a_memory_bound_step_counts_the_weights_the_runner_read(
+    monkeypatch, tmp_path, meta
+):
     monkeypatch.setattr(test_run_graph_pool, "SimpleNamespace", _with_kv_fields)
+    if meta:
+        with torch.device("meta"):
+            tree = TiedPacked(None)
+        real = compass_run.runner
+        monkeypatch.setattr(compass_run, "runner", lambda r: real(r, tree))
     datasheet = copy.deepcopy(DOCUMENT)
     datasheet["provenance"]["origin"] = "datasheet"
     installed = _installed(
@@ -231,9 +242,10 @@ def test_stated_weights_make_a_memory_bound_step_declared(monkeypatch, tmp_path)
         roofline_floor_s=0.0,
         machine=datasheet,
     )
-    (term,) = installed.roofline.price(view((1, 900, True))).terms
+    (term,) = installed.roofline.price(view((1, 90000, True))).terms
+    note = term.provenance.note
 
     assert term.name == "roofline.memory"
-    assert term.provenance.method is Method.DECLARED
-    assert "weights 8000000000 stated parameters" in term.provenance.note
-    assert "parameter_count" not in term.provenance.note
+    assert term.provenance.method is (Method.ANALYTICAL if meta else Method.DECLARED)
+    assert ("weights 8000000000 stated parameters" in note) is not meta
+    assert "parameter_count" not in note

@@ -18,7 +18,8 @@ that won. It is `declared`, its note naming each stated input, when an input
 that bound reads is stated, and `analytical` otherwise: compute reads
 `parameter_count` and `device.compute` (`FIELDS`), memory `device.memory` and
 the weights, host `roofline_floor_s`. A spec field from a datasheet or probe
-and a meta build's weights are not stated; the run file's numbers always are.
+is not stated, the weights are when `weights_stated` names how, and the run
+file's numbers always are.
 
 `StepFallbackBackend` asks a backend first and the roofline only for a step
 that backend refuses, so a law with no vector for a step still prices it. The
@@ -38,7 +39,6 @@ from atom.compass.backends.cost import CostTerm, StepCost
 from atom.compass.backends.provenance import Method, Provenance
 from atom.compass.backends.resolver import CostRefused
 from atom.compass.backends.shape import BatchView, sum_context, sum_tokens
-from atom.compass.memory.terms import Basis, Term
 
 SOURCE = "step-roofline"
 #: The machine spec fields a roofline reads; `device.<bound>` counts in that bound.
@@ -63,7 +63,8 @@ class StepRooflineBackend(CostBackend):
         machine,
         *,
         parameters: int,
-        weights: Term,
+        weight_bytes: int,
+        weights_stated: str,
         kv_token_bytes: int,
         host_floor_s: float,
     ) -> None:
@@ -76,7 +77,6 @@ class StepRooflineBackend(CostBackend):
         self.bandwidth = machine.value(
             "device.memory.bandwidth_bytes_per_s"
         ) * machine.value("device.memory.derate")
-        weight_bytes = weights.nbytes
         if min(parameters, weight_bytes, kv_token_bytes) < 1:
             raise ValueError(
                 f"a roofline needs parameters, weight bytes and KV bytes per "
@@ -93,11 +93,9 @@ class StepRooflineBackend(CostBackend):
         origins = {path: machine.origin(path)["origin"] for path in FIELDS}
         stated = {
             "compute": ["parameter_count stated in the run file"],
-            "memory": [f"weights {weights.source} ({weights.note})"],
+            "memory": [f"weights {weights_stated}"] if weights_stated else [],
             "host": ["roofline_floor_s stated in the run file"],
         }
-        if weights.basis is not Basis.DECLARED:
-            stated["memory"] = []
         spec = f"in the machine spec {machine.value('name')}"
         for p, o in origins.items():
             if _method(o) is Method.DECLARED:  # p is device.<bound>.<field>

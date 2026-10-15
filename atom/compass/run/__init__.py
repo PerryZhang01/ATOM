@@ -500,7 +500,7 @@ def runner(model_runner, tree=None) -> None:
         StepRooflineBackend,
     )
     from atom.compass.backends.step_stub import Coefficients, StepStubBackend
-    from atom.compass.memory import ModelTerms, device_readings, predicts
+    from atom.compass.memory import Basis, ModelTerms, device_readings, predicts
     from atom.compass.memory.check import record
     from atom.compass.runner.overrides import (
         HostDeviceRecurrence,
@@ -568,10 +568,13 @@ def runner(model_runner, tree=None) -> None:
             parallelism=Parallelism(tp_size=tp),
             kv_dtype=config.kv_cache_dtype,
         )
+        w = model.weights
+        stated = f"{w.source} ({w.note})" if w.basis is Basis.DECLARED else ""
         roofline = StepRooflineBackend(
             machine,
             parameters=run["parameter_count"] // tp,
-            weights=model.weights,
+            weight_bytes=model.weights.nbytes,
+            weights_stated=stated,
             kv_token_bytes=kv.layers * kv.bytes_per_token_per_layer,
             host_floor_s=run["roofline_floor_s"],
         )
