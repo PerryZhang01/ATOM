@@ -96,10 +96,6 @@ DEFAULT_ALLOW_LIST: dict[str, str] = {
         "a real run's send times, on the clock its runner's step timestamps "
         "read; a simulated run's traffic LP sends on the run's clock"
     ),
-    "atom/compass/drive/identity.py": (
-        "a command's phase boundaries in run.json, which are wall and monotonic "
-        "time by definition; the tool process reads them, and no simulated time"
-    ),
 }
 
 #: Packages under `atom/` a simulated run never executes, or that keep their
