@@ -63,6 +63,10 @@ class Runner(Bench):
         self.calls.append("capture_cudagraph")
         return 0.0, [], 0
 
+    def freeze_gc_heap(self):
+        self.calls.append("freeze_gc_heap")
+        return 0
+
     def bench_step(self, batch):
         self.calls.append("bench_step")
         return super().bench_step(batch)
@@ -167,7 +171,8 @@ def test_every_worker_starts_in_engine_cores_order_and_the_slowest_is_charged(
     assert bench.runner_mgr.rpc_broadcast_mq.closed
 
     startup = ["get_num_blocks", ["allocate_kv_cache", BLOCKS]]
-    assert log == startup + ([] if eager else ["capture_cudagraph"]) + ["bench_step"]
+    capture = [] if eager else ["capture_cudagraph"]
+    assert log == startup + capture + ["freeze_gc_heap", "bench_step"]
     # Rank 0's reply carries rank 1's times, and its preload outlasted rank 1's
     # host: at 3 ms rank 1's entry event had completed, and rank 0's had not.
     slowest = tp - 1

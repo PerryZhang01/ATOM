@@ -284,15 +284,15 @@ def test_both_filters_in_the_derivation_drop_nothing():
 
     The compass-side broadcasts accounted for: the bench starts its runner as
     `EngineCore` does, sending `get_num_blocks`, `allocate_kv_cache`,
-    `capture_cudagraph` and `exit`, and asks it for a measurement,
-    `bench_step`; the run bootstrap reads the Compass runner's refusal tally,
+    `capture_cudagraph`, `freeze_gc_heap` and `exit`, and asks it for a
+    measurement, `bench_step`; the run bootstrap reads the Compass runner's refusal tally,
     `refused_commands`, what its steps cost, `priced_steps`, the memory it
     predicts, `predicted_memory`, and its step grid bundle,
     `step_grid_bundle`. No ATOM site sends `bench_step` or the bootstrap's
     names, so no `ModelRunner` is ever asked for them.
     """
     assert NON_LITERAL == []
-    assert [where.rsplit(":", 1)[0] for where in FROM_COMPASS] == 5 * [
+    assert [where.rsplit(":", 1)[0] for where in FROM_COMPASS] == 6 * [
         "atom/compass/bench/engine.py"
     ] + 4 * ["atom/compass/run/__init__.py"]
     compass = {

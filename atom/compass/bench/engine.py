@@ -3,12 +3,12 @@
 
 `Bench(config)` publishes the workers' rendezvous store as `CoreManager` does
 for an engine, then starts `RUNNER` on every worker through ATOM's runner
-manager, in `EngineCore`'s order: `get_num_blocks`, `allocate_kv_cache` with the blocks
-it reports, which then become `config.num_kvcache_blocks`, and
-`capture_cudagraph` unless the engine runs eagerly. `measure(batch)` runs
-`bench_step` on every worker and returns rank 0's reply, the window's result
-(`window.py`). Data parallelism above one, expert parallelism and pipeline
-parallelism refuse.
+manager, in `EngineCore`'s order: `get_num_blocks`, `allocate_kv_cache` with
+the blocks it reports, which then become `config.num_kvcache_blocks`,
+`capture_cudagraph` unless the engine runs eagerly, and `freeze_gc_heap`.
+`measure(batch)` runs `bench_step` on every worker and returns rank 0's reply,
+the window's result (`window.py`). Data parallelism above one, expert
+parallelism and pipeline parallelism refuse.
 """
 
 from torch.distributed import TCPStore
@@ -56,6 +56,9 @@ class Bench:
             config.num_kvcache_blocks = blocks
             if not config.enforce_eager:
                 self.runner_mgr.call_func("capture_cudagraph", wait_out=True)
+            # Unfrozen, a worker's collections walk its startup heap, and their
+            # pauses would discard repeats.
+            self.runner_mgr.call_func("freeze_gc_heap", wait_out=True)
         except BaseException:
             self.exit()
             raise

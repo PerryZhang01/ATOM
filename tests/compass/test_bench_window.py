@@ -130,3 +130,22 @@ def test_a_forward_that_waits_for_the_device_never_counts_and_its_point_refuses(
     assert bench.preloads == [first * 2**n for n in range(window.DOUBLINGS + 1)]
     assert set(result) == {"protocol", "refused"}
     assert "host synchronisation" in result["refused"]
+
+
+def test_a_host_that_stalls_now_and_then_discards_those_repeats_and_measures_on():
+    """Every fourth repeat's host stalls for longer than the preload has grown
+    to, each stall twice the last: misses apart from one another, more than
+    `DOUBLINGS` of them, refuse nothing."""
+    stalls = window.DOUBLINGS + 2
+    repeats = [
+        10 * MS * 2**k if n % 4 == 3 and k < stalls else MS // 2
+        for n, k in ((n, n // 4) for n in range(window.REPEATS + stalls))
+    ]
+    bench = Bench(
+        itertools.chain([MS] * window.WARMUPS, repeats), itertools.repeat(BUSY)
+    )
+
+    result = bench.bench_step(batch())
+
+    assert result["discarded"] == stalls and result["preload_ns"] == MS * 2**stalls
+    assert result["repeats"] == [[PREPARE + BUSY, PREPARE, BUSY]] * window.REPEATS
