@@ -306,10 +306,10 @@ class CompassEventLoop(asyncio.SelectorEventLoop):
         self.set_default_executor(self.executor)
         self.rt.loop = self
         self.stopped = None  # the signal that stopped the run, by name
-        self.handlers = {}  # each stop signal's handler before this loop's
+        self.handlers_before = {}  # each stop signal's handler before this loop's
         if threading.current_thread() is threading.main_thread():
             for sig in STOP_SIGNALS:
-                self.handlers[sig] = signal.getsignal(sig)
+                self.handlers_before[sig] = signal.getsignal(sig)
                 self.add_signal_handler(sig, self.stop_run, sig)
 
     def time(self) -> float:
@@ -377,7 +377,7 @@ class CompassEventLoop(asyncio.SelectorEventLoop):
 
     def close(self) -> None:
         super().close()  # gives each stop signal its default handler
-        for sig, handler in self.handlers.items():
+        for sig, handler in self.handlers_before.items():
             if handler is not None:  # None: not installed from Python
                 signal.signal(sig, handler)
         if self.stopped is None:
