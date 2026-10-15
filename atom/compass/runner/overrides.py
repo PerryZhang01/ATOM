@@ -914,7 +914,7 @@ class NonAllocatingRunner(
         return ScheduledBatchOutput(
             **stream.step(batch),
             predicted_s=_group_step_seconds(self, batch, backend, mode),
-            group_targets=vars(self).pop("_group_targets", None),
+            group_targets=getattr(self, "_group_targets", None),
         )
 
 
@@ -929,8 +929,8 @@ def _group_step_seconds(
     In a run, `compass_host` composes the price, device seconds, with host time.
     The `all_gather` stands in for the cross-rank collectives a real forward
     makes: a rank with output, not the DP dummy, waits for them and leaves at
-    the group's max, any other at its own seconds; `_group_targets` holds all.
-    With one rank there is no group to exchange with.
+    the group's max, any other at its own seconds; `_group_targets` holds all,
+    by rank, or None with one rank.
 
     A pipeline stage is refused: it runs only its own layers, and a backend
     prices the whole step, so every stage would charge the whole model.
@@ -979,7 +979,7 @@ def _group_step_seconds(
         device_s, terms = cost.seconds, cost.terms
     host = getattr(runner, "compass_host", None)
     charge_s = device_s if host is None else host.charge(batch, device_s)
-    group_s = charge_s
+    group_s, targets = charge_s, None
     if mode.sync is not None:
         group = dp_group()
         waits = batch.produces_output() and not batch.is_dummy_run
@@ -988,8 +988,8 @@ def _group_step_seconds(
         torch.distributed.all_gather(rows, mine, group=group)
         top = max(r[0].item() for r in rows)
         targets = tuple(top if w else s for s, w in (r.tolist() for r in rows))
-        vars(runner)["_group_targets"] = targets
         group_s = targets[group.rank()]
+    vars(runner)["_group_targets"] = targets
     record = getattr(runner, "_parity_record", None)
     if record is None:
         return group_s
