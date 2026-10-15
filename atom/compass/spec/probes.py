@@ -141,7 +141,7 @@ def probe_for(constant: str, tp_width: int) -> str:
             "in width has no width to ask about, and one that is not a "
             "runtime constant is not a probe's to fill",
         )
-    if tp_width < 1:
+    if isinstance(tp_width, int) and tp_width < 1:
         raise SpecRefusal(
             Rule.NO_DEFAULTS,
             f"tensor-parallel width {tp_width} is not a number of cards an "

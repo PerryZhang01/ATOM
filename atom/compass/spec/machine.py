@@ -377,7 +377,9 @@ class MachineSpec:
 
     def digest(self) -> str:
         """A fingerprint of the echo, so an artifact can name the spec it used."""
-        canonical = json.dumps(self.echo(), sort_keys=True, separators=(",", ":"))
+        # Keys sort as JSON writes them, so a layout key can sit beside a width.
+        written = json.loads(json.dumps(self.echo()))
+        canonical = json.dumps(written, sort_keys=True, separators=(",", ":"))
         return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
 
     def runtime_constant(self, name: str, tp_width: int | None = None) -> Any:
@@ -393,13 +395,13 @@ class MachineSpec:
             raise SpecRefusal(
                 Rule.NO_DEFAULTS,
                 f"`{name}` is probed per tensor-parallel width and none was given",
-                f"ask for one of the probed widths {sorted(measured)}",
+                f"ask for one of the probed widths {sorted(measured, key=str)}",
             )
         if tp_width not in measured:
             raise SpecRefusal(
                 Rule.NO_DEFAULTS,
                 f"`{name}` was not probed at tensor-parallel width {tp_width}; "
-                f"this spec has {sorted(measured)}",
+                f"this spec has {sorted(measured, key=str)}",
                 "measure the engine at that width and add the entry; the "
                 "probed widths fit no fixed-plus-per-peer form, so there is "
                 "nothing here to interpolate along",

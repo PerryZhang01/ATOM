@@ -633,8 +633,11 @@ def runner(model_runner, tree=None) -> None:
             replay.now = lambda: float(slot[0])
     model_runner.compass_abort = run.get("on_refusal") == "abort"
     reserved, captured = _graph_pool(model_runner, machine, model)
+    # Under DP-attention the reserve and the residue are keyed by the layout.
+    dp = config.parallel_config.data_parallel_size
+    layout = f"{tp}x{dp}" if config.enable_dp_attention else tp
     readings = device_readings(
-        machine, tp_width=tp, model=model, cudagraph_overhead=reserved
+        machine, tp_width=layout, model=model, cudagraph_overhead=reserved
     )
     install_device_readings(model_runner, readings)
     pool = (
