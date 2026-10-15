@@ -388,7 +388,7 @@ one LP:
 | API server | 1 process: uvicorn, `CoreManager` and its threads | **1** (frontend) | Its asyncio event loop is a clock owner of its own: it tokenizes and streams while the engine runs a forward, so it overlaps the step loop in simulated time and cannot be folded into it. Offline, the owner is the loop that calls `get_output`. |
 | PD container (prefill or decode) | one full ATOM deployment | **2** | its frontend LP and its engine LP |
 | Traffic source | — | **1** | |
-| Atomesh router, 1P1D | 1 Rust process | **0** | Part of the channels that cross it: with one P and one D it has no choice to make, so it contributes only a fixed per-request forward cost, stated in those channels' lookahead (D7). With several P or D its policy reads time-varying state and it becomes an LP; that case is deferred. |
+| Atomesh router, 1P1D | 1 Rust process | **0**, or **1** under `--dp-aware` | Part of the channels that cross it: with one P and one D it has no choice to make, so it contributes only a fixed per-request forward cost, stated in those channels' lookahead (D7). Under `--dp-aware` (DP attention) it chooses among DP ranks on load that responses move, and is LP `router` (D7). Several P or D instances are deferred. |
 | PP stages | N EngineCores | **N** | The only group the collapse does not cover. |
 
 LP counts for the milestones (`16` D95):
@@ -1480,11 +1480,11 @@ loop.
   unless `runner_qualname` is in `RAPIDSERVE_RUNNERS`. The cost, for a runner that list
   names, is two real seconds of startup and no modelled time, because it runs before
   READY and therefore before any arrival.
-- The scanner's boundary is a list of directories, not a graph. It reads every `.py`
-  file under `SCANNED_ROOTS`, so a module added beside a scanned one is caught; but a
-  blocking call under a directory `UNSCANNED_ROOTS` names is invisible to the test, and
-  so is one reached through a call shape the scanner does not know. The offload
-  connectors are the largest exclusion.
+- The scanner's boundary is a list of exclusions, not a graph. It reads every `.py`
+  file under `atom/` except the entries `UNSCANNED_ROOTS` names, each with its reason,
+  so a package added anywhere is caught; but a blocking call under an excluded entry is
+  invisible to the test, and so is one reached through a call shape the scanner does
+  not know.
 
 ---
 
@@ -1844,7 +1844,7 @@ see (D3.2).
 This holds only while the router sees one worker per role and its limiter is off. A
 `--dp-aware` launch, which CI uses with DP attention (`pd_server_atom.sh`,
 `start_router`), registers every DP rank as a separate worker, and the policy then
-chooses among them; that is the xPyD case below (#449). `--max-concurrent-requests`
+chooses among them; the router is then an LP (below, #449). `--max-concurrent-requests`
 defaults to `-1` and the token bucket to unset (`cliargs.rs::CliArgs`), and CI sets
 neither; with either on, a wall-time queue or refill decides admission.
 
@@ -1878,14 +1878,38 @@ get disabled — not virtualized.
 
    A single deployment (M1's stage 1 and M2's first gate, no router) uses the same carriers.
 
-**xPyD is deferred.** With several instances per role, or `--dp-aware`, every policy
-this router ships (`atom/mesh/src/policies/`) reads state that changes over time:
+**Under `--dp-aware` the router is an LP; xPyD is deferred.** With several
+instances per role, or `--dp-aware`, every policy this router ships
+(`atom/mesh/src/policies/`) reads state that changes over time:
 `power_of_two`, `cache_aware` and `prefix_hash` compare `load()`, which moves as
 requests start and finish; `random` draws from an unseeded generator; `round_robin`
 counts requests in the order they reach the router, which is wall-clock order under
 concurrency; `dp_sticky` reads `Instant::now()`. A component whose time-varying state
 decides its output is an LP, so the router would have to become one, instrumented in its
-own process with the policy code untouched. That design is not done here; every milestone stays 1P1D.
+own process with the policy code untouched. Under `--dp-aware` it is (owner ruling on
+#449, 2026-10-15); several instances per role stay deferred.
+
+- **Channels.** A run file with `router_in_s` declares LP `router`
+  (`channels.py::prefill_decode_table`): each path through the router is a hop in,
+  with lookahead `router_in_s`, and a hop out with the rest of the path's. `pd_sim.sh`
+  chooses the router's arguments as `start_router` does: a DP-attention cell is
+  `--dp-aware` when it is agentic (as `cctraces_sim.sh` cells are) or maps ranks, and
+  then `pd_sim.sh` writes `router_in_s` at the run's `ipc_s`. Any other DP-attention cell
+  keeps a router without `--dp-aware`, and ATOM's own DP dispatch picks the rank.
+- **Delivery.** `atom/mesh/src/compass_router.rs` binds the LP when
+  `ATOM_COMPASS_CLOCK_ENDPOINT` is set. A request (ingress layer), a prefill response
+  (`PDRouter::dispatch_atom_relay_internal`) and each decode stream event
+  (`PDRouter::create_streaming_response`) wait until released, and are handled one at a
+  time in (arrival, channel, seq) order. Each sends exactly one message on, stamped at
+  its arrival plus the hop out's lookahead, which keeps every path's total. A request is
+  handled once its pair holds load, a prefill response once prefill's load is dropped,
+  and a stream's last event once decode's load is dropped. The router prices no work and
+  waits with NER only.
+- **Policy inputs.** `determinism::enable` runs before the policies are built, with the
+  run's seed (`ATOM_COMPASS_SEED`, the cell's `SEED`): the policies read the LP clock, a
+  seeded RNG and a fixed hasher. Without the endpoint nothing changes.
+- **Unchanged.** Cancels stay off behind the router; a clock error ends the router
+  process. The radix tree's eviction timer still runs on the wall clock (#1093).
 
 ### An unused hook worth knowing about
 
@@ -2160,7 +2184,7 @@ Ordered by how much they could cost.
 | D5 | Every timer and clock read the CA can reach runs on the LP clock; only what it cannot reach is configured or left real; metric cadence is virtual time (revising `11` D72); the profiler and RL control commands are refused by the simulated runner with a reply, counted, and make the run a coverage report | 2026-09-18; revised 2026-09-28, 2026-10-09 |
 | D5.1 | The simulated run uses stdlib asyncio, not uvloop: only a Python event loop can host virtual time | 2026-09-28 |
 | D6 | KV transfer is simulated through a connector registered in the existing factory, reproducing Mooncake (what ATOM's PD CI deploys) through scheduler-side hooks only | 2026-09-18; revised 2026-09-28 |
-| D7 | Atomesh gets no virtual clock: mesh-only mode; in 1P1D the router is one segment of a channel, not an LP, and its relay latency is that channel's lookahead; its bounds are configured (health check and circuit breaker off, `--worker-request-timeout-secs` set large); timestamps ride carriers it already relays; xPyD is deferred | 2026-09-18; revised 2026-09-30 |
+| D7 | Atomesh gets no virtual clock: mesh-only mode; in 1P1D the router is one segment of a channel, not an LP, and its relay latency is that channel's lookahead; its bounds are configured (health check and circuit breaker off, `--worker-request-timeout-secs` set large); timestamps ride carriers it already relays; xPyD is deferred; under `--dp-aware` the router is LP `router`, handling requests, prefill responses and stream events in timestamp order (#449) | 2026-09-18; revised 2026-09-30, 2026-10-15 |
 | D8 | Arrivals are messages in transit, covered by the send and receive counts for closed and open workloads alike; the arrival timestamp rides the `tracestate` header | 2026-09-18; revised 2026-09-28 |
 | D9 | The ATOM diff is enumerated (~1,980 lines with tests) and completeness enforced by test rather than by review; ATOM's own suite is the gate (`08` D43.1) | 2026-09-18; revised 2026-09-28 |
 

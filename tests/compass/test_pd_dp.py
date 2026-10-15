@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: MIT
-"""A simulated 1P1D run above DP width 1, behind a router without ``--dp-aware``.
+"""A simulated 1P1D run above DP width 1, behind each form of the router.
 
 `scripts/compass/pd_sim.sh` starts each side at ``-tp 2 --enable-dp-attention``:
-two DP ranks per side, each a member of its side's engine LP, and ATOM's own
-DP dispatch on each side picks the rank a request runs on. Decode sends each
-write request to the prefill rank the relayed ``dp_rank`` names, on the
-channel of that decode and prefill rank pair. The run is made twice, with
-different `PYTHONHASHSEED`, and `check_run` holds the two to the scenario
-checks.
+two DP ranks per side, each a member of its side's engine LP. Without
+``--dp-aware`` ATOM's own DP dispatch on each side picks the rank a request
+runs on; an agentic cell's router is ``--dp-aware``, the router LP, and picks
+it. Decode sends each write request to the prefill rank the relayed
+``dp_rank`` names, on the channel of that decode and prefill rank pair. Each
+form is run twice, with different `PYTHONHASHSEED`, and `check_run` holds the
+two to the scenario checks.
 
 The run tests skip as `test_pd_slice`'s do; the rest run anywhere.
 """
@@ -46,8 +47,20 @@ class PdRequests(Requests):
     http, stream = PdTraffic.http, PdTraffic.stream
 
 
-def run_pd_dp(out: Path, seed: str) -> dict:
+class RouterLpRequests(Requests):
+    http, stream = "traffic->router:http", "router->traffic:stream"
+
+
+# Each router form: the cell's environment and its traffic LP.
+FORMS = {
+    "dispatch": ({}, PdRequests),
+    "router_lp": ({"BENCHMARK_KIND": "aiperf_agentic"}, RouterLpRequests),
+}
+
+
+def run_pd_dp(out: Path, seed: str, form: str) -> dict:
     """One run under `pd_sim.sh` at DP width 2 on each side."""
+    cell, requests = FORMS[form]
     out.mkdir()
     ports = {name: _free_port() for name in PORTS}
     # The write requests take DP * DP ports from KV_WRITE_REQ_PORT; successive
@@ -73,6 +86,7 @@ def run_pd_dp(out: Path, seed: str) -> dict:
         ATOM_COMPASS_PARITY_RECORD=str(out / "parity"),
         MODEL=MODEL,
         SERVER_ARGS=SERVER_ARGS,
+        **cell,
         **{name: str(port) for name, port in ports.items()},
     )
     log = out / "pd_sim.log"
@@ -93,9 +107,7 @@ def run_pd_dp(out: Path, seed: str) -> dict:
             assert sim.poll() is None, f"pd_sim.sh exited:\n{log.read_text()}"
             assert time.monotonic() < deadline, f"no router in {WALL_S} wall seconds"
             time.sleep(0.5)
-        traffic = PdRequests(
-            json.loads(run_file.read_text()), ports["ROUTER_PORT"], sim
-        )
+        traffic = requests(json.loads(run_file.read_text()), ports["ROUTER_PORT"], sim)
         traffic.run()
         code = sim.wait(timeout=120)
     finally:
@@ -112,10 +124,10 @@ def run_pd_dp(out: Path, seed: str) -> dict:
     }
 
 
-@pytest.fixture(scope="module")
-def runs(tmp_path_factory):
-    root = tmp_path_factory.mktemp("pd_dp")
-    return [run_pd_dp(root / f"seed{seed}", seed) for seed in ("1", "2")]
+@pytest.fixture(scope="module", params=FORMS)
+def runs(request, tmp_path_factory):
+    root = tmp_path_factory.mktemp(f"pd_dp_{request.param}")
+    return [run_pd_dp(root / f"seed{s}", s, request.param) for s in ("1", "2")]
 
 
 @NEEDS_A_PD_RUN
@@ -139,7 +151,7 @@ def test_every_request_meets_every_scenario_check_with_a_kv_transfer_over_its_ra
     )
     assert not failed, "\n".join(failed)
     assert sum(pairs.values()) == len(MAX_TOKENS)
-    # ATOM's dispatch spread the requests over both ranks of each side.
+    # The requests were spread over both ranks of each side.
     assert {p.split(".")[0] for p in pairs} == {"dp0", "dp1"}
     assert {p.split(".")[1] for p in pairs} == {"dp0", "dp1"}
     assert run["handed_in"] == sorted(

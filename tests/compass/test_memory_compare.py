@@ -477,7 +477,7 @@ def test_a_declared_term_can_fail_its_gate_even_though_it_cannot_pass_one():
 
 
 def test_a_pair_taken_at_two_shapes_refuses_and_names_both():
-    # 3,494 tokens is the trace the analytic memory law scales to an
+    # 3,494 tokens is the trace the analytical memory law scales to an
     # independently measured 4,096-token peak. Comparing the one against the other without saying so
     # is the -0.015 GB of the incident.
     at_3494 = Recorded(

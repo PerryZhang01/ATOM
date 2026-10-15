@@ -105,8 +105,9 @@ class TrafficLP:
             )
         conn = clock_transport.connect(TRAFFIC, run["clock_endpoint"])
         table = compass_run.channel_table(run)
-        # One channel each way: into the frontend (frontend-P behind a PD
-        # router) and back from the one that streams (frontend-D).
+        # One channel each way: into the frontend (frontend-P, or the router
+        # LP, behind a PD router) and back from the one that streams
+        # (frontend-D, or the router LP).
         (http,), (stream,) = table.channels_from(TRAFFIC), table.channels_into(TRAFFIC)
         return cls(
             LPRuntime(TRAFFIC, table, conn),
@@ -114,8 +115,9 @@ class TrafficLP:
             http.name,
             stream.name,
             # ponytail: behind a PD router a cancel would reach frontend-P, not
-            # the frontend-D that streams, so aiperf's hang-up stays unstamped.
-            http.target == stream.source,
+            # the frontend-D that streams, and the router refuses its body, so
+            # aiperf's hang-up stays unstamped.
+            http.target == stream.source != compass_run.ROUTER,
         )
 
     # ---- the clock ClockPacedLoopScheduler paces on ----

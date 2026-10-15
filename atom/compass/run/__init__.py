@@ -83,7 +83,9 @@ naming its name now.
 
 A run file that also has ``router_s`` and ``kv_write_req_s`` describes a
 prefill-decode run over `prefill_decode_table`, and ``kv_link`` (``intra_node``
-or ``inter_node``) names the link its KV transfers are priced on. A deployment
+or ``inter_node``) names the link its KV transfers are priced on. An optional
+``router_in_s`` makes the router the ``router`` LP, with that lookahead on each
+hop into it; it prices no work, so it is no server LP and hands nothing in. A deployment
 whose ``kv_connector`` is ``compass`` is its prefill (``kv_producer``) or
 decode side: `engine(config)` makes it the ``engine-P`` or ``engine-D`` LP and
 binds the connector's transfer model. The write-request address comes with the
@@ -138,6 +140,7 @@ CLOCK_ENV = "ATOM_COMPASS_CLOCK_ENDPOINT"
 #: The file an engine LP's clock is mapped from, for its model runner workers.
 NOW_ENV = "ATOM_COMPASS_NOW"
 FRONTEND, ENGINE, TRAFFIC = LpId("frontend"), LpId("engine"), LpId("traffic")
+ROUTER = LpId("router")
 ATOM_RUNNER = "atom.model_engine.model_runner.ModelRunner"
 #: Keys that differ between two runs of one configuration, kept out of its name.
 PER_RUN = ("clock_endpoint", "out_dir", "client_runs")
@@ -249,6 +252,7 @@ def channel_table(run: dict):
             router_s=run["router_s"],
             kv_write_req_s=run["kv_write_req_s"],
             dp=_dp(run),
+            router_in_s=run.get("router_in_s"),
         )
     return single_engine_table(**common, dp=_dp(run))
 
@@ -315,8 +319,12 @@ def configuration(run: dict) -> dict:
 
 
 def _servers(run: dict) -> list[str]:
-    """The run's server LPs by name: every LP but the traffic LP."""
-    return [lp.name for lp in channel_table(run).registry.ids() if lp != TRAFFIC]
+    """The run's server LPs by name: every LP but the traffic and router LPs."""
+    return [
+        lp.name
+        for lp in channel_table(run).registry.ids()
+        if lp not in (TRAFFIC, ROUTER)
+    ]
 
 
 def _hand_ins(run: dict) -> list[str]:
@@ -658,10 +666,13 @@ def runner(model_runner, tree) -> None:
             replay.now = lambda: float(slot[0])
     model_runner.compass_abort = run.get("on_refusal") == "abort"
     reserved, captured = _graph_pool(model_runner, machine, model)
-    # Under DP-attention the reserve and the residue are keyed by the layout;
-    # one rank of it is a TP1 engine.
+    # Under DP-attention the reserve and the residue are keyed by the layout,
+    # and by the EP width when the experts shard; one rank of it is a TP1 engine.
     dp = config.parallel_config.data_parallel_size
-    layout = f"{tp}x{dp}" if dp > 1 and config.enable_dp_attention else tp
+    layout = tp
+    if dp > 1 and config.enable_dp_attention:
+        ep = f"x{tp * dp}" if config.enable_expert_parallel else ""
+        layout = f"{tp}x{dp}{ep}"
     readings = device_readings(
         machine, tp_width=layout, model=model, cudagraph_overhead=reserved
     )

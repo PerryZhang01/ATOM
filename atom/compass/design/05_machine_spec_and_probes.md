@@ -216,7 +216,12 @@ Mooncake's KV transfer between the prefill and the decode node (`01` D6).
    `MachineSpec.origin`): `datasheet`, `probed`, `assumed` or `transferred-from:<spec>`.
    A probed field also records its subject, what the probe ran on: model, width, source
    root, and the digest of the run record it read. A fragment states one
-   `provenance.origin` for what it supplies; an `assumed` fragment's `notes` say why each
+   `provenance.origin` for what it supplies, or `mixed` with each field's origin in
+   `provenance.origins` (the tokenizer probe's: the caller's origin on its entries,
+   `probed` on the core counts it reads). A fragment is a transfer, and must state its
+   source's stack pin, only when a field it supplies outside `host.` is
+   `transferred-from:`; a fragment naming two source specs is refused (#141). An
+   `assumed` fragment's `notes` say why each
    value was chosen, and a `datasheet` fragment's cite the document and the date it was
    read. `merge` writes each field's origin into `provenance.origins`: a field two
    fragments agree on takes the stronger origin, so it is assumed only when every supplier

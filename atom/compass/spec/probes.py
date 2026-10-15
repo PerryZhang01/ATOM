@@ -51,11 +51,14 @@ it would travel into a spec looking exactly like a measurement.
 obtained.** This function composes a fragment and reads a topology. It does not
 encode or decode anything, so it cannot know whether the rates it was handed
 were swept on a loaded tokenizer, copied out of an older spec or typed in -- and
-`provenance.origin` is what a merge refusal quotes and what a run artifact
-carries as the numbers' source. An origin stamped here would be this function
-asserting a measurement it did not take, over data it received. So the caller
-states it, with no default to fall through to, and the core counts read here
-ride along under whatever the caller states about its own rates.
+a field's origin is what a run artifact carries as the number's source. An
+origin stamped here would be this function asserting a measurement it did not
+take, over data it received. So the caller states it, with no default to fall
+through to, and it goes on each entry, with the subject. The core counts are
+`probed`, because this function did read them, so the fragment is `mixed` and
+says each field's origin in `provenance.origins`. That is also what keeps a
+tokenizer carried over from another spec from making the whole fragment a
+transfer, which a merge would then check against a device stack it never had.
 
 **What the entries are is checked here rather than several verbs later.** They
 are read against the closed table a tokenizer entry has, the same one a spec is
@@ -111,6 +114,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, NoReturn
 
 from .fields import SCHEMA_VERSION
+from .machine import entry_label
 from .merge import Fragment
 from .rules import Rule, SpecRefusal
 from .tokenizers import table
@@ -232,12 +236,23 @@ def tokenizer_fragment(
     # Read for its refusals: an entry that is not a tokenizer entry is refused
     # here, beside the caller that supplied it, rather than after a merge.
     table(entries)
+    origins = {
+        entry_label(entry["id"], entry.get("backend")): {"origin": origin}
+        | dict(subject or {})
+        for entry in entries
+    }
+    counts = cpu_counts(processors)
+    origins |= {f"host.cpu.{count}": {"origin": "probed"} for count in counts}
     document = {
         "schema_version": SCHEMA_VERSION,
         "name": machine,
-        "provenance": {"authored_by": authored_by, "date": date, "origin": origin}
-        | ({"subject": dict(subject)} if subject else {}),
-        "host": {"cpu": cpu_counts(processors), "tokenizers": list(entries)},
+        "provenance": {
+            "authored_by": authored_by,
+            "date": date,
+            "origin": "mixed",
+            "origins": origins,
+        },
+        "host": {"cpu": counts, "tokenizers": list(entries)},
     }
     return Fragment.from_mapping(document, source)
 
