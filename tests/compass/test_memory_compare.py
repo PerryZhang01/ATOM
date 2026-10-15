@@ -60,7 +60,6 @@ from atom.compass.memory import (
     piecewise_per_token_bytes,
     predicts,
     reserves,
-    tied_lm_head_bytes,
 )
 from tests.compass.test_memory_readings import (
     CAPTURE_SIZES,
@@ -309,117 +308,7 @@ def test_a_comparison_with_no_comparable_term_refuses_a_largest_error():
     assert "no largest error" in str(refusal.value)
 
 
-# --- trap 1: a meta build has not been through the loader --------------------
-
-
-def qwen_0_6b():
-    """The published Qwen3-0.6B geometry this correction is recorded against."""
-    return PretrainedConfig.from_dict(
-        {
-            "hidden_size": 1024,
-            "vocab_size": 151936,
-            "tie_word_embeddings": True,
-            "dtype": "bfloat16",
-        }
-    )
-
-
-def test_the_tied_head_is_one_embedding_of_0_290_gib_on_the_0_6b():
-    config = qwen_0_6b()
-    nbytes = tied_lm_head_bytes(config, dtype_bytes=element_bytes(config.dtype))
-    assert nbytes == 151_936 * 1_024 * 2
-    assert nbytes == 311_164_928
-    # The measured gap the tie closed: one embedding, 0.290 GiB on the 0.6B.
-    assert round(nbytes / (1 << 30), 3) == 0.290
-
-
-def test_the_tied_head_scales_with_a_4_byte_element_size():
-    # A float32 build of the same geometry owes twice the bfloat16 correction.
-    nbytes = tied_lm_head_bytes(qwen_0_6b(), dtype_bytes=4)
-    assert nbytes == 151_936 * 1_024 * 4
-    assert nbytes == 622_329_856
-
-
-def test_an_untied_model_owes_no_correction(qwen):
-    assert qwen.tie_word_embeddings is False
-    assert tied_lm_head_bytes(qwen, dtype_bytes=2) == 0
-
-
-def test_a_config_that_does_not_state_the_tie_refuses_rather_than_assuming():
-    # The absence is observable, which is checked here rather than assumed:
-    # this tree's transformers does not fill the field in, so a config that was
-    # never given it raises on the attribute instead of answering. Assuming
-    # untied is exactly the 0.290 GiB gap, and it is the same species as the
-    # absent partial_rotary_factor that made the buffers term 4x high without
-    # saying it had assumed anything.
-    config = PretrainedConfig.from_dict({"hidden_size": 1024, "vocab_size": 151936})
-    assert not hasattr(config, "tie_word_embeddings")
-    with pytest.raises(MemoryRefusal) as refusal:
-        tied_lm_head_bytes(config, dtype_bytes=2)
-    assert "tie_word_embeddings" in str(refusal.value)
-
-
-def test_a_model_config_class_supplies_the_field_and_its_default_is_untied():
-    """How far the refusal above reaches, measured rather than assumed.
-
-    A model's own config class fills the field in, and this family's class
-    default is untied -- the direction that leaves the meta build over by an
-    embedding. So on a config class the correction cannot tell a checkpoint
-    that said untied from a class that defaulted to it, and it returns zero for
-    both. That is a limit of the correction, asserted here so it is a known
-    limit rather than a claim nobody checked.
-    """
-    from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
-
-    defaulted = Qwen3Config()
-    assert hasattr(defaulted, "tie_word_embeddings")
-    assert defaulted.tie_word_embeddings is False
-    assert tied_lm_head_bytes(defaulted, dtype_bytes=2) == 0
-
-
-#: No measured resident weight total for the 0.6B is available. This fixture
-#: states one so a percentage can be shown; the only measured figure the test
-#: below pins is the tie itself.
-RECORDED_0_6B_WEIGHTS = 1_192_000_000
-
-
-def weights_comparison(predicted_bytes):
-    predicted = Predicted(
-        label="a meta build of the 0.6B",
-        shape=Shape(tokens=4096, phase="prefill"),
-        terms=(
-            Term(
-                "weights",
-                predicted_bytes,
-                Method.MEASURED,
-                "a meta build, deduped by storage",
-            ),
-        ),
-    )
-    recorded = Recorded(
-        run="fixture: the 0.6B after the loader tied its head",
-        shape=Shape(tokens=4096, phase="prefill"),
-        high_water_reset=True,
-        terms=footprint_terms(
-            {"weights": RECORDED_0_6B_WEIGHTS}, source="parameter_bytes"
-        ),
-    )
-    return compare(predicted, recorded).compared[0]
-
-
-def test_the_invisible_tied_head_fails_the_gate_and_the_correction_closes_it():
-    tie = tied_lm_head_bytes(qwen_0_6b(), dtype_bytes=2)
-    before = weights_comparison(RECORDED_0_6B_WEIGHTS + tie)
-    assert before.verdict is Verdict.FAIL
-    assert before.delta_bytes == tie
-    assert before.relative == pytest.approx(0.2610, abs=5e-5)
-
-    after = weights_comparison(RECORDED_0_6B_WEIGHTS + tie - tie)
-    assert after.verdict is Verdict.PASS
-    assert after.delta_bytes == 0
-
-
-# --- trap 2: a term the run does not record ----------------------------------
+# --- trap 1: a term the run does not record ----------------------------------
 
 
 def ladder():
@@ -583,7 +472,7 @@ def test_a_declared_term_can_fail_its_gate_even_though_it_cannot_pass_one():
     assert compare(predicted, recorded).compared[0].verdict is Verdict.FAIL
 
 
-# --- trap 3: compared at the wrong shape -------------------------------------
+# --- trap 2: compared at the wrong shape -------------------------------------
 
 
 def test_a_pair_taken_at_two_shapes_refuses_and_names_both():
@@ -686,7 +575,7 @@ def test_a_side_that_claims_a_shaped_term_it_does_not_carry_is_rejected():
     assert "records no such term" in str(bad.value)
 
 
-# --- trap 4: the allocator's high-water mark ---------------------------------
+# --- trap 3: the allocator's high-water mark ---------------------------------
 
 
 def test_a_run_that_did_not_reset_the_peak_refuses_every_shaped_term():

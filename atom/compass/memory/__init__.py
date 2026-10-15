@@ -56,7 +56,6 @@ from atom.compass.memory.compare import (
     compare,
     compare_graph_pool,
     footprint_terms,
-    tied_lm_head_bytes,
 )
 from atom.compass.memory.graph_pool import (
     EAGER_SOURCE,
@@ -107,5 +106,4 @@ __all__ = [
     "piecewise_per_token_bytes",
     "predicts",
     "reserves",
-    "tied_lm_head_bytes",
 ]

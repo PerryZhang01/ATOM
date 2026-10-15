@@ -752,58 +752,6 @@ def compare_graph_pool(
     return GraphPoolComparison(recorded=recorded, reserves=reserves, predicts=predicts)
 
 
-def tied_lm_head_bytes(config, *, dtype_bytes: int) -> int:
-    """The bytes a meta build over-counts because it has not been through the loader.
-
-    A meta build is what makes the weights term exact, and this is the one
-    correction it cannot make for itself: the loader is what ties `lm_head` to
-    the input embedding, so before it has run the two are separate tensors and
-    one embedding of bytes that is never resident is counted. It was worth
-    **0.290 GiB on the 0.6B** and was once the whole of a gap.
-
-    **What the refusal below reaches, stated because it is narrower than it
-    looks.** It fires when the attribute is *absent*, and nothing more. A bare
-    `PretrainedConfig` that was never given the field does raise on the
-    attribute, so the refusal is real and the test drives it. But a model's own
-    config class supplies the field, and for at least one family, Qwen3, the
-    class default is `False` -- untied, which is the direction that
-    costs an embedding. So on a config class this function cannot tell a
-    checkpoint that said untied from a class that defaulted to it, and it will
-    return zero for both. Telling those apart needs the raw config mapping,
-    which this function is not given; until it is, an absent key in a
-    `config.json` is a case this correction does not cover.
-    """
-    text = getattr(config, "text_config", config)
-    tied = getattr(text, "tie_word_embeddings", None)
-    if tied is None:
-        raise MemoryRefusal(
-            "this config states no `tie_word_embeddings`, and whether the "
-            "input embedding is also the output head is the whole of this "
-            "correction",
-            "state the field on the config. Taking the library default would "
-            "answer a question this config did not answer, and an untied "
-            "assumption is the 0.290 GiB gap on the 0.6B",
-        )
-    if not tied:
-        return 0
-    vocab = int(_field(config, "vocab_size"))
-    hidden = int(_field(config, "hidden_size"))
-    return vocab * hidden * int(dtype_bytes)
-
-
-def _field(config, name: str) -> object:
-    text = getattr(config, "text_config", config)
-    value = getattr(text, name, None)
-    if value is None:
-        raise MemoryRefusal(
-            f"this config states no `{name}`, and the tied-head correction "
-            "is one embedding of it",
-            "name the model whose geometry this is, or build the config "
-            "through ATOM's own config classes, which fill it in",
-        )
-    return value
-
-
 def footprint_terms(mapping: Mapping[str, int], *, source: str) -> tuple[Term, ...]:
     """Named byte counts from a run's printout, as recorded terms.
 
