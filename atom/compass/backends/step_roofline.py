@@ -14,11 +14,11 @@ P is the parameter count one rank holds. The weights are read once per step,
 the KV each row attends over is read and the KV of the tokens computed is
 written, one token's KV spanning every paged layer. The host floor is the
 stated launches x h of one step. The step's one term is named by the bound
-that won. A host bound reads the run file's `roofline_floor_s`; a compute or
-memory bound reads its `parameter_count` and the machine spec fields in
-`FIELDS`. The run file's numbers carry no origin, so every term is `declared`,
-with a note naming that number and each spec field not from a datasheet or
-probed.
+that won. It is `declared`, its note naming each stated input, when an input
+that bound reads is stated, and `analytical` otherwise: compute reads
+`parameter_count` and `device.compute` (`FIELDS`), memory `device.memory` and
+the weights, host `roofline_floor_s`. A spec field from a datasheet or probe
+and a meta build's weights are not stated; the run file's numbers always are.
 
 `StepFallbackBackend` asks a backend first and the roofline only for a step
 that backend refuses, so a law with no vector for a step still prices it. The
@@ -38,9 +38,10 @@ from atom.compass.backends.cost import CostTerm, StepCost
 from atom.compass.backends.provenance import Method, Provenance
 from atom.compass.backends.resolver import CostRefused
 from atom.compass.backends.shape import BatchView, sum_context, sum_tokens
+from atom.compass.memory.terms import Basis, Term
 
 SOURCE = "step-roofline"
-#: The machine spec fields a roofline reads, whose origins decide its method.
+#: The machine spec fields a roofline reads; `device.<bound>` counts in that bound.
 FIELDS = (
     "device.compute.bf16_flops",
     "device.compute.derate",
@@ -62,7 +63,7 @@ class StepRooflineBackend(CostBackend):
         machine,
         *,
         parameters: int,
-        weight_bytes: int,
+        weights: Term,
         kv_token_bytes: int,
         host_floor_s: float,
     ) -> None:
@@ -75,6 +76,7 @@ class StepRooflineBackend(CostBackend):
         self.bandwidth = machine.value(
             "device.memory.bandwidth_bytes_per_s"
         ) * machine.value("device.memory.derate")
+        weight_bytes = weights.nbytes
         if min(parameters, weight_bytes, kv_token_bytes) < 1:
             raise ValueError(
                 f"a roofline needs parameters, weight bytes and KV bytes per "
@@ -89,19 +91,19 @@ class StepRooflineBackend(CostBackend):
         self.kv_token_bytes = kv_token_bytes
         self.host_floor_s = float(host_floor_s)
         origins = {path: machine.origin(path)["origin"] for path in FIELDS}
-        stated = [
-            f"{p} {o}" for p, o in origins.items() if _method(o) is Method.DECLARED
-        ]
-        # Each bound reads a run-file number, which carries no origin, so each
-        # term is declared; compute and memory also read the spec fields.
-        spec = f", {', '.join(stated)} in the machine spec {machine.value('name')}"
-        none = "; no successor: the roofline is the last step-level source"
-        both = "parameter_count stated in the run file" + spec * bool(stated) + none
-        self.note = {
-            "compute": both,
-            "memory": both,
-            "host": "roofline_floor_s stated in the run file" + none,
+        stated = {
+            "compute": ["parameter_count stated in the run file"],
+            "memory": [f"weights {weights.source} ({weights.note})"],
+            "host": ["roofline_floor_s stated in the run file"],
         }
+        if weights.basis is not Basis.DECLARED:
+            stated["memory"] = []
+        spec = f"in the machine spec {machine.value('name')}"
+        for p, o in origins.items():
+            if _method(o) is Method.DECLARED:  # p is device.<bound>.<field>
+                stated[p.split(".")[1]].append(f"{p} {o} {spec}")
+        none = "; no successor: the roofline is the last step-level source"
+        self.note = {b: "; ".join(s) + none for b, s in stated.items() if s}
 
     @property
     def granularity(self) -> Granularity:
@@ -118,12 +120,13 @@ class StepRooflineBackend(CostBackend):
         }
         bound = max(bounds, key=bounds.get)
         detail = "max of " + ", ".join(f"{k} {v:.6g} s" for k, v in bounds.items())
+        method = Method.DECLARED if bound in self.note else Method.ANALYTICAL
         return StepCost(
             [
                 CostTerm(
                     f"roofline.{bound}",
                     bounds[bound],
-                    Provenance(Method.DECLARED, detail, SOURCE, note=self.note[bound]),
+                    Provenance(method, detail, SOURCE, note=self.note.get(bound, "")),
                 )
             ]
         )

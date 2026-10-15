@@ -571,7 +571,7 @@ def runner(model_runner, tree=None) -> None:
         roofline = StepRooflineBackend(
             machine,
             parameters=run["parameter_count"] // tp,
-            weight_bytes=model.weights.nbytes,
+            weights=model.weights,
             kv_token_bytes=kv.layers * kv.bytes_per_token_per_layer,
             host_floor_s=run["roofline_floor_s"],
         )
