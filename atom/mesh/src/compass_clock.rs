@@ -143,7 +143,9 @@ impl ClockClient {
         }
         let mut body = vec![0; size as usize];
         self.stream.read_exact(&mut body).await?;
-        let message: Value = serde_json::from_slice(&body).map_err(|e| {
+        // serde_json may read a 17-digit number as a neighbouring f64, and a time
+        // must come back exactly, so numbers are read as text.
+        let message: Value = serde_json::from_slice(&quote_numbers(&body)).map_err(|e| {
             ClockError::Malformed(format!("{e}: {}", String::from_utf8_lossy(&body)))
         })?;
         match message["kind"].as_str() {
@@ -168,16 +170,46 @@ fn time_out(t: f64) -> Result<Value, ClockError> {
     }
 }
 
-fn time_in(v: &Value) -> Result<f64, ClockError> {
-    match (v.as_f64(), v.as_str()) {
-        (Some(t), _) => Ok(t),
-        (_, Some("+inf")) => Ok(f64::INFINITY),
-        (_, Some("-inf")) => Ok(f64::NEG_INFINITY),
-        _ => Err(ClockError::Malformed(format!("{v} is not a time"))),
+/// `body` with each number outside a string quoted, so it is read as text.
+fn quote_numbers(body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(body.len() + 64);
+    let (mut string, mut escaped, mut number) = (false, false, false);
+    for &b in body {
+        let digit = !string
+            && if number {
+                b"0123456789.eE+-".contains(&b)
+            } else {
+                b == b'-' || b.is_ascii_digit()
+            };
+        if digit != number {
+            out.push(b'"');
+            number = digit;
+        }
+        if string {
+            (escaped, string) = (!escaped && b == b'\\', escaped || b != b'"');
+        } else {
+            string = b == b'"';
+        }
+        out.push(b);
     }
+    if number {
+        out.push(b'"');
+    }
+    out
+}
+
+fn time_in(v: &Value) -> Result<f64, ClockError> {
+    match v.as_str() {
+        Some("+inf") => Some(f64::INFINITY),
+        Some("-inf") => Some(f64::NEG_INFINITY),
+        Some(t) => t.parse().ok(),
+        None => None,
+    }
+    .ok_or_else(|| ClockError::Malformed(format!("{v} is not a time")))
 }
 
 fn seq_in(v: &Value) -> Result<u64, ClockError> {
-    v.as_u64()
+    v.as_str()
+        .and_then(|s| s.parse().ok())
         .ok_or_else(|| ClockError::Malformed(format!("{v} is not a sequence number")))
 }

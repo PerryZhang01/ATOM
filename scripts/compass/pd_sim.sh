@@ -109,11 +109,13 @@ if [[ " $SERVER_ARGS " == *" --enable-dp-attention "* ]]; then
     # on the hop out.
     lookaheads=$(python3 - "$RUN_FILE" <<'EOF'
 import json, sys
+from pathlib import Path
 from atom.compass.run import ROUTER, channel_table
 
-run = json.load(open(sys.argv[1]))
+path = Path(sys.argv[1])
+run = json.loads(path.read_text())
 run.setdefault("router_in_s", run["ipc_s"])
-json.dump(run, open(sys.argv[1], "w"))
+path.write_text(json.dumps(run))
 table = channel_table(run)
 print(json.dumps({c.name: table.lookahead(c.name) for c in table.channels_from(ROUTER)}))
 EOF

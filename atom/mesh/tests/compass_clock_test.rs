@@ -100,6 +100,24 @@ async fn sends_its_log_and_reads_grants_and_refusals() {
     );
 }
 
+/// A 17-digit time, as the authority writes it, reads back as the same f64.
+#[tokio::test]
+async fn reads_each_time_exactly() {
+    let t = 10.759668308661709;
+    let (endpoint, _served) = scripted(vec![
+        json!({"kind": "JOINED", "now": t, "seqs": {"router->traffic:stream": 2}}),
+        json!({"kind": "GRANT", "G": t, "released": {"traffic->router:http": [[1, t]]}}),
+    ])
+    .await;
+    let mut clock = ClockClient::bind(&endpoint, "router").await.unwrap();
+    assert_eq!(clock.joined_at.to_bits(), f64::to_bits(t));
+    assert_eq!(clock.send("router->traffic:stream", t), 2);
+    let grant = clock.next_event(INF, INF).await.unwrap();
+    assert_eq!(grant.time.to_bits(), f64::to_bits(t));
+    assert_eq!(grant.released[0].arrival.to_bits(), f64::to_bits(t));
+    assert_eq!(grant.released[0].seq, 1);
+}
+
 /// Run by `tests/compass/test_mesh_clock_client.py`, which serves the Python
 /// authority with LPs `traffic` and `router` and sends one request from
 /// `traffic` at 0.5; the router answers on its stream channel 0.25 later.
