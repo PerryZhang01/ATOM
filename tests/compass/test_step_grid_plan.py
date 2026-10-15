@@ -626,9 +626,9 @@ def test_no_step_is_refused(tmp_path):
 def test_the_module_command_plans_from_record_files(tmp_path, monkeypatch):
     records = [record(tmp_path, monkeypatch, *n) for n in (MIXED, SHORT)]
     path = tmp_path / "definition.json"
-    path.write_text(json.dumps({**DEFINITION, "margin": 1}))
+    path.write_text(json.dumps(DEFINITION))
 
-    assert command("plan", path, *records) == (0, plan(*records, margin=1))
+    assert command("plan", path, *records) == (0, plan(*records))
 
 
 def test_the_module_command_checks_coverage_from_a_bundle_file(tmp_path, monkeypatch):
