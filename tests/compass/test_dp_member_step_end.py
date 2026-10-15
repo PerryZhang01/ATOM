@@ -1,0 +1,161 @@
+# SPDX-License-Identifier: MIT
+"""A DP group member returns from a group step at its own step end.
+
+Each rank's target comes from the predicted forward's gather. Two members of
+the engine LP, joined by the clock authority, take a step whose targets are
+80.5 ms (dp1, an idle rank's dummy) and 244.7 ms (dp0). dp1 is the test's own
+thread, so its intake is read between its return and the collective that
+settles it; dp0 and the frontend run on threads of their own.
+"""
+
+import math
+import queue
+import threading
+import uuid
+from types import SimpleNamespace
+
+import pytest
+import torch.distributed as dist
+import zmq
+from test_dp_step_max import dp2, prefill, runner  # noqa: F401
+
+from atom.compass import clock_transport
+from atom.compass.audit import sync_scan
+from atom.compass.backends.step_stub import Coefficients, StepStubBackend
+from atom.compass.clock import NER, ClockAuthority, LpId, single_engine_table
+from atom.compass.run import _members
+from atom.utils import clock
+from atom.utils.clock import LPRuntime, WrappedSocket
+
+TABLE = single_engine_table(
+    admission_path="serving", ipc_s=2.0**-14, stream_s=2.0**-12, dp=2
+)
+ENGINE, FRONTEND = LpId("engine"), LpId("frontend")
+REQUEST = "frontend->engine:request#dp1"
+TARGETS = (0.0805, 0.2447)
+SENDS = (0.05, 0.15)  # one arrives before dp1's step end, one inside its window
+
+
+@pytest.fixture
+def collectives(monkeypatch):
+    """Each collective a no-op recording the caller's LP clock, put back after."""
+    seen = []
+    for name in clock.COLLECTIVES:
+        monkeypatch.setattr(
+            dist, name, lambda *a, **k: seen.append(clock.installed().now)
+        )
+    clock.settle_before_collectives()
+    return seen
+
+
+def _thread(target, *args):
+    t = threading.Thread(target=target, args=args, daemon=True)
+    t.start()
+    return t
+
+
+def test_the_early_member_takes_in_only_what_arrived_by_its_own_step_end(
+    monkeypatch, collectives
+):
+    endpoint = f"inproc:test-dp-member-{uuid.uuid4().hex}"
+    server = clock_transport.serve(
+        ClockAuthority(TABLE, members=_members(TABLE, 2)), endpoint
+    )
+    clock_transport.connect(LpId("traffic"), endpoint).send(
+        (NER, math.inf, [], math.inf)
+    )
+    ctx, address = zmq.Context(), f"inproc://dp-request-{uuid.uuid4().hex}"
+    push = ctx.socket(zmq.PUSH)
+    push.bind(address)
+    pull = ctx.socket(zmq.PULL)
+    pull.connect(address)
+
+    def frontend():
+        rt = LPRuntime(FRONTEND, TABLE, clock_transport.connect(FRONTEND, endpoint))
+        rt.start_run()
+        sock = WrappedSocket(rt, push, REQUEST)
+        for t in SENDS:
+            rt.advance_to(t)
+            sock.send(str(t).encode())
+        rt.next_event(math.inf)
+
+    def dp0():
+        rt = LPRuntime(ENGINE, TABLE, clock_transport.connect(ENGINE, endpoint, "dp0"))
+        rt.start_run()
+        rt.advance_group(TARGETS, TARGETS[1])
+        returned.append(rt.now)
+        rt.next_event(math.inf)
+
+    rt = LPRuntime(ENGINE, TABLE, clock_transport.connect(ENGINE, endpoint, "dp1"))
+    rt.start_run()
+    monkeypatch.setattr(clock, "_installed", rt)
+    intake, returned = queue.Queue(), []
+    sock = WrappedSocket(rt, pull, REQUEST)
+
+    def receive():  # the engine's input thread: one recv per send, then its wait point
+        for _ in SENDS:
+            intake.put(sock.recv())
+        rt.back_at_wait_point()
+
+    threads = [_thread(receive), _thread(frontend), _thread(dp0)]
+
+    rt.advance_group(TARGETS, TARGETS[0])
+
+    assert rt.now == TARGETS[0]
+    assert [intake.get_nowait()] == [b"0.05"] and intake.empty()
+    with pytest.raises(RuntimeError, match="before the owed group round"):
+        rt.advance_to(0.1)
+    with pytest.raises(RuntimeError, match="owing group rounds"):
+        rt.next_event(math.inf)
+    assert returned == []
+
+    dist.all_reduce(None)
+
+    assert collectives == [TARGETS[1]]
+    assert intake.get(timeout=10) == b"0.15"
+    assert rt.owed == [] and len(rt.refusals) == 2
+    rt.next_event(math.inf)
+    for t in threads:
+        t.join(timeout=10)
+    assert returned == [TARGETS[1]]
+    server.close()
+    ctx.destroy(linger=0)
+
+
+def test_an_idle_ranks_dummy_returns_at_its_own_seconds_a_busy_rank_at_the_max(
+    dp2,  # noqa: F811
+):
+    # Prefill dearer than decode, so the busy rank sets the group's max.
+    coefficients = Coefficients.constant(prefill_seconds=0.005, decode_seconds=0.001)
+    ranks = [
+        runner(StepStubBackend(coefficients), dp_size=2, dp_rank=r) for r in (0, 1)
+    ]
+
+    busy, idle = dp2(lambda: ranks[0].forward(prefill(40)), ranks[1].dummy_execution)
+
+    assert [busy.predicted_s, idle.predicted_s] == [0.005, 0.001]
+    assert busy.group_targets == idle.group_targets == (0.005, 0.001)
+
+
+def test_every_collective_the_inventory_lists_on_torch_distributed_settles_first(
+    monkeypatch, collectives
+):
+    settled = []
+    stub = SimpleNamespace(
+        owner=threading.current_thread(), now=0.0, settle=lambda: settled.append(1)
+    )
+    monkeypatch.setattr(clock, "_installed", stub)
+    calls = {
+        s["call"].rpartition(".")[2]
+        for s in sync_scan.load_inventory()["sites"]
+        if s["shape"] in ("collective", "barrier")
+        and s["call"].rpartition(".")[0] in ("torch.distributed", "dist")
+    }
+    assert {"all_reduce", "barrier", "all_gather"} <= calls
+
+    for name in sorted(calls):
+        getattr(dist, name)()
+
+    assert len(settled) == len(calls)
+    _thread(dist.barrier).join()
+    assert len(settled) == len(calls)
