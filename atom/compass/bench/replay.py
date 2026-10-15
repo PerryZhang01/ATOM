@@ -7,8 +7,9 @@ produces output. ATOM's forward also needs block tables, tokens and, for a
 model that keeps per-request state, state slots. `ReplayRule.batch` supplies
 them the same way for every line:
 
-- Rows keep the line's order. Prefill rows must come first, as ATOM's runner
-  reads the first `total_seqs_num_prefill` rows as prefill.
+- Rows keep the line's order, and are all prefill or all decode: ATOM's
+  runner runs a batch holding prefill tokens over its prefill rows alone, and
+  its scheduler builds no batch that mixes the two.
 - Each row is a new request, numbered by `Sequence`'s own counter, so no two
   replays share a request.
 - Row i holds `ceil(context / block_size)` KV blocks, contiguous, from a fresh
@@ -18,7 +19,7 @@ them the same way for every line:
   tokenizer, as the simulated runner keeps them.
 - Under a model that keeps per-request state, row i holds state slot i of a
   fresh pool.
-- A line that produces output has every prefill row on its final chunk, one
+- A prefill line that produces output has every row on its final chunk, one
   that does not has none: a line does not say which of its chunks ends a
   prompt, and ATOM's runner samples every row of a step that produces output.
 - The batch carries the rule's `NAME` and `VERSION` as `replay_rule`, which a
@@ -34,7 +35,6 @@ from atom.model_engine.llm_engine import InputOutputProcessor, _load_tokenizer
 from atom.model_engine.scheduler import ScheduledBatch
 from atom.model_engine.sequence import (
     Sequence,
-    SequenceStatus,
     SequenceType,
     new_block_table,
 )
@@ -68,25 +68,24 @@ class ReplayRule:
     def batch(self, line: dict) -> ScheduledBatch:
         """The `ScheduledBatch` `line`'s `rows` and `produces_output` state."""
         rows = line["rows"]
-        kinds = [decode for _, _, decode in rows]
-        if kinds != sorted(kinds):
+        decode = rows[0][2]
+        if any(kind != decode for _, _, kind in rows):
             raise ValueError(
-                f"rows {rows} put a decode row before a prefill row, and ATOM's "
-                "runner reads a batch's first rows as its prefill rows"
+                f"rows {rows} mix prefill and decode rows; ATOM's runner runs a "
+                "batch holding prefill tokens over its prefill rows alone"
             )
-        if any(decode and query != 1 for query, _, decode in rows):
+        if decode and any(query != 1 for query, _, _ in rows):
             raise ValueError(
                 f"rows {rows} decode more than one token in a row, a speculative "
                 "step, which this rule does not build"
             )
         final = bool(line["produces_output"])
         seqs, block = {}, 0
-        for i, (query, context, decode) in enumerate(rows):
+        for i, (query, context, _) in enumerate(rows):
             filler = self.fillers[i % len(self.fillers)]
             seq = Sequence(
                 [filler] * context, self.block_size, has_per_req_cache=self.stateful
             )
-            seq.status = SequenceStatus.RUNNING
             seq.type = SequenceType.DECODE if decode else SequenceType.PREFILL
             seq.num_cached_tokens = context - query
             seq.block_table = new_block_table(range(block, block + seq.num_blocks))
@@ -100,18 +99,17 @@ class ReplayRule:
                 f"and the pool has {self.num_blocks}"
             )
         queries = [query for query, _, _ in rows]
-        prefill = kinds.count(False)
-        prefill_tokens = sum(queries[:prefill])
+        tokens, n = sum(queries), len(rows)
         batch = ScheduledBatch(
             seqs=seqs,
             num_scheduled_tokens=queries,
-            total_tokens_num=sum(queries),
-            total_tokens_num_prefill=prefill_tokens,
-            total_tokens_num_decode=sum(queries) - prefill_tokens,
-            total_seqs_num=len(rows),
-            total_seqs_num_prefill=prefill,
-            total_seqs_num_decode=len(rows) - prefill,
-            is_final_chunk=[final] * len(rows) if prefill else None,
+            total_tokens_num=tokens,
+            total_tokens_num_prefill=0 if decode else tokens,
+            total_tokens_num_decode=tokens if decode else 0,
+            total_seqs_num=n,
+            total_seqs_num_prefill=0 if decode else n,
+            total_seqs_num_decode=n if decode else 0,
+            is_final_chunk=None if decode else [final] * n,
         )
         if batch.produces_output() != final:
             raise ValueError(

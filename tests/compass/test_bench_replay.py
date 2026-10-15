@@ -90,16 +90,16 @@ def test_every_recorded_step_rebuilt_records_its_rows_and_rung(
 
 def test_rows_hold_contiguous_blocks_of_a_fresh_pool_in_row_order(rule):
     # 40, 17 and 33 context tokens fill 3, 2 and 3 blocks of 16.
-    line, rebuild = _line([[5, 40, False], [3, 17, False], [1, 33, True]]), rule()
+    line, rebuild = _line([[5, 40, False], [3, 17, False], [9, 33, False]]), rule()
     batch = rebuild.batch(line)
     assert [list(table) for table in batch.block_tables] == [
         [0, 1, 2],
         [3, 4],
         [5, 6, 7],
     ]
-    assert batch.num_scheduled_tokens.tolist() == [5, 3, 1]
+    assert batch.num_scheduled_tokens.tolist() == [5, 3, 9]
     assert batch.context_lens.tolist() == [40, 17, 33]
-    assert batch.num_cached_tokens == [35, 14, 32]
+    assert batch.num_cached_tokens == [35, 14, 24]
     # Each rebuild draws from a fresh pool, and its rows are new requests.
     again = rebuild.batch(line)
     assert [list(t) for t in again.block_tables] == [[0, 1, 2], [3, 4], [5, 6, 7]]
@@ -156,7 +156,8 @@ def test_the_batch_carries_the_rules_name_and_version(rule):
 @pytest.mark.parametrize(
     "line, refusal",
     [
-        (_line([[1, 9, True], [8, 8, False]]), "decode row before a prefill row"),
+        (_line([[8, 8, False], [1, 9, True]]), "mix prefill and decode rows"),
+        (_line([[1, 9, True], [8, 8, False]]), "mix prefill and decode rows"),
         (_line([[2, 9, True]]), "a speculative step"),
         (_line([[1, 9, True]], False), "the line says it does not"),
     ],
