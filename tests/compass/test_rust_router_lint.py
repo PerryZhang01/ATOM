@@ -83,9 +83,10 @@ def test_routing_a_kept_decision_hit_leaves_a_stale_entry_that_fails(tmp_path):
 SOURCE = r"""
 use std::time::Instant;
 // Instant::now() in a comment
-/* nested /* Instant::now() */ still a comment */
+/* a /* b */ Instant::now() */
 fn f() -> char {
     let s = "rand::rng() in a string";
+    let e = "\"Instant::now()";
     let r = r#"SystemTime::now()"#;
     let c = '"';
     let l: &'static str = "";
@@ -100,12 +101,27 @@ mod tests {
 #[cfg(test)]
 mod load_tests;
 fn h() { let t = std::time::Instant::now(); }
+struct S {
+    #[cfg(test)]
+    probe: u32,
+    hasher: RandomState,
+    #[cfg(test)]
+    last: u32
+}
+impl S { fn route(&self) { let t = Instant::now(); } }
+#[cfg(test)]
+fn t<F: Fn() -> u8, G>(a: u8, b: G) -> Result<(), G> { let t = Instant::now(); }
 """
 
 
 def test_literals_comments_biased_select_and_test_code_are_not_hits():
     assert hits(SOURCE) == (
-        [(11, "unbiased select!"), (20, "Instant::now")],
+        [
+            (12, "unbiased select!"),
+            (21, "Instant::now"),
+            (25, "RandomState"),
+            (29, "Instant::now"),
+        ],
         ["load_tests"],
     )
 

@@ -9,8 +9,8 @@ polls its branches in random order all depend on the host. Each hit under
 (which this pass then does not see) or kept by an entry below naming its file,
 its pattern, how many hits the file holds, whether it can change a routing
 decision, and why. A file holding a different number fails, so a new hit
-beside a kept one is not excused by it. Entries of class `decision` keep the
-gate green but print on every run: they are known defects, not exemptions.
+beside a kept one is not excused by it. Entries of class `decision` are known
+defects, not exemptions.
 
 It matches tokens, not a parse, so cargo is not needed. Comments, string and
 char literals are blanked first, and code under `#[cfg(test)]` is skipped,
@@ -28,6 +28,9 @@ including a module file a `#[cfg(test)] mod name;` declares.
   or a `collect()` whose target type is written on the binding rather than as
   a turbofish;
 * any other random source: `uuid::Uuid::new_v4`, `getrandom`, `OsRng`;
+* a timer inside a dependency, set through its builder: reqwest
+  `.timeout(...)` bounds every worker request by wall seconds and no pattern
+  here matches it;
 * `#[cfg(...)]` other than exactly `#[cfg(test)]`.
 
 The list is what has been tried against it, not an enumeration of what Rust
@@ -147,8 +150,9 @@ _KEPT = (
     ("routers/grpc/pipeline.rs", "Instant::now", LATENCY, _TIMING, 2),
     ("routers/http_pd_router.rs", "Instant::now", LATENCY, _TIMING, 1),
     ("routers/http_pd_router.rs", "RandomState", LATENCY, "startup bootstrap tables; " + _LOOKUP, 5),
-    ("routers/http_pd_router.rs", "tokio::time", LATENCY,
-     "bounds the drain of a prefill response the stream no longer needs", 1),
+    ("routers/http_pd_router.rs", "tokio::time", BOUND, (
+        "aborts a prefill after 5 wall seconds and drops its load guard, on the "
+        "vLLM backend only; pd_sim.sh passes --backend atom"), 1),
     ("routers/openai/responses/streaming.rs", "Utc::now", LATENCY, _STAMP, 1),
     ("routers/prepare/chat_template.rs", "RandomState", LATENCY, _LOOKUP, 1),
     ("routers/prepare/mod.rs", "SystemTime::now", LATENCY, _STAMP, 2),
@@ -210,23 +214,44 @@ def blank(source: str) -> str:
     return "".join(out)
 
 
+def _item_end(code: str, start: int) -> int:
+    """Where the item starting at `start` ends: after its `{...}` body, after
+    a `;` or `,` outside brackets (a `,` also outside `<...>`), or before an
+    unmatched `}` (the last field or variant of its parent)."""
+    parens = angles = 0
+    for end in range(start, len(code)):
+        char = code[end]
+        if char in "([":
+            parens += 1
+        elif char in ")]":
+            parens -= 1
+        elif char == "<":
+            angles += 1
+        elif char == ">" and code[end - 1] != "-":
+            angles = max(angles - 1, 0)
+        elif parens:
+            continue
+        elif char == "}":
+            return end
+        elif char == ";" or (char == "," and not angles):
+            return end + 1
+        elif char == "{":
+            depth = 0
+            for close in range(end, len(code)):
+                depth += {"{": 1, "}": -1}.get(code[close], 0)
+                if depth == 0:
+                    return close + 1
+    return len(code)
+
+
 def strip_tests(code: str) -> tuple[str, list[str]]:
     """`code` with every `#[cfg(test)]` item blanked, and the module names
     that `#[cfg(test)] mod name;` declares."""
     out, test_mods = list(code), []
     for attr in _TEST_ATTR.finditer(code):
-        brace, semi = code.find("{", attr.end()), code.find(";", attr.end())
-        if semi >= 0 and (brace < 0 or semi < brace):
-            end = semi + 1
-            if decl := _MOD_DECL.search(code, attr.end(), end):
-                test_mods.append(decl.group(1))
-        else:
-            depth, end = 0, brace
-            while end < len(code):
-                depth += {"{": 1, "}": -1}.get(code[end], 0)
-                end += 1
-                if depth == 0:
-                    break
+        end = _item_end(code, attr.end())
+        if code[end - 1] == ";" and (decl := _MOD_DECL.search(code, attr.end(), end)):
+            test_mods.append(decl.group(1))
         for k in range(attr.start(), end):
             if out[k] != "\n":
                 out[k] = " "
@@ -279,9 +304,9 @@ def check(root: str, allow_list=ALLOW_LIST) -> tuple[int, str]:
     """Scan `root`; return an exit code beside the report. Non-zero fails CI.
 
     The report counts every hit by pattern and disposition (`routed`, an
-    entry's class, or `UNKEPT`), then lists the unkept hits and the kept
-    `decision` entries. An entry naming no hit is stale and fails too, so a
-    fixed defect does not keep printing. A root holding no .rs file is refused.
+    entry's class, or `UNKEPT`), then lists the unkept hits and the stale
+    entries. An entry naming no hit is stale and fails, so a fixed defect
+    does not stay excused. A root holding no .rs file is refused.
     """
     found = scan(root)
     if not any(n.endswith(".rs") for _, _, names in os.walk(root) for n in names):
@@ -303,11 +328,6 @@ def check(root: str, allow_list=ALLOW_LIST) -> tuple[int, str]:
     lines += [f"  {p:<17} {how:<8} {n}" for (p, how), n in sorted(tally.items())]
     lines += [f"  UNKEPT {path}:{line}  {pattern}" for path, line, pattern in unkept]
     lines += [f"  STALE {path}  {pattern}" for path, pattern in stale]
-    lines += [
-        f"  DECISION {path}  {pattern} x{n}: {why}"
-        for (path, pattern), (kind, why, n) in sorted(allow_list.items())
-        if kind == DECISION
-    ]
     if unkept or stale:
         lines.append(
             "Route the read or draw through crate::determinism, or add an "
