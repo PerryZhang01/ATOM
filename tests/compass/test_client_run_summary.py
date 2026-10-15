@@ -44,7 +44,7 @@ CLIENT_RUNS = (
         [],
     ),
     (
-        ["command:profile on rank 0", "cost:no rung answered"],
+        ["command:profile on rank 0", "cost:no source answered"],
         {
             "steps": 5,
             "seconds": 1.25,
