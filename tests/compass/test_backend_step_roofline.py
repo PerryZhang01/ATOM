@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 """The step-level fallback: a step the law cannot price is priced by the roofline.
 
-The roofline's answer takes its method from the origins of the spec fields it
-reads, and carries what the law declined. Steps
+The roofline's answer is declared, naming the stated inputs of the bound that
+won, and carries what the law declined. Steps
 reach the backends through the runner's own `dummy_execution` and
 `_group_step_seconds`, and the backends reach the runner through `run.runner`
 from a run file's `step_linear` and `roofline_floor_s` keys.
@@ -162,13 +162,21 @@ READS = (
 )
 
 
+BOUNDS = {
+    "compute": (view((8192, 8192, False)), 0.0, "parameter_count"),
+    "memory": (view((1, 900, True)), 0.0, "parameter_count"),
+    "host": (view((1, 900, True)), 1.0, "roofline_floor_s"),
+}
+
+
+@pytest.mark.parametrize("bound", BOUNDS)
 @pytest.mark.parametrize(
-    "spec,method,named",
+    "spec,named",
     [
-        (_spec("datasheet"), Method.ANALYTICAL, []),
-        (_spec("probed"), Method.ANALYTICAL, []),
-        (_spec("assumed"), Method.DECLARED, list(READS)),
-        (_spec("transferred-from:mi308x-hjbog18"), Method.DECLARED, list(READS)),
+        (_spec("datasheet"), []),
+        (_spec("probed"), []),
+        (_spec("assumed"), list(READS)),
+        (_spec("transferred-from:mi308x-hjbog18"), list(READS)),
         *[
             (
                 _spec(
@@ -176,7 +184,6 @@ READS = (
                     {p: {"origin": "datasheet"} for p in READS}
                     | {path: {"origin": "assumed"}},
                 ),
-                Method.DECLARED,
                 [path],
             )
             for path in READS
@@ -185,19 +192,22 @@ READS = (
     ids=["datasheet", "probed", "assumed", "transferred"]
     + [f"{path}-assumed" for path in READS],
 )
-def test_the_roofline_is_declared_iff_a_spec_field_it_reads_is_not_its_own(
-    spec, method, named
+def test_the_roofline_is_declared_and_names_the_stated_inputs_of_its_bound(
+    spec, named, bound
 ):
+    batch, floor, key = BOUNDS[bound]
     backend = StepRooflineBackend(
         spec,
         parameters=PARAMETERS,
         weight_bytes=WEIGHTS,
         kv_token_bytes=KV,
-        host_floor_s=0.0,
+        host_floor_s=floor,
     )
-    (term,) = backend.price(view((1, 900, True))).terms
+    (term,) = backend.price(batch).terms
+    note = term.provenance.note
 
-    assert term.provenance.method is method
-    assert [p for p in READS if p in term.provenance.note] == named
-    if named:
-        assert "no successor" in term.provenance.note
+    assert term.name == f"roofline.{bound}"
+    assert term.provenance.method is Method.DECLARED
+    assert [k for k in ("parameter_count", "roofline_floor_s") if k in note] == [key]
+    assert [p for p in READS if p in note] == ([] if bound == "host" else named)
+    assert "no successor" in note

@@ -14,9 +14,11 @@ P is the parameter count one rank holds. The weights are read once per step,
 the KV each row attends over is read and the KV of the tokens computed is
 written, one token's KV spanning every paged layer. The host floor is the
 stated launches x h of one step. The step's one term is named by the bound
-that won. Its method follows the origins of the machine spec fields it reads
-(`FIELDS`): `analytical` when each is from a datasheet or probed, `declared`,
-with a note naming the others, when any is assumed or transferred.
+that won. A host bound reads the run file's `roofline_floor_s`; a compute or
+memory bound reads its `parameter_count` and the machine spec fields in
+`FIELDS`. The run file's numbers carry no origin, so every term is `declared`,
+with a note naming that number and each spec field not from a datasheet or
+probed.
 
 `StepFallbackBackend` asks a backend first and the roofline only for a step
 that backend refuses, so a law with no vector for a step still prices it. The
@@ -33,7 +35,7 @@ import math
 
 from atom.compass.backends.base import CostBackend, Granularity
 from atom.compass.backends.cost import CostTerm, StepCost
-from atom.compass.backends.provenance import Method, Provenance, combine
+from atom.compass.backends.provenance import Method, Provenance
 from atom.compass.backends.resolver import CostRefused
 from atom.compass.backends.shape import BatchView, sum_context, sum_tokens
 
@@ -87,17 +89,19 @@ class StepRooflineBackend(CostBackend):
         self.kv_token_bytes = kv_token_bytes
         self.host_floor_s = float(host_floor_s)
         origins = {path: machine.origin(path)["origin"] for path in FIELDS}
-        self.method = combine(map(_method, origins.values()))
         stated = [
             f"{p} {o}" for p, o in origins.items() if _method(o) is Method.DECLARED
         ]
-        self.note = (
-            f"{', '.join(stated)} in the machine spec {machine.value('name')}; "
-            "no successor: the roofline is the last step-level source, and "
-            "reads analytical once these fields are from a datasheet or probed"
-            if stated
-            else ""
-        )
+        # Each bound reads a run-file number, which carries no origin, so each
+        # term is declared; compute and memory also read the spec fields.
+        spec = f", {', '.join(stated)} in the machine spec {machine.value('name')}"
+        none = "; no successor: the roofline is the last step-level source"
+        both = "parameter_count stated in the run file" + spec * bool(stated) + none
+        self.note = {
+            "compute": both,
+            "memory": both,
+            "host": "roofline_floor_s stated in the run file" + none,
+        }
 
     @property
     def granularity(self) -> Granularity:
@@ -119,7 +123,7 @@ class StepRooflineBackend(CostBackend):
                 CostTerm(
                     f"roofline.{bound}",
                     bounds[bound],
-                    Provenance(self.method, detail, SOURCE, note=self.note),
+                    Provenance(Method.DECLARED, detail, SOURCE, note=self.note[bound]),
                 )
             ]
         )
