@@ -100,6 +100,8 @@ from typing import Any
 
 import numpy as np
 import torch
+from torch.overrides import TorchFunctionMode
+from torch.utils._device import _device_constructors
 
 from atom.compass.backends.base import CostBackend
 from atom.compass.memory import EAGER_SOURCE, DeviceReadings, SizedKVPool
@@ -424,6 +426,22 @@ def _config_field(runner: Any, name: str) -> Any:
         ) from None
 
 
+class FactoriesOnMeta(TorchFunctionMode):
+    """Puts every tensor a factory makes on the meta device, a named device too.
+
+    `torch.device("meta")` fills in only a device the call leaves out, so a
+    module that names one -- ATOM's attention puts its KV scale on this rank's
+    GPU -- would still allocate there and bring up a device context. The
+    factories are the ones `torch.device` itself redirects.
+    """
+
+    def __torch_function__(self, func, types, args=(), kwargs=None):
+        kwargs = kwargs or {}
+        if func in _device_constructors():
+            kwargs["device"] = "meta"
+        return func(*args, **kwargs)
+
+
 class UnbuiltModel(torch.nn.Module):
     """Stands in for the model a non-allocating runner never loads.
 
@@ -545,8 +563,9 @@ class NonAllocatingRunner(
 
         The base class constructs the model with the default device set to this
         rank's GPU and then fills it from disk. Here it is built on the meta
-        device, shapes and no bytes, because ATOM sizes the KV pool by walking
-        its attention modules; the load is skipped, so no checkpoint is read.
+        device, shapes and no bytes, a tensor the model puts on a named device
+        included, because ATOM sizes the KV pool by walking its attention
+        modules; the load is skipped, so no checkpoint is read.
 
         A speculative config is refused here, because on the last pipeline rank
         the base goes on to build the drafter on this rank's GPU and load its
@@ -572,7 +591,7 @@ class NonAllocatingRunner(
                 "nothing about it; speculative decoding has no step semantics "
                 "here yet."
             )
-        with torch.device("meta"):
+        with FactoriesOnMeta():
             self.model.tree = model_class(self.config)
         from atom.compass import run
 
