@@ -133,7 +133,7 @@ def test_every_channel_row_maps_to_an_address_its_wiring_names(monkeypatch):
     acks = [r for r in rows if "flush_pp_send" in r["expr"]]
     # Compass's own KV connector wraps its socket in `clock.WrappedSocket` on
     # the channel it reads from the table; no address names that channel.
-    own = [r for r in rows if r["file"].startswith("atom/compass/")]
+    own = [r for r in rows if r["file"] == "atom/compass/kv/connector.py"]
     rows = [r for r in rows if r not in acks + own]
     root = sync_scan.repo_root_from_here()
     trees = {f: ast.parse((root / f).read_text()) for f in {r["file"] for r in rows}}
