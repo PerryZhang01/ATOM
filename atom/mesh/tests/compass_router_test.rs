@@ -18,6 +18,7 @@ use mesh::{
     compass_clock::ENDPOINT_ENV,
     compass_router::{self, LOOKAHEADS_ENV, SEED_ENV},
     core::{BasicWorkerBuilder, Worker, WorkerLoadGuard},
+    determinism,
 };
 use serde_json::{json, Value};
 use tokio::{
@@ -68,6 +69,9 @@ async fn releases_are_handled_one_at_a_time_in_order_and_restamped() {
         r#"{"router->traffic:stream": 0.25, "router->frontend-D:relay": 0.5,
             "router->frontend-P:http": 0.125}"#,
     );
+    // The policies' clock origin; `start` enables it again at zero.
+    determinism::enable(0);
+    let origin = determinism::now();
     compass_router::start();
 
     // The prefill response reaches the router first, but is released second.
@@ -79,17 +83,19 @@ async fn releases_are_handled_one_at_a_time_in_order_and_restamped() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(!relay.is_finished());
 
-    // The request is released first; until it is placed nothing else is.
+    // The request is released first, and handled with the policies' clock at
+    // its arrival; until it is placed nothing else is released.
     let (go, placed) = oneshot::channel::<()>();
     let placed = Arc::new(Mutex::new(Some(placed)));
     let app = Router::new()
         .route(
             "/",
             post(move |headers: HeaderMap| async move {
+                let clock = (determinism::now() - origin).as_secs_f64();
                 compass_router::placed();
                 let wait = placed.lock().await.take().unwrap();
                 wait.await.unwrap();
-                headers["tracestate"].to_str().unwrap().to_owned()
+                format!("{} at {clock}", headers["tracestate"].to_str().unwrap())
             }),
         )
         .layer(axum::middleware::from_fn(compass_router::ingress));
@@ -116,7 +122,7 @@ async fn releases_are_handled_one_at_a_time_in_order_and_restamped() {
     go.send(()).unwrap();
     assert_eq!(
         request.await.unwrap(),
-        "rojo=00f067aa0ba902b7,compass=a:0.625;s:0"
+        "rojo=00f067aa0ba902b7,compass=a:0.625;s:0 at 0.5"
     );
 
     let (body, turn) = relay.await.unwrap();
