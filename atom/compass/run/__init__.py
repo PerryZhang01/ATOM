@@ -345,9 +345,9 @@ class _RecordingAuthority(ClockAuthority):
     has asked once. Each client run that ends before the last has its summary
     written once every server LP has handed in. A TAR to ``+inf`` before the
     finish is a stop: it finishes the run there and sets `stopped`. Every LP
-    but the client, which holds no connection before it binds or between
-    client runs, is granted ``+inf``; the client learns of the stop when the
-    authority's process ends its connection."""
+    but the client is granted ``+inf``. The client holds no connection before
+    it binds or between client runs; a bound one is refused once a server LP's
+    connection ends."""
 
     def __init__(self, run: dict) -> None:
         # The tree that runs, read before the run so an unidentifiable one is
