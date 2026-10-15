@@ -308,6 +308,8 @@ def run_router_lp(atomesh: Path, out: Path, hash_seed: str, delay) -> list:
         for p in procs:
             if p.poll() is None:
                 p.kill()
+        for f in frontends.values():
+            f.http.shutdown()
     errors += [e for f in frontends.values() for e in f.errors]
     if errors:
         raise errors[0]
