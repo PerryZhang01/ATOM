@@ -9,7 +9,8 @@ authority's host writes that client run's summary; the finish writes the last
 one's beside the run summary. A client run's counts are its own: the engine's
 workers and the frontend's executor count from the server's start, and a
 summary takes each hand-in less the one at the previous client run's end, so
-it matches the summary a fresh server writes for the same client run.
+it matches the summary a fresh server writes for the same client run. A stop
+after a client run writes the run summary and leaves that client run's alone.
 """
 
 import json
@@ -207,8 +208,9 @@ def test_client_runs_is_a_positive_count_or_null(monkeypatch, tmp_path):
 def test_a_stop_after_a_client_run_leaves_that_client_runs_summary(
     monkeypatch, tmp_path
 ):
-    """A standalone authority stopped after client run 0 writes the run
-    summary from every hand-in and client run 0's summary not again."""
+    """A standalone authority stopped after client run 0 grants every server
+    LP ``+inf`` and the resigned client nothing, then writes the run summary
+    from every hand-in and client run 0's summary not again."""
     run = {"admission_path": "serving", "ipc_s": 2.0**-10, "stream_s": 2.0**-9}
     run.update(bound_s=100.0, client_runs=None, out_dir=str(tmp_path))
     monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
