@@ -2986,7 +2986,7 @@
    "expr": "enqueue(stores)",
    "shape": "task_wait",
    "peer": "none",
-   "why": "hands this pass's state checkpoints to an offload connector, which appends them to a list; the simulated connector has no state tier",
+   "why": "hands this pass's state checkpoints to an offload connector, which appends them to a list; the simulated connector offloads no state",
    "mechanism": "K9",
    "mechanism_why": "a list append in an offload backend outside the simulated configuration, which cannot park"
   },

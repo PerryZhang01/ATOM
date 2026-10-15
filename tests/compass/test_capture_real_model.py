@@ -13,7 +13,7 @@ widths cannot share an interpreter:
   `import atom`, and an import happens once per process.
 
 Running it as a script also keeps the substitutions off every other test in the
-tier: nothing here mutates `torch.cuda` in the pytest process.
+gate: nothing here mutates `torch.cuda` in the pytest process.
 
 What the capture is
 -------------------

@@ -10,7 +10,7 @@ that exits 98 leaves the verdict number under pytest's green summary.
 
 Each case runs the real script over a throwaway tree: a one-test suite, an
 empty exclusion list, and a trigger list that the stamped diff touches, so the
-run is green and then exits 98 for the GPU tier. Nothing needs a driver.
+run is green and then exits 98 for the GPU gate. Nothing needs a driver.
 """
 
 import os
