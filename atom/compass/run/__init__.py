@@ -59,7 +59,8 @@ LP after another, 1 when absent and ``null`` for no limit; each ends when no
 essential work is left, and the last one's end finishes the run),
 ``host`` (optional: ``laws``, per forward kind and host segment, coefficients
 on ``(1, tokens, seqs)``, zero where absent; ``key``, the `host_key` they were
-fitted under, which a run with laws must match; ``skip``, segments zeroed for
+fitted under and the ``machine_spec`` digest of the spec of the platform they
+were fitted on, which a run with laws must match; ``skip``, segments zeroed for
 a what-if run, which the graders refuse),
 ``machine`` (a machine spec mapping), ``parameter_count`` (read with
 ``step_roofline``), and ``out_dir``,
@@ -345,7 +346,8 @@ def _hand_ins(run: dict) -> list[str]:
 
 class _RecordingAuthority(ClockAuthority):
     """The authority, recording the step table: a row per reply and a row per
-    message each reply releases; and the wall seconds of the run, from its start
+    message each reply releases, from the receiver's clock before that grant to
+    the message's arrival; and the wall seconds of the run, from its start
     to the end of each client run in `ends` and to the finish, which sets `done`.
     A co-hosting frontend starts the run as it starts its own; otherwise it
     starts once every server LP, and every member of one declared with members,
@@ -364,6 +366,7 @@ class _RecordingAuthority(ClockAuthority):
         self.ends = []  # the wall time each client run ended
         self.done = threading.Event()
         self._joining = set(_hand_ins(run))
+        self._clock_before = {}  # LP -> its clock before its latest grant
         # A rerun into the same out_dir starts from none of the last run's files.
         out = Path(run["out_dir"])
         for name in (
@@ -387,6 +390,7 @@ class _RecordingAuthority(ClockAuthority):
         )
 
     def record(self, lp, time_from, time_to, kind, recovered) -> None:
+        self._clock_before[lp] = time_from
         self.steps.record(lp, time_from, time_to, kind, detail="recovered" * recovered)
 
     def on_request(self, lp, kind, t, log, t_daemon=math.inf, member=None) -> list:
@@ -399,7 +403,9 @@ class _RecordingAuthority(ClockAuthority):
             lp = to[0] if isinstance(to, tuple) else to
             for ch, msgs in released.items():
                 for seq, arrival in msgs:
-                    self.steps.record(lp, arrival, arrival, "release", ch, seq)
+                    # From the receiver's clock as the grant found it.
+                    clock = self._clock_before[lp]
+                    self.steps.record(lp, clock, arrival, "release", ch, seq)
         while len(self.ends) < len(self.ended):
             self.ends.append(time.monotonic())
             if self.final_clocks is None:  # an end before the last
@@ -620,6 +626,7 @@ def runner(model_runner, tree) -> None:
     run = spec()
     if run is None:
         return
+    from atom.compass.artifacts import machine_spec_digest
     from atom.compass.backends.geometry import KvGeometry, Parallelism
     from atom.compass.backends.step_linear import StepLinearBackend, StepLinearLaw
     from atom.compass.backends.step_roofline import (
@@ -669,6 +676,14 @@ def runner(model_runner, tree) -> None:
             stack_layers=config.hf_config.num_hidden_layers,
         )
     machine = MachineSpec.from_mapping(_width_keys(run["machine"]))
+    platform = machine_spec_digest(machine)
+    fitted_on = run.get("step_linear", {}).get("machine_spec")
+    if "step_linear" in run and fitted_on != platform:
+        raise ValueError(
+            f"the step linear law was fitted on machine spec {fitted_on} and this "
+            f"run's is {platform}; a law measured on one platform is no evidence "
+            "about another"
+        )
     bundle = None
     if "step_grid" in run:
         from atom.compass.run.step_grid import load
@@ -711,12 +726,13 @@ def runner(model_runner, tree) -> None:
     if NOW_ENV in os.environ:
         slot = np.memmap(os.environ[NOW_ENV], np.float64, "r", shape=(1,))
         host = run.get("host", {})
-        ours, theirs = host.get("laws") and host_key(config), host.get("key") or {}
+        ours = host.get("laws") and {**host_key(config), "machine_spec": platform}
+        theirs = host.get("key") or {}
         if ours and theirs != ours:
             differ = [k for k in ours if theirs.get(k) != ours[k]]
             raise ValueError(
                 f"the run file's host laws were fitted under another {differ}; "
-                f"this run's key is {ours}"
+                f"this run's key is {ours}, and theirs is {theirs}"
             )
         model_runner.compass_host = replay or HostDeviceRecurrence(
             host.get("laws", {}), host.get("skip", ()), lambda: float(slot[0])

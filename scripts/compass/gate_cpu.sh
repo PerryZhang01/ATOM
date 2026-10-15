@@ -225,6 +225,27 @@ import compass_harness, aiperf; print(aiperf.__file__, compass_harness.__file__)
     printf 'harness: %s\n' "$WHY"
 fi
 
+# atomesh's Compass cargo tests run here, offline, since the gate has no
+# network: from the container's crate cache, under the lockfile that cache was
+# fetched for. test_mesh_clock_client.py skips on the same `cargo metadata`
+# probe, so a diff touching atom/mesh is refused when the probe fails.
+MESH=$ROOT/atom/mesh
+MESH_RC=0
+if [ -r "$MESH/Cargo.toml" ]; then
+    export CARGO_NET_OFFLINE=${CARGO_NET_OFFLINE:-true}
+    LOCK=${COMPASS_CARGO_LOCK:-/app/ATOM/atom/mesh/Cargo.lock}
+    [ -e "$MESH/Cargo.lock" ] || [ ! -r "$LOCK" ] || cp "$LOCK" "$MESH/Cargo.lock"
+    if WHY=$(cd "$MESH" && cargo metadata --format-version 1 2>&1 >/dev/null); then
+        (cd "$MESH" && cargo test --test compass_clock_test --test compass_router_test \
+            --test compass_pd_router_test --test policy_determinism_test) || MESH_RC=$?
+    else
+        WHY=${WHY%%$'\n'*}
+        grep -q '^atom/mesh/' <<<"$CHANGED" &&
+            finish 96 "this diff touches atom/mesh and its cargo tests would skip ($WHY); see scripts/compass/README.md; nothing was run"
+        printf 'mesh:   cargo tests skipped, atom/mesh unchanged (%s)\n' "$WHY"
+    fi
+fi
+
 # pytest's own status, captured directly. Piping it into `tail` discards the
 # exit code and a failing suite reports success.
 python -m pytest tests/ "${IGN[@]}" -q --no-header -p no:cacheprovider "$@" -rf
@@ -250,6 +271,7 @@ if [ "$RC" -ne 0 ]; then
     printf 'to run gates one at a time. It is not a Compass defect and is not excluded.\n' >&2
     finish "$RC" "pytest failed; the FAILED lines above name the tests"
 fi
+[ "$MESH_RC" -eq 0 ] || finish "$MESH_RC" "cargo test failed in atom/mesh; its output is above pytest's"
 
 if [ -n "$GPU_SRC_UNKNOWN" ]; then
     printf 'pytest is green, but the CPU gate is not passed: %s.\n' "$GPU_SRC_UNKNOWN" >&2

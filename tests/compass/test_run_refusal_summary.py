@@ -112,7 +112,7 @@ def summary(monkeypatch, tmp_path, backend, *prompts, clock_refusals=(), jobs=()
     return json.loads((tmp_path / compass_run.SUMMARY_FILE).read_text())
 
 
-def test_a_step_a_lower_rung_answered_is_not_refused_and_its_answer_is_apart(
+def test_a_step_a_later_source_answered_is_not_refused_and_its_answer_is_apart(
     monkeypatch, tmp_path
 ):
     backend = AnalyticalBelow(STAGE1, tokens=40)
