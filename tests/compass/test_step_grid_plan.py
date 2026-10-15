@@ -504,16 +504,30 @@ def test_a_definition_stating_a_target_field_must_state_the_engines_value(
         plan(directory, capture_sizes=LADDER)
 
 
-def test_inputs_whose_ranks_state_two_engines_are_refused(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "drive,engine,field",
+    [
+        ({"budget": 48}, {}, "max_num_batched_tokens"),
+        ({}, {"kv_cache_dtype": "fp8"}, "kv_cache_dtype"),
+    ],
+    ids=["target-field", "keyed-field"],
+)
+def test_inputs_whose_ranks_state_two_engines_are_refused(
+    tmp_path, monkeypatch, drive, engine, field
+):
+    """The second record is driven by `drive` and its engine file changed by
+    `engine`; a field `plan` does not plan for still makes another engine."""
     records = [
         record(tmp_path, monkeypatch, *MIXED),
-        record(tmp_path, monkeypatch, *SHORT, budget=48),
+        record(tmp_path, monkeypatch, *SHORT, **drive),
     ]
+    path = records[1] / "dp0.engine.json"
+    path.write_text(json.dumps({**json.loads(path.read_text()), **engine}))
 
     with pytest.raises(
         ValueError,
         match=f"^{re.escape(f'{records[0]} dp0 and {records[1]} dp0')} state two "
-        "engines, which differ on max_num_batched_tokens$",
+        f"engines, which differ on {field}$",
     ):
         plan(*records)
 
