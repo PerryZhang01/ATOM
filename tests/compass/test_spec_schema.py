@@ -134,6 +134,7 @@ DOCUMENT = {
     "interconnect": {
         "intra_node": {
             "topology": "fully_connected",
+            "domain_devices": 8,
             "link_bandwidth_bytes_per_s": 1.0e12,
             "link_latency_s": 2.0e-6,
             "derate": 0.80,
@@ -407,6 +408,9 @@ BREAKAGES = {
         "device.memory.capacity_bytes", "lots"
     ),
     "one field written under two spellings": lambda: both_spellings(True),
+    "a fabric joining fewer devices than the node holds": lambda: written(
+        "interconnect.intra_node.domain_devices", 4
+    ),
     "an origin nobody defined": lambda: written("provenance.origin", "guessed"),
     "the key the origin used to be written under": lambda: written(
         "provenance.method", "probed"

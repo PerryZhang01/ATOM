@@ -147,6 +147,7 @@ LINKS = {
     "interconnect": {
         "intra_node": {
             "topology": "fully_connected",
+            "domain_devices": 8,
             "link_bandwidth_bytes_per_s": 1.0e12,
             "link_latency_s": 2.0e-6,
             "derate": 0.80,
