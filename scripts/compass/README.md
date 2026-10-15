@@ -545,10 +545,12 @@ the log of one rank.
 `python -m atom.compass.backends.step_linear_fit RECORD... --out LAW [--form FORM] [--dp N]`
 fits the law a run file's `step_linear` key holds (`atom/compass/backends/step_linear.py`) from
 the step records of real cells, `OUT_DIR/steps/dp0.jsonl` of `REAL=1
-cctraces_sim.sh` runs. The module's docstring states the label, what is cut and
-how outliers are dropped; the written law also carries, per vector, its samples,
-warm and dropped counts and condition number, and names any vector it could not
-fit under `unfitted`.
+cctraces_sim.sh` runs. `atom/compass/backends/step_labels.py` states the label
+and what is cut, and the command writes each record's labels beside it for
+reading, `dp0.cost.jsonl`; the module's docstring states how outliers are
+dropped. The written law also carries, per vector, its samples, warm and dropped
+counts and condition number, and names any vector it could not fit under
+`unfitted`.
 
 Calibration cells replay traces the graded cells do not: `FIRST_SESSION=256
 SESSIONS=137` against graded traces 0 to 255, by the
