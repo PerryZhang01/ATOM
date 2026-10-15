@@ -6,6 +6,7 @@ written by hand with the identity entries `record` writes there; its server
 served two client runs. Measurements are published through `ArtifactStore`.
 """
 
+import copy
 import dataclasses
 import json
 import re
@@ -215,11 +216,35 @@ def test_a_measurement_loads_beside_records_of_its_configuration_only(
         "config": None,
         "traces": ["trace-9"],
     }
-    other = measured(store, config, {**SAMPLING, "top_p": 0.9})
-    with pytest.raises(
-        ValueError, match=rf"sampling top_p: 1.0 in {re.escape(str(a))}; 0.9 in "
-    ):
-        load({a: RUNS}, [other], store)
+
+
+@pytest.mark.parametrize(
+    "named, field, inner, value",
+    [
+        ("model", "model", None, "sha256:2"),
+        ("device", "device", None, "AMD Instinct MI355X M3550 gfx950"),
+        ("parallel", "parallel", None, "tp2-dp1"),
+        ("source_root", "source_root", None, "tree-0e724ed5"),
+        ("engine_config kv_cache_dtype", "engine_config", "kv_cache_dtype", "fp8"),
+        ("sampling top_p", "sampling", "top_p", 0.9),
+    ],
+)
+def test_a_measurement_differing_from_the_records_in_one_key_field_refuses(
+    tmp_path, monkeypatch, named, field, inner, value
+):
+    a, store = record(tmp_path, monkeypatch), tmp_path / "store"
+    config = load({a: RUNS})[1]
+    there = copy.deepcopy(config)
+    held = there[field] if inner else there
+    old, held[inner or field] = held[inner or field], value
+    key = measured(store, there, there["sampling"])
+
+    with pytest.raises(ValueError) as refused:
+        load({a: RUNS}, [key], store)
+    assert str(refused.value) == (
+        "the inputs are not one configuration:\n"
+        f"{named}: {json.dumps(old)} in {a}; {json.dumps(value)} in {key}"
+    )
 
 
 def test_samples_come_in_one_order_whatever_order_the_inputs_came_in(

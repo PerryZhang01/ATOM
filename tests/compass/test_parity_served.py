@@ -98,3 +98,10 @@ def test_a_request_named_by_two_client_runs_refuses(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="is in client runs 0 and 1"):
         served(steps, [client_run([0]), client_run([0, 1])])
+
+
+def test_a_client_run_whose_requests_no_step_holds_refuses(tmp_path, monkeypatch):
+    steps = recorded(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match=r"client runs \[1\] name no request"):
+        served(steps, [client_run([0, 1, 2, 3]), client_run([7])])

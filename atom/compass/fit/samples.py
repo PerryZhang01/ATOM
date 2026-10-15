@@ -65,9 +65,7 @@ def load(
     ]
     if differ:
         raise ValueError("the inputs are not one configuration:\n" + "\n".join(differ))
-    one = {}
-    for config in configs.values():
-        one.update(config)
+    one = {k: v for c in configs.values() for k, v in c.items()}
     samples.sort(key=lambda s: (s.provenance["run"], s.rank, s.step))
     return samples, one
 
