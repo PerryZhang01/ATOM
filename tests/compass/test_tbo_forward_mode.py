@@ -55,6 +55,7 @@ def _runner_classes():
     ]
     namespace = {
         "np": np,
+        "torch": torch,
         "logger": logging.getLogger("atom"),
         "ScheduledBatch": ScheduledBatch,
         "ForwardMode": StopAtDecide,
