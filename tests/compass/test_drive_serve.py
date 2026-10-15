@@ -33,8 +33,13 @@ import http.server, json, os, subprocess, sys, time
 d = os.environ["PLANTED_DIR"]
 when, _, rc = os.environ.get("PLANTED_EXIT", "never:0").partition(":")
 argv, keep = sys.argv[1:], ("HIP_VISIBLE_DEVICES", "PYTHONPATH", "ATOM_COMPASS_RUN")
+keep += ("ATOM_COMPASS_PARITY_RECORD",)
 with open(d + "/argv.json", "w") as f:
     json.dump({"argv": argv, "env": {k: os.environ.get(k) for k in keep}}, f)
+if os.environ.get("PLANTED_ENGINE", "1") == "1":
+    record = os.environ["ATOM_COMPASS_PARITY_RECORD"]
+    os.makedirs(record)
+    open(record + "/dp0.engine.json", "w").close()
 child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
 with open(d + "/child", "w") as f:
     f.write(str(child.pid))
@@ -63,6 +68,7 @@ import json, sys
 from atom.compass.drive import serve
 if sys.argv[1]:
     serve.SERVER = (sys.executable, sys.argv[1])
+    serve.identity = lambda *args: {"identity": "planted"}
 serve.serve(sys.argv[4:], sys.argv[2], run=json.loads(sys.argv[3]))
 """
 ARGS = ["--model", "m", "-tp", "2", "--kv-transfer-config", '{"kv_role": "x"}']
@@ -71,9 +77,18 @@ ARGS += ["--disagg-constrained"]
 
 @pytest.fixture
 def planted(tmp_path, monkeypatch):
+    """The planted server, and an `identity` that records what it is called
+    with and whether the server is still running then."""
     (tmp_path / "planted.py").write_text(PLANTED)
     monkeypatch.setattr(serve, "SERVER", (sys.executable, str(tmp_path / "planted.py")))
     monkeypatch.setenv("PLANTED_DIR", str(tmp_path))
+
+    def identity(*args):
+        out = Path(args[0]).parents[1]
+        pid = json.loads((out / serve.READY_FILE).read_text())["pid"]
+        return {"args": [str(a) for a in args], "server running": _running(pid)}
+
+    monkeypatch.setattr(serve, "identity", identity)
     return tmp_path
 
 
@@ -121,6 +136,7 @@ def test_atom_arguments_pass_verbatim_and_the_driver_assigns_the_rest(
         "clock_endpoint": f"tcp://127.0.0.1:{clock_port}",
     }
     assert seen["env"]["ATOM_COMPASS_RUN"] is None
+    assert seen["env"]["ATOM_COMPASS_PARITY_RECORD"] == str(out / serve.STEPS)
     assert seen["env"]["PYTHONPATH"].split(os.pathsep)[0] == str(serve.TREE)
     ready = json.loads((out / serve.READY_FILE).read_text())
     assert ready.pop("pid") > 0
@@ -130,6 +146,11 @@ def test_atom_arguments_pass_verbatim_and_the_driver_assigns_the_rest(
         "run_file": str(run_file),
     }
     assert "planted server up" in (out / serve.LOG_FILE).read_text()
+    engine = out / serve.STEPS / "dp0.engine.json"
+    assert json.loads((out / serve.RUN_JSON).read_text()) == {
+        "args": [str(engine), "m", str(sys.argv), "()"],
+        "server running": False,
+    }
 
 
 def test_a_real_server_runs_on_its_gpus_between_the_gpu_checks(planted, monkeypatch):
@@ -141,6 +162,7 @@ def test_a_real_server_runs_on_its_gpus_between_the_gpu_checks(planted, monkeypa
     assert "--compass-run" not in seen["argv"]
     assert (out / "gpu_before.txt").exists() and (out / "gpu_after.txt").exists()
     assert json.loads((out / serve.READY_FILE).read_text()).keys() == {"url", "pid"}
+    assert json.loads((out / serve.RUN_JSON).read_text())["args"][3] == "(6, 7)"
 
 
 def test_a_process_on_a_named_gpu_refuses_before_the_server_starts(
@@ -170,11 +192,31 @@ def test_a_flag_the_driver_owns_refuses_before_the_server_starts(planted, flag):
     assert not (planted / "argv.json").exists()
 
 
-@pytest.mark.parametrize("kind", [{"gpus": (7,), "run": {}}, {}])
-def test_a_server_is_either_real_or_simulated(planted, kind):
-    with pytest.raises(serve.ServeError, match="exactly one"):
-        serve.serve(ARGS, planted / "out", **kind)
+@pytest.mark.parametrize(
+    "args, kind, used, refusal",
+    [
+        (ARGS, {"gpus": (7,), "run": {}}, False, "exactly one"),
+        (ARGS, {}, False, "exactly one"),
+        (ARGS[2:], {"run": {}}, False, "no --model"),
+        (ARGS, {"run": {}}, True, "earlier run's files"),
+    ],
+)
+def test_a_server_is_refused_before_it_starts(planted, args, kind, used, refusal):
+    out = planted / "out"
+    if used:
+        out.mkdir()
+        (out / serve.RUN_JSON).write_text("{}")
+    with pytest.raises(serve.ServeError, match=refusal):
+        serve.serve(args, out, **kind)
     assert not (planted / "argv.json").exists()
+
+
+def test_a_server_that_served_no_step_writes_no_run_json(planted, monkeypatch):
+    monkeypatch.setenv("PLANTED_EXIT", "late:0")
+    monkeypatch.setenv("PLANTED_ENGINE", "0")
+    with pytest.raises(serve.ServeError, match="^the server served no step"):
+        serve.serve(ARGS, planted / "out", run={})
+    assert not (planted / "out" / serve.RUN_JSON).exists()
 
 
 @pytest.mark.parametrize(
@@ -203,7 +245,15 @@ def test_the_ready_file_follows_the_first_answer_and_a_stop_leaves_nothing(
     out = planted / "out"
     env = dict(os.environ, PYTHONPATH=str(TREE), PLANTED_DELAY="2")
     driver = subprocess.Popen(
-        [sys.executable, "-c", DRIVE, str(planted / "planted.py"), str(out), "{}"],
+        [
+            sys.executable,
+            "-c",
+            DRIVE,
+            str(planted / "planted.py"),
+            str(out),
+            "{}",
+            *ARGS,
+        ],
         env=env,
     )
     server = _ready(out, driver, 600, 0.05)["pid"]
@@ -247,6 +297,8 @@ def test_a_simulated_server_starts_answers_and_stops(tmp_path):
     driver = subprocess.Popen(
         [sys.executable, "-c", DRIVE, "", str(out), json.dumps(run), *atom_args],
         env=dict(os.environ, PYTHONPATH=str(TREE)),
+        stderr=subprocess.PIPE,
+        text=True,
     )
     ready = _ready(out, driver, 1800, 0.5)
     conn = http.client.HTTPConnection(ready["url"].removeprefix("http://"))
@@ -254,5 +306,6 @@ def test_a_simulated_server_starts_answers_and_stops(tmp_path):
     assert conn.getresponse().status == 200
     assert json.loads(Path(ready["run_file"]).read_text())["out_dir"] == str(out)
     driver.send_signal(signal.SIGTERM)
-    assert driver.wait(timeout=300) == 0
-    assert not _running(ready["pid"])
+    # No client sent a request, so no step wrote the engine file run.json needs.
+    assert "the server served no step" in driver.communicate(timeout=300)[1]
+    assert driver.returncode == 1 and not _running(ready["pid"])

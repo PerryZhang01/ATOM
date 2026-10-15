@@ -9,13 +9,16 @@ verbatim; the driver assigns the host, both ports and the Compass flags, and
 refuses them among ATOM's arguments.
 
 The server runs this driver's tree in its own process group, so its engine
-processes stop with it, and writes ``<out>/server.log``. Once its ``/health``
-first answers, ``<out>/server.json`` names its URL and process id and, for a
-simulated server, its clock endpoint and run file. SIGINT or SIGTERM to the
-command, or the server's exit, stops the whole group: SIGTERM first, SIGKILL
-for what is left after `STOP_GRACE_S`. No command starts the client.
+processes stop with it, and writes ``<out>/server.log`` and its step record in
+``<out>/steps``. Once its ``/health`` first answers, ``<out>/server.json``
+names its URL and process id and, for a simulated server, its clock endpoint
+and run file. SIGINT or SIGTERM to the command, or the server's exit, stops the
+whole group: SIGTERM first, SIGKILL for what is left after `STOP_GRACE_S`.
+Then ``<out>/run.json`` gets the run's identity, read off the engine file its
+first step wrote. No command starts the client.
 """
 
+import argparse
 import http.client
 import json
 import os
@@ -28,7 +31,9 @@ from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 import atom
+from atom.compass import parity
 from atom.compass.drive.gpu import quiet
+from atom.compass.drive.identity import identity
 from atom.compass.run import CLOCK_ENV, ENV, _write_whole
 
 SERVER = (sys.executable, "-m", "atom.entrypoints.openai.api_server")
@@ -48,6 +53,7 @@ PROFILER = "--torch-profiler-dir"
 #: closed under it; before ATOM's arguments, so one there wins.
 KEEP_ALIVE = ("--timeout-keep-alive", "1000000")
 READY_FILE, LOG_FILE, RUN_FILE = "server.json", "server.log", "run_file.json"
+RUN_JSON, STEPS = "run.json", "steps"
 POLL_S = 0.5
 #: Seconds the group has to leave after SIGTERM. ATOM's server waits
 #: ATOM_SHUTDOWN_TIMEOUT_S, 5 s by default, for its engines, and they as long
@@ -68,17 +74,20 @@ def serve(atom_args, out, *, gpus=(), run=None) -> None:
     the run file's mapping, whose ``out_dir`` and ``clock_endpoint`` are set
     here. Raises `ServeError` when the server exits before ``/health``
     answers, or on its own with a non-zero status, and `GpuRefusal` from the
-    GPU checks.
+    GPU checks. Once the server has stopped, writes run.json from the engine
+    file, and raises `ServeError` when no step wrote one.
     """
     _refuse(atom_args)
+    model = _model(atom_args)
     if (run is None) == (not gpus):
         raise ServeError(
             "a server is real, on the GPUs it names, or simulated, from a run "
             f"file, exactly one; got gpus={gpus} and a run file: {run is not None}"
         )
     out = Path(out)
+    if out.exists() and any(out.iterdir()):
+        raise ServeError(f"{out} holds an earlier run's files; one run per directory")
     out.mkdir(parents=True, exist_ok=True)
-    (out / READY_FILE).unlink(missing_ok=True)
     server_port, engine_port, clock_port = _free_ports(3)
     argv = [*SERVER, *KEEP_ALIVE, *atom_args, "--host", HOST]
     argv += ["--server-port", str(server_port), "--port", str(engine_port)]
@@ -88,6 +97,7 @@ def serve(atom_args, out, *, gpus=(), run=None) -> None:
     env["PYTHONPATH"] = os.pathsep.join(
         filter(None, [str(TREE), env.get("PYTHONPATH")])
     )
+    env[parity.ENV] = str(out / STEPS)
     if run is None:
         env["HIP_VISIBLE_DEVICES"] = ",".join(map(str, gpus))
     else:
@@ -123,6 +133,28 @@ def serve(atom_args, out, *, gpus=(), run=None) -> None:
             server.wait()
     if not stopped and server.returncode:
         raise ServeError(f"the server exited {server.returncode}; see {out / LOG_FILE}")
+    # Any rank's: every DP rank resolves one engine configuration.
+    engines = sorted((out / STEPS).glob("dp*.engine.json"))
+    if not engines:
+        raise ServeError(
+            "the server served no step, so no engine file states the engine it "
+            f"resolved, and {out / RUN_JSON} is not written"
+        )
+    _write_whole(
+        out / RUN_JSON, json.dumps(identity(engines[0], model, sys.argv, gpus))
+    )
+
+
+def _model(atom_args) -> str:
+    """The model ATOM's arguments name, whose config.json the host key digests."""
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--model")
+    model = parser.parse_known_args(atom_args)[0].model
+    if not model:
+        raise ServeError(
+            "ATOM's arguments name no --model; run.json digests its config"
+        )
+    return model
 
 
 def _refuse(atom_args) -> None:
