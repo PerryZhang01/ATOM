@@ -17,9 +17,10 @@ config.json's digest; `device`, each GPU's series, SKU and gfx version;
 `parallel`, `tp<T>-dp<D>`; `engine_config`, `keyed`'s fields; `source_root`,
 `<revision_kind>-<revision>`; `sampling`, the request parameters, null for a
 record serving no client run's request; and a record's host key less its model
-and engine. A record reads them from `run.json`, its `dp0.engine.json` and the
-requests it served; a measurement from its key, whose `engine_config` and
-`sampling` are JSON objects as text. A field that differs between inputs
+and engine, and its `stack`, the software versions run.json names. A record
+reads them from `run.json`, its `dp0.engine.json` and the requests it served;
+a measurement from its key, whose `engine_config` and `sampling` are JSON
+objects as text. A field that differs between inputs
 refuses, naming each value and the inputs holding it; so do a profiled record
 and a record whose requests carry two sets of request parameters.
 """
@@ -114,6 +115,7 @@ def _record(directory: Path, client_runs) -> tuple[list[Sample], dict]:
             k: v for k, v in engine.items() if k not in (*BOUNDS, "num_kvcache_blocks")
         },
         "source_root": f"{run['source']['revision_kind']}-{run['source']['revision']}",
+        "stack": run["stack"],
         "sampling": json.loads(sampling[0]) if sampling else None,
         "host_key": {k: v for k, v in host.items() if k not in ("model", "engine")},
     }
