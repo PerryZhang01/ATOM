@@ -920,9 +920,11 @@ class NonAllocatingRunner(
                 ),
             )
             self._token_stream = stream
+        tokens = stream.step(batch)
+        seconds = _group_step_seconds(self, batch, backend, mode)
         return ScheduledBatchOutput(
-            **stream.step(batch),
-            predicted_s=_group_step_seconds(self, batch, backend, mode),
+            **tokens,
+            predicted_s=seconds,
             group_targets=getattr(self, "_group_targets", None),
         )
 
