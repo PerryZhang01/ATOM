@@ -230,8 +230,8 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
   is stopped. Several instances are several invocations, started by a script outside the
   CLI that its own issue designs, with how simulated instances share one Clock Authority
   (`01` D3.3) and how a client started apart is pointed at its run.
-  A simulated server outliving its client needs `01` D3's end of a run, when no essential
-  work is left, to end a client run instead (T99).
+  A simulated server serves the client runs its run file declares, each ending when no
+  essential work is left, and the clock waits between them (`01` D3, Client runs).
 - **A client run** is one client invocation against a server. Which requests and traces it
   sent comes from the client's export or from the requests (`06`). A step record splits
   per client run by the requests its lines name (`atom/compass/parity/`): a step belongs
@@ -364,4 +364,4 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 | ~~T57~~ | ~~Generate the `ATOM_COMPASS_*` environment twins from the flag table rather than hand-writing them~~ — retired 2026-10-14 on #851: there is no environment tier (D79) | mechanical; needs the flag table to be final first |
 | T58 | Decide whether a per-leaf tier override is worth the reproducibility cost | no demand yet |
 | ~~T96~~ | ~~Reconcile D79 and D80 with the run file the code selects a backend by (`--compass-run`, `atom/compass/run/__init__.py::runner`): D79 rejects a Compass config file, the code reads one (`17` D103)~~ — settled 2026-10-13 on #851: `compass run` takes flags only, and the run file is its internal transport (D79, D80) | needs an owner choice between describing the run file here and moving selection to flags |
-| T99 | A simulated server outlives its client (D80): `01` D3 ends a run when no essential work is left, and must end a client run there instead, the clock then waiting for the next client | needs a change to `01` D3, not yet designed |
+| ~~T99~~ | ~~A simulated server outlives its client (D80): `01` D3 ends a run when no essential work is left, and must end a client run there instead, the clock then waiting for the next client~~ — settled 2026-10-14 on #966: `01` D3, Client runs | needs a change to `01` D3, not yet designed |
