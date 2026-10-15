@@ -8,8 +8,9 @@ Both take steps as step-record lines (`atom/compass/parity/`), each in a
 `(name, line)` pair whose name a report gives the step, and read each step
 where the step grid backend reads it (`StepGrid.locate` and the cell's
 corners), so the plan and the backend never disagree on a cell. Only shapes
-are read, never timestamps. Reading records and loading a bundle stay with
-the callers.
+are read, never timestamps. `main` is the module command
+(`tools/compass/README.md`), which reads record directories and a bundle's
+member as JSON files.
 
 `plan` reads its target from the engine its inputs' ranks state, each in its
 `dp<r>.engine.json`: `TARGET`, the scheduler's bounds, the KV block size and
@@ -46,13 +47,18 @@ B * ceil((c + N_Q) / block size) above the block count, assuming no prefix
 sharing.
 """
 
+import argparse
 import bisect
 import itertools
+import json
+import sys
 from collections import defaultdict
+from pathlib import Path
 
 from atom.compass.backends.resolver import CostRefused
 from atom.compass.backends.shape import BatchView, RequestShape
-from atom.compass.backends.step_grid import StepGrid
+from atom.compass.backends.step_grid import StepGrid, StepGridBackend
+from atom.compass.backends.step_grid_residual import Residual
 
 #: The one timing scope a bundle may declare, the whole `ModelRunner.forward`.
 SCOPE = "forward"
@@ -374,3 +380,47 @@ def coverage(backend, steps) -> dict:
         "refused": refused,
         "prefill_above_top_c": above,
     }
+
+
+def _read_records(directories) -> tuple[list, dict]:
+    """Every line of each record directory's `dp<r>.jsonl`, named
+    `<directory> dp<r> step <n>`, and each rank's `dp<r>.engine.json` path,
+    by `<directory> dp<r>`."""
+    steps, engines = [], {}
+    for directory in map(Path, directories):
+        for path in sorted(directory.glob("dp*[0-9].jsonl")):
+            rank = f"{directory} {path.stem}"
+            engines[rank] = path.with_suffix(".engine.json")
+            for line in map(json.loads, path.read_text().splitlines()):
+                steps.append((f"{rank} step {line['step']}", line))
+    return steps, engines
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m atom.compass.backends.step_grid_plan",
+        description=__doc__.split("\n\n")[0],
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+    planning = commands.add_parser("plan", help="the points to measure")
+    planning.add_argument("definition", help="the grid definition, JSON")
+    checking = commands.add_parser("coverage", help="the steps a bundle covers")
+    checking.add_argument("bundle", help="a step grid bundle's member, JSON")
+    for command in (planning, checking):
+        command.add_argument("records", nargs="+", help="step record directories")
+    args = parser.parse_args(argv)
+    steps, engines = _read_records(args.records)
+    if args.command == "plan":
+        definition = json.loads(Path(args.definition).read_text())
+        engines = {rank: json.loads(p.read_text()) for rank, p in engines.items()}
+        print(json.dumps(plan(definition, steps, engines), indent=1))
+        return 0
+    bundle = json.loads(Path(args.bundle).read_text())
+    grid, residual = StepGrid(bundle["grid"]), Residual(bundle["residual"])
+    report = coverage(StepGridBackend(grid, residual, args.bundle), steps)
+    print(json.dumps(report, indent=1))
+    return 0 if report["covered"] == report["steps"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
