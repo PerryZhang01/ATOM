@@ -121,6 +121,9 @@
       "interconnect.intra_node.topology": {
         "origin": "assumed"
       },
+      "interconnect.intra_node.domain_devices": {
+        "origin": "assumed"
+      },
       "interconnect.intra_node.link_bandwidth_bytes_per_s": {
         "origin": "assumed"
       },
@@ -270,6 +273,7 @@
   "interconnect": {
     "intra_node": {
       "topology": "fully_connected",
+      "domain_devices": 8,
       "link_bandwidth_bytes_per_s": 64000000000.0,
       "link_latency_s": 2e-06,
       "derate": 0.8
