@@ -59,3 +59,26 @@ def test_a_tree_with_neither_git_nor_a_stamp_is_refused_by_name(monkeypatch, tmp
     monkeypatch.setattr(provenance, "module_root", lambda module: str(bare))
     with pytest.raises(ArtifactRefusal, match=f"`{bare}` is neither a git checkout"):
         compass_run._RecordingAuthority(run)
+
+
+def test_the_summary_names_the_router_binary_and_keeps_it_out_of_the_configuration(
+    monkeypatch, tmp_path
+):
+    run = _run(tmp_path, monkeypatch)
+    router = {
+        "path": "/usr/local/bin/atomesh",
+        "commit": "45009a939",
+        "status": "clean",
+    }
+    run["router"] = router
+    authority = compass_run._RecordingAuthority(run)
+    authority.started = authority.finished = time.monotonic()
+    compass_run._hand_in(run, compass_run.ENGINE.name, [])
+    compass_run._hand_in(run, compass_run.FRONTEND.name, [])
+    compass_run._write_summary(run, authority)
+
+    summary = json.loads((tmp_path / compass_run.SUMMARY_FILE).read_text())
+    print("router:", summary["router"])
+    assert summary["router"] == router
+    assert "router" not in summary["configuration"]
+    assert "atomesh" not in (tmp_path / compass_run.STEP_TABLE_FILE).read_text()

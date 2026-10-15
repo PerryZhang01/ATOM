@@ -33,8 +33,10 @@ member, the frontend's included, connects to.
   (`atom.utils.compass_loop.CompassEventLoop.stopped`) is a stop: the
   frontend's runtime first ends every LP's run through the authority, so each
   engine leaves its loop at its ``+inf`` grant and hands in; `frontend_done`
-  hands the stop in as an ``ended:`` reason, and the server leaves once the
-  summary is written from every hand-in.
+  hands in the signal, which the summary counts as an ``ended:`` reason, and
+  the server leaves once the summary is written from every hand-in. A server
+  whose ``client_runs`` is ``null`` serves until it is stopped: a stop with no
+  client run open is its run's end, summarised as the finish would be.
 - `engine_loop(engine)` wraps the engine's loop: under ``step_grid`` it asks the
   workers for the bundle before it, `engine_done` after it, and if either
   raises, the engine hands in the exception as an ``ended:`` reason, with the
@@ -91,7 +93,9 @@ A run file that also has ``router_s`` and ``kv_write_req_s`` describes a
 prefill-decode run over `prefill_decode_table`, and ``kv_link`` (``intra_node``
 or ``inter_node``) names the link its KV transfers are priced on. An optional
 ``router_in_s`` makes the router the ``router`` LP, with that lookahead on each
-hop into it; it prices no work, so it is no server LP and hands nothing in. A deployment
+hop into it; it prices no work, so it is no server LP and hands nothing in.
+Its ``router`` entry, `router_binary`'s record of the binary that ran it, is
+per-run and goes to the summary as it is. A deployment
 whose ``kv_connector`` is ``compass`` is its prefill (``kv_producer``) or
 decode side: `engine(config)` makes it the ``engine-P`` or ``engine-D`` LP and
 binds the connector's transfer model. The write-request address comes with the
@@ -121,6 +125,7 @@ import platform
 import re
 import shutil
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -155,7 +160,7 @@ FRONTEND, ENGINE, TRAFFIC = LpId("frontend"), LpId("engine"), LpId("traffic")
 ROUTER = LpId("router")
 ATOM_RUNNER = "atom.model_engine.model_runner.ModelRunner"
 #: Keys that differ between two runs of one configuration, kept out of its name.
-PER_RUN = ("clock_endpoint", "out_dir", "client_runs")
+PER_RUN = ("clock_endpoint", "out_dir", "client_runs", "router")
 LP_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
     "lp-{}.json",  # by LP name, or <lp>.<member> for a member
     "step_table.txt",
@@ -167,7 +172,7 @@ CLIENT_DIR = "client-{}"
 HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field is added, changes
 #: meaning or goes.
-SUMMARY_SCHEMA_VERSION = 4
+SUMMARY_SCHEMA_VERSION = 5
 #: Compass source the host-law key leaves out, by path under the package: all
 #: of it (None), or the top-level names (def, class or assigned) only a simulated
 #: run reaches, with the comments above each and the module docstring.
@@ -330,6 +335,46 @@ def configuration(run: dict) -> dict:
     return {k: v for k, v in run.items() if k not in PER_RUN}
 
 
+def router_binary(path: str, mesh: str | None = None) -> dict:
+    """The router binary `path` names, resolved on PATH, as the run summary
+    records it: where it is, and the commit and git status it was built at.
+
+    Refuses, naming the binary, one built from an uncommitted tree or at no
+    commit, and one whose router source differs from `mesh` (this tree's
+    ``atom/mesh`` by default), the working tree included. A stamped snapshot
+    has no history to diff, so there only its own commit matches."""
+    exe = shutil.which(path) or path
+    text = subprocess.run(
+        [exe, "--version-verbose"], capture_output=True, text=True, check=True
+    ).stdout
+    built = dict(re.findall(r"^\s*Git (Commit|Status): *(\S*)", text, re.MULTILINE))
+    commit, status = built.get("Commit", ""), built.get("Status", "")
+    named = f"router binary {exe} (commit {commit or '?'}, status {status or '?'})"
+    if status != "clean":
+        raise ValueError(f"{named} was built from an uncommitted tree; rebuild it")
+    if not re.fullmatch(r"[0-9a-f]{7,40}", commit):
+        raise ValueError(f"{named} names no commit; build it in a git checkout")
+    mesh = mesh or os.path.join(provenance.module_root("atom"), "mesh")
+    tree = provenance.git_tree_root("atom", mesh)
+    if tree.revision_kind == "commit":
+        if not tree.revision.startswith(commit):
+            raise ValueError(
+                f"{named} is not this snapshot's commit {tree.revision}; "
+                "a snapshot has no history to compare the router source across"
+            )
+    else:
+        diff = subprocess.run(
+            ["git", "-C", mesh, "diff", "--quiet", commit, "--", "."],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if diff.returncode:
+            why = diff.stderr.strip() or "it differs from the tree's"
+            raise ValueError(f"{named}: router source at {mesh}: {why}")
+    return {"path": exe, "commit": commit, "status": status}
+
+
 def _servers(run: dict) -> list[str]:
     """The run's server LPs by name: every LP but the traffic and router LPs."""
     return [
@@ -358,11 +403,13 @@ class _RecordingAuthority(ClockAuthority):
     A co-hosting frontend starts the run as it starts its own; otherwise it
     starts once every server LP, and every member of one declared with members,
     has asked once. Each client run that ends before the last has its summary
-    written once every server LP has handed in. A TAR to ``+inf`` before the
-    finish is a stop: it finishes the run there and sets `stopped`. Every LP
-    but the client is granted ``+inf``. The client holds no connection before
+    written once every server LP has handed in. A frontend's TAR to ``+inf``
+    before the finish is a stop: it finishes the run there and sets `stopped`.
+    Every LP but the client is granted ``+inf``. The client holds no connection before
     it binds or between client runs; a bound one is refused once a server LP's
-    connection ends."""
+    connection ends. A client run is open from the client's bind to its end; a
+    stop with none open, on a server whose ``client_runs`` is ``null``, sets
+    `stopped_whole`: the run ended as its run file says, as at the finish."""
 
     def __init__(self, run: dict) -> None:
         # The tree that runs, read before the run so an unidentifiable one is
@@ -374,7 +421,7 @@ class _RecordingAuthority(ClockAuthority):
         self.run = run
         self.started = self.finished = None
         self.ends = []  # the wall time each client run ended
-        self.stopped = False
+        self.stopped = self.stopped_whole = self.client_run_open = False
         self.done = threading.Event()
         self._joining = set(_hand_ins(run))
         self._clock_before = {}  # LP -> its clock before its latest grant
@@ -404,12 +451,20 @@ class _RecordingAuthority(ClockAuthority):
         self._clock_before[lp] = time_from
         self.steps.record(lp, time_from, time_to, kind, detail="recovered" * recovered)
 
+    def on_bind(self, lp):
+        self.client_run_open |= lp == TRAFFIC
+        return super().on_bind(lp)
+
     def on_request(self, lp, kind, t, log, t_daemon=math.inf, member=None) -> list:
         self._joining.discard(f"{lp.name}.{member}" if member else lp.name)
         if not self._joining and self.started is None:
             self.started = time.monotonic()
-        if kind == TAR and t == math.inf and self.final_clocks is None:
+        stop = kind == TAR and t == math.inf and lp.name.startswith(FRONTEND.name)
+        if stop and self.final_clocks is None:
             self.stopped = True
+            self.stopped_whole = (
+                self._client_runs == math.inf and not self.client_run_open
+            )
             replies = [r for r in self._address(self._finish()) if r[0] != TRAFFIC]
         else:
             replies = super().on_request(lp, kind, t, log, t_daemon, member)
@@ -423,6 +478,7 @@ class _RecordingAuthority(ClockAuthority):
                     self.steps.record(lp, clock, arrival, "release", ch, seq)
         while len(self.ends) < len(self.ended):
             self.ends.append(time.monotonic())
+            self.client_run_open = False
             if self.final_clocks is None:  # an end before the last
                 out = Path(self.run["out_dir"])
                 _write_whole(out / STEP_TABLE_FILE, self.steps.text())
@@ -1049,31 +1105,31 @@ def _write_on_early_end(run: dict, a: "_RecordingAuthority") -> None:
 def frontend_done(llm_engine) -> bool:
     """Whether the server left at a simulated run's finish, or at a stop: a
     signal that ended its event loop's run. At either, stop the engines and
-    hand in the frontend's refusals, at a stop with an ``ended:`` reason naming
-    the signal. With the authority co-hosted, then write the step table and the
-    run summary; at a stop, after the early end's writer, which has written its
-    own if an LP handed in before the stop, so the summary left counts every
-    hand-in."""
+    hand in the frontend's refusals, at a stop with the signal that ended it.
+    With the authority co-hosted, then write the step table and the run summary;
+    at a stop, after the early end's writer, which has written its own if an LP
+    handed in before the stop, so the summary left counts every hand-in."""
     rt = clock.installed()
     stop = None if rt is None else getattr(rt.loop, "stopped", None)
     if rt is None or (rt.now != math.inf and stop is None):
         return False
     llm_engine.close()
     run = spec()
-    ended = [] if stop is None else [f"ended:{rt.me.name} stopped by {stop}"]
-    _frontend_hand_in(run, rt, ended=ended)
+    _frontend_hand_in(run, rt, stopped=stop)
     if _authority is not None:
         if stop is not None:
             _early_end.join()
-        _write_summary(run, _authority, ended=stop is not None)
+        early = stop is not None and not _authority.stopped_whole
+        _write_summary(run, _authority, ended=early)
     return True
 
 
-def _frontend_hand_in(run: dict, rt, client_run=None, ended=()) -> None:
-    """Hand in the frontend's executor's refused jobs, its refused clock calls
-    and the ``ended:`` reasons in `ended`."""
-    reasons = rt.loop.executor.refusals + rt.refusals + list(ended)
-    _hand_in(run, rt.me.name, reasons, client_run)
+def _frontend_hand_in(run: dict, rt, client_run=None, stopped=None) -> None:
+    """Hand in the frontend's executor's refused jobs and its refused clock
+    calls, and the signal that stopped it, if one did."""
+    reasons = rt.loop.executor.refusals + rt.refusals
+    sections = {} if stopped is None else {"stopped": stopped}
+    _hand_in(run, rt.me.name, reasons, client_run, **sections)
 
 
 def _read_hand_ins(run: dict, where: Path, wait: bool) -> dict:
@@ -1126,6 +1182,10 @@ def _summary(run: dict, a, record, wall: float, hand_ins: dict, since: dict) -> 
     from atom.compass.backends.cost import GROUPS
 
     reasons = Counter(r for h in hand_ins.values() for r in h["refusals"])
+    # A frontend's stop ends the run early, unless it left the run whole.
+    if not a.stopped_whole:
+        stops = [(n, h["stopped"]) for n, h in hand_ins.items() if "stopped" in h]
+        reasons.update(f"ended:{n} stopped by {sig}" for n, sig in stops)
     reasons -= Counter(r for h in since.values() for r in h["refusals"])
     reasons = sorted(reasons.elements())
     priced = [h["priced"] for h in hand_ins.values() if "priced" in h]
@@ -1165,6 +1225,8 @@ def _summary(run: dict, a, record, wall: float, hand_ins: dict, since: dict) -> 
     summary["configuration"] = configuration(run)
     summary["schema_version"] = SUMMARY_SCHEMA_VERSION
     summary["source_root"] = a.source_root.as_json()
+    if "router" in run:
+        summary["router"] = run["router"]
     # Any refusal, of any source, leaves part of the run unsimulated; a run
     # that ended early handed in why.
     summary["coverage_report"] = bool(reasons)

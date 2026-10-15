@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
-"""`gate_cpu.sh` runs atomesh's Compass cargo tests offline, or refuses when a
-diff touching atom/mesh would leave them skipped.
+"""`gate_cpu.sh` runs atomesh's unit and Compass cargo tests offline, or refuses
+when a diff touching atom/mesh would leave them skipped.
 
 Each case runs the real script over the throwaway tree of
 ``test_gate_cpu_verdict_through_pipe.py`` plus an ``atom/mesh/Cargo.toml``, with
@@ -14,17 +14,17 @@ CARGO = """#!/bin/sh
 echo "$CARGO_NET_OFFLINE $*" >> "$0.log"
 case "$1" in metadata) exit {metadata};; test) exit {test};; esac
 """
-TARGETS = (
-    "--test compass_clock_test --test compass_router_test"
-    " --test compass_pd_router_test --test policy_determinism_test"
-)
+# Upstream's unit tests, and every Compass target by its file name alone.
+TARGETS = "--lib --test compass_a_test --test compass_b"
 
 
 def _gate(tmp_path, changed, metadata=0, test=0):
     root = _tree(tmp_path / "ATOM", stamped=True)
     (root / ".compass-changed").write_text(changed + "\n")
-    (root / "atom" / "mesh").mkdir()
+    (root / "atom" / "mesh" / "tests").mkdir(parents=True)
     (root / "atom" / "mesh" / "Cargo.toml").write_text("")
+    for name in ("compass_b.rs", "compass_a_test.rs", "routing_tests.rs"):
+        (root / "atom" / "mesh" / "tests" / name).write_text("")
     (tmp_path / "Cargo.lock").write_text("# image lock\n")
     cargo = tmp_path / "bin" / "cargo"
     cargo.parent.mkdir()
