@@ -142,7 +142,10 @@ def test_a_server_runs_atom_arguments_verbatim_on_its_gpus_between_the_checks(
     }
 
 
-def test_a_process_on_a_named_gpu_refuses_before_the_server_starts(planted):
+def test_a_process_on_a_named_gpu_refuses_before_the_server_starts(
+    planted, monkeypatch
+):
+    monkeypatch.setenv("PLANTED_EXIT", "early:0")
     (planted / "bin" / "listing0").write_text(LISTING)
     with pytest.raises(GpuRefusal, match="GPU 7 has PID 4242 on it before"):
         serve.serve(ARGS, planted / "out", (7,))
