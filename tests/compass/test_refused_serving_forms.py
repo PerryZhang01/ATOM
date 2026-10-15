@@ -8,22 +8,19 @@ frontend's clock owner, and a second instance of one role at the authority.
 import dataclasses
 import json
 import threading
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from test_dp_slice import _deployment
 
-import atom
 from atom.compass import run as compass_run
 from atom.compass.clock import ClockAuthority, LpId, prefill_decode_table
-from atom.compass.clock_transport import connect, serve
+from atom.compass.clock_transport import connect, serve, service
+from atom.entrypoints.openai import api_server
 from atom.model_engine import llm_engine
 from atom.model_engine.engine_core_mgr import CoreManager
 from atom.utils import clock
 from atom.utils.distributed import utils
-
-API_SERVER = Path(atom.__file__).parent / "entrypoints" / "openai" / "api_server.py"
 
 
 @pytest.fixture
@@ -52,7 +49,13 @@ def run_file(monkeypatch, tmp_path):
         "broadcast_utility_command_sync",
         CoreManager.broadcast_utility_command_sync,
     )
-    return run
+    yield run
+    # A frontend that got as far as co-hosting the authority: end its run, so
+    # neither the early-end poller nor the serve loop outlives the test.
+    if compass_run._authority is not None:
+        compass_run._authority.done.set()
+        compass_run._early_end.join()
+        service._SERVED[run["clock_endpoint"]].close()
 
 
 @dataclasses.dataclass
@@ -97,19 +100,22 @@ def test_an_offline_engine_is_refused(run_file, engine_parts):
 def test_the_engine_the_api_server_builds_is_not_refused_as_offline(
     run_file, engine_parts
 ):
-    """Built under a ``main`` of the API server's file, the frontend goes on to
-    its next check, here the runner's."""
+    """Built under a function at the API server's ``main`` file and name, the
+    frontend goes on to its next check, here the runner's."""
+    main = api_server.main.__code__
     scope = {"build": lambda: _build_engine(runner_qualname="my.Runner")}
-    code = compile("def main():\n    build()\n", str(API_SERVER), "exec")
-    exec(code, scope)  # noqa: S102 - defines a main in the API server's file
+    code = compile(f"def {main.co_name}():\n    build()\n", main.co_filename, "exec")
+    exec(code, scope)  # noqa: S102 - defines a stand-in at the server's main
     with pytest.raises(ValueError, match="runner 'my.Runner' is named"):
-        scope["main"]()
+        scope[main.co_name]()
 
 
-def test_the_atomesh_entrypoints_are_refused(run_file, monkeypatch):
+def test_the_atomesh_entrypoints_are_refused(run_file, engine_parts, monkeypatch):
+    """The Atomesh service builds its engine outside the API server's ``main``,
+    so this reason, not the offline one, names it."""
     monkeypatch.setenv("USE_ATOMESH_ENTRYPOINTS", "1")
     with pytest.raises(ValueError, match="USE_ATOMESH_ENTRYPOINTS=1 serves through"):
-        compass_run.frontend(_deployment())
+        _build_engine()
     assert clock.installed() is None
 
 
