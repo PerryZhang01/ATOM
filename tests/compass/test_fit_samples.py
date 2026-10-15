@@ -2,8 +2,8 @@
 """Labelled samples from record directories and step measurements, under one configuration.
 
 A record directory holds `test_parity_served.py`'s record and a run.json
-written by hand to `atom/compass/drive/identity.py`'s format; its server served
-two client runs. Measurements are published through `ArtifactStore`.
+written by hand with the identity entries `record` writes there; its server
+served two client runs. Measurements are published through `ArtifactStore`.
 """
 
 import dataclasses
