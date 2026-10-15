@@ -272,7 +272,7 @@ impl CacheAwarePolicy {
                 .copied()
                 .filter(|&(_, l)| l == m)
                 .map(|(idx, _)| idx)
-                .choose(&mut rand::rng())?
+                .choose(&mut crate::determinism::rng())?
         };
 
         // Even in imbalanced mode, update the tree to maintain cache state
@@ -396,7 +396,7 @@ impl LoadBalancingPolicy for CacheAwarePolicy {
                     .copied()
                     .filter(|&(_, load)| load == min_load)
                     .map(|(idx, _)| idx)
-                    .choose(&mut rand::rng())
+                    .choose(&mut crate::determinism::rng())
             };
 
             if let Some(idx) = selected_idx {
@@ -436,7 +436,7 @@ impl LoadBalancingPolicy for CacheAwarePolicy {
                 );
             }
             // Return a random healthy worker
-            let mut rng = rand::rng();
+            let mut rng = crate::determinism::rng();
             let random_idx = rng.random_range(0..healthy_indices.len());
             Some(healthy_indices[random_idx])
         }
