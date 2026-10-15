@@ -399,15 +399,10 @@ def device_readings(
             "costs and the two disagree by 4-19x, so substituting it would "
             "produce a block count ATOM would never reach",
         )
-    constants = "device.runtime_constants"
-    reserve, residue = (
-        f"{constants}.{name}"
-        for name in (
-            "driver_and_collective_reserve_bytes",
-            "allocator_retained_after_load_bytes",
-        )
-    )
-    persistent = f"{constants}.persistent_forward_buffer_bytes"
+    rc = "device.runtime_constants."
+    reserve = "driver_and_collective_reserve_bytes"
+    residue = "allocator_retained_after_load_bytes"
+    persistent = "persistent_forward_buffer_bytes"
     capacity = "device.memory.capacity_bytes"
     total = Reading(
         "total",
@@ -419,8 +414,8 @@ def device_readings(
             spec_term(
                 spec,
                 "driver and collective reserve",
-                reserve,
-                int(spec.runtime_constant(reserve.rsplit(".")[-1], tp_width)),
+                rc + reserve,
+                int(spec.runtime_constant(reserve, tp_width)),
                 width=tp_width,
             ),
         ),
@@ -433,15 +428,15 @@ def device_readings(
             spec_term(
                 spec,
                 "load residue",
-                residue,
-                int(spec.runtime_constant(residue.rsplit(".")[-1], tp_width)),
+                rc + residue,
+                int(spec.runtime_constant(residue, tp_width)),
                 width=tp_width,
             ),
             spec_term(
                 spec,
                 "persistent",
-                persistent,
-                int(spec.runtime_constant(persistent.rsplit(".")[-1])),
+                rc + persistent,
+                int(spec.runtime_constant(persistent)),
             ),
             model.activations,
         ),

@@ -136,7 +136,7 @@ HISTORICAL_PREDICTED = Predicted(
         Term(
             "weights",
             1_400_000_000,
-            Method.MEASURED,
+            Method.ANALYTICAL,
             "a meta build, deduped by storage, that had not been through the loader",
         ),
         Term(
@@ -660,9 +660,9 @@ def test_a_peak_that_was_not_reset_with_no_shaped_term_anywhere_refuses_outright
 
 
 def zero_byte_recording(*, also_predicted):
-    predicted_terms = [Term("weights", 100, Method.MEASURED, "a meta build")]
+    predicted_terms = [Term("weights", 100, Method.ANALYTICAL, "a meta build")]
     if also_predicted:
-        predicted_terms.append(Term("ghost", 5, Method.MEASURED, "a meta build"))
+        predicted_terms.append(Term("ghost", 5, Method.ANALYTICAL, "a meta build"))
     return (
         Predicted(
             label="a prediction beside a term the run measured as empty",
