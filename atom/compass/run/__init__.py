@@ -16,9 +16,9 @@ member, the frontend's included, connects to.
 - `frontend(config)` wraps the `CoreManager` construction in `LLMEngine`: it
   selects the simulated runner, serves the authority and installs the
   frontend LP's runtime; leaving it, after READY from every engine, starts
-  the run. It refuses an `LLMEngine` the API server is not building and the
-  Atomesh entrypoints, and makes a sync utility command on the frontend's
-  clock owner refuse.
+  the run. It refuses an `LLMEngine` the API server is not building, the
+  Atomesh entrypoints and a multi-node DP group, and makes a sync utility
+  command on the frontend's clock owner refuse.
 - `engine(config)` wraps the engine's construction in its own process the
   same way, and maps every DP rank to the engine LP for the process-group
   check.
@@ -496,6 +496,13 @@ def frontend(config):
             f"the deployment runs {dp} data-parallel ranks and the run file's "
             f"data_parallel_size is {_dp(run)}; the channel table every LP "
             "reads would declare the wrong ranks"
+        )
+    if pc.data_parallel_size > 1 and pc.is_multinode_dp:
+        raise ValueError(
+            "this node runs part of a multi-node data-parallel group, and every "
+            "node's API server builds an engine and so a frontend and an "
+            "authority of its own, while one run has one authority and one "
+            "out_dir; run every DP rank on one node"
         )
     if dp > 1 and config.fake_eplb:
         raise ValueError(
