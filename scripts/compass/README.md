@@ -576,8 +576,9 @@ same fit, with the same arguments, on records captured on hjbog-srdc-39 at
 ce625ddd9 (ROCm/ATOM 661ef7661) in the nightly-20261013 image: seven cells in
 the order above, then first-turn cells at concurrency 8 and 14, which give it
 its rung-8 vector. It carries the host key the records carry with its `atom`
-digest replaced by the one `host_key` gives ce625ddd9's tree since it leaves
-out the module docstring of a file `COMPASS_ONLY` lists with names.
+digest replaced by the one `host_key` gives 5148ceda2's tree, which adds
+`ScheduledBatchOutput.group_targets` and changes `clock.charge`, neither of
+which changes a real run's host time.
 
 ## Cost accuracy on a real run's own steps — `validate.cost`
 

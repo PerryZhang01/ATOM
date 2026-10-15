@@ -148,12 +148,17 @@ HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field changes meaning or goes.
 SUMMARY_SCHEMA_VERSION = 3
 #: Compass source the host-law key leaves out, by path under the package: all
-#: of it (None), or the top-level names only an installed LP runtime reaches
-#: (with the module docstring, which describes them).
+#: of it (None), or the top-level names (def, class or assigned) only a simulated
+#: run reaches, with the comments above each and the module docstring.
 COMPASS_ONLY = {
     "compass": None,
     "utils/compass_loop.py": None,
-    "utils/clock.py": {"LPRuntime", "WrappedSocket", "WrappedPoller", "RelayQueue"},
+    "utils/clock.py": {
+        *("DIAG_S", "job", "current_job_time", "install", "Straggler", "_Wakeup"),
+        *("LPRuntime", "UnsentRelayItem", "WrappedSocket", "WrappedPoller"),
+        *("RelayQueue", "channel_of", "REPLY_WAIT_S", "_WaitingReplyQueue"),
+        *("COLLECTIVES", "_on_host", "settle_before_collectives"),
+    },
     "utils/zmq_shim.py": {"_Socket", "_ChannelSocket", "_Context"},
 }
 #: Run-file keys that were renamed, to their names now.
@@ -745,9 +750,12 @@ def host_key(config) -> dict:
         lines = path.read_bytes().splitlines(keepends=True)
         tree = ast.parse(b"".join(lines)) if skip else None
         doc = tree.body[0] if tree and ast.get_docstring(tree) is not None else None
-        for node in reversed(tree.body if tree else []):
-            if node is doc or getattr(node, "name", None) in skip:
-                del lines[node.lineno - 1 : node.end_lineno]
+        body = tree.body if tree else []
+        for prev, node in reversed(list(zip([None, *body], body))):
+            named = (node, *getattr(node, "targets", ()))
+            names = {getattr(n, "name", getattr(n, "id", None)) for n in named}
+            if node is doc or names & skip:
+                del lines[prev.end_lineno if prev else 0 : node.end_lineno]
         digest.update(f"{relative}\0".encode() + b"".join(lines))
     return {
         "host_cpu": cpu.group(1) if cpu else platform.processor(),
