@@ -85,7 +85,11 @@ def test_a_stop_signal_ends_the_loops_run_and_closing_puts_its_handler_back(
     monkeypatch, sig
 ):
     had = []
-    previous = signal.signal(sig, lambda *_: had.append(sig))
+
+    def mine(*_):
+        had.append(sig)
+
+    previous = signal.signal(sig, mine)
     rt = LPRuntime(LpId("frontend"), TABLE, conn=SimpleNamespace())
     rt.start_run()
     monkeypatch.setattr(clock, "_installed", rt)
@@ -95,8 +99,7 @@ def test_a_stop_signal_ends_the_loops_run_and_closing_puts_its_handler_back(
         loop.run_forever()  # the stop ends the run with nothing asked of the clock
         loop.close()
         assert (loop.stopped, rt.in_run, had) == (sig.name, False, [])
-        signal.raise_signal(sig)  # the handler from before the loop has it again
-        assert had == [sig]
+        assert signal.getsignal(sig) is mine
     finally:
         signal.signal(sig, previous)
 
