@@ -64,7 +64,7 @@ def test_a_dp_attention_run_under_a_dp2_law_names_uniform_routing_and_its_steps(
 
     assert out["schedule"]["treatments"] == {"uniform routing": 4}
     assert out["schedule"]["refusals"]["steps"] == 4
-    assert out["schema_version"] == compass_run.SUMMARY_SCHEMA_VERSION == 4
+    assert out["schema_version"] == compass_run.SUMMARY_SCHEMA_VERSION == 5
 
 
 def test_a_one_rank_run_names_no_treatment(monkeypatch, tmp_path):
