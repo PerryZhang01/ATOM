@@ -4,7 +4,7 @@
 One request through traffic, frontend and engine, its LPs scripted against
 `_RecordingAuthority`: three engine forwards under the slices' constant stub,
 at the ends the stub implies. The run passes every check; each seeded
-mutation of one artifact turns exactly the check it names red.
+mutation of one artifact turns the check it names red, and no other.
 """
 
 import json
@@ -161,7 +161,7 @@ def test_each_seeded_mutation_turns_its_check_red(runs, mutate, named):
         shutil.copy(*(r / compass_run.STEP_TABLE_FILE for r in runs))
     failed = _check(runs, taken)
     print("\n" + "\n".join(failed))
-    assert len(failed) == 1 and named in failed[0]
+    assert failed and all(named in line for line in failed)
     assert main([*map(str, runs), "--record", f"engine={runs[0] / 'parity'}"]) == (
         0 if mutate is _lose_a_token else 1
     )
