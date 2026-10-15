@@ -54,14 +54,20 @@ def expected_timeline(record, prefill_s: float, decode_s: float, tars) -> list:
     forward's device work ends. Above DP width one a rank producing output,
     not a dummy, returns at the group's latest return and any other at its own;
     the step is one TAR per distinct return, ascending.
+
+    Raises ValueError when the ranks hold different step counts, or a step
+    starts after the TAR rows end.
     """
     ranks = sorted(record)
+    counts = {r: len(record[r]) for r in ranks}
+    if len(set(counts.values())) > 1:
+        raise ValueError(f"the record's ranks hold {counts} steps")
     # Per rank: device end of forwards n-2 and n-1, and of the last output one.
     device = {r: (-math.inf, -math.inf, -math.inf) for r in ranks}
     want, i = [], 0
     for k in range(len(record[ranks[0]])):
         if i >= len(tars):
-            break
+            raise ValueError(f"record step {k} has no TAR row")
         now = tars[i][0]
         returns = []
         for r in ranks:
@@ -140,7 +146,10 @@ def _timeline(table: str, lp: str, record) -> list[str]:
         for f in map(str.split, lines[1:])
         if f[0] == lp and f[3] == TAR
     ]
-    want = expected_timeline(record, stub.prefill_step, stub.decode_step, tars)
+    try:
+        want = expected_timeline(record, stub.prefill_step, stub.decode_step, tars)
+    except ValueError as e:
+        return [f"{lp}: {e}"]
     for i, (w, got) in enumerate(zip_longest(want, tars)):
         if w is None or got is None or not all(map(math.isclose, w, got)):
             return [f"{lp}: TAR row {i} is {got}; the constant stub implies {w}"]
