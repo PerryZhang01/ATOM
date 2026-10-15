@@ -76,13 +76,12 @@ async fn sends_its_log_and_reads_grants_and_refusals() {
                 released(2.0, "frontend-P->router:relay", 0),
                 released(2.0, "traffic->router:http", 1),
             ],
-            ended: None,
         }
     );
-    let last = clock.advance_to(3.0).await.unwrap();
-    assert_eq!((last.time, last.ended), (INF, Some(0)));
+    let last = clock.next_event(3.0, INF).await.unwrap();
+    assert_eq!(last.time, INF);
     assert!(matches!(
-        clock.advance_to(f64::NAN).await,
+        clock.next_event(f64::NAN, INF).await,
         Err(ClockError::Malformed(_))
     ));
     let refused = clock.next_event(4.0, INF).await;
@@ -95,7 +94,7 @@ async fn sends_its_log_and_reads_grants_and_refusals() {
         [
             r#"{"kind":"BIND","lp":"router"}"#,
             r#"{"kind":"NER","log":[["router->traffic:stream",3,2.0],["router->frontend-D:relay",0,2.25]],"t":"+inf","t_daemon":10.0}"#,
-            r#"{"kind":"TAR","log":[],"t":3.0,"t_daemon":"+inf"}"#,
+            r#"{"kind":"NER","log":[],"t":3.0,"t_daemon":"+inf"}"#,
             r#"{"kind":"NER","log":[],"t":4.0,"t_daemon":"+inf"}"#,
         ]
     );

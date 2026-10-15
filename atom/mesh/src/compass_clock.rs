@@ -2,8 +2,8 @@
 //!
 //! The wire is the authority's TCP carrier: each frame is its length as four
 //! big-endian bytes, then a JSON object with sorted keys. The first frame binds
-//! the connection to an LP and is answered `JOINED`; each later request, `NER`
-//! or `TAR`, carries the sends logged since the previous one and is answered
+//! the connection to an LP and is answered `JOINED`; each later request, an
+//! `NER`, carries the sends logged since the previous one and is answered
 //! `GRANT`, with the messages it releases, or `REFUSED`. Times are seconds, and
 //! the two infinities travel as the strings `+inf` and `-inf`.
 //!
@@ -47,8 +47,6 @@ pub struct Grant {
     pub time: f64,
     /// In (arrival, channel, seq) order, the order the LP handles them in.
     pub released: Vec<Released>,
-    /// The client run this grant ends, when it ends one.
-    pub ended: Option<u64>,
 }
 
 /// One LP's bound connection to the authority.
@@ -101,21 +99,12 @@ impl ClockClient {
 
     /// Idles until `t`, the daemon deadline `t_daemon` or the earliest arrival.
     pub async fn next_event(&mut self, t: f64, t_daemon: f64) -> Result<Grant, ClockError> {
-        self.request("NER", t, t_daemon).await
-    }
-
-    /// Advances to `t`, releasing what arrives up to it.
-    pub async fn advance_to(&mut self, t: f64) -> Result<Grant, ClockError> {
-        self.request("TAR", t, f64::INFINITY).await
-    }
-
-    async fn request(&mut self, kind: &str, t: f64, t_daemon: f64) -> Result<Grant, ClockError> {
         let (t, t_daemon) = (time_out(t)?, time_out(t_daemon)?);
         let log = std::mem::take(&mut self.log)
             .into_iter()
             .map(|(ch, seq, arrival)| Ok(json!([ch, seq, time_out(arrival)?])))
             .collect::<Result<Vec<_>, ClockError>>()?;
-        let frame = json!({"kind": kind, "log": log, "t": t, "t_daemon": t_daemon});
+        let frame = json!({"kind": "NER", "log": log, "t": t, "t_daemon": t_daemon});
         self.write(&frame).await?;
         let grant = self.reply("GRANT").await?;
         let mut released = Vec::new();
@@ -133,14 +122,9 @@ impl ClockClient {
                 .then_with(|| a.channel.cmp(&b.channel))
                 .then(a.seq.cmp(&b.seq))
         });
-        let ended = match &grant["ended"] {
-            Value::Null => None,
-            k => Some(seq_in(k)?),
-        };
         Ok(Grant {
             time: time_in(&grant["G"])?,
             released,
-            ended,
         })
     }
 
