@@ -7,8 +7,8 @@ refusals, plus the answer to a ninth: an artifact that is still read after the
 thing it was measured against has moved.
 
 * **A key is a tuple, never a path** (`keys`). The six artifacts and what keys
-  each one; a `price_list` is `(model, width, source-root digest)`, because a
-  bare or merged price file states no width and silently prices nothing.
+  each one; a `price_list` is `(model, parallel layout, source-root digest)`, because
+  a bare or merged price file states no layout and silently prices nothing.
 * **One naming function** (`naming`). Write and read sides call it, per-rank
   files carry every axis's coordinates, and the suffix is applied at width one
   too -- so a width-2 read cannot answer from a width-1 neighbour.
@@ -36,9 +36,7 @@ thing it was measured against has moved.
 
 **Not decided here**: whether an aiter bump invalidates an artifact or only
 warns (filed as #168) -- while that is open the default stands and a bump
-refuses; whether a dirty source root may publish (also #168); and what
-an artifact key's scalar `width` means against a four-axis topology (#165).
-The matrix's six columns hold no width, so nothing here binds one.
+refuses; and whether a dirty source root may publish (also #168).
 """
 
 from .fingerprints import (

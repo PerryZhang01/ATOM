@@ -649,6 +649,61 @@ def test_a_transfer_from_a_spec_pinned_to_this_stack_validates():
     assert validate(combination).ok
 
 
+def _class2_origins(**stated):
+    """Each field of `CLASS2` as `probed`, with the labels in `stated` replaced."""
+    origins = merge([fragment("class2", CLASS2)]).document["provenance"]["origins"]
+    return origins | {label: {"origin": held} for label, held in stated.items()}
+
+
+RESERVE_8 = "device.runtime_constants.driver_and_collective_reserve_bytes[8]"
+
+
+def test_one_transferred_constant_makes_a_mixed_fragment_a_transfer():
+    # The fragment says `mixed`; one width of one constant is the transfer, and
+    # that alone demands the source's stack pin. Its pin fields carry the same
+    # origin, so they are kept out of the document and checked against it.
+    origins = _class2_origins(**{RESERVE_8: "transferred-from:mi300x-8gpu"})
+    mixed = fragment("class2", CLASS2, origin="mixed", origins=origins)
+    assert mixed.transferred_from == "mi300x-8gpu"
+    rest = fragments()[:2] + [fragment("links", LINKS)]
+    (refused,) = validate(merge(rest + [mixed])).refusals
+    assert refused.rule is Rule.PINNED_STACK
+    assert "without saying which stack" in refused.what
+    carried = copy.deepcopy(CLASS2)
+    carried["device"]["software_pinned_to"] = dict(STACK, rocm="7.0.2")
+    origins |= {
+        f"device.software_pinned_to.{component}": {
+            "origin": "transferred-from:mi300x-8gpu"
+        }
+        for component in STACK
+    }
+    pinned = fragment("class2", carried, origin="mixed", origins=origins)
+    combination = merge(rest + [pinned])
+    assert combination.document["device"]["software_pinned_to"]["rocm"] == "7.2.4"
+    (refused,) = validate(combination).refusals
+    assert "probed against rocm '7.0.2', into a spec pinned to rocm '7.2.4'" in (
+        refused.what
+    )
+
+
+def test_a_fragment_whose_fields_name_two_source_specs_is_refused_by_name():
+    origins = _class2_origins(
+        **{
+            RESERVE_8: "transferred-from:mi300x-8gpu",
+            "device.runtime_constants.cudagraph_pool.w_gt1_flat_bytes": (
+                "transferred-from:mi325x-8gpu"
+            ),
+        }
+    )
+    with pytest.raises(SpecRefusal) as refused:
+        fragment("class2", CLASS2, origin="mixed", origins=origins)
+    assert refused.value.rule is Rule.PINNED_STACK
+    assert refused.value.what == (
+        "fragment 'class2' carries fields transferred from 'mi300x-8gpu' and "
+        "'mi325x-8gpu'"
+    )
+
+
 def test_a_clear_check_says_which_conditions_it_could_not_ask():
     # Four of the six conditions are opt-in, and a check that is silent about
     # what it declined to ask is a clear with no content behind it.
@@ -690,11 +745,11 @@ def test_the_transfer_condition_names_itself_as_unaskable_of_a_document():
     assert "in no field" in str(as_document)
 
 
-def test_a_saved_document_merged_again_does_not_claim_to_have_asked_the_transfer():
+def test_a_saved_document_merged_again_asks_the_transfer_and_names_the_merge():
     # Validating the first `Merge` is refused. Its document keeps the transfer's
-    # source pin out and says only `origin: mixed`, so a `Merge` of the saved
-    # document has no transfer to ask the condition of. A re-merged all-`probed`
-    # document is the control.
+    # source pin out, and each field keeps its own origin, so a `Merge` of the
+    # saved document finds the transfer again and is refused for the pin that
+    # merge dropped. A re-merged all-`probed` document is the control.
     carried = copy.deepcopy(CLASS2)
     carried["device"]["software_pinned_to"] = dict(STACK, rocm="7.0.2")
     transfer = fragment("class2", carried, origin="transferred-from:mi300x-8gpu")
@@ -706,13 +761,14 @@ def test_a_saved_document_merged_again_does_not_claim_to_have_asked_the_transfer
     assert bare.ok and [c.split(" -- ")[0] for c in bare.not_asked] == [TRANSFERS_ASKED]
     saved = Fragment.from_mapping(combination.document, "machine.yaml")
     again = validate(merge([saved]), **asked)
-    assert again.ok and again.asked_in_part == ()
-    assert [c.split(" -- ")[0] for c in again.not_asked] == [TRANSFERS_ASKED]
-    assert "origin `mixed` in 'machine.yaml'" in again.not_asked[0]
-    # A transfer stated beside the saved document is asked, and only in part.
+    assert [refusal.rule for refusal in again.refusals] == [Rule.PINNED_STACK]
+    assert again.refusals[0].what.startswith("'machine.yaml' (machine")
+    assert "names the fragments an earlier merge built it from" in str(again)
+    assert again.not_asked == () and again.asked_in_part == ()
+    # A transfer stated beside the saved document is asked of both.
     beside = validate(merge([saved, transfer]), **asked)
-    assert [refusal.rule for refusal in beside.refusals] == [Rule.PINNED_STACK]
-    assert [c.split(" -- ")[0] for c in beside.asked_in_part] == [TRANSFERS_ASKED]
+    assert [refusal.rule for refusal in beside.refusals] == [Rule.PINNED_STACK] * 2
+    assert beside.asked_in_part == ()
     # With some stack pins resolved it was asked in part, and says so once.
     thin = copy.deepcopy(combination.document)
     del thin["device"]["software_pinned_to"]["rccl"]
@@ -1573,7 +1629,7 @@ def test_the_fragment_states_where_it_is_authored_for_and_how(tmp_path):
         processors=published_topology(tmp_path, cores_physical=8),
     )
     assert emitted.machine == "node-18"
-    assert emitted.origin == "probed" and emitted.transferred_from is None
+    assert emitted.origin == "mixed" and emitted.transferred_from is None
     assert "by ana on 2026-09-22" in emitted.stanza()
 
 
@@ -1593,8 +1649,9 @@ def test_how_the_rates_were_obtained_is_the_callers_claim_and_has_no_default(tmp
     carried = tokenizer_fragment(
         [TOKENIZER], origin="transferred-from:mi300x-8gpu", **stated
     )
-    assert carried.origin == "transferred-from:mi300x-8gpu"
-    assert carried.transferred_from == "mi300x-8gpu"
+    label = "host.tokenizers[qwen3-151k-bpe fast]"
+    assert carried.carried_from(label) == "mi300x-8gpu"
+    assert carried.carried_from("host.cpu.cores_physical") is None
     with pytest.raises(TypeError):
         tokenizer_fragment([TOKENIZER], **stated)
 
@@ -2230,6 +2287,32 @@ def test_a_tokenizer_with_no_tokenizer_json_is_refused_before_the_merge(tmp_path
     script = _node18_script()
     with pytest.raises(SpecRefusal, match="fingerprint"):
         _swept_on(script, tmp_path, 112, fingerprint=None)
+
+
+def test_a_tokenizer_carried_from_another_spec_asks_the_device_for_no_stack(
+    tmp_path,
+):
+    # The entries are carried over and the core counts were read here; neither
+    # bears on a device stack, so the merge with the probed device fragments
+    # holds no transfer and asks for no pin the tokenizer fragment cannot write.
+    script = _node18_script()
+    carried = tokenizer_fragment(
+        [TOKENIZER],
+        machine=script.NAME,
+        authored_by="ana",
+        date="2026-10-15",
+        origin="transferred-from:mi300x-8gpu",
+        source="tokenizer",
+        processors=published_topology(tmp_path, cores_physical=112, packages=2),
+    )
+    merged = merge([carried, *script.device_fragments()])
+    assert carried.transferred_from is None and merged.transfers == ()
+    assert validate(merged, tp_widths=(1,)).ok
+    spec = MachineSpec.from_mapping(merged.document)
+    assert spec.origin("host.tokenizers[qwen3-151k-bpe fast]") == {
+        "origin": "transferred-from:mi300x-8gpu"
+    }
+    assert spec.origin("host.cpu.cores_physical")["origin"] == "probed"
 
 
 def test_the_checked_in_node_18_spec_validates_and_prices_its_activations(monkeypatch):
