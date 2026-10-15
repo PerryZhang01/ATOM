@@ -514,6 +514,7 @@ class PricedSteps:
             "seconds": mix.seconds,
             **{f"{g}_steps": steps.get(g, 0) for g in GROUPS},
             **{f"{g}_seconds": seconds.get(g, 0.0) for g in GROUPS},
+            "treatments": dict(mix.treatments),
         }
 
 
