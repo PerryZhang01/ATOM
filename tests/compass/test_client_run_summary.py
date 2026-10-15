@@ -202,3 +202,36 @@ def test_client_runs_is_a_positive_count_or_null(monkeypatch, tmp_path):
         monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
         with pytest.raises(ValueError, match=f"client_runs is {count!r}"):
             compass_run.spec()
+
+
+def test_a_stop_after_a_client_run_leaves_that_client_runs_summary(
+    monkeypatch, tmp_path
+):
+    """A standalone authority stopped after client run 0 writes the run
+    summary from every hand-in and client run 0's summary not again."""
+    run = {"admission_path": "serving", "ipc_s": 2.0**-10, "stream_s": 2.0**-9}
+    run.update(bound_s=100.0, client_runs=None, out_dir=str(tmp_path))
+    monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
+    authority = compass_run._RecordingAuthority(run)
+    for lp in (compass_run.FRONTEND, compass_run.ENGINE, compass_run.TRAFFIC):
+        authority.on_request(lp, "NER", INF, [])
+
+    def hand_in(k, steps, *reasons):
+        priced = {"steps": steps, "seconds": steps / 4}
+        compass_run._hand_in(run, "engine", [], k, priced=priced)
+        compass_run._hand_in(run, "frontend", list(reasons), k)
+
+    hand_in(0, 1)
+    client_run = tmp_path / "client-0" / compass_run.SUMMARY_FILE
+    deadline = time.monotonic() + 10
+    while not client_run.exists():
+        assert time.monotonic() < deadline, "no client-0 summary in 10 s"
+        time.sleep(0.05)
+    written = client_run.read_text()
+    stop = authority.on_request(compass_run.FRONTEND, "TAR", INF, [])
+    assert sorted(lp.name for lp, g, _ in stop if g == INF) == ["engine", "frontend"]
+    hand_in(None, 3, "ended:frontend stopped by SIGTERM")
+    compass_run._write_summary(run, authority)
+    summary = _read(tmp_path / compass_run.SUMMARY_FILE)
+    assert summary["schedule"]["predicted_seconds"] == 0.75
+    assert client_run.read_text() == written
