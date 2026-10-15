@@ -61,7 +61,8 @@ def charges(batches, laws=None, skip=()):
 
 def cost_lines(batches, directory, monkeypatch, laws=None, skip=(), rank=0):
     """A runner recording to `directory`: its charge of each batch, under
-    `laws` when given, and the cost lines it wrote there."""
+    `laws` when given, and the cost lines it wrote there, below the version
+    line."""
     monkeypatch.setenv(parity.ENV, str(directory))
     r, clock = _Runner(_config(), rank), [0.0]
     if laws is not None:
@@ -72,7 +73,7 @@ def cost_lines(batches, directory, monkeypatch, laws=None, skip=(), rank=0):
         clock[0] += charged[-1]
     path = directory / "dp0.cost.jsonl"
     lines = path.read_text().splitlines() if path.exists() else []
-    return [json.loads(line) for line in lines], charged
+    return [json.loads(line) for line in lines[1:]], charged
 
 
 def law(kind, seconds):
