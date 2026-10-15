@@ -42,6 +42,10 @@ class Term:
     who doubts the number knows where to go and look. `nbytes` may be negative:
     a clean box subtracts, and naming the subtraction as a term is what keeps
     the derivation visible in the table rather than folded into one figure.
+
+    `records` names the runs the bytes were taken from, each by the digest of
+    its record, so a comparison can tell a run that tests the term from one
+    that built it.
     """
 
     name: str
@@ -50,6 +54,7 @@ class Term:
     source: str
     note: str = ""
     validated: bool = False
+    records: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -97,8 +102,10 @@ def spec_term(
     A datasheet value is analytical, a probed one is `probed` -- measured when
     the term is the probed value itself, estimated when it projects one -- and
     an assumed or transferred one is declared, with a note naming the origin.
+    A probe subject's record goes on the term.
     """
-    origin = spec.origin(path, width)["origin"]
+    found = spec.origin(path, width)
+    origin = found["origin"]
     method = {"datasheet": Method.ANALYTICAL, "probed": probed}.get(
         origin, Method.DECLARED
     )
@@ -109,7 +116,8 @@ def spec_term(
         )
         note = f"{stated}. {note}" if note else stated
     labelled = path if width is None else f"{path}[{width}]"
-    return Term(name, nbytes, method, source or labelled, note)
+    records = (found["record"],) if "record" in found else ()
+    return Term(name, nbytes, method, source or labelled, note, records=records)
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +157,7 @@ class Reading:
         return tuple(t.name for t in self.terms if t.method is Method.DECLARED)
 
     def as_term(self, name: str = "", *, sign: int = 1, source: str = "") -> Term:
-        """This reading as one term, whose method combines its terms' methods."""
+        """This reading as one term: its terms' methods combined, records joined."""
         method = combine(t.method for t in self.terms)
         note = ""
         if method is Method.DECLARED:
@@ -163,6 +171,7 @@ class Reading:
             method,
             source or " + ".join(t.name for t in self.terms),
             note,
+            records=tuple(sorted({r for t in self.terms for r in t.records})),
         )
 
     def table(self) -> str:

@@ -79,8 +79,15 @@ DATE, COMMIT, READ, PIN = {
         dict(STACK, aiter="9205e1059"),
     ),
 }[NAME]
-#: What the start ran: the model, the width and the tree.
+#: Each start's record: the sha256 of its server log, as
+#: `python -m atom.compass.memory.check` digests it.
+RECORD = {
+    "mi308x-hjbog18": "f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87",
+    "mi308x-hjbog39": "e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
+}[NAME]
+#: What the start ran: the model, the width, the tree and the run's record.
 SUBJECT = {"model": "Qwen/Qwen3.8-27B", "width": 1, "source_root": f"commit:{COMMIT}"}
+SUBJECT["record"] = f"sha256:{RECORD}"
 CONFIG_JSON = "sha256:191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab"
 
 DEVICE = {

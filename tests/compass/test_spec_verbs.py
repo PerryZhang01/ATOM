@@ -2246,7 +2246,7 @@ def test_the_checked_in_node_18_spec_validates_and_prices_its_activations(monkey
                 assert spec.values[path] == value, path
     assert spec.activations_for(
         "Qwen3_5ForConditionalGeneration", script.CONFIG_JSON, 1
-    ) == ("qwen3.8-27b", 180480.0)
+    ) == ("qwen3.8-27b", 180480.0, (f"sha256:{script.RECORD}",))
 
 
 def test_the_checked_in_hjbog39_spec_holds_that_hosts_start(monkeypatch):
