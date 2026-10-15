@@ -9,7 +9,8 @@ came from and its request parameters; or by that ``requests`` mapping itself.
 
 `served` splits a record by them: a step belongs to the client run whose
 requests it holds, a step holding none to no client run, and a step holding two
-client runs' requests refuses the split.
+client runs' requests refuses the split, and so does a client run whose
+requests no step holds.
 """
 
 import json
@@ -56,4 +57,8 @@ def served(directory, client_runs: Sequence = ()) -> dict[int, list[dict]]:
             step["sampling"] = sorted(
                 {json.dumps(r["sampling"], sort_keys=True) for r in sent}
             )
+    owning = {s["client_run"] for steps in record.values() for s in steps}
+    idle = [k for k in range(len(runs)) if k not in owning]
+    if idle:
+        raise ValueError(f"client runs {idle} name no request this record's steps hold")
     return record
