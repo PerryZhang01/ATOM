@@ -8,8 +8,9 @@ earns the rule: it is keyed by **(model, parallel layout, source-root
 digest)**, and a bare or merged price file states no layout, so it silently
 prices nothing while looking layered.
 
-The parallel layout (`LAYOUT`) is the four rank widths and the three settings
-that change kernels and groups at a fixed rank count. A `price_list`,
+The parallel layout (`LAYOUT`) is the rank widths (`AXES`) plus the settings
+that change kernels and groups at a fixed rank count: the switches
+(`SWITCHES`) and `decode_context_parallel_size`. A `price_list`,
 `region_terms` or `memory_readings` entry answers only at the layout it was
 keyed at: a TP2 price list does not answer for `-tp 2 -dp 2`. A width is a
 whole number of at least one and a switch is a `bool`. A `bool` is refused in
