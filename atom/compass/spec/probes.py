@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: MIT
 """What a probe that needs no device emits, and which probe fills which constant.
 
-The first half of this module is the tier that needs no device; the second is
-the table of which probe supplies each runtime constant, and the one entry that
-no probe supplies. The reading that makes two fragments comparable comes first.
+The first half of this module is probe class 0, which needs no device; the
+second is the table of which probe supplies each runtime constant, and the one
+entry that no probe supplies. The reading that makes two fragments comparable
+comes first.
 
 A probe measures part of a machine and emits a fragment: the fields it probed
 plus the stanza saying which machine they are for, by whom, when and how. What
-is here is the tier that needs no device: `tokenizer_sweep` times a loaded
-tokenizer, `tokenizer_fragment` composes whatever rates it is handed -- and a
+is here is probe class 0, which needs no device: `tokenizer_sweep` times a
+loaded tokenizer, `tokenizer_fragment` composes whatever rates it is handed -- and a
 tokenizer sweep needs no device, so it is the measurement most likely to be taken
 somewhere other than the machine it is authored for -- a laptop, a build agent,
 the login node in front of a cluster. That is not an abuse of it. Tokenization
@@ -79,8 +80,8 @@ writing a capability into the table that nothing states, and a table entry
 invented to close a gap travels onward as a measurement -- so asking for that
 entry's probe returns a refusal naming what has to be measured by hand instead.
 
-**And the hole is not a tier boundary somebody forgot to move.** The retained
-bytes measure 1.1e6 at width one and 2.17e9 flat at every width above it,
+**And the hole is not a probe-class boundary somebody forgot to move.** The
+retained bytes measure 1.1e6 at width one and 2.17e9 flat at every width above it,
 because what is retained above one card is a collective staging pool that does
 not exist on a single card. Running the multi-rank probe at width one would
 therefore not be the same probe measuring a smaller number; it would be

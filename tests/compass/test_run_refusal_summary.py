@@ -65,7 +65,7 @@ class AnalyticBelow(StepStubBackend):
         cost = super().price(batch_view)
         if sum(r.query_tokens for r in batch_view.prefill) < self.tokens:
             return cost
-        analytic = Provenance(Method.ANALYTICAL, "roofline", "tier0", CHAIN)
+        analytic = Provenance(Method.ANALYTICAL, "roofline", "class0", CHAIN)
         return StepCost(
             [CostTerm(t.name, t.seconds, analytic) for t in cost.terms if t.seconds]
         )
