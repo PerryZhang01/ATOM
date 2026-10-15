@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
-"""A simulated run's meta build puts nothing on a device, a named device included.
+"""A simulated run's meta build makes factory tensors on meta, a named device included.
 
 `NonAllocatingRunner._build_and_load_model` builds the model class on the meta
-device. A module may name a device for a tensor it makes, as ATOM's attention
-names this rank's GPU for its KV scale; that tensor is built on meta too.
+device. A module may name a device for a tensor a factory function makes, as
+ATOM's attention names this rank's GPU for its KV scale; that tensor is built on
+meta too. A `*_like` or `Tensor.new_*` call keeps the device it names.
 
 The server test runs the slice of `test_vertical_slice` beside the first GPU in
 `HIP_VISIBLE_DEVICES` and reads that GPU's used VRAM with `rocm-smi`, so this
@@ -35,7 +36,7 @@ class NamedDevices(torch.nn.Module):
         self.register_buffer("rope", torch.ones(4, device="cpu"))
 
 
-def test_a_tensor_made_on_a_named_device_is_built_on_meta():
+def test_a_factory_tensor_on_a_named_device_is_built_on_meta():
     runner = Runner()
     runner._build_and_load_model(NamedDevices)
     tree = runner.model.tree
