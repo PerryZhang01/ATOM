@@ -4,7 +4,7 @@
 This is the one file in `tests/compass/` that needs a driver, and it needs one
 for a reason that has nothing to do with reading a device: importing
 `atom.model_engine.model_runner` runs aiter's architecture probe, which shells
-out to `rocminfo`. So the tier is decided by an import, not by the test --
+out to `rocminfo`. So the gate it runs in is decided by an import, not by the test --
 which is why every device reading is patched to raise for every test here. The
 pool is sized on a machine that has a card, from a spec describing a different
 one, and the card that is present is never asked anything.
@@ -44,7 +44,8 @@ from test_memory_readings import (
 from transformers import PretrainedConfig
 
 from atom.compass.backends.geometry import KvGeometry, Parallelism
-from atom.compass.memory import Basis, Reading, Term
+from atom.compass.backends.provenance import Method
+from atom.compass.memory import Reading, Term
 from atom.compass.spec import MachineSpec
 from atom.model_ops.attentions.pool_layout.sub_pool_spec import page_pool
 
@@ -138,7 +139,7 @@ def _runner(spec, qwen, tp_width, *, utilisation=GPU_MEMORY_UTILIZATION, free=No
                     Term(
                         "probe",
                         int(free),
-                        Basis.DERIVED,
+                        Method.ANALYTICAL,
                         "a probe that moves the clamp, not a reading",
                     ),
                 ),

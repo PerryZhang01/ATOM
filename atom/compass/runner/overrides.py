@@ -92,6 +92,7 @@ source and compare it with this table.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -244,6 +245,8 @@ class HostDeviceRecurrence:
     device work two forwards back; an output forward, after launch, waits for the
     previous output forward's. `laws[kind][segment]` are coefficients on `(1,
     tokens, seqs)`, zero where absent. `now` reads the engine LP's clock.
+    `segments` holds the seconds the last `charge` charged each segment, 0 for
+    one in `skip`.
     """
 
     def __init__(self, laws: dict, skip, now) -> None:
@@ -256,10 +259,11 @@ class HostDeviceRecurrence:
         kind = "decode" if batch.total_seqs_num_prefill == 0 else "prefill"
         law = self.laws.get(kind if batch.produces_output() else "middle", {})
         x = (1, batch.total_tokens_num, batch.total_seqs_num)
-        e, pre, launch, post = (
-            float(np.dot(law.get(s, (0, 0, 0)), x)) * (s not in self.skip)
+        self.segments = {
+            s: float(np.dot(law.get(s, (0, 0, 0)), x)) * (s not in self.skip)
             for s in HOST_SEGMENTS
-        )
+        }
+        e, pre, launch, post = self.segments.values()
         now = self.now()
         host = max(now + e, self.ends[0]) + pre
         launch_end = host + launch
@@ -934,6 +938,15 @@ def _group_step_seconds(
     a priced step; its reason, ``cost:`` and what each source said, joins the
     refusals the summary reads. With `compass_abort` set it raises instead,
     which ends the worker.
+
+    On the rank that keeps the parity record, each step also appends its cost
+    line to `dp<r>.cost.jsonl` beside it: the record's `step`; with a
+    `compass_host` that reports them, each of `HOST_SEGMENTS` in seconds and
+    `skipped`, those its `skip` charged as 0; `device_s`, the backend's price;
+    `charge_s`, that composed with host time (`device_s` with no host);
+    `group_s`, after the DP group's max; `terms`, each one's `name`, `seconds`
+    and its provenance's `method`, `validated` and `source`; and `refused`,
+    the ``cost:`` reason or None.
     """
     from atom.compass.runner.projection import batch_view, dp_group, forward_mode
 
@@ -949,26 +962,56 @@ def _group_step_seconds(
     if mode is None:
         mode = forward_mode(batch, runner)
     mix = vars(runner).setdefault("_priced", ProvenanceMix())
+    terms, refused = (), None
     try:
         cost = backend.price(batch_view(batch, mode, runner))
-    except CostRefused as refused:
+    except CostRefused as refusal:
         if getattr(runner, "compass_abort", False):
             raise
         mix.steps += 1
-        said = "; ".join(f"{r.source}: {r.reason}" for r in refused.declined)
-        said = said or "no cost source was consulted"
-        vars(runner).setdefault("_refused_commands", []).append(f"cost:{said}")
-        seconds = 0.0
+        said = "; ".join(f"{r.source}: {r.reason}" for r in refusal.declined)
+        refused = f"cost:{said or 'no cost source was consulted'}"
+        vars(runner).setdefault("_refused_commands", []).append(refused)
+        device_s = 0.0
     else:
         mix.record(cost)
-        seconds = cost.seconds
+        device_s, terms = cost.seconds, cost.terms
     host = getattr(runner, "compass_host", None)
-    if host is not None:
-        seconds = host.charge(batch, seconds)
-    if mode.sync is None:
-        return seconds
-    group_max = torch.tensor([seconds], dtype=torch.float64)
-    torch.distributed.all_reduce(
-        group_max, op=torch.distributed.ReduceOp.MAX, group=dp_group()
-    )
-    return group_max.item()
+    charge_s = device_s if host is None else host.charge(batch, device_s)
+    group_s = charge_s
+    if mode.sync is not None:
+        group_max = torch.tensor([charge_s], dtype=torch.float64)
+        torch.distributed.all_reduce(
+            group_max, op=torch.distributed.ReduceOp.MAX, group=dp_group()
+        )
+        group_s = group_max.item()
+    record = getattr(runner, "_parity_record", None)
+    if record is None:
+        return group_s
+    step = record.step - 1  # the step `record_step` just recorded
+    segments = {}
+    if hasattr(host, "segments"):
+        skipped = [s for s in HOST_SEGMENTS if s in host.skip]
+        segments = {**host.segments, "skipped": skipped}
+    line = {
+        "step": step,
+        **segments,
+        "device_s": device_s,
+        "charge_s": charge_s,
+        "group_s": group_s,
+        "terms": [
+            {
+                "name": t.name,
+                "seconds": t.seconds,
+                "method": t.provenance.method.value,
+                "validated": t.provenance.validated,
+                "source": t.provenance.source,
+            }
+            for t in terms
+        ],
+        "refused": refused,
+    }
+    # Replaced on a rerun into the same directory, as the record is.
+    with record.path.with_suffix(".cost.jsonl").open("a" if step else "w") as f:
+        f.write(json.dumps(line) + "\n")
+    return group_s

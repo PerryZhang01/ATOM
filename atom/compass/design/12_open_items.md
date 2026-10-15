@@ -171,7 +171,7 @@ M-f `14`; M-g `01` D3.5.
 | ~~T57~~ | ~~Generate the `ATOM_COMPASS_*` environment twins from the flag table rather than hand-writing them~~ — retired 2026-10-14 on #851: there is no environment tier (`13` D79) |
 | T58 | Decide whether a per-leaf tier override is worth the reproducibility cost |
 | ~~T96~~ | ~~Reconcile `13` D79 and D80 with the run file the code selects a backend by (`--compass-run`, `atom/compass/run/__init__.py::runner`): `13` rejects a Compass config file, the code reads one (`17` D103)~~ — settled 2026-10-13 on #851: `compass run` takes flags only, and the run file is its internal transport (`13` D79, D80) |
-| T99 | A simulated server outlives its client (`13` D80): `01` D3 ends a run when no essential work is left, and must end a client run there instead, the clock then waiting for the next client |
+| ~~T99~~ | ~~A simulated server outlives its client (`13` D80): `01` D3 ends a run when no essential work is left, and must end a client run there instead, the clock then waiting for the next client~~ — settled 2026-10-14 on #966: `01` D3, Client runs |
 
 ### Topic 14 — speculative decoding and MTP
 

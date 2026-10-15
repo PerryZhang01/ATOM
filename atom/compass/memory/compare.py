@@ -26,39 +26,19 @@ would be a comparator nobody could run against the card they are sizing for.
 
 | outcome | when |
 |---|---|
-| `Verdict.PASS` | both sides present, within the gate, and the predicted side carries a basis that can discharge one -- see below |
-| `Verdict.FAIL` | both sides present and outside the gate -- **including** when the predicted side is a declared coefficient, because a recording that contradicts a coefficient is evidence |
-| `Verdict.NOT_DISCHARGED` | both sides present and within the gate, but the predicted side carries a basis that cannot discharge one. The error is reported and the gate is not called discharged |
+| `Verdict.PASS` | both sides present, within the gate, and the predicted side is not declared |
+| `Verdict.FAIL` | both sides present and outside the gate -- **including** when the predicted side is declared, because a recording that contradicts a declared input is evidence |
+| `Verdict.NOT_DISCHARGED` | both sides present and within the gate, but the predicted side is declared, or was built from the run it is compared with. The error is reported and the gate is not called discharged |
 | a `TermRefusal` | the two sides cannot be compared at all: the run records no such term, the run records it as zero bytes, the shapes disagree, or the recorded peak is the warmup prefill's |
 
-**Which bases discharge a gate.** It is a stated list, not the single word
-"obtained", because the bases divide three ways and only one of the three is
-about a number having been read off the thing it describes.
+**A declared term can fail its gate but cannot pass it.** Every other method
+can: analytical, measured and estimated (validated or not) are in
+`DISCHARGES`. Agreement with one run does not turn an assumed input into an
+observation. The recorded side is measured: every term of a recording was
+read off the card.
 
-- `Basis.SPEC` **discharges.** A machine specification's runtime constants are
-  filled by probe runs on a card, so a spec number is a measurement taken
-  elsewhere rather than a coefficient somebody wrote down, and holding it
-  against this run is a real check. What a pass does *not* say is that a law
-  was validated: two of the constants this package reads -- the driver and
-  collective reserve, and the load residue -- are width tables exactly because
-  no closed form fits them, so a pass means the table's entry for this width
-  agrees with this run and means nothing at any other width.
-- `Basis.DERIVED` **discharges**, being arithmetic over readings that are
-  themselves one of these.
-- `Basis.OBTAINED` **discharges**: the number was read off the thing itself.
-- `Basis.DECLARED` **does not.** It is a coefficient with a named successor,
-  and agreement with one run does not turn a coefficient into a measurement.
-- `Basis.DEPLOYMENT` **does not.** It is a knob the serving config states, and
-  a knob agreeing with a run is not evidence about bytes in either direction.
-  No footprint term carries it today; the only one in this package labels the
-  eager-mode branch of the graph-pool estimator, which is not a footprint term.
-
-The asymmetry between the second and third rows is deliberate: a declared term
-can **fail** its gate but cannot **pass** it. Two of the three model terms have
-a successor that makes them exact -- weights from a meta build, buffers from a
-recording off a card -- and the third has none yet: a traced graph without the
-invisible-scratch table is not enough to discharge the 10% gate on the
-activation term.
+**Nor can a term pass against the run it was built from**: when a term's
+`records` hold the recording's own, the verdict names that record.
 
 ## The traps this module refuses rather than papers over
 
@@ -72,9 +52,7 @@ activation term.
   that as a field with no default, and a recording that did not reset it
   refuses every term it took at a shape.
 - **A term the run does not record.** Not a term of zero bytes. The refusal
-  names it and, when the predicted side is declared, carries that term's own
-  note -- which for buffers is the reason for recording them rather than
-  computing them.
+  names it and carries the predicted term's own note.
 - **A term the run records as zero bytes.** An error relative to zero has no
   value, and the gate's unit is relative. So it refuses in the comparison
   rather than dividing, which also keeps it out of the renderer: one term that
@@ -96,17 +74,18 @@ import enum
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
+from atom.compass.backends.provenance import Method
 from atom.compass.memory import graph_pool
 from atom.compass.memory.readings import DeviceReadings, MemoryRefusal
-from atom.compass.memory.terms import Basis, Reading, Term
+from atom.compass.memory.terms import Reading, Term
 
 #: The acceptance gate on each non-KV term, as a fraction of the recorded term.
 NON_KV_TERM_GATE = 0.10
 
-#: The bases that can discharge a gate. Stated as a set rather than as "not
-#: DECLARED" so that adding a member to `Basis` is a decision about this list
-#: rather than a silent grant. See the module docstring for why each is here.
-DISCHARGES = frozenset({Basis.SPEC, Basis.DERIVED, Basis.OBTAINED})
+#: The methods that can discharge a gate. Stated as a set rather than as "not
+#: DECLARED" so that adding a member to `Method` is a decision about this list
+#: rather than a silent grant.
+DISCHARGES = frozenset({Method.ANALYTICAL, Method.MEASURED, Method.ESTIMATED})
 
 
 class Verdict(enum.Enum):
@@ -183,6 +162,9 @@ class Recorded:
     than inferred: which terms move with the shape is a property of how the
     breakdown was produced, and the one thing this module must not do is guess
     it from a term's name.
+
+    `record` is the digest of the run's record, the one a predicted term built
+    from this run names among its `records`.
     """
 
     run: str
@@ -190,6 +172,7 @@ class Recorded:
     high_water_reset: bool
     terms: tuple[Term, ...]
     at_shape: frozenset[str] = frozenset()
+    record: str = ""
 
     def __post_init__(self) -> None:
         if not self.run.strip():
@@ -198,10 +181,10 @@ class Recorded:
         if not by_name:
             raise ValueError(f"recording {self.run!r} records nothing")
         for term in self.terms:
-            if term.basis is not Basis.OBTAINED:
+            if term.method is not Method.MEASURED:
                 raise ValueError(
-                    f"{self.run}.{term.name} is {term.basis}; every term of a "
-                    "recording was read off the card, which is Basis.OBTAINED"
+                    f"{self.run}.{term.name} is {term.method}; every term of a "
+                    "recording was read off the card, which is measured"
                 )
         unknown = self.at_shape - by_name.keys()
         if unknown:
@@ -317,8 +300,10 @@ class TermComparison:
 
     def row(self) -> tuple[str, ...]:
         predicted = "-" if self.predicted is None else f"{self.predicted_bytes:,}"
+        method = "-" if self.predicted is None else self.predicted.method_label
         return (
             self.name,
+            method,
             predicted,
             f"{self.recorded.nbytes:,}",
             f"{self.delta_bytes:+,}",
@@ -385,7 +370,15 @@ class Comparison:
 
     def table(self) -> str:
         """The per-term table, then every refusal by name. Never a total."""
-        header = ("term", "predicted", "recorded", "delta", "of term", "verdict")
+        header = (
+            "term",
+            "method",
+            "predicted",
+            "recorded",
+            "delta",
+            "of term",
+            "verdict",
+        )
         rows = [header] + [t.row() for t in self.compared]
         widths = [max(len(r[i]) for r in rows) for i in range(len(header))]
         shapes = (
@@ -397,7 +390,7 @@ class Comparison:
             lines.append(
                 "  "
                 + "  ".join(
-                    cell.rjust(widths[i]) if i else cell.ljust(widths[i])
+                    cell.rjust(widths[i]) if i > 1 else cell.ljust(widths[i])
                     for i, cell in enumerate(row)
                 ).rstrip()
             )
@@ -537,21 +530,22 @@ def _refuse_zero(name: str, run: str) -> TermRefusal:
     )
 
 
-def _verdict(predicted: Term, relative: float, gate: float) -> tuple[Verdict, str]:
+def _verdict(
+    predicted: Term, relative: float, gate: float, record: str
+) -> tuple[Verdict, str]:
     if abs(relative) > gate:
         return Verdict.FAIL, ""
-    if predicted.basis in DISCHARGES:
-        return Verdict.PASS, ""
-    if predicted.basis is Basis.DECLARED:
+    if record and record in predicted.records:
         return Verdict.NOT_DISCHARGED, (
-            f"within the gate, and the gate is not discharged: the predicted "
-            f"side is a declared coefficient over {predicted.source}. "
-            f"{predicted.note}"
+            f"within the gate, and the gate is not discharged: this term was "
+            f"built from record {record}, the run it is compared with, so "
+            "agreeing with it is no evidence; compare it with another run"
         )
+    if predicted.method in DISCHARGES:
+        return Verdict.PASS, ""
     return Verdict.NOT_DISCHARGED, (
-        f"within the gate, and the gate is not discharged: the predicted side "
-        f"is {predicted.basis}, over {predicted.source}, and a knob the serving "
-        "config states agreeing with a run is not evidence about bytes"
+        f"within the gate, and the gate is not discharged: the predicted "
+        f"side is declared, over {predicted.source}. {predicted.note}"
     )
 
 
@@ -644,7 +638,7 @@ def compare(
             )
             continue
         relative = (term.nbytes - recording.nbytes) / recording.nbytes
-        verdict, why = _verdict(term, relative, gate)
+        verdict, why = _verdict(term, relative, gate, recorded.record)
         compared.append(
             TermComparison(
                 name=name,
@@ -683,10 +677,10 @@ class GraphPoolComparison:
     predicts: Reading
 
     def __post_init__(self) -> None:
-        if self.recorded.basis is not Basis.OBTAINED:
+        if self.recorded.method is not Method.MEASURED:
             raise ValueError(
-                f"the recorded pool is {self.recorded.basis}; a pool to compare "
-                "against was read off a card, which is Basis.OBTAINED"
+                f"the recorded pool is {self.recorded.method}; a pool to compare "
+                "against was read off a card, which is measured"
             )
         if self.reserves.name != graph_pool.RESERVES:
             raise MemoryRefusal(
@@ -726,33 +720,36 @@ class GraphPoolComparison:
 
     def table(self) -> str:
         rows = [
-            ("function", "role", "bytes", "vs recorded"),
+            ("function", "role", "method", "bytes", "vs recorded"),
             (
                 "reserves()",
                 "reserves the memory",
+                self.reserves.as_term().method_label,
                 f"{self.reserves.total:,}",
                 f"{self.reserves_relative:+.2%}",
             ),
             (
                 "predicts()",
                 "reserves nothing",
+                self.predicts.as_term().method_label,
                 f"{self.predicts.total:,}",
                 f"{self.predicts_relative:+.2%}",
             ),
             (
                 "recorded",
                 self.recorded.source,
+                self.recorded.method_label,
                 f"{self.recorded.nbytes:,}",
                 "",
             ),
         ]
-        widths = [max(len(r[i]) for r in rows) for i in range(4)]
+        widths = [max(len(r[i]) for r in rows) for i in range(5)]
         lines = [f"graph pool against {self.recorded.name}"]
         for row in rows:
             lines.append(
                 "  "
                 + "  ".join(
-                    cell.rjust(widths[i]) if i > 1 else cell.ljust(widths[i])
+                    cell.rjust(widths[i]) if i > 2 else cell.ljust(widths[i])
                     for i, cell in enumerate(row)
                 ).rstrip()
             )
@@ -773,64 +770,12 @@ def compare_graph_pool(
     return GraphPoolComparison(recorded=recorded, reserves=reserves, predicts=predicts)
 
 
-def tied_lm_head_bytes(config, *, dtype_bytes: int) -> int:
-    """The bytes a meta build over-counts because it has not been through the loader.
-
-    A meta build is what makes the weights term exact, and this is the one
-    correction it cannot make for itself: the loader is what ties `lm_head` to
-    the input embedding, so before it has run the two are separate tensors and
-    one embedding of bytes that is never resident is counted. It was worth
-    **0.290 GiB on the 0.6B** and was once the whole of a gap.
-
-    **What the refusal below reaches, stated because it is narrower than it
-    looks.** It fires when the attribute is *absent*, and nothing more. A bare
-    `PretrainedConfig` that was never given the field does raise on the
-    attribute, so the refusal is real and the test drives it. But a model's own
-    config class supplies the field, and for at least one family, Qwen3, the
-    class default is `False` -- untied, which is the direction that
-    costs an embedding. So on a config class this function cannot tell a
-    checkpoint that said untied from a class that defaulted to it, and it will
-    return zero for both. Telling those apart needs the raw config mapping,
-    which this function is not given; until it is, an absent key in a
-    `config.json` is a case this correction does not cover.
-    """
-    text = getattr(config, "text_config", config)
-    tied = getattr(text, "tie_word_embeddings", None)
-    if tied is None:
-        raise MemoryRefusal(
-            "this config states no `tie_word_embeddings`, and whether the "
-            "input embedding is also the output head is the whole of this "
-            "correction",
-            "state the field on the config. Taking the library default would "
-            "answer a question this config did not answer, and an untied "
-            "assumption is the 0.290 GiB gap on the 0.6B",
-        )
-    if not tied:
-        return 0
-    vocab = int(_field(config, "vocab_size"))
-    hidden = int(_field(config, "hidden_size"))
-    return vocab * hidden * int(dtype_bytes)
-
-
-def _field(config, name: str) -> object:
-    text = getattr(config, "text_config", config)
-    value = getattr(text, name, None)
-    if value is None:
-        raise MemoryRefusal(
-            f"this config states no `{name}`, and the tied-head correction "
-            "is one embedding of it",
-            "name the model whose geometry this is, or build the config "
-            "through ATOM's own config classes, which fill it in",
-        )
-    return value
-
-
 def footprint_terms(mapping: Mapping[str, int], *, source: str) -> tuple[Term, ...]:
     """Named byte counts from a run's printout, as recorded terms.
 
     A convenience for the one shape a recording arrives in -- a printed
     breakdown is names and byte counts -- and it does the one thing that must
-    not be got wrong, which is to label every one of them `Basis.OBTAINED` and
+    not be got wrong, which is to label every one of them measured and
     to make each name its run.
 
     **It converts nothing.** `Term` rejects a non-integer byte count and says
@@ -843,5 +788,5 @@ def footprint_terms(mapping: Mapping[str, int], *, source: str) -> tuple[Term, .
     rather than a contrived one, and truncating it would be silent.
     """
     return tuple(
-        Term(name, nbytes, Basis.OBTAINED, source) for name, nbytes in mapping.items()
+        Term(name, nbytes, Method.MEASURED, source) for name, nbytes in mapping.items()
     )
