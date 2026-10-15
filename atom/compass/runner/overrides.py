@@ -328,7 +328,7 @@ class HostEvent:
 
 
 def start_on_host(runner: Any, rank: int, config: Any) -> None:
-    """Start a TP1 runner on the host: no device set, its groups on gloo.
+    """Start a runner on the host: no device set, its groups on gloo.
 
     Replaces ATOM's `_setup_device_and_distributed`, which
     `ModelRunner.__init__` calls before it builds any buffer, so every buffer
@@ -338,26 +338,30 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
     half, a driver allocation. All are replaced for the life of the worker
     process, which hosts this runner and nothing else.
 
-    The groups are the ones ATOM's own call builds, on gloo. At one rank
-    aiter builds no device communicator. At data-parallel width the DP and EP
-    groups span the DP ranks, so they are built with an empty custom group
-    configuration, under which aiter builds no device communicator for any
-    group. A start wider within one engine is refused: a TP, PCP or PP group
-    would need one, and a simulated TP width needs `apply_simulated_tp` on a
-    device group.
+    The groups are the ones ATOM's own call builds -- TP, DCP, PCP, DP and EP
+    over `rank` of the engine's TP x PCP workers -- on gloo and with an empty
+    custom group configuration, under which aiter builds no device
+    communicator for any group. A pipeline stage is refused, and so is a
+    simulated TP width, which starts fewer workers than the TP group
+    `apply_simulated_tp` then reports on a device group.
     """
     pc = config.parallel_config
-    ranks = (
-        config.tensor_parallel_size
-        * config.prefill_context_parallel_size
-        * config.pipeline_parallel_size
-    )
-    if ranks != 1:
+    if config.pipeline_parallel_size != 1:
         raise RunnerRefusal(
-            f"this start is {ranks} ranks wide within its engine; a runner "
-            "starts on the host only at one rank per engine, because aiter "
-            "builds a TP, PCP or PP group's device communicators on the device."
+            f"this runner is one stage of a pipeline of "
+            f"{config.pipeline_parallel_size}; a runner starts on the host only "
+            "at pipeline width 1."
         )
+    if config.tp_world_size != config.tensor_parallel_size:
+        raise RunnerRefusal(
+            f"-tp {config.tensor_parallel_size} starts {config.tp_world_size} "
+            "workers under --fake-eplb, and a runner on the host builds its TP "
+            "group from the ranks that start."
+        )
+    from aiter.dist.parallel_state import (
+        init_distributed_environment,
+        initialize_model_parallel,
+    )
     from aiter.dist.utils import get_distributed_init_method
 
     from atom.utils import CpuGpuBuffer
@@ -376,6 +380,7 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
     method = get_distributed_init_method(
         pc.data_parallel_master_ip, pc.data_parallel_base_port
     )
+    tp, pcp = config.tensor_parallel_size, config.prefill_context_parallel_size
     if pc._managed_distributed_store and not torch.distributed.is_initialized():
         # The engine core manager already listens on the base port; join its
         # store as a client, as ModelRunner does, and aiter reuses the group.
@@ -385,23 +390,11 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
         torch.distributed.init_process_group(
             backend="gloo",
             store=store,
-            rank=pc.data_parallel_rank + rank,
-            world_size=pc.data_parallel_size,
+            rank=pc.data_parallel_rank * tp * pcp + rank,
+            world_size=pc.data_parallel_size * tp * pcp,
         )
-    if pc.data_parallel_size == 1:
-        from aiter import init_dist_env
-
-        init_dist_env(
-            1, rankID=rank, backend="gloo", distributed_init_method=method, local_rank=0
-        )
-        return
-    from aiter.dist.parallel_state import (
-        init_distributed_environment,
-        initialize_model_parallel,
-    )
-
     init_distributed_environment(
-        world_size=1,
+        world_size=tp * pcp,
         rank=rank,
         distributed_init_method=method,
         backend="gloo",
@@ -410,7 +403,12 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
         data_parallel_rank=pc.data_parallel_rank,
     )
     initialize_model_parallel(
-        1, 1, data_parallel_size=pc.data_parallel_size, custom_group_config={}
+        tp,
+        1,
+        decode_context_model_parallel_size=config.decode_context_parallel_size,
+        data_parallel_size=pc.data_parallel_size,
+        prefill_context_model_parallel_size=pcp,
+        custom_group_config={},
     )
 
 
@@ -878,7 +876,8 @@ class NonAllocatingRunner(
         to own its memory, carries the same one of the two.
 
         The reply's `predicted_s` is the step's duration: this rank's batch
-        priced by the installed cost backend, then its DP group target.
+        priced by the installed cost backend, then its DP group target, on TP
+        rank 0; the engine reads no other rank's reply, and it reports 0 s.
         A runner with no backend refuses the step rather than report one that
         took no time. ATOM's `dummy_execution` answers with this reply too, so
         an idle DP rank's dummy batch is priced and joins the group's targets.
@@ -956,6 +955,8 @@ def _group_step_seconds(
 ) -> float:
     """This rank's step priced from its own batch, then its DP group target.
 
+    Only TP rank 0 prices; any other TP rank of the engine charges 0 s.
+
     `mode` is the step's `ForwardMode` when the step record already settled
     it; without one it is settled here, which runs the DP collective.
 
@@ -986,6 +987,10 @@ def _group_step_seconds(
     """
     from atom.compass.runner.projection import batch_view, dp_group, forward_mode
 
+    if runner.rank != 0:
+        # The engine reads TP rank 0's reply only, and the other ranks'
+        # collectives are inside the step that rank prices.
+        return 0.0
     if int(_config_field(runner, "pipeline_parallel_size") or 1) > 1:
         raise RunnerRefusal(
             "this runner is one stage of a pipeline and runs only its own "
