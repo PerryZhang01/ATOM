@@ -64,7 +64,7 @@ The `send_multipart` calls the scanner found once it knew that shape carry no
 category: the front end's request and control sends (K4), and the sends in the
 KV event publisher and the transfer backends (K9). Compass's own runtime is
 scanned too, for the waits it adds to a simulated run: the data-parallel
-group's per-step all_gather in the simulated runner (K1), the two ends of the
+group's per-step all_gather in the simulated runner (K6), the two ends of the
 KV write request between a decode and a prefill deployment (K4, K5), the
 engine's RPCs to its own workers for its hand-ins (K6), and the joins and
 waits that close a run (K9). The rows per mechanism,

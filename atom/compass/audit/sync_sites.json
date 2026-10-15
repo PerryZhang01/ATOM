@@ -212,8 +212,8 @@
    "shape": "collective",
    "peer": "process",
    "why": "every data-parallel rank's worker gathers each rank's priced step and whether it waits, on the group's CPU group, once per simulated step; it stands in for the cross-rank collectives a real forward makes",
-   "mechanism": "K1",
-   "mechanism_why": "the data-parallel group's per-step round: the gathered prices set each rank's step target, the group's max for a rank with output, which decides the step the data-parallel LP advances by; the ranks wait on each other here as at DPEngineCoreProc._sync_dp_state"
+   "mechanism": "K6",
+   "mechanism_why": "a wait inside the data-parallel group's LP: every rank is a member of that one LP, the exchange is never reported to the clock authority and carries no cost; the gathered prices only set each rank's step target, the group's max for a rank with output"
   },
   {
    "id": "atom/distributed/indexer_cp.py::warmup_exchange::torch.cuda.synchronize()::device_sync#0",
