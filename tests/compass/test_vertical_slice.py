@@ -5,8 +5,8 @@ A run is ATOM's API server started with ``--compass-run``: its engine core and
 TP1 worker processes, the Compass runner priced by `StepStubBackend`, and
 the Clock Authority co-hosted in the API server. The traffic LP is `Traffic`
 below, in this process. The run is made twice, in two process trees with
-different `PYTHONHASHSEED`, and the two step tables the authority writes are
-compared byte for byte.
+different `PYTHONHASHSEED`, under a constant stub with the step record on, and
+`atom.compass.detect.scenario.check_run` holds the two to the scenario checks.
 
 The engine core and the worker import aiter, and the worker's construction
 still touches the device, so those tests skip where there is no driver. They

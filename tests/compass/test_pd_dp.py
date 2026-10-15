@@ -6,7 +6,8 @@ two DP ranks per side, each a member of its side's engine LP, and ATOM's own
 DP dispatch on each side picks the rank a request runs on. Decode sends each
 write request to the prefill rank the relayed ``dp_rank`` names, on the
 channel of that decode and prefill rank pair. The run is made twice, with
-different `PYTHONHASHSEED`, and the two step tables are compared byte for byte.
+different `PYTHONHASHSEED`, and `check_run` holds the two to the scenario
+checks.
 
 The run tests skip as `test_pd_slice`'s do; the rest run anywhere.
 """

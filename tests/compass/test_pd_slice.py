@@ -6,8 +6,8 @@ prefill and a decode API server on the simulated KV connector, and atomesh in
 PD mode between them. The traffic LP is the vertical slice's `Traffic`, in
 this process: it sends through the router and scrapes the prefill server,
 since the router serves no metrics. The run is made twice with different
-`PYTHONHASHSEED`, and the two step tables the authority writes are compared
-byte for byte.
+`PYTHONHASHSEED`, under a constant stub with each side's step record on, and
+`check_run` holds the two to the scenario checks.
 
 The run tests skip as the vertical slice's do, and without `atomesh` on PATH.
 With `ATOM_COMPASS_PD_DECODE_EXEC` set, such as ``docker exec <container>``,
