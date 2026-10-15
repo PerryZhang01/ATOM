@@ -153,15 +153,15 @@ def forward_mode(batch: Any, runner: Any) -> ForwardMode:
     `tbo_on` and `local_tbo` are what `ModelRunner.prepare_model` passes: the
     config's `enable_tbo` and the runner's own `_local_tbo_eligibility`, which
     ride the collective, so the group agrees the two-batch-overlap split a real
-    run agrees. A config with no `enable_tbo` field is read as TBO off. The
-    other arguments that do not reach the rung are passed at their inert
-    values: `decide` settles a query length and a token count as well, and
-    those are what `captured_tokens` and `is_block_drafter` feed. The width and
-    the replay decision come from `capture_sizes`, `enforce_eager`, the
-    attention builder's `step_needs_eager`, the batch and the collective alone.
+    run agrees. The other arguments that do not reach the rung are passed at
+    their inert values: `decide` settles a query length and a token count as
+    well, and those are what `captured_tokens` and `is_block_drafter` feed. The
+    width and the replay decision come from `capture_sizes`, `enforce_eager`,
+    the attention builder's `step_needs_eager`, the batch and the collective
+    alone.
     """
     dp_size = _data_parallel_size(runner)
-    tbo_on = bool(getattr(runner.config, "enable_tbo", False))
+    tbo_on = runner.config.enable_tbo
     ladder = np.asarray(runner.capture_sizes_np, dtype=np.int32)
     if bool(np.any(ladder[1:] < ladder[:-1])):
         raise RunnerRefusal(

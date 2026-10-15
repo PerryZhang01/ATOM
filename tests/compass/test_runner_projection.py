@@ -85,7 +85,8 @@ def runner(ladder=LADDER, enforce_eager=False, dp_size=1):
         enforce_eager=enforce_eager,
         attn_metadata_builder=GRAPHABLE,
         config=SimpleNamespace(
-            parallel_config=SimpleNamespace(data_parallel_size=dp_size)
+            enable_tbo=False,
+            parallel_config=SimpleNamespace(data_parallel_size=dp_size),
         ),
     )
 
@@ -101,6 +102,7 @@ def _captured(declared, max_num_seqs, max_num_batched_tokens):
             capture_sizes=declared,
             max_num_seqs=max_num_seqs,
             max_num_batched_tokens=max_num_batched_tokens,
+            enable_tbo=False,
             parallel_config=SimpleNamespace(data_parallel_size=1),
         )
 
