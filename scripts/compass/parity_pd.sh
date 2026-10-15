@@ -11,7 +11,10 @@
 #
 # Usage: parity_pd.sh OUT_DIR
 #   MODEL            model directory with its weights (required)
-#   REQUESTS GAP_S   as parity_one_node.sh (defaults 16 and 0.05)
+#   REQUESTS GAP_S   requests, and wall seconds between sends (defaults 16 and
+#                    0.01); no request waits for the one before it to be
+#                    admitted, so prefills overlap and the router chooses a
+#                    prefill rank
 #   PREFILL_GPUS DECODE_GPUS
 #                    the real servers' devices (defaults 0,1 and 2,3); the
 #                    simulated run sees PREFILL_GPUS and allocates nothing
@@ -35,49 +38,43 @@ ATOMESH=${ATOMESH:-atomesh}
 WAIT_S=${WAIT_S:-1800}
 mkdir -p "$OUT/real/record" "$OUT/sim"
 OUT=$(realpath "$OUT")
-free_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
-until_up() { # what url pid
-    local deadline=$((SECONDS + WAIT_S))
-    until curl -sf --max-time 10 "$2" >/dev/null; do
-        kill -0 "$3" 2>/dev/null || { echo "parity_pd: $1 exited" >&2; exit 1; }
-        ((SECONDS < deadline)) || { echo "parity_pd: no $1 after $WAIT_S s" >&2; exit 1; }
-        sleep 1
-    done
-}
 pids=()
 trap 'kill -KILL -- "${pids[@]/#/-}" 2>/dev/null || true' EXIT
-ROUTER_PORT=$(free_port)
+ROUTER_PORT=$(compass_free_port)
 # The router's flags as pd_sim.sh passes them under BENCHMARK_KIND=aiperf_agentic.
 router() { # prefill_url decode_url
     setsid "$ATOMESH" launch --host 127.0.0.1 --port "$ROUTER_PORT" \
         --pd-disaggregation --prefill "$1" --decode "$2" --policy dp_sticky --dp-aware \
         --backend atom --disable-health-check --disable-circuit-breaker --disable-retries \
-        --prometheus-port "$(free_port)" --log-level info >"$OUT/real/router.log" 2>&1 &
+        --prometheus-port "$(compass_free_port)" --log-level info >"$OUT/real/router.log" 2>&1 &
     pids+=($!)
 }
 
 # serve SIDE GPUS KV_ROLE: a real server recording to OUT/real/record/SIDE.
 serve() {
     local port
-    port=$(free_port)
+    port=$(compass_free_port)
     # shellcheck disable=SC2086 # SERVER_ARGS is a word list
     HIP_VISIBLE_DEVICES=$2 ATOM_COMPASS_PARITY_RECORD=$OUT/real/record/$1 setsid \
         python3 -m atom.entrypoints.openai_server --model "$MODEL" --host 127.0.0.1 \
         --server-port "$port" -tp 2 --enable-dp-attention \
-        --data-parallel-master-port "$(free_port)" $SERVER_ARGS --kv-transfer-config \
-        "{\"kv_role\":\"$3\",\"kv_connector\":\"mooncake\",\"protocol\":\"tcp\",\"proxy_ip\":\"127.0.0.1\",\"handshake_port\":$(free_port)}" \
+        --data-parallel-master-port "$(compass_free_port)" $SERVER_ARGS --kv-transfer-config \
+        "{\"kv_role\":\"$3\",\"kv_connector\":\"mooncake\",\"protocol\":\"tcp\",\"proxy_ip\":\"127.0.0.1\",\"handshake_port\":$(compass_free_port)}" \
         >"$OUT/real/$1.log" 2>&1 &
     pids+=($!)
-    until_up "$1 server" "http://127.0.0.1:$port/health" $!
+    compass_wait_up "$1 server" $! "http://127.0.0.1:$port/health"
     url=http://127.0.0.1:$port
 }
 serve prefill "${PREFILL_GPUS:-0,1}" kv_producer
 prefill_url=$url
 serve decode "${DECODE_GPUS:-2,3}" kv_consumer
 router "$prefill_url" "$url"
-until_up router "http://127.0.0.1:$ROUTER_PORT/v1/models" "${pids[-1]}"
-python3 -m atom.compass.parity.traffic "$ROUTER_PORT" "$MODEL" "$OUT/real/record" \
-    "${REQUESTS:-16}" "${GAP_S:-0.05}" >"$OUT/real/traffic.log" 2>&1
+compass_wait_up router "${pids[-1]}" "http://127.0.0.1:$ROUTER_PORT/v1/models"
+python3 -c 'import sys; from pathlib import Path; from atom.compass.parity.traffic import bodies, real
+port, model, record, n, gap_s = sys.argv[1:]
+real(int(port), bodies(model, int(n)), float(gap_s), Path(record), wait=False)' \
+    "$ROUTER_PORT" "$MODEL" "$OUT/real/record" "${REQUESTS:-16}" "${GAP_S:-0.01}" \
+    >"$OUT/real/traffic.log" 2>&1
 # The records' last lines are written as the workers exit.
 for pid in "${pids[@]}"; do kill -TERM -- "-$pid" 2>/dev/null || true; done
 for pid in "${pids[@]}"; do
@@ -92,7 +89,7 @@ pids=()
 for side in prefill decode; do cp "$OUT/real/record/arrivals.json" "$OUT/real/record/$side/"; done
 
 RUN=$OUT/sim/run.json
-CLOCK_PORT=$(free_port)
+CLOCK_PORT=$(compass_free_port)
 python3 - "$RUN" "$OUT" "${MACHINE:-$ROOT/scripts/compass/machines/mi308x-hjbog18.json}" \
     "$MODEL" "$CLOCK_PORT" <<'EOF'
 import json, sys
@@ -123,7 +120,7 @@ EOF
 ports=("CLOCK_PORT=$CLOCK_PORT")
 for name in PREFILL_PORT DECODE_PORT KV_WRITE_REQ_PORT PROMETHEUS_PORT \
     PREFILL_DP_PORT DECODE_DP_PORT; do
-    ports+=("$name=$(free_port)")
+    ports+=("$name=$(compass_free_port)")
 done
 # shellcheck disable=SC2086 # SERVER_ARGS is a word list
 env "${ports[@]}" ROUTER_PORT="$ROUTER_PORT" MODEL="$MODEL" ATOMESH="$ATOMESH" \
@@ -171,6 +168,8 @@ def ranks_of(record: Path) -> dict:
                 first.setdefault((rank, rid), context)
     for (rank, rid), context in first.items():
         ranks[by_length[context - 1]][1] = rank
+    if missing := [key for key, (_, d) in ranks.items() if d is None]:
+        raise ValueError(f"{record}: {len(missing)} requests have no decode rank")
     return ranks
 
 

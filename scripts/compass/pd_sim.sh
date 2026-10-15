@@ -87,15 +87,6 @@ server() { # role port kv_role dp_port [exec]
         >"$OUT/$1.log" 2>&1 &
 }
 
-wait_for() { # what pid url
-    local deadline=$((SECONDS + WAIT_S))
-    until curl -sf --max-time 10 "$3" >/dev/null; do
-        kill -0 "$2" 2>/dev/null || { echo "pd_sim: $1 exited before it answered" >&2; exit 1; }
-        ((SECONDS < deadline)) || { echo "pd_sim: no $1 after $WAIT_S s" >&2; exit 1; }
-        sleep 1
-    done
-}
-
 # The real cell's router arguments, chosen as `start_router` chooses them. With
 # the health check, circuit breaker and retries off, no wall-clock failure
 # detector can resend or drop a request.
@@ -154,15 +145,15 @@ server prefill "$PREFILL_PORT" kv_producer "$PREFILL_DP_PORT"
 prefill=$!
 server decode "$DECODE_PORT" kv_consumer "$DECODE_DP_PORT" "${DECODE_EXEC:-}"
 decode=$!
-wait_for prefill $prefill "http://127.0.0.1:$PREFILL_PORT/health"
-wait_for decode $decode "http://127.0.0.1:$DECODE_PORT/health"
+compass_wait_up prefill $prefill "http://127.0.0.1:$PREFILL_PORT/health"
+compass_wait_up decode $decode "http://127.0.0.1:$DECODE_PORT/health"
 
 env "${router_env[@]}" "$ATOMESH" launch --host 127.0.0.1 --port "$ROUTER_PORT" --pd-disaggregation \
     --prefill "http://127.0.0.1:$PREFILL_PORT" --decode "http://127.0.0.1:$DECODE_PORT" \
     "${router[@]}" --backend atom --disable-health-check --disable-circuit-breaker \
     --disable-retries --prometheus-port "$PROMETHEUS_PORT" --log-level info \
     >"$OUT/router.log" 2>&1 &
-wait_for router $! "http://127.0.0.1:$ROUTER_PORT/v1/models"
+compass_wait_up router $! "http://127.0.0.1:$ROUTER_PORT/v1/models"
 echo "pd_sim: ready"
 
 rc=0
