@@ -1892,8 +1892,10 @@ own process with the policy code untouched. Under `--dp-aware` it is (owner ruli
 - **Channels.** A run file with `router_in_s` declares LP `router`
   (`channels.py::prefill_decode_table`): each path through the router is a hop in,
   with lookahead `router_in_s`, and a hop out with the rest of the path's. `pd_sim.sh`
-  writes `router_in_s` for a DP-attention cell, at the run's `ipc_s`, and launches the
-  router as the real cell's launch does, `--dp-aware` and `dp_sticky` or `cache_aware`.
+  chooses the router's arguments as `start_router` does: a DP-attention cell is
+  `--dp-aware` when it is agentic (as `cctraces_sim.sh` cells are) or maps ranks, and
+  then `pd_sim.sh` writes `router_in_s` at the run's `ipc_s`. Any other DP-attention cell
+  keeps a router without `--dp-aware`, and ATOM's own DP dispatch picks the rank.
 - **Delivery.** `atom/mesh/src/compass_router.rs` binds the LP when
   `ATOM_COMPASS_CLOCK_ENDPOINT` is set. A request (ingress layer), a prefill response
   (`PDRouter::dispatch_atom_relay_internal`) and each decode stream event

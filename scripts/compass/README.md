@@ -509,7 +509,9 @@ ITL and request throughput in simulated time, and the run's refusals. A
 A run file with `router_s` and `kv_write_req_s` makes the cell 1P1D: `pd_sim.sh`
 deploys it, taking `DECODE_EXEC` and `ATOMESH` from the environment, and aiperf
 drives the atomesh router. The traffic LP sends to `frontend-P` and reads the
-stream from `frontend-D`, as the run file's channel table names them. The result
+stream from `frontend-D`, as the run file's channel table names them; with
+`--enable-dp-attention` in `SERVER_ARGS` the cell is agentic, its router is
+`--dp-aware` and LP `router`, and the traffic LP talks to `router`. The result
 line adds `kv_transfers` and `kv_transfer_mean_s`, from the line the prefill
 engine logs per KV transfer.
 
