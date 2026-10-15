@@ -322,7 +322,7 @@ class DeviceReadings:
     non_torch: Reading
     cudagraph_overhead: Reading
     free: Reading
-    tp_width: int
+    tp_width: int | str
     spec_digest: str
 
     def as_dict(self) -> dict[str, Reading]:
@@ -356,7 +356,7 @@ class DeviceReadings:
 def device_readings(
     spec,
     *,
-    tp_width: int,
+    tp_width: int | str,
     model: ModelTerms,
     cudagraph_overhead: Reading,
 ) -> DeviceReadings:
@@ -373,8 +373,12 @@ def device_readings(
     `allocator_retained_after_load_bytes` are `Kind.WIDTH_TABLE` because no
     fixed-plus-per-peer form fits 5980/6340/9138 at widths 2/4/8, so there is
     nothing to interpolate along. Nothing here catches that refusal.
+
+    Under DP-attention `tp_width` is the layout key, `"<tp>x<dp>"`: every rank
+    runs attention at TP 1 inside DP-wide groups, which reserve what neither
+    width alone does.
     """
-    if tp_width < 1:
+    if isinstance(tp_width, int) and tp_width < 1:
         raise ValueError(f"tensor-parallel width is at least 1: {tp_width}")
     if cudagraph_overhead.name != graph_pool.RESERVES:
         raise MemoryRefusal(
