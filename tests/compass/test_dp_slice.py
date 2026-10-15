@@ -58,6 +58,8 @@ for _name in (
     _width = DP_MACHINE["device"]["runtime_constants"][_name]
     _width["1x2"] = _width["1x2x2"] = _width[1]
 DONE = "data: [DONE]"
+#: The slice's parallelism: two DP ranks at TP 1, with expert parallelism.
+DP_WIDTH = ["-tp", "2", "--enable-dp-attention", "--enable-expert-parallel"]
 
 
 @pytest.fixture(autouse=True)
@@ -97,11 +99,13 @@ class Requests(Traffic):
         self.open = set(range(done, len(MAX_TOKENS)))
 
 
-def run_dp_slice(out: Path, seed: str) -> dict:
-    """One run in its own process tree: its step table, summary, parity record."""
+def run_dp_slice(out: Path, seed: str, width=DP_WIDTH, dp=2) -> dict:
+    """One run in its own process tree: its step table, summary, parity record.
+
+    `width` is the server's parallelism flags, `dp` the DP ranks they start."""
     out.mkdir()
     run_file = _run_file(
-        out, data_parallel_size=2, step_stub=CONSTANT, machine=DP_MACHINE
+        out, data_parallel_size=dp, step_stub=CONSTANT, machine=DP_MACHINE
     )
     port = _free_port()
     env = dict(
@@ -112,7 +116,7 @@ def run_dp_slice(out: Path, seed: str) -> dict:
         ATOM_COMPASS_PARITY_RECORD=str(out / "parity"),
     )
     args = ["--model", MODEL, "--host", "127.0.0.1", "--server-port", str(port)]
-    args += ["-tp", "2", "--enable-dp-attention", "--enable-expert-parallel"]
+    args += width
     args += ["--enforce-eager", "--max-model-len", "2048"]
     with open(out / "server.log", "w") as log:
         server = subprocess.Popen(
