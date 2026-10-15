@@ -20,7 +20,7 @@ member, the frontend's included, connects to.
 - `engine(config)` wraps the engine's construction in its own process the
   same way, and maps every DP rank to the engine LP for the process-group
   check.
-- `runner(runner)` installs the cost backend and the device readings on a
+- `runner(runner, tree)` installs the cost backend and the device readings on a
   `CompassModelRunner` where it would build its model, in the worker process.
 - `tokenizer(tokenizer, config)` charges the served tokenizer's ``encode`` and
   ``decode`` to the frontend's clock, at the rates the machine spec measured.
@@ -532,6 +532,7 @@ def runner(model_runner, tree) -> None:
     if run is None:
         return
     from atom.compass.backends.geometry import KvGeometry, Parallelism
+    from atom.compass.backends.provenance import Method
     from atom.compass.backends.step_linear import StepLinearBackend, StepLinearLaw
     from atom.compass.backends.step_roofline import (
         StepFallbackBackend,
@@ -605,10 +606,13 @@ def runner(model_runner, tree) -> None:
             parallelism=Parallelism(tp_size=tp),
             kv_dtype=config.kv_cache_dtype,
         )
+        w = model.weights
+        stated = f"{w.source} ({w.note})" if w.method is Method.DECLARED else ""
         roofline = StepRooflineBackend(
             machine,
             parameters=run["parameter_count"] // tp,
             weight_bytes=model.weights.nbytes,
+            weights_stated=stated,
             kv_token_bytes=kv.layers * kv.bytes_per_token_per_layer,
             host_floor_s=run["roofline_floor_s"],
         )
