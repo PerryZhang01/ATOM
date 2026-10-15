@@ -111,7 +111,8 @@ from the measured `W_launch` host law (`09` D54), not from `host.*`. The evidenc
 **The step roofline.** `backends/step_roofline.py::StepRooflineBackend` is this law at
 step level, without the IR: compute `2 · P · Σ N_Q / flops`, memory `(weight bytes + KV
 bytes per token · (Σ N_KV + Σ N_Q)) / bandwidth`. A run reaches it only as
-the step-level fallback its run file composes (`StepFallbackBackend`, `07` D36). Its one
+the step-level fallback its run file composes (`StepFallbackBackend`, `07` D36), turned on
+by the run-file key `step_roofline`. Its one
 term is named by the bound that won, and its method counts the inputs that bound reads
 (owner ruling on [#1011](https://github.com/jgong5/ATOM/issues/1011), 2026-10-15): spec
 fields by their origin, analytical from a datasheet or a probe, declared if assumed; the
@@ -119,10 +120,12 @@ run file's stated inputs declared unless they carry an origin. Every derate is a
 today and the run file gives `parameter_count` no origin, so no roofline term is
 analytical yet.
 
-The code departs from the #815 revision here: `StepRooflineBackend.price` also takes the
-run file's `roofline_floor_s` as a third, host bound, while `run/__init__.py::runner`
-composes host time separately, so one run can count launch time twice.
-[#1047](https://github.com/jgong5/ATOM/issues/1047) removes that bound.
+The step roofline has no host bound (owner ruling on
+[#1047](https://github.com/jgong5/ATOM/issues/1047), 2026-10-15): it prices device time
+only, and `run/__init__.py::runner` composes host time with it through the host
+recurrence, so launch time is counted once. The run file's former `roofline_floor_s`,
+which both set a host floor and turned the fallback on, is refused by name, naming
+`step_roofline`.
 
 ### Why the host floor is not optional
 
@@ -447,7 +450,7 @@ what the op-level backend exists for.
 | # | Decision | Date |
 |---|---|---|
 | D63 | Three classes: A exact from geometry, B device-parameterised, C policy-determined. An analytical law works where the quantity is a pure function of stated geometry and fails where a runtime or library policy decides it. `analytical` is #952's method: a form from first principles over geometry, deployment config and datasheet or probed device parameters; an assumed parameter makes a term declared. | 2026-09-19; revised 2026-10-14 (#952) |
-| D64 | Roofline leaf `max(F/flops, M/bandwidth)` with derates, plus the host floor as a step-level `max`, not an addend. Revised: every analytical law, the step roofline included, prices device time only; the `max` moves to `01` D4's recurrence, with the launch time from the measured `W_launch` law. The step roofline's `roofline_floor_s` bound departs from this in code (#1047). Revised: the step roofline's method counts the inputs the winning bound reads. | 2026-09-19; revised 2026-10-11 (#815) and 2026-10-15 (#1011) |
+| D64 | Roofline leaf `max(F/flops, M/bandwidth)` with derates, plus the host floor as a step-level `max`, not an addend. Revised: every analytical law, the step roofline included, prices device time only; the `max` moves to `01` D4's recurrence, with the launch time from the measured `W_launch` law. Revised: the step roofline's method counts the inputs the winning bound reads. Revised: the step roofline has no host bound; the run-file key `step_roofline` turns it on. | 2026-09-19; revised 2026-10-11 (#815), 2026-10-15 (#1011) and 2026-10-15 (#1047) |
 | D65 | An analytical law is a smooth model and says so: it answers a leaf with a known discontinuity in range with a band, as the analytical fallback too. | 2026-09-19; revised 2026-10-14 (#952) |
 | D66 | Two-regime collective model with the algorithm named in the spec. Textbook ring/log models are refuted on this fabric. | 2026-09-19 |
 | D67.1 | Roofline accuracy goals stated per quantity: ≤5% on weights and on KV capacity/block count (the empirical gate for KV, tighter than it for weights), ≤25% each other non-KV memory term, ≤30% step time, ≤40% end-to-end. **Configuration ranking (top-1 and top-3 set) is the primary gate**; no false "fits". The goals attach to the backend and are graded against real runs. | 2026-09-19; revised 2026-10-14 (#952) |

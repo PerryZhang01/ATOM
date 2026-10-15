@@ -4,16 +4,21 @@
 interview and reviewed by jgong5 across two review rounds on PR #3. No code has been
 written against it yet; implementation follows the execution plan in `16`.
 
+**Revised 2026-10-14 by the naming record in
+[#952](https://github.com/jgong5/ATOM/issues/952):** the cost model has two granularities,
+step-level and op-level, and no fallback crosses them (D17); a stated node's terms
+carry the `declared` method (D21).
+
 **Depends on:** `02_model_runner_and_cost_backend.md` (the backend plug point this fills),
 `03_memory_and_kv_model.md` (the activation term this supplies).
 
 **Scope.** What a model looks like to Compass: how it is captured without a device, what
 intermediate representation the cost is computed over, and which parts of a step that
-representation cannot see. Covers both tiers of the cost model.
+representation cannot see. Covers both granularities of the cost model.
 
 ---
 
-## D17. Two tiers, and how they compose
+## D17. Two granularities, and how they compose
 
 ### Problem
 
@@ -24,20 +29,27 @@ acceptance gates.
 
 ### Decision
 
-**Two tiers behind one `CostBackend` interface (D11).**
+**Two granularities behind one `CostBackend` interface (`02` D11)**, a property of the
+backend (`backends/base.py::Granularity`); each term a backend returns carries its own
+method.
 
-| | tier (a) — coarse | tier (b) — op level |
+| | step-level | op-level |
 |---|---|---|
 | Input | features `ScheduledBatch` already carries | a symbolic operator graph |
-| Form | declared/fitted closed form over `tokens`, `Sum N_Q^2`, `Sum N_Q*N_KV`, `Sum ctx`, rung padding | sum over priced nodes, with a declared per-leaf parameter extractor |
+| Form | a closed form over `tokens`, `Sum N_Q^2`, `Sum N_Q*N_KV`, `Sum ctx`, rung padding, its coefficients stated (`StepStubBackend`) or fitted (`StepLinearBackend`); or a measured grid (`StepGridBackend`, `17`) | sum over priced nodes, with a stated per-leaf parameter extractor |
 | Construction cost | none | one trace per **structure** |
 | Per-step cost | microseconds | target: one layer body, not 2,999 operators |
 | Used for | sweeps, structure discovery, M1 plumbing | acceptance cells |
 
+No fallback crosses the two (#952). An op-level backend covers a structure it has not
+seen by a lazy trace, and an unpriced leaf by its analytical law (`02` D11). A capture
+that fails is an error and the run exits; with lazy trace disabled an unseen structure is
+a refusal; an IR guard miss triggers a trace.
+
 ### The composition, which is the point
 
-**Tier (a) is the discovery mechanism for tier (b).** Drive ATOM's real scheduler
-device-free with the coarse backend, log the structure key per step, take the distinct
+**The step level is the discovery mechanism for the op level.** Drive ATOM's real scheduler
+device-free with a step-level backend, log the structure key per step, take the distinct
 set, and trace exactly those. The step table needed already exists — predict mode records
 `num_scheduled_tokens`, `context_lens`, `req_ids` and the scheduler's own decision per
 step.
@@ -49,8 +61,8 @@ pool — which change *which requests coexist*, not just chunk sizes — and so 
 conservative in either direction. Measured against the real classes it under-counted
 prefill steps 3 vs 8 on one cell and over-counted width 5 seqs vs 4 on another.
 
-A second consequence: **tier (a) can eventually be *derived* from tier (b)** — take the
-symbolic step-cost expression, drop terms below a threshold, and the coarse model has
+A second consequence: **a step-level form can eventually be *derived* from the op level** — take the
+symbolic step-cost expression, drop terms below a threshold, and the step-level form has
 stated provenance instead of being a separately-fitted thing that can disagree with the
 fine one for unknown reasons. Not required for M1; recorded as the intended direction.
 
@@ -60,7 +72,7 @@ fine one for unknown reasons. Not required for M1; recorded as the intended dire
   **319 operators**, chunked prefill at **356**, and decode as **one** structure across
   all eleven CUDA-graph rungs (*"330 operators, 19 distinct kinds, one identical operator
   multiset at every rung"*). But nobody has enumerated it for the hybrid 27B.
-- Whether tier (a)'s fitted coefficients and tier (b)'s priced sum should be required to
+- Whether a step-level backend's fitted coefficients and the op-level priced sum should be required to
   agree, and what to do when they do not.
 
 ---
@@ -69,7 +81,7 @@ fine one for unknown reasons. Not required for M1; recorded as the intended dire
 
 ### Problem
 
-The IR needs an operator list with shapes, obtained without a GPU, for a configuration
+The IR needs an operator list with shapes, taken without a GPU, for a configuration
 that may never have been run.
 
 ### Options
@@ -214,7 +226,7 @@ property was originally recorded at were repaired and `_rows` appeared behind th
 number, and the number it needs is the hint, which is the count the engine computed. So a
 symbolic capture keeps the conversion and replaces the guard with its own log — every
 conversion, with the line it happened on — and asserts that log, as a multiset of
-`(line, conversions)`, against a declared set. That last clause is the whole of the
+`(line, conversions)`, against a stated set. That last clause is the whole of the
 discipline's value and it is the part that is easy to leave out: a log nothing compares
 records a conversion at a seventeenth line and says nothing, so the instrument reads as
 evidence while behaving as decoration. The capture referenced below declares the set as
@@ -315,7 +327,7 @@ fake-less aiter ops sit *inside* those leaves and are never reached.
 > 2,471 and 2,611 here, on a decode step of two sequences at a block size and a batch
 > budget this file never recorded, which is the reason a total is not the assertion.
 >
-> **The TP2 inventory is conditional on two declared substitutions, and every number in
+> **The TP2 inventory is conditional on two stated substitutions, and every number in
 > the paragraph above inherits them.** `ATOM_USE_CUSTOM_ALL_GATHER=0` selects the
 > non-custom vocab-parallel gather: it is a **non-default** ATOM path, and a default TP2
 > deployment takes the `ca_comm` custom gather, which is not what was traced — with the
@@ -385,7 +397,7 @@ reaches it once the group exists is wrong. ATOM's default `ATOM_USE_CUSTOM_ALL_G
 takes `embed_head.py::ParallelLMHead.forward`'s vocab-parallel gather down the custom path, which asserts on
 `device_communicator.ca_comm` and fails with `'NoneType' object has no attribute
 'ca_comm'` after 2,588 operators. The runs above therefore set
-**`ATOM_USE_CUSTOM_ALL_GATHER=0`**, selecting the non-custom gather; that is a declared
+**`ATOM_USE_CUSTOM_ALL_GATHER=0`**, selecting the non-custom gather; that is a stated
 configuration of the capture and belongs in the record beside the device readings. It is
 the whole difference between the run that fails at 2,588 and the one that completes at
 2,611.
@@ -533,7 +545,7 @@ graph:
 dispatcher events — a dispatch trace records a *serial* operator list for work the device
 runs concurrently. So the tracer records `torch.cuda.current_stream()` as a field on every
 node and hooks `Event.record` / `wait_event` / `wait_stream` for the edges. `Par` is then
-**derived** from stream ids rather than declared.
+**derived** from stream ids rather than stated.
 
 **Staging.** In M1 and in M2's first gate every node carries one stream id and `Par`
 never materialises: Qwen3.8-27B is dense-MLP (no `num_experts`, no `shared_expert`) so
@@ -579,18 +591,18 @@ Three things symbolic shapes do **not** buy, stated so nobody expects them:
   (`MT256x1...` -> `MT256x2...`), and prefill attention sits on plateaus quantised in
   sequence length with a step of ~2.27 us/token at `ceil(L / 2530)`. A cost function over
   a symbolic shape must be piecewise and dispatch-band aware.
-- **`Ctx` is a multiset, and row order is an undeclared treatment.** At one fixed 32-row
+- **`Ctx` is a multiset, and row order is an unstated treatment.** At one fixed 32-row
   context multiset, row **order alone** moves measured decode attention across **1.77x**
   (grouped-descending 276.1 us, grouped-ascending 292.2 us, alternating 376.5 us,
   ladder-interleaved 489.5 us). KV-pool footprint, co-residency, shape and launch-wave
   packing were all refuted as causes. Every candidate feature is a function of the
   multiset and therefore blind to this. A corpus that mixes orderings is fitting an
-  undeclared treatment.
+  unstated treatment.
 - **Data-dependent shapes stay unknown.** MoE per-expert token counts depend on the
   router. `ShapeEnv.allow_dynamic_output_shape_ops` defaults True so they trace as
   unbacked symbols (`u0`), and branching on one raises rather than guessing
-  (`GuardOnDataDependentSymNode`), with `guard_or_false` / `torch._check` as the declared
-  escape hatches. A balance assumption has to be declared; ATOM's `fake_eplb` is the hook.
+  (`GuardOnDataDependentSymNode`), with `guard_or_false` / `torch._check` as the sanctioned
+  escape hatches. A balance assumption has to be stated; ATOM's `fake_eplb` is the hook.
 
 ### Applicability: no branches in the IR
 
@@ -770,7 +782,7 @@ become graph inputs and flow per step; everything else is a compile-time constan
 once from whichever forward triggered compilation — `max_seqlen_q` because it is an int,
 `block_tables` because it happened to be `None` in the warmup dummy.
 
-**So each leaf needs a declared parameter extractor:**
+**So each leaf needs a stated parameter extractor:**
 
 ```
 (forward_context, symbol_bindings) -> cost parameters
@@ -809,7 +821,7 @@ recorded query start offsets, so the installer calls the engine's own
 
 Inside a leaf, shapes stop being symbolic: the fake impl gives the output shape, not the
 internal work. The leaf's cost model is its own thing — a fitted law, a measured price
-table with dispatch bands, or an analytic roofline. **Symbolic shapes feed it; they do not
+table with dispatch bands, or an analytical roofline. **Symbolic shapes feed it; they do not
 replace it.** And the boundary is the right one, because a leaf is also where ATOM's own
 autotuning happens — one leaf is one tuned kernel family.
 
@@ -888,11 +900,11 @@ recording them took chunked prefill from 365/366 to **364/364**.
 The 8x prefill/decode spread is structural: the per-layer generated-kernel count is fixed
 and a decode step is ~30x shorter.
 
-### Decision: declared nodes, and refusal over silence
+### Decision: stated nodes, and refusal over silence
 
-1. Do not chase 100% capture. The IR carries **declared nodes** alongside captured ones,
+1. Do not chase 100% capture. The IR carries **stated nodes** (`ir/nodes.py::NodeKind.DECLARED`) alongside captured ones,
    so something the tracer cannot see becomes an **explicit assumption in the artifact**
-   rather than an absence.
+   rather than an absence, and its terms carry the `declared` method (`02` D11).
 2. Record `unpriced{signature: reason}` and report coverage as a fraction, always.
 3. **A failed forward writes no graph.** A 101-operator capture of a 64-layer model was a
    crashed forward written from a `finally` block — structurally valid, and merely wrong.
@@ -901,7 +913,7 @@ and a decode step is ~30x shorter.
 
 ### Open issues
 
-- The declared-node mechanism has no consumers yet; EP is its first customer.
+- The stated-node mechanism has no consumers yet; EP is its first customer.
 - At `ep_size == tp_size` EP is close to a no-op — without EP each rank holds all experts
   sharded along the intermediate dimension, with EP each rank holds half the experts
   whole. Same FLOPs, graphs structurally identical (488 operators, 23 kinds either way),
@@ -1001,7 +1013,7 @@ storage something else keeps alive). Transient, self-correcting, nowhere near th
 **Declare a scratch parameter per opaque leaf**, symmetric with the cost parameter
 extractor of D20: `bytes = f(shape)` or the single bytes-per-token number the prior work
 found generalises. Sourced from kernel source, documentation, or one measurement on
-whatever device happens to be available — and in every case recorded as a **declared
+whatever device happens to be available — and in every case recorded as a **stated
 constant in the artifact**, not a hidden absence.
 
 Measured magnitudes: **0.1 KB/token on the 0.6B, 39.6 KB/token on the 27B**, worth the
@@ -1036,7 +1048,7 @@ then (T4). A model with no measured coefficient takes a geometry form, which
 ### Problem
 
 Device-free means the model cannot be compiled: inductor must codegen and autotune for the
-target architecture. So tier (b) traces the **eager** operator stream, while production
+target architecture. So the op-level backend traces the **eager** operator stream, while production
 runs at `--level 3` PIECEWISE with `use_inductor = True` and `--cudagraph-mode FULL`
 (`atom/model_engine/arg_utils.py::EngineArgs.add_cli_args`).
 
@@ -1118,7 +1130,7 @@ Deferred to future work by decision on 2026-09-18.
 
   1. **No real collective executes under the mode.** ATOM's collectives are either
      dispatcher-visible ops (which have `register_fake` impls — every ATOM opaque op
-     does) or invisible ones reached through declared nodes, which the tracer records
+     does) or invisible ones reached through stated nodes, which the tracer records
      rather than calls. Nothing should reach RCCL.
   2. **The specific hazard is not the same mode.** `dspark_scheduler.py::schedule_prefix_lengths_tensor` hung under
      an active `DeviceContext` **`__torch_function__`** guard doing
@@ -1157,13 +1169,13 @@ Deferred to future work by decision on 2026-09-18.
 
 | # | Decision | Date |
 |---|---|---|
-| D17 | Two tiers behind one `CostBackend`; tier (a) discovers the structure set tier (b) traces | 2026-09-18 |
-| D18 | Capture with `TorchDispatchMode` + `FakeTensorMode(ShapeEnv)` + `_EnablePythonDispatcher()`, on FakeTensor rather than bare meta; **four** disciplines, not three — the fourth is that the engine's host arithmetic asks a symbol for a number, so the capture keeps the conversion, logs it with the line it happened on, and asserts that log against a declared set | 2026-09-18, fourth discipline 2026-09-22 |
+| D17 | Two granularities behind one `CostBackend`; the step level discovers the structure set the op level traces. No fallback crosses granularity: a capture failure fails the run, lazy trace off makes an unseen structure a refusal, an IR guard miss traces | 2026-09-18; revised 2026-10-14 (#952) |
+| D18 | Capture with `TorchDispatchMode` + `FakeTensorMode(ShapeEnv)` + `_EnablePythonDispatcher()`, on FakeTensor rather than bare meta; **four** disciplines, not three — the fourth is that the engine's host arithmetic asks a symbol for a number, so the capture keeps the conversion, logs it with the line it happened on, and asserts that log against a stated set | 2026-09-18, fourth discipline 2026-09-22 |
 | D18.1 | `torch.export` recorded as an unverified alternative; rejected now on decomposition fidelity and on capturing a model call rather than an engine step | 2026-09-18 |
 | D19 | Hierarchical, symbolic, stream-annotated IR: `Seq` / `Repeat` / `Par`. No branches in the IR — applicability is a discrete key plus an evaluated guard domain | 2026-09-18 |
-| D20 | Opaque leaves are priced, not decomposed. Each carries a declared parameter extractor. FlyDSL and MORI need no IR node. | 2026-09-18 |
-| D21 | Declared nodes over chased coverage; refuse and record `unpriced` reasons; a failed forward writes no graph | 2026-09-18 |
-| D22 | Liveness stays observational under fake tensors; internal scratch of an opaque leaf is a declared per-leaf constant. Revised: until capture lands the activation term is a coefficient measured on a real run, scratch inside it, and the walk replaces it after | 2026-09-18; revised 2026-10-10 |
+| D20 | Opaque leaves are priced, not decomposed. Each carries a stated parameter extractor. FlyDSL and MORI need no IR node. | 2026-09-18 |
+| D21 | Stated nodes over chased coverage, their terms declared; refuse and record `unpriced` reasons; a failed forward writes no graph | 2026-09-18; revised 2026-10-14 (#952) |
+| D22 | Liveness stays observational under fake tensors; internal scratch of an opaque leaf is a stated per-leaf constant. Revised: until capture lands the activation term is a coefficient measured on a real run, scratch inside it, and the walk replaces it after | 2026-09-18; revised 2026-10-10 |
 | D23 | Trace eager, price with the regime constant of the real step. The inductor fusion gap (~4.8% decode) is a documented **TODO**, not a decision. | 2026-09-18 |
 
 ---
@@ -1176,11 +1188,11 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 | # | Item | Why deferred |
 |---|---|---|
 | T1 | Inductor fusion correction (D23) | ~4.8% of a decode step; three candidate treatments, none chosen |
-| T2 | Enumerate the structure set for Qwen3.8-27B | needs tier (a) running against the real scheduler |
+| T2 | Enumerate the structure set for Qwen3.8-27B | needs a step-level backend run against the real scheduler on the 27B |
 | T3 | Build the per-leaf parameter-extractor table (~20 entries) | the main hand-written asset; needs the leaf list frozen first |
 | T4 | Establish scratch constants per leaf for the 27B | needed once the liveness walk replaces the measured activation coefficient (D22); unobservable device-free, so it needs a source or one measurement |
 | T5 | Verify ATOM's model classes trace cleanly under FakeTensorMode at TP>1 | needs a non-wedged node |
 | T6 | Validate that `Repeat` grouping reproduces the flat prices term by term | needs a first trace |
 | T7 | Validate `Par` reconstruction from stream ids | not exercised until M2 (DeepSeek-V4-Pro) |
-| T8 | Decide whether tier (a) is fitted independently or derived from tier (b) | tier (b) does not exist yet |
-| T9 | Declare a row-ordering treatment for decode attention | 1.77x effect, invisible to every current feature |
+| T8 | Decide whether a step-level form is fitted independently or derived from the op level | the op-level backend does not exist yet |
+| T9 | State a row-ordering treatment for decode attention | 1.77x effect, invisible to every current feature |

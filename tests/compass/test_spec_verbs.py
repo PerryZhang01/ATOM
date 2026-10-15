@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """The three verbs over the spec: combining fragments, checking one, reading one.
 
-The fragments below are the ones the probes of each hardware tier would emit --
+The fragments below are the ones the probes of each hardware probe class would emit --
 a tokenizer and an interprocess measurement that need no device, a single-card
 engine start, a multi-rank one, and a fabric measurement -- so a test that
 combines them combines the same partial documents a real run would, and a test
@@ -90,8 +90,8 @@ TOKENIZER = {
     "derate": 0.85,
 }
 
-#: Tier 0, no device: the tokenizer sweep and the interprocess round trips.
-TIER0 = {
+#: Probe class 0, no device: the tokenizer sweep and the interprocess round trips.
+CLASS0 = {
     "host": {
         "cpu": {"cores_physical": 96, "cores_logical": 192},
         "tokenizers": [TOKENIZER],
@@ -100,14 +100,14 @@ TIER0 = {
     }
 }
 
-#: Tier 1, one card: the five readings and the single-width graph pool, plus
-#: one entry no tier-1 probe produces. `allocator_retained_after_load_bytes` at
+#: Probe class 1, one card: the five readings and the single-width graph pool, plus
+#: one entry no class-1 probe produces. `allocator_retained_after_load_bytes` at
 #: width 1 is the hole `FILLED_BY` records, so on a real machine it is measured
 #: by hand. It is carried here because these fixtures exist to make a complete
 #: document, and `provenance.origin` is one claim over a whole fragment:
 #: `probed` on this body is right about every entry but that one, which is a
 #: limit of the fixture rather than a capability of the probe.
-TIER1 = {
+CLASS1 = {
     "device": {
         "name": "MI355X",
         "arch": "gfx950",
@@ -131,8 +131,8 @@ TIER1 = {
     }
 }
 
-#: Tier 2, N cards: one engine start per width, and the flat pool above one.
-TIER2 = {
+#: Probe class 2, N cards: one engine start per width, and the flat pool above one.
+CLASS2 = {
     "device": {
         "runtime_constants": {
             "driver_and_collective_reserve_bytes": {2: 7.2e9, 4: 7.6e9, 8: 11.2e9},
@@ -142,7 +142,7 @@ TIER2 = {
     }
 }
 
-#: Tier 2 and 3: collectives in real groups, then the same across two nodes.
+#: Probe classes 2 and 3: collectives in real groups, then the same across two nodes.
 LINKS = {
     "interconnect": {
         "intra_node": {
@@ -186,9 +186,9 @@ def fragment(
 def fragments(**edits):
     """The five fragments a full spec is built from, with one body replaced."""
     bodies = {
-        "tier0": TIER0,
-        "tier1": TIER1,
-        "tier2": TIER2,
+        "class0": CLASS0,
+        "class1": CLASS1,
+        "class2": CLASS2,
         "links": LINKS,
     }
     bodies.update(edits)
@@ -221,7 +221,7 @@ def test_two_hosts_in_one_spec_are_refused_and_both_provenances_are_named():
     # shape: different identities, different entries, no field of one
     # overlapping a field of the other. Only the stanzas differ, so only the
     # stanzas can catch it.
-    here = fragment("tokenizer-a", TIER0, machine="node-18", authored_by="ana")
+    here = fragment("tokenizer-a", CLASS0, machine="node-18", authored_by="ana")
     elsewhere = fragment(
         "tokenizer-b",
         {"host": {"tokenizers": [dict(TOKENIZER, id="llama-128k-bpe")]}},
@@ -243,7 +243,7 @@ def test_the_refusal_says_the_fragments_are_authored_for_different_machines():
     # says what the fragments claim and not where their numbers came from.
     with pytest.raises(SpecRefusal) as refused:
         merge(
-            [fragment("a", TIER0, machine="node-18"), fragment("b", machine="node-22")]
+            [fragment("a", CLASS0, machine="node-18"), fragment("b", machine="node-22")]
         )
     message = str(refused.value)
     assert refused.value.what.endswith(
@@ -257,7 +257,7 @@ def test_the_same_two_tokenizers_merge_when_the_machine_agrees():
     # `test_two_hosts_in_one_spec_are_refused_and_both_provenances_are_named`:
     # the same two measurements, the same two authors and dates, differing only
     # in the machine they name.
-    here = fragment("tokenizer-a", TIER0, machine="node-18", authored_by="ana")
+    here = fragment("tokenizer-a", CLASS0, machine="node-18", authored_by="ana")
     also_here = fragment(
         "tokenizer-b",
         {"host": {"tokenizers": [dict(TOKENIZER, id="llama-128k-bpe")]}},
@@ -280,29 +280,29 @@ def test_a_merged_document_merged_again_keeps_the_names_that_built_it():
     # week's probe into the saved document. A merged document is a legal
     # fragment, so this works -- and the block whose whole job is to say where
     # the numbers came from must not lose the fragments of the first round.
-    first = merge([fragment("tier0", TIER0), fragment("tier1", TIER1)])
+    first = merge([fragment("class0", CLASS0), fragment("class1", CLASS1)])
     again = merge(
         [
             Fragment.from_mapping(first.document, "machine.yaml"),
-            fragment("tier2", TIER2),
+            fragment("class2", CLASS2),
             fragment("links", LINKS),
         ]
     )
     assert again.document["provenance"]["fragments"] == [
-        "tier0",
-        "tier1",
+        "class0",
+        "class1",
         "machine.yaml",
-        "tier2",
+        "class2",
         "links",
     ]
 
 
 def test_one_machine_named_twice_with_two_answers_is_refused():
     other_cpu = {
-        "host": dict(TIER0["host"], cpu={"cores_physical": 128, "cores_logical": 256})
+        "host": dict(CLASS0["host"], cpu={"cores_physical": 128, "cores_logical": 256})
     }
     with pytest.raises(SpecRefusal) as refused:
-        merge([fragment("first", TIER0), fragment("second", other_cpu)])
+        merge([fragment("first", CLASS0), fragment("second", other_cpu)])
     message = str(refused.value)
     assert refused.value.rule is Rule.ONE_MACHINE
     assert "host.cpu.cores_physical" in message
@@ -311,7 +311,7 @@ def test_one_machine_named_twice_with_two_answers_is_refused():
 
 
 def test_two_fragments_that_agree_are_not_a_conflict():
-    combination = merge([fragment("first", TIER0), fragment("second", TIER0)])
+    combination = merge([fragment("first", CLASS0), fragment("second", CLASS0)])
     assert combination.sources["host.cpu.cores_physical"] == ("first", "second")
 
 
@@ -324,21 +324,21 @@ def test_a_width_table_is_combined_across_the_probes_that_measured_it():
 
 
 def test_one_width_measured_twice_differently_is_refused():
-    disagrees = copy.deepcopy(TIER2)
+    disagrees = copy.deepcopy(CLASS2)
     disagrees["device"]["runtime_constants"]["driver_and_collective_reserve_bytes"][
         1
     ] = 980.0e6
     with pytest.raises(SpecRefusal) as refused:
-        merged(tier2=disagrees)
+        merged(class2=disagrees)
     assert refused.value.rule is Rule.ONE_MACHINE
     assert "driver_and_collective_reserve_bytes[1]" in str(refused.value)
 
 
 def test_two_fragments_pinned_to_different_stacks_are_refused_as_a_stack_conflict():
-    moved = copy.deepcopy(TIER1)
+    moved = copy.deepcopy(CLASS1)
     moved["device"]["software_pinned_to"]["rocm"] = "7.3.0"
     with pytest.raises(SpecRefusal) as refused:
-        merge([fragment("tier1", TIER1), fragment("tier1b", moved)])
+        merge([fragment("class1", CLASS1), fragment("class1b", moved)])
     assert refused.value.rule is Rule.PINNED_STACK
     assert "fragments pinned to different stacks" in refused.value.remedy
 
@@ -351,14 +351,14 @@ def test_the_merged_document_reads_as_a_spec_and_echoes_back():
 def test_the_merged_provenance_names_every_fragment_and_its_origin():
     combination = merge(
         [
-            fragment("tier0", TIER0),
-            fragment("tier1", TIER1, origin="datasheet", date="2026-09-20"),
-            fragment("tier2", TIER2),
+            fragment("class0", CLASS0),
+            fragment("class1", CLASS1, origin="datasheet", date="2026-09-20"),
+            fragment("class2", CLASS2),
             fragment("links", LINKS, authored_by="another person"),
         ]
     )
     provenance = combination.document["provenance"]
-    assert provenance["fragments"] == ["tier0", "tier1", "tier2", "links"]
+    assert provenance["fragments"] == ["class0", "class1", "class2", "links"]
     assert provenance["origin"] == "mixed"
     assert provenance["date"] == "2026-09-20"
     assert provenance["authored_by"] == "a person, another person"
@@ -388,7 +388,7 @@ def test_a_fragment_that_does_not_state_where_it_came_from_is_refused(path):
             "origin": "probed",
         },
     }
-    document.update(copy.deepcopy(TIER0))
+    document.update(copy.deepcopy(CLASS0))
     *blocks, leaf = path.split(".")
     node = document
     for block in blocks:
@@ -427,7 +427,7 @@ def test_one_id_over_two_files_is_refused_with_both_fingerprints():
         "host": {"tokenizers": [dict(TOKENIZER, fingerprint="sha256:" + "b" * 64)]}
     }
     with pytest.raises(SpecRefusal) as refused:
-        merge([fragment("first", TIER0), fragment("second", revised)])
+        merge([fragment("first", CLASS0), fragment("second", revised)])
     assert refused.value.rule is Rule.TOKENIZER_IDENTITY
     what = refused.value.what
     assert what.startswith(f"'qwen3-151k-bpe' is 'sha256:{'a' * 64}' in 'first' (")
@@ -440,7 +440,7 @@ def test_one_tokenizer_measured_on_both_backends_is_not_a_conflict():
             "tokenizers": [dict(TOKENIZER, backend="slow", encode_tokens_per_s=1.6e5)]
         }
     }
-    combination = merge([fragment("fast", TIER0), fragment("slow", slow)])
+    combination = merge([fragment("fast", CLASS0), fragment("slow", slow)])
     backends = [
         entry["backend"] for entry in combination.document["host"]["tokenizers"]
     ]
@@ -450,7 +450,7 @@ def test_one_tokenizer_measured_on_both_backends_is_not_a_conflict():
 def test_the_same_entry_measured_twice_differently_is_refused():
     faster = {"host": {"tokenizers": [dict(TOKENIZER, encode_tokens_per_s=9.0e6)]}}
     with pytest.raises(SpecRefusal) as refused:
-        merge([fragment("first", TIER0), fragment("second", faster)])
+        merge([fragment("first", CLASS0), fragment("second", faster)])
     assert refused.value.rule is Rule.ONE_MACHINE
     assert "host.tokenizers[qwen3-151k-bpe fast]" in str(refused.value)
 
@@ -473,9 +473,9 @@ def test_a_complete_spec_validates_and_resolves():
 
 
 def test_every_missing_field_is_reported_and_not_only_the_first():
-    thin = without(TIER1, "device", "arch")
+    thin = without(CLASS1, "device", "arch")
     thin = without(thin, "device", "memory", "capacity_bytes")
-    checked = validate(merge(fragments(tier1=thin)).document)
+    checked = validate(merge(fragments(class1=thin)).document)
     missing = {
         refusal.what.split("`")[1]
         for refusal in checked.refusals
@@ -487,17 +487,17 @@ def test_every_missing_field_is_reported_and_not_only_the_first():
 
 def test_a_missing_runtime_constant_has_no_default():
     thin = without(
-        TIER1, "device", "runtime_constants", "persistent_forward_buffer_bytes"
+        CLASS1, "device", "runtime_constants", "persistent_forward_buffer_bytes"
     )
-    checked = validate(merge(fragments(tier1=thin)).document)
+    checked = validate(merge(fragments(class1=thin)).document)
     rules = {refusal.rule for refusal in checked.refusals}
     assert rules == {Rule.NO_DEFAULTS}
     assert "persistent_forward_buffer_bytes" in str(checked.refusals[0])
 
 
 def test_a_spec_peak_with_no_derate_beside_it_is_refused():
-    thin = without(TIER1, "device", "compute", "derate")
-    checked = validate(merge(fragments(tier1=thin)).document)
+    thin = without(CLASS1, "device", "compute", "derate")
+    checked = validate(merge(fragments(class1=thin)).document)
     assert [refusal.rule for refusal in checked.refusals] == [Rule.DERATE]
 
 
@@ -556,12 +556,12 @@ def test_a_stack_difference_is_rendered_by_the_run_that_refused_nothing():
 def test_a_transfer_keeps_the_source_stack_out_of_this_machines_pin():
     # The constants came from another spec; the stack that spec was pinned to is
     # provenance about them, not a claim about this host's stack.
-    carried = copy.deepcopy(TIER2)
+    carried = copy.deepcopy(CLASS2)
     carried["device"]["software_pinned_to"] = dict(STACK, rocm="7.0.2")
     combination = merge(
         fragments()[:2]
         + [
-            fragment("tier2", carried, origin="transferred-from:mi300x-8gpu"),
+            fragment("class2", carried, origin="transferred-from:mi300x-8gpu"),
             fragment("links", LINKS),
         ]
     )
@@ -570,7 +570,7 @@ def test_a_transfer_keeps_the_source_stack_out_of_this_machines_pin():
     assert not checked.ok
     assert checked.refusals[0].rule is Rule.PINNED_STACK
     assert checked.refusals[0].what == (
-        "'tier2' (machine 'mi355x-8gpu-2node', transferred-from:mi300x-8gpu, "
+        "'class2' (machine 'mi355x-8gpu-2node', transferred-from:mi300x-8gpu, "
         "by a person on 2026-09-18) carried constants over from 'mi300x-8gpu', "
         "probed against rocm '7.0.2', into a spec pinned to rocm '7.2.4'"
     )
@@ -580,7 +580,7 @@ def test_a_transfer_that_names_no_stack_at_all_is_refused():
     combination = merge(
         fragments()[:2]
         + [
-            fragment("tier2", TIER2, origin="transferred-from:mi300x-8gpu"),
+            fragment("class2", CLASS2, origin="transferred-from:mi300x-8gpu"),
             fragment("links", LINKS),
         ]
     )
@@ -595,9 +595,9 @@ def test_a_saved_transfer_merged_again_names_the_merge_that_dropped_its_pin():
     # transfer with no pin is the control, and its text does not change. Saved
     # twice, the provenance lists the pinned transfer and the first saved
     # document, which is itself a transfer with no pin; the remedy names both.
-    carried = copy.deepcopy(TIER2)
+    carried = copy.deepcopy(CLASS2)
     carried["device"]["software_pinned_to"] = dict(STACK)
-    transfer = fragment("tier2", carried, origin="transferred-from:mi300x-8gpu")
+    transfer = fragment("class2", carried, origin="transferred-from:mi300x-8gpu")
     saved = Fragment.from_mapping(merge([transfer]).document, "t.yaml")
     rest = fragments()[:2] + [fragment("links", LINKS)]
     (refused,) = validate(merge([saved] + rest)).refusals
@@ -607,17 +607,17 @@ def test_a_saved_transfer_merged_again_names_the_merge_that_dropped_its_pin():
         "by a person on 2026-09-18) carried constants over from 'mi300x-8gpu', "
         "and its provenance names the fragments an earlier merge built it from"
     )
-    bare = fragment("tier2", TIER2, origin="transferred-from:mi300x-8gpu")
+    bare = fragment("class2", CLASS2, origin="transferred-from:mi300x-8gpu")
     first_hand = validate(merge(fragments()[:2] + [bare, fragment("links", LINKS)]))
     assert first_hand.refusals[0].what == (
-        "'tier2' (machine 'mi355x-8gpu-2node', transferred-from:mi300x-8gpu, "
+        "'class2' (machine 'mi355x-8gpu-2node', transferred-from:mi300x-8gpu, "
         "by a person on 2026-09-18) carried constants over from 'mi300x-8gpu' "
         "without saying which stack they were probed against"
     )
     twice = Fragment.from_mapping(merge([saved]).document, "t2.yaml")
     (refused,) = validate(merge([twice] + rest)).refusals
     assert refused.remedy == (
-        "merge the fragments it was built from ('tier2', 't.yaml') in its place, "
+        "merge the fragments it was built from ('class2', 't.yaml') in its place, "
         "since a transfer states its source's stack pin there and nowhere else; "
         "any of them that is itself a saved document with no pin is refused the "
         "same way"
@@ -629,20 +629,20 @@ def test_a_transfer_whose_provenance_lists_no_fragments_is_refused_first_hand():
     # wrote this transfer left its pin out, as in the first-hand case.
     origin = "transferred-from:mi300x-8gpu"
     rest = fragments()[:2] + [fragment("links", LINKS)]
-    empty = fragment("tier2", TIER2, origin=origin, fragments=[])
-    bare = fragment("tier2", TIER2, origin=origin)
+    empty = fragment("class2", CLASS2, origin=origin, fragments=[])
+    bare = fragment("class2", CLASS2, origin=origin)
     (refused,) = validate(merge(rest + [empty])).refusals
     (control,) = validate(merge(rest + [bare])).refusals
     assert str(refused) == str(control)
 
 
 def test_a_transfer_from_a_spec_pinned_to_this_stack_validates():
-    carried = dict(copy.deepcopy(TIER2))
+    carried = dict(copy.deepcopy(CLASS2))
     carried["device"]["software_pinned_to"] = dict(STACK)
     combination = merge(
         fragments()[:2]
         + [
-            fragment("tier2", carried, origin="transferred-from:mi300x-8gpu"),
+            fragment("class2", carried, origin="transferred-from:mi300x-8gpu"),
             fragment("links", LINKS),
         ]
     )
@@ -672,12 +672,12 @@ def test_the_transfer_condition_names_itself_as_unaskable_of_a_document():
     # The same spec is refused as a `Merge` and clear as the document it makes,
     # because the source's pin is deliberately in no field of the document. A
     # caller holding only the document cannot ask it, so its check must say so.
-    carried = copy.deepcopy(TIER2)
+    carried = copy.deepcopy(CLASS2)
     carried["device"]["software_pinned_to"] = dict(STACK, rocm="7.0.2")
     combination = merge(
         fragments()[:2]
         + [
-            fragment("tier2", carried, origin="transferred-from:mi300x-8gpu"),
+            fragment("class2", carried, origin="transferred-from:mi300x-8gpu"),
             fragment("links", LINKS),
         ]
     )
@@ -695,9 +695,9 @@ def test_a_saved_document_merged_again_does_not_claim_to_have_asked_the_transfer
     # source pin out and says only `origin: mixed`, so a `Merge` of the saved
     # document has no transfer to ask the condition of. A re-merged all-`probed`
     # document is the control.
-    carried = copy.deepcopy(TIER2)
+    carried = copy.deepcopy(CLASS2)
     carried["device"]["software_pinned_to"] = dict(STACK, rocm="7.0.2")
-    transfer = fragment("tier2", carried, origin="transferred-from:mi300x-8gpu")
+    transfer = fragment("class2", carried, origin="transferred-from:mi300x-8gpu")
     combination = merge(fragments()[:2] + [transfer, fragment("links", LINKS)])
     asked = {"tp_widths": (1, 2, 4, 8), "observed_stack": STACK}
     first = validate(combination, **asked)
@@ -735,10 +735,10 @@ def test_a_desk_fix_refusal_does_not_hide_the_expensive_one():
     # width table behind it is present and schema-valid, and the width nobody
     # measured costs an eight-GPU reservation. Both are reported, and so is the
     # stack, because each question is asked of the fields that did resolve.
-    thin = without(TIER1, "device", "memory", "derate")
+    thin = without(CLASS1, "device", "memory", "derate")
     with pytest.warns(StackMismatch):
         checked = validate(
-            merge(fragments(tier1=thin)).document,
+            merge(fragments(class1=thin)).document,
             tp_widths=(1, 2, 4, 8, 16),
             observed_stack=dict(STACK, rocm="7.3.0"),
             strict=True,
@@ -782,7 +782,7 @@ def test_a_question_asked_of_part_of_what_it_reads_is_not_called_unasked():
     absent = ("device", "runtime_constants", "allocator_retained_after_load_bytes")
     checked = validate(
         merge(
-            fragments(tier1=without(TIER1, *absent), tier2=without(TIER2, *absent))
+            fragments(class1=without(CLASS1, *absent), class2=without(CLASS2, *absent))
         ).document,
         tp_widths=(16,),
     )
@@ -802,7 +802,7 @@ def test_a_question_none_of_whose_fields_resolved_was_not_asked_at_all():
     # The other side of the same split: with both width tables gone there is
     # nothing the question could have been asked of, so it is unasked and the
     # count of what the run reached must not include it.
-    thin1, thin2 = TIER1, TIER2
+    thin1, thin2 = CLASS1, CLASS2
     for name in (
         "allocator_retained_after_load_bytes",
         "driver_and_collective_reserve_bytes",
@@ -810,7 +810,7 @@ def test_a_question_none_of_whose_fields_resolved_was_not_asked_at_all():
         thin1 = without(thin1, "device", "runtime_constants", name)
         thin2 = without(thin2, "device", "runtime_constants", name)
     checked = validate(
-        merge(fragments(tier1=thin1, tier2=thin2)).document, tp_widths=(16,)
+        merge(fragments(class1=thin1, class2=thin2)).document, tp_widths=(16,)
     )
     (unasked,) = [
         condition
@@ -899,14 +899,14 @@ def test_a_value_of_the_wrong_shape_is_reported():
 def test_two_tokenizer_entries_claiming_one_architecture_are_refused():
     twice = {
         "host": dict(
-            TIER0["host"],
+            CLASS0["host"],
             tokenizers=[
                 TOKENIZER,
                 dict(TOKENIZER, id="other", fingerprint="sha256:" + "c" * 64),
             ],
         )
     }
-    document = merge(fragments(tier0=twice)).document
+    document = merge(fragments(class0=twice)).document
     checked = validate(document)
     assert [refusal.rule for refusal in checked.refusals] == [Rule.TOKENIZER_IDENTITY]
 
@@ -927,20 +927,20 @@ def refused_by_condition():
     rule alone can be earned by a neighbouring condition while the one named
     here produces nothing.
     """
-    thin = without(TIER1, "device", "arch")
+    thin = without(CLASS1, "device", "arch")
     no_constant = without(
-        TIER1, "device", "runtime_constants", "persistent_forward_buffer_bytes"
+        CLASS1, "device", "runtime_constants", "persistent_forward_buffer_bytes"
     )
-    no_derate = without(TIER1, "device", "memory", "derate")
+    no_derate = without(CLASS1, "device", "memory", "derate")
     no_probe = without(
-        TIER1, "device", "runtime_constants", "allocator_retained_after_load_bytes"
+        CLASS1, "device", "runtime_constants", "allocator_retained_after_load_bytes"
     )
-    carried = copy.deepcopy(TIER2)
+    carried = copy.deepcopy(CLASS2)
     carried["device"]["software_pinned_to"] = dict(STACK, rocm="7.0.2")
     transferred = merge(
         fragments()[:2]
         + [
-            fragment("tier2", carried, origin="transferred-from:mi300x-8gpu"),
+            fragment("class2", carried, origin="transferred-from:mi300x-8gpu"),
             fragment("links", LINKS),
         ]
     )
@@ -951,19 +951,19 @@ def refused_by_condition():
     return {
         MISSING_ASKED: [
             (
-                validate(merge(fragments(tier1=thin)).document),
+                validate(merge(fragments(class1=thin)).document),
                 Rule.SHAPE,
                 "`device.arch` is missing",
             ),
             (
-                validate(merge(fragments(tier1=no_constant)).document),
+                validate(merge(fragments(class1=no_constant)).document),
                 Rule.NO_DEFAULTS,
                 "`device.runtime_constants.persistent_forward_buffer_bytes` is missing",
             ),
         ],
         DERATES_ASKED: [
             (
-                validate(merge(fragments(tier1=no_derate)).document),
+                validate(merge(fragments(class1=no_derate)).document),
                 Rule.DERATE,
                 "`device.memory.derate` is missing, and its block states a spec peak",
             )
@@ -977,7 +977,7 @@ def refused_by_condition():
         ],
         PROBES_ASKED: [
             (
-                validate(merge(fragments(tier1=no_probe)).document, tp_widths=(1,)),
+                validate(merge(fragments(class1=no_probe)).document, tp_widths=(1,)),
                 Rule.NO_DEFAULTS,
                 (
                     "no probe here fills `allocator_retained_after_load_bytes` "
@@ -1081,7 +1081,7 @@ def test_a_tokenizer_row_names_the_fragment_that_supplied_the_entry():
     )
     assert basis.contributions
     for row in basis.contributions:
-        assert row.supplied_by == ("tier0",), row.path
+        assert row.supplied_by == ("class0",), row.path
 
 
 def test_a_spec_peak_is_reported_with_its_derate_and_the_derated_value():
@@ -1133,10 +1133,10 @@ def test_a_quantity_names_the_fragment_each_field_came_from():
     spec = MachineSpec.from_mapping(combination.document)
     basis = explain(spec, "kv_blocks", tp_width=8, origin=combination)
     supplied = {row.path: row.supplied_by for row in basis.contributions}
-    assert supplied["device.memory.capacity_bytes"] == ("tier1",)
+    assert supplied["device.memory.capacity_bytes"] == ("class1",)
     assert supplied[
         "device.runtime_constants.driver_and_collective_reserve_bytes[8]"
-    ] == ("tier2",)
+    ] == ("class2",)
 
 
 def test_without_a_merge_a_basis_still_reads_but_names_no_fragment():
@@ -1303,7 +1303,7 @@ def test_the_basis_prints_its_spec_and_one_line_per_field():
     printed = str(explain(spec, "host.ipc", origin=combination)).splitlines()
     assert printed[0].endswith(spec.digest())
     assert printed[1].strip().startswith("host.ipc.zmq_roundtrip_s = 5e-05")
-    assert printed[1].endswith("[tier0]  probed")
+    assert printed[1].endswith("[class0]  probed")
 
 
 # --- one reading per rank ----------------------------------------------------
@@ -1505,7 +1505,7 @@ def test_the_pair_merged_cleanly_before_the_counts_were_emitted():
         machine="node-18",
         authored_by="ana",
     )
-    combination = merge([elsewhere, fragment("tier0", TIER0, machine="node-18")])
+    combination = merge([elsewhere, fragment("class0", CLASS0, machine="node-18")])
     assert combination.document["host"]["cpu"]["cores_physical"] == 96
     assert [entry["id"] for entry in combination.document["host"]["tokenizers"]] == [
         "llama-128k-bpe",
@@ -1528,12 +1528,12 @@ def test_the_probes_counts_refuse_the_pair_that_used_to_merge(tmp_path):
         processors=published_topology(tmp_path, cores_physical=8),
     )
     with pytest.raises(SpecRefusal) as refused:
-        merge([laptop, fragment("tier0", TIER0, machine="node-18")])
+        merge([laptop, fragment("class0", CLASS0, machine="node-18")])
     message = str(refused.value)
     assert refused.value.rule is Rule.ONE_MACHINE
     assert "`host.cpu.cores_physical` is 8 in" in message
     assert "and 96 in" in message
-    for named in ("tokenizer-laptop", "tier0", "node-18", "ana"):
+    for named in ("tokenizer-laptop", "class0", "node-18", "ana"):
         assert named in message, f"{named} is not named in: {message}"
 
 
@@ -1552,14 +1552,14 @@ def test_the_same_pair_merges_when_the_counts_agree(tmp_path):
         source="tokenizer-node",
         processors=published_topology(tmp_path, cores_physical=96, packages=2),
     )
-    combination = merge([here, fragment("tier0", TIER0, machine="node-18")])
+    combination = merge([here, fragment("class0", CLASS0, machine="node-18")])
     assert combination.document["host"]["cpu"] == {
         "cores_physical": 96,
         "cores_logical": 192,
     }
     assert combination.sources["host.cpu.cores_physical"] == (
         "tokenizer-node",
-        "tier0",
+        "class0",
     )
 
 
@@ -1920,9 +1920,9 @@ def test_a_missing_entry_no_probe_fills_is_two_refusals_and_not_one():
     # that does not exist. The two always arrive together: the probe question
     # is asked only where the entry is absent, which is when the first fires.
     thin = without(
-        TIER1, "device", "runtime_constants", "allocator_retained_after_load_bytes"
+        CLASS1, "device", "runtime_constants", "allocator_retained_after_load_bytes"
     )
-    checked = validate(merge(fragments(tier1=thin)).document, tp_widths=(1,))
+    checked = validate(merge(fragments(class1=thin)).document, tp_widths=(1,))
     assert not checked.ok
     assert [refusal.rule for refusal in checked.refusals] == [
         Rule.NO_DEFAULTS,
@@ -2094,7 +2094,7 @@ def test_the_probe_question_says_it_could_not_be_asked_when_its_table_is_gone():
     absent = ("device", "runtime_constants", "allocator_retained_after_load_bytes")
     checked = validate(
         merge(
-            fragments(tier1=without(TIER1, *absent), tier2=without(TIER2, *absent))
+            fragments(class1=without(CLASS1, *absent), class2=without(CLASS2, *absent))
         ).document,
         tp_widths=(16,),
     )

@@ -10,7 +10,7 @@ AI agents work under the `agent-team` plugin (enabled in `.claude/settings.json`
 ```bash
 pip install -e .                          # editable install
 python -m pytest tests/                   # the full suite; needs a GPU driver
-scripts/compass/gate_cpu.sh               # CPU tier, per task; no driver as a batch; must be green: scripts/compass/README.md
+scripts/compass/gate_cpu.sh               # CPU gate, per task; no driver as a batch; must be green: scripts/compass/README.md
 black . && ruff check .                   # format + lint (CI enforced)
 ```
 
