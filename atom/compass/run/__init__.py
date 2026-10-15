@@ -16,7 +16,9 @@ member, the frontend's included, connects to.
 - `frontend(config)` wraps the `CoreManager` construction in `LLMEngine`: it
   selects the simulated runner, serves the authority and installs the
   frontend LP's runtime; leaving it, after READY from every engine, starts
-  the run.
+  the run. It refuses an `LLMEngine` the API server is not building and the
+  Atomesh entrypoints, and makes a sync utility command on the frontend's
+  clock owner refuse.
 - `engine(config)` wraps the engine's construction in its own process the
   same way, and maps every DP rank to the engine LP for the process-group
   check.
@@ -106,6 +108,7 @@ carries.
 
 import ast
 import contextlib
+import functools
 import hashlib
 import json
 import math
@@ -113,8 +116,10 @@ import os
 import platform
 import re
 import shutil
+import sys
 import threading
 import time
+import traceback
 from collections import Counter
 from pathlib import Path
 
@@ -340,7 +345,8 @@ def _hand_ins(run: dict) -> list[str]:
 
 class _RecordingAuthority(ClockAuthority):
     """The authority, recording the step table: a row per reply and a row per
-    message each reply releases; and the wall seconds of the run, from its start
+    message each reply releases, from the receiver's clock before that grant to
+    the message's arrival; and the wall seconds of the run, from its start
     to the end of each client run in `ends` and to the finish, which sets `done`.
     A co-hosting frontend starts the run as it starts its own; otherwise it
     starts once every server LP, and every member of one declared with members,
@@ -359,6 +365,7 @@ class _RecordingAuthority(ClockAuthority):
         self.ends = []  # the wall time each client run ended
         self.done = threading.Event()
         self._joining = set(_hand_ins(run))
+        self._clock_before = {}  # LP -> its clock before its latest grant
         # A rerun into the same out_dir starts from none of the last run's files.
         out = Path(run["out_dir"])
         for name in (
@@ -382,6 +389,7 @@ class _RecordingAuthority(ClockAuthority):
         )
 
     def record(self, lp, time_from, time_to, kind, recovered) -> None:
+        self._clock_before[lp] = time_from
         self.steps.record(lp, time_from, time_to, kind, detail="recovered" * recovered)
 
     def on_request(self, lp, kind, t, log, t_daemon=math.inf, member=None) -> list:
@@ -394,7 +402,9 @@ class _RecordingAuthority(ClockAuthority):
             lp = to[0] if isinstance(to, tuple) else to
             for ch, msgs in released.items():
                 for seq, arrival in msgs:
-                    self.steps.record(lp, arrival, arrival, "release", ch, seq)
+                    # From the receiver's clock as the grant found it.
+                    clock = self._clock_before[lp]
+                    self.steps.record(lp, clock, arrival, "release", ch, seq)
         while len(self.ends) < len(self.ended):
             self.ends.append(time.monotonic())
             if self.final_clocks is None:  # an end before the last
@@ -462,6 +472,7 @@ def frontend(config):
                 )
             config.runner_qualname = parity.RUNNER
         return contextlib.nullcontext()
+    _refuse_unserved()
     pc = config.parallel_config
     widths = (pc.data_parallel_size, config.pipeline_parallel_size)
     if widths[1] != 1 or config.enable_rapidserve:
@@ -497,6 +508,7 @@ def frontend(config):
             "the channel table declares, and a rank that never joins holds the run"
         )
     config.runner_qualname = COMPASS_RUNNER_QUALNAME
+    _refuse_sync_utility_commands()
     lp = FRONTEND if side is None else LpId(f"{FRONTEND.name}-{side}")
     authority = None
     if not standalone:
@@ -511,6 +523,56 @@ def frontend(config):
     rt = _runtime(lp, run)
     rt.client_run_ended = lambda k: _frontend_hand_in(run, rt, k)
     return _start_on_leaving(rt, authority)
+
+
+def _refuse_unserved() -> None:
+    """Refuse the frontends no client of a simulated run reaches: the Atomesh
+    standalone service, and an `LLMEngine` that the API server's ``main`` is
+    not building, such as an offline one."""
+    from atom.utils import envs
+
+    if envs.USE_ATOMESH_ENTRYPOINTS:
+        raise ValueError(
+            "USE_ATOMESH_ENTRYPOINTS=1 serves through the Atomesh standalone "
+            "service, whose worker thread sends each request, and only the "
+            "frontend's clock owner may; serve a simulated run with the API server"
+        )
+    root = Path(atom.__file__).parent
+    on_stack = {
+        (Path(f.f_code.co_filename), f.f_code.co_name)
+        for f, _ in traceback.walk_stack(sys._getframe())
+    }
+    building = (root / "model_engine" / "llm_engine.py", "__init__") in on_stack
+    served = (root / "entrypoints" / "openai" / "api_server.py", "main") in on_stack
+    if building and not served:
+        raise ValueError(
+            "an offline LLMEngine has no client to bind the traffic LP, so no "
+            "grant passes its first request; serve a simulated run with the API "
+            "server's --compass-run"
+        )
+
+
+def _refuse_sync_utility_commands() -> None:
+    """Make `CoreManager.broadcast_utility_command_sync` refuse a call on the
+    frontend's clock owner, which waits on wall time for replies that reach it
+    only at that owner's next clock call."""
+    from atom.model_engine.engine_core_mgr import CoreManager
+
+    sync = CoreManager.broadcast_utility_command_sync
+
+    @functools.wraps(sync)
+    def refusing(self, cmd, *args, **kwargs):
+        rt = clock.installed()
+        if rt is not None and threading.current_thread() is rt.owner:
+            why = f"sync utility command {cmd!r} on the clock owner"
+            rt.refusals.append(f"clock:{why}")
+            raise RuntimeError(
+                f"{rt.me}: {why}, which would wait on wall time for replies "
+                "released only at its next clock call"
+            )
+        return sync(self, cmd, *args, **kwargs)
+
+    CoreManager.broadcast_utility_command_sync = refusing
 
 
 def engine(config):
