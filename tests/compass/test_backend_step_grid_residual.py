@@ -24,13 +24,16 @@ from fractions import Fraction
 import numpy as np
 import pytest
 from test_backend_step_grid import (
+    B37,
     MIDDLE,
     chunks,
     decode,
     eager,
     fitted,
+    graphed,
     linear,
     point,
+    replay,
     view,
 )
 from test_dp_step_max import runner
@@ -38,7 +41,7 @@ from test_dp_step_max import runner
 from atom.compass.backends import CostRefused, Method, RequestShape
 from atom.compass.backends.shape import sum_context
 from atom.compass.backends.step_grid import equivalent_shape
-from atom.compass.backends.step_grid_residual import V1, Recipe, Residual, fit
+from atom.compass.backends.step_grid_residual import V1, Recipe, Residual, band, fit
 
 HOMOGENEOUS = [767] * 32
 GROUPED = [575] * 16 + [959] * 16
@@ -258,8 +261,10 @@ def test_a_member_the_residual_does_not_select_never_loads():
         ({**linear(), "intercept": None}, 1.0, "TypeError"),
         ({k: v for k, v in linear().items() if k != "form"}, 1.0, "KeyError: 'form'"),
         (linear(), 0.0, "weight 0.0 is not positive and finite"),
+        ({"form": "band", "values": {}}, 1.0, "no band"),
+        ({"form": "band", "values": {"a": -1.0}}, 1.0, "band factor that is not"),
     ],
-    ids=["transform", "features", "nan", "intercept", "form", "weight"],
+    ids=["transform", "features", "nan", "intercept", "form", "weight", "none", "band"],
 )
 def test_a_selected_member_that_cannot_load_fails_loading_naming_it(
     member, weight, match
@@ -289,11 +294,34 @@ def features(v):
     return dict(zip(V1.names, map(float, V1(v.requests))))
 
 
+def test_a_band_member_prices_decode_by_rung_and_prefill_by_token_band():
+    values = {
+        "decode rung 32": 1.25,
+        "decode rung eager": 1.5,
+        "prefill tokens 0-512": 2,
+    }
+    banded = residual(b={"form": "band", "values": values})
+    r = graphed(replay(residual=banded))
+
+    # GROUPED replays rung 32: f(32, 767) + 3200; B37 replays rung 48.
+    assert r.forward(decode(GROUPED)).predicted_s == 7461e-6 * 1.25
+    assert r.forward(decode(B37)).predicted_s == 0.0
+    assert r.refused_commands() == (
+        "cost:step-grid: the residual's member b has no band decode rung 48",
+    )
+    assert price(GROUPED, eager(residual=banded)) == (4261e-6 * 1.5, ())
+    final = [point(1, 8, 192, time=3)]
+    prefill = eager(residual=banded, output=final, no_output=MIDDLE, unit="ms")
+    assert chunks(prefill) == ([(False, 2e-3)] * 3 + [(True, 6e-3)], ())
+    # A batch holding a prefill row is read at its token count.
+    assert band(view((1, 600, True), (511, 511, False))) == "prefill tokens 512-2048"
+
+
 def triples_of(factor, n=400, b=(24, 41), prefill=True):
     """`n` triples: one in four of one to three prefill chunks (none without
     `prefill`), the rest a decode batch of B in `b` rows reading two contexts,
     grouped, shuffled or alternating. Each is measured at its lookup times
-    `factor` of its features, times 1 within 0.5%."""
+    `factor` of its view, times 1 within 0.5%."""
     rng, triples = np.random.default_rng(0), []
     for i in range(n):
         if prefill and not i % 4:
@@ -308,9 +336,7 @@ def triples_of(factor, n=400, b=(24, 41), prefill=True):
             rows = [(1, int(k), True) for k in ks]
         lookup = float(rng.uniform(1e-3, 5e-3))
         noise = 1.0 + rng.uniform(-0.005, 0.005)
-        triples.append(
-            (view(*rows), lookup, lookup * factor(features(view(*rows))) * noise)
-        )
+        triples.append((view(*rows), lookup, lookup * factor(view(*rows)) * noise))
     return triples
 
 
@@ -318,13 +344,16 @@ def load_and_price(mapping, factor):
     """Load `mapping`, and price ATOM's grouped and alternating batches with it."""
     loaded = Residual(mapping)
     for prompts in (GROUPED, ALTERNATING):
-        x = features(view(*[(1, p + 1, True) for p in prompts]))
-        expected = pytest.approx(4261e-6 * factor(x), rel=0.01)
-        assert price(prompts, eager(residual=loaded)) == (expected, ())
+        expected = 4261e-6 * factor(view(*[(1, p + 1, True) for p in prompts]))
+        assert price(prompts, eager(residual=loaded)) == (
+            pytest.approx(expected, rel=0.01),
+            (),
+        )
     return loaded
 
 
-def planted(x):
+def planted(v):
+    x = features(v)
     return math.exp(0.05 + 0.2 * x["order"] - 0.1 * x["raggedness"])
 
 
@@ -335,32 +364,49 @@ def test_the_fit_recovers_a_planted_factor_within_1pc_on_held_out_views():
     ((_, weight, member),) = load_and_price(mapping, planted).members
     assert weight == 1.0 and len(report["held_out"]) == 100
     for i in report["held_out"]:
-        x = features(triples[i][0])
-        assert member(tuple(x.values())) == pytest.approx(planted(x), rel=0.01)
+        v = triples[i][0]
+        assert member(v, tuple(features(v).values())) == pytest.approx(
+            planted(v), rel=0.01
+        )
+
+
+def curved(v):
+    x = features(v)
+    return math.exp(0.05 + 2 * x["order"] - x["raggedness"])
+
+
+def straight(v):
+    x = features(v)
+    return 0.2 + 3 * x["order"] + 0.5 * x["raggedness"]
+
+
+def stepped(v):
+    return 1.1 if band(v) == "decode rung eager" else 1.3
 
 
 @pytest.mark.parametrize(
     "factor,selected",
-    [
-        (lambda x: math.exp(0.05 + 2 * x["order"] - x["raggedness"]), "exp"),
-        (lambda x: 0.2 + 3 * x["order"] + 0.5 * x["raggedness"], "identity"),
-    ],
-    ids=["exp", "identity"],
+    [(curved, "exp"), (straight, "identity"), (stepped, "band")],
+    ids=["exp", "identity", "band"],
 )
-def test_both_members_are_kept_and_the_lower_held_out_error_is_selected(
+def test_every_member_is_kept_and_the_lowest_held_out_error_is_selected(
     factor, selected
 ):
     mapping, report = fit(triples_of(factor), seed=0)
 
     load_and_price(mapping, factor)
     assert mapping["selected"] == {selected: 1.0}
-    assert {
-        n: (m["transform"], list(m["coefficients"]))
-        for n, m in mapping["members"].items()
-    } == {
-        "identity": ("identity", list(V1.names)),
-        "exp": ("exp", list(V1.names)),
-    }
+    members = mapping["members"]
+    assert [(n, m["form"], m.get("transform")) for n, m in members.items()] == [
+        ("identity", "linear", "identity"),
+        ("exp", "linear", "exp"),
+        ("band", "band", None),
+    ]
+    assert list(members["exp"]["coefficients"]) == list(V1.names)
+    assert list(members["band"]["values"]) == [
+        "decode rung eager",
+        "prefill tokens 0-512",
+    ]
     errors = {n: m["held_out_error"] for n, m in report["members"].items()}
     assert min(errors, key=errors.get) == selected
 
@@ -371,15 +417,22 @@ def test_outliers_are_dropped_until_settled_and_the_hull_is_the_kept_views():
     dev = [i for i in range(len(triples)) if i not in held]
     # Five fitted triples measured 1.5x slow, one a 64-row batch no other reaches.
     wide = view(*[(1, 700, True)] * 64)
-    triples[dev[0]] = (wide, 1e-3, 1.5e-3 * planted(features(wide)))
+    triples[dev[0]] = (wide, 1e-3, 1.5e-3 * planted(wide))
     for i in dev[1:5]:
         v, lookup, measured = triples[i]
         triples[i] = (v, lookup, 1.5 * measured)
+    # Two 600-token prefill chunks alone in their band, measured 1x and 2x:
+    # every member drops both, and the band member holds no factor for them.
+    for i, (rows, slow) in zip(
+        dev[5:7], [((600, 600, False), 1), ((600, 700, False), 2)]
+    ):
+        triples[i] = (view(rows), 1e-3, slow * 1e-3 * planted(view(rows)))
     mapping, report = fit(triples, seed=0)
 
-    assert [(m["samples"], m["dropped"]) for m in report["members"].values()] == [
-        (295, 5)
-    ] * 2
+    counts = {n: (m["samples"], m["dropped"]) for n, m in report["members"].items()}
+    assert counts == dict.fromkeys(("identity", "exp", "band"), (293, 7))
+    assert report["members"]["band"]["zero"] == ["prefill tokens 512-2048"]
+    assert "prefill tokens 512-2048" not in mapping["members"]["band"]["values"]
     with pytest.raises(CostRefused, match="outside the residual's hull"):
         load_and_price(mapping, planted).factor(wide)
 
@@ -400,8 +453,8 @@ def test_a_feature_constant_over_the_fit_is_zeroed_and_held_at_its_value():
 
     load_and_price(mapping, planted)
     assert mapping["hull"]["equal"] == {"tokens": 1 / 32, "query_square": 1 / 32768}
-    for name, member in report["members"].items():
-        assert member["zero"] == ["tokens", "query_square"]
+    for name in ("identity", "exp"):
+        assert report["members"][name]["zero"] == ["tokens", "query_square"]
         coefficients = mapping["members"][name]["coefficients"]
         assert coefficients["tokens"] == coefficients["query_square"] == 0.0
 

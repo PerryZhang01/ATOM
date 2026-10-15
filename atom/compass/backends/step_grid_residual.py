@@ -35,11 +35,16 @@ A residual is a mapping, as a bundle holds it:
 
     MEMBER = {"form": "linear", "transform": "identity" | "exp",
               "intercept": z_0, "coefficients": {<feature>: z_f, ...}}
+           | {"form": "band", "values": {<band>: factor, ...}}
 
 A linear member outputs its transform of z_0 + Sum z_f.feature_f, naming every
-feature of the recipe; `form` leaves room for other forms beside it. Only the
-selected members load, so an error in one the residual does not select fails
-nothing, and an error in a selected one fails loading, naming it. The factor is
+feature of the recipe. A band member outputs the factor of the batch's band
+(`band`): a batch of decode rows only is in `decode rung <rung>`, `eager` when
+it replays no graph, and any other in `prefill tokens <lo>-<hi>`, its token
+count's band over `step_linear_fit.TOKEN_BANDS`; a batch in a band it holds
+no factor for is refused, naming the member and the band. Only the selected
+members load, so an error in one the residual does not select fails nothing,
+and an error in a selected one fails loading, naming it. The factor is
 Sum weight.output over the selected members.
 
 The hull is the features' range over the fit, read as `hull.py` reads a
@@ -51,17 +56,20 @@ else answers: no renormalising over the other members, and no lookup alone.
 
 `fit(triples, seed)` makes that mapping from (batch view, lookup seconds,
 measured seconds) triples; its target is measured over lookup, whatever timed
-the measurement. `seed` holds out `HELD_OUT` of the triples. Two linear
-members are fitted on the rest over every recipe feature: `identity` on the
-target, as relative error, and `exp` on its log. A feature constant over them
-gets coefficient zero and is named. Relative residuals more than `MAD_K`
-scaled MADs from their median, floored at `MAD_FLOOR`, are dropped and the
-rest refitted until the kept set settles. The member with the lower median
-absolute relative error on the held-out triples is selected with weight 1;
-the hull is that of its kept views' features. The report gives the held-out
-triples' indices and, per member, the kept and dropped counts, the centre and
-scaled MAD of the relative residuals, the condition number of the
-column-scaled design, the zeroed features and the held-out error. A fit whose
+the measurement. `seed` holds out `HELD_OUT` of the triples. Three members
+are fitted on the rest, each as relative error: linear over every recipe
+feature, `identity` on the target and `exp` on its log, and `band`, one
+factor per band the triples reach. A feature constant over them gets
+coefficient zero and is named. Relative residuals more than `MAD_K` scaled
+MADs from their median, floored at `MAD_FLOOR`, are dropped and the rest
+refitted until the kept set settles; a band left with no triple is named and
+holds no factor. The member with the lowest median absolute relative error
+on the held-out triples is selected with weight 1, a held-out triple in a
+band the fit holds no factor for counting as an error of 1; the hull is that
+of its kept views' features. The report gives the held-out triples' indices
+and, per member, the kept and dropped counts, the centre and scaled MAD of
+the relative residuals, the condition number of the column-scaled design, the
+zeroed features or bands and the held-out error. A fit whose
 triples hold out none or leave no more than one per coefficient, whose
 lookup or measured time is not positive and finite, or whose kept views span
 no hull is refused.
@@ -88,7 +96,14 @@ from atom.compass.backends.shape import (
     sum_tokens,
 )
 from atom.compass.backends.step_grid import _refused
-from atom.compass.backends.step_linear_fit import MAD_FLOOR, MAD_K, MAD_PASSES, _hull
+from atom.compass.backends.step_linear_fit import (
+    MAD_FLOOR,
+    MAD_K,
+    MAD_PASSES,
+    _band,
+    _hull,
+    _rung_key,
+)
 
 #: The share of the triples `fit` holds out to select its member.
 HELD_OUT = 0.25
@@ -162,7 +177,7 @@ class _Linear:
             raise ValueError("an intercept or coefficient that is not finite")
         self.intercept, *self.coefficients = values
 
-    def __call__(self, x: tuple[float, ...]) -> float:
+    def __call__(self, view: BatchView, x: tuple[float, ...]) -> float:
         z = self.intercept + sum(c * v for c, v in zip(self.coefficients, x))
         if self.transform == "identity":
             return z
@@ -172,7 +187,31 @@ class _Linear:
             return math.inf
 
 
-FORMS = {"linear": _Linear}
+def band(view: BatchView) -> str:
+    """A decode batch's rung, or any other batch's token band."""
+    if view.prefill:
+        return _band("prefill", (1, sum_tokens(view.requests)))
+    return _band(_rung_key(view.capture_rung), ())
+
+
+class _Band:
+    """A factor per band."""
+
+    def __init__(self, member: Mapping, features: tuple[str, ...]) -> None:
+        self.values = {str(k): float(v) for k, v in member["values"].items()}
+        if not self.values:
+            raise ValueError("no band")
+        if any(map(_bad, self.values.values())):
+            raise ValueError("a band factor that is not positive and finite")
+
+    def __call__(self, view: BatchView, x: tuple[float, ...]) -> float:
+        key = band(view)
+        if key not in self.values:
+            raise LookupError(f"no band {key}")
+        return self.values[key]
+
+
+FORMS = {"linear": _Linear, "band": _Band}
 
 
 def _bad(value: float) -> bool:
@@ -221,7 +260,10 @@ class Residual:
             raise _refused(view, f"the step at {named} is outside the residual's hull")
         outputs = []
         for name, weight, member in self.members:
-            output = member(x)
+            try:
+                output = member(view, x)
+            except LookupError as error:
+                raise _refused(view, f"the residual's member {name} has {error}")
             if _bad(output):
                 raise _refused(
                     view,
@@ -249,9 +291,8 @@ def _output(x: np.ndarray, z: np.ndarray, transform: str) -> np.ndarray:
         return x @ z if transform == "identity" else np.exp(x @ z)
 
 
-def _solve(x: np.ndarray, y: np.ndarray, transform: str) -> dict:
-    """One linear member on `x` (intercept first) for targets `y`, MAD-dropped until settled."""
-    vary = [0] + [j for j in range(1, x.shape[1]) if np.ptp(x[:, j]) > 0]
+def _solve(x: np.ndarray, y: np.ndarray, transform: str, vary: list[int]) -> dict:
+    """Columns `vary` of `x` fitted to targets `y`, MAD-dropped until settled."""
     a, b = (
         (x / y[:, None], np.ones(len(y))) if transform == "identity" else (x, np.log(y))
     )
@@ -259,8 +300,12 @@ def _solve(x: np.ndarray, y: np.ndarray, transform: str) -> dict:
     for passes in range(1, MAD_PASSES + 1):
         cols = a[keep][:, vary]
         norms = np.linalg.norm(cols, axis=0)
+        # A column no kept row reaches (a band every triple of which was
+        # dropped) sits out at zero.
+        solved = np.array(vary)[norms > 0]
+        cols, norms = cols[:, norms > 0], norms[norms > 0]
         z = np.zeros(x.shape[1])
-        z[vary] = np.linalg.lstsq(cols / norms, b[keep], rcond=None)[0] / norms
+        z[solved] = np.linalg.lstsq(cols / norms, b[keep], rcond=None)[0] / norms
         residual = _output(x, z, transform) / y - 1.0
         centre = np.median(residual)
         mad = 1.4826 * np.median(np.abs(residual - centre))
@@ -276,7 +321,7 @@ def _solve(x: np.ndarray, y: np.ndarray, transform: str) -> dict:
         "centre": float(centre),
         "mad": float(mad),
         "condition": float(np.linalg.cond(cols / norms)),
-        "zero": [V1.names[j - 1] for j in range(1, x.shape[1]) if j not in vary],
+        "zero": [j for j in range(x.shape[1]) if j not in solved],
     }
 
 
@@ -300,18 +345,32 @@ def fit(
             f"{len(y)} triples hold out {len(held)} and leave {len(dev)} to fit "
             f"{x.shape[1]} coefficients"
         )
+    bands = sorted({band(triples[i][0]) for i in dev})
+    onehot = np.array([[float(band(v) == b) for b in bands] for v, _, _ in triples])
+    linear = [0] + [j for j in range(1, x.shape[1]) if np.ptp(x[dev, j]) > 0]
     members, solved, report = {}, {}, {"held_out": held.tolist(), "members": {}}
-    for transform in ("identity", "exp"):
-        s = solved[transform] = _solve(x[dev], y[dev], transform)
-        error = np.abs(_output(x[held], s["z"], transform) / y[held] - 1.0)
-        members[transform] = {
-            "form": "linear",
-            "transform": transform,
-            "intercept": float(s["z"][0]),
-            "coefficients": dict(zip(V1.names, map(float, s["z"][1:]))),
-        }
-        report["members"][transform] = {
-            **{k: v for k, v in s.items() if k not in ("z", "keep")},
+    for name, design, columns, vary in (
+        ("identity", x, ("intercept", *V1.names), linear),
+        ("exp", x, ("intercept", *V1.names), linear),
+        ("band", onehot, bands, list(range(len(bands)))),
+    ):
+        transform = "exp" if name == "exp" else "identity"
+        s = solved[name] = _solve(design[dev], y[dev], transform, vary)
+        error = np.abs(_output(design[held], s["z"], transform) / y[held] - 1.0)
+        z = [float(v) for v in s["z"]]
+        members[name] = (
+            {"form": "band", "values": {b: v for b, v in zip(bands, z) if v}}
+            if name == "band"
+            else {
+                "form": "linear",
+                "transform": transform,
+                "intercept": z[0],
+                "coefficients": dict(zip(V1.names, z[1:])),
+            }
+        )
+        report["members"][name] = {
+            **{k: v for k, v in s.items() if k not in ("z", "keep", "zero")},
+            "zero": [columns[j] for j in s["zero"]],
             "held_out_error": float(np.median(error)),
         }
     best = min(members, key=lambda t: report["members"][t]["held_out_error"])
