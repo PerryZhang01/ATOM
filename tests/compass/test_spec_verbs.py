@@ -2374,7 +2374,9 @@ def _mi355x_spec(monkeypatch):
     script = importlib.util.module_from_spec(loaded)
     loaded.loader.exec_module(script)
     document = SPEC_ROOT / "scripts" / "compass" / "machines" / f"{script.NAME}.json"
-    checked = validate(_width_keys(json.loads(document.read_text())), tp_widths=("1x8",))
+    checked = validate(
+        _width_keys(json.loads(document.read_text())), tp_widths=("1x8",)
+    )
     return script, checked.raise_first()
 
 
@@ -2392,9 +2394,8 @@ def test_the_checked_in_mi355x_spec_holds_its_start_and_prices_its_activations(
         (read["peak"] - read["current"]) / read["warmup_tokens"],
         (f"sha256:{script.RECORD}",),
     )
-    assert spec.runtime_constant("driver_and_collective_reserve_bytes", "1x8") == (
-        read["non_torch"]
-    )
+    reserve = spec.runtime_constant("driver_and_collective_reserve_bytes", "1x8")
+    assert reserve == read["non_torch"]
     with pytest.raises(SpecRefusal):
         spec.runtime_constant("driver_and_collective_reserve_bytes", 1)
 
@@ -2417,6 +2418,8 @@ def test_the_mi355x_spec_explains_what_the_start_measured_apart_from_the_declare
         "device.memory.bandwidth_bytes_per_s",
         "device.compute.bf16_flops",
         "device.compute.fp8_flops",
+        "device.compute.fp4_flops",
+        "interconnect.intra_node.domain_devices",
         "interconnect.intra_node.link_bandwidth_bytes_per_s",
     }
     assert all(

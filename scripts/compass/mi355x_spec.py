@@ -84,13 +84,20 @@ DEVICE = {
     },
 }
 
-#: AMD Instinct MI355X datasheet: dense peaks and one Infinity Fabric link.
+#: AMD Instinct MI355X GPU and platform datasheets: dense peaks, one Infinity
+#: Fabric link, and the eight GPUs one fabric connects.
 DATASHEET = {
     "device": {
         "memory": {"bandwidth_bytes_per_s": 8.0e12},
-        "compute": {"bf16_flops": 2.5166e15, "fp8_flops": 5.0332e15},
+        "compute": {
+            "bf16_flops": 2.5166e15,
+            "fp8_flops": 5.0332e15,
+            "fp4_flops": 1.00664e16,
+        },
     },
-    "interconnect": {"intra_node": {"link_bandwidth_bytes_per_s": 1.536e11}},
+    "interconnect": {
+        "intra_node": {"domain_devices": 8, "link_bandwidth_bytes_per_s": 1.536e11}
+    },
 }
 
 #: No probe fills these: each derate is the haircut this spec's author chose,
