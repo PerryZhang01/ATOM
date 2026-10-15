@@ -45,6 +45,7 @@ INVENTORY = sync_scan.load_inventory()
 ROWS = INVENTORY["sites"] + INVENTORY["anchors"]
 CATEGORIES = set(INVENTORY["categories"])
 MECHANISMS = set(INVENTORY["mechanisms"])
+LPS = set(INVENTORY["lps"])
 
 # The mechanism each first-classification category named. A row whose
 # mechanism is another one has to say why in `mechanism_why`.
@@ -173,6 +174,10 @@ def _inconsistencies(row: dict) -> list[str]:
     named = NAMED_BY_CATEGORY.get(row.get("category"))
     if mechanism != named and not row["mechanism_why"]:
         wrong.append("the mechanism is not the one its category named; say why")
+    if (row.get("shape") == "thread_start") != (row.get("lp") in LPS):
+        wrong.append(
+            "a thread or process row names one LP it runs in; no other row does"
+        )
     return wrong
 
 
@@ -189,6 +194,7 @@ def test_every_mechanism_agrees_with_the_rest_of_its_row():
         ("K7", {"expr": "q.get()", "shape": "queue_get"}, "a virtual timer needs"),
         ("K4", {"mechanism_why": ""}, "the mechanism is not the one"),
         ("K4", {"category": None, "mechanism_why": ""}, "the mechanism is not the one"),
+        ("K4", {"lp": "engine"}, "a thread or process row names"),
     ],
 )
 def test_a_seeded_inconsistent_row_is_refused(mechanism, change, refusal):
@@ -196,6 +202,15 @@ def test_a_seeded_inconsistent_row_is_refused(mechanism, change, refusal):
     assert _inconsistencies(row) == [], _key(row)
     wrong = _inconsistencies({**row, **change})
     assert len(wrong) == 1 and wrong[0].startswith(refusal), wrong
+
+
+@pytest.mark.parametrize("lp", [None, "nowhere"])
+def test_a_thread_row_that_names_no_lp_is_refused(lp):
+    row = next(r for r in INVENTORY["sites"] if r["shape"] == "thread_start")
+    assert _inconsistencies(row) == [], _key(row)
+    assert _inconsistencies({**row, "lp": lp}) == [
+        "a thread or process row names one LP it runs in; no other row does"
+    ]
 
 
 def test_mechanism_crosstab_against_the_first_classification():
@@ -317,6 +332,50 @@ def test_a_string_join_is_not_a_thread_join(src, blocking):
 )
 def test_a_worker_call_parks_only_when_it_asks_for_the_reply(src, blocking):
     assert sync_scan._worker_rpc_form(_first_call(src)) is blocking
+
+
+@pytest.mark.parametrize(
+    "src,shape",
+    [
+        ("asyncio.to_thread(render)", "executor_handoff"),
+        ("for f in as_completed(fs):\n    f.done()", "event_wait"),
+        ("dist.monitored_barrier(group)", "barrier"),
+        ("dist.broadcast_object_list(objs, src=0)", "object_collective"),
+        ("dist.all_gather_object(out, obj)", "object_collective"),
+        ("dist.gather_object(obj, out)", "object_collective"),
+        ("dist.send_object_list(objs, dst=1)", "object_collective"),
+        ("dist.recv_object_list(objs, src=0)", "object_collective"),
+        ("while not done.query():\n    time.sleep(1e-3)", "event_poll"),
+        ("for e in events:\n    e.query()", "event_poll"),
+        ("threading.Thread(target=run, daemon=True)", "thread_start"),
+        ("ctx.Process(target=run)", "thread_start"),
+        ("subprocess.Popen(cmd)", "thread_start"),
+        ("ThreadPoolExecutor(max_workers=1)", "thread_start"),
+        ("ProcessPoolExecutor(2)", "thread_start"),
+    ],
+)
+def test_a_call_that_parks_or_starts_a_thread_is_reported(src, shape):
+    assert [s.shape for s in _scan_source(src) if s.shape != "sleep"] == [shape]
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "if not busy.query():\n    pass",  # one look, not a poll
+        "psutil.Process(pid)",  # attaches to a running process
+        'db.query("x")\nwhile True:\n    db.query("x")',  # not an event
+    ],
+)
+def test_a_lookalike_is_not_reported(src):
+    assert _scan_source(src) == []
+
+
+@pytest.mark.parametrize("body", ["done.query()", "threading.Thread(target=f).start()"])
+def test_a_loop_around_a_call_that_cannot_park_still_spins(body):
+    src = f"def f(self):\n    while self.pending:\n        {body}\n        continue\n"
+    visitor = sync_scan._SpinVisitor("made/up.py", src)
+    visitor.visit(ast.parse(src))
+    assert [s.shape for s in visitor.sites] == ["spin_loop"]
 
 
 def test_a_new_blocking_call_is_reported():
