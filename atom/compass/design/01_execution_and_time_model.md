@@ -1194,8 +1194,7 @@ The rules that settle the boundaries #53's categories left in the wrong place:
   affect TPOT.
 - **A bound in Python is a virtual timer; only what the CA cannot reach is a real
   bound.** #53 split bounded waits by purpose, failure detector (C1) against pacing (C2).
-  Both run on the LP clock now (K7, D5). K8 is the Rust router's bounds and health check,
-  OS-level process-death detection and the control-command reply deadline (D5). The C1 bounds inside the TP group
+  Both run on the LP clock now (K7, D5). The K8 row above lists what stays real. The C1 bounds inside the TP group
   (`AsyncIOProcManager.process_output_sockets`, `process_kv_output_sockets` and
   `call_func_with_aggregation`) are K6: real-time bounds on in-LP transport that the
   simulated runner answers in real milliseconds, so they never fire and stay as they are.
@@ -1600,11 +1599,12 @@ do not (D1), and the frontend's service times come from the model, not from the 
 The engine registers its out-of-band commands in `EngineUtilityHandler._UTILITY_HANDLERS`
 (`atom/model_engine/engine_utility.py`). Each arrives on the control channel, runs on the
 step loop between steps, reaches a worker, if at all, through the in-LP RPC (K6), and
-replies on the output channel.
+replies on the output channel, except the fire-and-forget `abort_request` and
+`get_mtp_stats` (`FIRE_AND_FORGET_UTILITY_CMDS`), which never reply.
 
 | Commands | Simulated run | Why |
 |---|---|---|
-| `abort_request`, `get_mtp_stats`, `get_mtp_statistics`, `get_cache_statistics`, `finish_weight_sync`, `get_weight_sync_status` — call no worker | **run as usual** in the engine; the two statistics commands are refused by the frontend from its clock owner (below), as `/debug/mtp_stats` and `/debug/cache_stats` send them | engine state only, inside the LP. `abort_request` fires when a client disconnects and changes scheduling, so it must stay |
+| `abort_request`, `get_mtp_stats`, `get_mtp_statistics`, `get_cache_statistics`, `finish_weight_sync`, `get_weight_sync_status` — call no worker | **run as usual** in the engine; `get_mtp_statistics` and `get_cache_statistics` are refused by the frontend from its clock owner (below), as `/debug/mtp_stats` and `/debug/cache_stats` send them | engine state only, inside the LP. `abort_request` fires when a client disconnects and changes scheduling, so it must stay |
 | `start_profile`, `stop_profile` (HTTP routes `start_profile` and `stop_profile` in `api_server.py`), reaching worker methods `start_profiler`, `stop_profiler` | **refused**, by the frontend from its clock owner and by the runner | a real profiler slows every later step; charging it zero is a silent simplification, and a profiled system is not what is simulated |
 | `update_weights`, `update_weights_shm`, `update_weights_ipc` (worker methods `update_weights_from_shm`, `update_weights_from_ipc`), `discard_failed_weight_sync`, `release_memory`, `resume_memory`, `clear_kv_cache`, `configure_hidden_states` | **refused** | RL weight sync and sleep/wake. The API server has no route to them; the only senders in the tree are in `atom/rollout/` (`async_engine.py`, `weight_sync.py`), a Python interface for external RL frameworks whose `AsyncLLMEngine` a simulated run refuses at startup as an offline engine. Simulating them needs cost models for weight transfer and memory release that do not exist |
 | `collective_rpc` | **as the worker method it names** | it runs a method `COLLECTIVE_RPC_METHODS` (`atom/model_engine/collective_rpc.py`) opens, on every rank; the runner refuses `configure_hidden_states` and answers a name it does not define with ATOM's missing-method reply. Its only sender is `AsyncLLMEngine`, refused as above |
