@@ -17,7 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch.distributed as dist
-from test_bench_window import BUSY, MS, PREPARE, Bench
+from test_bench_window import BUSY, MS, PREPARE, Bench, batch
 
 from atom.compass.bench import window
 
@@ -160,7 +160,7 @@ def test_every_worker_starts_in_engine_cores_order_and_the_slowest_is_charged(
     bench = engine.Bench(config)
     try:
         assert config.num_kvcache_blocks == BLOCKS
-        result = bench.measure([])
+        result = bench.measure(batch())
         log = bench.runner_mgr.call_func("call_log", wait_out=True)
     finally:
         bench.exit()
