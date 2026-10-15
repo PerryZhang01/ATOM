@@ -1,0 +1,114 @@
+# SPDX-License-Identifier: MIT
+"""`parity_one_node.sh`: what each CONFIG starts both servers with, and the DP
+width the simulated run file names.
+
+`python3` is stubbed for the servers, the traffic and the compare, so these run
+with no GPU and no model; the rest of the script runs as written.
+"""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+BASH = shutil.which("bash")
+STUB = """#!/bin/bash
+case "$1 $2" in
+"-m atom.entrypoints.openai.api_server")
+    echo "$* GPU_MAX_HW_QUEUES=${GPU_MAX_HW_QUEUES-} ATOM_NUMA_BIND=${ATOM_NUMA_BIND-}" >> "$STUB_LOG"
+    echo "Uvicorn running"
+    case "$*" in *--compass-run*) exit 0 ;; esac
+    exec sleep 60 ;;
+"-m atom.compass.parity.traffic")
+    [ -n "${ATOM_COMPASS_RUN-}" ] && exit 0
+    mkdir -p "$5" && echo '{"sent_ns": [0], "admitted_ns": [2000000]}' > "$5/arrivals.json"
+    exit 0 ;;
+"-m atom.compass.parity")
+    echo '{"steps": {"0": {"compared": 3, "identical": 3}}, "first_divergence": {"0": null}}'
+    exit 0 ;;
+esac
+exec "$REAL_PYTHON" "$@"
+"""
+
+
+def _parity(tmp_path, **env):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "python3").write_text(STUB)
+    (bindir / "python3").chmod(0o755)
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "config.json").write_text('{"architectures": ["DeepseekV4ForCausalLM"]}')
+    inherited = (
+        "CONFIG",
+        "MACHINE",
+        "SERVER_ARGS",
+        "GPU_MAX_HW_QUEUES",
+        "ATOM_NUMA_BIND",
+    )
+    env = {k: v for k, v in os.environ.items() if k not in inherited} | dict(
+        PATH=f"{bindir}:{os.environ['PATH']}",
+        REAL_PYTHON=sys.executable,
+        STUB_LOG=str(tmp_path / "servers.log"),
+        MODEL=str(model),
+        WAIT_S="30",
+        **env,
+    )
+    r = subprocess.run(
+        [BASH, "scripts/compass/parity_one_node.sh", str(tmp_path / "out")],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    log = tmp_path / "servers.log"
+    servers = log.read_text().splitlines() if log.exists() else []
+    return r, servers, tmp_path / "out" / "sim" / "run.json"
+
+
+@pytest.mark.skipif(BASH is None, reason="no bash on PATH")
+def test_tp2_is_the_default(tmp_path):
+    r, servers, run = _parity(tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert len(servers) == 2 and "--compass-run" in servers[1]
+    for line in servers:
+        assert " -tp 2 --enable-dp-attention --enforce-eager " in line
+        assert line.endswith("GPU_MAX_HW_QUEUES= ATOM_NUMA_BIND=")
+    assert json.loads(run.read_text())["data_parallel_size"] == 2
+    assert r.stdout.splitlines()[-1] == (
+        "parity_one_node: dp0 compared=3 identical=3 first_divergence=None"
+    )
+
+
+@pytest.mark.skipif(BASH is None, reason="no bash on PATH")
+def test_dsv4_dpa8_runs_the_nightly_prefill_server_at_eight_ranks(tmp_path):
+    machine = ROOT / "scripts/compass/machines/mi308x-hjbog18.json"
+    r, servers, run = _parity(tmp_path, CONFIG="dsv4-dpa8", MACHINE=str(machine))
+    assert r.returncode == 0, r.stderr
+    assert len(servers) == 2 and "--compass-run" in servers[1]
+    for line in servers:
+        assert " -tp 8 --enable-dp-attention --trust-remote-code " in line
+        assert (
+            "--kv_cache_dtype fp8 --block-size 16 --gpu-memory-utilization 0.85" in line
+        )
+        assert "--max-num-seqs 512 --enable-tbo" in line
+        assert "--enforce-eager" not in line and "--enable-expert-parallel" not in line
+        assert line.endswith("GPU_MAX_HW_QUEUES=5 ATOM_NUMA_BIND=1")
+    spec = json.loads(run.read_text())
+    assert spec["data_parallel_size"] == 8
+    assert spec["machine"]["name"] == json.loads(machine.read_text())["name"]
+
+
+@pytest.mark.skipif(BASH is None, reason="no bash on PATH")
+def test_dsv4_dpa8_without_a_machine_starts_nothing(tmp_path):
+    r, servers, _ = _parity(tmp_path, CONFIG="dsv4-dpa8")
+    assert r.returncode != 0
+    assert "needs MACHINE" in r.stderr
+    assert servers == []
