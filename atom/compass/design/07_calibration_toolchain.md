@@ -55,7 +55,7 @@ comes from.
 
 | Granularity | Backends | Needs | Used for |
 |---|---|---|---|
-| **step-level** | the step stub, linear law and grid (run-file keys `step_stub`, `step_linear`, `step_grid`); the step roofline | measured steps, fitted over features `ScheduledBatch` already carries; the roofline only the machine spec and the model geometry | structure discovery, plumbing, sweeps; day zero, a device never measured, fast configuration sweeps |
+| **step-level** | the step stub, linear law and grid (run-file keys `step_stub`, `step_linear`, `step_grid`); the step roofline | measured steps, fitted over features `ScheduledBatch` already carries; the roofline only the machine spec, the model geometry and the run file's `parameter_count` | structure discovery, plumbing, sweeps; day zero, a device never measured, fast configuration sweeps |
 | **op-level** | the op graph (`OpGraphBackend`, not built) | symbolic IR + priced leaves + region terms; an analytical law per leaf | acceptance cells |
 
 Two orthogonal axes: **the granularity of the backend asked**, and **the method of each

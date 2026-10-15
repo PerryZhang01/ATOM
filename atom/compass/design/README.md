@@ -224,7 +224,7 @@ document that owns it. Nothing in `01`–`11` is outside this diagram.
 | L3 | Model capture, Cost IR | [`04_model_capture_and_cost_ir.md`](04_model_capture_and_cost_ir.md) | D17–D23 (+ D18.1) |
 | L3 | Fitting, law selection, hull guard | [`09_fitting_and_law_selection.md`](09_fitting_and_law_selection.md) | D53–D62 |
 | L3 | Analytical laws, the step roofline | [`10_analytical_laws.md`](10_analytical_laws.md) | D63–D70 |
-| L3 | Step grid backend (step-level), a stage-2 candidate | [`17`](17_step_fit_backend.md) | D96–D105 |
+| L3 | Step grid backend (step-level), a stage-2 candidate | [`17`](17_step_grid_backend.md) | D96–D105 |
 | L4 | Harness contract, wire fields, adapter | [`06_workload_harness_contract.md`](06_workload_harness_contract.md) | D27–D35 |
 | L5 | The calibration phases, the measurement bench and the recommended flow | [`07_calibration_toolchain.md`](07_calibration_toolchain.md) | D36–D43 |
 | L5 | Machine spec schema and probes | [`05_machine_spec_and_probes.md`](05_machine_spec_and_probes.md) | D24–D26 |
@@ -305,7 +305,7 @@ rather than answering from stale data.
   |  step-level   one whole forward per answer: the step stub,   |
   |               linear law and grid; the step roofline         |
   |               needs: measured steps; the roofline only the   |
-  |               machine spec and the model geometry            |
+  |               machine spec, model geometry, parameter_count  |
   |               used for: structure discovery, sweeps,         |
   |               plumbing; day zero, a device never measured    |
   +--------------------------------------------------------------+
@@ -532,7 +532,7 @@ The documents use these precisely; a reader will bounce off without them.
 | [`03`](03_memory_and_kv_model.md) | Memory Model and the KV Pool | **Do not simulate the KV pool** — ATOM's real one is pure arithmetic. Substitute the five device readings, never the arithmetic. How a prefix-cache hit reaches the cost model. Validate per term, never as a sum. |
 | [`04`](04_model_capture_and_cost_ir.md) | Model Capture and the Cost IR | Capture with `TorchDispatchMode` + `FakeTensorMode` + `ShapeEnv`. A hierarchical, symbolic, stream-annotated IR whose `Repeat` nests and tolerates non-contiguous layer patterns. **Opaque leaves** are priced, not decomposed. |
 | [`10`](10_analytical_laws.md) | Analytical Laws | Cost and memory from device parameters and model geometry, with no observation of the subject. Three classes: exact from geometry, device-parameterised, policy-determined. The analytical fallback, the step roofline and the MI455 projection. Accuracy goals stated in advance with **ranking** as the primary gate. **The most speculative document here.** |
-| [`17`](17_step_fit_backend.md) | Step Grid Backend | A measured grid of whole forwards, answered only from complete cells, plus a residual fitted on real-run step times, bench replays or both. A stage-2 candidate, graded by stage 2's protocol and off the stage-2 path for now (#627). |
+| [`17`](17_step_grid_backend.md) | Step Grid Backend | A measured grid of whole forwards, answered only from complete cells, plus a residual fitted on real-run step times, bench replays or both. A stage-2 candidate, graded by stage 2's protocol and off the stage-2 path for now (#627). |
 
 ### Part III — How the data is made
 
