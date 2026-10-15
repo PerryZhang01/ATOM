@@ -92,8 +92,9 @@ pids=()
 for side in prefill decode; do cp "$OUT/real/record/arrivals.json" "$OUT/real/record/$side/"; done
 
 RUN=$OUT/sim/run.json
+CLOCK_PORT=$(free_port)
 python3 - "$RUN" "$OUT" "${MACHINE:-$ROOT/scripts/compass/machines/mi308x-hjbog18.json}" \
-    "$MODEL" "$(free_port)" <<'EOF'
+    "$MODEL" "$CLOCK_PORT" <<'EOF'
 import json, sys
 from pathlib import Path
 
@@ -119,8 +120,8 @@ Path(run).write_text(json.dumps({
     "data_parallel_size": 2, "out_dir": f"{out}/sim",
 }))
 EOF
-ports=()
-for name in CLOCK_PORT PREFILL_PORT DECODE_PORT KV_WRITE_REQ_PORT PROMETHEUS_PORT \
+ports=("CLOCK_PORT=$CLOCK_PORT")
+for name in PREFILL_PORT DECODE_PORT KV_WRITE_REQ_PORT PROMETHEUS_PORT \
     PREFILL_DP_PORT DECODE_DP_PORT; do
     ports+=("$name=$(free_port)")
 done
