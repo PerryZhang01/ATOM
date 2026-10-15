@@ -48,6 +48,9 @@ class Kind(enum.Enum):
     REGION_TERMS = "region_terms"
     MEMORY_READINGS = "memory_readings"
     COVERAGE_HULL = "coverage_hull"
+    STEP_MEASUREMENT = "step_measurement"
+    STEP_LINEAR_LAW = "step_linear_law"
+    HOST_LAWS = "host_laws"
     STEP_GRID_BUNDLE = "step_grid_bundle"
 
     def __str__(self) -> str:
@@ -57,7 +60,9 @@ class Kind(enum.Enum):
 #: What keys each artifact, in the order a key reads.
 KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
     Kind.MACHINE_SPEC: ("device", "software_stack"),
-    Kind.SHAPE_POPULATION: ("model", "workload", "engine_config"),
+    # `workload` is the digest of the requests its steps name; `backend` the
+    # pricing backend's digest, so another backend addresses another entry.
+    Kind.SHAPE_POPULATION: ("model", "workload", "engine_config", "backend"),
     Kind.OP_GRAPH: ("structure",),
     Kind.PRICE_LIST: ("model", "width", "source_root"),
     Kind.REGION_TERMS: ("model", "width"),
@@ -71,6 +76,28 @@ KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
         "block_size",
     ),
     Kind.COVERAGE_HULL: ("price_list",),
+    # `view` is the digest of the batch view the step was measured as.
+    Kind.STEP_MEASUREMENT: (
+        "model",
+        "device",
+        "parallel",
+        "engine_config",
+        "source_root",
+        "sampling",
+        "step_kind",
+        "view",
+    ),
+    Kind.STEP_LINEAR_LAW: (
+        "model",
+        "device",
+        "parallel",
+        "engine_config",
+        "source_root",
+        "form",
+    ),
+    # The four values `run.host_key` reads, the engine config as its sorted
+    # JSON, since a key holds only strings and numbers.
+    Kind.HOST_LAWS: ("host_cpu", "atom_src", "model", "engine_config"),
     # `engine_config` names the one the grid was planned for; `grid` names
     # the grid definition with its margin.
     Kind.STEP_GRID_BUNDLE: (

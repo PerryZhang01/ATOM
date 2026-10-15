@@ -70,7 +70,7 @@ PACKAGE = REPO / "atom" / "compass" / "spec"
 ENGINE_ARGS = REPO / "atom" / "model_engine" / "arg_utils.py"
 
 #: The stack the constants below were measured against.
-STACK = {"rocm": "7.2.4", "aiter": "f4e7c7509", "rccl": "2.22.3"}
+STACK = {"rocm": "7.2.4", "aiter": "f4e7c7509", "rccl": "2.22.3", "torch": "2.10.0"}
 
 TOKENIZER = {
     "id": "qwen3-151k-bpe",
@@ -950,7 +950,9 @@ def test_a_stack_mismatch_warns_and_names_both_versions():
 
 def test_a_stack_component_nobody_reported_is_a_mismatch_not_a_pass():
     with pytest.warns(StackMismatch):
-        differences = read().check_stack({"rocm": "7.2.4", "aiter": "f4e7c7509"})
+        differences = read().check_stack(
+            {"rocm": "7.2.4", "aiter": "f4e7c7509", "torch": "2.10.0"}
+        )
     assert differences == (("rccl", "2.22.3", None),)
 
 

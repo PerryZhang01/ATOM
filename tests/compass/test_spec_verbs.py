@@ -74,7 +74,7 @@ from atom.compass.spec.validate import WIDTHS as WIDTHS_ASKED
 MACHINE = "mi355x-8gpu-2node"
 #: A tokenizer entry's fields by name, to say which of its rates is a peak.
 ENTRY_RATES = {field.path: field for field in ENTRY_FIELDS}
-STACK = {"rocm": "7.2.4", "aiter": "f4e7c7509", "rccl": "2.22.3"}
+STACK = {"rocm": "7.2.4", "aiter": "f4e7c7509", "rccl": "2.22.3", "torch": "2.10.0"}
 MIB = 1024**2
 
 TOKENIZER = {

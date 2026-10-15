@@ -150,6 +150,7 @@ FIELDS = (
     Field("device.software_pinned_to.rocm", Kind.TEXT),
     Field("device.software_pinned_to.aiter", Kind.TEXT),
     Field("device.software_pinned_to.rccl", Kind.TEXT),
+    Field("device.software_pinned_to.torch", Kind.TEXT),
     Field("interconnect.intra_node.topology", Kind.TEXT),
     Field(
         "interconnect.intra_node.link_bandwidth_bytes_per_s", Kind.QUANTITY, peak=True

@@ -681,15 +681,21 @@ def _fingerprint(tok) -> str | None:
     return _file_digest(name, "tokenizer.json")
 
 
+def host_cpu() -> str:
+    """This host's CPU model, as /proc/cpuinfo names it, else as
+    `platform.processor` does."""
+    cpu = re.search(
+        r"^model name\s*:\s*(.+)$", Path("/proc/cpuinfo").read_text(), re.MULTILINE
+    )
+    return cpu.group(1) if cpu else platform.processor()
+
+
 def host_key(config) -> dict:
     """What host laws are keyed by: this host's CPU, ATOM's source less
     `COMPASS_ONLY`, the served config.json and the engine config a step grid
     bundle is keyed by."""
     from atom.compass.run.step_grid import keyed
 
-    cpu = re.search(
-        r"^model name\s*:\s*(.+)$", Path("/proc/cpuinfo").read_text(), re.MULTILINE
-    )
     root = Path(atom.__file__).parent
     digest = hashlib.sha256()
     for path in sorted(root.rglob("*.py")):
@@ -705,7 +711,7 @@ def host_key(config) -> dict:
                 del lines[node.lineno - 1 : node.end_lineno]
         digest.update(f"{relative}\0".encode() + b"".join(lines))
     return {
-        "host_cpu": cpu.group(1) if cpu else platform.processor(),
+        "host_cpu": host_cpu(),
         "atom": digest.hexdigest(),
         "model": _file_digest(config.model, "config.json"),
         "engine": keyed(config),
