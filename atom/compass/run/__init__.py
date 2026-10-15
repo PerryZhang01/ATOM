@@ -150,8 +150,9 @@ LP_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
 CLIENT_DIR = "client-{}"
 #: Wall seconds the summary's writer waits for the server LPs' refusals.
 HAND_IN_WAIT_S = 300.0
-#: The format of the run summary; raise it when a field changes meaning or goes.
-SUMMARY_SCHEMA_VERSION = 3
+#: The format of the run summary; raise it when a field is added, changes
+#: meaning or goes.
+SUMMARY_SCHEMA_VERSION = 4
 #: Compass source the host-law key leaves out, by path under the package: all
 #: of it (None), or the top-level names (def, class or assigned) only a simulated
 #: run reaches, with the comments above each and the module docstring.
@@ -1017,6 +1018,10 @@ def _summary(run: dict, a, record, wall: float, hand_ins: dict, since: dict) -> 
         }
         for g in GROUPS
     }
+    # Each assumed treatment the steps were priced under, with its step count.
+    treatments = sum((Counter(p.get("treatments", {})) for p in priced), Counter())
+    treatments -= sum((Counter(p.get("treatments", {})) for p in before), Counter())
+    schedule["treatments"] = dict(sorted(treatments.items()))
     # An engine whose workers died, or that never handed in, priced steps no
     # one counted: they are absent, not 0.
     if any(
@@ -1024,7 +1029,7 @@ def _summary(run: dict, a, record, wall: float, hand_ins: dict, since: dict) -> 
         for n in _hand_ins(run)
         if n.startswith("engine")
     ):
-        schedule.update(predicted_seconds=None, seconds_by_method=None)
+        schedule.update(predicted_seconds=None, seconds_by_method=None, treatments=None)
         schedule["refusals"].update(steps=None, fraction_of_steps=None)
     summary["configuration"] = configuration(run)
     summary["schema_version"] = SUMMARY_SCHEMA_VERSION

@@ -470,7 +470,9 @@ the terms of [#952](https://github.com/jgong5/ATOM/issues/952)). Concretely:
    measured, estimated and unvalidated, each with its step count and share of predicted
    seconds (`seconds_by_method` in the run summary, grouped as
    `backends/cost.py::GROUPS`). Declared and analytical seconds are reported and not
-   gated. Refusals carry no seconds: a refused step has none.
+   gated. Refusals carry no seconds: a refused step has none. Each assumed treatment
+   the steps were priced under (`09` D61) is listed with its step count (`treatments`
+   in the run summary); it is a property of the query and changes no term's method.
 3. **Any refusal, of any source, makes the run a coverage report** (`coverage_report` in
    the run summary, `01` D3.5), not acceptance evidence. It names exactly what to
    measure next. There is no threshold. No answered step invalidates a run, whatever its
