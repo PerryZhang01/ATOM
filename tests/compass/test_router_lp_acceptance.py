@@ -54,16 +54,17 @@ WALL_S = 120.0
 U = 2.0**-6
 PREFILL_S, DECODE_S = 4 * U, U
 # Each request's send time on the traffic clock, and its max_tokens.
-WORKLOAD = [(0.0, 6), (5 * U, 8), (6 * U, 1), (11.5 * U, 2)]
+WORKLOAD = [(0.0, 6), (5.5 * U, 8), (6 * U, 1), (11.5 * U, 2)]
 # Least load, ties to rank 0. Prefill load is held from placement until the
 # relay is handled, 4.12U after the send; decode load until the stream's last
 # event is, 0.02U plus U per token later.
 #   0: nothing held                                         -> (0, 0)
-#   1: p0 freed at 4.12U; d0 held by 0                      -> (0, 1)
+#   1: p0 freed at 4.12U; d0 held by 0, streaming since 5.14U -> (0, 1)
 #   2: p0 held by 1; d0 by 0, d1 by 1                       -> (1, 0)
-#   3: p0 freed at 9.12U, p1 at 10.12U; d0 freed at 10.14U
+#   3: p0 freed at 9.62U, p1 at 10.12U; d0 freed at 10.14U
 #      and 11.14U, d1 held by 1                             -> (0, 0)
-# A missed prefill drop sends 1 to p1, a missed decode drop 3 to d1.
+# A missed prefill drop sends 1 to p1, a missed decode drop 3 to d1, and a
+# decode drop at the stream's first event 1 to d0.
 RANKS = [(0, 0), (0, 1), (1, 0), (0, 0)]
 
 
