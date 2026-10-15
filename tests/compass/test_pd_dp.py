@@ -254,6 +254,7 @@ def _transfer(ranks, served_by: int, taken_by: int):
     )
     rt_p.conn.grants.append((1.0, {channel: [(seq, arrival)]}))
     rt_p.advance_to(1.0)
+    p.process_completions(KVConnectorOutput())
     return channel, p.process_completions(KVConnectorOutput())
 
 

@@ -20,6 +20,7 @@ import ipaddress
 import itertools
 import json
 import pathlib
+import queue
 import socket
 import sys
 import time
@@ -243,6 +244,8 @@ def test_prefill_frees_at_max_a_r_plus_t_and_decode_is_ready_at_a_t_notify(
     engine_step(pd.p, pd.rt_p, e - TICK)
     assert x.id in pd.p.deferred_free_blocks, "freed before the write was done"
     engine_step(pd.p, pd.rt_p, e)
+    assert x.id in pd.p.deferred_free_blocks, "freed at the poll that saw it done"
+    engine_step(pd.p, pd.rt_p, e + TICK)
     assert pd.p.deferred_free_blocks == {}
     assert free_blocks(pd.p) == total
 
@@ -251,10 +254,52 @@ def test_prefill_frees_at_max_a_r_plus_t_and_decode_is_ready_at_a_t_notify(
     assert y.status is SequenceStatus.WAITING_FOR_REMOTE_KVS, "ready early"
     engine_step(pd.d, pd.rt_d, ready)
     pd.d.schedule()
+    assert y.status is SequenceStatus.WAITING_FOR_REMOTE_KVS, "one poll early"
+    engine_step(pd.d, pd.rt_d, ready + TICK)
+    pd.d.schedule()
     assert y.status is SequenceStatus.RUNNING
     assert y.token_ids[y.num_prompt_tokens] == FIRST_TOKEN_ID
     assert pd.d.finished_recving_kv_req_ids == [], "an id with no reachable pop"
     assert pd.d.kv_connector.has_pending_work() is False
+
+
+def test_decode_learns_of_a_write_at_the_poll_the_engines_aggregation_reports_it(
+    pd, seq_factory
+):
+    """A real decode hears of a write-done through `call_func_with_aggregation`,
+    whose workers each answer a poll's aggregation after that poll returns. The
+    connector reports at the same poll, on the same poll times."""
+    from aiter_stub import stubbed_aiter
+
+    with stubbed_aiter():
+        from atom.model_engine.async_proc import AsyncIOProcManager
+
+    (x,) = prefilled(pd, 1, R)
+    (y,) = admitted(pd, [x], seq_factory, SEND)
+    ready = SEND + L + pd.model.duration_s(len(y.block_table)) + L
+    mgr = AsyncIOProcManager.__new__(AsyncIOProcManager)
+    mgr.label, mgr.proc_num, mgr.kv_output_aggregator = "decode", 1, None
+    mgr.kv_outputs_queues, mgr._pending_kv_aggregation = [queue.Queue()], None
+    asked = []
+    mgr.rpc_broadcast_mq = SimpleNamespace(enqueue=asked.append)
+    told = set()
+
+    def real(t):
+        out = mgr.call_func_with_aggregation("async_proc_aggregation", timeout=0)
+        for _ in asked:  # the idle worker's `get_finished`, once the poll returned
+            done = {y.id} - told if ready <= t else set()
+            told.update(done)
+            mgr.kv_outputs_queues[0].put(KVConnectorOutput(finished_recving=done))
+        asked.clear()
+        return out is not None and y.id in out.finished_recving
+
+    def simulated(t):
+        engine_step(pd.d, pd.rt_d, t)
+        return y.id in pd.d.finished_recving_kv_req_ids
+
+    polls = [ready - TICK, ready, ready + TICK, ready + 2 * TICK]
+    assert [real(t) for t in polls] == [False, False, True, False]
+    assert [simulated(t) for t in polls] == [False, False, True, False]
 
 
 def test_a_prefill_the_router_does_not_send_on_is_freed_at_once(pd):
@@ -324,6 +369,7 @@ def test_a_decode_side_prefix_hit_is_written_only_when_both_hash_alike(
     pd.d.schedule()
     assert y.status is SequenceStatus.WAITING_FOR_REMOTE_KVS, "ready early"
     engine_step(pd.d, pd.rt_d, ready)
+    engine_step(pd.d, pd.rt_d, ready + TICK)
     pd.d.schedule()
     assert y.status is SequenceStatus.RUNNING
 
@@ -359,6 +405,7 @@ def test_an_idle_producer_frees_every_finished_prefill(pd, seq_factory, follower
     engine_step(pd.p, pd.rt_p, a, *[(k, a) for k in range(len(seqs))])
     T = pd.model.duration_s(max(len(seq.block_table) for seq in seqs))
     engine_step(pd.p, pd.rt_p, a + T)
+    engine_step(pd.p, pd.rt_p, a + T + TICK)
     assert pd.p.deferred_free_blocks == {}
     assert free_blocks(pd.p) == total
 
