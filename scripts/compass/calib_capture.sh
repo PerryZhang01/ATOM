@@ -25,8 +25,7 @@
 # records with
 #   python -m atom.compass.backends.step_linear_fit --form history \
 #       OUT_DIR/c{1,4,16,64,256}/steps/dp0.jsonl --out LAW --machine-spec DIGEST
-# DIGEST being the capture host's machine-spec digest, printed as
-# scripts/compass/README.md (step_linear_fit) shows.
+# DIGEST as scripts/compass/README.md (step_linear_fit) prints it.
 set -uo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/_lib.sh"
 
