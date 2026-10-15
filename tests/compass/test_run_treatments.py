@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """The run summary names each assumed treatment its steps were priced under.
 
-Two DP-attention ranks each price a prefill through the runner's own
+Two DP-attention ranks each price two prefills through the runner's own
 `forward`, with a step linear law keyed at their `(dp, ep)`; each rank's worker
 answers `engine_done` over the worker RPC, and `frontend_done` writes
 ``summary.json``.
@@ -54,12 +54,16 @@ def test_a_dp_attention_run_under_a_dp2_law_names_uniform_routing_and_its_steps(
         runner(StepLinearBackend(StepLinearLaw(keyed), (2, 1)), dp_size=2, dp_rank=r)
         for r in range(2)
     ]
-    dp2(lambda: ranks[0].forward(prefill(40)), lambda: ranks[1].forward(prefill(8)))
+    # Two steps per rank, so a count reads 4 where a per-rank flag reads 2.
+    dp2(
+        lambda: [ranks[0].forward(prefill(40)) for _ in range(2)],
+        lambda: [ranks[1].forward(prefill(8)) for _ in range(2)],
+    )
 
     out = dp_summary(monkeypatch, tmp_path, ranks)
 
-    assert out["schedule"]["treatments"] == {"uniform routing": 2}
-    assert out["schedule"]["refusals"]["steps"] == 2
+    assert out["schedule"]["treatments"] == {"uniform routing": 4}
+    assert out["schedule"]["refusals"]["steps"] == 4
     assert out["schema_version"] == compass_run.SUMMARY_SCHEMA_VERSION == 4
 
 

@@ -310,6 +310,7 @@ def test_a_run_that_ends_mid_run_counts_what_live_workers_priced_and_no_zeros(
         assert sorted(hand_in) == ["refusals"]
         assert schedule["predicted_seconds"] is None
         assert schedule["seconds_by_method"] is None
+        assert schedule["treatments"] is None
         assert (refusals["steps"], refusals["fraction_of_steps"]) == (None, None)
         assert refusals["reasons"] == [[ended, 1]]
         return

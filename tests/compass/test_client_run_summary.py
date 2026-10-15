@@ -15,6 +15,7 @@ it matches the summary a fresh server writes for the same client run.
 import json
 import math
 import time
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -34,12 +35,23 @@ HTTP, STREAM = "traffic->frontend:http", "frontend->traffic:stream"
 CLIENT_RUNS = (
     (
         ["command:profile on rank 0"],
-        {"steps": 3, "seconds": 0.75, "estimated_steps": 1},
+        {
+            "steps": 3,
+            "seconds": 0.75,
+            "estimated_steps": 1,
+            "treatments": Counter({"uniform routing": 3}),
+        },
         [],
     ),
     (
         ["command:profile on rank 0", "cost:no rung answered"],
-        {"steps": 5, "seconds": 1.25, "analytical_steps": 2, "analytical_seconds": 0.5},
+        {
+            "steps": 5,
+            "seconds": 1.25,
+            "analytical_steps": 2,
+            "analytical_seconds": 0.5,
+            "treatments": Counter(),
+        },
         ["executor:render"],
     ),
 )
@@ -77,7 +89,11 @@ def _serve(monkeypatch, out: Path, client_runs, served) -> Path:
     with compass_run.engine(_deployment()):
         pass
     engine = clock.installed()
-    workers = {"refused_commands": [], "priced_steps": {}, "predicted_memory": {}}
+    workers = {
+        "refused_commands": [],
+        "priced_steps": {"treatments": Counter()},
+        "predicted_memory": {},
+    }
     core = SimpleNamespace(
         runner_mgr=SimpleNamespace(call_func=lambda name, wait_out: workers[name])
     )
@@ -147,6 +163,7 @@ def test_each_client_run_has_its_own_summary_over_its_own_steps(served):
         )
         assert schedule["refusals"]["steps"] == priced["steps"]
         assert schedule["predicted_seconds"] == priced["seconds"]
+        assert schedule["treatments"] == dict(priced["treatments"])
         by_method = schedule["seconds_by_method"]
         assert by_method["analytical"]["steps"] == priced.get("analytical_steps", 0)
         assert by_method["estimated"]["steps"] == priced.get("estimated_steps", 0)
@@ -169,7 +186,7 @@ def test_a_later_client_run_s_summary_is_a_fresh_server_s(
         "start": 0.0,
         "end": fresh["cost"]["simulated_seconds"],
     }
-    for key in ("predicted_seconds", "refusals", "seconds_by_method"):
+    for key in ("predicted_seconds", "refusals", "seconds_by_method", "treatments"):
         assert later["schedule"][key] == fresh["schedule"][key], key
     for key in ("coverage_report", "configuration", "schema_version"):
         assert later[key] == fresh[key], key

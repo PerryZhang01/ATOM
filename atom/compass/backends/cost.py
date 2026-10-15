@@ -32,6 +32,7 @@ adds a `+`.
 from __future__ import annotations
 
 import math
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
@@ -242,12 +243,11 @@ class ProvenanceMix:
         self._method_steps: dict[tuple[Method, bool], int] = {}
         self._reasons: dict[tuple[str, str], int] = {}
         #: Steps priced under each assumed treatment, by its name.
-        self.treatments: dict[str, int] = {}
+        self.treatments: Counter[str] = Counter()
 
     def record(self, step: StepCost) -> None:
         self.steps += 1
-        for name in step.treatments:
-            self.treatments[name] = self.treatments.get(name, 0) + 1
+        self.treatments.update(step.treatments)
         self.seconds = fold_step(self.seconds, step.seconds)
         if step.is_refused:
             self.refused_steps += 1

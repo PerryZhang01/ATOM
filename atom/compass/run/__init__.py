@@ -987,12 +987,9 @@ def _summary(run: dict, a, record, wall: float, hand_ins: dict, since: dict) -> 
         for g in GROUPS
     }
     # Each assumed treatment the steps were priced under, with its step count.
-    treatments = Counter()
-    for p in priced:
-        treatments.update(p.get("treatments", {}))
-    for p in before:
-        treatments.subtract(p.get("treatments", {}))
-    schedule["treatments"] = {t: n for t, n in sorted(treatments.items()) if n}
+    treatments = sum((Counter(p.get("treatments", {})) for p in priced), Counter())
+    treatments -= sum((Counter(p.get("treatments", {})) for p in before), Counter())
+    schedule["treatments"] = dict(sorted(treatments.items()))
     # An engine whose workers died, or that never handed in, priced steps no
     # one counted: they are absent, not 0.
     if any(
