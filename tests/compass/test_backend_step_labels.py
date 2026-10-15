@@ -12,16 +12,18 @@ import json
 import pytest
 from test_backend_step_linear_fit import (
     GAP_NS,
+    SPEC,
     _record,
     _rowmod_steps,
     _steps,
     _timed_record,
     _view,
 )
-from test_memory_readings import META_8B
+from test_memory_readings import DOCUMENT, META_8B
 from test_parity_device_window import BUSY, GAP, _recorded
 from test_parity_record import _config, _drive
 
+from atom.compass.artifacts import machine_spec_digest
 from atom.compass.backends import StepLinearBackend, StepLinearLaw
 from atom.compass.backends.step_labels import (
     TABLE_VERSION,
@@ -36,6 +38,7 @@ from atom.compass.backends.step_linear_fit import (
     mark_held_out,
 )
 from atom.compass.parity import ENV
+from atom.compass.spec import MachineSpec
 
 KEY = {"host_cpu": "planted cpu", "atom": "0" * 64, "model": None, "engine": {}}
 
@@ -110,7 +113,7 @@ def test_the_command_writes_each_record_s_table_with_the_labels_it_fitted(tmp_pa
         _timed_record(tmp_path / f"dp0-{s}.jsonl", _steps(s), {60}, gap=GAP_NS)[0]
         for s in (19, 20)
     ]
-    main([*map(str, records), "--out", str(tmp_path / "law.json")])
+    main([*map(str, records), "--out", str(tmp_path / "law.json"), *SPEC])
     law = StepLinearBackend(
         StepLinearLaw(json.loads((tmp_path / "law.json").read_text()))
     )
@@ -201,7 +204,15 @@ def test_the_command_s_laws_load_in_a_run_file(tmp_path, monkeypatch):
         str(_timed_record(tmp_path / f"dp0-{s}.jsonl", _steps(s), key=key)[0])
         for s in (19, 20)
     ]
-    main([*records, "--out", str(tmp_path / "law.json")])
+    main(
+        [
+            *records,
+            "--out",
+            str(tmp_path / "law.json"),
+            "--machine-spec",
+            machine_spec_digest(MachineSpec.from_mapping(DOCUMENT)),
+        ]
+    )
     law = json.loads((tmp_path / "law.json").read_text())
 
     run = run_file(tmp_path, monkeypatch, step_linear=law, host=law["host"])

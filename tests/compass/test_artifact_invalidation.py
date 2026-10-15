@@ -110,10 +110,16 @@ KEY_OF: dict[Row, Key] = {
     Row.PRICE_LIST: Key.of(
         Kind.PRICE_LIST,
         model="Qwen/Qwen3-32B",
+        machine_spec="sha256:mi308x",
         source_root=ATOM_ROOT.revision,
         **LAYOUT,
     ),
-    Row.REGION_TERMS: Key.of(Kind.REGION_TERMS, model="Qwen/Qwen3-32B", **LAYOUT),
+    Row.REGION_TERMS: Key.of(
+        Kind.REGION_TERMS,
+        model="Qwen/Qwen3-32B",
+        machine_spec="sha256:mi308x",
+        **LAYOUT,
+    ),
     Row.MEMORY_READINGS: Key.of(
         Kind.MEMORY_READINGS,
         model="Qwen/Qwen3-32B",

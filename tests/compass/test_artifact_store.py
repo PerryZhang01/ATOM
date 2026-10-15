@@ -98,6 +98,7 @@ def price_key(tp: int = 2, **layout: object) -> Key:
     return Key.of(
         Kind.PRICE_LIST,
         model="Qwen/Qwen3-32B",
+        machine_spec="sha256:mi308x",
         source_root=ATOM_ROOT.revision,
         **{**LAYOUT, "tp": tp, **layout},
     )
@@ -134,6 +135,7 @@ def test_a_price_list_asked_for_by_path_is_refused_by_name(tmp_path):
         Key.of(
             Kind.PRICE_LIST,
             model="Qwen/Qwen3-32B",
+            machine_spec="sha256:mi308x",
             source_root="/measurements/prices.json",
             **LAYOUT,
         )

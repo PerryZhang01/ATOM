@@ -47,12 +47,12 @@ from atom.compass.artifacts import (
     Row,
     Topology,
     git_tree_root,
+    machine_spec_key,
     module_root,
 )
 from atom.compass.backends.step_grid import StepGrid, StepGridBackend
 from atom.compass.backends.step_grid_residual import Residual
 from atom.compass.runner.overrides import schedulable_ladder
-from atom.compass.spec.fields import PINNED
 
 #: The bundle's one member: a group's step has a single writer.
 MEMBER = ("bundle", Topology().ranks()[0], "json")
@@ -77,13 +77,11 @@ def conditions(config, machine) -> Conditions:
     this process's torch and ATOM tree, the served config.json and `keyed`."""
     from atom.compass.run import _file_digest
 
-    pins = (f"{c} {machine.value(f'device.software_pinned_to.{c}')}" for c in PINNED)
     return Conditions.of(
-        software_stack=" / ".join(pins),
+        **machine_spec_key(machine).values,
         torch=torch.__version__,
         atom_src=Reading.of_source_root(git_tree_root("atom", module_root("atom"))),
         model=_file_digest(config.model, "config.json"),
-        device=f"{machine.value('device.name')} {machine.value('device.arch')}",
         engine_config=json.dumps(keyed(config), sort_keys=True),
     )
 
