@@ -12,6 +12,7 @@ import json
 import pytest
 from test_backend_step_linear_fit import (
     GAP_NS,
+    SPEC,
     _record,
     _rowmod_steps,
     _steps,
@@ -112,7 +113,7 @@ def test_the_command_writes_each_record_s_table_with_the_labels_it_fitted(tmp_pa
         _timed_record(tmp_path / f"dp0-{s}.jsonl", _steps(s), {60}, gap=GAP_NS)[0]
         for s in (19, 20)
     ]
-    main([*map(str, records), "--out", str(tmp_path / "law.json")])
+    main([*map(str, records), "--out", str(tmp_path / "law.json"), *SPEC])
     law = StepLinearBackend(
         StepLinearLaw(json.loads((tmp_path / "law.json").read_text()))
     )
