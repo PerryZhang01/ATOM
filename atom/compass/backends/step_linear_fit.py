@@ -165,18 +165,17 @@ def _host_rows(samples) -> list[tuple]:
     return rows
 
 
-def label_records(records, dp: int = 1) -> list:
+def label_records(records, dp: int = 1) -> tuple[list, dict]:
     """`records`, runs of `dp` ranks in rank order, as `step_labels` samples, each
-    run named by its records' digests; each record's table is written beside it."""
-    samples = []
+    run named by its records' digests; and each record's table rows."""
+    samples, tables = [], {}
     for i in range(0, len(records), dp):
         run = records[i : i + dp]
         name = ", ".join(map(step_labels.digest, run))
         for record in run:
-            got, table = step_labels.label(record, name)
-            step_labels.write_table(record, table)
+            got, tables[record] = step_labels.label(record, name)
             samples += got
-    return samples
+    return samples, tables
 
 
 def _runs(samples, dp: int) -> dict[str, list[list]]:
@@ -662,7 +661,9 @@ def main(argv=None) -> None:
     )
     args = parser.parse_args(argv)
     options = {"form": args.form, "dp": args.dp}
-    samples = label_records(args.records, args.dp)
+    samples, tables = label_records(args.records, args.dp)
+    for record, table in tables.items():
+        step_labels.write_table(record, table)
     law, report = fit(samples, options)
     if any(s.provenance["config"] for s in samples):
         law["host"], law["host_fit"] = fit_host(samples)

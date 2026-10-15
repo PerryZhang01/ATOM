@@ -104,7 +104,7 @@ def _summary(steps: list[tuple]) -> dict:
 
 def cost_accuracy(record, law) -> dict:
     """The report for `law`, a mapping `StepLinearLaw` reads, on the record directory `record`."""
-    ranks = [p for p in Path(record).glob("dp*.jsonl") if p.stem[2:].isdigit()]
+    ranks = sorted(Path(record).glob("dp*[0-9].jsonl"))
     if len(ranks) != 1:
         raise ValueError(
             f"{record} holds {len(ranks)} DP ranks' records; this prices one rank's"

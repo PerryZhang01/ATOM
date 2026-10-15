@@ -22,7 +22,12 @@ from test_parity_device_window import BUSY, GAP, _recorded
 from test_parity_record import _config, _drive
 
 from atom.compass.backends import StepLinearBackend, StepLinearLaw
-from atom.compass.backends.step_labels import TABLE_VERSION, digest, label
+from atom.compass.backends.step_labels import (
+    TABLE_VERSION,
+    digest,
+    label,
+    write_table,
+)
 from atom.compass.backends.step_linear_fit import (
     fit,
     label_records,
@@ -134,9 +139,11 @@ def test_the_command_writes_each_record_s_table_with_the_labels_it_fitted(tmp_pa
 
 def test_the_report_states_inputs_vectors_and_held_out_errors_per_run(tmp_path):
     records = [_record(tmp_path / f"dp0-{s}.jsonl", _steps(s)) for s in (6, 7)]
-    samples = label_records(records)
+    samples = label_records(records)[0]
     law, report = fit(samples)
 
+    # Labelling writes nothing; the command writes the tables.
+    assert not list(tmp_path.glob("*.cost.jsonl"))
     runs = [digest(r) for r in records]
     assert report["provenance"] == [
         {"source": "record", "run": run, "config": None} for run in runs
@@ -159,8 +166,8 @@ def test_a_seed_fixes_the_shuffles_and_the_same_inputs_give_the_same_bytes(tmp_p
     records = [
         _record(tmp_path / f"dp0-{s}.jsonl", _rowmod_steps(s, 150)) for s in (20, 21)
     ]
-    samples = label_records(records)
-    once, again = fit(samples), fit(label_records(records))
+    samples = label_records(records)[0]
+    once, again = fit(samples), fit(label_records(records)[0])
 
     assert json.dumps(once) == json.dumps(again)
     reseeded = fit(samples, seed=1)[0]["decode"]["8"]["fit"]["rowmod"]
@@ -175,7 +182,7 @@ def test_record_readers_take_rank_records_and_leave_their_tables(tmp_path):
 
     (tmp_path / "steps").mkdir()
     record = _record(tmp_path / "steps" / "dp0.jsonl", _steps(6, n=40))
-    label_records([record])
+    write_table(record, label(record)[1])
 
     assert (tmp_path / "steps" / "dp0.cost.jsonl").exists()
     assert list(read(tmp_path / "steps")) == [0]

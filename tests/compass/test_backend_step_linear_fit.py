@@ -123,7 +123,7 @@ def _view(rows, rung=None):
 
 def _fit(records, form="base", dp=1):
     """The law `fit` gives on `records`, labelled as the command labels them."""
-    return fit(label_records(records, dp), {"form": form, "dp": dp})[0]
+    return fit(label_records(records, dp)[0], {"form": form, "dp": dp})[0]
 
 
 def test_the_fit_recovers_its_law_and_drops_planted_outliers_by_name(tmp_path):
@@ -201,7 +201,7 @@ def test_three_forms_are_scored_on_a_record_held_out_of_their_fit(tmp_path):
     records = [
         _record(tmp_path / f"dp0-{s}.jsonl", _steps(s, history=2e-7)) for s in (3, 4, 5)
     ]
-    samples = label_records(records)
+    samples = label_records(records)[0]
     scores = {f: held_out(samples, {"form": f}) for f in ("base", "history", "shared")}
 
     history = np.abs(
@@ -438,7 +438,7 @@ def test_device_busy_time_and_host_laws_are_recovered_from_a_timed_record(tmp_pa
     decode = dict(DECODE["2"], step=DECODE["2"]["step"] + GAP_NS * 1e-9)
     assert law["decode"]["2"]["coefficients"] == pytest.approx(decode, rel=1e-5)
 
-    host, report = fit_host(label_records([record]))
+    host, report = fit_host(label_records([record])[0])
     assert host["key"] == KEY
     assert report["cut"] == {"idle": 2}
     assert report["unfitted"] == {}
@@ -458,7 +458,7 @@ def test_records_under_two_host_keys_are_refused(tmp_path):
 
     for pair in ([a, b], [a, c]):
         with pytest.raises(ValueError, match="2 host keys"):
-            fit_host(label_records(pair))
+            fit_host(label_records(pair)[0])
     main([str(c), "--out", str(tmp_path / "law.json")])
     assert "host" not in json.loads((tmp_path / "law.json").read_text())
 
@@ -794,7 +794,7 @@ def test_a_rowmod_rung_is_validated_on_its_rowmod_coordinate_too(tmp_path):
     records = [
         _record(tmp_path / f"dp0-{s}.jsonl", _rowmod_steps(s, 150)) for s in (20, 21)
     ]
-    samples = label_records(records)
+    samples = label_records(records)[0]
     law, report = fit(samples)
     mark_held_out(law, report, samples)
     backend = StepLinearBackend(StepLinearLaw(law))
