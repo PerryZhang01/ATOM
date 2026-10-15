@@ -64,6 +64,22 @@ def test_a_new_hit_in_a_kept_file_fails_with_the_kept_ones(tmp_path):
     assert report.count(f"  UNKEPT {path}:") == count + 1
 
 
+def test_routing_a_kept_decision_hit_leaves_a_stale_entry_that_fails(tmp_path):
+    root = shutil.copytree(MESH_SRC, tmp_path / "src")
+    target = root / "policies" / "random.rs"
+    text = target.read_text(encoding="utf-8")
+    target.write_text(
+        text.replace("use rand::Rng;", "use rand_core::RngCore as _;").replace(
+            "rand::rng()", "crate::determinism::rng()"
+        ),
+        encoding="utf-8",
+    )
+    code, report = check(str(root))
+    assert code == 1
+    assert "0 unkept, 1 stale entries" in report
+    assert "  STALE policies/random.rs  rand::" in report
+
+
 SOURCE = r"""
 use std::time::Instant;
 // Instant::now() in a comment

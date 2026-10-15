@@ -280,7 +280,8 @@ def check(root: str, allow_list=ALLOW_LIST) -> tuple[int, str]:
 
     The report counts every hit by pattern and disposition (`routed`, an
     entry's class, or `UNKEPT`), then lists the unkept hits and the kept
-    `decision` entries. A root holding no .rs file is refused.
+    `decision` entries. An entry naming no hit is stale and fails too, so a
+    fixed defect does not keep printing. A root holding no .rs file is refused.
     """
     found = scan(root)
     if not any(n.endswith(".rs") for _, _, names in os.walk(root) for n in names):
@@ -295,19 +296,22 @@ def check(root: str, allow_list=ALLOW_LIST) -> tuple[int, str]:
 
     marked = [(hit, disposition(hit[0], hit[2])) for hit in found]
     unkept = [hit for hit, how in marked if how == "UNKEPT"]
+    stale = sorted(key for key in allow_list if not held[key])
     tally = Counter((hit[2], how) for hit, how in marked)
-    lines = [f"rust router lint: {len(found)} hit(s), {len(unkept)} unkept"]
+    head = f"{len(found)} hit(s), {len(unkept)} unkept, {len(stale)} stale entries"
+    lines = [f"rust router lint: {head}"]
     lines += [f"  {p:<17} {how:<8} {n}" for (p, how), n in sorted(tally.items())]
     lines += [f"  UNKEPT {path}:{line}  {pattern}" for path, line, pattern in unkept]
+    lines += [f"  STALE {path}  {pattern}" for path, pattern in stale]
     lines += [
         f"  DECISION {path}  {pattern} x{n}: {why}"
         for (path, pattern), (kind, why, n) in sorted(allow_list.items())
         if kind == DECISION
     ]
-    if unkept:
+    if unkept or stale:
         lines.append(
             "Route the read or draw through crate::determinism, or add an "
             "ALLOW_LIST entry saying whether it can change a routing decision "
-            "and why it stays."
+            "and why it stays; delete an entry with no hit left."
         )
-    return (1 if unkept else 0), "\n".join(lines)
+    return (1 if unkept or stale else 0), "\n".join(lines)
