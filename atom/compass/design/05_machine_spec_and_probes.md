@@ -16,7 +16,7 @@ needs: an FP4 matrix-core rate, the size of the domain the in-node fabric joins,
 [#851](https://github.com/jgong5/ATOM/issues/851#issuecomment-6140384791):** the probes,
 `merge`, `validate` and `explain` are the `spec` package's functions, run by per-machine
 scripts, with no `compass` command (D26, `13` D80); `software_pinned_to` states torch, and
-a step fit bundle's stack is checked against it (D25).
+a step grid bundle's stack is checked against it (D25).
 
 **Revised 2026-10-14 by the owner's
 [ruling on #937](https://github.com/jgong5/ATOM/pull/937#issuecomment-6161726104), which
@@ -24,6 +24,11 @@ a step fit bundle's stack is checked against it (D25).
 developers', one per supported machine, and a user passes one by `--machine`; the memory
 readings of an engine start leave the spec for the `memory_readings` entries
 `compass measure memory` takes per configuration (D25, D26, `07` D38).
+
+**Revised 2026-10-14 by the naming record in
+[#952](https://github.com/jgong5/ATOM/issues/952):** a spec states where its values came from,
+`provenance.origin`, not how they were produced, and each field's origin, with a probe's
+subject, is recorded and kept across a save (D25); probes are grouped by probe class (D26).
 
 **Scope.** The single input artifact that tells Compass what machine it is simulating,
 its schema, and the tools that fill it in. A project requirement is that compute, memory
@@ -85,12 +90,13 @@ artifact**.
 schema_version: 1
 name: mi355x-8gpu-2node
 
-provenance:                      # one block, not per-field tags
+provenance:                      # the document's origin, and each field's
   authored_by: <who>
   date: 2026-09-18
-  method: datasheet | probed | assumed | mixed
+  origin: datasheet | probed | assumed | transferred-from:<spec> | mixed
+  subject: {model, width, source_root, record}   # a probed document only, rule 5
+  origins: {...}                 # each field's origin, written by `merge`, rule 5
   fragments: [...]               # filled by `merge`, see D26
-  assumed: [...]                 # a `mixed` spec only: its assumed fields, rule 5
   notes: free text
 
 host:
@@ -170,16 +176,16 @@ mapping so a reader can follow the term into ATOM's code without guessing. The
 | `activations[].bytes_per_token` | `peak_torch`, `cudagraph_overhead` | Qwen3.8-27B TP1 on MI308X: **180,480 B/token** fitted at 16384 warmup tokens predicts the held-out 8192 at **+0.000%**; the declared geometry form gives 98,304 (-45.5%). A model, config or width with no entry keeps the declared form |
 | `tokenizers[].*` | admission queue | cc-traces p50 input is **88,768 tokens**; at 2 M tok/s that is ~44 ms, **3x take2's entire admission constant**, and it scales with prompt length while a constant does not |
 | `ipc.*`, `interconnect.*_latency_s` | **Clock Authority lookahead floors** (doc 01 D3) | a zero lookahead serializes the whole simulation |
-| `compute.fp4_flops` | tier-0 roofline (`10` D64) for an FP4 leaf | DeepSeek-V4-Pro's routed experts are FP4 (`16` D95), and MI455X's dense FP4 peak is twice its FP8 peak ([#504](https://github.com/jgong5/ATOM/issues/504#issuecomment-6080974531)); priced at the FP8 rate they would read twice as slow |
+| `compute.fp4_flops` | the roofline (`10` D64) for an FP4 leaf | DeepSeek-V4-Pro's routed experts are FP4 (`16` D95), and MI455X's dense FP4 peak is twice its FP8 peak ([#504](https://github.com/jgong5/ATOM/issues/504#issuecomment-6080974531)); priced at the FP8 rate they would read twice as slow |
 | `intra_node.domain_devices` | the link a collective group rides (`10` D66) | MI455X's UALoE fabric joins 72 GPUs across compute trays of 4 (#504), so a TP8 or EP8 group spans two trays without touching the NICs; `count_per_node` alone would send it over `inter_node` |
-| every `derate` | cost model | no kernel reaches spec peak; the gap between datasheet and achievable is the user's to declare |
+| every `derate` | cost model | no kernel reaches spec peak; the gap between datasheet and achievable is the user's to state |
 
 **On `derate`.** The name was kept deliberately after considering `achievable_fraction`
 and `efficiency`. It is a fraction in `(0, 1]` multiplying a spec-peak number, it appears
 in five places with identical meaning, and it is the term the schema rules make
 *mandatory* so that nobody quietly uses a datasheet FLOP as an achievable one. A name
 that reads like a neutral measurement would undercut that; `derate` reads like what it is
-— a declared haircut the author is responsible for.
+— a stated haircut the author is responsible for.
 
 **Precisions and links.** Each `*_flops` is the dense matrix-core peak at one operand
 precision, never a structured-sparsity figure: `fp8_flops` covers OCP FP8 and MXFP8,
@@ -201,24 +207,28 @@ Mooncake's KV transfer between the prefill and the decode node (`01` D6).
 3. **`software_pinned_to` is checked, not decorative.** Device numbers track the
    ROCm/RCCL/AITER build as well as the die (`07` D43). A stack mismatch warns loudly by
    default and refuses under `validate(strict=True)`; constants moved across stacks by a
-   merge always refuse. It is the target's stack: a step fit bundle's
+   merge always refuse. It is the target's stack: a step grid bundle's
    stack, torch included, is checked against it, never against the stack of the process
    that simulates (`17` D101).
 4. **The whole resolved spec is echoed into every run artifact.** The KV gate is **≤5%**;
    a number whose spec cannot be recovered from the artifact is unattributable.
-5. **Every field is *sourced* or *assumed*, and the document says which.** A fragment
-   whose `method` is `assumed` assumes every value it supplies, and its `notes` say why
-   each value was chosen. A `mixed` fragment, which is what a saved merge is, assumes
-   exactly the fields its `provenance.assumed` names; one that does not state that list
-   is refused by name, and no other fragment may state it. A fragment with any other
-   method assumes nothing: it is the source of what it supplies, and a `datasheet`
-   fragment's `notes` cite the document and the date it was read. A field is assumed when
-   every fragment that supplied it assumes it. When the merged method is `mixed`, `merge`
-   writes those fields into `provenance.assumed`, keyed as `Merge.sources` keys them and
-   empty when there are none, so a saved merge re-merged next week keeps its assumed
-   fields assumed although the per-field record is not saved. A derate for a device never
-   run is assumed (`10` D69): a vendor's measured fraction of peak informs the choice and
-   does not source it. `08` D50.2 says how the projection reports its assumed fields.
+5. **Every field has an origin, and the document records it** (`spec/fields.py::ORIGINS`,
+   `MachineSpec.origin`): `datasheet`, `probed`, `assumed` or `transferred-from:<spec>`.
+   A probed field also records its subject, what the probe ran on: model, width, source
+   root, and the digest of the run record it read. A fragment states one
+   `provenance.origin` for what it supplies; an `assumed` fragment's `notes` say why each
+   value was chosen, and a `datasheet` fragment's cite the document and the date it was
+   read. `merge` writes each field's origin into `provenance.origins`: a field two
+   fragments agree on takes the stronger origin, so it is assumed only when every supplier
+   assumed it, and the document's own origin is `mixed` unless every field shares one. A
+   saved merge keeps `provenance.origins`, so re-merging it next week keeps each field's
+   origin; a `mixed` document without them is refused by name, and so is a document
+   that states a method in place of an origin. The origin is not the method: the term that reads a field
+   decides that (`02` D11, #952), so a datasheet value used as a parameter is analytical,
+   a probed one used as the answer is measured, and an assumed or transferred one makes
+   the term declared. A derate for a device never run is assumed (`10` D69): a vendor's
+   measured fraction of peak informs the choice and does not source it. `08` D50.2 says
+   how the projection reports its assumed fields.
 
 ### `host.tokenizer` is keyed by tokenizer identity, not by model
 
@@ -227,7 +237,7 @@ one spec would silently share one set of terms.
 
 The obvious fix is to key by model type. Rejected, for one reason: **models share
 tokenizers, routinely.** Every size in a family ships the same tokenizer, and
-distillations and fine-tunes inherit it. Keying by model means measuring the same
+distillations and fine-tunes inherit it. Keying by model means probing the same
 tokenizer once per model, storing N copies of one number, and letting them drift — and
 drift here is invisible, because nothing ever compares the copies.
 
@@ -238,16 +248,16 @@ So the key is the **tokenizer**, with model names as an index into it — the
 |---|---|
 | `id` | author-chosen, stable, human-readable; what `merge` conflicts on |
 | `backend` | `fast` (Rust) and `slow` (Python) run an order of magnitude apart on the same `tokenizer.json`, and which one loads depends on the environment, not the model |
-| `fingerprint` | sha256 of the `tokenizer.json` actually measured — the check that the numbers belong to this tokenizer |
+| `fingerprint` | sha256 of the `tokenizer.json` actually probed — the check that the numbers belong to this tokenizer |
 | `applies_to` | the model architectures that resolve to it; one entry, many models |
 
 Resolution at run time: match the model architecture against `applies_to`; if the loaded
 tokenizer's `tokenizer.json` hash does not equal `fingerprint`, **warn and name both**.
-No match at all is a **refusal**, not a default — an unmeasured tokenizer on an 88,768-token
+No match at all is a **refusal**, not a default — an unprobed tokenizer on an 88,768-token
 p50 prompt is a ~44 ms per-request error that would land entirely inside TTFT.
 
 **What this does not solve:** one spec still describes one *host*. Two tokenizers
-measured on different CPUs must not be merged into one spec — that is what
+probed on different CPUs must not be merged into one spec — that is what
 `provenance` and `merge`'s conflict check are for.
 
 ### Open issues
@@ -276,7 +286,7 @@ blank form.
 ### Design
 
 A probe **emits a fragment**: a partial spec plus a provenance stanza saying what it
-measured, how, and on what. `merge` combines fragments into a spec, recording which
+probed, how, and on what. `merge` combines fragments into a spec, recording which
 fragment supplied each field. `validate` refuses an incomplete or inconsistent one.
 
 ```
@@ -288,7 +298,7 @@ explain(spec, term)      -> the fields behind one quantity, and how much each co
 
 Each is a function of the `spec` package, and a per-machine script runs them:
 `scripts/compass/mi308x_spec.py` sweeps the tokenizer, merges its fragment with the
-device's and the declared ones, validates the result and prints `explain`'s rows. No
+device's and the assumed ones, validates the result and prints `explain`'s rows. No
 `compass` command wraps them (`13` D80). Machine specs are developers', one per supported
 machine (`scripts/compass/machines/`), and a user passes one by `--machine`. The readings
 of an engine start are not the spec's: `compass measure memory` takes them per
@@ -296,37 +306,37 @@ configuration into a `memory_readings` entry (`07` D38, Phase 2).
 
 ### The probes, by what hardware they need
 
-**Tier 0 — no GPU. Runs anywhere, including the CPU container.**
+**Class 0 — no GPU. Runs anywhere, including the CPU container.**
 
 | Probe | Fills | Method |
 |---|---|---|
 | `tokenizer`, per model | `host.tokenizers[].*` | encode and decode a length sweep with **ATOM's own loaded tokenizer** (`_load_tokenizer`, `llm_engine.py`), fit `a + b*n`. Must sweep past 200k tokens: the workload's p90 input is 204,288. |
 | `ipc` | `host.ipc.*` | round-trip over ATOM's own `make_zmq_socket` and `aiter.dist.shm_broadcast.MessageQueue`, so it measures the transports ATOM actually uses |
 
-**Tier 1 — one GPU of the target type.**
+**Class 1 — one GPU of the target type.**
 
 | Probe | Fills | Notes |
 |---|---|---|
 | `device-memory`, at TP1 | `capacity_bytes` | the device's capacity; the readings of an engine start are `measure memory`'s |
 | `device-compute` | `bandwidth_bytes_per_s`, `*_flops`, their `derate`s | GEMM and bandwidth sweeps; derate is achieved/datasheet |
 
-**Tier 2 — N GPUs of the target type.**
+**Class 2 — N GPUs of the target type.**
 
 | Probe | Fills | Notes |
 |---|---|---|
 | `interconnect-intra` | `intra_node.*` | collectives in **real groups**, several sizes |
 
-**Tier 3 — two nodes.**
+**Class 3 — two nodes.**
 
 | Probe | Fills |
 |---|---|
 | `interconnect-inter` | `inter_node.*`, `router_relay_s` |
 
-**Tier 4 — no hardware at all.**
+**Class 4 — no hardware at all.**
 
 | Probe | Fills | Provenance stamped |
 |---|---|---|
-| `from-datasheet` | `capacity_bytes`, `bandwidth`, `flops` | `method: datasheet`, derates left blank so `validate` refuses until declared |
+| `from-datasheet` | `capacity_bytes`, `bandwidth`, `flops` | `origin: datasheet`, derates left blank so `validate` refuses until stated |
 
 ### Two refusals every hardware probe must implement
 
@@ -365,19 +375,19 @@ which cancelled — the largest being 25% of a single term.
 ### Open issues
 
 - The tokenizer probe measures *this* host. **Working assumption: tokenizer throughput
-  transfers across CPUs of comparable class, adjusted by the declared `derate`.** Adopted
+  transfers across CPUs of comparable class, adjusted by the stated `derate`.** Adopted
   rather than left open, because the alternative is refusing every spec authored on a
   machine other than the target, which is most of them. It is weaker than it sounds —
   tokenization is single-threaded, cache-resident, integer work, so it tracks per-core
   clock far more than core count, and the schema records `cpu.cores_physical` so a gross
   mismatch is visible. Untested; recorded as **T53**, settled by one probe on a second
   host class.
-- Tier 2 and 3 probes need a quiet machine. Three of the last five prior pilot attempts
+- Class 2 and 3 probes need a quiet machine. Three of the last five prior pilot attempts
   were lost or degraded by other tenants — two refused to start with a negative KV budget
   at 141 GB of neighbour, one ran 64% slow. **Any probe run needs the machine checked
   before and after, not only before.**
 - Nothing yet decides what a developer does with no card of the target type. Today the
-  answer is "declare it and accept the error", the memory readings in an entry marked
+  answer is "assume it and accept the error", the memory readings in an entry marked
   assumed (`07` D38), which is honest but unguided.
 
 ---
@@ -387,6 +397,6 @@ which cancelled — the largest being 25% of a single term.
 | # | Decision | Date |
 |---|---|---|
 | D24 | The spec describes the machine; ATOM's config describes the deployment. Thread-pool width becomes an ATOM config option, not a Compass one. | 2026-09-18 |
-| D25 | Four-section schema: `provenance`, `host`, `device`, `interconnect`. Mandatory derates, no memory readings (`measure memory`'s entries, 2026-10-14), `software_pinned_to` checked, torch included, as the target's stack, whole spec echoed into every artifact. Revised for the MI455 projection: an optional dense `fp4_flops`, `intra_node.domain_devices` for a scale-up fabric wider than a node, and every field *sourced* or *assumed* by the fragments that supplied it, which a `mixed` spec records in `provenance.assumed`. | 2026-09-18; revised 2026-10-10; torch 2026-10-13 (#851) |
-| D26 | Probes emit fragments; `merge` / `validate` / `explain` combine and check them. Four hardware tiers plus a datasheet path; the transfer path dropped 2026-10-14 (#937). Every hardware probe implements the contamination refusals. All are the `spec` package's functions, run by per-machine scripts, with no `compass` command. Machine specs are developers', one per supported machine, passed by `--machine`; an engine start's memory readings are `measure memory`'s, not the spec's. | 2026-09-18; revised 2026-10-13 and 2026-10-14 (#851) |
+| D25 | Four-section schema: `provenance`, `host`, `device`, `interconnect`. Mandatory derates, no memory readings (`measure memory`'s entries, 2026-10-14), `software_pinned_to` checked, torch included, as the target's stack, whole spec echoed into every artifact. Revised for the MI455 projection: an optional dense `fp4_flops`, `intra_node.domain_devices` for a scale-up fabric wider than a node, and every field given an origin, `provenance.origin` and per field `provenance.origins` with a probe's subject, kept across a save. | 2026-09-18; revised 2026-10-10; torch 2026-10-13 (#851); origin 2026-10-14 (#952) |
+| D26 | Probes emit fragments; `merge` / `validate` / `explain` combine and check them. Four hardware probe classes plus a datasheet path; the transfer path dropped 2026-10-14 (#937). Every hardware probe implements the contamination refusals. All are the `spec` package's functions, run by per-machine scripts, with no `compass` command. Machine specs are developers', one per supported machine, passed by `--machine`; an engine start's memory readings are `measure memory`'s, not the spec's. | 2026-09-18; revised 2026-10-13 and 2026-10-14 (#851) |
 | D25.1 | Runtime-constant fields renamed to say what they are; ATOM's own term recorded as a mapping column. `host.tokenizer` becomes `host.tokenizers[]`, keyed by tokenizer identity (id + backend + fingerprint) with `applies_to` model architectures. | 2026-09-19 |

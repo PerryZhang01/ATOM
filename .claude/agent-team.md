@@ -62,7 +62,7 @@ own `gh` login. Ownership is the assignee:
 - **`gate_task` runs in a CPU environment with no GPU driver**, on a
   `scripts/compass/snapshot.sh` tarball of the head
   (`scripts/compass/README.md`), and is judged against the same run on the
-  base. Not where a driver is present: kernel tests in the CPU tier run on
+  base. Not where a driver is present: kernel tests in the CPU gate run on
   the device there and fail at the base too. New tests in `new_tests_dir`
   are CPU-only: they pass there with no driver.
 - **Python resolution.** Run `python3` and `pytest` from the tree's root, or
