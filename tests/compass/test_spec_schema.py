@@ -933,6 +933,30 @@ def test_a_layout_nobody_probed_is_refused_by_name_in_validation():
     assert validate(with_layout(), tp_widths=(1, "1x8")).ok
 
 
+def test_an_expert_parallel_layout_is_its_own_entry():
+    edited = with_layout()
+    constants = edited["device"]["runtime_constants"]
+    constants[RESERVE]["1x8x8"] = 9.5e9
+    machine = MachineSpec.from_mapping(edited)
+    assert machine.runtime_constant(RESERVE, "1x8x8") == 9.5e9
+    assert machine.runtime_constant(RESERVE, "1x8") == 8.19e9
+    # The residue table has no EP entry: validation names it, and only it.
+    checked = validate(edited, tp_widths=("1x8", "1x8x8"))
+    (refusal,) = checked.refusals
+    assert "allocator_retained_after_load_bytes" in refusal.what
+    assert "width 1x8x8" in refusal.what
+    constants["allocator_retained_after_load_bytes"]["1x8x8"] = 2.3e9
+    assert validate(edited, tp_widths=("1x8", "1x8x8")).ok
+
+
+@pytest.mark.parametrize("key", ["1x8x4", "1x8x16", "2x4x4", "1x8x08", "1x8x8x8"])
+def test_an_expert_parallel_layout_spans_every_rank(key):
+    edited = document()
+    edited["device"]["runtime_constants"][RESERVE][key] = 1.0
+    with pytest.raises(SpecRefusal):
+        MachineSpec.from_mapping(edited)
+
+
 # --- a derate wherever a spec peak appears -----------------------------------
 
 
