@@ -7,6 +7,8 @@ The deployment is the Qwen3.5-27B config at TP1 on the suite's machine
 document, replaying graphs on `test_backend_step_grid`'s ladder; the bundle is
 that file's replay grid and a unit residual, published under the readings
 `step_grid.conditions` takes of the same deployment unless a test moves one.
+The kinds `measure steps`, `fit` and `trace steps` publish are published and
+loaded under those readings too.
 """
 
 import copy
@@ -369,6 +371,7 @@ def test_a_new_kind_loads_under_the_runs_readings_and_refuses_on_its_rows_cells(
     each axis moved refuses where the kind's row depends on it, and loads
     where it does not."""
     r = deployment(tmp_path)
+    here = readings(r)
     store = ArtifactStore(tmp_path / "store")
     key = Key.of(kind, **(NEW_KINDS[kind] or host_laws_key(r)))
     assert tuple(key.values) == KEY_FIELDS[kind]
@@ -376,7 +379,7 @@ def test_a_new_kind_loads_under_the_runs_readings_and_refuses_on_its_rows_cells(
         key,
         provenance=STANZA,
         topology=Topology(),
-        conditions=readings(r),
+        conditions=here,
         gates=GateState.of(),
         members={member_name("laws", Topology().ranks()[0], "json"): b"{}"},
     )
@@ -384,7 +387,7 @@ def test_a_new_kind_loads_under_the_runs_readings_and_refuses_on_its_rows_cells(
 
     assert store.load(key, conditions=readings(r), gates=GateState.of()).key == key
     for axis in Axis:
-        there = moved(readings(r), axis)
+        there = moved(here, axis)
         if not MATRIX[row][axis].depends:
             store.load(key, conditions=there, gates=GateState.of())
             continue

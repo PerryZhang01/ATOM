@@ -172,7 +172,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: INDEPENDENT,
         Axis.MODEL: Cell(True, "tokenizer"),
         Axis.DEVICE: Cell(False, "host CPU"),
-        Axis.HOST_CPU: INDEPENDENT,
+        Axis.HOST_CPU: Cell(False, "untested: assumed to transfer by derate"),
         Axis.ENGINE_CONFIG: INDEPENDENT,
     },
     Row.SHAPE_POPULATION: {
