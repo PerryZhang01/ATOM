@@ -175,8 +175,9 @@ functions on import, so a wheel from another commit fails the same way.
 
 ## atomesh's cargo tests run offline, from the container's crate cache
 
-`gate_cpu.sh` runs atomesh's Compass cargo tests (the `--test` targets it names)
-in `atom/mesh` before pytest, with `CARGO_NET_OFFLINE=true` unless the caller set
+`gate_cpu.sh` runs atomesh's unit tests (`cargo test --lib`) and every Compass
+cargo target, selected by file name (`atom/mesh/tests/compass_*.rs`, so a new
+Compass target must carry the prefix), in `atom/mesh` before pytest, with `CARGO_NET_OFFLINE=true` unless the caller set
 it, and fails after pytest if they fail. `tests/compass/test_mesh_clock_client.py`
 skips when `cargo metadata` fails, and the gate runs the same probe first: when it
 fails and the diff touches `atom/mesh`, the gate exits 96 before pytest and names
