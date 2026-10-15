@@ -13,6 +13,7 @@ import hashlib
 import json
 from types import SimpleNamespace
 
+import pytest
 import torch
 from test_memory_readings import (
     ACTIVATIONS,
@@ -22,6 +23,7 @@ from test_memory_readings import (
     GPU_MEMORY_UTILIZATION,
     GRAPH_POOL_BY_DTYPE,
     MAX_NUM_BATCHED_TOKENS,
+    META_8B,
     MODEL_TERMS_BY_DTYPE,
     WARMUP_TOKENS,
     overridden,
@@ -31,6 +33,7 @@ from transformers import PretrainedConfig
 
 from atom.compass import run as compass_run
 from atom.compass.runner.overrides import NonAllocatingRunner
+from atom.compass.spec import SpecRefusal
 
 
 def _installed(
@@ -40,6 +43,7 @@ def _installed(
     eager,
     piecewise=False,
     dp=1,
+    dpa=False,
     sizes=None,
     hf_overrides=None,
     **run,
@@ -60,7 +64,7 @@ def _installed(
             hf_config=hf,
             hf_overrides=hf_overrides,
             tensor_parallel_size=1,
-            enable_dp_attention=False,
+            enable_dp_attention=dpa,
             enable_expert_parallel=False,
             parallel_config=SimpleNamespace(
                 data_parallel_size=dp, data_parallel_rank=0
@@ -78,7 +82,7 @@ def _installed(
         ),
         _piecewise_cg_active=lambda: piecewise,
     )
-    compass_run.runner(runner)
+    compass_run.runner(runner, META_8B)
     return runner
 
 
@@ -137,3 +141,33 @@ def test_a_field_only_hf_overrides_sets_reaches_the_installed_readings(
     peak_torch = runner.compass_memory["readings"]["peak_torch"]
     (buffers,) = [row for row in peak_torch if row["name"] == "buffers"]
     assert buffers["source"].startswith("65536 positions")
+
+
+@pytest.mark.parametrize(
+    ("dpa", "dp", "key"), [(True, 8, "1x8"), (False, 2, 1), (True, 1, 1)]
+)
+def test_dp_attention_reads_its_layout_and_plain_dp_its_width(
+    monkeypatch, tmp_path, dpa, dp, key
+):
+    machine = copy.deepcopy(DOCUMENT)
+    constants = machine["device"]["runtime_constants"]
+    reserve = constants["driver_and_collective_reserve_bytes"]
+    residue = constants["allocator_retained_after_load_bytes"]
+    reserve["1x8"], residue["1x8"] = 8.19e9, 2.17e9
+    runner = _installed(
+        monkeypatch, tmp_path, eager=True, dpa=dpa, dp=dp, machine=machine
+    )
+    readings = runner.compass_memory["readings"]
+    (non_torch,) = readings["non_torch"]
+    (load,) = [row for row in readings["peak_torch"] if row["name"] == "load residue"]
+    assert non_torch["source"].endswith(f"[{key}]")
+    assert load["source"].endswith(f"[{key}]")
+    assert (non_torch["nbytes"], load["nbytes"]) == (
+        int(reserve[key]),
+        int(residue[key]),
+    )
+
+
+def test_dp_attention_refuses_a_spec_without_its_layout(monkeypatch, tmp_path):
+    with pytest.raises(SpecRefusal, match="width 1x8; this spec has"):
+        _installed(monkeypatch, tmp_path, eager=True, dpa=True, dp=8)

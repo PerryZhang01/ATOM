@@ -21,7 +21,9 @@ entry, and none of them is written down.
 measured values at widths 1, 2, 4 and 8 fit no fixed-plus-per-peer form, so
 there is nothing to interpolate along and a width that was not probed cannot
 be produced from the widths that were. `WIDTH_TABLE` holds what was probed and
-the accessor refuses the rest by name.
+the accessor refuses the rest by name. Under DP-attention every rank runs at
+TP 1 inside DP-wide groups, so such an entry is keyed by its layout, the string
+`"<tp>x<dp>"` (`"1x8"`); JSON keeps it as written, and a width stays an integer.
 
 **A checked value is the spec's own.** Every kind returns a copy rather than
 what the document handed over: `tuple` for a list of names, `dict` for a width
@@ -58,6 +60,14 @@ from dataclasses import dataclass
 from .rules import Rule, SpecRefusal
 
 
+def layout(key: object) -> bool:
+    """Whether `key` is a DP-attention layout, `<tp>x<dp>` in positive integers."""
+    parts = key.split("x") if isinstance(key, str) else ()
+    return len(parts) == 2 and all(
+        p.isascii() and p.isdigit() and p[0] != "0" for p in parts
+    )
+
+
 class Kind(enum.Enum):
     """What a field may hold."""
 
@@ -78,8 +88,14 @@ class Kind(enum.Enum):
 #: name; `mixed` describes a document, never one field.
 ORIGINS = ("datasheet", "probed", "assumed", "mixed")
 TRANSFERRED = "transferred-from:"
-#: What a probe ran on, any of which it may state.
-SUBJECT = {"model": Kind.TEXT, "width": Kind.COUNT, "source_root": Kind.TEXT}
+#: What a probe ran on, any of which it may state. `record` is the digest of
+#: the record of the run it read, `sha256:` over the server log.
+SUBJECT = {
+    "model": Kind.TEXT,
+    "width": Kind.COUNT,
+    "source_root": Kind.TEXT,
+    "record": Kind.TEXT,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,8 +302,14 @@ def check(field: Field, value: object, path: str) -> object:
         if not isinstance(value, Mapping) or not value:
             _refuse(path, "a non-empty table keyed by tensor-parallel width", value)
         for width, measured in value.items():
-            if isinstance(width, bool) or not isinstance(width, int) or width <= 0:
-                _refuse(f"{path}[{width!r}]", "a positive tensor-parallel width", width)
+            if not layout(width) and (
+                isinstance(width, bool) or not isinstance(width, int) or width <= 0
+            ):
+                _refuse(
+                    f"{path}[{width!r}]",
+                    "a positive tensor-parallel width or a `<tp>x<dp>` layout",
+                    width,
+                )
             check(Field(f"{path}.{width}", Kind.QUANTITY), measured, f"{path}[{width}]")
         return dict(value)
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):

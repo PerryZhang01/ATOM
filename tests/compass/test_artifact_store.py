@@ -17,7 +17,7 @@ fixture that picked one would settle by example a question filed as #165. The
 multi-axis round trip is therefore keyed on `op_graph`, which has no width in
 its key at all. And nothing here touches a driver, a device or a network:
 `git` is reached only through an injected runner, so the source-root resolvers
-are exercised without this tier depending on the tree it was staged from.
+are exercised without the CPU gate depending on the tree it was staged from.
 """
 
 import json

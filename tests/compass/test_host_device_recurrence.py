@@ -15,14 +15,22 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from test_dp_step_max import runner
+from test_memory_readings import META_8B
+from test_parity_record import _config, _Runner
 from test_run_step_grid import B37, decode, deployment, publish, run_file
 from test_runner_step_semantics import _drive
 from test_validate_runs import _cell, _schedule
 
+from atom.compass import parity
 from atom.compass import run as compass_run
-from atom.compass.backends.step_stub import StepStubBackend
+from atom.compass.backends.cost import fold_seconds
+from atom.compass.backends.step_stub import SOURCE, StepStubBackend
 from atom.compass.runner import overrides
-from atom.compass.runner.overrides import HOST_SEGMENTS, HostDeviceRecurrence
+from atom.compass.runner.overrides import (
+    FORWARD_KINDS,
+    HOST_SEGMENTS,
+    HostDeviceRecurrence,
+)
 from atom.compass.validate import runs
 
 BACKEND = StepStubBackend()
@@ -50,6 +58,23 @@ def charges(batches, laws=None, skip=()):
         out.append(overrides._group_step_seconds(r, b, BACKEND))
         clock[0] += out[-1]
     return out
+
+
+def cost_lines(batches, directory, monkeypatch, laws=None, skip=(), rank=0):
+    """A runner recording to `directory`: its charge of each batch, under
+    `laws` when given, and the cost lines it wrote there, below the version
+    line."""
+    monkeypatch.setenv(parity.ENV, str(directory))
+    r, clock = _Runner(_config(), rank), [0.0]
+    if laws is not None:
+        r.compass_host = HostDeviceRecurrence(laws, skip, lambda: clock[0])
+    charged = []
+    for b in batches:
+        charged.append(r.forward(b).predicted_s)
+        clock[0] += charged[-1]
+    path = directory / "dp0.cost.jsonl"
+    lines = path.read_text().splitlines() if path.exists() else []
+    return [json.loads(line) for line in lines[1:]], charged
 
 
 def law(kind, seconds):
@@ -112,7 +137,7 @@ def test_a_runs_runner_charges_at_the_clock_its_engine_publishes(tmp_path, monke
     engine = compass_run._PublishedClock(
         compass_run.ENGINE, compass_run.channel_table(run), None
     )
-    compass_run.runner(r)
+    compass_run.runner(r, META_8B)
     price = 8897.5e-6  # `test_run_step_grid`'s price of this batch
     # The first output forward waits for nothing; the next, called at the same
     # time, for the first one's device work.
@@ -140,6 +165,65 @@ def test_a_host_entry_the_runner_would_not_read_is_refused(tmp_path, monkeypatch
     monkeypatch.setenv(compass_run.ENV, str(path))
     with pytest.raises(ValueError, match="host is"):
         compass_run.spec()
+
+
+def test_each_cost_line_reproduces_the_charge_of_its_step(
+    streak, tmp_path, monkeypatch
+):
+    rng = random.Random(904)
+    laws = {
+        k: {s: [rng.uniform(0, 1e-2), rng.uniform(0, 1e-5), 0] for s in HOST_SEGMENTS}
+        for k in FORWARD_KINDS
+    }
+    lines, charged = cost_lines(streak, tmp_path, monkeypatch, laws, ["W_launch"])
+
+    steps = [s["step"] for s in parity.read(tmp_path)[0]]
+    assert [line["step"] for line in lines] == steps == list(range(len(streak)))
+    # Charged again from the lines alone: each segment a constant, and the
+    # device time, each called at the clock the lines before it moved.
+    now = 0.0
+    host = HostDeviceRecurrence({}, (), lambda: now)
+    for batch, line, charge in zip(streak, lines, charged):
+        segments = {s: (line[s], 0, 0) for s in HOST_SEGMENTS}
+        host.laws = dict.fromkeys(FORWARD_KINDS, segments)
+        assert host.charge(batch, line["device_s"]) == line["charge_s"] == charge
+        now += charge
+        assert (line["W_launch"], line["skipped"]) == (0.0, ["W_launch"])
+        assert line["group_s"] == charge
+        assert line["device_s"] == fold_seconds(t["seconds"] for t in line["terms"])
+        provenance = {(t["method"], t["validated"], t["source"]) for t in line["terms"]}
+        assert (provenance, line["refused"]) == ({("declared", False, SOURCE)}, None)
+    assert all(line["E"] > 0 for line in lines)
+
+
+def test_with_no_host_a_cost_line_is_the_price_and_a_rerun_replaces_the_file(
+    streak, tmp_path, monkeypatch
+):
+    cost_lines(streak, tmp_path, monkeypatch)
+    lines, charged = cost_lines(streak[:5], tmp_path, monkeypatch)
+    assert [line["step"] for line in lines] == list(range(5))
+    for line, charge in zip(lines, charged):
+        assert line["device_s"] == line["charge_s"] == line["group_s"] == charge
+        assert not {*HOST_SEGMENTS, "skipped"} & line.keys()
+
+
+def test_no_cost_line_is_written_with_the_record_off_or_off_tp_rank_0(
+    streak, tmp_path, monkeypatch
+):
+    assert cost_lines(streak[:3], tmp_path / "tp1", monkeypatch, rank=1)[0] == []
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(parity.ENV)
+    r = _Runner(_config())
+    for b in streak[:3]:
+        r.forward(b)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_grading_reads_a_simulated_cells_record_beside_its_cost_lines(tmp_path):
+    cells = [_cell(tmp_path / f"c{i}", _schedule(), {}) for i in range(4)]
+    graded = runs.grade(cells[2:], cells[0], cells[1])
+    (cells[0] / "steps" / "dp0.cost.jsonl").write_text(json.dumps({"step": 0}) + "\n")
+    assert runs.grade(cells[2:], cells[0], cells[1]) == graded
 
 
 def test_grading_refuses_a_what_if_run(tmp_path):

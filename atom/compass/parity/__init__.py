@@ -327,7 +327,8 @@ def read(directory) -> dict[int, list[dict]]:
     directory, record, start = pathlib.Path(directory), {}, None
     if (directory / ARRIVALS).exists():
         start = min(json.loads((directory / ARRIVALS).read_text())["sent_ns"])
-    for path in sorted(directory.glob("dp*.jsonl")):
+    # Each rank's record, and not the cost lines a simulated run writes beside it.
+    for path in sorted(directory.glob("dp*[0-9].jsonl")):
         steps = [json.loads(line) for line in path.read_text().splitlines()]
         keys = dict(pair for step in steps for pair in step.pop("named"))
         if start is not None:

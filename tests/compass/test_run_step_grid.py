@@ -36,7 +36,7 @@ from test_backend_step_grid import (
     point,
 )
 from test_dp_slice import _deployment
-from test_memory_readings import CONFIG_JSON, DOCUMENT
+from test_memory_readings import CONFIG_JSON, DOCUMENT, META_8B
 from test_refused_step_continues import drive
 from test_runner_control_refusals import Worker
 from test_vertical_slice import _run_file
@@ -163,7 +163,7 @@ def test_a_run_file_bundle_prices_the_runs_steps_and_the_summary_names_it(
     entry = publish(tmp_path, r)
     run = run_file(tmp_path, monkeypatch)
 
-    compass_run.runner(r)
+    compass_run.runner(r, META_8B)
 
     assert isinstance(r.compass_backend, StepGridBackend)
     # Rung 48's cell, as `test_backend_step_grid` reads it from the same grid.
@@ -197,7 +197,7 @@ def test_a_run_ended_by_abort_still_names_its_bundle(monkeypatch, tmp_path):
         monkeypatch.setattr(module, name, None)
     with compass_run.frontend(_deployment()):
         pass
-    compass_run.runner(r)
+    compass_run.runner(r, META_8B)
     engine = LPRuntime(compass_run.ENGINE, compass_run.channel_table(run), None)
     monkeypatch.setattr(clock, "_installed", engine)
 
@@ -223,7 +223,7 @@ def test_a_roofline_floor_still_prices_below_step_grid(monkeypatch, tmp_path):
     publish(tmp_path, r)
     run_file(tmp_path, monkeypatch, roofline_floor_s=1e-3)
 
-    compass_run.runner(r)
+    compass_run.runner(r, META_8B)
 
     assert isinstance(r.compass_backend, StepFallbackBackend)
     assert isinstance(r.compass_backend.first, StepGridBackend)
@@ -234,7 +234,7 @@ def test_step_grid_is_one_of_the_backend_keys(monkeypatch, tmp_path):
     run_file(tmp_path, monkeypatch, step_stub={})
 
     with pytest.raises(ValueError, match="this one has step_stub and step_grid"):
-        compass_run.runner(r)
+        compass_run.runner(r, META_8B)
 
 
 @pytest.mark.parametrize(
@@ -253,7 +253,7 @@ def test_the_key_is_its_fields_never_a_path(monkeypatch, tmp_path, fields, named
     run_file(tmp_path, monkeypatch, step_grid={"store": str(tmp_path / "store"), **key})
 
     with pytest.raises(ArtifactRefusal, match=re.escape(named)) as refused:
-        compass_run.runner(r)
+        compass_run.runner(r, META_8B)
     assert "(model, device, parallel, engine_config, grid, source_root)" in str(
         refused.value
     )
@@ -265,7 +265,7 @@ def test_a_key_with_no_bundle_refuses_naming_it(monkeypatch, tmp_path):
     run_file(tmp_path, monkeypatch)
 
     with pytest.raises(ArtifactRefusal, match="no entry for step_grid_bundle\\("):
-        compass_run.runner(r)
+        compass_run.runner(r, META_8B)
 
 
 @pytest.mark.parametrize(
@@ -285,7 +285,7 @@ def test_a_bundle_read_under_other_conditions_refuses_naming_the_cell(
     with pytest.raises(
         ArtifactRefusal, match=re.escape(f"`step grid bundle` x `{axis}`")
     ):
-        compass_run.runner(r)
+        compass_run.runner(r, META_8B)
 
 
 def test_a_bundle_measured_on_another_host_cpu_loads(monkeypatch, tmp_path):
@@ -444,7 +444,7 @@ def test_a_deployment_off_the_bundles_keyed_conditions_refuses_naming_them(
     run_file(tmp_path, monkeypatch)
 
     with pytest.raises(ValueError, match="measured under other conditions") as refused:
-        compass_run.runner(deployment(tmp_path, **config))
+        compass_run.runner(deployment(tmp_path, **config), META_8B)
     assert named in str(refused.value)
 
 
@@ -453,7 +453,7 @@ def test_a_capture_size_past_max_num_seqs_is_not_on_the_ladder(monkeypatch, tmp_
     run_file(tmp_path, monkeypatch)
     r = deployment(tmp_path, capture_sizes=LADDER + [64])
 
-    compass_run.runner(r)
+    compass_run.runner(r, META_8B)
 
     assert isinstance(r.compass_backend, StepGridBackend)
 
@@ -469,7 +469,7 @@ def test_a_timing_scope_narrower_than_the_forward_refuses(monkeypatch, tmp_path)
         ValueError,
         match="timing scope 'run_model\\+logits' in the bundle and 'forward' here",
     ):
-        compass_run.runner(r)
+        compass_run.runner(r, META_8B)
 
 
 def test_a_data_parallel_run_refuses(monkeypatch, tmp_path):
@@ -478,7 +478,7 @@ def test_a_data_parallel_run_refuses(monkeypatch, tmp_path):
     dp2 = SimpleNamespace(data_parallel_size=2, data_parallel_rank=0)
 
     with pytest.raises(ValueError, match="this run has data_parallel_size 2"):
-        compass_run.runner(deployment(tmp_path, parallel_config=dp2))
+        compass_run.runner(deployment(tmp_path, parallel_config=dp2), META_8B)
 
 
 def test_an_unmeasured_rung_between_measured_ones_refuses_listing_it(
@@ -500,7 +500,7 @@ def test_an_unmeasured_rung_between_measured_ones_refuses_listing_it(
             "measured the decode rungs [16, 48], and not the ladder's rungs [32]"
         ),
     ):
-        compass_run.runner(r)
+        compass_run.runner(r, META_8B)
 
 
 @pytest.mark.parametrize(
@@ -516,7 +516,7 @@ def test_a_bound_past_the_one_the_grid_was_planned_for_refuses(
     with pytest.raises(
         ValueError, match=f"this run's {bound} {value} is above the {BOUNDS[bound]} "
     ):
-        compass_run.runner(deployment(tmp_path, **{bound: value}))
+        compass_run.runner(deployment(tmp_path, **{bound: value}), META_8B)
 
 
 @pytest.mark.parametrize(
@@ -552,5 +552,5 @@ def test_a_bundle_that_does_not_load_names_itself(monkeypatch, tmp_path, edit, n
     with pytest.raises(
         ValueError, match=re.escape(f"{entry.key} does not load")
     ) as refused:
-        compass_run.runner(r)
+        compass_run.runner(r, META_8B)
     assert named in str(refused.value)

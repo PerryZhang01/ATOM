@@ -9,8 +9,10 @@ fragment carries this host's core counts, and the merge refuses it if they are
 not the ones the device fragment recorded there. The device fragment is the
 readings ATOM's own `ModelRunner` took at one engine start (Qwen3.8-27B, TP1,
 CUDA graphs and prefix caching on, `--max-model-len 262144`); every field no
-probe fills is assumed, on either host. One fragment per origin. Writes the
-merged document to `--out` when `validate` passes at width 1, then prints
+probe fills is assumed, on either host. On hjbog-srdc-18 two Qwen3-30B-A3B
+starts add the width-keyed terms at width 8 and at the DP-attention layout 1x8.
+One fragment per start or origin. Writes the merged document to `--out` when
+`validate` passes at every width and layout it holds, then prints
 `explain`'s rows for the host, device and interconnect blocks, grouped by
 origin, and the basis of `kv_blocks`.
 """
@@ -84,9 +86,35 @@ DATE, COMMIT, READ, PIN = {
         dict(STACK, aiter="9205e1059"),
     ),
 }[NAME]
-#: What the start ran: the model, the width and the tree.
+#: Each start's record: the sha256 of its server log, as
+#: `python -m atom.compass.memory.check` digests it.
+RECORD = {
+    "mi308x-hjbog18": "f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87",
+    "mi308x-hjbog39": "e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
+}[NAME]
+#: What the start ran: the model, the width, the tree and the run's record.
 SUBJECT = {"model": "Qwen/Qwen3.8-27B", "width": 1, "source_root": f"commit:{COMMIT}"}
+SUBJECT["record"] = f"sha256:{RECORD}"
 CONFIG_JSON = "sha256:191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab"
+
+#: Two Qwen3-30B-A3B starts on node 18 at commit 7370fbe47 (image
+#: nightly-20261013), by the key the run reads them at: the flags, `non_torch`
+#: (minimum over the 8 ranks) and the log's sha256. Both read the same load
+#: residue, `allocated` after load less unique parameter and buffer bytes.
+STARTS = {
+    "1x8": (
+        "-tp 8 --enable-dp-attention",
+        8189378560,
+        "72a76cc8907cf77ae9c22583583b5d6ac5a6e2acb94d396e1df08b4ddd001d55",
+    ),
+    8: (
+        "-tp 8",
+        9485418496,
+        "21991eab509e154ac6da9a2c3d769603da9a9ed492e52a0a9ec18d2f4e18caa2",
+    ),
+}
+STARTS = STARTS if NAME == "mi308x-hjbog18" else {}
+RESIDUE = 2165604480
 
 DEVICE = {
     "host": {"cpu": {"cores_physical": 112, "cores_logical": 224}},
@@ -153,9 +181,9 @@ DECLARED = {
 
 
 def fragment(
-    source: str, body: dict, origin: str, notes: str, subject=None
+    source: str, body: dict, origin: str, notes: str, subject=None, date=DATE
 ) -> Fragment:
-    stanza = {"authored_by": AUTHOR, "date": DATE, "origin": origin, "notes": notes}
+    stanza = {"authored_by": AUTHOR, "date": date, "origin": origin, "notes": notes}
     if subject:
         stanza["subject"] = subject
     document = {"schema_version": 1, "name": NAME, "provenance": stanza, **body}
@@ -163,11 +191,28 @@ def fragment(
 
 
 def device_fragments() -> list[Fragment]:
-    """The fragment one engine start probed, and the assumed rest."""
+    """The fragments each engine start probed, and the assumed rest."""
     notes = f"one Qwen3.8-27B TP1 start at {COMMIT}"
+    starts = []
+    for key, (flags, reserve, record) in STARTS.items():
+        constants = {
+            "driver_and_collective_reserve_bytes": {key: reserve},
+            "allocator_retained_after_load_bytes": {key: RESIDUE},
+        }
+        model, root = "Qwen/Qwen3-30B-A3B", "commit:7370fbe47"
+        subject = {"model": model, "width": 8, "source_root": root}
+        subject["record"] = f"sha256:{record}"
+        # aiter on gfx942 has no MoE kernel for this model's 8-wide expert shard.
+        how = f"one {model} {flags} --enable-expert-parallel --all2all-backend none"
+        body = {"device": {"runtime_constants": constants}}
+        notes_of = f"{how} start at {root}"
+        starts.append(
+            fragment(f"start {key}", body, "probed", notes_of, subject, "2026-10-14")
+        )
     return [
         fragment("device", DEVICE, "probed", notes, SUBJECT),
         fragment("assumed", DECLARED, "assumed", "no probe fills these"),
+        *starts,
     ]
 
 
@@ -227,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     merged = merge([swept(args.model), *device_fragments()])
-    verdict = validate(merged, tp_widths=(1,))
+    verdict = validate(merged, tp_widths=(1, *STARTS))
     print(verdict)
     if not verdict.ok:
         return 1

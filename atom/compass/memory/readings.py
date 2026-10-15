@@ -34,14 +34,14 @@ The declared scope boundary that follows, stated so it is not discovered as a
 gap: Compass models a **dedicated** device. It will not predict the OOM a shared
 box produces and will not reproduce a neighbour-induced admission cliff.
 
-**Two of the five `peak_torch` terms are not derivable here.** Weights are
-exact from a meta build deduped by storage, and buffers need a recording,
-because the formula that matched the 0.6B was 4x wrong on the 27B. A meta build
-needs a module tree, which needs the engine, which this package does not import;
-the simulated runner builds one and hands it in. `from_config` reads
-the weights off that tree's parameter storages when it is given one, and fills
-the rest with declared formulas, labelling every one of them, unless a real run
-measured the activation term's bytes per token in the machine spec.
+**The weights are not derivable here.** They are exact from a meta build
+deduped by storage, which needs a module tree, which needs the engine, which
+this package does not import; the simulated runner builds one and hands it in,
+and `from_config` reads the weights off that tree's parameter storages. Each term
+carries its own method: the buffers are analytical unless the rotary fraction
+is assumed, and the activations are a declared formula unless a real run
+measured their bytes per token in the machine spec. The spec fields used as
+terms take their method from the origin the spec records for them.
 """
 
 from __future__ import annotations
@@ -49,8 +49,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from atom.compass.backends.geometry import dtype_bytes as element_bytes
+from atom.compass.backends.provenance import Method
 from atom.compass.memory import graph_pool
-from atom.compass.memory.terms import Basis, Reading, Term
+from atom.compass.memory.terms import Reading, Term, spec_term
 
 #: Gate and up are both live before their product, so the MLP's intermediate
 #: activation is resident twice at the peak. Geometry, not a coefficient.
@@ -114,8 +115,7 @@ class ModelTerms:
 
     Kept together because they move together -- they are the same bytes on any
     card, and only the other two terms of `peak_torch` change when the spec
-    does. Each is a `Term`, so each carries its own basis and its own source and
-    a caller that has a meta build can hand one in beside two that are declared.
+    does. Each is a `Term`, so each carries its own method and its own source.
     """
 
     weights: Term
@@ -127,13 +127,12 @@ class ModelTerms:
         cls,
         config,
         *,
-        parameter_count: int | None = None,
         tp_size: int,
         warmup_tokens: int,
         dtype_bytes: int | None = None,
         config_json: dict | None = None,
-        activations_entry: tuple[str, float] | None = None,
-        tree=None,
+        activations_entry: tuple[str, float, tuple[str, ...]] | None = None,
+        tree,
     ) -> ModelTerms:
         """All three, each labelled with where its bytes came from.
 
@@ -148,23 +147,22 @@ class ModelTerms:
         ATOM's own quantisation config and process groups; the weights are the
         bytes of its parameter storages, each storage once, so a tied
         `lm_head` that shares the embedding's storage counts once, as it is
-        resident once. Without it, the weights are `parameter_count` at one
-        dtype, sharded by `tp_size`.
+        resident once.
 
-        With fake models, a declared formula suffices and must say so.
-        Every declared term below names its successor, because none of the
-        three formulas is its eventual source: weights are owed a meta
-        build, buffers a recording, and
-        activations a liveness walk over a traced op graph *plus* the
-        per-leaf invisible-scratch constants -- and the second is the one
-        with no law behind it. The measured spread that makes it load-bearing
-        is 0.1 KB/token on the 0.6B against 39.6 KB/token on the 27B, the
+        Every declared term below names its successor: assumed buffers are
+        owed a config that states the rotary fraction, and the activation
+        formula an entry measured on the model
+        or a liveness walk over a traced op graph *plus* the per-leaf
+        invisible-scratch constants -- and the second is the one with no law
+        behind it. The measured spread that makes it load-bearing is
+        0.1 KB/token on the 0.6B against 39.6 KB/token on the 27B, the
         difference between -35.0% and +3.4% held out. A formula does not
         stand in for that on a real model.
 
         `activations_entry`, what `MachineSpec.activations_for` returns,
         replaces the activation formula with that entry's bytes per token
-        times `warmup_tokens`; the scratch is inside it.
+        times `warmup_tokens`, an estimate; the scratch is inside it. The term
+        keeps the records of the runs the entry was read off.
         """
         if tp_size < 1:
             raise ValueError(f"tensor-parallel width is at least 1: {tp_size}")
@@ -175,6 +173,7 @@ class ModelTerms:
         if dtype_bytes is None:
             dtype_bytes = element_bytes(_dtype(config))
         rope = _stated(config, file, "qk_rope_head_dim")
+        assumed = ""
         if rope is not None:
             # An MLA model rotates only this slice of each head.
             rotary_dim = int(rope)
@@ -247,40 +246,32 @@ class ModelTerms:
                 dense = int(_geometry(config, file, "intermediate_size"))
                 intermediate = max(dense, intermediate)
                 live = f"max({dense} intermediate_size, {live})"
-        if tree is not None:
-            # Parameters that share a storage (a tied head, a view) are one
-            # allocation; `_cdata` names the storage even on meta, where every
-            # data pointer is zero.
-            storages = {
-                p.untyped_storage()._cdata: p.untyped_storage().nbytes()
-                for p in tree.parameters()
-            }
-            weights = Term(
-                "weights",
-                sum(storages.values()),
-                Basis.OBTAINED,
-                f"{len(storages)} parameter storages of a meta build of "
-                f"{type(tree).__name__}",
-            )
-        else:
-            weights = Term(
-                "weights",
-                parameter_count * dtype_bytes // tp_size,
-                Basis.DECLARED,
-                f"{parameter_count} stated parameters x {dtype_bytes} B / "
-                f"TP{tp_size}",
-                "a meta build deduped by storage replaces this and is "
-                "exact at every width; this shards every parameter, where a "
-                "real stack replicates its norms",
-            )
+        # Parameters that share a storage (a tied head, a view) are one
+        # allocation; `_cdata` names the storage even on meta, where every
+        # data pointer is zero.
+        storages = {
+            p.untyped_storage()._cdata: p.untyped_storage().nbytes()
+            for p in tree.parameters()
+        }
+        weights = Term(
+            "weights",
+            sum(storages.values()),
+            Method.ANALYTICAL,
+            f"{len(storages)} parameter storages of a meta build of "
+            f"{type(tree).__name__}",
+        )
         buffers = Term(
             "buffers",
             positions * rotary_dim * dtype_bytes,
-            Basis.DECLARED,
+            Method.DECLARED if assumed else Method.ANALYTICAL,
             f"{positions} positions x {rotary} x {dtype_bytes} B",
-            "a recording off a card replaces this; this is "
-            "not a recording -- it is derived from ATOM's own rotary source "
-            "and validated against no card. cos and sin together are "
+            (
+                "partial_rotary_factor 1.0 is assumed; a config that states it "
+                "replaces this. "
+                if assumed
+                else ""
+            )
+            + "cos and sin together are "
             "positions x rotary_dim elements, because inv_freq holds "
             "rotary_dim/2 of them (RotaryEmbedding._compute_inv_freq in "
             "atom/model_ops/rotary_embedding.py), and "
@@ -298,7 +289,7 @@ class ModelTerms:
                     + _LIVE_INTERMEDIATE * intermediate
                 )
             ),
-            Basis.DECLARED,
+            Method.DECLARED,
             f"{warmup_tokens} warmup tokens x {dtype_bytes} B x "
             f"({graph_pool.LIVE_TENSORS_PER_LAYER} x {hidden} hidden + "
             f"{_LIVE_INTERMEDIATE} x {live})",
@@ -310,13 +301,14 @@ class ModelTerms:
             "layer rather than all of them",
         )
         if activations_entry is not None:
-            entry, per_token = activations_entry
+            entry, per_token, records = activations_entry
             activations = Term(
                 "activations",
                 int(warmup_tokens * per_token),
-                Basis.SPEC,
+                Method.ESTIMATED,
                 f"{warmup_tokens} warmup tokens x {per_token} B/token, "
                 f"device.activations[{entry}].bytes_per_token[{tp_size}]",
+                records=records,
             )
         return cls(weights, buffers, activations)
 
@@ -330,7 +322,7 @@ class DeviceReadings:
     non_torch: Reading
     cudagraph_overhead: Reading
     free: Reading
-    tp_width: int
+    tp_width: int | str
     spec_digest: str
 
     def as_dict(self) -> dict[str, Reading]:
@@ -364,7 +356,7 @@ class DeviceReadings:
 def device_readings(
     spec,
     *,
-    tp_width: int,
+    tp_width: int | str,
     model: ModelTerms,
     cudagraph_overhead: Reading,
 ) -> DeviceReadings:
@@ -381,8 +373,12 @@ def device_readings(
     `allocator_retained_after_load_bytes` are `Kind.WIDTH_TABLE` because no
     fixed-plus-per-peer form fits 5980/6340/9138 at widths 2/4/8, so there is
     nothing to interpolate along. Nothing here catches that refusal.
+
+    Under DP-attention `tp_width` is the layout key, `"<tp>x<dp>"`: every rank
+    runs attention at TP 1 inside DP-wide groups, which reserve what neither
+    width alone does.
     """
-    if tp_width < 1:
+    if isinstance(tp_width, int) and tp_width < 1:
         raise ValueError(f"tensor-parallel width is at least 1: {tp_width}")
     if cudagraph_overhead.name != graph_pool.RESERVES:
         raise MemoryRefusal(
@@ -393,30 +389,24 @@ def device_readings(
             "costs and the two disagree by 4-19x, so substituting it would "
             "produce a block count ATOM would never reach",
         )
+    rc = "device.runtime_constants."
+    reserve = "driver_and_collective_reserve_bytes"
+    residue = "allocator_retained_after_load_bytes"
+    persistent = "persistent_forward_buffer_bytes"
+    capacity = "device.memory.capacity_bytes"
     total = Reading(
         "total",
-        (
-            Term(
-                "capacity",
-                int(spec.value("device.memory.capacity_bytes")),
-                Basis.SPEC,
-                "device.memory.capacity_bytes",
-            ),
-        ),
+        (spec_term(spec, "capacity", capacity, int(spec.value(capacity))),),
     )
     non_torch = Reading(
         "non_torch",
         (
-            Term(
+            spec_term(
+                spec,
                 "driver and collective reserve",
-                int(
-                    spec.runtime_constant(
-                        "driver_and_collective_reserve_bytes", tp_width
-                    )
-                ),
-                Basis.SPEC,
-                "device.runtime_constants."
-                f"driver_and_collective_reserve_bytes[{tp_width}]",
+                rc + reserve,
+                int(spec.runtime_constant(reserve, tp_width)),
+                width=tp_width,
             ),
         ),
     )
@@ -425,22 +415,18 @@ def device_readings(
         (
             model.weights,
             model.buffers,
-            Term(
+            spec_term(
+                spec,
                 "load residue",
-                int(
-                    spec.runtime_constant(
-                        "allocator_retained_after_load_bytes", tp_width
-                    )
-                ),
-                Basis.SPEC,
-                "device.runtime_constants."
-                f"allocator_retained_after_load_bytes[{tp_width}]",
+                rc + residue,
+                int(spec.runtime_constant(residue, tp_width)),
+                width=tp_width,
             ),
-            Term(
+            spec_term(
+                spec,
                 "persistent",
-                int(spec.runtime_constant("persistent_forward_buffer_bytes")),
-                Basis.SPEC,
-                "device.runtime_constants.persistent_forward_buffer_bytes",
+                rc + persistent,
+                int(spec.runtime_constant(persistent)),
             ),
             model.activations,
         ),
@@ -449,7 +435,7 @@ def device_readings(
     if box < 0:
         # A refusal carries its decomposition as an answer does: the reader
         # has to see which of the six terms is the one that does not fit, and
-        # three of them are declared coefficients. Both readings render
+        # how each was obtained. Both readings render
         # themselves, so the decomposition costs a newline.
         needed = (peak_torch.total + non_torch.total) / total.total
         raise MemoryRefusal(
@@ -468,18 +454,12 @@ def device_readings(
     free = Reading(
         "free",
         (
-            Term("total", total.total, Basis.DERIVED, "the total reading"),
-            Term(
-                "less peak_torch",
-                -peak_torch.total,
-                Basis.DERIVED,
-                "the peak_torch reading",
+            total.as_term("total", source="the total reading"),
+            peak_torch.as_term(
+                "less peak_torch", sign=-1, source="the peak_torch reading"
             ),
-            Term(
-                "less non_torch",
-                -non_torch.total,
-                Basis.DERIVED,
-                "the non_torch reading",
+            non_torch.as_term(
+                "less non_torch", sign=-1, source="the non_torch reading"
             ),
         ),
     )

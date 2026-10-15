@@ -2239,14 +2239,17 @@ def test_the_checked_in_node_18_spec_validates_and_prices_its_activations(monkey
     script = _node18_script()
     path = SPEC_ROOT / "scripts" / "compass" / "machines" / f"{script.NAME}.json"
     document = _width_keys(json.loads(path.read_text()))
-    spec = validate(document, tp_widths=(1,)).raise_first()
+    spec = validate(document, tp_widths=(1, 8, "1x8")).raise_first()
     for fragment in script.device_fragments():
         for path, value in fragment.values.items():
             if not path.startswith("provenance.") and path != "name":
-                assert spec.values[path] == value, path
+                # Each start fills its own widths of a width table.
+                held = spec.values[path]
+                part = {k: held[k] for k in value} if isinstance(value, dict) else held
+                assert part == value, path
     assert spec.activations_for(
         "Qwen3_5ForConditionalGeneration", script.CONFIG_JSON, 1
-    ) == ("qwen3.8-27b", 180480.0)
+    ) == ("qwen3.8-27b", 180480.0, (f"sha256:{script.RECORD}",))
 
 
 def test_the_checked_in_hjbog39_spec_holds_that_hosts_start(monkeypatch):

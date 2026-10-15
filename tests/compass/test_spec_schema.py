@@ -886,6 +886,53 @@ def test_a_measured_width_answers():
     assert machine.runtime_constant("cudagraph_pool.w_gt1_flat_bytes") == 109.0e6
 
 
+RESERVE = "driver_and_collective_reserve_bytes"
+RESERVE_PATH = f"device.runtime_constants.{RESERVE}"
+
+
+def with_layout():
+    """The reference document with a DP-attention layout entry in both tables."""
+    edited = document()
+    constants = edited["device"]["runtime_constants"]
+    constants[RESERVE]["1x8"] = 8.19e9
+    constants["allocator_retained_after_load_bytes"]["1x8"] = 2.17e9
+    return edited
+
+
+def test_a_layout_answers_beside_the_widths_and_names_them_when_unprobed():
+    machine = MachineSpec.from_mapping(with_layout())
+    assert machine.runtime_constant(RESERVE, "1x8") == 8.19e9
+    assert machine.runtime_constant(RESERVE, 8) == 11.2e9
+    with pytest.raises(SpecRefusal) as refusal:
+        machine.runtime_constant(RESERVE, "1x4")
+    assert "width 1x4; this spec has [1, '1x8', 2, 4, 8]" in refusal.value.what
+
+
+@pytest.mark.parametrize("key", ["0x8", "1x", "x8", "1x8x2", "1X8", "01x8", "8"])
+def test_a_layout_key_is_two_positive_integers(key):
+    edited = document()
+    edited["device"]["runtime_constants"][RESERVE][key] = 1.0
+    with pytest.raises(SpecRefusal):
+        MachineSpec.from_mapping(edited)
+
+
+def test_a_layout_explains_in_order_and_moves_the_digest():
+    machine = MachineSpec.from_mapping(with_layout())
+    rows = explain(machine, RESERVE_PATH).contributions
+    assert [row.path for row in rows] == [
+        f"{RESERVE_PATH}[{key}]" for key in ("1", "1x8", "2", "4", "8")
+    ]
+    assert rows[1].value == 8.19e9
+    assert machine.digest() != read().digest()
+
+
+def test_a_layout_nobody_probed_is_refused_by_name_in_validation():
+    checked = validate(document(), tp_widths=(1, "1x8"))
+    assert len(checked.refusals) == 2
+    assert all("width 1x8" in refusal.what for refusal in checked.refusals)
+    assert validate(with_layout(), tp_widths=(1, "1x8")).ok
+
+
 # --- a derate wherever a spec peak appears -----------------------------------
 
 
