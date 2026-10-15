@@ -48,6 +48,23 @@ bound the others, in recipe order, as `a . x + c <= 0` inside. A step outside
 it is refused, naming the hull; so is a step where a member's output or the
 factor is not finite and positive, naming that member or the factor. Nothing
 else answers: no renormalising over the other members, and no lookup alone.
+
+`fit(triples, seed)` makes that mapping from (batch view, lookup seconds,
+measured seconds) triples; its target is measured over lookup, whatever timed
+the measurement. `seed` holds out `HELD_OUT` of the triples. Two linear
+members are fitted on the rest over every recipe feature: `identity` on the
+target, as relative error, and `exp` on its log. A feature constant over them
+gets coefficient zero and is named. Relative residuals more than `MAD_K`
+scaled MADs from their median, floored at `MAD_FLOOR`, are dropped and the
+rest refitted until the kept set settles. The member with the lower median
+absolute relative error on the held-out triples is selected with weight 1;
+the hull is that of its kept views' features. The report gives the held-out
+triples' indices and, per member, the kept and dropped counts, the centre and
+scaled MAD of the relative residuals, the condition number of the
+column-scaled design, the zeroed features and the held-out error. A fit whose
+triples hold out none or leave no more than one per coefficient, whose
+lookup or measured time is not positive and finite, or whose kept views span
+no hull is refused.
 """
 
 from __future__ import annotations
@@ -59,6 +76,8 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from fractions import Fraction
 
+import numpy as np
+
 from atom.compass.backends.hull import Hull
 from atom.compass.backends.shape import (
     BatchView,
@@ -69,6 +88,10 @@ from atom.compass.backends.shape import (
     sum_tokens,
 )
 from atom.compass.backends.step_grid import _refused
+from atom.compass.backends.step_linear_fit import MAD_FLOOR, MAD_K, MAD_PASSES, _hull
+
+#: The share of the triples `fit` holds out to select its member.
+HELD_OUT = 0.25
 
 
 def tokens(rows: Sequence[RequestShape]) -> Fraction:
@@ -219,3 +242,93 @@ class Residual:
     def describe(self) -> str:
         names = ", ".join(name for name, _, _ in self.members)
         return f"recipe {self.recipe.name} v{self.recipe.version}, members {names}"
+
+
+def _output(x: np.ndarray, z: np.ndarray, transform: str) -> np.ndarray:
+    with np.errstate(over="ignore"):
+        return x @ z if transform == "identity" else np.exp(x @ z)
+
+
+def _solve(x: np.ndarray, y: np.ndarray, transform: str) -> dict:
+    """One linear member on `x` (intercept first) for targets `y`, MAD-dropped until settled."""
+    vary = [0] + [j for j in range(1, x.shape[1]) if np.ptp(x[:, j]) > 0]
+    a, b = (
+        (x / y[:, None], np.ones(len(y))) if transform == "identity" else (x, np.log(y))
+    )
+    keep = np.ones(len(y), dtype=bool)
+    for passes in range(1, MAD_PASSES + 1):
+        cols = a[keep][:, vary]
+        norms = np.linalg.norm(cols, axis=0)
+        z = np.zeros(x.shape[1])
+        z[vary] = np.linalg.lstsq(cols / norms, b[keep], rcond=None)[0] / norms
+        residual = _output(x, z, transform) / y - 1.0
+        centre = np.median(residual)
+        mad = 1.4826 * np.median(np.abs(residual - centre))
+        moved = np.abs(residual - centre) <= max(MAD_K * mad, MAD_FLOOR)
+        if (moved == keep).all() or passes == MAD_PASSES:
+            break
+        keep = moved
+    return {
+        "z": z,
+        "keep": keep,
+        "samples": int(keep.sum()),
+        "dropped": int((~keep).sum()),
+        "centre": float(centre),
+        "mad": float(mad),
+        "condition": float(np.linalg.cond(cols / norms)),
+        "zero": [V1.names[j - 1] for j in range(1, x.shape[1]) if j not in vary],
+    }
+
+
+def fit(
+    triples: Sequence[tuple[BatchView, float, float]], seed: int
+) -> tuple[dict, dict]:
+    """The residual mapping `Residual` reads, fitted on `triples`, and its report."""
+    from scipy.spatial import QhullError
+
+    bad = [i for i, (_, *times) in enumerate(triples) if any(map(_bad, times))]
+    if bad:
+        raise ValueError(f"triples {bad} have a time that is not positive and finite")
+    x = np.array([[1.0, *map(float, V1(view.requests))] for view, _, _ in triples])
+    y = np.array([measured / lookup for _, lookup, measured in triples])
+    held = np.sort(
+        np.random.default_rng(seed).permutation(len(y))[: int(len(y) * HELD_OUT)]
+    )
+    dev = np.setdiff1d(np.arange(len(y)), held)
+    if not len(held) or len(dev) <= x.shape[1]:
+        raise ValueError(
+            f"{len(y)} triples hold out {len(held)} and leave {len(dev)} to fit "
+            f"{x.shape[1]} coefficients"
+        )
+    members, solved, report = {}, {}, {"held_out": held.tolist(), "members": {}}
+    for transform in ("identity", "exp"):
+        s = solved[transform] = _solve(x[dev], y[dev], transform)
+        error = np.abs(_output(x[held], s["z"], transform) / y[held] - 1.0)
+        members[transform] = {
+            "form": "linear",
+            "transform": transform,
+            "intercept": float(s["z"][0]),
+            "coefficients": dict(zip(V1.names, map(float, s["z"][1:]))),
+        }
+        report["members"][transform] = {
+            **{k: v for k, v in s.items() if k not in ("z", "keep")},
+            "held_out_error": float(np.median(error)),
+        }
+    best = min(members, key=lambda t: report["members"][t]["held_out_error"])
+    kept = x[dev[solved[best]["keep"]], 1:]
+    try:
+        hull = _hull(kept, V1.names)
+    except QhullError as e:
+        raise ValueError(
+            f"the kept views' features span no hull: {str(e).splitlines()[0]}"
+        ) from e
+    # `_hull` writes a constant feature as an integer count; these are fractions.
+    hull["equal"] = {f: float(kept[0, V1.names.index(f)]) for f in hull["equal"]}
+    recipe = {"name": V1.name, "version": V1.version, "digest": V1.digest}
+    mapping = {
+        "recipe": recipe,
+        "hull": hull,
+        "members": members,
+        "selected": {best: 1.0},
+    }
+    return mapping, report

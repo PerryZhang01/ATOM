@@ -13,11 +13,15 @@ and its lookup in the eager grid is f(32, 767) = 1000 + 960 + 767 + 1534 =
     homogeneous   767 x 32                 0       1
     grouped       575 x 16, then 959 x 16  1/64    5/4      (384 / 24576)
     alternating   575, 959, ... x 16       31/64   5/4      (31 x 384 / 24576)
+
+A fitted residual is loaded the same way and prices the grouped and alternating
+batches at the lookup times the factor its triples were planted with.
 """
 
 import math
 from fractions import Fraction
 
+import numpy as np
 import pytest
 from test_backend_step_grid import (
     MIDDLE,
@@ -31,10 +35,10 @@ from test_backend_step_grid import (
 )
 from test_dp_step_max import runner
 
-from atom.compass.backends import Method, RequestShape
+from atom.compass.backends import CostRefused, Method, RequestShape
 from atom.compass.backends.shape import sum_context
 from atom.compass.backends.step_grid import equivalent_shape
-from atom.compass.backends.step_grid_residual import V1, Recipe, Residual
+from atom.compass.backends.step_grid_residual import V1, Recipe, Residual, fit
 
 HOMOGENEOUS = [767] * 32
 GROUPED = [575] * 16 + [959] * 16
@@ -279,3 +283,150 @@ def test_a_selected_member_that_cannot_load_fails_loading_naming_it(
 def test_a_residual_that_cannot_be_read_fails_loading(selected, hull, match):
     with pytest.raises(ValueError, match=match):
         Residual(fitted({"u": linear()}, selected, hull))
+
+
+def features(v):
+    return dict(zip(V1.names, map(float, V1(v.requests))))
+
+
+def triples_of(factor, n=400, b=(24, 41), prefill=True):
+    """`n` triples: one in four of one to three prefill chunks (none without
+    `prefill`), the rest a decode batch of B in `b` rows reading two contexts,
+    grouped, shuffled or alternating. Each is measured at its lookup times
+    `factor` of its features, times 1 within 0.5%."""
+    rng, triples = np.random.default_rng(0), []
+    for i in range(n):
+        if prefill and not i % 4:
+            q, c = rng.integers(8, 65, 3), rng.integers(0, 193, 3)
+            rows = [(int(q[j]), int(q[j] + c[j]), False) for j in range(i % 3 + 1)]
+        else:
+            rows_b = rng.integers(*b)
+            lo, hi = rng.integers(512, 700), rng.integers(800, 1025)
+            hi_rows = rng.integers(0, rows_b + 1)
+            ks = [lo] * (rows_b - hi_rows) + [hi] * hi_rows
+            ks = [ks, list(rng.permutation(ks)), ([lo, hi] * rows_b)[:rows_b]][i % 3]
+            rows = [(1, int(k), True) for k in ks]
+        lookup = float(rng.uniform(1e-3, 5e-3))
+        noise = 1.0 + rng.uniform(-0.005, 0.005)
+        triples.append(
+            (view(*rows), lookup, lookup * factor(features(view(*rows))) * noise)
+        )
+    return triples
+
+
+def load_and_price(mapping, factor):
+    """Load `mapping`, and price ATOM's grouped and alternating batches with it."""
+    loaded = Residual(mapping)
+    for prompts in (GROUPED, ALTERNATING):
+        x = features(view(*[(1, p + 1, True) for p in prompts]))
+        expected = pytest.approx(4261e-6 * factor(x), rel=0.01)
+        assert price(prompts, eager(residual=loaded)) == (expected, ())
+    return loaded
+
+
+def planted(x):
+    return math.exp(0.05 + 0.2 * x["order"] - 0.1 * x["raggedness"])
+
+
+def test_the_fit_recovers_a_planted_factor_within_1pc_on_held_out_views():
+    triples = triples_of(planted)
+    mapping, report = fit(triples, seed=0)
+
+    ((_, weight, member),) = load_and_price(mapping, planted).members
+    assert weight == 1.0 and len(report["held_out"]) == 100
+    for i in report["held_out"]:
+        x = features(triples[i][0])
+        assert member(tuple(x.values())) == pytest.approx(planted(x), rel=0.01)
+
+
+@pytest.mark.parametrize(
+    "factor,selected",
+    [
+        (lambda x: math.exp(0.05 + 2 * x["order"] - x["raggedness"]), "exp"),
+        (lambda x: 0.2 + 3 * x["order"] + 0.5 * x["raggedness"], "identity"),
+    ],
+    ids=["exp", "identity"],
+)
+def test_both_members_are_kept_and_the_lower_held_out_error_is_selected(
+    factor, selected
+):
+    mapping, report = fit(triples_of(factor), seed=0)
+
+    load_and_price(mapping, factor)
+    assert mapping["selected"] == {selected: 1.0}
+    assert {
+        n: (m["transform"], list(m["coefficients"]))
+        for n, m in mapping["members"].items()
+    } == {
+        "identity": ("identity", list(V1.names)),
+        "exp": ("exp", list(V1.names)),
+    }
+    errors = {n: m["held_out_error"] for n, m in report["members"].items()}
+    assert min(errors, key=errors.get) == selected
+
+
+def test_outliers_are_dropped_until_settled_and_the_hull_is_the_kept_views():
+    triples = triples_of(planted)
+    held = set(fit(triples, seed=0)[1]["held_out"])
+    dev = [i for i in range(len(triples)) if i not in held]
+    # Five fitted triples measured 1.5x slow, one a 64-row batch no other reaches.
+    wide = view(*[(1, 700, True)] * 64)
+    triples[dev[0]] = (wide, 1e-3, 1.5e-3 * planted(features(wide)))
+    for i in dev[1:5]:
+        v, lookup, measured = triples[i]
+        triples[i] = (v, lookup, 1.5 * measured)
+    mapping, report = fit(triples, seed=0)
+
+    assert [(m["samples"], m["dropped"]) for m in report["members"].values()] == [
+        (295, 5)
+    ] * 2
+    with pytest.raises(CostRefused, match="outside the residual's hull"):
+        load_and_price(mapping, planted).factor(wide)
+
+
+def test_the_target_is_measured_over_lookup_and_the_seed_fixes_the_split():
+    triples = triples_of(planted)
+    fitted_once = fit(triples, seed=0)
+
+    assert fit(triples, seed=0) == fitted_once
+    assert fit([(v, 2 * lo, 2 * m) for v, lo, m in triples], seed=0) == fitted_once
+    assert fit(triples, seed=1)[1]["held_out"] != fitted_once[1]["held_out"]
+    load_and_price(fitted_once[0], planted)
+
+
+def test_a_feature_constant_over_the_fit_is_zeroed_and_held_at_its_value():
+    # Every batch is 32 decode rows: tokens 1/32 and query_square 1/32768.
+    mapping, report = fit(triples_of(planted, b=(32, 33), prefill=False), seed=0)
+
+    load_and_price(mapping, planted)
+    assert mapping["hull"]["equal"] == {"tokens": 1 / 32, "query_square": 1 / 32768}
+    for name, member in report["members"].items():
+        assert member["zero"] == ["tokens", "query_square"]
+        coefficients = mapping["members"][name]["coefficients"]
+        assert coefficients["tokens"] == coefficients["query_square"] == 0.0
+
+
+def negated(triples):
+    v, lookup, measured = triples[3]
+    return triples[:3] + [(v, -lookup, -measured)] + triples[4:]
+
+
+@pytest.mark.parametrize(
+    "triples,match",
+    [
+        (lambda: triples_of(planted)[:8], "8 triples hold out 2 and leave 6 to fit 6"),
+        (
+            lambda: negated(triples_of(planted)),
+            r"triples \[3\] have a time that is not",
+        ),
+        # Decode rows only: query_square is tokens / 1024 on every batch.
+        (
+            lambda: triples_of(planted, prefill=False),
+            "kept views' features span no hull",
+        ),
+    ],
+    ids=["few", "time", "flat"],
+)
+def test_a_fit_that_cannot_be_made_is_refused_naming_why(triples, match):
+    with pytest.raises(ValueError, match=match):
+        fit(triples(), seed=0)
