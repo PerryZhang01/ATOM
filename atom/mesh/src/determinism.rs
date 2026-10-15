@@ -28,7 +28,8 @@ static ORIGIN: OnceLock<Instant> = OnceLock::new();
 static CLOCK: AtomicU64 = AtomicU64::new(0);
 static RUN_RNG: Mutex<Option<StdRng>> = Mutex::new(None);
 
-fn simulated() -> bool {
+/// Whether [`enable`] has run.
+pub fn simulated() -> bool {
     ORIGIN.get().is_some()
 }
 
