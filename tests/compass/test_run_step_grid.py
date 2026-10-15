@@ -7,7 +7,7 @@ The deployment is the Qwen3.5-27B config at TP1 on the suite's machine
 document, replaying graphs on `test_backend_step_grid`'s ladder; the bundle is
 that file's replay grid and a unit residual, published under the readings
 `step_grid.conditions` takes of the same deployment unless a test moves one.
-The kinds `measure steps`, `fit` and `trace steps` publish are published and
+The kinds `fit` publishes and `measure steps` measures are published and
 loaded under those readings too.
 """
 
@@ -343,8 +343,8 @@ def host_laws_key(r) -> dict:
 MEASURED = {
     k: KEY[k] for k in ("model", "device", "parallel", "engine_config", "source_root")
 }
-#: A key per kind `measure steps`, `fit` and `trace steps` publish; a
-#: `host_laws` key is the deployment's `host_laws_key`.
+#: A key per kind `fit` publishes and `measure steps` measures; a `host_laws`
+#: key is the deployment's `host_laws_key`.
 NEW_KINDS = {
     Kind.STEP_MEASUREMENT: {
         **MEASURED,
@@ -354,12 +354,6 @@ NEW_KINDS = {
     },
     Kind.STEP_LINEAR_LAW: {**MEASURED, "form": "fixed+tokens+seqs"},
     Kind.HOST_LAWS: None,
-    Kind.SHAPE_POPULATION: {
-        "model": KEY["model"],
-        "workload": "sha256:9c0d",
-        "engine_config": KEY["engine_config"],
-        "backend": "sha256:e7a2",
-    },
 }
 
 

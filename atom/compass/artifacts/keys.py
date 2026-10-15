@@ -60,9 +60,7 @@ class Kind(enum.Enum):
 #: What keys each artifact, in the order a key reads.
 KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
     Kind.MACHINE_SPEC: ("device", "software_stack"),
-    # `workload` is the digest of the requests its steps name; `backend` the
-    # pricing backend's digest, so another backend addresses another entry.
-    Kind.SHAPE_POPULATION: ("model", "workload", "engine_config", "backend"),
+    Kind.SHAPE_POPULATION: ("model", "workload", "engine_config"),
     Kind.OP_GRAPH: ("structure",),
     Kind.PRICE_LIST: ("model", "width", "source_root"),
     Kind.REGION_TERMS: ("model", "width"),

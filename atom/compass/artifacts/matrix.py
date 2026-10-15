@@ -21,14 +21,13 @@ hand would take away:
   invalidates two of them while a tokenizer change invalidates the third.
 
 The host CPU invalidates `host_laws`, which time the host, and nothing that
-holds device time. A `shape_population`'s pricing backend is in its key rather
-than its row: another backend addresses another entry instead of invalidating
-this one.
+holds device time.
 
-**One artifact this store holds has no row at all.** `coverage_hull` appears
-in the artifact key table and nowhere in this one. Guessing a row for it is the
-failure this package exists to prevent -- an artifact answering under
-conditions nobody checked -- so `rows_for` refuses and names what is missing.
+**Two artifacts this store holds have no row at all.** `shape_population` and
+`coverage_hull` appear in the artifact key table and nowhere in this one.
+Guessing a row for them is the failure this package exists to prevent -- an
+artifact answering under conditions nobody checked -- so `rows_for` refuses and
+names what is missing.
 """
 
 import enum
@@ -73,7 +72,6 @@ class Row(enum.Enum):
     MACHINE_SPEC_CAPACITY = "machine_spec: capacity"
     MACHINE_SPEC_RUNTIME_CONSTANTS = "machine_spec: runtime constants"
     MACHINE_SPEC_TOKENIZER_TERMS = "machine_spec: tokenizer terms"
-    SHAPE_POPULATION = "shape_population"
     STEP_MEASUREMENT = "step_measurement"
     STEP_LINEAR_LAW = "step_linear_law"
     HOST_LAWS = "host_laws"
@@ -175,15 +173,6 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.HOST_CPU: Cell(False, "untested: assumed to transfer by derate"),
         Axis.ENGINE_CONFIG: INDEPENDENT,
     },
-    Row.SHAPE_POPULATION: {
-        Axis.SOFTWARE_STACK: INDEPENDENT,
-        Axis.TORCH: INDEPENDENT,
-        Axis.ATOM_SRC: DEPENDS,
-        Axis.MODEL: DEPENDS,
-        Axis.DEVICE: INDEPENDENT,
-        Axis.HOST_CPU: INDEPENDENT,
-        Axis.ENGINE_CONFIG: DEPENDS,
-    },
     Row.STEP_MEASUREMENT: {
         Axis.SOFTWARE_STACK: DEPENDS,
         Axis.TORCH: DEPENDS,
@@ -222,8 +211,8 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
     },
 }
 
-#: Which rows decide a kind's validity. `machine_spec` is three; `coverage_hull`
-#: is none, and that is a gap in the matrix rather than a default taken here.
+#: Which rows decide a kind's validity. `machine_spec` is three; two kinds are
+#: none, and that is a gap in the matrix rather than a default taken here.
 ROWS_OF: Mapping[Kind, tuple[Row, ...]] = {
     Kind.OP_GRAPH: (Row.OP_GRAPH,),
     Kind.PRICE_LIST: (Row.PRICE_LIST,),
@@ -234,7 +223,6 @@ ROWS_OF: Mapping[Kind, tuple[Row, ...]] = {
         Row.MACHINE_SPEC_RUNTIME_CONSTANTS,
         Row.MACHINE_SPEC_TOKENIZER_TERMS,
     ),
-    Kind.SHAPE_POPULATION: (Row.SHAPE_POPULATION,),
     Kind.STEP_MEASUREMENT: (Row.STEP_MEASUREMENT,),
     Kind.STEP_LINEAR_LAW: (Row.STEP_LINEAR_LAW,),
     Kind.HOST_LAWS: (Row.HOST_LAWS,),
