@@ -99,6 +99,9 @@ class _Broadcast:
     def dequeue(self):
         return self.queues[0].get()
 
+    def close(self):
+        self.closed = True
+
 
 def _worker(*args, **kwargs):
     """`AsyncIOProc`, in a worker whose aiter is the stub."""
@@ -161,6 +164,7 @@ def test_every_worker_starts_in_engine_cores_order_and_the_slowest_is_charged(
         log = bench.runner_mgr.call_func("call_log", wait_out=True)
     finally:
         bench.exit()
+    assert bench.runner_mgr.rpc_broadcast_mq.closed
 
     startup = ["get_num_blocks", ["allocate_kv_cache", BLOCKS]]
     assert log == startup + ([] if eager else ["capture_cudagraph"]) + ["bench_step"]

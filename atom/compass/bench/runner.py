@@ -12,7 +12,7 @@ from atom.compass.bench.window import BenchWindow
 from atom.compass.parity.runner import RecordingModelRunner
 
 #: Spin cycles timed once at startup, to turn a preload's nanoseconds into cycles.
-CALIBRATION_CYCLES = 1_000_000
+CALIBRATION_CYCLES = 10_000_000
 
 
 class BenchModelRunner(BenchWindow, RecordingModelRunner):
@@ -20,6 +20,8 @@ class BenchModelRunner(BenchWindow, RecordingModelRunner):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        # The first launch also loads the kernel, which takes longer than it spins.
+        torch.cuda._sleep(1)
         start = self.device_event()
         torch.cuda._sleep(CALIBRATION_CYCLES)
         end = self.device_event()

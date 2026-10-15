@@ -73,3 +73,6 @@ class Bench:
             self.runner_mgr.keep_monitoring = False
             self.runner_mgr.call_func("exit")
             self.runner_mgr.exit()
+        # Left to the garbage collector at interpreter exit, the broadcast
+        # queue's ZMQ context never terminates and the process never exits.
+        self.runner_mgr.rpc_broadcast_mq.close()

@@ -32,8 +32,8 @@ import torch.distributed as dist
 
 #: The measuring protocol's version; it changes whenever a count below does.
 PROTOCOL = 1
-WARMUPS = 5
-REPEATS = 20
+WARMUPS = 3
+REPEATS = 10
 DOUBLINGS = 5
 
 
