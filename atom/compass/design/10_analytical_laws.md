@@ -100,23 +100,29 @@ leaf's operand precision,
 `memory.bandwidth_bytes_per_s`, their `derate`s, and — for `h` — `host.*`.
 
 **Revised 2026-10-11 by the owner's ruling on
-[#815](https://github.com/jgong5/ATOM/issues/815): an op-level law prices `Σ t_leaf` only.** Every
-backend prices one forward's device time (`02` D11), so the host floor leaves the leaf laws. The
+[#815](https://github.com/jgong5/ATOM/issues/815): an analytical law prices device time
+only, `Σ t_leaf` at op level and the larger of compute and memory in the step roofline.**
+Every backend prices one forward's device busy time (`02` D11) and host time is composed
+per runner, so the host floor leaves both. The
 `max` it states survives in `01` D4's recurrence, `end = max(target_end + D_draft,
 launch_end)`, where `launch_end` plays the part of `launches × h`. The launch time comes
 from the measured `W_launch` host law (`09` D54), not from `host.*`. The evidence below is why that `max` is kept.
 
 **The step roofline.** `backends/step_roofline.py::StepRooflineBackend` is this law at
 step level, without the IR: compute `2 · P · Σ N_Q / flops`, memory `(weight bytes + KV
-bytes per token · (Σ N_KV + Σ N_Q)) / bandwidth`, and the run file's stated host floor
-`roofline_floor_s`, the step costing the largest of the three. A run reaches it only as
+bytes per token · (Σ N_KV + Σ N_Q)) / bandwidth`. A run reaches it only as
 the step-level fallback its run file composes (`StepFallbackBackend`, `07` D36). Its one
 term is named by the bound that won, and its method counts the inputs that bound reads
 (owner ruling on [#1011](https://github.com/jgong5/ATOM/issues/1011), 2026-10-15): spec
 fields by their origin, analytical from a datasheet or a probe, declared if assumed; the
-run file's `roofline_floor_s` and `parameter_count` declared unless they carry an origin.
-Every derate is assumed today and the run file gives `parameter_count` no origin, so no
-roofline term is analytical yet.
+run file's stated inputs declared unless they carry an origin. Every derate is assumed
+today and the run file gives `parameter_count` no origin, so no roofline term is
+analytical yet.
+
+The code departs from the #815 revision here: `StepRooflineBackend.price` also takes the
+run file's `roofline_floor_s` as a third, host bound, while `run/__init__.py::runner`
+composes host time separately, so one run can count launch time twice.
+[#1047](https://github.com/jgong5/ATOM/issues/1047) removes that bound.
 
 ### Why the host floor is not optional
 
@@ -441,7 +447,7 @@ what the op-level backend exists for.
 | # | Decision | Date |
 |---|---|---|
 | D63 | Three classes: A exact from geometry, B device-parameterised, C policy-determined. An analytical law works where the quantity is a pure function of stated geometry and fails where a runtime or library policy decides it. `analytical` is #952's method: a form from first principles over geometry, deployment config and datasheet or probed device parameters; an assumed parameter makes a term declared. | 2026-09-19; revised 2026-10-14 (#952) |
-| D64 | Roofline leaf `max(F/flops, M/bandwidth)` with derates, plus the host floor as a step-level `max`, not an addend. Revised: an op-level law prices `Σ t_leaf` only; the `max` moves to `01` D4's recurrence, with the launch time from the measured `W_launch` law. The step roofline prices a whole step as the largest of compute, memory and the run file's stated floor, and its method counts the inputs the winning bound reads. | 2026-09-19; revised 2026-10-11 (#815) and 2026-10-15 (#1011) |
+| D64 | Roofline leaf `max(F/flops, M/bandwidth)` with derates, plus the host floor as a step-level `max`, not an addend. Revised: every analytical law, the step roofline included, prices device time only; the `max` moves to `01` D4's recurrence, with the launch time from the measured `W_launch` law. The step roofline's `roofline_floor_s` bound departs from this in code (#1047). Revised: the step roofline's method counts the inputs the winning bound reads. | 2026-09-19; revised 2026-10-11 (#815) and 2026-10-15 (#1011) |
 | D65 | An analytical law is a smooth model and says so: it answers a leaf with a known discontinuity in range with a band, as the analytical fallback too. | 2026-09-19; revised 2026-10-14 (#952) |
 | D66 | Two-regime collective model with the algorithm named in the spec. Textbook ring/log models are refuted on this fabric. | 2026-09-19 |
 | D67.1 | Roofline accuracy goals stated per quantity: ≤5% on weights and on KV capacity/block count (the empirical gate for KV, tighter than it for weights), ≤25% each other non-KV memory term, ≤30% step time, ≤40% end-to-end. **Configuration ranking (top-1 and top-3 set) is the primary gate**; no false "fits". The goals attach to the backend and are graded against real runs. | 2026-09-19; revised 2026-10-14 (#952) |
