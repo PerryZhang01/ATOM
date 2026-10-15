@@ -427,12 +427,14 @@ def _config_field(runner: Any, name: str) -> Any:
 
 
 class FactoriesOnMeta(TorchFunctionMode):
-    """Puts every tensor a factory makes on the meta device, a named device too.
+    """Puts what a factory function makes on the meta device, a named device too.
 
     `torch.device("meta")` fills in only a device the call leaves out, so a
     module that names one -- ATOM's attention puts its KV scale on this rank's
     GPU -- would still allocate there and bring up a device context. The
-    factories are the ones `torch.device` itself redirects.
+    functions are the ones `torch.device` itself redirects, `torch.zeros` and
+    `torch.tensor` among them; a `*_like` or `Tensor.new_*` call keeps the
+    device it names.
     """
 
     def __torch_function__(self, func, types, args=(), kwargs=None):
@@ -563,8 +565,8 @@ class NonAllocatingRunner(
 
         The base class constructs the model with the default device set to this
         rank's GPU and then fills it from disk. Here it is built on the meta
-        device, shapes and no bytes, a tensor the model puts on a named device
-        included, because ATOM sizes the KV pool by walking its attention
+        device, shapes and no bytes, a factory function's tensor on a named
+        device included, because ATOM sizes the KV pool by walking its attention
         modules; the load is skipped, so no checkpoint is read.
 
         A speculative config is refused here, because on the last pipeline rank
