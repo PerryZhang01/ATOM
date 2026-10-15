@@ -135,7 +135,7 @@ python -m atom.entrypoints.openai_server <ATOM arguments> \
 | `--store` | the artifact store keys resolve in, the configuration's `memory_readings` included (`07` D41) | **none — refuses** |
 | `--host-laws` | the host laws by store key (`09` D54), composed by `01` D4's recurrence | none: the run charges no host time and records that |
 | `--on-refusal` | `mark`: a refused step costs 0 s, its reason is recorded, and the run continues. `abort`: stop at the first refusal; the run summary is still written. Either way a refusal makes the run a coverage report (`08` D50.1) | `mark` (`08` D50.1) |
-| `--roofline-floor-s` | composes `StepFallbackBackend`: the step roofline (`10` D64) prices the steps the backend refuses, with the method its inputs give it. The code also takes this value as a host bound, a departure from `01` D4 that [#1047](https://github.com/jgong5/ATOM/issues/1047) removes | off; `run.json` records it when given |
+| `--roofline-floor-s` | superseded by the owner's ruling on [#1047](https://github.com/jgong5/ATOM/issues/1047): the step roofline has no host bound, so this setting is a switch with no value, the run-file key `step_roofline`. On, it composes `StepFallbackBackend`: the step roofline (`10` D64) prices the device time of the steps the backend refuses, with the method its inputs give it | off; `run.json` records it when on |
 | `--coverage` | `shape_population` keys and `record` directories the backend's coverage check reads before the run starts; a failed check refuses the run (`07` D37) | off; `run.json` records the check's result, or that none ran |
 
 `run` reads the `memory_readings` entry for its configuration (`07` D41) and refuses when
@@ -281,11 +281,11 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
   its inputs' provenance into its output, the traces they came from included, and
   identical inputs and arguments give a bit-identical output. A grader refuses a backend
   fitted on the traces it grades (`08` D50).
-- **`run`** records in `run.json` what grading reads: the floor, whether host segments
-  were skipped (`01` D4's what-if), the refusals, the coverage check's result, and the
+- **`run`** records in `run.json` what grading reads: whether the step roofline was on,
+  whether host segments were skipped (`01` D4's what-if), the refusals, the coverage check's result, and the
   backend's provenance, its fitted traces and profiled inputs included.
   `python -m atom.compass.validate` decides from them whether a client run is gradeable:
-  not when the run skipped host segments, used `--roofline-floor-s`, priced with a backend
+  not when the run skipped host segments, composed the step roofline, priced with a backend
   fitted on the traces it grades or on profiled inputs, ran the step grid without a passed
   coverage check, or refused a step of that client run (`08` D50.1). A backend fitted
   under another engine configuration refuses to run: that is a mismatch, not a reason.
@@ -354,7 +354,7 @@ have changed.
 |---|---|---|
 | D78 | Three homes. A setting is Compass's only if it would be meaningless in a real ATOM run — which keeps the surface small by construction. | 2026-09-19 |
 | D79 | Precedence is CLI > artifact > **refuse**, with no environment level. No silent default for anything that changes a predicted number. The resolved configuration is echoed into every artifact. The run file `compass run` writes is its transport to ATOM, not a config file. | 2026-09-19; run file 2026-10-13 (#851); no environment level 2026-10-14 (#851) |
-| D80 | A simulated serve is configured by `compass run`'s flags, handed to ATOM's server in a run file by `--compass-run`. One `compass` entry, the only way users reach Compass, with the toolchain's commands: `record`, `trace steps\|ops`, `measure steps\|ops\|memory`, `fit steps\|ops\|host` and `run`, sharing ATOM's arguments after `--`, `--out` and `--store`, one step-record format, `run.json` and the GPU refusals; no command starts the client or takes a workload. One `record` or `run` serves one instance to any number of client runs, and a record splits per client run by its requests. `run` records what grading reads, and grading decides whether a run is gradeable. The commands first listed are deprecated and removable, each with where its work went; developers' quality tooling stays outside the CLI. Non-flags audited and recorded. | 2026-09-19; revised 2026-10-13 and 2026-10-14 (#851); backend flags named 2026-10-14 (#952) |
+| D80 | A simulated serve is configured by `compass run`'s flags, handed to ATOM's server in a run file by `--compass-run`. One `compass` entry, the only way users reach Compass, with the toolchain's commands: `record`, `trace steps\|ops`, `measure steps\|ops\|memory`, `fit steps\|ops\|host` and `run`, sharing ATOM's arguments after `--`, `--out` and `--store`, one step-record format, `run.json` and the GPU refusals; no command starts the client or takes a workload. One `record` or `run` serves one instance to any number of client runs, and a record splits per client run by its requests. `run` records what grading reads, and grading decides whether a run is gradeable. The commands first listed are deprecated and removable, each with where its work went; developers' quality tooling stays outside the CLI. Non-flags audited and recorded. | 2026-09-19; revised 2026-10-13 and 2026-10-14 (#851); backend flags named 2026-10-14 (#952); the step roofline setting made a switch 2026-10-15 (#1047) |
 | D81 | The resolved configuration is part of every artifact, by value and never by reference. | 2026-09-19 |
 
 ---
