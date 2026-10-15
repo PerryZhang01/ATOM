@@ -173,6 +173,29 @@ COMPASS_AGENTX_HARNESS=<dir>/aiperf-0.12.0-py3-none-any.whl scripts/compass/gate
 `compass_harness` checks the installed `aiperf` source against its pinned
 functions on import, so a wheel from another commit fails the same way.
 
+## atomesh's cargo tests run offline, from the container's crate cache
+
+`gate_cpu.sh` runs atomesh's Compass cargo tests (the `--test` targets it names)
+in `atom/mesh` before pytest, with `CARGO_NET_OFFLINE=true` unless the caller set
+it, and fails after pytest if they fail. `tests/compass/test_mesh_clock_client.py`
+skips when `cargo metadata` fails, and the gate runs the same probe first: when it
+fails and the diff touches `atom/mesh`, the gate exits 96 before pytest and names
+cargo's error; otherwise it prints a `mesh:` line and goes on.
+
+The tree has no `Cargo.lock` (`atom/mesh/.gitignore`). The gate copies one in from
+`COMPASS_CARGO_LOCK`, default `/app/ATOM/atom/mesh/Cargo.lock`, the lockfile the
+gate image built atomesh with, unless the tree already has one. The image's cargo
+cache holds only what its release build downloaded, so a new gate container needs
+the rest fetched once, with the network, outside any netns:
+
+```
+docker exec <container> bash -c 'cd /app/ATOM/atom/mesh && cargo fetch --locked'
+```
+
+A change to atomesh's `Cargo.toml` that needs a crate the cache lacks makes the
+probe fail, and so the gate exit 96, until `cargo fetch` runs in that tree's
+`atom/mesh` in the container, with the network.
+
 ## A red CPU gate that may not be your diff — one flaky test in ATOM's suite
 
 `tests/entrypoints/test_stream_marker_properties.py::TestTheRegionIsNotCopiedPerChunk`
