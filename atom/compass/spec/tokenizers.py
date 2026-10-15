@@ -16,11 +16,11 @@ Four fields carry the identity, and each earns its place:
   hash they would not recognise.
 * `backend` is in the key because the Rust and Python implementations run an
   order of magnitude apart on the same `tokenizer.json`, and which one loads is
-  decided by the environment, not by the model. A spec measured on one says
+  decided by the environment, not by the model. A spec probed on one says
   nothing about the other, so resolution takes the backend that actually loaded
-  and refuses when only the other was measured -- falling back to whichever
+  and refuses when only the other was probed -- falling back to whichever
   entry exists would report a tenfold-wrong number with no indication.
-* `fingerprint` is the sha256 of the `tokenizer.json` that was measured. It is
+* `fingerprint` is the sha256 of the `tokenizer.json` that was probed. It is
   the check that the rates belong to this tokenizer and not to a revision of it.
 * `applies_to` is the list of model architectures that resolve to this entry.
   One entry, many models: this is where the sharing is written down.
@@ -33,7 +33,7 @@ A default would be wrong by an amount that scales with prompt length while
 looking like a constant.
 
 A fingerprint mismatch warns instead of refusing: the rates are still the right
-tokenizer's, measured against a different revision of its file, so the number is
+tokenizer's, probed against a different revision of its file, so the number is
 usable and the discrepancy is the user's to judge. A missing architecture is not
 usable at all.
 """
@@ -48,7 +48,7 @@ from .rules import FingerprintMismatch, Rule, SpecRefusal
 
 
 class Backend(enum.Enum):
-    """Which tokenizer implementation the rates were measured on."""
+    """Which tokenizer implementation the rates were probed on."""
 
     FAST = "fast"
     SLOW = "slow"
@@ -73,7 +73,7 @@ ENTRY_FIELDS = closed(
 
 @dataclass(frozen=True, slots=True)
 class TokenizerKey:
-    """What identifies a measured tokenizer, and what a merge conflicts on."""
+    """What identifies a probed tokenizer, and what a merge conflicts on."""
 
     id: str
     backend: Backend
@@ -83,7 +83,7 @@ class TokenizerKey:
 
 @dataclass(frozen=True, slots=True)
 class TokenizerEntry:
-    """One measured tokenizer: its identity and the rates that were measured."""
+    """One probed tokenizer: its identity and the rates that were probed."""
 
     key: TokenizerKey
     vocab_size: int
@@ -96,34 +96,34 @@ class TokenizerEntry:
 
 @dataclass(frozen=True, slots=True)
 class TokenizerTable:
-    """The measured tokenizers of one host, resolved by model architecture."""
+    """The probed tokenizers of one host, resolved by model architecture."""
 
     entries: tuple[TokenizerEntry, ...]
 
     def resolve(
         self, architecture: str, backend: Backend, fingerprint: str | None = None
     ) -> TokenizerEntry:
-        """The entry measured for this architecture, or a refusal naming it."""
+        """The entry probed for this architecture, or a refusal naming it."""
         for entry in self.entries:
             if architecture in entry.key.applies_to and entry.key.backend is backend:
                 if fingerprint is not None and fingerprint != entry.key.fingerprint:
                     warnings.warn(
-                        f"tokenizer {entry.key.id!r} was measured against "
+                        f"tokenizer {entry.key.id!r} was probed against "
                         f"{entry.key.fingerprint}, but the tokenizer.json now "
                         f"loaded hashes to {fingerprint}",
                         FingerprintMismatch,
                         stacklevel=2,
                     )
                 return entry
-        measured = ", ".join(
+        probed = ", ".join(
             f"{entry.key.id} ({entry.key.backend.value})" for entry in self.entries
         )
         raise SpecRefusal(
             Rule.TOKENIZER_IDENTITY,
-            f"no tokenizer measured for {architecture!r} on the "
-            f"{backend.value} backend; this host measured {measured or 'nothing'}",
-            "measure that tokenizer on this host and add an entry whose "
-            "applies_to names this architecture; an unmeasured one is refused "
+            f"no tokenizer probed for {architecture!r} on the "
+            f"{backend.value} backend; this host probed {probed or 'nothing'}",
+            "probe that tokenizer on this host and add an entry whose "
+            "applies_to names this architecture; an unprobed one is refused "
             "rather than defaulted because the whole of the error lands inside "
             "time to first token and grows with the prompt",
         )
@@ -144,7 +144,7 @@ def _entry(raw: object, index: int) -> TokenizerEntry:
                 Rule.SEPARATION,
                 f"`{where}.{name}` is not a field of a tokenizer entry",
                 "a tokenizer entry carries the identity of a tokenizer and the "
-                "rates measured for it, and nothing about the deployment",
+                "rates probed for it, and nothing about the deployment",
             )
     values = {}
     for path, field in declared.items():
@@ -153,7 +153,7 @@ def _entry(raw: object, index: int) -> TokenizerEntry:
             raise SpecRefusal(
                 rule,
                 f"`{where}.{path}` is missing",
-                "every field of a tokenizer entry is measured, including the "
+                "every field of a tokenizer entry is required, including the "
                 "derate the two rates oblige",
             )
         values[path] = check(field, raw[path], f"{where}.{path}")
@@ -163,7 +163,7 @@ def _entry(raw: object, index: int) -> TokenizerEntry:
         raise SpecRefusal(
             Rule.TOKENIZER_IDENTITY,
             f"`{where}.backend` is {values['backend']!r}",
-            "name the implementation the rates were measured on: "
+            "name the implementation the rates were probed on: "
             + " or ".join(member.value for member in Backend),
         ) from None
     return TokenizerEntry(
@@ -194,7 +194,7 @@ def table(raw: object) -> TokenizerTable:
                     Rule.TOKENIZER_IDENTITY,
                     f"{architecture!r} on the {entry.key.backend.value} backend "
                     f"resolves to both {seen[claim]!r} and {entry.key.id!r}",
-                    "one architecture resolves to one measured tokenizer; if "
+                    "one architecture resolves to one probed tokenizer; if "
                     "two entries really describe it, they disagree and the "
                     "disagreement is the thing to settle",
                 )

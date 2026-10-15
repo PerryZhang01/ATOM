@@ -13,24 +13,25 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from test_backend_coarse import law
+from test_backend_step_linear import law
 from test_dp_step_max import prefill, runner
 from test_runner_control_refusals import Worker
 
 from atom.compass import run as compass_run
 from atom.compass.backends import (
     BatchView,
-    CoarseBackend,
-    CoarseLaw,
     Coefficients,
     CostTerm,
+    Method,
     Provenance,
     Refusal,
     RequestShape,
-    ShapeStubBackend,
-    Species,
     StepCost,
+    StepLinearBackend,
+    StepLinearLaw,
+    StepStubBackend,
 )
+from atom.compass.backends.cost import GROUPS
 from atom.utils import clock
 from atom.utils.clock import LPRuntime
 
@@ -47,26 +48,31 @@ SHORT_PREFILL_HULL = {
 NONE_APART = {"steps": 0, "fraction_of_predicted_seconds": 0.0}
 
 
-class AnalyticBelow(ShapeStubBackend):
-    """The stub's seconds, answered by an analytical rung after two rungs above
+def by_method(**groups):
+    """`seconds_by_method` with `groups` and every other group at none."""
+    return {g: groups.get(g, NONE_APART) for g in GROUPS}
+
+
+class AnalyticBelow(StepStubBackend):
+    """The stub's seconds, answered by an analytical source after two sources above
     it declined a prefill of `tokens` or more."""
 
     def __init__(self, coefficients, tokens):
         super().__init__(coefficients)
         self.tokens = tokens
 
-    def estimate(self, batch_view):
-        cost = super().estimate(batch_view)
+    def price(self, batch_view):
+        cost = super().price(batch_view)
         if sum(r.query_tokens for r in batch_view.prefill) < self.tokens:
             return cost
-        analytic = Provenance(Species.ANALYTICAL, "roofline", "tier0", CHAIN)
+        analytic = Provenance(Method.ANALYTICAL, "roofline", "tier0", CHAIN)
         return StepCost(
             [CostTerm(t.name, t.seconds, analytic) for t in cost.terms if t.seconds]
         )
 
 
 def seconds(backend, tokens):
-    return backend.estimate(BatchView((RequestShape(tokens, tokens, False),))).seconds
+    return backend.price(BatchView((RequestShape(tokens, tokens, False),))).seconds
 
 
 def summary(monkeypatch, tmp_path, backend, *prompts, clock_refusals=(), jobs=()):
@@ -115,11 +121,18 @@ def test_a_step_a_lower_rung_answered_is_not_refused_and_its_answer_is_apart(
     short, long = seconds(backend, 8), seconds(backend, 40)
     schedule = out["schedule"]
     assert schedule["predicted_seconds"] == pytest.approx(3 * short + long)
-    assert schedule["analytical"] == {
-        "steps": 1,
-        "fraction_of_predicted_seconds": pytest.approx(long / (3 * short + long)),
-    }
-    assert schedule["extrapolated"] == NONE_APART
+    assert schedule["seconds_by_method"] == by_method(
+        analytical={
+            "steps": 1,
+            "fraction_of_predicted_seconds": pytest.approx(long / (3 * short + long)),
+        },
+        declared={
+            "steps": 3,
+            "fraction_of_predicted_seconds": pytest.approx(
+                3 * short / (3 * short + long)
+            ),
+        },
+    )
     refusals = schedule["refusals"]
     assert (refusals["count"], refusals["steps"], refusals["reasons"]) == (0, 4, [])
     assert refusals["fraction_of_steps"] == 0.0
@@ -136,7 +149,7 @@ def test_a_step_a_lower_rung_answered_is_not_refused_and_its_answer_is_apart(
 def test_any_refusal_of_any_source_is_a_coverage_report(
     monkeypatch, tmp_path, where, reason
 ):
-    backend = ShapeStubBackend(STAGE1)
+    backend = StepStubBackend(STAGE1)
     out = summary(monkeypatch, tmp_path, backend, 8, 40, **{where: [reason]})
 
     refusals = out["schedule"]["refusals"]
@@ -145,35 +158,49 @@ def test_any_refusal_of_any_source_is_a_coverage_report(
     assert out["coverage_report"] is True
 
 
-def test_steps_outside_the_hull_are_extrapolated_and_never_refused(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize("held_out", [False, True], ids=["no-held-out", "held-out"])
+def test_steps_outside_the_held_out_hull_are_unvalidated_and_never_refused(
+    monkeypatch, tmp_path, held_out
 ):
-    backend = CoarseBackend(CoarseLaw(law(prefill_hull=SHORT_PREFILL_HULL)))
+    written = law(prefill_hull=SHORT_PREFILL_HULL)
+    if held_out:
+        written["prefill"]["held_out"] = {"hull": SHORT_PREFILL_HULL, "bands": {}}
+    backend = StepLinearBackend(StepLinearLaw(written))
     out = summary(monkeypatch, tmp_path, backend, 8, 8, 8, 40)
 
     short, long = seconds(backend, 8), seconds(backend, 40)
     schedule = out["schedule"]
-    assert schedule["extrapolated"] == {
+    unvalidated = {
         "steps": 1,
         "fraction_of_predicted_seconds": pytest.approx(long / (3 * short + long)),
     }
-    assert schedule["analytical"] == NONE_APART
+    estimated = {
+        "steps": 3,
+        "fraction_of_predicted_seconds": pytest.approx(3 * short / (3 * short + long)),
+    }
+    if not held_out:
+        unvalidated = {"steps": 4, "fraction_of_predicted_seconds": pytest.approx(1.0)}
+        estimated = NONE_APART
+    assert schedule["seconds_by_method"] == by_method(
+        estimated=estimated, unvalidated=unvalidated
+    )
     refusals = schedule["refusals"]
     assert (refusals["count"], refusals["steps"]) == (0, 4)
     assert out["coverage_report"] is False
 
 
-def test_a_run_with_neither_reports_zero_of_both_beside_its_seconds(
-    monkeypatch, tmp_path
-):
-    backend = ShapeStubBackend(STAGE1)
+def test_a_stub_run_reports_all_its_seconds_declared(monkeypatch, tmp_path):
+    backend = StepStubBackend(STAGE1)
     out = summary(monkeypatch, tmp_path, backend, 8, 40)
 
     schedule = out["schedule"]
     assert schedule["predicted_seconds"] == pytest.approx(
         seconds(backend, 8) + seconds(backend, 40)
     )
-    assert schedule["analytical"] == schedule["extrapolated"] == NONE_APART
+    assert schedule["seconds_by_method"] == by_method(
+        declared={"steps": 2, "fraction_of_predicted_seconds": pytest.approx(1.0)}
+    )
+    assert out["schema_version"] == compass_run.SUMMARY_SCHEMA_VERSION == 3
     assert schedule["refusals"]["count"] == 0
     assert schedule["refusals"]["fraction_of_steps"] == 0.0
     assert out["coverage_report"] is False
@@ -182,7 +209,7 @@ def test_a_run_with_neither_reports_zero_of_both_beside_its_seconds(
 def test_each_server_lp_hands_in_one_file_with_a_section_per_kind(
     monkeypatch, tmp_path
 ):
-    summary(monkeypatch, tmp_path, ShapeStubBackend(STAGE1), 8, jobs=["executor:j"])
+    summary(monkeypatch, tmp_path, StepStubBackend(STAGE1), 8, jobs=["executor:j"])
 
     assert sorted(f.name for f in tmp_path.iterdir()) == [
         "lp-engine.json",

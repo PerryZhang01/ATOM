@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: MIT
-"""Step fit selected by a run file's ``step_fit`` key: its bundle published to
+"""The step grid selected by a run file's ``step_grid`` key: its bundle published to
 and loaded from an `ArtifactStore` by `run.runner`, checked against the
 deployment's config, and named in the summary `_write_summary` writes.
 
 The deployment is the Qwen3.5-27B config at TP1 on the suite's machine
-document, replaying graphs on `test_backend_step_fit`'s ladder; the bundle is
+document, replaying graphs on `test_backend_step_grid`'s ladder; the bundle is
 that file's replay grid and a unit residual, published under the readings
-`step_fit.conditions` takes of the same deployment unless a test moves one.
+`step_grid.conditions` takes of the same deployment unless a test moves one.
 """
 
 import copy
@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from test_artifact_invalidation import STANZA, moved
-from test_backend_step_fit import (
+from test_backend_step_grid import (
     B37,
     C_NODES,
     LADDER,
@@ -51,10 +51,10 @@ from atom.compass.artifacts import (
     Topology,
     member_name,
 )
-from atom.compass.backends import StepFitBackend
-from atom.compass.backends.analytic import Tiered
-from atom.compass.backends.ladder import CostRefused
-from atom.compass.run import step_fit
+from atom.compass.backends import StepGridBackend
+from atom.compass.backends.resolver import CostRefused
+from atom.compass.backends.step_roofline import StepFallbackBackend
+from atom.compass.run import step_grid
 from atom.compass.spec import MachineSpec
 from atom.utils import clock
 from atom.utils.clock import LPRuntime
@@ -104,26 +104,26 @@ def deployment(tmp_path, **config):
 
 
 def readings(r):
-    return step_fit.conditions(r.config, MachineSpec.from_mapping(DOCUMENT))
+    return step_grid.conditions(r.config, MachineSpec.from_mapping(DOCUMENT))
 
 
 def publish(tmp_path, r, member=BUNDLE, conditions=None, **key):
     """The bundle handed off under `r`'s own readings, unless others are given."""
     return ArtifactStore(tmp_path / "store").publish(
-        Key.of(Kind.STEP_FIT_BUNDLE, **{**KEY, **key}),
+        Key.of(Kind.STEP_GRID_BUNDLE, **{**KEY, **key}),
         provenance=STANZA,
         topology=Topology(),
         conditions=conditions or readings(r),
         gates=GateState.of(),
-        members={member_name(*step_fit.MEMBER): json.dumps(member).encode()},
+        members={member_name(*step_grid.MEMBER): json.dumps(member).encode()},
     )
 
 
 def run_file(tmp_path, monkeypatch, **keys):
-    """The suite's run file with ``step_fit`` in place of ``coefficients``."""
+    """The suite's run file with ``step_grid`` in place of ``step_stub``."""
     run = json.loads(_run_file(tmp_path).read_text())
-    del run["coefficients"]
-    run["step_fit"] = {"store": str(tmp_path / "store"), **KEY}
+    del run["step_stub"]
+    run["step_grid"] = {"store": str(tmp_path / "store"), **KEY}
     run.update(keys)
     (tmp_path / "run.json").write_text(json.dumps(run))
     monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
@@ -158,17 +158,17 @@ def test_a_run_file_bundle_prices_the_runs_steps_and_the_summary_names_it(
 
     compass_run.runner(r)
 
-    assert isinstance(r.compass_backend, StepFitBackend)
-    # Rung 48's cell, as `test_backend_step_fit` reads it from the same grid.
+    assert isinstance(r.compass_backend, StepGridBackend)
+    # Rung 48's cell, as `test_backend_step_grid` reads it from the same grid.
     assert r.forward(decode(B37)).predicted_s == 8897.5e-6
     out = summary(monkeypatch, run, r)
-    assert out["step_fit"] == {
+    assert out["step_grid"] == {
         "engine": {
             "key": KEY,
             "digest": entry.digest,
             "describe": (
-                f"tier-a step fit, bundle {entry.key}; replay decode grid, "
-                "timing scope forward; recipe step-fit-residual v1, members unit"
+                f"step grid, bundle {entry.key}; replay decode grid, "
+                "timing scope forward; recipe step-grid-residual v1, members unit"
             ),
         }
     }
@@ -206,36 +206,36 @@ def test_a_run_ended_by_abort_still_names_its_bundle(monkeypatch, tmp_path):
         assert time.monotonic() < deadline, "no summary.json in 10 wall seconds"
         time.sleep(0.05)
     out = json.loads(path.read_text())
-    assert out["step_fit"]["engine"]["digest"] == entry.digest
+    assert out["step_grid"]["engine"]["digest"] == entry.digest
     [[reason, _]] = out["schedule"]["refusals"]["reasons"]
     assert reason.startswith("ended:engine raised CostRefused(")
 
 
-def test_a_roofline_floor_still_prices_below_step_fit(monkeypatch, tmp_path):
+def test_a_roofline_floor_still_prices_below_step_grid(monkeypatch, tmp_path):
     r = deployment(tmp_path)
     publish(tmp_path, r)
     run_file(tmp_path, monkeypatch, roofline_floor_s=1e-3)
 
     compass_run.runner(r)
 
-    assert isinstance(r.compass_backend, Tiered)
-    assert isinstance(r.compass_backend.first, StepFitBackend)
+    assert isinstance(r.compass_backend, StepFallbackBackend)
+    assert isinstance(r.compass_backend.first, StepGridBackend)
 
 
-def test_step_fit_is_one_of_the_three_backend_keys(monkeypatch, tmp_path):
+def test_step_grid_is_one_of_the_backend_keys(monkeypatch, tmp_path):
     r = deployment(tmp_path)
-    run_file(tmp_path, monkeypatch, coefficients={})
+    run_file(tmp_path, monkeypatch, step_stub={})
 
-    with pytest.raises(ValueError, match="this one has coefficients and step_fit"):
+    with pytest.raises(ValueError, match="this one has step_stub and step_grid"):
         compass_run.runner(r)
 
 
 @pytest.mark.parametrize(
     "fields,named",
     [
-        ({"grid": "/data/grids/s2.json"}, "`step_fit_bundle.grid` holds"),
+        ({"grid": "/data/grids/s2.json"}, "`step_grid_bundle.grid` holds"),
         ({"path": "bundles/qwen"}, "has no key field 'path'"),
-        ({"source_root": None}, "this step_fit_bundle key states no source_root"),
+        ({"source_root": None}, "this step_grid_bundle key states no source_root"),
     ],
     ids=["path", "unknown", "missing"],
 )
@@ -243,7 +243,7 @@ def test_the_key_is_its_fields_never_a_path(monkeypatch, tmp_path, fields, named
     r = deployment(tmp_path)
     publish(tmp_path, r)
     key = {k: v for k, v in {**KEY, **fields}.items() if v is not None}
-    run_file(tmp_path, monkeypatch, step_fit={"store": str(tmp_path / "store"), **key})
+    run_file(tmp_path, monkeypatch, step_grid={"store": str(tmp_path / "store"), **key})
 
     with pytest.raises(ArtifactRefusal, match=re.escape(named)) as refused:
         compass_run.runner(r)
@@ -257,7 +257,7 @@ def test_a_key_with_no_bundle_refuses_naming_it(monkeypatch, tmp_path):
     publish(tmp_path, r, grid="s2-dense")
     run_file(tmp_path, monkeypatch)
 
-    with pytest.raises(ArtifactRefusal, match="no entry for step_fit_bundle\\("):
+    with pytest.raises(ArtifactRefusal, match="no entry for step_grid_bundle\\("):
         compass_run.runner(r)
 
 
@@ -273,7 +273,7 @@ def test_a_bundle_read_under_other_conditions_refuses_naming_the_cell(
     run_file(tmp_path, monkeypatch)
 
     with pytest.raises(
-        ArtifactRefusal, match=re.escape(f"`step fit bundle` x `{axis}`")
+        ArtifactRefusal, match=re.escape(f"`step grid bundle` x `{axis}`")
     ):
         compass_run.runner(r)
 
@@ -323,7 +323,7 @@ def test_a_capture_size_past_max_num_seqs_is_not_on_the_ladder(monkeypatch, tmp_
 
     compass_run.runner(r)
 
-    assert isinstance(r.compass_backend, StepFitBackend)
+    assert isinstance(r.compass_backend, StepGridBackend)
 
 
 def test_a_timing_scope_narrower_than_the_forward_refuses(monkeypatch, tmp_path):

@@ -68,7 +68,7 @@ class Row(enum.Enum):
     MACHINE_SPEC_CAPACITY = "machine_spec: capacity"
     MACHINE_SPEC_RUNTIME_CONSTANTS = "machine_spec: runtime constants"
     MACHINE_SPEC_TOKENIZER_TERMS = "machine_spec: tokenizer terms"
-    STEP_FIT_BUNDLE = "step fit bundle"
+    STEP_GRID_BUNDLE = "step grid bundle"
 
     @property
     def field(self) -> str:
@@ -159,7 +159,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.DEVICE: Cell(False, "host CPU"),
         Axis.ENGINE_CONFIG: INDEPENDENT,
     },
-    Row.STEP_FIT_BUNDLE: {
+    Row.STEP_GRID_BUNDLE: {
         Axis.SOFTWARE_STACK: DEPENDS,
         Axis.TORCH: DEPENDS,
         Axis.ATOM_SRC: DEPENDS,
@@ -181,7 +181,7 @@ ROWS_OF: Mapping[Kind, tuple[Row, ...]] = {
         Row.MACHINE_SPEC_RUNTIME_CONSTANTS,
         Row.MACHINE_SPEC_TOKENIZER_TERMS,
     ),
-    Kind.STEP_FIT_BUNDLE: (Row.STEP_FIT_BUNDLE,),
+    Kind.STEP_GRID_BUNDLE: (Row.STEP_GRID_BUNDLE,),
 }
 
 

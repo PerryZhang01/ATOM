@@ -5,13 +5,13 @@
 
 The two halves a simulated run needs already exist in this package and are
 built separately. `KvGeometry.from_hf_config` says what a KV block costs at a
-set of parallel widths; `ShapeStubBackend` says what a step costs, and is told
+set of parallel widths; `StepStubBackend` says what a step costs, and is told
 the widths a second time so it knows which collectives to charge. Nothing
 joined them, and the join is not bookkeeping:
 
     geometry = KvGeometry.from_hf_config(config, block_size=64,
                                          parallelism=Parallelism(tp_size=4))
-    backend = ShapeStubBackend(geometry=geometry)
+    backend = StepStubBackend(geometry=geometry)
 
 is accepted today. The pool is sized for four ranks and the price is a single
 rank's, with no all-reduce charged at all, and nothing anywhere can notice: a
@@ -75,7 +75,7 @@ from atom.compass.backends.geometry import (
     KvGeometry,
     Parallelism,
 )
-from atom.compass.backends.shape import Coefficients, ShapeStubBackend
+from atom.compass.backends.step_stub import Coefficients, StepStubBackend
 
 # Layer kinds a dialled stack is built out of, read from the module that
 # decides what they mean rather than spelled again here. Which strings name a
@@ -266,7 +266,7 @@ class FakeModel:
         # The span reaches the price and the geometry reaches the pool. The
         # backend is built after both are known because the span is what it
         # charges a collective on, and this worker's span is the one it runs.
-        self.backend = ShapeStubBackend(
+        self.backend = StepStubBackend(
             coefficients=self.coefficients,
             parallelism=self.parallelism,
             geometry=self.geometry,

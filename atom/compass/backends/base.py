@@ -3,7 +3,7 @@
 
 """The interface a cost backend implements.
 
-Two methods. `estimate` prices one step; `describe` says what this backend is,
+Two methods. `price` prices one step; `describe` says what this backend is,
 in a line that goes into the run record so a result can be read a month later.
 
 `batch_view` is a projection of the scheduled batch, prepared by the caller --
@@ -23,10 +23,10 @@ over its own sources. A projection that reaches an engine type for one field
 is a projection that can only be built where the engine imports, which defeats
 the reason it exists.
 
-`tier` says which cost model was asked, which is a different axis from where
-each answer inside it came from. A run can ask for the op-level model and still
-receive analytically-computed seconds for a term the campaign never covered;
-the tier records the intent and the provenance records what happened.
+`granularity` says what the backend prices as one unit, a whole step or the
+ops in it, which is a different axis from where each answer inside it came
+from. An op-level backend still answers an unpriced leaf analytically; the
+granularity records the unit and the provenance records what happened.
 """
 
 from __future__ import annotations
@@ -38,15 +38,11 @@ from typing import Any
 from atom.compass.backends.cost import StepCost
 
 
-class Tier(enum.Enum):
-    """Which cost model was asked for."""
+class Granularity(enum.Enum):
+    """What a backend prices as one unit."""
 
-    ANALYTIC = "0"
-    COARSE = "a"
-    OP_LEVEL = "b"
-
-    def __str__(self) -> str:
-        return self.value
+    STEP = "step"
+    OP = "op"
 
 
 class CostBackend(abc.ABC):
@@ -54,11 +50,11 @@ class CostBackend(abc.ABC):
 
     @property
     @abc.abstractmethod
-    def tier(self) -> Tier:
-        """Which cost model this backend is."""
+    def granularity(self) -> Granularity:
+        """What this backend prices as one unit."""
 
     @abc.abstractmethod
-    def estimate(self, batch_view: Any) -> StepCost:
+    def price(self, batch_view: Any) -> StepCost:
         """Price one step.
 
         Returns a `StepCost`, which carries its breakdown by construction.

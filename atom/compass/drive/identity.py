@@ -22,7 +22,8 @@ from atom.compass.artifacts.provenance import (
     module_root,
 )
 from atom.compass.drive.gpu import GpuRefusal, smi
-from atom.compass.run import host_key
+from atom.compass.run import host_key_of
+from atom.compass.run.step_grid import BOUNDS
 
 FORMAT_VERSION = 1
 #: The phases whose boundaries a run records; ops are profiled only in "profiling".
@@ -31,16 +32,24 @@ PHASES = ("warm-up", "profiling")
 CARD_FIELDS = {"series": "Card Series", "sku": "Card SKU", "gfx": "GFX Version"}
 
 
-def identity(config, argv: Sequence[str], gpus: tuple[int, ...] = ()) -> dict:
-    """The identity entries of run.json for a command line `argv` run under
-    ATOM's resolved `config` on `gpus`, which is empty for a command that uses
-    no GPU."""
+def identity(
+    engine_file: Path, model: str, argv: Sequence[str], gpus: tuple[int, ...] = ()
+) -> dict:
+    """The identity entries of run.json for a command line `argv` serving the
+    model `model` names, on `gpus`, which is empty for a command that uses no
+    GPU. `engine_file` is the `dp<r>.engine.json` the run's engine wrote, so a
+    command calls this once its server stops."""
+    engine = json.loads(Path(engine_file).read_text())
+    # The file adds the scheduler bounds and the block count to `keyed`.
+    keyed = {
+        k: v for k, v in engine.items() if k not in (*BOUNDS, "num_kvcache_blocks")
+    }
     rocm = Path(os.environ.get("ROCM_PATH", "/opt/rocm")) / ".info" / "version"
     return {
         "format_version": FORMAT_VERSION,
         "argv": list(argv),
         "source": git_tree_root("atom", module_root("atom")).as_json(),
-        "host_key": host_key(config),
+        "host_key": host_key_of(model, keyed),
         "device": _device(gpus),
         "stack": {
             "rocm": rocm.read_text().strip(),

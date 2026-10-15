@@ -285,7 +285,7 @@ def test_both_filters_in_the_derivation_drop_nothing():
     The compass-side broadcasts accounted for: the run bootstrap reads the
     Compass runner's refusal tally, `refused_commands`, what its steps cost,
     `priced_steps`, the memory it predicts, `predicted_memory`, and its step
-    fit bundle, `step_fit_bundle`. No ATOM site sends any of them, so no
+    grid bundle, `step_grid_bundle`. No ATOM site sends any of them, so no
     `ModelRunner` is ever asked for them.
     """
     assert NON_LITERAL == []
@@ -296,7 +296,7 @@ def test_both_filters_in_the_derivation_drop_nothing():
         "refused_commands",
         "priced_steps",
         "predicted_memory",
-        "step_fit_bundle",
+        "step_grid_bundle",
     }
     assert not compass & set(SITES)
 
@@ -560,7 +560,7 @@ def test_a_runner_with_a_hole_is_reported_by_name():
 
 
 def test_the_binding_module_refuses_rather_than_composing_a_hole():
-    """Two greps, and this is as far as a CPU tier can go.
+    """Two greps, and this is as far as the CPU gate can go.
 
     Executing the device means importing the composed class, which imports
     `ModelRunner`, which runs aiter's architecture probe and needs a driver.
