@@ -140,11 +140,13 @@ def close():
         engine.kill()
 
 async def app(scope, receive, send):
-    while scope["type"] == "lifespan":
-        kind = (await receive())["type"].rpartition(".")[2]
-        if kind == "shutdown":
-            close()
-        await send({"type": f"lifespan.{kind}.complete"})
+    if scope["type"] == "lifespan":
+        for kind in ("startup", "shutdown"):
+            await receive()
+            if kind == "shutdown":
+                close()
+            await send({"type": f"lifespan.{kind}.complete"})
+        return
     await send({"type": "http.response.start", "status": 200, "headers": []})
     await send({"type": "http.response.body", "body": b"ok"})
 
