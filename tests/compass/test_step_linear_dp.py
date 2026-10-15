@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: MIT
-"""The coarse law under DP-attention with EP off: one law per rank, keyed
+"""The step linear law under DP-attention with EP off: one law per rank, keyed
 `(dp, ep)`, the group's step the max over its ranks.
 
 Each rank's record is written from a known per-rank law, every line labelled
 with the group's step, the max over the ranks' prices, as a real DP group's
-ranks each measure it. The fitted law is read by `CoarseLaw` and priced by
-`CoarseBackend.estimate`.
+ranks each measure it. The fitted law is read by `StepLinearLaw` and priced by
+`StepLinearBackend.price`.
 """
 
 import json
@@ -13,17 +13,17 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from test_backend_coarse import law, view
-from test_backend_coarse_fit import _record
+from test_backend_step_linear import law, view
+from test_backend_step_linear_fit import _fit, _record
+from test_memory_readings import META_8B
 
 from atom.compass.backends import (
     BatchView,
-    CoarseBackend,
-    CoarseLaw,
     CostRefused,
     RequestShape,
+    StepLinearBackend,
+    StepLinearLaw,
 )
-from atom.compass.backends.coarse_fit import fit
 
 DP = 4
 PREFILL = {
@@ -113,7 +113,7 @@ def test_the_alternating_fit_recovers_the_per_rank_law_and_every_row_does_not(
     # One step whose ranks fall to different vectors: rank 0 prefills.
     mixed = groups[1][0].copy()
     mixed[0] = groups[0][0][0]
-    law_ = fit(_records(tmp_path, groups + [(mixed, 1.0)]), dp=DP)
+    law_ = _fit(_records(tmp_path, groups + [(mixed, 1.0)]), dp=DP)
 
     assert law_["key"] == [DP, 1]
     assert law_["cut"]["ranks"] == 1
@@ -125,26 +125,26 @@ def test_the_alternating_fit_recovers_the_per_rank_law_and_every_row_does_not(
         assert vector["fit"]["mad"] < 1e-6
         assert vector["fit"]["all_rows"]["mad"] > 0.01
 
-    backend = CoarseBackend(CoarseLaw(law_), (DP, 1))
+    backend = StepLinearBackend(StepLinearLaw(law_), (DP, 1))
     for views, seconds in groups:
-        priced = max(backend.estimate(v).seconds for v in views)
+        priced = max(backend.price(v).seconds for v in views)
         assert priced == pytest.approx(seconds, rel=1e-6)
     without = BatchView(groups[0][0][0].requests)
     with pytest.raises(CostRefused, match="no MoE gather rows"):
-        backend.estimate(without)
+        backend.price(without)
 
 
 def test_a_keyed_law_refuses_another_width_and_one_one_prices_as_tp1(monkeypatch):
     from atom.compass import run
 
-    tp1 = CoarseBackend(CoarseLaw(law()))
-    keyed = CoarseBackend(CoarseLaw(dict(law(), key=[1, 1])))
+    tp1 = StepLinearBackend(StepLinearLaw(law()))
+    keyed = StepLinearBackend(StepLinearLaw(dict(law(), key=[1, 1])))
     for v in (view((40, 40, False)), view((1, 300, True), rung=2)):
-        assert keyed.estimate(v).terms == tp1.estimate(v).terms
+        assert keyed.price(v).terms == tp1.price(v).terms
 
     with pytest.raises(ValueError, match=r"\(dp, ep\) \(4, 1\) .* at \(1, 1\)"):
-        CoarseBackend(CoarseLaw(dict(law(), key=[4, 1])))
-    monkeypatch.setattr(run, "spec", lambda: {"law": law()})
+        StepLinearBackend(StepLinearLaw(dict(law(), key=[4, 1])))
+    monkeypatch.setattr(run, "spec", lambda: {"step_linear": law()})
     dpa = SimpleNamespace(
         tensor_parallel_size=1,
         enable_dp_attention=True,
@@ -152,16 +152,16 @@ def test_a_keyed_law_refuses_another_width_and_one_one_prices_as_tp1(monkeypatch
         parallel_config=SimpleNamespace(data_parallel_size=8),
     )
     with pytest.raises(ValueError, match=r"\(dp, ep\) \(1, 1\) .* at \(8, 1\)"):
-        run.runner(SimpleNamespace(config=dpa))
+        run.runner(SimpleNamespace(config=dpa), META_8B)
 
 
 @pytest.mark.parametrize("cap, decode", [(20, 4), (4, 4), (3, None)])
 def test_the_fit_records_whether_the_alternation_settled(
     tmp_path, monkeypatch, cap, decode
 ):
-    from atom.compass.backends import coarse_fit
+    from atom.compass.backends import step_linear_fit
 
-    monkeypatch.setattr(coarse_fit, "MAD_PASSES", cap)
-    law_ = fit(_records(tmp_path, _groups(0)), dp=DP)
+    monkeypatch.setattr(step_linear_fit, "MAD_PASSES", cap)
+    law_ = _fit(_records(tmp_path, _groups(0)), dp=DP)
     assert law_["prefill"]["fit"]["passes"] == 1
     assert law_["decode"]["4"]["fit"]["passes"] == decode

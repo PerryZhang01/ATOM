@@ -8,7 +8,6 @@
 #
 # Usage: parity_one_node.sh OUT_DIR
 #   MODEL            model directory with its weights (required)
-#   PARAMETER_COUNT  the model's parameter count, for the simulated memory (required)
 #   REQUESTS         requests in the workload (default 64)
 #   GAP_S            seconds between sends, each also waiting for the server to
 #                    admit the one before; 0 sends them back to back (default 0.05)
@@ -18,7 +17,8 @@
 #   WAIT_S           seconds a server has to start, and to stop (default 1800)
 # The real run uses HIP_VISIBLE_DEVICES as set. OUT_DIR gets real/ and sim/,
 # each with its server log and step record (sim/ also has the run file, step
-# table and summary), and compare.json; the last lines are per DP rank.
+# table and summary), and compare.json; the last lines are the real run's
+# admission, send to response headers, and the compare per DP rank.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/_lib.sh"
 
@@ -27,7 +27,6 @@ compass_env "$ROOT"
 compass_require_tree "$ROOT" || exit $?
 OUT=${1:?usage: parity_one_node.sh OUT_DIR}
 MODEL=${MODEL:?MODEL names the model directory}
-PARAMETER_COUNT=${PARAMETER_COUNT:?PARAMETER_COUNT is the model parameter count}
 SERVER_ARGS=${SERVER_ARGS:---enforce-eager --max-model-len 8192 --no-enable_prefix_caching}
 WAIT_S=${WAIT_S:-1800}
 mkdir -p "$OUT/real" "$OUT/sim"
@@ -72,11 +71,11 @@ leave real
 
 RUN=$OUT/sim/run.json
 python3 - "$RUN" "$OUT" "${MACHINE:-$ROOT/scripts/compass/machines/mi308x-hjbog18.json}" \
-    "$MODEL" "$PARAMETER_COUNT" "$(free_port)" <<'EOF'
+    "$MODEL" "$(free_port)" <<'EOF'
 import json, sys
 from pathlib import Path
 
-run, out, machine, model, parameters, port = sys.argv[1:]
+run, out, machine, model, port = sys.argv[1:]
 machine = json.loads(Path(machine).read_text())
 # ponytail: prices the model's tokenizer as the spec's first entry measured it;
 # only arrival latency reads it. Measure the model's own to drop this.
@@ -86,7 +85,7 @@ Path(run).write_text(json.dumps({
     "clock_endpoint": f"tcp://127.0.0.1:{port}", "bound_s": 1e7,
     "admission_path": "serving", "ipc_s": 2.0**-14, "stream_s": 2.0**-12,
     "replay": f"{out}/real/record", "machine": machine,
-    "parameter_count": int(parameters), "data_parallel_size": 2, "out_dir": f"{out}/sim",
+    "data_parallel_size": 2, "out_dir": f"{out}/sim",
 }))
 EOF
 serve sim --compass-run "$RUN"
@@ -96,10 +95,13 @@ leave sim
 wait $server
 
 python3 -m atom.compass.parity "$OUT/real/record" "$OUT/sim/record" >"$OUT/compare.json"
-python3 - "$OUT/compare.json" <<'EOF'
-import json, sys
+python3 - "$OUT/compare.json" "$OUT/real/record/arrivals.json" <<'EOF'
+import json, statistics, sys
 
-report = json.loads(open(sys.argv[1]).read())
+report, arrivals = (json.loads(open(path).read()) for path in sys.argv[1:])
+ms = [(a - s) / 1e6 for s, a in zip(arrivals["sent_ns"], arrivals["admitted_ns"])]
+print(f"parity_one_node: real admission ms min={min(ms):.2f} "
+      f"median={statistics.median(ms):.2f} max={max(ms):.2f}")
 for rank, n in report["steps"].items():
     first = report["first_divergence"][rank]
     print(f"parity_one_node: dp{rank} compared={n['compared']} "

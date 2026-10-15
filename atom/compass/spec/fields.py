@@ -19,9 +19,11 @@ entry, and none of them is written down.
 
 **A runtime constant keyed by tensor-parallel width is a table, not a law.** The
 measured values at widths 1, 2, 4 and 8 fit no fixed-plus-per-peer form, so
-there is nothing to interpolate along and a width that was not measured cannot
-be produced from the widths that were. `WIDTH_TABLE` holds what was measured and
-the accessor refuses the rest by name.
+there is nothing to interpolate along and a width that was not probed cannot
+be produced from the widths that were. `WIDTH_TABLE` holds what was probed and
+the accessor refuses the rest by name. Under DP-attention every rank runs at
+TP 1 inside DP-wide groups, so such an entry is keyed by its layout, the string
+`"<tp>x<dp>"` (`"1x8"`); JSON keeps it as written, and a width stays an integer.
 
 **A checked value is the spec's own.** Every kind returns a copy rather than
 what the document handed over: `tuple` for a list of names, `dict` for a width
@@ -42,6 +44,13 @@ the refusal happens while a person is authoring the document rather than in the
 middle of a simulated run. The exceptions are the provenance fields `merge`
 fills in later, and the activation entries, whose absence falls back to a
 declared form.
+
+**Every field says where it came from.** `provenance.origin` is one of
+`ORIGINS` or `transferred-from:<spec>`, and anything else is refused. A
+document built from several origins says `mixed`, and `merge` writes
+`provenance.origins`: one entry per field, keyed as `Merge.sources` keys it,
+holding the field's own origin and, on a probed field, the subject the probe
+ran on (`SUBJECT`).
 """
 
 import enum
@@ -49,6 +58,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from .rules import Rule, SpecRefusal
+
+
+def layout(key: object) -> bool:
+    """Whether `key` is a DP-attention layout, `<tp>x<dp>` in positive integers."""
+    parts = key.split("x") if isinstance(key, str) else ()
+    return len(parts) == 2 and all(
+        p.isascii() and p.isdigit() and p[0] != "0" for p in parts
+    )
 
 
 class Kind(enum.Enum):
@@ -62,6 +79,23 @@ class Kind(enum.Enum):
     NAMES = "names"
     TOKENIZERS = "tokenizers"
     ACTIVATIONS = "activations"
+    ORIGIN = "origin"
+    SUBJECT = "subject"
+    ORIGINS = "origins"
+
+
+#: Where a value came from. A transfer is `TRANSFERRED` plus the source spec's
+#: name; `mixed` describes a document, never one field.
+ORIGINS = ("datasheet", "probed", "assumed", "mixed")
+TRANSFERRED = "transferred-from:"
+#: What a probe ran on, any of which it may state. `record` is the digest of
+#: the record of the run it read, `sha256:` over the server log.
+SUBJECT = {
+    "model": Kind.TEXT,
+    "width": Kind.COUNT,
+    "source_root": Kind.TEXT,
+    "record": Kind.TEXT,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,12 +124,14 @@ def closed(fields: tuple[Field, ...]) -> tuple[Field, ...]:
 
 
 #: The machine spec, one row per field, in the order a document reads.
-DECLARED = (
+FIELDS = (
     Field("schema_version", Kind.COUNT),
     Field("name", Kind.TEXT),
     Field("provenance.authored_by", Kind.TEXT),
     Field("provenance.date", Kind.TEXT),
-    Field("provenance.method", Kind.TEXT),
+    Field("provenance.origin", Kind.ORIGIN),
+    Field("provenance.subject", Kind.SUBJECT, required=False),
+    Field("provenance.origins", Kind.ORIGINS, required=False),
     Field("provenance.fragments", Kind.NAMES, required=False),
     Field("provenance.notes", Kind.TEXT, required=False),
     Field("host.cpu.cores_physical", Kind.COUNT),
@@ -142,7 +178,7 @@ DECLARED = (
     Field("interconnect.router_relay_s", Kind.QUANTITY),
 )
 
-SCHEMA = closed(DECLARED)
+SCHEMA = closed(FIELDS)
 BY_PATH = {field.path: field for field in SCHEMA}
 #: Every dotted prefix of a declared path, so a document can be walked into.
 BLOCKS = frozenset(
@@ -183,9 +219,54 @@ def _detached(value: object) -> object:
     return value
 
 
+def origin(value: object, path: str, *, of_a_field: bool = False) -> str:
+    """An origin as written, or a refusal; one field's origin is never `mixed`."""
+    allowed = ORIGINS[:-1] if of_a_field else ORIGINS
+    transfer = isinstance(value, str) and value.startswith(TRANSFERRED)
+    if not (value in allowed or transfer and value[len(TRANSFERRED) :].strip()):
+        raise SpecRefusal(
+            Rule.SHAPE,
+            f"`{path}` holds {value!r}, which is not an origin",
+            f"write one of {', '.join(allowed)} or {TRANSFERRED}<spec>; an origin "
+            "nobody defined says nothing about where a value came from",
+        )
+    return value
+
+
+def _subject(value: object, path: str) -> dict:
+    if not isinstance(value, Mapping) or not value or not set(value) <= set(SUBJECT):
+        _refuse(path, f"a mapping of some of {', '.join(SUBJECT)}", value)
+    return {k: check(Field(k, SUBJECT[k]), v, f"{path}.{k}") for k, v in value.items()}
+
+
+def _origins(value: object, path: str) -> dict:
+    if not isinstance(value, Mapping):
+        _refuse(path, "a mapping from field to origin", value)
+    origins = {}
+    for label, entry in value.items():
+        where = f"{path}[{label}]"
+        if not isinstance(entry, Mapping) or "origin" not in entry:
+            _refuse(where, "a mapping holding an `origin`", entry)
+        stated = origin(entry["origin"], f"{where}.origin", of_a_field=True)
+        subject = {key: held for key, held in entry.items() if key != "origin"}
+        if subject and stated != "probed":
+            _refuse(where, "a probed field, the only kind with a subject", entry)
+        origins[label] = {
+            "origin": stated,
+            **(_subject(subject, where) if subject else {}),
+        }
+    return origins
+
+
 def check(field: Field, value: object, path: str) -> object:
     """The value as the schema keeps it, or a refusal naming what was wanted."""
     kind = field.kind
+    if kind is Kind.ORIGIN:
+        return origin(value, path)
+    if kind is Kind.SUBJECT:
+        return _subject(value, path)
+    if kind is Kind.ORIGINS:
+        return _origins(value, path)
     if kind is Kind.TEXT:
         if not isinstance(value, str) or not value.strip():
             _refuse(path, "a non-empty string", value)
@@ -220,8 +301,14 @@ def check(field: Field, value: object, path: str) -> object:
         if not isinstance(value, Mapping) or not value:
             _refuse(path, "a non-empty table keyed by tensor-parallel width", value)
         for width, measured in value.items():
-            if isinstance(width, bool) or not isinstance(width, int) or width <= 0:
-                _refuse(f"{path}[{width!r}]", "a positive tensor-parallel width", width)
+            if not layout(width) and (
+                isinstance(width, bool) or not isinstance(width, int) or width <= 0
+            ):
+                _refuse(
+                    f"{path}[{width!r}]",
+                    "a positive tensor-parallel width or a `<tp>x<dp>` layout",
+                    width,
+                )
             check(Field(f"{path}.{width}", Kind.QUANTITY), measured, f"{path}[{width}]")
         return dict(value)
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):

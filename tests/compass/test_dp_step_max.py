@@ -25,12 +25,8 @@ from conftest import MockConfig
 from test_runner_non_allocating import ATOM_RUNNER, PACKAGE, _classes
 
 import atom.utils.distributed.utils as dist_utils
-from atom.compass.backends.shape import (
-    BatchView,
-    Coefficients,
-    RequestShape,
-    ShapeStubBackend,
-)
+from atom.compass.backends.shape import BatchView, RequestShape
+from atom.compass.backends.step_stub import Coefficients, StepStubBackend
 from atom.compass.runner import projection
 from atom.compass.runner.overrides import (
     NonAllocatingRunner,
@@ -77,16 +73,16 @@ def _compass_runner_class():
 CompassModelRunner = _compass_runner_class()
 
 
-class Recording(ShapeStubBackend):
+class Recording(StepStubBackend):
     """The stub, keeping each view it priced."""
 
     def __init__(self, coefficients=None):
         super().__init__(coefficients)
         self.views = []
 
-    def estimate(self, batch_view):
+    def price(self, batch_view):
         self.views.append(batch_view)
-        return super().estimate(batch_view)
+        return super().price(batch_view)
 
 
 def runner(backend, dp_size=1, dp_rank=0):
@@ -123,7 +119,7 @@ def prefill(tokens):
 
 
 def priced(*rows, coefficients=None):
-    return ShapeStubBackend(coefficients).estimate(BatchView(rows)).seconds
+    return StepStubBackend(coefficients).price(BatchView(rows)).seconds
 
 
 @pytest.fixture
@@ -163,7 +159,7 @@ def dp2(monkeypatch):
 def test_one_rank_exchanges_nothing_and_reports_its_own_cost(monkeypatch):
     monkeypatch.setattr(torch.distributed, "all_reduce", None)
 
-    reply = runner(ShapeStubBackend()).forward(prefill(40))
+    reply = runner(StepStubBackend()).forward(prefill(40))
 
     assert reply.predicted_s == priced(RequestShape(40, 40, False))
 
@@ -205,7 +201,7 @@ def test_a_runner_with_no_backend_refuses_the_step():
 
 
 def test_a_pipeline_stage_refuses_to_price_the_whole_model():
-    stage = runner(ShapeStubBackend())
+    stage = runner(StepStubBackend())
     stage.config.pipeline_parallel_size = 2
     with pytest.raises(RunnerRefusal, match="one stage of a pipeline"):
         stage.forward(prefill(8))

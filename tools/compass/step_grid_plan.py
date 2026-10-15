@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Step fit's grid points planned from batch shapes, and steps checked for
+"""The step grid's points planned from batch shapes, and steps checked for
 coverage against a published bundle; `README.md` beside this file says how.
 
-Each step is read where step fit's backend reads it (`StepFitGrid.locate` and
+Each step is read where the step grid backend reads it (`StepGrid.locate` and
 the cell's corners), so the plan and the backend never disagree on a cell.
 """
 
@@ -17,9 +17,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from atom.compass import parity
-from atom.compass.backends import BatchView, CostRefused, RequestShape, StepFitGrid
+from atom.compass.backends import BatchView, CostRefused, RequestShape, StepGrid
 from atom.compass.run import _width_keys
-from atom.compass.run.step_fit import BOUNDS, SCOPE, load
+from atom.compass.run.step_grid import BOUNDS, SCOPE, load
 from atom.compass.runner.overrides import schedulable_ladder
 from atom.compass.spec import MachineSpec
 
@@ -175,7 +175,7 @@ def plan(definition: dict, steps) -> dict:
     b_nodes = {r: {p + 1, r} for p, r in zip([0, *ladder], ladder)}
     # A B at which a recorded step reaches past its rung's KV limit is a B node
     # of the rung, so that its own limit is a c node there.
-    grid = StepFitGrid({**_layout(definition, b_nodes), "unit": "s"})
+    grid = StepGrid({**_layout(definition, b_nodes), "unit": "s"})
     for _, view in steps:
         if view.prefill or view.capture_rung not in b_nodes:
             continue
@@ -186,7 +186,7 @@ def plan(definition: dict, steps) -> dict:
         if c > _c_max(definition, view.capture_rung):
             b_nodes[view.capture_rung].add(int(b))
     out = _layout(definition, b_nodes)
-    grid = StepFitGrid({**out, "unit": "s"})
+    grid = StepGrid({**out, "unit": "s"})
     planned, unplaced = defaultdict(set), []
     for where, view in steps:
         try:
@@ -277,7 +277,7 @@ def coverage(backend, steps) -> dict:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        prog="step_fit_plan.py", description=__doc__.splitlines()[0]
+        prog="step_grid_plan.py", description=__doc__.splitlines()[0]
     )
     commands = parser.add_subparsers(dest="command", required=True)
     planning = commands.add_parser("plan", help="the points to measure")
@@ -293,7 +293,7 @@ def main(argv=None) -> int:
         definition = _read(args.definition, ("prefill", "decode", "margin", *TARGET))
         print(json.dumps(plan(definition, read), indent=1))
         return 0
-    run, fields = _read(args.run, ("step_fit", "machine")), _read(args.config, CONFIG)
+    run, fields = _read(args.run, ("step_grid", "machine")), _read(args.config, CONFIG)
     config = SimpleNamespace(
         **fields,
         parallel_config=SimpleNamespace(
@@ -302,7 +302,7 @@ def main(argv=None) -> int:
         quant_config=SimpleNamespace(compute_hash=lambda: fields["quantization"]),
     )
     machine = MachineSpec.from_mapping(_width_keys(run["machine"]))
-    backend, _ = load(run["step_fit"], config, machine)
+    backend, _ = load(run["step_grid"], config, machine)
     report = coverage(backend, read)
     print(json.dumps(report, indent=1))
     return 0 if report["covered"] == report["steps"] else 1

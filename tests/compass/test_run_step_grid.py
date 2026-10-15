@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: MIT
-"""Step fit selected by a run file's ``step_fit`` key: its bundle published to
+"""The step grid selected by a run file's ``step_grid`` key: its bundle published to
 and loaded from an `ArtifactStore` by `run.runner`, checked against the
 deployment's config, and named in the summary `_write_summary` writes.
 
 The deployment is the Qwen3.5-27B config at TP1 on the suite's machine
-document, replaying graphs on `test_backend_step_fit`'s ladder; the bundle is
+document, replaying graphs on `test_backend_step_grid`'s ladder; the bundle is
 that file's replay grid and a unit residual, published under the readings
-`step_fit.conditions` takes of the same deployment unless a test moves one.
+`step_grid.conditions` takes of the same deployment unless a test moves one.
 """
 
 import copy
@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from test_artifact_invalidation import STANZA, moved
-from test_backend_step_fit import (
+from test_backend_step_grid import (
     B37,
     C_NODES,
     LADDER,
@@ -34,7 +34,7 @@ from test_backend_step_fit import (
     point,
 )
 from test_dp_slice import _deployment
-from test_memory_readings import CONFIG_JSON, DOCUMENT
+from test_memory_readings import CONFIG_JSON, DOCUMENT, META_8B
 from test_refused_step_continues import drive
 from test_runner_control_refusals import Worker
 from test_vertical_slice import _run_file
@@ -51,10 +51,10 @@ from atom.compass.artifacts import (
     Topology,
     member_name,
 )
-from atom.compass.backends import StepFitBackend
-from atom.compass.backends.analytic import Tiered
-from atom.compass.backends.ladder import CostRefused
-from atom.compass.run import step_fit
+from atom.compass.backends import StepGridBackend
+from atom.compass.backends.resolver import CostRefused
+from atom.compass.backends.step_roofline import StepFallbackBackend
+from atom.compass.run import step_grid
 from atom.compass.spec import MachineSpec
 from atom.utils import clock
 from atom.utils.clock import LPRuntime
@@ -104,26 +104,26 @@ def deployment(tmp_path, **config):
 
 
 def readings(r):
-    return step_fit.conditions(r.config, MachineSpec.from_mapping(DOCUMENT))
+    return step_grid.conditions(r.config, MachineSpec.from_mapping(DOCUMENT))
 
 
 def publish(tmp_path, r, member=BUNDLE, conditions=None, **key):
     """The bundle handed off under `r`'s own readings, unless others are given."""
     return ArtifactStore(tmp_path / "store").publish(
-        Key.of(Kind.STEP_FIT_BUNDLE, **{**KEY, **key}),
+        Key.of(Kind.STEP_GRID_BUNDLE, **{**KEY, **key}),
         provenance=STANZA,
         topology=Topology(),
         conditions=conditions or readings(r),
         gates=GateState.of(),
-        members={member_name(*step_fit.MEMBER): json.dumps(member).encode()},
+        members={member_name(*step_grid.MEMBER): json.dumps(member).encode()},
     )
 
 
 def run_file(tmp_path, monkeypatch, **keys):
-    """The suite's run file with ``step_fit`` in place of ``coefficients``."""
+    """The suite's run file with ``step_grid`` in place of ``step_stub``."""
     run = json.loads(_run_file(tmp_path).read_text())
-    del run["coefficients"]
-    run["step_fit"] = {"store": str(tmp_path / "store"), **KEY}
+    del run["step_stub"]
+    run["step_grid"] = {"store": str(tmp_path / "store"), **KEY}
     run.update(keys)
     (tmp_path / "run.json").write_text(json.dumps(run))
     monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
@@ -156,19 +156,19 @@ def test_a_run_file_bundle_prices_the_runs_steps_and_the_summary_names_it(
     entry = publish(tmp_path, r)
     run = run_file(tmp_path, monkeypatch)
 
-    compass_run.runner(r)
+    compass_run.runner(r, META_8B)
 
-    assert isinstance(r.compass_backend, StepFitBackend)
-    # Rung 48's cell, as `test_backend_step_fit` reads it from the same grid.
+    assert isinstance(r.compass_backend, StepGridBackend)
+    # Rung 48's cell, as `test_backend_step_grid` reads it from the same grid.
     assert r.forward(decode(B37)).predicted_s == 8897.5e-6
     out = summary(monkeypatch, run, r)
-    assert out["step_fit"] == {
+    assert out["step_grid"] == {
         "engine": {
             "key": KEY,
             "digest": entry.digest,
             "describe": (
-                f"tier-a step fit, bundle {entry.key}; replay decode grid, "
-                "timing scope forward; recipe step-fit-residual v1, members unit"
+                f"step grid, bundle {entry.key}; replay decode grid, "
+                "timing scope forward; recipe step-grid-residual v1, members unit"
             ),
         }
     }
@@ -190,7 +190,7 @@ def test_a_run_ended_by_abort_still_names_its_bundle(monkeypatch, tmp_path):
         monkeypatch.setattr(module, name, None)
     with compass_run.frontend(_deployment()):
         pass
-    compass_run.runner(r)
+    compass_run.runner(r, META_8B)
     engine = LPRuntime(compass_run.ENGINE, compass_run.channel_table(run), None)
     monkeypatch.setattr(clock, "_installed", engine)
 
@@ -206,36 +206,36 @@ def test_a_run_ended_by_abort_still_names_its_bundle(monkeypatch, tmp_path):
         assert time.monotonic() < deadline, "no summary.json in 10 wall seconds"
         time.sleep(0.05)
     out = json.loads(path.read_text())
-    assert out["step_fit"]["engine"]["digest"] == entry.digest
+    assert out["step_grid"]["engine"]["digest"] == entry.digest
     [[reason, _]] = out["schedule"]["refusals"]["reasons"]
     assert reason.startswith("ended:engine raised CostRefused(")
 
 
-def test_a_roofline_floor_still_prices_below_step_fit(monkeypatch, tmp_path):
+def test_a_roofline_floor_still_prices_below_step_grid(monkeypatch, tmp_path):
     r = deployment(tmp_path)
     publish(tmp_path, r)
     run_file(tmp_path, monkeypatch, roofline_floor_s=1e-3)
 
-    compass_run.runner(r)
+    compass_run.runner(r, META_8B)
 
-    assert isinstance(r.compass_backend, Tiered)
-    assert isinstance(r.compass_backend.first, StepFitBackend)
+    assert isinstance(r.compass_backend, StepFallbackBackend)
+    assert isinstance(r.compass_backend.first, StepGridBackend)
 
 
-def test_step_fit_is_one_of_the_three_backend_keys(monkeypatch, tmp_path):
+def test_step_grid_is_one_of_the_backend_keys(monkeypatch, tmp_path):
     r = deployment(tmp_path)
-    run_file(tmp_path, monkeypatch, coefficients={})
+    run_file(tmp_path, monkeypatch, step_stub={})
 
-    with pytest.raises(ValueError, match="this one has coefficients and step_fit"):
-        compass_run.runner(r)
+    with pytest.raises(ValueError, match="this one has step_stub and step_grid"):
+        compass_run.runner(r, META_8B)
 
 
 @pytest.mark.parametrize(
     "fields,named",
     [
-        ({"grid": "/data/grids/s2.json"}, "`step_fit_bundle.grid` holds"),
+        ({"grid": "/data/grids/s2.json"}, "`step_grid_bundle.grid` holds"),
         ({"path": "bundles/qwen"}, "has no key field 'path'"),
-        ({"source_root": None}, "this step_fit_bundle key states no source_root"),
+        ({"source_root": None}, "this step_grid_bundle key states no source_root"),
     ],
     ids=["path", "unknown", "missing"],
 )
@@ -243,10 +243,10 @@ def test_the_key_is_its_fields_never_a_path(monkeypatch, tmp_path, fields, named
     r = deployment(tmp_path)
     publish(tmp_path, r)
     key = {k: v for k, v in {**KEY, **fields}.items() if v is not None}
-    run_file(tmp_path, monkeypatch, step_fit={"store": str(tmp_path / "store"), **key})
+    run_file(tmp_path, monkeypatch, step_grid={"store": str(tmp_path / "store"), **key})
 
     with pytest.raises(ArtifactRefusal, match=re.escape(named)) as refused:
-        compass_run.runner(r)
+        compass_run.runner(r, META_8B)
     assert "(model, device, parallel, engine_config, grid, source_root)" in str(
         refused.value
     )
@@ -257,8 +257,8 @@ def test_a_key_with_no_bundle_refuses_naming_it(monkeypatch, tmp_path):
     publish(tmp_path, r, grid="s2-dense")
     run_file(tmp_path, monkeypatch)
 
-    with pytest.raises(ArtifactRefusal, match="no entry for step_fit_bundle\\("):
-        compass_run.runner(r)
+    with pytest.raises(ArtifactRefusal, match="no entry for step_grid_bundle\\("):
+        compass_run.runner(r, META_8B)
 
 
 @pytest.mark.parametrize(
@@ -273,9 +273,9 @@ def test_a_bundle_read_under_other_conditions_refuses_naming_the_cell(
     run_file(tmp_path, monkeypatch)
 
     with pytest.raises(
-        ArtifactRefusal, match=re.escape(f"`step fit bundle` x `{axis}`")
+        ArtifactRefusal, match=re.escape(f"`step grid bundle` x `{axis}`")
     ):
-        compass_run.runner(r)
+        compass_run.runner(r, META_8B)
 
 
 @pytest.mark.parametrize(
@@ -312,7 +312,7 @@ def test_a_deployment_off_the_bundles_keyed_conditions_refuses_naming_them(
     run_file(tmp_path, monkeypatch)
 
     with pytest.raises(ValueError, match="measured under other conditions") as refused:
-        compass_run.runner(deployment(tmp_path, **config))
+        compass_run.runner(deployment(tmp_path, **config), META_8B)
     assert named in str(refused.value)
 
 
@@ -321,9 +321,9 @@ def test_a_capture_size_past_max_num_seqs_is_not_on_the_ladder(monkeypatch, tmp_
     run_file(tmp_path, monkeypatch)
     r = deployment(tmp_path, capture_sizes=LADDER + [64])
 
-    compass_run.runner(r)
+    compass_run.runner(r, META_8B)
 
-    assert isinstance(r.compass_backend, StepFitBackend)
+    assert isinstance(r.compass_backend, StepGridBackend)
 
 
 def test_a_timing_scope_narrower_than_the_forward_refuses(monkeypatch, tmp_path):
@@ -337,7 +337,7 @@ def test_a_timing_scope_narrower_than_the_forward_refuses(monkeypatch, tmp_path)
         ValueError,
         match="timing scope 'run_model\\+logits' in the bundle and 'forward' here",
     ):
-        compass_run.runner(r)
+        compass_run.runner(r, META_8B)
 
 
 def test_a_data_parallel_run_refuses(monkeypatch, tmp_path):
@@ -346,7 +346,7 @@ def test_a_data_parallel_run_refuses(monkeypatch, tmp_path):
     dp2 = SimpleNamespace(data_parallel_size=2, data_parallel_rank=0)
 
     with pytest.raises(ValueError, match="this run has data_parallel_size 2"):
-        compass_run.runner(deployment(tmp_path, parallel_config=dp2))
+        compass_run.runner(deployment(tmp_path, parallel_config=dp2), META_8B)
 
 
 def test_an_unmeasured_rung_between_measured_ones_refuses_listing_it(
@@ -368,7 +368,7 @@ def test_an_unmeasured_rung_between_measured_ones_refuses_listing_it(
             "measured the decode rungs [16, 48], and not the ladder's rungs [32]"
         ),
     ):
-        compass_run.runner(r)
+        compass_run.runner(r, META_8B)
 
 
 @pytest.mark.parametrize(
@@ -384,7 +384,7 @@ def test_a_bound_past_the_one_the_grid_was_planned_for_refuses(
     with pytest.raises(
         ValueError, match=f"this run's {bound} {value} is above the {BOUNDS[bound]} "
     ):
-        compass_run.runner(deployment(tmp_path, **{bound: value}))
+        compass_run.runner(deployment(tmp_path, **{bound: value}), META_8B)
 
 
 @pytest.mark.parametrize(
@@ -420,5 +420,5 @@ def test_a_bundle_that_does_not_load_names_itself(monkeypatch, tmp_path, edit, n
     with pytest.raises(
         ValueError, match=re.escape(f"{entry.key} does not load")
     ) as refused:
-        compass_run.runner(r)
+        compass_run.runner(r, META_8B)
     assert named in str(refused.value)

@@ -4,7 +4,7 @@
 ``serve(authority, "tcp://host:port")`` listens there; port 0 binds a free one,
 and the result's ``endpoint`` names the port it got. Each accepted connection
 gets one thread. Its first frame binds it to an LP through the serve loop, which
-answers by sending that frame back, or a refusal. After that, for each request
+answers with what the LP starts from, or a refusal. After that, for each request
 frame, the thread queues it with the loop and writes back the next reply from
 that LP's slot. The thread waits on its own LP's slot under no lock, so an LP
 whose reply is held stops no other connection. When a bound connection ends,
@@ -24,7 +24,7 @@ import socket
 import threading
 
 from .service import _Connection, _refusal, _reply, _Server
-from .wire import MalformedMessage, encode
+from .wire import JOINED, MalformedMessage, encode
 
 STREAM_SCHEME = "tcp"
 #: A frame is a few hundred bytes. A length far above that is a peer that is not
@@ -95,8 +95,8 @@ class _StreamServer:
                 while (frame := _receive(stream)) is not None:
                     try:
                         if slot is None:
-                            address, slot = self._server.bind(frame)
-                            reply = frame
+                            address, slot, joined = self._server.bind(frame)
+                            reply = encode((JOINED, *joined))
                         else:
                             self._server.submit(address, frame)
                             reply = slot.get()
@@ -107,7 +107,7 @@ class _StreamServer:
             pass
         finally:
             if slot is not None:
-                self._server._closed(address)
+                self._server._closed(address, slot)
 
 
 class _Remote:
@@ -121,11 +121,11 @@ class _Remote:
     def bind(self, frame: bytes) -> tuple:
         _send(self._stream, frame)
         try:
-            _reply(self.get())
+            _, *joined = _reply(self.get())
         except Exception:
             self.close()
             raise
-        return None, self
+        return None, self, tuple(joined)
 
     def submit(self, _lp, frame: bytes) -> None:
         _send(self._stream, frame)

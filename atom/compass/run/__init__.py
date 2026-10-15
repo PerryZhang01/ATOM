@@ -20,14 +20,18 @@ member, the frontend's included, connects to.
 - `engine(config)` wraps the engine's construction in its own process the
   same way, and maps every DP rank to the engine LP for the process-group
   check.
-- `runner(runner)` installs the cost backend and the device readings on a
+- `runner(runner, tree)` installs the cost backend and the device readings on a
   `CompassModelRunner` where it would build its model, in the worker process.
 - `tokenizer(tokenizer, config)` charges the served tokenizer's ``encode`` and
   ``decode`` to the frontend's clock, at the rates the machine spec measured.
 - `engine_done(engine)` and `frontend_done(engine)` close each side after the
   finish, each handing in its LP's refusals; the frontend's, when it co-hosts
-  the authority, then writes the step table and the run summary.
-- `engine_loop(engine)` wraps the engine's loop: under ``step_fit`` it asks the
+  the authority, then writes the step table and the run summary. A SIGINT or
+  SIGTERM that stopped the frontend's event loop
+  (`atom.utils.compass_loop.CompassEventLoop.stopped`) is an early end:
+  `frontend_done` hands it in as an ``ended:`` reason, and the server leaves
+  once the summary is written from every hand-in.
+- `engine_loop(engine)` wraps the engine's loop: under ``step_grid`` it asks the
   workers for the bundle before it, `engine_done` after it, and if either
   raises, the engine hands in the exception as an ``ended:`` reason, with the
   bundle; `engine_done` raises for a loop that left before the finish. A
@@ -36,38 +40,45 @@ member, the frontend's included, connects to.
   what has been handed in.
 
 Run file keys: ``clock_endpoint``, ``bound_s`` (finite), ``admission_path``,
-``ipc_s``, ``stream_s``, one of ``coefficients`` (a `Coefficients` mapping,
-priced by `ShapeStubBackend`), ``law`` (a `CoarseLaw` mapping, priced by
-`CoarseBackend`), ``step_fit`` (an artifact store's root and a bundle's key,
-priced by `StepFitBackend`; see `step_fit`) and ``replay`` (a real run's parity
-record directory: each step ends when the real one did, by
+``ipc_s``, ``stream_s``, one of ``step_stub`` (a `Coefficients` mapping,
+priced by `StepStubBackend`), ``step_linear`` (a `StepLinearLaw` mapping,
+priced by `StepLinearBackend`), ``step_grid`` (an artifact store's root and a
+bundle's key, priced by `StepGridBackend`; see `step_grid`) and ``replay`` (a
+real run's parity record directory: each step ends when the real one did, by
 `atom.compass.parity.replay`),
-``roofline_floor_s`` (optional: a tier-0 `Roofline` with this host floor prices
-the steps the backend refuses),
+``roofline_floor_s`` (optional: a `StepRooflineBackend` with this host floor
+prices the steps the backend refuses, through `StepFallbackBackend`),
 ``on_refusal`` (optional: ``mark``, the default, prices a step no cost source
 answers at 0 s, hands in its ``cost:`` reason and continues; ``abort`` ends
 the run there, which still writes the summary),
+``client_runs`` (optional: how many client runs the server serves, one traffic
+LP after another, 1 when absent and ``null`` for no limit; each ends when no
+essential work is left, and the last one's end finishes the run),
 ``host`` (optional: ``laws``, per forward kind and host segment, coefficients
 on ``(1, tokens, seqs)``, zero where absent; ``key``, the `host_key` they were
 fitted under, which a run with laws must match; ``skip``, segments zeroed for
 a what-if run, which the graders refuse),
 ``machine`` (a machine spec mapping), ``parameter_count`` (read with
-``roofline_floor_s``, and for the weights when the runner hands in no meta
-build), and ``out_dir``,
+``roofline_floor_s``), and ``out_dir``,
 where the step table, the run summary and each server LP's hand-in go, one
 file written as the LP leaves its loop. It holds the LP's refusals: an
 engine's are the worker's refused commands and the engine's refused clock
 calls, a frontend's its executor's refused jobs and its refused clock calls.
 An engine's also holds what its worker's steps cost, for the summary's
-predicted seconds and its analytical and extrapolated shares.
+predicted seconds and their shares by method (`backends.cost.GROUPS`).
 It holds the memory the worker predicts too, for
-``python -m atom.compass.memory.check``, and under ``step_fit`` the bundle's
+``python -m atom.compass.memory.check``, and under ``step_grid`` the bundle's
 key, digest and ``describe()`` line, which the summary carries. The authority
-removes an earlier run's files there as it starts. An optional
+removes an earlier run's files there as it starts. At the end of client run
+``k`` every server LP hands in to ``client-<k>/`` there, and the authority's
+host writes the step table and that client run's summary, its steps taken as
+each hand-in less the one at client run ``k - 1``'s end; the finish writes the
+last client run's beside the run summary. An optional
 ``data_parallel_size``, 1 when absent, is the deployment's DP width, which
 under DP-attention is its TP size times its DP size; the traffic LP reads the
 channel table from the run file alone. Each DP rank's engine process hands in
-its own refusals, as ``<lp>.<member>``.
+its own refusals, as ``<lp>.<member>``. A key `RENAMED_KEYS` lists refuses,
+naming its name now.
 
 A run file that also has ``router_s`` and ``kv_write_req_s`` describes a
 prefill-decode run over `prefill_decode_table`, and ``kv_link`` (``intra_node``
@@ -98,8 +109,10 @@ import math
 import os
 import platform
 import re
+import shutil
 import threading
 import time
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -126,26 +139,45 @@ NOW_ENV = "ATOM_COMPASS_NOW"
 FRONTEND, ENGINE, TRAFFIC = LpId("frontend"), LpId("engine"), LpId("traffic")
 ATOM_RUNNER = "atom.model_engine.model_runner.ModelRunner"
 #: Keys that differ between two runs of one configuration, kept out of its name.
-PER_RUN = ("clock_endpoint", "out_dir")
+PER_RUN = ("clock_endpoint", "out_dir", "client_runs")
 LP_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
     "lp-{}.json",  # by LP name, or <lp>.<member> for a member
     "step_table.txt",
     "summary.json",
 )
+#: Each client run's hand-ins and summary, by its index.
+CLIENT_DIR = "client-{}"
 #: Wall seconds the summary's writer waits for the server LPs' refusals.
 HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field changes meaning or goes.
-SUMMARY_SCHEMA_VERSION = 1
+SUMMARY_SCHEMA_VERSION = 3
 #: Compass source the host-law key leaves out, by path under the package: all
-#: of it (None), or the top-level names only an installed LP runtime reaches.
+#: of it (None), or the top-level names only an installed LP runtime reaches
+#: (with the module docstring, which describes them).
 COMPASS_ONLY = {
     "compass": None,
     "utils/compass_loop.py": None,
     "utils/clock.py": {"LPRuntime", "WrappedSocket", "WrappedPoller", "RelayQueue"},
     "utils/zmq_shim.py": {"_Socket", "_ChannelSocket", "_Context"},
 }
+#: Run-file keys that were renamed, to their names now.
+RENAMED_KEYS = {
+    "coefficients": "step_stub",
+    "law": "step_linear",
+    "step_fit": "step_grid",
+}
+
+
+def refuse_renamed_keys(run: dict, where) -> None:
+    """Refuse a run file that holds a renamed key, naming the key's name now."""
+    if old := [k for k in RENAMED_KEYS if k in run]:
+        named = ", ".join(f"{k} (now {RENAMED_KEYS[k]})" for k in old)
+        raise ValueError(f"{where} holds run-file keys that were renamed: {named}")
+
 
 _authority: "_RecordingAuthority | None" = None
+#: The co-hosted authority's early-end writer.
+_early_end: threading.Thread | None = None
 #: This engine process's member name in the engine LP, None at DP width one.
 _member: str | None = None
 
@@ -166,6 +198,12 @@ def spec() -> dict | None:
         raise ValueError(
             f"{path}: on_refusal is {run['on_refusal']!r}; a step no cost source "
             "answers is marked and the run continues (mark), or ends it (abort)"
+        )
+    count = run.get("client_runs", 1)
+    if count is not None and (type(count) is not int or count < 1):
+        raise ValueError(
+            f"{path}: client_runs is {count!r}; a server serves a positive number "
+            "of client runs, or null for no limit"
         )
     _check_host(path, run.get("host", {}))
     run["clock_endpoint"] = os.environ.get(CLOCK_ENV, run.get("clock_endpoint"))
@@ -287,9 +325,11 @@ def _hand_ins(run: dict) -> list[str]:
 class _RecordingAuthority(ClockAuthority):
     """The authority, recording the step table: a row per reply and a row per
     message each reply releases; and the wall seconds of the run, from its start
-    to the finish, which sets `done`. A co-hosting frontend starts the run as it
-    starts its own; otherwise it starts once every server LP, and every member of
-    one declared with members, has asked once."""
+    to the end of each client run in `ends` and to the finish, which sets `done`.
+    A co-hosting frontend starts the run as it starts its own; otherwise it
+    starts once every server LP, and every member of one declared with members,
+    has asked once. Each client run that ends before the last has its summary
+    written once every server LP has handed in."""
 
     def __init__(self, run: dict) -> None:
         # The tree that runs, read before the run so an unidentifiable one is
@@ -298,7 +338,9 @@ class _RecordingAuthority(ClockAuthority):
             "atom", provenance.module_root("atom")
         )
         self.steps = StepTable(json.dumps(configuration(run), sort_keys=True))
+        self.run = run
         self.started = self.finished = None
+        self.ends = []  # the wall time each client run ended
         self.done = threading.Event()
         self._joining = set(_hand_ins(run))
         # A rerun into the same out_dir starts from none of the last run's files.
@@ -310,12 +352,17 @@ class _RecordingAuthority(ClockAuthority):
         ):
             for f in out.glob(name.format("*")):
                 f.unlink()
+        for d in out.glob(CLIENT_DIR.format("*")):
+            shutil.rmtree(d)
         table = channel_table(run)
+        count = run.get("client_runs", 1)
         super().__init__(
             table,
             timeline=self,
             members=_members(table, _dp(run)),
             bound_s=run["bound_s"],
+            client=TRAFFIC,
+            client_runs=math.inf if count is None else count,
         )
 
     def record(self, lp, time_from, time_to, kind, recovered) -> None:
@@ -326,12 +373,23 @@ class _RecordingAuthority(ClockAuthority):
         if not self._joining and self.started is None:
             self.started = time.monotonic()
         replies = super().on_request(lp, kind, t, log, t_daemon, member)
-        for to, _, released in replies:
+        for to, _, released, *_ in replies:
             # A member's reply is addressed (lp, member); its channels name its rank.
             lp = to[0] if isinstance(to, tuple) else to
             for ch, msgs in released.items():
                 for seq, arrival in msgs:
                     self.steps.record(lp, arrival, arrival, "release", ch, seq)
+        while len(self.ends) < len(self.ended):
+            self.ends.append(time.monotonic())
+            if self.final_clocks is None:  # an end before the last
+                out = Path(self.run["out_dir"])
+                _write_whole(out / STEP_TABLE_FILE, self.steps.text())
+                threading.Thread(
+                    target=_write_client_run,
+                    args=(self.run, self, len(self.ends) - 1),
+                    name="compass client run summary",
+                    daemon=True,
+                ).start()
         if self.final_clocks is not None and self.finished is None:
             self.finished = time.monotonic()
             self.done.set()
@@ -375,7 +433,7 @@ def frontend(config):
     through the recording one, and refuses any other runner, which would
     record nothing.
     """
-    global _authority
+    global _authority, _early_end
     run = spec()
     if run is None:
         from atom.compass import parity
@@ -424,23 +482,26 @@ def frontend(config):
         )
     config.runner_qualname = COMPASS_RUNNER_QUALNAME
     lp = FRONTEND if side is None else LpId(f"{FRONTEND.name}-{side}")
-    if standalone:
-        return _start_on_leaving(_runtime(lp, run))
-    _authority = _RecordingAuthority(run)
-    serve(_authority, run["clock_endpoint"])
-    # Not a daemon: the API server's main thread may die of the early end
-    # before this thread has written the summary.
-    threading.Thread(
-        target=_write_on_early_end, args=(run, _authority), name="compass early end"
-    ).start()
-    return _start_on_leaving(_runtime(lp, run), _authority)
+    authority = None
+    if not standalone:
+        _authority = authority = _RecordingAuthority(run)
+        serve(_authority, run["clock_endpoint"])
+        # Not a daemon: the API server's main thread may die of the early end
+        # before this thread has written the summary.
+        _early_end = threading.Thread(
+            target=_write_on_early_end, args=(run, authority), name="compass early end"
+        )
+        _early_end.start()
+    rt = _runtime(lp, run)
+    rt.client_run_ended = lambda k: _frontend_hand_in(run, rt, k)
+    return _start_on_leaving(rt, authority)
 
 
 def engine(config):
     """Around the engine's construction in its process; a no-op context on a real run.
 
     At DP width above one, the process joins the engine LP as the member of its
-    DP rank.
+    DP rank, and its host collectives first join the group rounds it owes.
     """
     global _member
     run = spec()
@@ -457,6 +518,7 @@ def engine(config):
     _member = f"dp{pc.data_parallel_rank}" if pc.data_parallel_size > 1 else None
     name = lp.name if _member is None else f"{lp.name}.{_member}"
     os.environ[NOW_ENV] = str(Path(run["out_dir"]) / f"now-{name}.bin")
+    clock.settle_before_collectives()
     return _named(_start_on_leaving(_runtime(lp, run, _member, _PublishedClock)))
 
 
@@ -470,18 +532,21 @@ def _named(inner):
         del os.environ[NOW_ENV]
 
 
-def runner(model_runner, tree=None) -> None:
+def runner(model_runner, tree) -> None:
     """Install the cost backend and the device readings from the run file.
 
     `tree` is the model built on the meta device, which the weights are read
-    off; without it they are the run file's ``parameter_count``."""
+    off."""
     run = spec()
     if run is None:
         return
-    from atom.compass.backends.analytic import Roofline, Tiered
-    from atom.compass.backends.coarse import CoarseBackend, CoarseLaw
     from atom.compass.backends.geometry import KvGeometry, Parallelism
-    from atom.compass.backends.shape import Coefficients, ShapeStubBackend
+    from atom.compass.backends.step_linear import StepLinearBackend, StepLinearLaw
+    from atom.compass.backends.step_roofline import (
+        StepFallbackBackend,
+        StepRooflineBackend,
+    )
+    from atom.compass.backends.step_stub import Coefficients, StepStubBackend
     from atom.compass.memory import ModelTerms, device_readings, predicts
     from atom.compass.memory.check import record
     from atom.compass.runner.overrides import (
@@ -493,11 +558,12 @@ def runner(model_runner, tree=None) -> None:
 
     config = model_runner.config
     tp = config.tensor_parallel_size
-    keys = [k for k in ("coefficients", "law", "step_fit", "replay") if k in run]
+    refuse_renamed_keys(run, "the run file")
+    keys = [k for k in ("step_stub", "step_linear", "step_grid", "replay") if k in run]
     if len(keys) != 1:
         raise ValueError(
-            "a run file prices its steps from one of coefficients, law, "
-            f"step_fit and replay, and this one has {' and '.join(keys) or 'none'}"
+            "a run file prices its steps from one of step_stub, step_linear, "
+            f"step_grid and replay, and this one has {' and '.join(keys) or 'none'}"
         )
     replay = None
     if "replay" in run:
@@ -505,37 +571,36 @@ def runner(model_runner, tree=None) -> None:
 
         dp_rank = config.parallel_config.data_parallel_rank
         backend = replay = ReplayBackend(run["replay"], dp_rank)
-    if "law" in run:
+    if "step_linear" in run:
         if tp != 1:
             raise ValueError(
-                f"a law is fitted on one rank of tensor-parallel width 1, and this "
-                f"run has tensor_parallel_size {tp}"
+                "a step linear law is fitted on one rank of tensor-parallel width "
+                f"1, and this run has tensor_parallel_size {tp}"
             )
         # Under DP-attention every rank runs at TP 1, and experts shard over the group.
         dpa = config.enable_dp_attention
         dp = config.parallel_config.data_parallel_size if dpa else 1
         ep = dp if config.enable_expert_parallel else 1
-        backend = CoarseBackend(CoarseLaw(run["law"]), (dp, ep))
-    elif "coefficients" in run:
-        backend = ShapeStubBackend(
-            Coefficients(**run["coefficients"]),
+        backend = StepLinearBackend(StepLinearLaw(run["step_linear"]), (dp, ep))
+    elif "step_stub" in run:
+        backend = StepStubBackend(
+            Coefficients(**run["step_stub"]),
             Parallelism(tp_size=tp),
             stack_layers=config.hf_config.num_hidden_layers,
         )
     machine = MachineSpec.from_mapping(_width_keys(run["machine"]))
     bundle = None
-    if "step_fit" in run:
-        from atom.compass.run.step_fit import load
+    if "step_grid" in run:
+        from atom.compass.run.step_grid import load
 
-        backend, bundle = load(run["step_fit"], config, machine)
+        backend, bundle = load(run["step_grid"], config, machine)
     config_json = _config_json(config)
-    model = ModelTerms.from_declared_config(
+    model = ModelTerms.from_config(
         config.hf_config,
-        parameter_count=run.get("parameter_count"),
         tp_size=tp,
         warmup_tokens=config.max_num_batched_tokens,
         config_json=config_json,
-        measured_activations=machine.activations_for(
+        activations_entry=machine.activations_for(
             (config_json.get("architectures") or [None])[0],
             _file_digest(config.model, "config.json"),
             tp,
@@ -549,14 +614,14 @@ def runner(model_runner, tree=None) -> None:
             parallelism=Parallelism(tp_size=tp),
             kv_dtype=config.kv_cache_dtype,
         )
-        roofline = Roofline(
+        roofline = StepRooflineBackend(
             machine,
             parameters=run["parameter_count"] // tp,
             weight_bytes=model.weights.nbytes,
             kv_token_bytes=kv.layers * kv.bytes_per_token_per_layer,
             host_floor_s=run["roofline_floor_s"],
         )
-        backend = Tiered(backend, roofline)
+        backend = StepFallbackBackend(backend, roofline)
     install_cost_backend(model_runner, backend)
     if NOW_ENV in os.environ:
         slot = np.memmap(os.environ[NOW_ENV], np.float64, "r", shape=(1,))
@@ -575,8 +640,12 @@ def runner(model_runner, tree=None) -> None:
             replay.now = lambda: float(slot[0])
     model_runner.compass_abort = run.get("on_refusal") == "abort"
     reserved, captured = _graph_pool(model_runner, machine, model)
+    # Under DP-attention the reserve and the residue are keyed by the layout;
+    # one rank of it is a TP1 engine.
+    dp = config.parallel_config.data_parallel_size
+    layout = f"{tp}x{dp}" if dp > 1 and config.enable_dp_attention else tp
     readings = device_readings(
-        machine, tp_width=tp, model=model, cudagraph_overhead=reserved
+        machine, tp_width=layout, model=model, cudagraph_overhead=reserved
     )
     install_device_readings(model_runner, readings)
     pool = (
@@ -588,7 +657,7 @@ def runner(model_runner, tree=None) -> None:
         readings, tokens=config.max_num_batched_tokens, pool=pool
     )
     if bundle is not None:
-        model_runner.compass_step_fit = {**bundle, "describe": backend.describe()}
+        model_runner.compass_step_grid = {**bundle, "describe": backend.describe()}
 
 
 def _graph_pool(model_runner, machine, model):
@@ -615,7 +684,7 @@ def _graph_pool(model_runner, machine, model):
         capture_token_shapes(config.capture_sizes, max_num_batched_tokens=bound)
     )
     if not model_runner._piecewise_cg_active():
-        return reserves(activation_bytes=model.activations.nbytes), captured
+        return reserves(activations=model.activations), captured
     hf = config.hf_config
     sizes = config.compilation_config.cudagraph_capture_sizes or [config.max_num_seqs]
     capacity = machine.value("device.memory.capacity_bytes")
@@ -664,9 +733,9 @@ def _fingerprint(tok) -> str | None:
 
 def host_key(config) -> dict:
     """What host laws are keyed by: this host's CPU, ATOM's source less
-    `COMPASS_ONLY`, the served config.json and the engine config a step fit
+    `COMPASS_ONLY`, the served config.json and the engine config a step grid
     bundle is keyed by."""
-    from atom.compass.run.step_fit import keyed
+    from atom.compass.run.step_grid import keyed
 
     cpu = re.search(
         r"^model name\s*:\s*(.+)$", Path("/proc/cpuinfo").read_text(), re.MULTILINE
@@ -681,8 +750,10 @@ def host_key(config) -> dict:
         if skip is None:
             continue
         lines = path.read_bytes().splitlines(keepends=True)
-        for node in reversed(ast.parse(b"".join(lines)).body if skip else []):
-            if getattr(node, "name", None) in skip:
+        tree = ast.parse(b"".join(lines)) if skip else None
+        doc = tree.body[0] if tree and ast.get_docstring(tree) is not None else None
+        for node in reversed(tree.body if tree else []):
+            if node is doc or getattr(node, "name", None) in skip:
                 del lines[node.lineno - 1 : node.end_lineno]
         digest.update(f"{relative}\0".encode() + b"".join(lines))
     return {
@@ -733,10 +804,18 @@ def _write_whole(path: Path, text: str) -> None:
     part.replace(path)
 
 
-def _hand_in(run: dict, lp: str, reasons: list, **sections) -> None:
-    """Write `lp`'s refusals, and its other sections, for the summary's writer."""
-    out = Path(run["out_dir"]) / LP_FILE.format(lp)
-    _write_whole(out, json.dumps({"refusals": reasons, **sections}))
+def _hand_in(
+    run: dict, lp: str, reasons: list, client_run: int | None = None, **sections
+) -> None:
+    """Write `lp`'s refusals, and its other sections, for the summary's writer:
+    at the end of client run `client_run`, or None for the finish."""
+    out = Path(run["out_dir"])
+    if client_run is not None:
+        out = out / CLIENT_DIR.format(client_run)
+        out.mkdir(exist_ok=True)
+    _write_whole(
+        out / LP_FILE.format(lp), json.dumps({"refusals": reasons, **sections})
+    )
 
 
 def _workers_say(engine_core) -> dict:
@@ -750,22 +829,21 @@ def _workers_say(engine_core) -> dict:
 
 
 def engine_done(engine_core, **sections) -> None:
-    """After the engine's loop: leave the clock and hand in what the worker's
-    steps cost and the memory it predicts, with `sections`, its command
-    refusals and the engine's refused clock calls."""
+    """After the engine's loop: leave the clock and hand in."""
     clock.close()
     run = spec()
     if run is not None:
-        said = _workers_say(engine_core)
-        rt = clock.installed()
-        lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
-        _hand_in(
-            run,
-            lp,
-            said.pop("refusals") + rt.refusals,
-            **said,
-            **sections,
-        )
+        _engine_hand_in(run, engine_core, sections)
+
+
+def _engine_hand_in(run: dict, engine_core, sections: dict, client_run=None) -> None:
+    """Hand in what the worker's steps cost and the memory it predicts, with
+    `sections`, its command refusals and the engine's refused clock calls."""
+    said = _workers_say(engine_core)
+    rt = clock.installed()
+    lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
+    reasons = said.pop("refusals") + rt.refusals
+    _hand_in(run, lp, reasons, client_run, **said, **sections)
 
 
 @contextlib.contextmanager
@@ -773,12 +851,16 @@ def engine_loop(engine_core):
     """Around the engine's loop: `engine_done` once it leaves, which raises if
     that was before the finish. If either raises in a run, hand in the engine's
     refused clock calls and the exception, and what the workers say in 10 wall
-    seconds unless one died. Under ``step_fit`` the workers are asked for the bundle
+    seconds unless one died. Under ``step_grid`` the workers are asked for the bundle
     before the loop, so a run that ends early still hands it in."""
     run, sections = spec(), {}
-    if run is not None and "step_fit" in run:
+    if run is not None and "step_grid" in run:
         workers = engine_core.runner_mgr
-        sections["step_fit"] = workers.call_func("step_fit_bundle", wait_out=True)
+        sections["step_grid"] = workers.call_func("step_grid_bundle", wait_out=True)
+    if run is not None:
+        clock.installed().client_run_ended = lambda k: _engine_hand_in(
+            run, engine_core, sections, k
+        )
     try:
         yield
         engine_done(engine_core, **sections)
@@ -820,61 +902,114 @@ def _write_on_early_end(run: dict, a: "_RecordingAuthority") -> None:
 
 
 def frontend_done(llm_engine) -> bool:
-    """Whether the stopped server was a simulated run's finish. If it was, stop
-    the engines, hand in the frontend's refusals and, with the authority
-    co-hosted, write the step table and the run summary."""
+    """Whether the server left at a simulated run's finish, or at a stop: a
+    signal that ended its event loop's run. At either, stop the engines and
+    hand in the frontend's refusals, at a stop with an ``ended:`` reason naming
+    the signal. With the authority co-hosted, then write the step table and the
+    run summary; at a stop, once the early end's writer has written its own at
+    the first hand-in, so the summary left counts every hand-in."""
     rt = clock.installed()
-    if rt is None or rt.now != math.inf:
+    stop = None if rt is None else getattr(rt.loop, "stopped", None)
+    if rt is None or (rt.now != math.inf and stop is None):
         return False
     llm_engine.close()
     run = spec()
-    _hand_in(run, rt.me.name, rt.loop.executor.refusals + rt.refusals)
+    ended = [] if stop is None else [f"ended:{rt.me.name} stopped by {stop}"]
+    _frontend_hand_in(run, rt, ended=ended)
     if _authority is not None:
-        _write_summary(run, _authority)
+        if stop is not None:
+            _early_end.join()
+        _write_summary(run, _authority, ended=stop is not None)
     return True
+
+
+def _frontend_hand_in(run: dict, rt, client_run=None, ended=()) -> None:
+    """Hand in the frontend's executor's refused jobs, its refused clock calls
+    and the ``ended:`` reasons in `ended`."""
+    reasons = rt.loop.executor.refusals + rt.refusals + list(ended)
+    _hand_in(run, rt.me.name, reasons, client_run)
+
+
+def _read_hand_ins(run: dict, where: Path, wait: bool) -> dict:
+    """Every server LP's hand-in in `where`, by name; with `wait`, once all are."""
+    files = {n: where / LP_FILE.format(n) for n in _hand_ins(run)}
+    deadline = time.monotonic() + HAND_IN_WAIT_S
+    while wait and (missing := [f.name for f in files.values() if not f.exists()]):
+        if time.monotonic() > deadline:
+            raise TimeoutError(
+                f"no {', '.join(missing)} in {where} after {HAND_IN_WAIT_S} wall "
+                "seconds, so the run summary would miss those LPs' refusals"
+            )
+        time.sleep(0.1)
+    return {n: json.loads(f.read_text()) for n, f in files.items() if f.exists()}
 
 
 def _write_summary(run: dict, a: _RecordingAuthority, ended: bool = False) -> None:
     """Write the step table, then the run summary once every server LP has
-    handed in its refusals, or after an early end, from those handed in so far."""
+    handed in its refusals, or after an early end, from those handed in so far;
+    after the finish, the last client run's summary too."""
     out = Path(run["out_dir"])
     _write_whole(out / STEP_TABLE_FILE, a.steps.text())
-    files = {n: out / LP_FILE.format(n) for n in _hand_ins(run)}
-    deadline = time.monotonic() + HAND_IN_WAIT_S
-    while not ended and (missing := [f.name for f in files.values() if not f.exists()]):
-        if time.monotonic() > deadline:
-            raise TimeoutError(
-                f"no {', '.join(missing)} in {out} after {HAND_IN_WAIT_S} wall "
-                "seconds, so the run summary would miss those LPs' refusals"
-            )
-        time.sleep(0.1)
-    hand_ins = {n: json.loads(f.read_text()) for n, f in files.items() if f.exists()}
-    reasons = [r for h in hand_ins.values() for r in h["refusals"]]
+    hand_ins = _read_hand_ins(run, out, not ended)
+    end = a.finished or time.monotonic()
+    summary = _summary(run, a, a, end - (a.started or end), hand_ins, {})
+    _write_whole(out / SUMMARY_FILE, json.dumps(summary, sort_keys=True, indent=1))
+    if not ended and a.ended:
+        _write_client_run(run, a, len(a.ended) - 1, hand_ins)
+
+
+def _write_client_run(run: dict, a: _RecordingAuthority, k: int, hand_ins=None):
+    """Write client run `k`'s summary from the hand-ins at its end, those in its
+    directory unless given, less those at client run ``k - 1``'s end."""
+    out = Path(run["out_dir"])
+    here = out / CLIENT_DIR.format(k)
+    if hand_ins is None:
+        hand_ins = _read_hand_ins(run, here, True)
+    since = _read_hand_ins(run, out / CLIENT_DIR.format(k - 1), False) if k else {}
+    record = a.ended[k]
+    summary = _summary(run, a, record, a.ends[k] - a.started, hand_ins, since)
+    summary["client_run"] = {"index": k, "start": record.start, "end": record.end}
+    here.mkdir(exist_ok=True)
+    _write_whole(here / SUMMARY_FILE, json.dumps(summary, sort_keys=True, indent=1))
+
+
+def _summary(run: dict, a, record, wall: float, hand_ins: dict, since: dict) -> dict:
+    """The summary of `record`, the authority or one client run, over the steps
+    the hand-ins count beyond those in `since`."""
+    from atom.compass.backends.cost import GROUPS
+
+    reasons = Counter(r for h in hand_ins.values() for r in h["refusals"])
+    reasons -= Counter(r for h in since.values() for r in h["refusals"])
+    reasons = sorted(reasons.elements())
     priced = [h["priced"] for h in hand_ins.values() if "priced" in h]
+    before = [h["priced"] for h in since.values() if "priced" in h]
 
     def total(key):
-        return sum(p.get(key, 0) for p in priced)
+        return sum(p.get(key, 0) for p in priced) - sum(p.get(key, 0) for p in before)
 
     seconds = total("seconds")
     tally = RefusalTally.of(reasons, total("steps"))
-    end = a.finished or time.monotonic()
-    summary = RunSummary.of(a, end - (a.started or end), refusals=tally).as_record()
+    summary = RunSummary.of(record, wall, refusals=tally).as_record()
     schedule = summary["schedule"]
     schedule["predicted_seconds"] = seconds
-    # Answers no measurement backs: diagnostics, never refusals.
-    for species in ("analytical", "extrapolated"):
-        schedule[species] = {
-            "steps": total(f"{species}_steps"),
+    # How the seconds were obtained: reported, never gated.
+    schedule["seconds_by_method"] = {
+        g: {
+            "steps": total(f"{g}_steps"),
             "fraction_of_predicted_seconds": (
-                total(f"{species}_seconds") / seconds if seconds else 0.0
+                total(f"{g}_seconds") / seconds if seconds else 0.0
             ),
         }
+        for g in GROUPS
+    }
     # An engine whose workers died, or that never handed in, priced steps no
     # one counted: they are absent, not 0.
     if any(
-        "priced" not in hand_ins.get(n, {}) for n in files if n.startswith("engine")
+        "priced" not in hand_ins.get(n, {})
+        for n in _hand_ins(run)
+        if n.startswith("engine")
     ):
-        schedule.update(predicted_seconds=None, analytical=None, extrapolated=None)
+        schedule.update(predicted_seconds=None, seconds_by_method=None)
         schedule["refusals"].update(steps=None, fraction_of_steps=None)
     summary["configuration"] = configuration(run)
     summary["schema_version"] = SUMMARY_SCHEMA_VERSION
@@ -882,9 +1017,9 @@ def _write_summary(run: dict, a: _RecordingAuthority, ended: bool = False) -> No
     # Any refusal, of any source, leaves part of the run unsimulated; a run
     # that ended early handed in why.
     summary["coverage_report"] = bool(reasons)
-    if fits := {n: h["step_fit"] for n, h in hand_ins.items() if "step_fit" in h}:
-        summary["step_fit"] = fits
-    _write_whole(out / SUMMARY_FILE, json.dumps(summary, sort_keys=True, indent=1))
+    if grids := {n: h["step_grid"] for n, h in hand_ins.items() if "step_grid" in h}:
+        summary["step_grid"] = grids
+    return summary
 
 
 def authority(endpoint: str) -> None:

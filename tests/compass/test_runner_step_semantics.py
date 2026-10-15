@@ -32,7 +32,7 @@ import pytest
 from conftest import MockConfig
 from test_runner_rpc_surface import SITES
 
-from atom.compass.backends.shape import ShapeStubBackend
+from atom.compass.backends.step_stub import StepStubBackend
 from atom.compass.runner import overrides
 from atom.compass.runner.overrides import (
     NonAllocatingRunner,
@@ -64,7 +64,7 @@ class _Runner(NonAllocatingRunner):
 
     def __init__(self, config, stream=None):
         self.config = config
-        install_cost_backend(self, ShapeStubBackend())
+        install_cost_backend(self, StepStubBackend())
         self._token_stream = DeferredTokenStream([0]) if stream is None else stream
 
 

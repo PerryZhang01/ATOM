@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: MIT
 #
 # Regenerate gpu_gate_triggers.txt -- the source paths that no *running*
-# CPU-tier test names. Run after any change to cpu_gate_exclude.txt; the two
+# CPU-gate test names. Run after any change to cpu_gate_exclude.txt; the two
 # files are derived from the same tree and are wrong separately.
 #
 # THE RULE, in one sentence: an atom module named by an excluded test is a blind
-# spot unless a CPU-tier test that actually runs names it too.
+# spot unless a CPU-gate test that actually runs names it too.
 #
 # Three decisions make that sentence operational. Decisions 1 and 3 were each
 # forced by a measured counter-example, named below with its commit so the next
@@ -21,10 +21,10 @@
 #      it claimed to read.
 #
 #   2. A test whose file is not collected covers nothing, so coverage is
-#      credited only from a CPU-tier file that `pytest --collect-only` shows
+#      credited only from a CPU-gate file that `pytest --collect-only` shows
 #      collecting at least one test. MEASURED at 236abfd9a in xiaobizh_n18_cpu,
 #      2026-09-20: this probe removed NO path from that tree. Run whole with it,
-#      and whole without it -- crediting every CPU-tier file, collecting or not
+#      and whole without it -- crediting every CPU-gate file, collecting or not
 #      -- the result is 30 triggers both ways and the difference is empty. It
 #      withheld 15 coverage paths; exactly one of them,
 #      atom/model_ops/v4_kernels/state_writes.py, is even a candidate, and that
@@ -32,16 +32,16 @@
 #      so the collapse at the bottom of this script absorbs it whether its
 #      coverage was credited or not. It is kept as a forward guard on trees that
 #      one does not represent, NOT because anything here depends on it, and it
-#      is not free: a full `pytest --collect-only` over the CPU tier, plus a
+#      is not free: a full `pytest --collect-only` over the CPU gate, plus a
 #      refusal path (exit 97). Decision 3, not this one, carries both of the
 #      measured counter-examples.
 #
 #   3. The two sides are deliberately ASYMMETRIC, and the asymmetry is what
 #      carries both counter-examples. Candidates come from any import in an
 #      excluded test. Coverage is subtracted only for a MODULE-LEVEL import in a
-#      CPU-tier file that collects at least one test -- the only imports this
+#      CPU-gate file that collects at least one test -- the only imports this
 #      tree can prove execute, since collection imports the module. An indented
-#      import in a CPU-tier file is not credited, because text cannot tell
+#      import in a CPU-gate file is not credited, because text cannot tell
 #      whether its enclosing test ran. Two paths turn on that, both measured at
 #      236abfd9a in xiaobizh_n18_cpu:
 #        - atom/model_ops/topK.py. Its only excluded-side reference is
@@ -59,18 +59,18 @@
 #
 # Where this is still wrong, in both directions, so neither is a surprise:
 #
-#   - Toward FIRING: an indented import in a CPU-tier test that does run is not
-#     credited, so its module can appear here although the CPU tier exercises it.
+#   - Toward FIRING: an indented import in a CPU-gate test that does run is not
+#     credited, so its module can appear here although the CPU gate exercises it.
 #     Coverage subtraction is also exact-string, so a candidate SUBTREE entry is
 #     never cancelled by coverage of the files under it, and a candidate file is
 #     never cancelled by coverage of its package.
 #   - Toward SILENCE: imports are read as text, not resolved as a graph. A module
 #     reached only transitively -- imported by a module a test imports -- is
 #     invisible to both sides. A path absent from the output is NOT a claim that
-#     the CPU tier covers it.
+#     the CPU gate covers it.
 #
 # So the output is neither a floor nor a ceiling. Of the two mistakes, this file
-# prefers firing: running the GPU tier when in doubt is never the wrong one.
+# prefers firing: running the GPU gate when in doubt is never the wrong one.
 # Decision 3 is that preference, written down.
 set -uo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/_lib.sh"
@@ -99,7 +99,7 @@ N_CPU=$(grep -c . "$D/cpu")
     exit 96
 }
 
-# --- which CPU-tier files actually collect a test ----------------------------
+# --- which CPU-gate files actually collect a test ----------------------------
 # Decision 2. Measured, not assumed: a file that collects nothing here is a file
 # whose module-level imports we will not credit. Collection is also the weakest
 # probe that answers the question, which is why it is collection and not a run --
@@ -183,7 +183,7 @@ resolve() {
 
 : >"$D/unres"
 refs "^[[:space:]]*(from|import)" <"$D/ex" | resolve >"$D/cand"          # candidates: any indentation
-comm -12 "$D/cpu" "$D/live" >"$D/cpulive"      # CPU-tier files that collect a test
+comm -12 "$D/cpu" "$D/live" >"$D/cpulive"      # CPU-gate files that collect a test
 refs '^(from|import)' <"$D/cpulive" | resolve >"$D/covered" # coverage: module level, live files only
 
 # An `atom.*` reference that resolves to nothing is not a warning to scroll past.
@@ -248,15 +248,15 @@ TMP=$OUT.tmp
 # imports in tests/. The two files are derived from the same tree and are wrong
 # separately.
 #
-# A change touching the CPU tier's blind spot must also run the GPU tier. This
+# A change touching the CPU gate's blind spot must also run the GPU gate. This
 # file is that blind spot, stated as paths a script can match, so the rule is a
 # gate rather than a sentence somebody remembers.
 #
 # THE RULE: an atom module named by an excluded test is a blind spot unless a
-# CPU-tier test that actually runs names it too. Imports are read at any
+# CPU-gate test that actually runs names it too. Imports are read at any
 # indentation on the excluded side -- @@IND@@ of this tree's `import atom.*`
 # lines are indented -- but coverage is credited only for a module-level import
-# in a CPU-tier file that collects at least one test, because those are the only
+# in a CPU-gate file that collects at least one test, because those are the only
 # imports that provably execute. At 236abfd9a the MODULE-LEVEL half carried both
 # measured counter-examples: test_moe_dp_token_capacity.py:39 imports topK
 # inside a test marked skipif(not torch.cuda.is_available()), and
@@ -268,22 +268,22 @@ TMP=$OUT.tmp
 # derivation, with that 2x2, is in the script's header comment.
 #
 # This list errs in BOTH directions, which is why it is not described as a floor:
-#   - toward firing: an indented import in a CPU-tier test that does run is not
-#     credited, so its module can appear here even though the CPU tier reaches it,
+#   - toward firing: an indented import in a CPU-gate test that does run is not
+#     credited, so its module can appear here even though the CPU gate reaches it,
 #     and coverage subtraction is exact-string, so a candidate subtree entry is
 #     never cancelled by coverage of the files under it;
 #   - toward silence: imports are read as text, so a module reached only
 #     transitively is invisible. A path absent from this list is NOT a claim that
-#     the CPU tier covers it.
-# Of the two mistakes, this list prefers firing: running the GPU tier when in
+#     the CPU gate covers it.
+# Of the two mistakes, this list prefers firing: running the GPU gate when in
 # doubt is never the wrong one.
 #
 # A trailing / matches the whole subtree.
 HDR
     printf '#\n# Measured at %s over this tree:\n' "$SHA"
-    printf '#   tests/       %4s files  = %s in tests/plugin/ + %s excluded + %s CPU tier\n' \
+    printf '#   tests/       %4s files  = %s in tests/plugin/ + %s excluded + %s CPU gate\n' \
         "$((N_ALL + N_PLUGIN))" "$N_PLUGIN" "$N_EX" "$N_CPU"
-    printf '#   CPU tier     %4s files collect >=1 test, %s collect none\n' "$N_LIVE" "$N_DEAD"
+    printf '#   CPU gate     %4s files collect >=1 test, %s collect none\n' "$N_LIVE" "$N_DEAD"
     printf '#   imports      %4s indented `import atom.*` lines in non-plugin test files\n' "$N_IND"
     printf '#   collected  @@N@@ tests by --collect-only. A run of the same set reports\n'
     printf '#              the same @@M@@ outcomes. Its "skipped" total is LARGER than any\n'
@@ -292,7 +292,7 @@ HDR
     printf '#              becoming a collected test. This file states the set; gate_cpu.sh\n'
     printf '#              prints the run, and is the only source for its outcome counts.\n'
     printf '#   candidates   %4s paths named by an excluded test, any indentation\n' "$N_CAND"
-    printf '#   covered      %4s paths named at module level by a live CPU-tier file\n' "$N_COV"
+    printf '#   covered      %4s paths named at module level by a live CPU-gate file\n' "$N_COV"
     printf '#   triggers     %4s paths below\n' "$N"
     cat "$D/final"
 } >"$TMP"
@@ -301,7 +301,7 @@ mv -f "$TMP" "$OUT"
 # The collected-test count is measured AGAIN, after the rewrite, because this
 # file is part of the suite it is measured against: tests/compass/
 # test_cpu_gate_exclude.py parametrises test_every_trigger_path_still_exists
-# over the paths below, one case each. So regenerating moves the CPU tier's
+# over the paths below, one case each. So regenerating moves the CPU gate's
 # pass count by exactly the change in the number of entries -- 13 -> 30 at
 # f3f584ea4 -- and a count taken before the rewrite describes the previous
 # list, not this one. That is not a quirk to work around; it is why the number
@@ -316,5 +316,5 @@ N_COLLECTED2=$(printf '%s' "$COLLECT2" | grep -oE '[0-9]+ tests? collected' | gr
     exit 97
 }
 sed -i "s/@@N@@/$(printf '%5s' "$N_COLLECTED2")/; s/@@M@@/$N_COLLECTED2/; s/@@IND@@/$N_IND/" "$OUT"
-printf 'wrote %s: %s trigger paths (%s cpu-tier files, %s live, %s excluded) at %s\nCPU tier now collects %s tests, was %s before this rewrite\n' \
+printf 'wrote %s: %s trigger paths (%s cpu-gate files, %s live, %s excluded) at %s\nCPU gate now collects %s tests, was %s before this rewrite\n' \
     "$OUT" "$N" "$N_CPU" "$N_LIVE" "$N_EX" "$SHA" "$N_COLLECTED2" "$N_COLLECTED"

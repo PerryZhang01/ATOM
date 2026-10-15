@@ -5,15 +5,15 @@
 # imports in tests/. The two files are derived from the same tree and are wrong
 # separately.
 #
-# A change touching the CPU tier's blind spot must also run the GPU tier. This
+# A change touching the CPU gate's blind spot must also run the GPU gate. This
 # file is that blind spot, stated as paths a script can match, so the rule is a
 # gate rather than a sentence somebody remembers.
 #
 # THE RULE: an atom module named by an excluded test is a blind spot unless a
-# CPU-tier test that actually runs names it too. Imports are read at any
+# CPU-gate test that actually runs names it too. Imports are read at any
 # indentation on the excluded side -- 852 of this tree's `import atom.*`
 # lines are indented -- but coverage is credited only for a module-level import
-# in a CPU-tier file that collects at least one test, because those are the only
+# in a CPU-gate file that collects at least one test, because those are the only
 # imports that provably execute. At 236abfd9a the MODULE-LEVEL half carried both
 # measured counter-examples: test_moe_dp_token_capacity.py:39 imports topK
 # inside a test marked skipif(not torch.cuda.is_available()), and
@@ -25,21 +25,21 @@
 # derivation, with that 2x2, is in the script's header comment.
 #
 # This list errs in BOTH directions, which is why it is not described as a floor:
-#   - toward firing: an indented import in a CPU-tier test that does run is not
-#     credited, so its module can appear here even though the CPU tier reaches it,
+#   - toward firing: an indented import in a CPU-gate test that does run is not
+#     credited, so its module can appear here even though the CPU gate reaches it,
 #     and coverage subtraction is exact-string, so a candidate subtree entry is
 #     never cancelled by coverage of the files under it;
 #   - toward silence: imports are read as text, so a module reached only
 #     transitively is invisible. A path absent from this list is NOT a claim that
-#     the CPU tier covers it.
-# Of the two mistakes, this list prefers firing: running the GPU tier when in
+#     the CPU gate covers it.
+# Of the two mistakes, this list prefers firing: running the GPU gate when in
 # doubt is never the wrong one.
 #
 # A trailing / matches the whole subtree.
 #
 # Measured at 5c214e1a89896a6f56ed5f1ec36179631fdd5651 over this tree:
-#   tests/        561 files  = 55 in tests/plugin/ + 96 excluded + 410 CPU tier
-#   CPU tier      361 files collect >=1 test, 49 collect none
+#   tests/        561 files  = 55 in tests/plugin/ + 96 excluded + 410 CPU gate
+#   CPU gate      361 files collect >=1 test, 49 collect none
 #   imports       852 indented `import atom.*` lines in non-plugin test files
 #   collected  11092 tests by --collect-only. A run of the same set reports
 #              the same 11092 outcomes. Its "skipped" total is LARGER than any
@@ -48,7 +48,7 @@
 #              becoming a collected test. This file states the set; gate_cpu.sh
 #              prints the run, and is the only source for its outcome counts.
 #   candidates    166 paths named by an excluded test, any indentation
-#   covered       266 paths named at module level by a live CPU-tier file
+#   covered       266 paths named at module level by a live CPU-gate file
 #   triggers      117 paths below
 atom/distributed/dcp_utils.py
 atom/distributed/indexer_cp.py

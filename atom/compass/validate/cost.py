@@ -5,26 +5,27 @@
 
 RECORD is a real run's step record directory (`ATOM_COMPASS_PARITY_RECORD`,
 `OUT_DIR/steps` of a `REAL=1 cctraces_sim.sh` cell); LAW is a law file as
-`coarse_fit` writes it. Pricing the real run's own steps separates cost error
+`step_linear_fit` writes it. Pricing the real run's own steps separates cost error
 from schedule error: both sides run the same batches.
 
 Each step is labelled as the fit labels it, by its device time
-(`coarse_fit.samples`, which also says which steps carry no label and refuses a
-record without device windows), and priced by `CoarseBackend`. The
-error of a step is `priced / measured - 1`. Per kind the report gives the error
+(`step_labels.label`, which also says which steps carry no label and refuses a
+record without device windows), and priced by `StepLinearBackend`. The
+error of a step is `priced / real - 1`. Per kind the report gives the error
 on totals, on totals holding out the step that contributes most to their error,
 and the median per step; per decode rung or prefill token band, the p10, p50
 and p90 of the per-step error and the fraction of steps within 10%.
 
-A step outside its vector's hull is priced, but its error describes the
-extrapolation, not the law: those steps are reported apart, with their measured
-and priced seconds, and enter none of the in-hull figures. A step that ran more
-than `coarse_fit.WARM_FACTOR` times its price is warm, a one-off first touch the
+A step whose terms are not validated (outside the hull of the law's held-out
+steps, every step of a law that records none) is priced, but its error was
+not measured where the law's was: those steps are reported apart, with their
+real and priced seconds, and enter none of the validated figures. A step that ran more
+than `step_linear_fit.WARM_FACTOR` times its price is warm, a one-off first touch the
 law does not model: it is named with its seconds and enters no figure. So are
 the steps that lead a vector's priced steps, each slower than its price by more
-than `coarse_fit.MAD_K` scaled MADs of the errors the law's vector was fitted
+than `step_linear_fit.MAD_K` scaled MADs of the errors the law's vector was fitted
 on, as the fit names them; of that vector's errors here if the law records no
-`fit.mad`. A step the law refuses is counted with its measured seconds.
+`fit.mad`. A step the law refuses is counted with its real seconds.
 """
 
 from __future__ import annotations
@@ -35,17 +36,14 @@ from pathlib import Path
 
 import numpy as np
 
-from atom.compass import parity
 from atom.compass.backends import (
-    BatchView,
-    CoarseBackend,
-    CoarseLaw,
     CostRefused,
-    RequestShape,
-    Species,
-    coarse_fit,
+    StepLinearBackend,
+    StepLinearLaw,
+    step_labels,
+    step_linear_fit,
 )
-from atom.compass.backends.coarse_fit import WARM_FACTOR, _band, samples
+from atom.compass.backends.step_linear_fit import WARM_FACTOR, _band, _features
 
 WITHIN = 0.10
 
@@ -62,7 +60,8 @@ def _leading_slow(priced: list[tuple], law: dict) -> set[int]:
         if "mad" in vector.get("fit", {}):
             centre, mad = vector["fit"]["centre"], vector["fit"]["mad"]
         slow = (error < 0) & (
-            np.abs(error - centre) > max(coarse_fit.MAD_K * mad, coarse_fit.MAD_FLOOR)
+            np.abs(error - centre)
+            > max(step_linear_fit.MAD_K * mad, step_linear_fit.MAD_FLOOR)
         )
         for p, s in zip(mine, slow):
             if not s:
@@ -72,11 +71,11 @@ def _leading_slow(priced: list[tuple], law: dict) -> set[int]:
 
 
 def _summary(steps: list[tuple]) -> dict:
-    """(band, step, measured, priced) rows of one kind as the report's figures."""
-    measured = np.array([s[2] for s in steps])
+    """(band, step, real, priced) rows of one kind as the report's figures."""
+    real = np.array([s[2] for s in steps])
     priced = np.array([s[3] for s in steps])
-    error = priced / measured - 1.0
-    largest = int(np.argmax(np.abs(priced - measured)))
+    error = priced / real - 1.0
+    largest = int(np.argmax(np.abs(priced - real)))
     rest = np.arange(len(steps)) != largest
     bands = {}
     for band in sorted({s[0] for s in steps}):
@@ -91,14 +90,12 @@ def _summary(steps: list[tuple]) -> dict:
         }
     return {
         "steps": len(steps),
-        "measured_s": float(measured.sum()),
+        "real_s": float(real.sum()),
         "priced_s": float(priced.sum()),
-        "on_totals": float(priced.sum() / measured.sum() - 1.0),
+        "on_totals": float(priced.sum() / real.sum() - 1.0),
         "held_out_step": steps[largest][1],
         "held_out": (
-            float(priced[rest].sum() / measured[rest].sum() - 1.0)
-            if rest.any()
-            else None
+            float(priced[rest].sum() / real[rest].sum() - 1.0) if rest.any() else None
         ),
         "median": float(np.median(error)),
         "bands": bands,
@@ -106,32 +103,27 @@ def _summary(steps: list[tuple]) -> dict:
 
 
 def cost_accuracy(record, law) -> dict:
-    """The report for `law`, a mapping `CoarseLaw` reads, on the record directory `record`."""
-    ranks = parity.read(record)
+    """The report for `law`, a mapping `StepLinearLaw` reads, on the record directory `record`."""
+    ranks = sorted(Path(record).glob("dp*[0-9].jsonl"))
     if len(ranks) != 1:
         raise ValueError(
             f"{record} holds {len(ranks)} DP ranks' records; this prices one rank's"
         )
-    ((rank, steps),) = ranks.items()
-    labelled, cut = samples(Path(record) / f"dp{rank}.jsonl")
-    by_step = {s["step"]: s for s in steps}
-    backend = CoarseBackend(CoarseLaw(law))
-    groups = {"fitted": {}, "extrapolated": {}}
+    got = step_labels.label(ranks[0])[0]
+    labelled, cut = _features(got, "base", 1)
+    views = {s.step: s.view for s in got}
+    backend = StepLinearBackend(StepLinearLaw(law))
+    groups = {"validated": {}, "unvalidated": {}}
     refused: dict[str, dict] = {}
     warm, priced = [], []
     for key, counts, seconds, step, _ in labelled:
-        line = by_step[step]
-        view = BatchView(
-            tuple(RequestShape(q, c, bool(d)) for q, c, d in line["rows"]),
-            capture_rung=line["rung"],
-        )
         band = _band(key, counts)
         try:
-            cost = backend.estimate(view)
+            cost = backend.price(views[step])
         except CostRefused:
-            r = refused.setdefault(band, {"steps": 0, "measured_s": 0.0})
+            r = refused.setdefault(band, {"steps": 0, "real_s": 0.0})
             r["steps"] += 1
-            r["measured_s"] += seconds
+            r["real_s"] += seconds
             continue
         priced.append((key, band, step, seconds, cost))
     leading = _leading_slow(priced, law)
@@ -141,16 +133,16 @@ def cost_accuracy(record, law) -> dict:
                 {
                     "step": step,
                     "band": band,
-                    "measured_s": seconds,
+                    "real_s": seconds,
                     "priced_s": cost.seconds,
                 }
             )
             continue
-        species = {t.provenance.species for t in cost.terms}
-        group = "extrapolated" if Species.EXTRAPOLATED in species else "fitted"
+        validated = all(t.provenance.validated for t in cost.terms)
+        group = "validated" if validated else "unvalidated"
         kind = "prefill" if key == "prefill" else "decode"
         groups[group].setdefault(kind, []).append((band, step, seconds, cost.seconds))
-    report = {"record": str(record), "law": backend.law.provenance, "cut": cut}
+    report = {"record": str(record), "law": backend.law.fitted_on, "cut": cut}
     for group, kinds in groups.items():
         report[group] = {
             kind: _summary(rows) for kind, rows in sorted(kinds.items(), reverse=True)
@@ -164,15 +156,15 @@ def _text(report: dict) -> str:
     out = [f"record {report['record']}", f"law {report['law']}"]
     out.append(f"not labelled: {json.dumps(report['cut'])}")
     for group, title in (
-        ("fitted", "inside the hull"),
-        ("extrapolated", "outside the hull, apart"),
+        ("validated", "validated: inside the held-out hull"),
+        ("unvalidated", "unvalidated, apart"),
     ):
         out.append(f"\n{title}")
         for kind, s in report[group].items():
             held = "-" if s["held_out"] is None else f"{s['held_out']:+.2%}"
             out += [
                 (
-                    f"{kind}  {s['steps']} steps  measured {s['measured_s']:.2f} s"
+                    f"{kind}  {s['steps']} steps  real {s['real_s']:.2f} s"
                     f"  priced {s['priced_s']:.2f} s"
                 ),
                 f"  on totals              {s['on_totals']:+.2%}",
@@ -187,13 +179,11 @@ def _text(report: dict) -> str:
                 )
     for w in report["warm"]:
         out.append(
-            f"\nwarm step {w['step']} ({w['band']}): measured {w['measured_s']:.2f} s,"
+            f"\nwarm step {w['step']} ({w['band']}): real {w['real_s']:.2f} s,"
             f" priced {w['priced_s']:.2f} s"
         )
     for band, r in report["refused"].items():
-        out.append(
-            f"\nrefused {band}: {r['steps']} steps, measured {r['measured_s']:.2f} s"
-        )
+        out.append(f"\nrefused {band}: {r['steps']} steps, real {r['real_s']:.2f} s")
     return "\n".join(out)
 
 
@@ -203,7 +193,7 @@ def main(argv=None) -> None:
         description=__doc__.split("\n\n")[0],
     )
     parser.add_argument("record", help="a real run's step record directory")
-    parser.add_argument("law", help="a law file, as coarse_fit writes it")
+    parser.add_argument("law", help="a law file, as step_linear_fit writes it")
     args = parser.parse_args(argv)
     print(_text(cost_accuracy(args.record, json.loads(Path(args.law).read_text()))))
 

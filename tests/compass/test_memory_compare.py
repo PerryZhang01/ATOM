@@ -31,6 +31,7 @@ package, so `compare.py` is inside it already.
 """
 
 import copy
+import hashlib
 import json
 
 import pytest
@@ -38,10 +39,10 @@ import torch
 from transformers import PretrainedConfig
 
 from atom.compass.backends.geometry import dtype_bytes as element_bytes
+from atom.compass.backends.provenance import Method
 from atom.compass.memory import (
     DISCHARGES,
     NON_KV_TERM_GATE,
-    Basis,
     Comparison,
     MemoryRefusal,
     ModelTerms,
@@ -54,6 +55,7 @@ from atom.compass.memory import (
     TermComparison,
     Verdict,
     capture_token_shapes,
+    check,
     compare,
     compare_graph_pool,
     device_readings,
@@ -61,10 +63,10 @@ from atom.compass.memory import (
     piecewise_per_token_bytes,
     predicts,
     reserves,
-    tied_lm_head_bytes,
 )
 from atom.compass.spec import MachineSpec
 from tests.compass.test_memory_readings import (
+    ACTIVATIONS,
     CAPTURE_SIZES,
     CONFIG_JSON,
     DOCUMENT,
@@ -72,9 +74,12 @@ from tests.compass.test_memory_readings import (
     MAX_NUM_BATCHED_TOKENS,
     PARAMETERS,
     WARMUP_TOKENS,
+    meta_tree,
+    spec_of,
 )
 
 MIB = 1 << 20
+CAPACITY = "device.memory.capacity_bytes"
 
 
 @pytest.fixture(autouse=True)
@@ -93,7 +98,8 @@ def no_device_readings(monkeypatch):
 
 @pytest.fixture(scope="module")
 def spec():
-    return MachineSpec.from_mapping(copy.deepcopy(DOCUMENT))
+    # Probed, so the constants it supplies are measured terms.
+    return spec_of("probed")
 
 
 @pytest.fixture(scope="module")
@@ -138,13 +144,13 @@ HISTORICAL_PREDICTED = Predicted(
         Term(
             "weights",
             1_400_000_000,
-            Basis.OBTAINED,
+            Method.ANALYTICAL,
             "a meta build, deduped by storage, that had not been through the loader",
         ),
         Term(
             "activations",
             95_000_000,
-            Basis.OBTAINED,
+            Method.MEASURED,
             "a liveness walk of the traced graph",
         ),
     ),
@@ -300,7 +306,7 @@ def test_a_comparison_with_no_comparable_term_refuses_a_largest_error():
     predicted = Predicted(
         label="a prediction of that one term",
         shape=HISTORICAL_SHAPE,
-        terms=(Term("activations", 95_000_000, Basis.OBTAINED, "a liveness walk"),),
+        terms=(Term("activations", 95_000_000, Method.MEASURED, "a liveness walk"),),
         at_shape=AT_SHAPE,
     )
     comparison = compare(predicted, recorded)
@@ -310,117 +316,7 @@ def test_a_comparison_with_no_comparable_term_refuses_a_largest_error():
     assert "no largest error" in str(refusal.value)
 
 
-# --- trap 1: a meta build has not been through the loader --------------------
-
-
-def qwen_0_6b():
-    """The published Qwen3-0.6B geometry this correction is recorded against."""
-    return PretrainedConfig.from_dict(
-        {
-            "hidden_size": 1024,
-            "vocab_size": 151936,
-            "tie_word_embeddings": True,
-            "dtype": "bfloat16",
-        }
-    )
-
-
-def test_the_tied_head_is_one_embedding_of_0_290_gib_on_the_0_6b():
-    config = qwen_0_6b()
-    nbytes = tied_lm_head_bytes(config, dtype_bytes=element_bytes(config.dtype))
-    assert nbytes == 151_936 * 1_024 * 2
-    assert nbytes == 311_164_928
-    # The measured gap the tie closed: one embedding, 0.290 GiB on the 0.6B.
-    assert round(nbytes / (1 << 30), 3) == 0.290
-
-
-def test_the_tied_head_scales_with_a_4_byte_element_size():
-    # A float32 build of the same geometry owes twice the bfloat16 correction.
-    nbytes = tied_lm_head_bytes(qwen_0_6b(), dtype_bytes=4)
-    assert nbytes == 151_936 * 1_024 * 4
-    assert nbytes == 622_329_856
-
-
-def test_an_untied_model_owes_no_correction(qwen):
-    assert qwen.tie_word_embeddings is False
-    assert tied_lm_head_bytes(qwen, dtype_bytes=2) == 0
-
-
-def test_a_config_that_does_not_state_the_tie_refuses_rather_than_assuming():
-    # The absence is observable, which is checked here rather than assumed:
-    # this tree's transformers does not fill the field in, so a config that was
-    # never given it raises on the attribute instead of answering. Assuming
-    # untied is exactly the 0.290 GiB gap, and it is the same species as the
-    # absent partial_rotary_factor that made the buffers term 4x high without
-    # saying it had assumed anything.
-    config = PretrainedConfig.from_dict({"hidden_size": 1024, "vocab_size": 151936})
-    assert not hasattr(config, "tie_word_embeddings")
-    with pytest.raises(MemoryRefusal) as refusal:
-        tied_lm_head_bytes(config, dtype_bytes=2)
-    assert "tie_word_embeddings" in str(refusal.value)
-
-
-def test_a_model_config_class_supplies_the_field_and_its_default_is_untied():
-    """How far the refusal above reaches, measured rather than assumed.
-
-    A model's own config class fills the field in, and this family's class
-    default is untied -- the direction that leaves the meta build over by an
-    embedding. So on a config class the correction cannot tell a checkpoint
-    that said untied from a class that defaulted to it, and it returns zero for
-    both. That is a limit of the correction, asserted here so it is a known
-    limit rather than a claim nobody checked.
-    """
-    from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
-
-    defaulted = Qwen3Config()
-    assert hasattr(defaulted, "tie_word_embeddings")
-    assert defaulted.tie_word_embeddings is False
-    assert tied_lm_head_bytes(defaulted, dtype_bytes=2) == 0
-
-
-#: No measured resident weight total for the 0.6B is available. This fixture
-#: states one so a percentage can be shown; the only measured figure the test
-#: below pins is the tie itself.
-RECORDED_0_6B_WEIGHTS = 1_192_000_000
-
-
-def weights_comparison(predicted_bytes):
-    predicted = Predicted(
-        label="a meta build of the 0.6B",
-        shape=Shape(tokens=4096, phase="prefill"),
-        terms=(
-            Term(
-                "weights",
-                predicted_bytes,
-                Basis.OBTAINED,
-                "a meta build, deduped by storage",
-            ),
-        ),
-    )
-    recorded = Recorded(
-        run="fixture: the 0.6B after the loader tied its head",
-        shape=Shape(tokens=4096, phase="prefill"),
-        high_water_reset=True,
-        terms=footprint_terms(
-            {"weights": RECORDED_0_6B_WEIGHTS}, source="parameter_bytes"
-        ),
-    )
-    return compare(predicted, recorded).compared[0]
-
-
-def test_the_invisible_tied_head_fails_the_gate_and_the_correction_closes_it():
-    tie = tied_lm_head_bytes(qwen_0_6b(), dtype_bytes=2)
-    before = weights_comparison(RECORDED_0_6B_WEIGHTS + tie)
-    assert before.verdict is Verdict.FAIL
-    assert before.delta_bytes == tie
-    assert before.relative == pytest.approx(0.2610, abs=5e-5)
-
-    after = weights_comparison(RECORDED_0_6B_WEIGHTS + tie - tie)
-    assert after.verdict is Verdict.PASS
-    assert after.delta_bytes == 0
-
-
-# --- trap 2: a term the run does not record ----------------------------------
+# --- trap 1: a term the run does not record ----------------------------------
 
 
 def ladder():
@@ -448,9 +344,9 @@ def live_readings(spec, qwen, tp_width=1):
     return device_readings(
         spec,
         tp_width=tp_width,
-        model=ModelTerms.from_declared_config(
+        model=ModelTerms.from_config(
             qwen,
-            parameter_count=PARAMETERS,
+            tree=meta_tree(PARAMETERS * element_bytes(qwen.dtype) // tp_width),
             tp_size=tp_width,
             warmup_tokens=WARMUP_TOKENS,
         ),
@@ -497,12 +393,8 @@ def test_a_term_the_run_does_not_record_refuses_and_carries_its_own_reason(
 ):
     """`buffers` refuses by name, and the refusal quotes the reason.
 
-    This term has to be recorded rather than computed: the formula that
-    matched the 0.6B exactly was 4x wrong on the 27B, was tested on a second
-    model, failed and did not ship. The replacement that shipped was itself 4x
-    high and now says on the term that it is derived from ATOM's rotary source
-    and validated against no card. A comparator cannot discharge a 10% gate on
-    a term with no recording, and the refusal is the result.
+    A real run's split does not isolate buffers, so a comparator cannot hold
+    them to a 10% gate, and the refusal is the result.
     """
     prediction = live_prediction(spec, qwen)
     comparison = compare(prediction, agreeing_recording(prediction))
@@ -515,7 +407,7 @@ def test_a_term_the_run_does_not_record_refuses_and_carries_its_own_reason(
     message = str(refused["buffers"])
     assert "records no 'buffers'" in message
     assert "not a term of zero bytes" in message
-    assert "validated against no card" in message
+    assert "positions x rotary_dim elements" in message
     assert "buffers" not in {t.name for t in comparison.compared}
 
 
@@ -530,34 +422,27 @@ def test_an_absent_term_is_not_a_term_of_zero_bytes(spec, qwen):
     )
 
 
-def test_the_two_terms_that_cannot_discharge_their_gate_while_agreeing_exactly(
-    spec, qwen
-):
-    """Every recorded term equals its prediction, and two gates still do not close.
+def test_the_term_that_cannot_discharge_its_gate_while_agreeing_exactly(spec, qwen):
+    """Every recorded term equals its prediction, and one gate still does not close.
 
-    `weights` is a declared coefficient over a **round 27e9**, and the note it
-    carries names a second reason that a better parameter count would not
-    touch: it shards every parameter, where a real stack replicates its norms.
     `activations` is a declared formula over one live layer, and even a traced
     graph without the invisible-scratch table would not be enough to discharge
-    the 10% gate on it.
+    the 10% gate on it. `weights`, read off a meta build, discharges its gate.
     """
     prediction = live_prediction(spec, qwen)
     comparison = compare(prediction, agreeing_recording(prediction))
 
     by_name = {t.name: t for t in comparison.compared}
     assert all(t.delta_bytes == 0 for t in comparison.compared)
-    assert {t.name for t in comparison.not_discharged()} == {"weights", "activations"}
+    assert {t.name for t in comparison.not_discharged()} == {"activations"}
     assert not comparison.failures()
     assert {t.name for t in comparison.compared if t.verdict is Verdict.PASS} == {
+        "weights",
         "load residue",
         "persistent",
         "driver and collective reserve",
     }
 
-    weights = by_name["weights"].why
-    assert "27000000000 stated parameters" in weights
-    assert "shards every parameter, where a real stack replicates its norms" in weights
     activations = by_name["activations"].why
     assert "liveness walk" in activations and "invisible-scratch" in activations
 
@@ -568,7 +453,7 @@ def test_a_declared_term_can_fail_its_gate_even_though_it_cannot_pass_one():
     declared = Term(
         "activations",
         200_000_000,
-        Basis.DECLARED,
+        Method.DECLARED,
         "a coefficient over one live layer",
         "a liveness walk over a traced op graph",
     )
@@ -588,7 +473,7 @@ def test_a_declared_term_can_fail_its_gate_even_though_it_cannot_pass_one():
     assert compare(predicted, recorded).compared[0].verdict is Verdict.FAIL
 
 
-# --- trap 3: compared at the wrong shape -------------------------------------
+# --- trap 2: compared at the wrong shape -------------------------------------
 
 
 def test_a_pair_taken_at_two_shapes_refuses_and_names_both():
@@ -691,7 +576,7 @@ def test_a_side_that_claims_a_shaped_term_it_does_not_carry_is_rejected():
     assert "records no such term" in str(bad.value)
 
 
-# --- trap 4: the allocator's high-water mark ---------------------------------
+# --- trap 3: the allocator's high-water mark ---------------------------------
 
 
 def test_a_run_that_did_not_reset_the_peak_refuses_every_shaped_term():
@@ -726,9 +611,9 @@ def test_a_recorded_term_that_was_not_read_off_a_card_is_rejected():
             run="a run whose terms are formulas",
             shape=HISTORICAL_SHAPE,
             high_water_reset=True,
-            terms=(Term("weights", 1, Basis.SPEC, "a spec field"),),
+            terms=(Term("weights", 1, Method.ANALYTICAL, "a spec field"),),
         )
-    assert "Basis.OBTAINED" in str(bad.value)
+    assert "which is measured" in str(bad.value)
 
 
 def test_the_peak_guard_holds_when_only_the_prediction_names_a_shaped_term():
@@ -776,9 +661,9 @@ def test_a_peak_that_was_not_reset_with_no_shaped_term_anywhere_refuses_outright
 
 
 def zero_byte_recording(*, also_predicted):
-    predicted_terms = [Term("weights", 100, Basis.OBTAINED, "a meta build")]
+    predicted_terms = [Term("weights", 100, Method.ANALYTICAL, "a meta build")]
     if also_predicted:
-        predicted_terms.append(Term("ghost", 5, Basis.OBTAINED, "a meta build"))
+        predicted_terms.append(Term("ghost", 5, Method.ANALYTICAL, "a meta build"))
     return (
         Predicted(
             label="a prediction beside a term the run measured as empty",
@@ -828,7 +713,7 @@ def test_the_named_refusal_for_a_zero_recorded_term_is_still_reachable():
     pair = TermComparison(
         name="ghost",
         predicted=None,
-        recorded=Term("ghost", 0, Basis.OBTAINED, "the printout"),
+        recorded=Term("ghost", 0, Method.MEASURED, "the printout"),
         gate=NON_KV_TERM_GATE,
         verdict=Verdict.FAIL,
     )
@@ -848,32 +733,24 @@ def test_a_printout_carrying_a_float_byte_count_refuses_rather_than_truncating()
     assert "bytes are whole" in str(bad.value)
 
 
-# --- which bases discharge a gate -------------------------------------------
+# --- which methods discharge a gate -----------------------------------------
 
 
 @pytest.mark.parametrize(
-    "basis, expected",
+    "method, expected",
     [
-        (Basis.SPEC, Verdict.PASS),
-        (Basis.DERIVED, Verdict.PASS),
-        (Basis.OBTAINED, Verdict.PASS),
-        (Basis.DECLARED, Verdict.NOT_DISCHARGED),
-        (Basis.DEPLOYMENT, Verdict.NOT_DISCHARGED),
+        (Method.ANALYTICAL, Verdict.PASS),
+        (Method.MEASURED, Verdict.PASS),
+        (Method.ESTIMATED, Verdict.PASS),
+        (Method.DECLARED, Verdict.NOT_DISCHARGED),
     ],
 )
-def test_the_bases_that_discharge_a_gate_are_the_stated_set(basis, expected):
-    """A stated set, so adding a `Basis` member is a decision rather than a grant.
-
-    A knob the serving config states is the one that would have been let
-    through by a rule reading "not declared": a knob agreeing with a run is not
-    evidence about bytes in either direction.
-    """
-    assert DISCHARGES == frozenset({Basis.SPEC, Basis.DERIVED, Basis.OBTAINED})
-    note = "a successor" if basis is Basis.DECLARED else ""
+def test_every_method_but_declared_can_pass_a_gate(method, expected):
+    note = "a successor" if method is Method.DECLARED else ""
     predicted = Predicted(
-        label=f"a prediction whose term is {basis}",
+        label=f"a prediction whose term is {method}",
         shape=HISTORICAL_SHAPE,
-        terms=(Term("persistent", 100, basis, "wherever it came from", note),),
+        terms=(Term("persistent", 100, method, "wherever it came from", note),),
     )
     recorded = Recorded(
         run="a run that agrees to the byte",
@@ -884,10 +761,8 @@ def test_the_bases_that_discharge_a_gate_are_the_stated_set(basis, expected):
     assert compare(predicted, recorded).compared[0].verdict is expected
 
 
-def test_every_basis_is_either_discharging_or_named_as_not():
-    # No member may fall through unclassified, which is what would happen if a
-    # future addition met a rule phrased as "not declared".
-    assert set(Basis) - DISCHARGES == {Basis.DECLARED, Basis.DEPLOYMENT}
+def test_only_declared_is_left_out_of_the_set_that_discharges():
+    assert set(Method) - DISCHARGES == {Method.DECLARED}
 
 
 # --- the graph pool: two numbers, both reported ------------------------------
@@ -902,7 +777,7 @@ RECORDED_POOL_W_GT1 = 104 * MIB
 
 
 def recorded_pool(nbytes, where):
-    return Term("recorded pool", int(nbytes), Basis.OBTAINED, where)
+    return Term("recorded pool", int(nbytes), Method.MEASURED, where)
 
 
 @pytest.mark.parametrize(
@@ -941,6 +816,20 @@ def test_both_graph_pool_numbers_are_reported_against_the_recorded_pool(
     assert "reserves nothing" in rendered
     assert f"{comparison.reserves_relative:+.2%}" in rendered
     assert f"{comparison.predicts_relative:+.2%}" in rendered
+
+
+def test_each_graph_pool_row_prints_its_method(spec, qwen):
+    # An assumed pool line makes predicts() declared, which must not read like
+    # a measured row.
+    comparison = compare_graph_pool(
+        recorded_pool(RECORDED_POOL_W1, "a printout"),
+        reserves=reserved(qwen, int(spec.value("device.memory.capacity_bytes"))),
+        predicts=predicts(spec_of("assumed"), tp_width=1, captured_tokens=1023),
+    )
+    rows = {line.split()[0]: line for line in comparison.table().splitlines()[2:5]}
+    assert "declared" in rows["predicts()"]
+    assert "analytical" in rows["reserves()"]
+    assert "measured" in rows["recorded"]
 
 
 def test_the_disagreement_is_inside_the_recorded_four_to_nineteen_times(spec, qwen):
@@ -991,7 +880,7 @@ def test_the_graph_pool_cannot_be_folded_into_the_per_term_table(spec, qwen):
             Term(
                 pool.name,
                 pool.total,
-                Basis.DECLARED,
+                Method.DECLARED,
                 "ATOM's own estimator",
                 "the measured pool, which disagrees by 4-19x",
             ),
@@ -1025,3 +914,105 @@ def test_the_footprint_is_peak_torch_and_non_torch_and_nothing_else(spec, qwen):
     assert "capacity" not in {t.name for t in prediction.terms}
     assert "per-token x captured tokens" not in {t.name for t in prediction.terms}
     assert readings.spec_digest in prediction.label
+
+
+# --- a term against the run it was built from --------------------------------
+
+GIB = 1 << 30
+
+
+def _server_log(path, *, peak, non_torch, start="08:31:41"):
+    """The two lines `python -m atom.compass.memory.check` reads off a server."""
+    path.write_text(
+        f"[atom {start}] Model Runner0/1: warmup_model 40.35 seconds with 1 reqs "
+        f"{WARMUP_TOKENS} tokens\n"
+        f"[atom {start}] Memory budget: total_gpu=191.98GB, free=139.49GB, "
+        f"peak_torch={peak / GIB:.2f}GB, non_torch={non_torch / GIB:.2f}GB, "
+        "cudagraph_est=0.55GB\n"
+    )
+    return path
+
+
+def _hand_in(tmp_path, qwen, record):
+    """A hand-in sized off the suite's document, probed on the run `record`
+    names, with this model's activations measured on that run."""
+    document = copy.deepcopy(DOCUMENT)
+    document["provenance"] |= {"origin": "probed", "subject": {"record": record}}
+    document["device"]["activations"] = [ACTIVATIONS]
+    spec = MachineSpec.from_mapping(document)
+    entry = spec.activations_for(
+        ACTIVATIONS["applies_to"][0], ACTIVATIONS["fingerprint"], 1
+    )
+    model = ModelTerms.from_config(
+        qwen,
+        tree=meta_tree(PARAMETERS * 2),
+        tp_size=1,
+        warmup_tokens=WARMUP_TOKENS,
+        activations_entry=entry,
+    )
+    readings = device_readings(
+        spec,
+        tp_width=1,
+        model=model,
+        cudagraph_overhead=reserved(qwen, int(spec.value(CAPACITY))),
+    )
+    path = tmp_path / "lp-engine.json"
+    hand_in = check.record(readings, tokens=WARMUP_TOKENS, pool=None)
+    path.write_text(json.dumps({"memory": hand_in}))
+    return path, readings
+
+
+def _digest(path):
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("factor", [1.0, 2.0])
+def test_a_term_compared_with_its_own_source_run_is_not_passed(tmp_path, qwen, factor):
+    _, readings = _hand_in(tmp_path, qwen, "sha256:none")
+    source = _server_log(
+        tmp_path / "source.log",
+        peak=readings.peak_torch.total,
+        non_torch=readings.non_torch.total * factor,
+    )
+    record = _digest(source)
+    hand_in, readings = _hand_in(tmp_path, qwen, record)
+    # The activations come off the entry, and the entry names its run.
+    by_name = {t.name: t for t in readings.peak_torch.terms}
+    assert by_name["activations"].method is Method.ESTIMATED
+    assert by_name["activations"].records == (record,)
+
+    comparison = check.parts(hand_in, source)[0]
+    verdicts = {t.name: t.verdict for t in comparison.compared}
+    assert verdicts["peak_torch"] is Verdict.NOT_DISCHARGED
+    # Built from the run or not, a term outside its gate fails.
+    expected = Verdict.FAIL if factor > 1 else Verdict.NOT_DISCHARGED
+    assert verdicts["non_torch"] is expected
+    named = f"this term was built from record {record}, the run it is compared with"
+    why = {t.name: t.why for t in comparison.compared}
+    assert named in why["peak_torch"]
+    assert (named in why["non_torch"]) is (factor == 1.0)
+    assert (
+        f"* peak_torch: within the gate, and the gate is not discharged: {named}"
+        in comparison.table()
+    )
+
+
+@pytest.mark.parametrize("factor, verdict", [(1.0, Verdict.PASS), (2.0, Verdict.FAIL)])
+def test_another_run_of_the_same_configuration_is_judged_on_its_numbers(
+    tmp_path, qwen, factor, verdict
+):
+    _, readings = _hand_in(tmp_path, qwen, "sha256:none")
+    peak, non_torch = readings.peak_torch.total, readings.non_torch.total
+    source = _server_log(tmp_path / "source.log", peak=peak, non_torch=non_torch)
+    other = _server_log(
+        tmp_path / "other.log",
+        peak=peak,
+        non_torch=non_torch * factor,
+        start="16:32:07",
+    )
+    hand_in, _ = _hand_in(tmp_path, qwen, _digest(source))
+
+    comparison = check.parts(hand_in, other)[0]
+    verdicts = {t.name: t.verdict for t in comparison.compared}
+    assert verdicts == {"peak_torch": Verdict.PASS, "non_torch": verdict}
+    assert "built from record" not in comparison.table()

@@ -15,7 +15,7 @@ from test_vertical_slice import _run_file
 from transformers import PretrainedConfig
 
 from atom.compass import run as compass_run
-from atom.compass.memory import Basis
+from atom.compass.backends.provenance import Method
 from atom.compass.runner.overrides import NonAllocatingRunner
 
 VOCAB, HIDDEN = 64, 16
@@ -67,6 +67,6 @@ def test_the_weights_are_the_meta_builds_storages_each_counted_once(
     runner = _built(monkeypatch, tmp_path)
     weights = runner.compass_readings.peak_torch.terms[0]
     assert weights.name == "weights"
-    assert weights.basis is Basis.OBTAINED
+    assert weights.method is Method.ANALYTICAL
     assert weights.nbytes == VOCAB * HIDDEN * 2 + EXPERTS * ROWS * COLS // 2
     assert all(p.is_meta for p in runner.model.parameters())

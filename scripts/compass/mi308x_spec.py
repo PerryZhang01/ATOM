@@ -9,10 +9,12 @@ fragment carries this host's core counts, and the merge refuses it if they are
 not the ones the device fragment recorded there. The device fragment is the
 readings ATOM's own `ModelRunner` took at one engine start (Qwen3.8-27B, TP1,
 CUDA graphs and prefix caching on, `--max-model-len 262144`); every field no
-probe fills is in the declared fragment. Writes the merged document to `--out`
-when `validate` passes at width 1, then prints `explain`'s rows for the host,
-device and interconnect blocks, split by whether a measured fragment supplied
-them, and the basis of `kv_blocks`.
+probe fills is assumed, on either host. On hjbog-srdc-18 two Qwen3-30B-A3B
+starts add the width-keyed terms at width 8 and at the DP-attention layout 1x8.
+One fragment per start or origin. Writes the merged document to `--out` when
+`validate` passes at every width and layout it holds, then prints
+`explain`'s rows for the host, device and interconnect blocks, grouped by
+origin, and the basis of `kv_blocks`.
 """
 
 import argparse
@@ -60,13 +62,54 @@ NODE18 = {
     "peak": 58034271744,
     "warmup_tokens": 16384,
 }
-#: The same readings on card 6 of hjbog-srdc-39 at commit a1cac25a6.
-HJBOG39 = dict(NODE18, non_torch=1254096896, current=55077418496, peak=58034402816)
-DATE, COMMIT, READ = {
-    "mi308x-hjbog18": ("2026-10-11", "983e42973", NODE18),
-    "mi308x-hjbog39": ("2026-10-12", "a1cac25a6", HJBOG39),
+#: The same readings on card 5 of hjbog-srdc-39 at commit ce625ddd9.
+HJBOG39 = dict(
+    NODE18,
+    non_torch=1277165568,
+    loaded=54761861632,
+    current=55145206784,
+    peak=58102190592,
+)
+#: The software stack each host's readings were taken under.
+STACK = {"rocm": "7.2.4", "aiter": "f4e7c7509", "rccl": "2.27.7"}
+DATE, COMMIT, READ, PIN = {
+    "mi308x-hjbog18": ("2026-10-11", "983e42973", NODE18, STACK),
+    "mi308x-hjbog39": (
+        "2026-10-14",
+        "ce625ddd9",
+        HJBOG39,
+        dict(STACK, aiter="9205e1059"),
+    ),
 }[NAME]
+#: Each start's record: the sha256 of its server log, as
+#: `python -m atom.compass.memory.check` digests it.
+RECORD = {
+    "mi308x-hjbog18": "f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87",
+    "mi308x-hjbog39": "e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
+}[NAME]
+#: What the start ran: the model, the width, the tree and the run's record.
+SUBJECT = {"model": "Qwen/Qwen3.8-27B", "width": 1, "source_root": f"commit:{COMMIT}"}
+SUBJECT["record"] = f"sha256:{RECORD}"
 CONFIG_JSON = "sha256:191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab"
+
+#: Two Qwen3-30B-A3B starts on node 18 at commit 7370fbe47 (image
+#: nightly-20261013), by the key the run reads them at: the flags, `non_torch`
+#: (minimum over the 8 ranks) and the log's sha256. Both read the same load
+#: residue, `allocated` after load less unique parameter and buffer bytes.
+STARTS = {
+    "1x8": (
+        "-tp 8 --enable-dp-attention",
+        8189378560,
+        "72a76cc8907cf77ae9c22583583b5d6ac5a6e2acb94d396e1df08b4ddd001d55",
+    ),
+    8: (
+        "-tp 8",
+        9485418496,
+        "21991eab509e154ac6da9a2c3d769603da9a9ed492e52a0a9ec18d2f4e18caa2",
+    ),
+}
+STARTS = STARTS if NAME == "mi308x-hjbog18" else {}
+RESIDUE = 2165604480
 
 DEVICE = {
     "host": {"cpu": {"cores_physical": 112, "cores_logical": 224}},
@@ -92,12 +135,13 @@ DEVICE = {
                 },
             }
         ],
-        "software_pinned_to": {"rocm": "7.2.4", "aiter": "f4e7c7509", "rccl": "2.27.7"},
+        "software_pinned_to": PIN,
     },
 }
 
 #: No probe here fills these. The peaks are MI300X's datasheet scaled by
-#: 80/304 compute units; the rest are the schema's example values.
+#: 80/304 compute units, each derate is the haircut this spec's author chose on
+#: its peak, and the rest are the schema's example values.
 DECLARED = {
     "host": {
         "ipc": {"zmq_roundtrip_s": 5.0e-5, "shm_broadcast_s": 2.0e-5},
@@ -131,17 +175,39 @@ DECLARED = {
 }
 
 
-def fragment(source: str, body: dict, method: str, notes: str) -> Fragment:
-    stanza = {"authored_by": AUTHOR, "date": DATE, "method": method, "notes": notes}
+def fragment(
+    source: str, body: dict, origin: str, notes: str, subject=None, date=DATE
+) -> Fragment:
+    stanza = {"authored_by": AUTHOR, "date": date, "origin": origin, "notes": notes}
+    if subject:
+        stanza["subject"] = subject
     document = {"schema_version": 1, "name": NAME, "provenance": stanza, **body}
     return Fragment.from_mapping(document, source)
 
 
 def device_fragments() -> list[Fragment]:
-    """The fragment one engine start measured, and the declared one."""
+    """The fragments each engine start probed, and the assumed rest."""
+    notes = f"one Qwen3.8-27B TP1 start at {COMMIT}"
+    starts = []
+    for key, (flags, reserve, record) in STARTS.items():
+        constants = {
+            "driver_and_collective_reserve_bytes": {key: reserve},
+            "allocator_retained_after_load_bytes": {key: RESIDUE},
+        }
+        model, root = "Qwen/Qwen3-30B-A3B", "commit:7370fbe47"
+        subject = {"model": model, "width": 8, "source_root": root}
+        subject["record"] = f"sha256:{record}"
+        # aiter on gfx942 has no MoE kernel for this model's 8-wide expert shard.
+        how = f"one {model} {flags} --enable-expert-parallel --all2all-backend none"
+        body = {"device": {"runtime_constants": constants}}
+        notes_of = f"{how} start at {root}"
+        starts.append(
+            fragment(f"start {key}", body, "probed", notes_of, subject, "2026-10-14")
+        )
     return [
-        fragment("device", DEVICE, "probed", f"one Qwen3.8-27B TP1 start at {COMMIT}"),
-        fragment("declared", DECLARED, "assumed", "no probe fills these"),
+        fragment("device", DEVICE, "probed", notes, SUBJECT),
+        fragment("assumed", DECLARED, "assumed", "no probe fills these"),
+        *starts,
     ]
 
 
@@ -149,10 +215,12 @@ def swept(model: str) -> Fragment:
     """The tokenizer the server loads, swept over this tree's own source."""
     from transformers import PretrainedConfig
 
+    from atom.compass.artifacts.provenance import git_tree_root
     from atom.compass.run import _fingerprint
     from atom.model_engine.llm_engine import _load_tokenizer
 
     tok = _load_tokenizer(model)
+    root = git_tree_root("atom", str(ROOT))
     text = "\n".join(p.read_text() for p in sorted((ROOT / "atom").rglob("*.py")))
     entry = {
         "id": Path(model).name.lower(),
@@ -169,25 +237,25 @@ def swept(model: str) -> Fragment:
         machine=NAME,
         authored_by=AUTHOR,
         date=datetime.datetime.now(datetime.UTC).date().isoformat(),
-        method="probed",
+        origin="probed",
+        subject={
+            "model": model,
+            "source_root": f"{root.revision_kind}:{root.revision}",
+        },
         source="tokenizer",
     )
 
 
-def report(merged, measured: set[str]) -> str:
-    """`explain`'s rows, measured then declared, and the basis of `kv_blocks`."""
+def report(merged) -> str:
+    """`explain`'s rows grouped by origin, and the basis of `kv_blocks`."""
     spec = MachineSpec.from_mapping(merged.document)
-    rows = [
-        row
-        for block in ("host", "device", "interconnect")
-        for row in explain(spec, block, tp_width=1, origin=merged).contributions
-    ]
-    split = {True: [], False: []}
-    for row in rows:
-        split[bool(measured & set(row.supplied_by))].append(f"  {row}")
+    groups: dict[str, list[str]] = {}
+    for block in ("host", "device", "interconnect"):
+        for row in explain(spec, block, tp_width=1, origin=merged).contributions:
+            groups.setdefault(row.origin["origin"], []).append(f"  {row}")
+    lines = [line for origin, rows in groups.items() for line in (f"{origin}:", *rows)]
     return "\n".join(
-        [f"measured on {NAME}:", *split[True], "declared:", *split[False]]
-        + [str(explain(spec, "kv_blocks", tp_width=1, origin=merged))]
+        lines + [str(explain(spec, "kv_blocks", tp_width=1, origin=merged))]
     )
 
 
@@ -199,12 +267,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     merged = merge([swept(args.model), *device_fragments()])
-    verdict = validate(merged, tp_widths=(1,))
+    verdict = validate(merged, tp_widths=(1, *STARTS))
     print(verdict)
     if not verdict.ok:
         return 1
     args.out.write_text(json.dumps(merged.document, indent=2) + "\n")
-    print(report(merged, {"tokenizer", "device"}))
+    print(report(merged))
     return 0
 
 

@@ -46,7 +46,7 @@ from atom.compass.backends import (
     KvGeometry,
     Parallelism,
     RequestShape,
-    ShapeStubBackend,
+    StepStubBackend,
     SyntheticStack,
     hf_config,
 )
@@ -136,7 +136,7 @@ def charged_layers(model):
     leaving them asserting the old one. A count that is neither of the two
     this config declares has no row here and is refused by name.
     """
-    step = model.backend.estimate(batch())
+    step = model.backend.price(batch())
     seconds = sum(
         value for name, value, _ in step.rows() if name.startswith("collective.")
     )
@@ -172,18 +172,18 @@ class TestOneDeclaration:
         sharded = KvGeometry.from_hf_config(
             published, block_size=BLOCK_SIZE, parallelism=Parallelism(tp_size=4)
         )
-        mismatched = ShapeStubBackend(geometry=sharded)
+        mismatched = StepStubBackend(geometry=sharded)
         assert blocks_for(sharded) == 4 * blocks_for(
             KvGeometry.from_hf_config(published, block_size=BLOCK_SIZE)
         )
-        assert charged(mismatched.estimate(batch())) == []
+        assert charged(mismatched.price(batch())) == []
 
     def test_the_model_hands_both_halves_the_same_widths(self, published):
         widths = Parallelism(tp_size=4)
         model = FakeModel(published, block_size=BLOCK_SIZE, parallelism=widths)
         assert model.backend.parallelism is widths
         assert model.backend.geometry is model.geometry
-        assert charged(model.backend.estimate(batch())) == ["collective.tp-all-reduce"]
+        assert charged(model.backend.price(batch())) == ["collective.tp-all-reduce"]
 
     def test_the_price_of_the_disagreement_is_the_collective(self, published):
         """The two prices differ by the term one of them does not know to add.
@@ -204,8 +204,8 @@ class TestOneDeclaration:
         model = FakeModel(
             published, block_size=BLOCK_SIZE, parallelism=Parallelism(tp_size=4)
         )
-        unpaired = ShapeStubBackend(geometry=sharded).estimate(batch()).seconds
-        paired = model.backend.estimate(batch()).seconds
+        unpaired = StepStubBackend(geometry=sharded).price(batch()).seconds
+        paired = model.backend.price(batch()).seconds
         count = charged_layers(model)
         assert paired - unpaired == pytest.approx(
             REQUESTS * CHUNK * count * Coefficients().collective_token_layer
@@ -233,8 +233,8 @@ class TestOneDeclaration:
         # the assertions keyed on it follow the charge to this row rather than
         # needing to be rewritten when it moves.
         assert charged_layers(dense) == STACK_LAYERS
-        unpaired = ShapeStubBackend(geometry=dense.geometry).estimate(batch()).seconds
-        paired = dense.backend.estimate(batch()).seconds
+        unpaired = StepStubBackend(geometry=dense.geometry).price(batch()).seconds
+        paired = dense.backend.price(batch()).seconds
         assert unpaired == pytest.approx(UNCHARGED_STEP_SECONDS)
         assert paired == pytest.approx(STEP_SECONDS_BY_CHARGED_LAYERS[STACK_LAYERS])
         assert paired / unpaired == pytest.approx(RATIO_BY_CHARGED_LAYERS[STACK_LAYERS])
@@ -268,7 +268,7 @@ class TestTheWidthSweep:
         )
         assert model.geometry.kv_heads == kv_heads
         assert blocks_for(model.geometry) == blocks
-        step = model.backend.estimate(batch())
+        step = model.backend.price(batch())
         assert charged(step) == ([] if tp_size == 1 else ["collective.tp-all-reduce"])
         assert step.seconds == pytest.approx(
             UNCHARGED_STEP_SECONDS
@@ -405,9 +405,7 @@ class TestPipelineStages:
             layer_range=(0, 32),
         ).stages([(0, 32), (32, 64)])
         for stage in stages:
-            assert charged(stage.backend.estimate(batch())) == [
-                "collective.tp-all-reduce"
-            ]
+            assert charged(stage.backend.price(batch())) == ["collective.tp-all-reduce"]
 
 
 # ── the two layer counts ────────────────────────────────────────────────────
@@ -644,7 +642,7 @@ class TestWhatTheRecordSays:
     def test_constant_pricing_reaches_the_model_as_a_coefficient_set(self, published):
         flat = Coefficients.constant(prefill_seconds=0.05, decode_seconds=0.002)
         model = FakeModel(published, block_size=BLOCK_SIZE, coefficients=flat)
-        assert model.backend.estimate(batch()).seconds == 0.05
+        assert model.backend.price(batch()).seconds == 0.05
         assert "constant bring-up" in model.describe()
 
     def test_no_document_identifier_reaches_the_record(self, published):

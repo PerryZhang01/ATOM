@@ -49,7 +49,7 @@
 # A TP1 cell also writes its step record to steps/. A real cell writes no step
 # table or summary; it saves rocm-smi's process listing before and after it in
 # gpu_before.txt and gpu_after.txt, and its result names the processes on its
-# GPU (the first in HIP_VISIBLE_DEVICES, default 0), with their VRAM bytes.
+# GPUs (each in HIP_VISIBLE_DEVICES, default 0), with their VRAM bytes.
 # It keeps Triton's autotune results in TRITON_CACHE_DIR (Triton's default
 # ~/.triton/cache), so a kernel tuned by one real run of that directory loads
 # its choice in the next instead of tuning inside it.
@@ -106,11 +106,19 @@ from pathlib import Path
 
 run_file, out, traces, benchmark_id, *args = sys.argv[1:]
 out = Path(out)
+run = json.loads(Path(run_file).read_text())
+n = run.get("data_parallel_size", 1)
 # Held together, so no two are the same port.
 socks = [socket.socket() for _ in range(6)]
 for s in socks:
     s.bind(("127.0.0.1", 0))
 ports = [s.getsockname()[1] for s in socks]
+# The write requests take n*n ports from KV_WRITE_REQ_PORT, the fifth: re-pick
+# it, the others still held, until none of them lies in that block.
+while {*ports[:4], ports[5]} & set(range(ports[4], ports[4] + n * n)):
+    socks.append(socket.socket())
+    socks[-1].bind(("127.0.0.1", 0))
+    ports[4] = socks[-1].getsockname()[1]
 for s in socks:
     s.close()
 
@@ -123,7 +131,6 @@ def sha256(path):
     return h.hexdigest()
 
 
-run = json.loads(Path(run_file).read_text())
 run["out_dir"] = str(out)
 run["clock_endpoint"] = f"tcp://127.0.0.1:{ports[0]}"
 run["workload"] = {
@@ -139,7 +146,6 @@ EOF
 
 trap 'kill -- $(jobs -p) ${server:+-$server} ${client:+-$client} 2>/dev/null || true' EXIT
 gpu=${HIP_VISIBLE_DEVICES:-0}
-gpu=${gpu%%,*}
 gpu_processes() { rocm-smi --showpids --showpidgpus >"$OUT/gpu_$1.txt"; }
 if ((REAL)); then
     [[ $MODE == tp1 ]] || { echo "cctraces_sim: a real cell is TP1, and the run file is 1P1D" >&2; exit 2; }
@@ -223,11 +229,11 @@ if export["benchmark_id"] != benchmark_id:
     sys.exit(f"cctraces_sim: benchmark id {export['benchmark_id']}, recorded {benchmark_id}")
 if sys.argv[4] == "1":
     def others(when):
-        """pid:VRAM bytes of each KFD process on the cell's GPU."""
+        """pid:VRAM bytes of each KFD process on the cell's GPUs."""
         text = (out / f"gpu_{when}.txt").read_text()
         vram = dict(re.findall(r"^(\d+) *\t[^\t]*\t[^\t]*\t(\d+)", text, re.M))
         on = re.findall(r"PID (\d+) is using \d+ DRM device\(s\):\n([\d ]*)", text)
-        return ",".join(f"{p}:{vram.get(p, '?')}" for p, d in on if sys.argv[5] in d.split())
+        return ",".join(f"{p}:{vram.get(p, '?')}" for p, d in on if set(sys.argv[5].split(",")) & set(d.split()))
 
     before, after = others("before"), others("after")
     print(

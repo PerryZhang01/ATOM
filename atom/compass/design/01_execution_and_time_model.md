@@ -425,7 +425,7 @@ constraints.
 
 **A DP group is one LP, and its step costs the `max` over ranks** of each rank's own cost
 (owner ruling 2026-10-01, `15` D90). Every rank prices its own batch, and the predicted
-forward exchanges the step seconds by one `all_reduce(MAX)` on the DP group after
+forward exchanges the step seconds by one `all_gather` on the DP group after
 pricing; `15` D90 owns the `T_moe` and uniform-routing argument. Every rank then calls
 the CA as a member of the LP (below). No operator-level TAR/NER. Per-rank LPs are right only if the ranks decouple at step level (no per-step
 collective) and interact only with lookahead > 0.
@@ -444,6 +444,16 @@ frames. The CA completes the LP's request only when every member has called:
    time never rises on a partial request.
 4. One common grant `G`; each member is released only the messages on its own channels.
 5. A member never advances time alone; a lone call only ships its send log.
+
+Every member's step end is a round (owner ruling 2026-10-15, #988). A rank whose forward
+waits on its device, one with output other than the DP dummy, ends at the group's `max`;
+any other ends at its own seconds, as a real idle rank takes in arrivals when its own
+forward returns. Each member asks one TAR per distinct end, ascending, returns at its own
+and owes the rest. Until they are paid its sends are stamped at its own end; a TAR before
+the last owed round and any NER are refused; and every host collective on its clock owner
+thread, a `torch.distributed` collective whose tensors are all on the CPU or that has none,
+pays them first, as it returns at the latest arrival. A device collective returns once
+enqueued and pays nothing.
 
 One LP per rank is rejected: under NER a rank woken by a message blocks in the lockstep
 `all_reduce` on a rank that waits at the CA with no message. Precedents: dist-gem5, where
@@ -608,7 +618,9 @@ LP (partition principle, above).
   `H`. When every LP waits, nothing is undelivered, no essential target is pending and
   every daemon deadline exceeds `H`, the CA grants every LP `+inf`. The clock cannot tell
   a lost message from a finished run, so on its `+inf` grant the traffic LP raises unless
-  every request it sent has its final response, naming those that do not (#534).
+  every request it sent has its final response, naming those that do not (#534). On a
+  server that serves several client runs this test ends a client run, and only the last
+  one's end is the finish (Client runs, below).
 - **Determinism:** ties at equal timestamps broken by `(time, LP id, channel, seq)`.
   Without this the 126-vs-189-decode-steps nondeterminism returns.
 
@@ -635,6 +647,87 @@ The grant rule relies on these invariants inside each LP:
   nothing inside the simulation window, and the simulated KV connector sends only from
   scheduler-side hooks on the step loop (D6).
 
+#### Client runs: termination in a federation open to clients
+
+A server outlives its client and serves client runs one after another, each a client
+started apart (`13` D80). The finish above is termination detection, and on such a
+server it detects less than the end of the run.
+
+**The PDES concept.** A distributed computation has terminated when every process is
+passive and no message is in transit (Dijkstra and Scholten 1980; the counting form,
+Mattern 1987). The CA is the centralised detector: every LP's state reaches it in a
+request and it counts every message, so the finish's test is that predicate. It means
+termination only in a closed system. A server open to clients is not one: after the test
+holds, a new client can still send. HLA's federation management is the standard shape
+for that case, and Compass takes it as it stands:
+
+- **A federate joins and resigns** (Join and Resign Federation Execution). The traffic
+  LP is the run's *client*: the CA is built naming it, and it alone joins and resigns.
+  Server LPs join once, at startup.
+- **A late joiner regulates time from a point none of its messages can precede** (Enable
+  Time Regulation hands it its logical time). A client binding gets in the bind's reply
+  the client row's clock and the next sequence number of each channel out of it. Its
+  first send arrives at that clock plus the channel's lookahead, in no LP's past, and
+  sequence numbers run on across client runs, so counting stays exact and no receiver
+  resets anything.
+- **A federation ends by an explicit act, not by quiescence** (Destroy Federation
+  Execution). Here the act is stated before the run: the run file's `client_runs`, the
+  number of client runs the server serves, 1 when absent and `null` for a server that
+  serves until it is stopped.
+- **A boundary every federate acts on is a synchronization point** (Register, Announce
+  and Achieve Synchronization Point). The end of a client run is one.
+
+**The rule.** When every LP waits and none is grantable, the open client run ends at
+`E`, the latest LP clock.
+
+1. If it is the last client run the run file declares, the CA finishes the run as above.
+2. Otherwise the CA announces the end in one round. The client is granted `+inf`, which
+   resigns it, and on which it raises as above unless each request it sent has its final
+   response. Every server LP, and every member of one, is granted its own clock with
+   nothing released, marked as the end of client run `k`, counted from 0. It hands in its
+   part of the summary and asks for time again, which achieves the point. No clock moves.
+3. The client's row then runs at `E`, as the first client's runs at 0 before it binds,
+   holding every LP at `E + D(client->i)`. The CA cannot find every LP waiting again until
+   a client has bound, so it announces each end once and grants nothing between client
+   runs: every daemon deadline stays above `H`, and virtual time stands at `E` until the
+   next client's first send.
+4. The connection of a client granted `+inf` may close and the next client binds the same
+   LP. A connection that closes at any other time still ends the run
+   (`clock_transport/service.py::_Server._loop`). The bound on simulated time bounds the
+   server's clock across client runs.
+
+**What a later client run meets.** Virtual time does not pass between client runs, so
+the next starts at `E` with every server LP idle, as a fresh server's first starts at 0
+(`13` D80). What carries over is state: the prefix cache earlier client runs left
+(`03` D13); the phase of daemon timers, which make no scheduling decision; request ids,
+which pick the token a simulated step reports
+(`atom/compass/runner/step_output.py::DeferredTokenStream`); and the stream
+detokenizer's audit count, which charges a decode to the first stream update of a fresh
+server and to every `audit_every`-th after it
+(`atom/entrypoints/openai/streaming_dispatch.py::_DeltaReuse`). Traces sharing no prefix
+block with an earlier client run take the steps a fresh server takes, shifted by `E` to
+rounding; their stream differs from a fresh server's only by the audits that fall
+elsewhere.
+
+**Its summary.** Once every server LP has handed in at the end of client run `k`, the
+CA's host writes the step table and client run `k`'s summary: its index, start and end;
+steps, predicted seconds, refusals, the analytic and extrapolated shares and
+`coverage_report` over its own steps, as each LP's hand-in less its hand-in at client run
+`k - 1`'s end; and final clocks, grants and wall seconds as the server's at `E` (`13`
+D80). The finish also writes the server's summary over its whole life (D3.5). A server
+stopped between client runs, by a kill, has written every ended client run's summary.
+
+**Not chosen.**
+
+- *Ending the client run when its connection closes.* A close is not a time, and the
+  clock cannot tell a lost message from a finished run (#534); only the test above says
+  the client's work is done.
+- *Restarting virtual time at 0 for each client run.* Server LPs keep timestamps in their
+  state, a request's arrival and their timers among them, which a restart would put in
+  the future.
+- *Reading the hand-ins only at the finish.* Their counts would not split by client run,
+  and a server stopped by a kill would leave no summary of the client runs it served.
+
 #### Lookahead sources
 
 Every one is physical and configurable, which is also a project requirement
@@ -653,7 +746,7 @@ receives it itself, at its own receive point.
 
 | Channel | Sender | Receiver (mode) | Lookahead |
 |---|---|---|---|
-| `traffic->frontend:http` | Compass traffic source | event loop (inline) | modelled admission delay. Prior work measured 13.7 ms end-to-end, worth ~4 points of TTFT. Path-specific: 13 ms offline batch, 9 ms serving. 1P+1D adds the router hop. |
+| `traffic->frontend:http` | Compass traffic source | event loop (inline) | modelled admission delay. Prior work measured 13.7 ms end-to-end, worth ~4 points of TTFT. Path-specific; the values and what each was measured on are in `channels.py::ADMISSION_DELAY_S`. 1P+1D adds the router hop. |
 | `frontend->traffic:stream` | event loop, writing the SSE stream | traffic source (inline) | declared return delay |
 | `frontend->engine:request#dpN` | event loop, `engine_core_mgr.py::CoreManager._send_request` | engine input thread, `poller.poll()` in `engine_core.py::EngineCore.process_input_sockets` (thread) | declared IPC delay |
 | `frontend->engine:control#dpN` | event loop, `engine_core_mgr.py::CoreManager._send_control`. Its second writer, the frontend output thread sending SHUTDOWN (`process_outputs_socket -> CoreManager._shutdown_engine_core_rank`), runs only outside the window | same (thread) | declared IPC delay |
@@ -999,7 +1092,8 @@ None of these aborts. This is what makes a hang
 diagnosable rather than merely silent.
 
 **3. The run summary**, written once at the end of every run, an early end (an abort on
-refusal, an engine that raises) included, and carried in the run artifact:
+refusal, an engine that raises) included, and once at the end of every client run (D3,
+Client runs), and carried in the run artifact:
 
 | Field | Why |
 |---|---|
@@ -1057,7 +1151,7 @@ undecided**.
 | K3 | Idle point | NER: `next_event(t, t_daemon)` | the step loops' spin, the PP bounded polls, offline `get_output` |
 | K4 | Channel send | timestamped send, logged on the clock owner | PD direct sends, PP sends, output sends through the relay queue |
 | K5 | Channel receive | counted at the wait point, then TSO delivery | the engine input thread, the frontend output thread, the PD handler threads, the PP receives and zero-bound drains, the PP `flush_pp_send` |
-| K6 | Wait inside one LP | LP aggregation: never reported to the CA | TP worker RPC and barriers, frontend coroutines awaiting their own process's data, control commands' calls to workers, the DP group's reductions (the `PrefillDelayer` all_reduce, and the step-seconds `all_reduce(MAX)` in the predicted forward) |
+| K6 | Wait inside one LP | LP aggregation: never reported to the CA | TP worker RPC and barriers, frontend coroutines awaiting their own process's data, control commands' calls to workers, the DP group's reductions (the `PrefillDelayer` all_reduce, and the step-seconds `all_gather` in the predicted forward) |
 | K7 | Virtual timer | the timer runs on the LP clock | idle KV drain, metrics push and refresh, Anthropic ping, keep-alive, the silence warning, the control-command reply timeout |
 | K8 | Real bound | the CA cannot reach it, or it stays real on purpose: configuration | the Rust router's bounds and health check, process-death detection |
 | K9 | Outside the model | outside the simulation window, inside replaced code, cannot park, or a timing only a log line reads | startup and shutdown, the replaced runner and RDMA backends, collectives inside the real forward, text scanners, the step-loop timings that only feed a log line |
@@ -1085,9 +1179,9 @@ The rules that settle the boundaries #53's categories left in the wrong place:
   sizes both). So the TP workers and every rank of a lockstep DP group sit in the engine
   LP, and a startup assertion refuses a process group whose ranks map to more than one
   LP.
-- **A DP step is one TAR, costing the `max` over ranks** (D3, `15` D90). Each rank
+- **A DP step is one TAR per member step end, an output rank's the `max`** (D3, #988). Each rank
   charges its own forward by the recurrence below, the ranks exchange the step seconds
-  by one `all_reduce(MAX)` inside the predicted forward, and every rank calls the CA as a member of the LP (D3). The exchange
+  by one `all_gather` inside the predicted forward, and every rank calls the CA as a member of the LP (D3). The exchange
   is K6 and carries no cost (`15` D90). The lockstep `all_reduce`
   (`DPEngineCoreProc._sync_dp_state`, `atom/model_engine/engine_core.py`) keeps its payload; it is K1 rather than ignored because it has a cost of its own, not
   because the step is decided there. **Second-order bound:** a fast rank's output is
@@ -1295,8 +1389,8 @@ time.
 | R7 | non-first PP stage | device start, host launch | the upstream stage's `end`, and its host send | the `PPStageTransport` receives (`atom/distributed/pp_transport.py`) |
 | R8 | last PP stage, output batch | after launch | its own `target_end` | `tokenIDProcessor.prepare_sampled_ids`'s `tolist`, on the stage that does not defer output |
 
-The DP barriers are not wait rules: the step-seconds `all_reduce(MAX)` carries each
-member's charge, and the CA's member join grants the group one time (D3, `15` D90). PD's
+The DP barriers are not wait rules: the step-seconds `all_gather` carries each
+member's charge, and the CA's member join grants each member's step end in turn (D3, `15` D90). PD's
 KV transfer keeps its own model (D6).
 
 Stage 2 builds R1 and R4 ([#825](https://github.com/jgong5/ATOM/issues/825)). The MTP
@@ -2052,7 +2146,7 @@ Ordered by how much they could cost.
 | D0 | Fresh design; prior branches referenced at the design level only, not as a code-port plan | 2026-09-17 |
 | D1 | Keep ATOM's multi-process / multi-thread topology; additive changes only | 2026-09-17 |
 | D2 | "Two nodes" means true PD disaggregation, realised as two containers on one physical node | 2026-09-17 |
-| D3 | Central Clock Authority acting as the HLA RTI (`advance_to` = TAR, idle point = NER, grant = TAG); an LP is a process group with one clock owner per process, and zero-lookahead couplings collapse into one LP; the CA grants a DP group's LP only after every rank has called; a grant is strictly below the lookahead-distance LBTS and waits for the messages already in transit (Fujimoto counters); a run finishes when no essential work is left | 2026-09-18; revised 2026-09-28 and 2026-10-02 |
+| D3 | Central Clock Authority acting as the HLA RTI (`advance_to` = TAR, idle point = NER, grant = TAG); an LP is a process group with one clock owner per process, and zero-lookahead couplings collapse into one LP; the CA grants a DP group's LP only after every rank has called; a grant is strictly below the lookahead-distance LBTS and waits for the messages already in transit (Fujimoto counters); a run finishes when no essential work is left; on a server open to clients that test ends a client run, as HLA's join, resign and synchronization point frame it, and the finish comes after the client runs the run file declares | 2026-09-18; revised 2026-09-28, 2026-10-02 and 2026-10-14 (#966) |
 | D3.1 | Single CA with a hierarchy-ready interface; LP count scales with replicas and PP stages, not with GPUs | 2026-09-18 |
 | D3.2 | Always-on causality detectors: a straggler check against the receiver's last drain (fails the run); a stall the CA cannot see prints one diagnostic after 30 wall seconds and keeps waiting, never aborting; clock-source CI lint | 2026-09-19; revised 2026-09-28 |
 | D3.3 | CA deploys two ways from one implementation: co-hosted in the API-server process by default, standalone server via `--compass-clock-endpoint` for multi-container runs (1P+1D in M1 and M2) | 2026-09-19 |

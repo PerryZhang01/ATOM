@@ -92,6 +92,7 @@ source and compare it with this table.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -235,6 +236,8 @@ def install_cost_backend(runner: Any, backend: CostBackend) -> None:
 
 HOST_SEGMENTS = ("E", "W_pre", "W_launch", "W_post")  # in the order the host runs them
 FORWARD_KINDS = ("decode", "prefill", "middle")
+#: The format of a simulated run's `dp<r>.cost.jsonl`, its first line.
+COST_TABLE_VERSION = 1
 
 
 class HostDeviceRecurrence:
@@ -244,6 +247,8 @@ class HostDeviceRecurrence:
     device work two forwards back; an output forward, after launch, waits for the
     previous output forward's. `laws[kind][segment]` are coefficients on `(1,
     tokens, seqs)`, zero where absent. `now` reads the engine LP's clock.
+    `segments` holds the seconds the last `charge` charged each segment, 0 for
+    one in `skip`.
     """
 
     def __init__(self, laws: dict, skip, now) -> None:
@@ -256,10 +261,11 @@ class HostDeviceRecurrence:
         kind = "decode" if batch.total_seqs_num_prefill == 0 else "prefill"
         law = self.laws.get(kind if batch.produces_output() else "middle", {})
         x = (1, batch.total_tokens_num, batch.total_seqs_num)
-        e, pre, launch, post = (
-            float(np.dot(law.get(s, (0, 0, 0)), x)) * (s not in self.skip)
+        self.segments = {
+            s: float(np.dot(law.get(s, (0, 0, 0)), x)) * (s not in self.skip)
             for s in HOST_SEGMENTS
-        )
+        }
+        e, pre, launch, post = self.segments.values()
         now = self.now()
         host = max(now + e, self.ends[0]) + pre
         launch_end = host + launch
@@ -494,21 +500,20 @@ class PricedSteps:
 
     def priced_steps(self) -> dict[str, Any]:
         """This rank's own steps, folded into one `ProvenanceMix` as each was
-        priced, before the max over the DP group, with the analytical and the
-        extrapolated steps and seconds apart. A dict even before the first
-        step, since a None reply parks the engine that asks.
+        priced, before the max over the DP group, with the steps and seconds
+        of each of `GROUPS` apart. A dict even before the first step, since a
+        None reply parks the engine that asks.
         """
-        from atom.compass.backends.cost import ProvenanceMix
-        from atom.compass.backends.provenance import Species
+        from atom.compass.backends.cost import GROUPS, ProvenanceMix, group
 
         mix = vars(self).get("_priced") or ProvenanceMix()
-        steps, seconds = mix.steps_by_species(), mix.seconds_by_species()
-        apart = (Species.ANALYTICAL, Species.EXTRAPOLATED)
+        steps = {group(*k): n for k, n in mix.steps_by_method().items()}
+        seconds = {group(*k): s for k, s in mix.seconds_by_method().items()}
         return {
             "steps": mix.steps,
             "seconds": mix.seconds,
-            **{f"{s}_steps": steps.get(s, 0) for s in apart},
-            **{f"{s}_seconds": seconds.get(s, 0.0) for s in apart},
+            **{f"{g}_steps": steps.get(g, 0) for g in GROUPS},
+            **{f"{g}_seconds": seconds.get(g, 0.0) for g in GROUPS},
         }
 
 
@@ -520,17 +525,17 @@ class PredictedMemory:
         return vars(self).get("compass_memory", {})
 
 
-class StepFitBundle:
-    """The step fit bundle a runner prices with, read by the engine's hand-in."""
+class StepGridBundle:
+    """The step grid bundle a runner prices with, read by the engine's hand-in."""
 
-    def step_fit_bundle(self) -> dict[str, Any]:
-        """`compass_step_fit` as a step fit run installed it; empty before
+    def step_grid_bundle(self) -> dict[str, Any]:
+        """`compass_step_grid` as a step grid run installed it; empty before
         one is, since a None reply parks the engine."""
-        return vars(self).get("compass_step_fit", {})
+        return vars(self).get("compass_step_grid", {})
 
 
 class NonAllocatingRunner(
-    RefusedControlCommands, PricedSteps, PredictedMemory, StepFitBundle
+    RefusedControlCommands, PricedSteps, PredictedMemory, StepGridBundle
 ):
     """Overrides that construct a model runner without touching device memory."""
 
@@ -851,10 +856,10 @@ class NonAllocatingRunner(
         to own its memory, carries the same one of the two.
 
         The reply's `predicted_s` is the step's duration: this rank's batch
-        priced by the installed cost backend, then the max over its DP group.
+        priced by the installed cost backend, then its DP group target.
         A runner with no backend refuses the step rather than report one that
         took no time. ATOM's `dummy_execution` answers with this reply too, so
-        an idle DP rank's dummy batch is priced and joins the group's max.
+        an idle DP rank's dummy batch is priced and joins the group's targets.
         """
         if not hasattr(batch, "produces_output"):
             # Not reachable from the engine, which only ever passes a scheduled
@@ -877,7 +882,14 @@ class NonAllocatingRunner(
         from atom.compass.parity import record_step
         from atom.model_engine.scheduler import ScheduledBatchOutput
 
-        record_step(self, batch)
+        mode = record_step(self, batch)
+        record = getattr(self, "_parity_record", None)
+        if record is not None and record.step == 1:
+            # The record was just created, replacing an earlier run's; so is
+            # the cost table, before anything this step does can stop the run.
+            record.path.with_suffix(".cost.jsonl").write_text(
+                json.dumps({"version": COST_TABLE_VERSION}) + "\n"
+            )
 
         stream = getattr(self, "_token_stream", None)
         if stream is None:
@@ -908,20 +920,28 @@ class NonAllocatingRunner(
                 ),
             )
             self._token_stream = stream
+        tokens = stream.step(batch)
+        seconds = _group_step_seconds(self, batch, backend, mode)
         return ScheduledBatchOutput(
-            **stream.step(batch),
-            predicted_s=_group_step_seconds(self, batch, backend),
+            **tokens,
+            predicted_s=seconds,
+            group_targets=getattr(self, "_group_targets", None),
         )
 
 
-def _group_step_seconds(runner: Any, batch: Any, backend: CostBackend) -> float:
-    """This rank's step priced from its own batch, then the max over its DP group.
+def _group_step_seconds(
+    runner: Any, batch: Any, backend: CostBackend, mode: Any = None
+) -> float:
+    """This rank's step priced from its own batch, then its DP group target.
+
+    `mode` is the step's `ForwardMode` when the step record already settled
+    it; without one it is settled here, which runs the DP collective.
 
     In a run, `compass_host` composes the price, device seconds, with host time.
-    The `all_reduce(MAX)` stands in for the cross-rank collectives a real
-    forward makes, which a predicted one does not run, so every rank leaves the
-    step at the group's seconds. With one rank there is no group to exchange
-    with.
+    The `all_gather` stands in for the cross-rank collectives a real forward
+    makes: a rank with output, not the DP dummy, waits for them and leaves at
+    the group's max, any other at its own seconds; `_group_targets` holds all,
+    by rank, or None with one rank.
 
     A pipeline stage is refused: it runs only its own layers, and a backend
     prices the whole step, so every stage would charge the whole model.
@@ -930,6 +950,17 @@ def _group_step_seconds(runner: Any, batch: Any, backend: CostBackend) -> float:
     a priced step; its reason, ``cost:`` and what each source said, joins the
     refusals the summary reads. With `compass_abort` set it raises instead,
     which ends the worker.
+
+    On the rank that keeps the parity record, each step also appends its cost
+    line to `dp<r>.cost.jsonl` beside it: the record's `step`; with a
+    `compass_host` that reports them, each of `HOST_SEGMENTS` in seconds and
+    `skipped`, those its `skip` charged as 0; `device_s`, the backend's price;
+    `charge_s`, that composed with host time (`device_s` with no host);
+    `group_s`, its DP group target; `terms`, each one's `name`, `seconds`
+    and its provenance's `method`, `validated` and `source`; and `refused`,
+    the ``cost:`` reason or None. Above them, `forward` starts the file with
+    `{"version": COST_TABLE_VERSION}` as the record starts, replacing an
+    earlier run's file.
     """
     from atom.compass.runner.projection import batch_view, dp_group, forward_mode
 
@@ -940,30 +971,64 @@ def _group_step_seconds(runner: Any, batch: Any, backend: CostBackend) -> float:
             "stage the whole model would count it once per stage"
         )
     from atom.compass.backends.cost import ProvenanceMix
-    from atom.compass.backends.ladder import CostRefused
+    from atom.compass.backends.resolver import CostRefused
 
-    mode = forward_mode(batch, runner)
+    if mode is None:
+        mode = forward_mode(batch, runner)
     mix = vars(runner).setdefault("_priced", ProvenanceMix())
+    terms, refused = (), None
     try:
-        cost = backend.estimate(batch_view(batch, mode, runner))
-    except CostRefused as refused:
+        cost = backend.price(batch_view(batch, mode, runner))
+    except CostRefused as refusal:
         if getattr(runner, "compass_abort", False):
             raise
         mix.steps += 1
-        said = "; ".join(f"{r.source}: {r.reason}" for r in refused.declined)
-        said = said or "no cost source was consulted"
-        vars(runner).setdefault("_refused_commands", []).append(f"cost:{said}")
-        seconds = 0.0
+        said = "; ".join(f"{r.source}: {r.reason}" for r in refusal.declined)
+        refused = f"cost:{said or 'no cost source was consulted'}"
+        vars(runner).setdefault("_refused_commands", []).append(refused)
+        device_s = 0.0
     else:
         mix.record(cost)
-        seconds = cost.seconds
+        device_s, terms = cost.seconds, cost.terms
     host = getattr(runner, "compass_host", None)
-    if host is not None:
-        seconds = host.charge(batch, seconds)
-    if mode.sync is None:
-        return seconds
-    group_max = torch.tensor([seconds], dtype=torch.float64)
-    torch.distributed.all_reduce(
-        group_max, op=torch.distributed.ReduceOp.MAX, group=dp_group()
-    )
-    return group_max.item()
+    charge_s = device_s if host is None else host.charge(batch, device_s)
+    group_s, targets = charge_s, None
+    if mode.sync is not None:
+        group = dp_group()
+        waits = batch.produces_output() and not batch.is_dummy_run
+        mine = torch.tensor([charge_s, waits], dtype=torch.float64)
+        rows = [torch.empty_like(mine) for _ in range(group.size())]
+        torch.distributed.all_gather(rows, mine, group=group)
+        top = max(r[0].item() for r in rows)
+        targets = tuple(top if w else s for s, w in (r.tolist() for r in rows))
+        group_s = targets[group.rank()]
+    vars(runner)["_group_targets"] = targets
+    record = getattr(runner, "_parity_record", None)
+    if record is None:
+        return group_s
+    step = record.step - 1  # the step `record_step` just recorded
+    segments = {}
+    if hasattr(host, "segments"):
+        skipped = [s for s in HOST_SEGMENTS if s in host.skip]
+        segments = {**host.segments, "skipped": skipped}
+    line = {
+        "step": step,
+        **segments,
+        "device_s": device_s,
+        "charge_s": charge_s,
+        "group_s": group_s,
+        "terms": [
+            {
+                "name": t.name,
+                "seconds": t.seconds,
+                "method": t.provenance.method.value,
+                "validated": t.provenance.validated,
+                "source": t.provenance.source,
+            }
+            for t in terms
+        ],
+        "refused": refused,
+    }
+    with record.path.with_suffix(".cost.jsonl").open("a") as f:
+        f.write(json.dumps(line) + "\n")
+    return group_s

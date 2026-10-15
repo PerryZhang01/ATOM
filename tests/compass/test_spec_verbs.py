@@ -104,7 +104,7 @@ TIER0 = {
 #: one entry no tier-1 probe produces. `allocator_retained_after_load_bytes` at
 #: width 1 is the hole `FILLED_BY` records, so on a real machine it is measured
 #: by hand. It is carried here because these fixtures exist to make a complete
-#: document, and `provenance.method` is one claim over a whole fragment:
+#: document, and `provenance.origin` is one claim over a whole fragment:
 #: `probed` on this body is right about every entry but that one, which is a
 #: limit of the fixture rather than a capability of the probe.
 TIER1 = {
@@ -166,7 +166,7 @@ def fragment(
     body=None,
     *,
     machine=MACHINE,
-    method="probed",
+    origin="probed",
     authored_by="a person",
     date="2026-09-18",
     **stanza,
@@ -176,7 +176,7 @@ def fragment(
         "schema_version": 1,
         "name": machine,
         "provenance": dict(
-            {"authored_by": authored_by, "date": date, "method": method}, **stanza
+            {"authored_by": authored_by, "date": date, "origin": origin}, **stanza
         ),
     }
     document.update(copy.deepcopy(body or {}))
@@ -348,24 +348,24 @@ def test_the_merged_document_reads_as_a_spec_and_echoes_back():
     assert MachineSpec.from_mapping(spec.echo()).digest() == spec.digest()
 
 
-def test_the_merged_provenance_names_every_fragment_and_its_method():
+def test_the_merged_provenance_names_every_fragment_and_its_origin():
     combination = merge(
         [
             fragment("tier0", TIER0),
-            fragment("tier1", TIER1, method="datasheet", date="2026-09-20"),
+            fragment("tier1", TIER1, origin="datasheet", date="2026-09-20"),
             fragment("tier2", TIER2),
             fragment("links", LINKS, authored_by="another person"),
         ]
     )
     provenance = combination.document["provenance"]
     assert provenance["fragments"] == ["tier0", "tier1", "tier2", "links"]
-    assert provenance["method"] == "mixed"
+    assert provenance["origin"] == "mixed"
     assert provenance["date"] == "2026-09-20"
     assert provenance["authored_by"] == "a person, another person"
 
 
-def test_one_method_is_kept_when_every_fragment_used_it():
-    assert merged().document["provenance"]["method"] == "probed"
+def test_one_origin_is_kept_when_every_fragment_used_it():
+    assert merged().document["provenance"]["origin"] == "probed"
 
 
 @pytest.mark.parametrize(
@@ -375,7 +375,7 @@ def test_one_method_is_kept_when_every_fragment_used_it():
         "name",
         "provenance.authored_by",
         "provenance.date",
-        "provenance.method",
+        "provenance.origin",
     ],
 )
 def test_a_fragment_that_does_not_state_where_it_came_from_is_refused(path):
@@ -385,7 +385,7 @@ def test_a_fragment_that_does_not_state_where_it_came_from_is_refused(path):
         "provenance": {
             "authored_by": "a person",
             "date": "2026-09-18",
-            "method": "probed",
+            "origin": "probed",
         },
     }
     document.update(copy.deepcopy(TIER0))
@@ -548,7 +548,7 @@ def test_a_stack_difference_is_rendered_by_the_run_that_refused_nothing():
     assert checked.ok
     assert str(checked) == (
         "ok: 0 refusal(s)\n"
-        "  stack moved: the constants were measured against rocm '7.2.4' "
+        "  stack moved: the constants were probed against rocm '7.2.4' "
         "(now '7.3.0')"
     )
 
@@ -561,7 +561,7 @@ def test_a_transfer_keeps_the_source_stack_out_of_this_machines_pin():
     combination = merge(
         fragments()[:2]
         + [
-            fragment("tier2", carried, method="transferred-from:mi300x-8gpu"),
+            fragment("tier2", carried, origin="transferred-from:mi300x-8gpu"),
             fragment("links", LINKS),
         ]
     )
@@ -572,7 +572,7 @@ def test_a_transfer_keeps_the_source_stack_out_of_this_machines_pin():
     assert checked.refusals[0].what == (
         "'tier2' (machine 'mi355x-8gpu-2node', transferred-from:mi300x-8gpu, "
         "by a person on 2026-09-18) carried constants over from 'mi300x-8gpu', "
-        "measured against rocm '7.0.2', into a spec pinned to rocm '7.2.4'"
+        "probed against rocm '7.0.2', into a spec pinned to rocm '7.2.4'"
     )
 
 
@@ -580,7 +580,7 @@ def test_a_transfer_that_names_no_stack_at_all_is_refused():
     combination = merge(
         fragments()[:2]
         + [
-            fragment("tier2", TIER2, method="transferred-from:mi300x-8gpu"),
+            fragment("tier2", TIER2, origin="transferred-from:mi300x-8gpu"),
             fragment("links", LINKS),
         ]
     )
@@ -597,7 +597,7 @@ def test_a_saved_transfer_merged_again_names_the_merge_that_dropped_its_pin():
     # document, which is itself a transfer with no pin; the remedy names both.
     carried = copy.deepcopy(TIER2)
     carried["device"]["software_pinned_to"] = dict(STACK)
-    transfer = fragment("tier2", carried, method="transferred-from:mi300x-8gpu")
+    transfer = fragment("tier2", carried, origin="transferred-from:mi300x-8gpu")
     saved = Fragment.from_mapping(merge([transfer]).document, "t.yaml")
     rest = fragments()[:2] + [fragment("links", LINKS)]
     (refused,) = validate(merge([saved] + rest)).refusals
@@ -607,12 +607,12 @@ def test_a_saved_transfer_merged_again_names_the_merge_that_dropped_its_pin():
         "by a person on 2026-09-18) carried constants over from 'mi300x-8gpu', "
         "and its provenance names the fragments an earlier merge built it from"
     )
-    bare = fragment("tier2", TIER2, method="transferred-from:mi300x-8gpu")
+    bare = fragment("tier2", TIER2, origin="transferred-from:mi300x-8gpu")
     first_hand = validate(merge(fragments()[:2] + [bare, fragment("links", LINKS)]))
     assert first_hand.refusals[0].what == (
         "'tier2' (machine 'mi355x-8gpu-2node', transferred-from:mi300x-8gpu, "
         "by a person on 2026-09-18) carried constants over from 'mi300x-8gpu' "
-        "without saying which stack they were measured against"
+        "without saying which stack they were probed against"
     )
     twice = Fragment.from_mapping(merge([saved]).document, "t2.yaml")
     (refused,) = validate(merge([twice] + rest)).refusals
@@ -627,10 +627,10 @@ def test_a_saved_transfer_merged_again_names_the_merge_that_dropped_its_pin():
 def test_a_transfer_whose_provenance_lists_no_fragments_is_refused_first_hand():
     # `merge` never writes an empty list, so one names no earlier merge; whoever
     # wrote this transfer left its pin out, as in the first-hand case.
-    method = "transferred-from:mi300x-8gpu"
+    origin = "transferred-from:mi300x-8gpu"
     rest = fragments()[:2] + [fragment("links", LINKS)]
-    empty = fragment("tier2", TIER2, method=method, fragments=[])
-    bare = fragment("tier2", TIER2, method=method)
+    empty = fragment("tier2", TIER2, origin=origin, fragments=[])
+    bare = fragment("tier2", TIER2, origin=origin)
     (refused,) = validate(merge(rest + [empty])).refusals
     (control,) = validate(merge(rest + [bare])).refusals
     assert str(refused) == str(control)
@@ -642,7 +642,7 @@ def test_a_transfer_from_a_spec_pinned_to_this_stack_validates():
     combination = merge(
         fragments()[:2]
         + [
-            fragment("tier2", carried, method="transferred-from:mi300x-8gpu"),
+            fragment("tier2", carried, origin="transferred-from:mi300x-8gpu"),
             fragment("links", LINKS),
         ]
     )
@@ -677,7 +677,7 @@ def test_the_transfer_condition_names_itself_as_unaskable_of_a_document():
     combination = merge(
         fragments()[:2]
         + [
-            fragment("tier2", carried, method="transferred-from:mi300x-8gpu"),
+            fragment("tier2", carried, origin="transferred-from:mi300x-8gpu"),
             fragment("links", LINKS),
         ]
     )
@@ -692,12 +692,12 @@ def test_the_transfer_condition_names_itself_as_unaskable_of_a_document():
 
 def test_a_saved_document_merged_again_does_not_claim_to_have_asked_the_transfer():
     # Validating the first `Merge` is refused. Its document keeps the transfer's
-    # source pin out and says only `method: mixed`, so a `Merge` of the saved
+    # source pin out and says only `origin: mixed`, so a `Merge` of the saved
     # document has no transfer to ask the condition of. A re-merged all-`probed`
     # document is the control.
     carried = copy.deepcopy(TIER2)
     carried["device"]["software_pinned_to"] = dict(STACK, rocm="7.0.2")
-    transfer = fragment("tier2", carried, method="transferred-from:mi300x-8gpu")
+    transfer = fragment("tier2", carried, origin="transferred-from:mi300x-8gpu")
     combination = merge(fragments()[:2] + [transfer, fragment("links", LINKS)])
     asked = {"tp_widths": (1, 2, 4, 8), "observed_stack": STACK}
     first = validate(combination, **asked)
@@ -708,7 +708,7 @@ def test_a_saved_document_merged_again_does_not_claim_to_have_asked_the_transfer
     again = validate(merge([saved]), **asked)
     assert again.ok and again.asked_in_part == ()
     assert [c.split(" -- ")[0] for c in again.not_asked] == [TRANSFERS_ASKED]
-    assert "method `mixed` in 'machine.yaml'" in again.not_asked[0]
+    assert "origin `mixed` in 'machine.yaml'" in again.not_asked[0]
     # A transfer stated beside the saved document is asked, and only in part.
     beside = validate(merge([saved, transfer]), **asked)
     assert [refusal.rule for refusal in beside.refusals] == [Rule.PINNED_STACK]
@@ -940,7 +940,7 @@ def refused_by_condition():
     transferred = merge(
         fragments()[:2]
         + [
-            fragment("tier2", carried, method="transferred-from:mi300x-8gpu"),
+            fragment("tier2", carried, origin="transferred-from:mi300x-8gpu"),
             fragment("links", LINKS),
         ]
     )
@@ -972,7 +972,7 @@ def refused_by_condition():
             (
                 validate(merged(), tp_widths=(16,)),
                 Rule.NO_DEFAULTS,
-                "was not measured at tensor-parallel width 16",
+                "was not probed at tensor-parallel width 16",
             )
         ],
         PROBES_ASKED: [
@@ -986,13 +986,13 @@ def refused_by_condition():
             )
         ],
         STACK_ASKED: [
-            (moved, Rule.PINNED_STACK, "this spec's constants were measured against")
+            (moved, Rule.PINNED_STACK, "this spec's constants were probed against")
         ],
         TRANSFERS_ASKED: [
             (
                 validate(transferred),
                 Rule.PINNED_STACK,
-                "measured against rocm '7.0.2', into a spec pinned to rocm '7.2.4'",
+                "probed against rocm '7.0.2', into a spec pinned to rocm '7.2.4'",
             )
         ],
     }
@@ -1272,7 +1272,7 @@ def test_every_missing_field_under_a_quantity_is_named_and_not_only_the_first():
         "`host.admission_fixed_s`, `host.ipc.shm_broadcast_s` are declared by "
         "this schema, and this spec carries no value for them"
     )
-    assert "fragments that measure these fields" in refused.value.remedy
+    assert "fragments that supply these fields" in refused.value.remedy
 
 
 def test_a_block_an_assembled_spec_holds_nothing_under_names_every_field():
@@ -1303,7 +1303,7 @@ def test_the_basis_prints_its_spec_and_one_line_per_field():
     printed = str(explain(spec, "host.ipc", origin=combination)).splitlines()
     assert printed[0].endswith(spec.digest())
     assert printed[1].strip().startswith("host.ipc.zmq_roundtrip_s = 5e-05")
-    assert printed[1].endswith("[tier0]")
+    assert printed[1].endswith("[tier0]  probed")
 
 
 # --- one reading per rank ----------------------------------------------------
@@ -1456,7 +1456,7 @@ def test_a_fragment_carrying_no_tokenizer_is_refused(tmp_path):
             machine="node-18",
             authored_by="ana",
             date="2026-09-22",
-            method="probed",
+            origin="probed",
             processors=published_topology(tmp_path, cores_physical=8),
         )
     assert refused.value.rule is Rule.TOKENIZER_IDENTITY
@@ -1473,7 +1473,7 @@ def test_an_entry_that_is_not_a_tokenizer_entry_is_refused_here(tmp_path):
             machine="node-18",
             authored_by="ana",
             date="2026-09-22",
-            method="probed",
+            origin="probed",
             processors=published_topology(tmp_path, cores_physical=8),
         )
     assert refused.value.rule is Rule.SEPARATION
@@ -1487,7 +1487,7 @@ def test_an_entry_without_the_derate_its_rates_oblige_is_refused_here(tmp_path):
             machine="node-18",
             authored_by="ana",
             date="2026-09-22",
-            method="probed",
+            origin="probed",
             processors=published_topology(tmp_path, cores_physical=8),
         )
     assert refused.value.rule is Rule.DERATE
@@ -1523,7 +1523,7 @@ def test_the_probes_counts_refuse_the_pair_that_used_to_merge(tmp_path):
         machine="node-18",
         authored_by="ana",
         date="2026-09-22",
-        method="probed",
+        origin="probed",
         source="tokenizer-laptop",
         processors=published_topology(tmp_path, cores_physical=8),
     )
@@ -1548,7 +1548,7 @@ def test_the_same_pair_merges_when_the_counts_agree(tmp_path):
         machine="node-18",
         authored_by="ana",
         date="2026-09-22",
-        method="probed",
+        origin="probed",
         source="tokenizer-node",
         processors=published_topology(tmp_path, cores_physical=96, packages=2),
     )
@@ -1569,18 +1569,18 @@ def test_the_fragment_states_where_it_is_authored_for_and_how(tmp_path):
         machine="node-18",
         authored_by="ana",
         date="2026-09-22",
-        method="probed",
+        origin="probed",
         processors=published_topology(tmp_path, cores_physical=8),
     )
     assert emitted.machine == "node-18"
-    assert emitted.method == "probed" and emitted.transferred_from is None
+    assert emitted.origin == "probed" and emitted.transferred_from is None
     assert "by ana on 2026-09-22" in emitted.stanza()
 
 
 def test_how_the_rates_were_obtained_is_the_callers_claim_and_has_no_default(tmp_path):
     # The rates arrive as an argument and nothing here encodes or decodes
     # anything, so what the record claims about their source is the caller's to
-    # state. `provenance.method` is what a merge refusal quotes and what an
+    # state. `provenance.origin` is what a merge refusal quotes and what an
     # artifact carries as the numbers' source, and a default here would be this
     # function asserting a measurement it did not take, over data it received.
     processors = published_topology(tmp_path, cores_physical=8)
@@ -1591,9 +1591,9 @@ def test_how_the_rates_were_obtained_is_the_callers_claim_and_has_no_default(tmp
         "processors": processors,
     }
     carried = tokenizer_fragment(
-        [TOKENIZER], method="transferred-from:mi300x-8gpu", **stated
+        [TOKENIZER], origin="transferred-from:mi300x-8gpu", **stated
     )
-    assert carried.method == "transferred-from:mi300x-8gpu"
+    assert carried.origin == "transferred-from:mi300x-8gpu"
     assert carried.transferred_from == "mi300x-8gpu"
     with pytest.raises(TypeError):
         tokenizer_fragment([TOKENIZER], **stated)
@@ -1911,7 +1911,7 @@ def test_a_term_that_is_not_keyed_by_width_has_no_probe_to_ask_for():
     with pytest.raises(SpecRefusal) as refused:
         probe_for("persistent_forward_buffer_bytes", 1)
     assert refused.value.rule is Rule.NO_DEFAULTS
-    assert "not one of the constants measured per" in refused.value.what
+    assert "not one of the constants probed per" in refused.value.what
 
 
 def test_a_missing_entry_no_probe_fills_is_two_refusals_and_not_one():
@@ -1929,7 +1929,7 @@ def test_a_missing_entry_no_probe_fills_is_two_refusals_and_not_one():
         Rule.NO_DEFAULTS,
     ]
     measured, filled = (refusal.what for refusal in checked.refusals)
-    assert "was not measured at tensor-parallel width 1" in measured
+    assert "was not probed at tensor-parallel width 1" in measured
     assert "no probe here fills" in filled
 
 
@@ -1971,7 +1971,7 @@ def test_the_probe_question_is_asked_of_the_tables_it_says_it_reads(monkeypatch)
     unmeasured = [
         refusal
         for refusal in checked.refusals
-        if "was not measured at tensor-parallel width 16" in refusal.what
+        if "was not probed at tensor-parallel width 16" in refusal.what
     ]
     assert len(unmeasured) == len(WIDTH_TABLES) > len(PROBE_TABLES)
     assert asked, "the probe question asked nothing"
@@ -2188,7 +2188,7 @@ def _swept_on(script, tmp_path, cores_physical, **entry):
         machine=script.NAME,
         authored_by="ana",
         date="2026-10-11",
-        method="probed",
+        origin="probed",
         source="tokenizer",
         processors=published_topology(
             tmp_path, cores_physical=cores_physical, packages=2
@@ -2202,9 +2202,7 @@ def test_the_node_18_fragments_validate_and_explain_splits_measured_from_declare
     script = _node18_script()
     merged = merge([_swept_on(script, tmp_path, 112), *script.device_fragments()])
     assert validate(merged, tp_widths=(1,)).ok
-    measured, declared = script.report(merged, {"tokenizer", "device"}).split(
-        "declared:"
-    )
+    measured, declared = script.report(merged).split("assumed:")
     for field in (
         "device.memory.capacity_bytes",
         "driver_and_collective_reserve_bytes[1]",
@@ -2241,14 +2239,17 @@ def test_the_checked_in_node_18_spec_validates_and_prices_its_activations(monkey
     script = _node18_script()
     path = SPEC_ROOT / "scripts" / "compass" / "machines" / f"{script.NAME}.json"
     document = _width_keys(json.loads(path.read_text()))
-    spec = validate(document, tp_widths=(1,)).raise_first()
+    spec = validate(document, tp_widths=(1, 8, "1x8")).raise_first()
     for fragment in script.device_fragments():
         for path, value in fragment.values.items():
             if not path.startswith("provenance.") and path != "name":
-                assert spec.values[path] == value, path
+                # Each start fills its own widths of a width table.
+                held = spec.values[path]
+                part = {k: held[k] for k in value} if isinstance(value, dict) else held
+                assert part == value, path
     assert spec.activations_for(
         "Qwen3_5ForConditionalGeneration", script.CONFIG_JSON, 1
-    ) == ("qwen3.8-27b", 180480.0)
+    ) == ("qwen3.8-27b", 180480.0, (f"sha256:{script.RECORD}",))
 
 
 def test_the_checked_in_hjbog39_spec_holds_that_hosts_start(monkeypatch):

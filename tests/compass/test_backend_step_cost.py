@@ -23,17 +23,17 @@ import pytest
 
 from atom.compass.backends import (
     CostTerm,
+    Method,
     Provenance,
     ProvenanceMix,
     Refusal,
-    Species,
     StepCost,
     fold_seconds,
     fold_step,
 )
 
-MEASURED = Provenance(Species.MEASURED, "step-level")
-ANALYTIC = Provenance(Species.ANALYTICAL, "roofline")
+MEASURED = Provenance(Method.MEASURED, "step-level")
+ANALYTIC = Provenance(Method.ANALYTICAL, "roofline")
 UNPRICED = Refusal("price_list", "unpriced leaf")
 STOOD_IN = ANALYTIC.resolved("analytic_law", [UNPRICED])
 
@@ -51,7 +51,7 @@ def test_the_total_is_the_fold_of_the_parts():
 
 
 def test_grouping_re_associates_so_the_mixture_is_not_a_second_total():
-    """The rows re-fold to the total; the species totals are a different sum."""
+    """The rows re-fold to the total; the method totals are a different sum."""
     step = StepCost(
         [
             term("a", 0.1),
@@ -60,8 +60,8 @@ def test_grouping_re_associates_so_the_mixture_is_not_a_second_total():
         ]
     )
     assert step.seconds == 0.45000000000000007
-    assert fold_seconds(step.seconds_by_species().values()) == 0.45
-    assert fold_seconds(step.seconds_by_species().values()) != step.seconds
+    assert fold_seconds(step.seconds_by_method().values()) == 0.45
+    assert fold_seconds(step.seconds_by_method().values()) != step.seconds
     assert fold_seconds(seconds for _, seconds, _ in step.rows()) == step.seconds
 
 
@@ -128,7 +128,7 @@ def test_every_reader_is_covered_not_just_the_obvious_one():
         "refused_seconds",
         "rows",
         "seconds",
-        "seconds_by_species",
+        "seconds_by_method",
         "terms",
     }
 
@@ -184,15 +184,15 @@ def test_a_step_reports_its_mixture_and_its_refused_share():
     step = StepCost([term("mlp", 0.006), CostTerm("attention", 0.004, STOOD_IN)])
     assert step.is_refused
     assert step.refused_seconds == pytest.approx(0.004)
-    assert step.seconds_by_species() == {
-        Species.MEASURED: pytest.approx(0.006),
-        Species.ANALYTICAL: pytest.approx(0.004),
+    assert step.seconds_by_method() == {
+        (Method.MEASURED, False): pytest.approx(0.006),
+        (Method.ANALYTICAL, False): pytest.approx(0.004),
     }
     assert step.refusals == (UNPRICED,)
 
 
 def test_a_step_reports_every_refusal_behind_it():
-    """Two rungs declined on one term; both are the record, and both count."""
+    """Two sources declined on one term; both are the record, and both count."""
     chained = ANALYTIC.resolved(
         "analytic_law", [UNPRICED, Refusal("nearest_key", "outside the range")]
     )
