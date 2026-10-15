@@ -150,14 +150,18 @@ def forward_mode(batch: Any, runner: Any) -> ForwardMode:
     on the DP group, so every rank calls it once per step, as the real forward
     does; the group's rung and token counts come back from it.
 
-    The arguments below that do not reach the rung are passed at their inert
-    values: `decide` settles a query length and a token count as well, and those
-    are what `captured_tokens`, `is_block_drafter`, `tbo_on` and `local_tbo`
-    feed. The width and the replay decision come from `capture_sizes`,
-    `enforce_eager`, the attention builder's `step_needs_eager`, the batch and
-    the collective alone.
+    `tbo_on` and `local_tbo` are what `ModelRunner.prepare_model` passes: the
+    config's `enable_tbo` and the runner's own `_local_tbo_eligibility`, which
+    ride the collective, so the group agrees the two-batch-overlap split a real
+    run agrees. A config with no `enable_tbo` field is read as TBO off. The
+    other arguments that do not reach the rung are passed at their inert
+    values: `decide` settles a query length and a token count as well, and
+    those are what `captured_tokens` and `is_block_drafter` feed. The width and
+    the replay decision come from `capture_sizes`, `enforce_eager`, the
+    attention builder's `step_needs_eager`, the batch and the collective alone.
     """
     dp_size = _data_parallel_size(runner)
+    tbo_on = bool(getattr(runner.config, "enable_tbo", False))
     ladder = np.asarray(runner.capture_sizes_np, dtype=np.int32)
     if bool(np.any(ladder[1:] < ladder[:-1])):
         raise RunnerRefusal(
@@ -176,8 +180,10 @@ def forward_mode(batch: Any, runner: Any) -> ForwardMode:
         capture_sizes=ladder,
         captured_tokens=None,
         is_block_drafter=False,
-        tbo_on=False,
-        local_tbo=(False, False, 0, 0),
+        tbo_on=tbo_on,
+        local_tbo=(
+            runner._local_tbo_eligibility(batch) if tbo_on else (False, False, 0, 0)
+        ),
         max_seqlen_q=batch.num_spec_step + 1,
     )
 
@@ -217,7 +223,8 @@ def batch_view(batch: Any, mode: ForwardMode, runner: Any) -> BatchView:
     first `total_seqs_num_prefill` rows are prefill. The rung and the MoE
     gather's rows come from `mode`, the step's one `forward_mode`; a
     data-parallel runner handed a mode with no group counts is refused.
-    Whether the step produces output is `ScheduledBatch.produces_output`.
+    Whether the step produces output is `ScheduledBatch.produces_output`, and
+    the TBO split is the collective's `ub_tokens_across_dp`.
 
     The MoE gather's rows follow `running_tokens_are_unified`, as
     `FusedMoE.forward_impl_graph` does. Every rank decoding, the padded
@@ -248,4 +255,5 @@ def batch_view(batch: Any, mode: ForwardMode, runner: Any) -> BatchView:
         capture_rung=_rung(mode),
         moe_rows=moe_rows,
         produces_output=batch.produces_output(),
+        tbo_tokens=None if mode.sync is None else mode.sync.ub_tokens_across_dp,
     )
