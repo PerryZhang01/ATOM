@@ -2,14 +2,16 @@
 """A SIGINT or SIGTERM stops a simulated server where its run stands.
 
 The frontend's event loop ends its run at the signal, as the ``+inf`` grant
-ends it at the finish, and closing the loop gives each signal back the handler
-it had. A server whose engine waits for a grant no client run will give, since
-no traffic LP binds, leaves on the signal alone, its summary written as an
-early end naming the signal.
+ends it at the finish, and after the finish the signal changes nothing; closing
+the loop gives each signal back the handler it had. A server whose engine waits
+for a grant no client run will give, since no traffic LP binds, leaves on the
+signal alone, its summary written as an early end naming the signal.
 """
 
+import asyncio
 import http.client
 import json
+import math
 import os
 import signal
 import socket
@@ -81,8 +83,9 @@ def _answers(port: int) -> bool:
 
 
 @SIGNALS
-def test_a_stop_signal_ends_the_loops_run_and_closing_puts_its_handler_back(
-    monkeypatch, sig
+@pytest.mark.parametrize("finished", [False, True], ids=["in-run", "after-finish"])
+def test_a_stop_signal_ends_a_run_in_progress_and_closing_puts_the_handler_back(
+    monkeypatch, sig, finished
 ):
     had = []
 
@@ -92,13 +95,18 @@ def test_a_stop_signal_ends_the_loops_run_and_closing_puts_its_handler_back(
     previous = signal.signal(sig, mine)
     rt = LPRuntime(LpId("frontend"), TABLE, conn=SimpleNamespace())
     rt.start_run()
+    if finished:  # as the +inf grant leaves it
+        rt.now = math.inf
+        rt.end_run()
     monkeypatch.setattr(clock, "_installed", rt)
     try:
         loop = CompassEventLoop()
         signal.raise_signal(sig)
-        loop.run_forever()  # the stop ends the run with nothing asked of the clock
+        # In the run, the stop ends it with nothing asked of the clock.
+        loop.run_until_complete(asyncio.sleep(0))
         loop.close()
-        assert (loop.stopped, rt.in_run, had) == (sig.name, False, [])
+        stopped = None if finished else sig.name
+        assert (loop.stopped, rt.in_run, had) == (stopped, False, [])
         assert signal.getsignal(sig) is mine
     finally:
         signal.signal(sig, previous)
