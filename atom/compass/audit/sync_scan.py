@@ -85,6 +85,27 @@ SCANNED_ROOTS: tuple[tuple[str, str], ...] = (
             "once per step from ForwardMode.decide, a simulated step included"
         ),
     ),
+    (
+        "atom/compass/runner/",
+        (
+            "the simulated runner that replaces the forward pass, and the "
+            "data-parallel group exchange it makes on every simulated step"
+        ),
+    ),
+    (
+        "atom/compass/kv/",
+        (
+            "the simulated KV connector, which carries the decode side's write "
+            "requests to the prefill engine"
+        ),
+    ),
+    (
+        "atom/compass/run/",
+        (
+            "the run driver: the engine step loop it installs and the hand-ins "
+            "and joins that close a simulated run"
+        ),
+    ),
 )
 
 UNSCANNED_ROOTS: tuple[tuple[str, str], ...] = (

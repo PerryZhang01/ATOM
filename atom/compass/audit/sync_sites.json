@@ -42,6 +42,18 @@
   {
    "path": "atom/utils/tbo/ubatching.py",
    "why": "the data-parallel step-shape all_gather every rank's worker runs once per step from ForwardMode.decide, a simulated step included"
+  },
+  {
+   "path": "atom/compass/runner/",
+   "why": "the simulated runner that replaces the forward pass, and the data-parallel group exchange it makes on every simulated step"
+  },
+  {
+   "path": "atom/compass/kv/",
+   "why": "the simulated KV connector, which carries the decode side's write requests to the prefill engine"
+  },
+  {
+   "path": "atom/compass/run/",
+   "why": "the run driver: the engine step loop it installs and the hand-ins and joins that close a simulated run"
   }
  ],
  "unscanned_roots": [
@@ -59,6 +71,150 @@
   }
  ],
  "sites": [
+  {
+   "id": "atom/compass/kv/connector.py::SimulatedKVConnectorScheduler.update_state_after_alloc::self._socks[rank].send(pickle.dumps((params[\"transfer_id\"], blocks, a, rank)))::p2p#0",
+   "file": "atom/compass/kv/connector.py",
+   "symbol": "SimulatedKVConnectorScheduler.update_state_after_alloc",
+   "call": "self._socks[rank].send",
+   "expr": "self._socks[rank].send(pickle.dumps((params[\"transfer_id\"], blocks, a, rank)))",
+   "shape": "p2p",
+   "peer": "deployment",
+   "why": "the decode engine's KV write request to the prefill engine of another deployment, sent on the decode step loop right after the request's blocks are allocated",
+   "mechanism": "K4",
+   "mechanism_why": "the decode end of the kv_write_req channel: the wrapped socket stamps the send with the LP's time, and the step loop that makes it is the clock owner"
+  },
+  {
+   "id": "atom/compass/kv/connector.py::SimulatedKVConnectorScheduler._write_requests::sock.poll(0)::poll#0",
+   "file": "atom/compass/kv/connector.py",
+   "symbol": "SimulatedKVConnectorScheduler._write_requests",
+   "call": "sock.poll",
+   "expr": "sock.poll(0)",
+   "shape": "poll",
+   "peer": "deployment",
+   "why": "the prefill engine asks, on its step loop, whether a write request from the decode deployment has been released to it; a zero bound never idles the loop",
+   "mechanism": "K5",
+   "mechanism_why": "the prefill end of the kv_write_req channel, received inline by the clock owner: the poll waits only until every frame already released has physically arrived, and reports one ready once the LP's clock passes its arrival"
+  },
+  {
+   "id": "atom/compass/kv/connector.py::SimulatedKVConnectorScheduler._write_requests::sock.recv()::socket_recv#0",
+   "file": "atom/compass/kv/connector.py",
+   "symbol": "SimulatedKVConnectorScheduler._write_requests",
+   "call": "sock.recv",
+   "expr": "sock.recv()",
+   "shape": "socket_recv",
+   "peer": "deployment",
+   "why": "takes a write request the poll before it reported ready, so the frame is already here and the call returns at once",
+   "mechanism": "K5",
+   "mechanism_why": "the inline receive of the kv_write_req channel on the prefill step loop, where the frame is counted as handled"
+  },
+  {
+   "id": "atom/compass/run/__init__.py::_workers_say::workers.call_func(\"refused_commands\", wait_out=True)::worker_rpc#0",
+   "file": "atom/compass/run/__init__.py",
+   "symbol": "_workers_say",
+   "call": "workers.call_func",
+   "expr": "workers.call_func(\"refused_commands\", wait_out=True)",
+   "shape": "worker_rpc",
+   "peer": "process",
+   "why": "the engine asks its own workers for their command refusals when it hands in its part of a client run or of the whole run",
+   "mechanism": "K6",
+   "mechanism_why": "an RPC to the engine's own workers, which share the engine's LP; mid-run it is made at a client-run-end grant, which moves no clock, and otherwise after the finish or after the loop raised, where nothing is simulated"
+  },
+  {
+   "id": "atom/compass/run/__init__.py::_workers_say::workers.call_func(\"priced_steps\", wait_out=True)::worker_rpc#0",
+   "file": "atom/compass/run/__init__.py",
+   "symbol": "_workers_say",
+   "call": "workers.call_func",
+   "expr": "workers.call_func(\"priced_steps\", wait_out=True)",
+   "shape": "worker_rpc",
+   "peer": "process",
+   "why": "the engine asks its own workers how many steps they priced and from which sources, for the same hand-in",
+   "mechanism": "K6",
+   "mechanism_why": "an RPC to the engine's own workers, which share the engine's LP; mid-run it is made at a client-run-end grant, which moves no clock, and otherwise after the finish or after the loop raised, where nothing is simulated"
+  },
+  {
+   "id": "atom/compass/run/__init__.py::_workers_say::workers.call_func(\"predicted_memory\", wait_out=True)::worker_rpc#0",
+   "file": "atom/compass/run/__init__.py",
+   "symbol": "_workers_say",
+   "call": "workers.call_func",
+   "expr": "workers.call_func(\"predicted_memory\", wait_out=True)",
+   "shape": "worker_rpc",
+   "peer": "process",
+   "why": "the engine asks its own workers for the memory they predict, for the same hand-in",
+   "mechanism": "K6",
+   "mechanism_why": "an RPC to the engine's own workers, which share the engine's LP; mid-run it is made at a client-run-end grant, which moves no clock, and otherwise after the finish or after the loop raised, where nothing is simulated"
+  },
+  {
+   "id": "atom/compass/run/__init__.py::engine_loop::workers.call_func(\"step_grid_bundle\", wait_out=True)::worker_rpc#0",
+   "file": "atom/compass/run/__init__.py",
+   "symbol": "engine_loop",
+   "call": "workers.call_func",
+   "expr": "workers.call_func(\"step_grid_bundle\", wait_out=True)",
+   "shape": "worker_rpc",
+   "peer": "process",
+   "why": "under a step-grid run the engine asks its own workers for the grid bundle once, before its step loop starts, so a run that ends early still hands it in",
+   "mechanism": "K6",
+   "mechanism_why": "an RPC to the engine's own workers, which share the engine's LP, made before the step loop's first clock request, while the LP's clock stands at its start"
+  },
+  {
+   "id": "atom/compass/run/__init__.py::engine_loop::ask.join(10.0)::join#0",
+   "file": "atom/compass/run/__init__.py",
+   "symbol": "engine_loop",
+   "call": "ask.join",
+   "expr": "ask.join(10.0)",
+   "shape": "join",
+   "peer": "thread",
+   "why": "after the engine's loop raised, waits up to ten wall seconds for a helper thread asking the workers for their hand-in, so a dead worker cannot hold the refusal record",
+   "mechanism": "K9",
+   "mechanism_why": "the run has already ended with the exception being recorded; the wall bound is real on purpose, and nothing simulated waits on it"
+  },
+  {
+   "id": "atom/compass/run/__init__.py::_until_end::a.done.wait(0.1)::event_wait#0",
+   "file": "atom/compass/run/__init__.py",
+   "symbol": "_until_end",
+   "call": "a.done.wait",
+   "expr": "a.done.wait(0.1)",
+   "shape": "event_wait",
+   "peer": "thread",
+   "why": "the early-end watcher beside the co-hosted clock authority polls every tenth of a wall second for the finish or for an LP that handed in before it",
+   "mechanism": "K9",
+   "mechanism_why": "a watcher thread that belongs to no LP: it reads no LP clock and sends on no channel, and its cadence decides only how soon after an early end the summary is written"
+  },
+  {
+   "id": "atom/compass/run/__init__.py::frontend_done::_early_end.join()::join#0",
+   "file": "atom/compass/run/__init__.py",
+   "symbol": "frontend_done",
+   "call": "_early_end.join",
+   "expr": "_early_end.join()",
+   "shape": "join",
+   "peer": "thread",
+   "why": "after a stop has ended the frontend's event loop, waits for the early-end watcher to write its summary before the final one is written",
+   "mechanism": "K9",
+   "mechanism_why": "after the frontend's loop has left the run, so outside the simulated window"
+  },
+  {
+   "id": "atom/compass/run/__init__.py::_read_hand_ins::time.sleep(0.1)::sleep#0",
+   "file": "atom/compass/run/__init__.py",
+   "symbol": "_read_hand_ins",
+   "call": "time.sleep",
+   "expr": "time.sleep(0.1)",
+   "shape": "sleep",
+   "peer": "process",
+   "why": "the summary writer waits, in tenths of a wall second up to a bound, for every server LP's hand-in file after the finish",
+   "mechanism": "K9",
+   "mechanism_why": "after the finish, so outside the simulated window; the wall bound only turns a missing hand-in into an error naming it"
+  },
+  {
+   "id": "atom/compass/runner/overrides.py::_group_step_seconds::torch.distributed.all_gather(rows, mine, group=group)::collective#0",
+   "file": "atom/compass/runner/overrides.py",
+   "symbol": "_group_step_seconds",
+   "call": "torch.distributed.all_gather",
+   "expr": "torch.distributed.all_gather(rows, mine, group=group)",
+   "shape": "collective",
+   "peer": "process",
+   "why": "every data-parallel rank's worker gathers each rank's priced step and whether it waits, on the group's CPU group, once per simulated step; it stands in for the cross-rank collectives a real forward makes",
+   "mechanism": "K6",
+   "mechanism_why": "a wait inside the data-parallel group's LP: every rank is a member of that one LP, the exchange is never reported to the clock authority and carries no cost; the gathered prices only set each rank's step target, the group's max for a rank with output"
+  },
   {
    "id": "atom/distributed/indexer_cp.py::warmup_exchange::torch.cuda.synchronize()::device_sync#0",
    "file": "atom/distributed/indexer_cp.py",
