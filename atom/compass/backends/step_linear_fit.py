@@ -6,21 +6,14 @@
     python -m atom.compass.backends.step_linear_fit RECORD... --out LAW [--form FORM] [--dp N]
 
 Each RECORD is a real run's step record (`steps/dp0.jsonl`, written with
-`ATOM_COMPASS_PARITY_RECORD`). A step's label is its device busy time,
-`d_busy_ns`, plus for a decode step the device work queued since the previous
-forward's exit, `d_gap_ns`. A decode step whose device start precedes its host
-launch end is launch-exposed, counted and not fitted; a prefill step is never
-cut, so a host bubble inside it stays in its label. The exit of each wait for the
-previous output's token copy (`t_recv_ns`) bounds the host clock's lead over
-the device's (that forward had finished by then); the tightest of the last
-`ANCHORS` bounds is the lead. The copy itself lands on its own stream after the
-exit event the bound reads, by 14 to 29 us measured on one host (median 17 us),
-so each bound carries that much more lead than the clocks actually have; on
-this law's records the gap never moves a decode step across the
-launch-exposed cut, so it is left in the bound rather than corrected by a
-host-specific number with no record or law of its own to carry it. A record
-without device windows is refused. A step mixing prefill and decode rows is
-counted and not fitted.
+`ATOM_COMPASS_PARITY_RECORD`), labelled by `step_labels`, whose docstring
+states the labels; the command writes each record's per-step table beside it.
+A step whose device label is cut is counted under its reason and not fitted.
+`fit` and `fit_host` take the labelled samples, grouped into runs by their
+provenance's `run`, and each returns its laws and a report. `fit`'s report
+holds the runs it was fitted on, each vector's fit figures and hull, and, once
+`mark_held_out` has run, the held-out errors per run; its `seed` fixes the
+`rowmod` shuffles, so the same samples and arguments give the same bytes.
 
 With `--dp N` (EP off) the records come in runs of N, each run's `dp0.jsonl`
 to `dp<N-1>.jsonl`, and the law is keyed `(N, 1)`. A step is its ranks' lines
@@ -40,12 +33,9 @@ printed and written at `--dp 1` only.
 
 Records with a host key (`dp0.key.json`, from the real runner) also give the
 host laws as a run file's `host` entry: `key`, and `laws[kind][segment]`,
-seconds on `(1, tokens, seqs)`. `E` runs from the previous forward's exit,
-cut as idle when the two batches share no request; `W_pre` to the launch, less
-the staging gate's wait; `W_post` from the launch to the exit, less the token
-copy wait, and a middle chunk has none. They take the step linear law's
-solver, MAD drops and hulls; `seqs` equal to `tokens` on every sample gets
-zero. Two keys refuse.
+seconds on `(1, tokens, seqs)`, fitted on the samples' host labels. They take
+the step linear law's solver, MAD drops and hulls; `seqs` equal to `tokens` on
+every sample gets zero. Two keys refuse.
 
 Each equation is divided by its own label and the coefficients are bound to be
 non-negative. Steps whose relative residual is more than `MAD_K` scaled MADs
@@ -85,22 +75,20 @@ validated. A vector whose held-out steps span no hull gets none.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
-from collections import deque
 from pathlib import Path
 
 import numpy as np
 
+from atom.compass.backends import step_labels
 from atom.compass.backends.shape import (
-    BatchView,
-    RequestShape,
     sum_context,
     sum_query_cached,
     sum_query_square,
     sum_tokens,
 )
+from atom.compass.backends.step_labels import CUTS, HOST_SEGMENTS, host_kind
 from atom.compass.backends.step_linear import (
     DECODE,
     EAGER,
@@ -125,10 +113,7 @@ ROWMOD_CELL_STEPS = 100
 ROWMOD_GAIN = 0.1
 #: Seeded shuffles of each step's rows whose mean MAD the `rowmod` column must not beat.
 ROWMOD_SHUFFLES = 8
-#: Token copy wait exits whose tightest bound is a step's host clock lead.
-ANCHORS = 32
 HOST_KINDS = ("decode", "prefill", "middle")
-HOST_SEGMENTS = ("E", "W_pre", "W_launch", "W_post")
 HOST_FEATURES = ("step", "tokens", "seqs")
 
 
@@ -136,70 +121,19 @@ def _rung_key(rung: int | None) -> str:
     return EAGER if rung is None else str(rung)
 
 
-def _lines(record) -> list[dict]:
-    return [json.loads(line) for line in Path(record).read_text().splitlines()]
-
-
-def _launch_exposed(lines) -> set[int]:
-    """The steps whose device start precedes their host launch end."""
-    device, output_end, timed = 0, None, []
-    for s in lines:
-        if "d_busy_ns" not in s:
-            continue
-        start = device + s.get("d_gap_ns", 0)
-        device = start + s["d_busy_ns"]
-        bound = None
-        if "t_recv_ns" in s and output_end is not None:
-            bound = s["t_recv_ns"][1] - output_end
-        if s["produces_output"]:
-            output_end = device
-        timed.append((s, start, bound))
-    bounds = [b for _, _, b in timed if b is not None]
-    if not bounds:
-        raise ValueError(
-            "no token copy wait exit (`t_recv_ns`) ties the record's host and device clocks"
-        )
-    # Steps before the first anchor read the first ones.
-    first, recent, exposed = min(bounds[:ANCHORS]), deque(maxlen=ANCHORS), set()
-    for s, start, bound in timed:
-        if bound is not None:
-            recent.append(bound)
-        if start + min(recent, default=first) < s["t_launch_ns"][1]:
-            exposed.add(s["step"])
-    return exposed
-
-
-def samples(record, form: str = "base", dp: int = 1) -> tuple[list[tuple], dict]:
-    """One record's fittable steps as (vector, features, seconds, step, context), and
-    what was cut.
+def _features(samples, form: str, dp: int) -> tuple[list[tuple], dict]:
+    """One rank's fittable samples as (vector, features, seconds, step, context),
+    and how many were cut, per reason.
 
     `vector` is `prefill` or a decode rung's key; features are in `StepLinearLaw`'s
     order, plus `history` for that form and, above `dp` 1, `moe_rows` on prefill;
     `context` is the decode rows' N_KV in scheduled order, empty for prefill.
     """
-    lines = _lines(record)
-    steps = [s for s in lines if not s["is_dummy_run"]]
-    if not steps or "t_enter_ns" not in steps[0]:
-        raise ValueError(
-            f"{record} has no timed steps; a fit needs a real run's record"
-        )
-    if "d_busy_ns" not in steps[0]:
-        raise ValueError(
-            f"{record} has no device windows (`d_busy_ns`); a fit labels a step "
-            "by its device time"
-        )
-    exposed = _launch_exposed(lines)
-    cut = {"exposed": 0, "mixed": 0}
-    rows = []
-    for step in steps:
-        view = BatchView(
-            tuple(RequestShape(q, c, bool(d)) for q, c, d in step["rows"]),
-            capture_rung=step["rung"],
-        )
-        if view.prefill and view.decode:
-            cut["mixed"] += 1
-        elif not view.prefill and step["step"] in exposed:
-            cut["exposed"] += 1
+    cut, rows = dict.fromkeys(CUTS, 0), []
+    for s in samples:
+        view = s.view
+        if s.cut:
+            cut[s.cut] += 1
         else:
             if view.prefill:
                 r = view.prefill
@@ -208,72 +142,67 @@ def samples(record, form: str = "base", dp: int = 1) -> tuple[list[tuple], dict]
                 if form == "history":
                     counts += (sum_context(r) - sum_tokens(r),)
                 if dp > 1:
-                    if step.get("moe_rows") is None:
+                    if view.moe_rows is None:
                         raise ValueError(
-                            f"{record} step {step['step']} has no moe_rows, which "
+                            f"{s.provenance['run']} step {s.step} has no moe_rows, which "
                             "a data-parallel law prices prefill from"
                         )
-                    counts += (step["moe_rows"],)
+                    counts += (view.moe_rows,)
             else:
                 key = _rung_key(view.capture_rung)
                 counts = (1, sum_context(view.decode), view.graph_padding)
-            gap = 0 if view.prefill else step.get("d_gap_ns", 0)
-            label = (gap + step["d_busy_ns"]) * 1e-9
             context = tuple(r.context_tokens for r in view.decode)
-            rows.append((key, counts, label, step["step"], context))
+            rows.append((key, counts, s.device_s, s.step, context))
     return rows, cut
 
 
-def _shared(step, other) -> bool:
-    """Whether two steps' batches hold a request in common."""
-    return bool({r[0] for r in step["batch"]} & {r[0] for r in other["batch"]})
+def _host_rows(samples) -> list[tuple]:
+    """(kind, segment, (1, tokens, seqs), seconds) per host label of each sample."""
+    rows = []
+    for s in samples:
+        x = (1, sum_tokens(s.view.requests), len(s.view.requests))
+        rows += [(host_kind(s.view), k, x, v) for k, v in s.host.items()]
+    return rows
 
 
-def host_samples(record) -> tuple[list[tuple], int]:
-    """(kind, segment, (1, tokens, seqs), seconds) per host segment of each
-    real forward, and how many `E` gaps were cut as idle."""
-    rows, idle, prev = [], 0, None
-    for s in _lines(record):
-        if s["is_dummy_run"]:
-            prev = s
-            continue
-        enter, (l0, l1) = s["t_enter_ns"], s["t_launch_ns"]
-        g0, g1 = s.get("t_gate_ns", (l0, l0))
-        r0, r1 = s.get("t_recv_ns", (0, 0))
-        kind = "decode" if all(d for _, _, d in s["rows"]) else "prefill"
-        kind = kind if s["produces_output"] else "middle"
-        segments = {"W_pre": g0 - enter + l0 - g1, "W_launch": l1 - l0}
-        if kind != "middle":
-            segments["W_post"] = s["t_exit_ns"] - l1 - (r1 - r0)
-        if prev is not None and _shared(s, prev):
-            segments["E"] = enter - prev["t_exit_ns"]
-        elif prev is not None:
-            idle += 1
-        x = (1, sum(r[1] for r in s["batch"]), len(s["batch"]))
-        rows += [(kind, k, x, v * 1e-9) for k, v in segments.items()]
-        prev = s
-    return rows, idle
+def label_records(records, dp: int = 1) -> list:
+    """`records`, runs of `dp` ranks in rank order, as `step_labels` samples, each
+    run named by its records' digests; each record's table is written beside it."""
+    samples = []
+    for i in range(0, len(records), dp):
+        run = records[i : i + dp]
+        name = ", ".join(map(step_labels.digest, run))
+        for record in run:
+            got, table = step_labels.label(record, name)
+            step_labels.write_table(record, table)
+            samples += got
+    return samples
 
 
-def _key(record):
-    path = Path(record).with_suffix(".key.json")
-    return json.loads(path.read_text()) if path.exists() else None
+def _runs(samples, dp: int) -> dict[str, list[list]]:
+    """`samples` per run, in the order runs first appear, as each rank's samples."""
+    runs: dict[str, dict[int, list]] = {}
+    for s in samples:
+        runs.setdefault(s.provenance["run"], {}).setdefault(s.rank, []).append(s)
+    if any(len(ranks) != dp for ranks in runs.values()):
+        n = sum(map(len, runs.values()))
+        raise ValueError(f"{n} records are not runs of {dp} ranks")
+    return {run: [ranks[r] for r in sorted(ranks)] for run, ranks in runs.items()}
 
 
-def fit_host(records) -> tuple[dict, dict]:
-    """The host laws over `records`, as a run file's `host` entry, and their report."""
+def fit_host(samples) -> tuple[dict, dict]:
+    """The host laws over `samples`, as a run file's `host` entry, and their report."""
     from scipy.spatial import QhullError
 
-    keys = sorted({json.dumps(_key(r), sort_keys=True) for r in records})
+    keys = sorted({json.dumps(s.provenance["config"], sort_keys=True) for s in samples})
     if len(keys) != 1:
         raise ValueError(
             f"the records carry {len(keys)} host keys ({' / '.join(keys)}); "
             "host laws are fitted under one"
         )
-    got = [host_samples(r) for r in records]
-    rows = [row for r, _ in got for row in r]
+    rows = _host_rows(samples)
     host = {"key": json.loads(keys[0]), "laws": {}}
-    report = {"cut": {"idle": sum(n for _, n in got)}, "unfitted": {}}
+    report = {"cut": {"idle": sum(s.idle for s in samples)}, "unfitted": {}}
     for kind in HOST_KINDS:
         for segment in HOST_SEGMENTS[: 3 if kind == "middle" else 4]:
             members = [r for r in rows if r[:2] == (kind, segment) and r[3] > 0]
@@ -340,13 +269,13 @@ def _solve(x: np.ndarray, y: np.ndarray, names: list[str]) -> dict:
     }
 
 
-def _rowmod(members, rung: int, base: dict) -> tuple | None:
+def _rowmod(members, rung: int, base: dict, seed: int) -> tuple | None:
     """The `rowmod(k)` column decode rung `rung` adopts, or None.
 
     `members` are the rung's `fit` rows, `base` their solve without the column.
     `k` runs over the powers of two up to the rung. A `k` qualifies when its
     solve cuts `base`'s scaled MAD by `ROWMOD_GAIN`, the mean MAD of the same
-    solve over `ROWMOD_SHUFFLES` seeded shuffles of each step's rows does not,
+    solve over `ROWMOD_SHUFFLES` shuffles of each step's rows, by `seed`, does not,
     and no record (a cell) priced by a solve on the others has a p50 error
     further from zero than without the column. Every cell
     needs `ROWMOD_CELL_STEPS` steps at the rung, and a rung needs two cells.
@@ -359,7 +288,7 @@ def _rowmod(members, rung: int, base: dict) -> tuple | None:
         return None
     x = np.array([r[2] for r in members], dtype=np.float64)
     y = np.array([r[3] for r in members])
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng(seed)
     shuffles = [
         [rng.permutation(r[5]) for r in members] for _ in range(ROWMOD_SHUFFLES)
     ]
@@ -426,9 +355,9 @@ def _hull(points: np.ndarray, names: tuple[str, ...]) -> dict:
 
 
 def _groups(run, form: str) -> tuple[list[list[tuple]], dict, list[float]]:
-    """One run's steps, each its ranks' `samples` rows labelled with the smallest
+    """One run's steps, each its ranks' `_features` rows labelled with the smallest
     rank label; what was cut; and each step's rank label spread."""
-    got = [samples(record, form, len(run)) for record in run]
+    got = [_features(rank, form, len(run)) for rank in run]
     cut = {k: sum(c[k] for _, c in got) for k in got[0][1]}
     if len(run) == 1:
         return [[r] for r in got[0][0]], cut, []
@@ -475,17 +404,25 @@ def _slowest(groups, prefill: list[str]) -> tuple[list[tuple], dict]:
     return rows, report
 
 
-def fit(records, form: str = "base", dp: int = 1) -> dict:
-    """The law over `records`, runs of `dp` ranks each, as the mapping `StepLinearLaw` reads."""
+def _options(options) -> tuple[str, int]:
+    options = {"form": "base", "dp": 1, **(options or {})}
+    if options["form"] not in FORMS:
+        raise ValueError(f"form {options['form']!r} is not one of {FORMS}")
+    return options["form"], options["dp"]
+
+
+def fit(samples, options=None, seed: int = 0) -> tuple[dict, dict]:
+    """The law over `samples`, as the mapping `StepLinearLaw` reads, and its report.
+
+    `options` takes `form` (`base` by default) and `dp`, the ranks each run
+    holds (1 by default); `seed` fixes the `rowmod` shuffles.
+    """
     from scipy.spatial import QhullError
 
-    if form not in FORMS:
-        raise ValueError(f"form {form!r} is not one of {FORMS}")
-    if len(records) % dp:
-        raise ValueError(f"{len(records)} records are not runs of {dp} ranks")
-    runs = [records[i : i + dp] for i in range(0, len(records), dp)]
+    form, dp = _options(options)
+    runs = _runs(samples, dp)
     groups, cut, spread = [], {"warm": 0, "warm_s": 0.0}, []
-    for i, run in enumerate(runs):
+    for i, run in enumerate(runs.values()):
         got, c, s = _groups(run, form)
         groups += [[(i, *r) for r in g] for g in got]
         spread += s
@@ -493,13 +430,9 @@ def fit(records, form: str = "base", dp: int = 1) -> dict:
             cut[k] = cut.get(k, 0) + v
     prefill = list(HISTORY if form == "history" else PREFILL) + ["moe_rows"] * (dp > 1)
     rows, alternation = _slowest(groups, prefill)
-    digests = [
-        f"{Path(r).name}:{hashlib.sha256(Path(r).read_bytes()).hexdigest()[:12]}"
-        for r in records
-    ]
     law = {
-        "provenance": f"step_linear_fit {form} on {len(records)} real records "
-        f"({', '.join(digests)})",
+        "provenance": f"step_linear_fit {form} on {len(runs) * dp} real records "
+        f"({', '.join(runs)})",
         "form": form,
         "cut": cut,
         "key": [dp, 1],
@@ -537,7 +470,7 @@ def fit(records, form: str = "base", dp: int = 1) -> dict:
         solved = _solve(x, np.array([r[3] for r in members]), names)
         rowmod_k = None
         if key and key.isdigit():
-            chosen = _rowmod(members, int(key), solved)
+            chosen = _rowmod(members, int(key), solved, seed)
             if chosen:
                 rowmod_k, column, solved, evidence = chosen
                 counts = np.column_stack([counts, column])
@@ -593,9 +526,16 @@ def fit(records, form: str = "base", dp: int = 1) -> dict:
                 law["prefill"] = vector
             else:
                 law["decode"][k] = vector
-    if any(_key(r) for r in records):
-        law["host"], law["host_fit"] = fit_host(records)
-    return law
+    vectors = [("prefill", law.get("prefill")), *law["decode"].items()]
+    report = {
+        "provenance": [
+            {k: v for k, v in run[0][0].provenance.items() if k != "requests"}
+            for run in runs.values()
+        ],
+        "vectors": {k: {**v["fit"], "hull": v["hull"]} for k, v in vectors if v},
+        "held_out": {},
+    }
+    return law, report
 
 
 def _band(key: str, counts) -> str:
@@ -606,15 +546,18 @@ def _band(key: str, counts) -> str:
     return f"prefill tokens {lo}-{hi}"
 
 
-def _held_out(records, form: str, warm=None):
-    """Each step of each record, warm steps left out, priced by the law fitted
-    on the other records: (vector, band, counts, context, relative error), the
+def _held_out(samples, options, seed, warm=None):
+    """Each step of each run, warm steps left out, priced by the law fitted on
+    the other runs: (run, vector, band, counts, context, relative error), the
     error nan where that law has no vector for the step."""
+    form = _options(options)[0]
+    runs = _runs(samples, 1)
     if warm is None:
-        warm = fit(records, form)["warm_steps"]
-    for i, record in enumerate(records):
-        law = fit(records[:i] + records[i + 1 :], form)
-        for key, counts, seconds, step, context in samples(record, form)[0]:
+        warm = fit(samples, options, seed)[0]["warm_steps"]
+    for i, (run, (mine,)) in enumerate(runs.items()):
+        others = [s for s in samples if s.provenance["run"] != run]
+        law = fit(others, options, seed)[0]
+        for key, counts, seconds, step, context in _features(mine, form, 1)[0]:
             if step in warm[i]:
                 continue
             vector = law["decode"].get(key) if key != "prefill" else law.get(key)
@@ -623,35 +566,50 @@ def _held_out(records, form: str, warm=None):
                 x = counts + _rowmod_count(vector, context)
                 price = np.dot(list(vector["coefficients"].values()), x)
                 error = float(price) / seconds - 1.0
-            yield key, _band(key, counts), counts, context, error
+            yield run, key, _band(key, counts), counts, context, error
 
 
 def _rowmod_count(vector: dict, context) -> tuple:
     return (rowmod(context, vector["rowmod"]),) if "rowmod" in vector else ()
 
 
-def held_out(records, form: str = "base") -> dict:
-    """Per band, the relative errors on each record of the law fitted on the others."""
+def held_out(samples, options=None, seed: int = 0) -> dict:
+    """Per band, the relative errors on each run of the law fitted on the others."""
     errors: dict[str, list[float]] = {}
-    for _, band, _, _, error in _held_out(records, form):
+    for _, _, band, _, _, error in _held_out(samples, options, seed):
         band = band if not math.isnan(error) else f"{band} (no vector)"
         errors.setdefault(band, []).append(error)
     return errors
 
 
-def mark_held_out(law: dict, records, form: str = "base") -> None:
-    """Write under each of `law`'s vectors, as `held_out`, the hull of its steps
-    `_held_out` priced and their errors per band."""
+def _bands(rows) -> dict:
+    """Per band of `_held_out`'s rows, their steps and error percentiles."""
+    bands = {}
+    for band in sorted({r[2] for r in rows}):
+        e = [r[5] for r in rows if r[2] == band]
+        p10, p50, p90 = np.percentile(e, (10, 50, 90)).tolist()
+        bands[band] = {"steps": len(e), "p10": p10, "p50": p50, "p90": p90}
+    return bands
+
+
+def mark_held_out(law: dict, report: dict, samples, options=None, seed: int = 0):
+    """Write the held-out errors: under each of `law`'s vectors, as `held_out`,
+    the hull of its steps `_held_out` priced and their errors per band; under
+    `report`'s `held_out`, each run's errors per band."""
     from scipy.spatial import QhullError
 
     rows = [
-        r for r in _held_out(records, form, law["warm_steps"]) if not math.isnan(r[4])
+        r
+        for r in _held_out(samples, options, seed, law["warm_steps"])
+        if not math.isnan(r[5])
     ]
+    for run in dict.fromkeys(r[0] for r in rows):
+        report["held_out"][run] = _bands([r for r in rows if r[0] == run])
     for key, vector in [("prefill", law.get("prefill")), *law["decode"].items()]:
-        mine = [r for r in rows if r[0] == key]
+        mine = [r for r in rows if r[1] == key]
         if vector is None or not mine:
             continue
-        points = [c + _rowmod_count(vector, x) for _, _, c, x, _ in mine]
+        points = [c + _rowmod_count(vector, x) for _, _, _, c, x, _ in mine]
         try:
             hull = _hull(
                 np.array(points, dtype=np.float64)[:, 1:],
@@ -659,20 +617,17 @@ def mark_held_out(law: dict, records, form: str = "base") -> None:
             )
         except (ValueError, QhullError):
             continue
-        bands = {}
-        for band in sorted({r[1] for r in mine}):
-            e = [r[4] for r in mine if r[1] == band]
-            p10, p50, p90 = np.percentile(e, (10, 50, 90)).tolist()
-            bands[band] = {"steps": len(e), "p10": p10, "p50": p50, "p90": p90}
-        vector["held_out"] = {"hull": hull, "bands": bands}
+        vector["held_out"] = {"hull": hull, "bands": _bands(mine)}
 
 
-def host_held_out(records) -> dict:
-    """Per host law, the relative errors on each record of the laws fitted on the others."""
+def host_held_out(samples) -> dict:
+    """Per host law, the relative errors on each run of the laws fitted on the others."""
     errors: dict[str, list[float]] = {}
-    for i, record in enumerate(records):
-        laws = fit_host(records[:i] + records[i + 1 :])[0]["laws"]
-        for kind, segment, x, seconds in host_samples(record)[0]:
+    for run in dict.fromkeys(s.provenance["run"] for s in samples):
+        others = [s for s in samples if s.provenance["run"] != run]
+        laws = fit_host(others)[0]["laws"]
+        mine = [s for s in samples if s.provenance["run"] == run]
+        for kind, segment, x, seconds in _host_rows(mine):
             c = laws.get(kind, {}).get(segment)
             if seconds > 0:
                 errors.setdefault(
@@ -706,9 +661,13 @@ def main(argv=None) -> None:
         "--dp", type=int, default=1, help="ranks per run, the records in rank order"
     )
     args = parser.parse_args(argv)
-    law = fit(args.records, args.form, args.dp)
+    options = {"form": args.form, "dp": args.dp}
+    samples = label_records(args.records, args.dp)
+    law, report = fit(samples, options)
+    if any(s.provenance["config"] for s in samples):
+        law["host"], law["host_fit"] = fit_host(samples)
     if len(args.records) > 1 and args.dp == 1:
-        mark_held_out(law, args.records, args.form)
+        mark_held_out(law, report, samples, options)
     Path(args.out).write_text(json.dumps(law) + "\n")
     print(f"cut: {json.dumps(law['cut'])}")
     for name, vector in [("prefill", law.get("prefill"))] + list(law["decode"].items()):
@@ -720,9 +679,10 @@ def main(argv=None) -> None:
         print(f"host: {json.dumps(law['host']['laws'])} {json.dumps(law['host_fit'])}")
     if len(args.records) > 1 and args.dp == 1:
         for form in FORMS:
-            print(f"\nheld out, form {form}\n{_table(held_out(args.records, form))}")
+            errors = held_out(samples, {"form": form})
+            print(f"\nheld out, form {form}\n{_table(errors)}")
         if "host" in law:
-            print(f"\nheld out, host laws\n{_table(host_held_out(args.records))}")
+            print(f"\nheld out, host laws\n{_table(host_held_out(samples))}")
 
 
 if __name__ == "__main__":

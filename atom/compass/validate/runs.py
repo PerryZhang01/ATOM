@@ -65,7 +65,9 @@ END_TO_END = {
 
 
 def _steps(cell) -> list[dict]:
-    ranks = sorted((Path(cell) / "steps").glob("dp*.jsonl"))
+    ranks = [
+        p for p in (Path(cell) / "steps").glob("dp*.jsonl") if p.stem[2:].isdigit()
+    ]
     if len(ranks) != 1:
         raise ValueError(
             f"{cell} holds {len(ranks)} DP ranks' records; this grades one"

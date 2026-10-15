@@ -328,6 +328,8 @@ def read(directory) -> dict[int, list[dict]]:
     if (directory / ARRIVALS).exists():
         start = min(json.loads((directory / ARRIVALS).read_text())["sent_ns"])
     for path in sorted(directory.glob("dp*.jsonl")):
+        if not path.stem[2:].isdigit():  # a rank's table, `dp<r>.cost.jsonl`
+            continue
         steps = [json.loads(line) for line in path.read_text().splitlines()]
         keys = dict(pair for step in steps for pair in step.pop("named"))
         if start is not None:
