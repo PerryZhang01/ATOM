@@ -293,7 +293,7 @@ def test_a_bundle_measured_on_another_host_cpu_loads(monkeypatch, tmp_path):
     publish(tmp_path, r, conditions=moved(readings(r), Axis.HOST_CPU))
     run_file(tmp_path, monkeypatch)
 
-    compass_run.runner(r)
+    compass_run.runner(r, META_8B)
 
     assert isinstance(r.compass_backend, StepGridBackend)
 
@@ -306,7 +306,7 @@ def test_a_bundle_is_checked_against_the_specs_torch_not_the_simulators(
     run_file(tmp_path, monkeypatch)
     monkeypatch.setattr(torch, "__version__", "0.0.0+the-simulating-host")
 
-    compass_run.runner(r)
+    compass_run.runner(r, META_8B)
 
     assert isinstance(r.compass_backend, StepGridBackend)
 
