@@ -226,3 +226,11 @@ def test_a_law_without_held_out_errors_reports_every_priced_step_unvalidated(tmp
         "prefill": 10,
         "decode": 10,
     }
+
+
+def test_the_report_labels_the_record_and_never_reads_the_table_beside_it(tmp_path):
+    record = _record(tmp_path / "steps", _steps(), stretch={4: 0.2})
+    report = cost_accuracy(record, LAW)
+
+    (record / "dp0.cost.jsonl").write_text('{"version": 1}\nnot a row\n')
+    assert cost_accuracy(record, LAW) == report

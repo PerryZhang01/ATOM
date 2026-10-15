@@ -78,8 +78,14 @@ class Kind(enum.Enum):
 #: name; `mixed` describes a document, never one field.
 ORIGINS = ("datasheet", "probed", "assumed", "mixed")
 TRANSFERRED = "transferred-from:"
-#: What a probe ran on, any of which it may state.
-SUBJECT = {"model": Kind.TEXT, "width": Kind.COUNT, "source_root": Kind.TEXT}
+#: What a probe ran on, any of which it may state. `record` is the digest of
+#: the record of the run it read, `sha256:` over the server log.
+SUBJECT = {
+    "model": Kind.TEXT,
+    "width": Kind.COUNT,
+    "source_root": Kind.TEXT,
+    "record": Kind.TEXT,
+}
 
 
 @dataclass(frozen=True, slots=True)

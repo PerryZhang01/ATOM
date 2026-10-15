@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 """The step-level fallback: a step the law cannot price is priced by the roofline.
 
-The roofline's answer takes its method from the origins of the spec fields it
-reads, and carries what the law declined. Steps
+The roofline's answer is declared when an input of the bound that won is stated,
+naming each such input, and carries what the law declined. Steps
 reach the backends through the runner's own `dummy_execution` and
 `_group_step_seconds`, and the backends reach the runner through `run.runner`
 from a run file's `step_linear` and `roofline_floor_s` keys.
@@ -15,10 +15,13 @@ import types
 
 import pytest
 import test_run_graph_pool
+import torch
 from test_backend_step_linear import IN_HULL, _installed, backend, graphed, law, view
 from test_memory_readings import CONFIG_JSON, DOCUMENT
+from test_weights_meta_build import TiedPacked
 from transformers import PretrainedConfig
 
+from atom.compass import run as compass_run
 from atom.compass.backends import (
     CostRefused,
     Granularity,
@@ -48,6 +51,7 @@ def roofline(floor=0.0):
         MACHINE,
         parameters=PARAMETERS,
         weight_bytes=WEIGHTS,
+        weights_stated="",
         kv_token_bytes=KV,
         host_floor_s=floor,
     )
@@ -162,13 +166,22 @@ READS = (
 )
 
 
+# Each bound's batch and floor, the spec fields it reads and its stated inputs.
+BOUNDS = {
+    "compute": (view((8192, 8192, False)), 0.0, "device.compute.", ["parameter_count"]),
+    "memory": (view((1, 900, True)), 0.0, "device.memory.", []),
+    "host": (view((1, 900, True)), 1.0, None, ["roofline_floor_s"]),
+}
+
+
+@pytest.mark.parametrize("bound", BOUNDS)
 @pytest.mark.parametrize(
-    "spec,method,named",
+    "spec,named",
     [
-        (_spec("datasheet"), Method.ANALYTICAL, []),
-        (_spec("probed"), Method.ANALYTICAL, []),
-        (_spec("assumed"), Method.DECLARED, list(READS)),
-        (_spec("transferred-from:mi308x-hjbog18"), Method.DECLARED, list(READS)),
+        (_spec("datasheet"), []),
+        (_spec("probed"), []),
+        (_spec("assumed"), list(READS)),
+        (_spec("transferred-from:mi308x-hjbog18"), list(READS)),
         *[
             (
                 _spec(
@@ -176,7 +189,6 @@ READS = (
                     {p: {"origin": "datasheet"} for p in READS}
                     | {path: {"origin": "assumed"}},
                 ),
-                Method.DECLARED,
                 [path],
             )
             for path in READS
@@ -185,19 +197,55 @@ READS = (
     ids=["datasheet", "probed", "assumed", "transferred"]
     + [f"{path}-assumed" for path in READS],
 )
-def test_the_roofline_is_declared_iff_a_spec_field_it_reads_is_not_its_own(
-    spec, method, named
+def test_a_roofline_term_is_declared_iff_an_input_its_bound_reads_is_stated(
+    spec, named, bound
 ):
+    batch, floor, prefix, keys = BOUNDS[bound]
     backend = StepRooflineBackend(
         spec,
         parameters=PARAMETERS,
         weight_bytes=WEIGHTS,
+        weights_stated="",
         kv_token_bytes=KV,
-        host_floor_s=0.0,
+        host_floor_s=floor,
     )
-    (term,) = backend.price(view((1, 900, True))).terms
+    (term,) = backend.price(batch).terms
+    note = term.provenance.note
+    fields = [p for p in named if prefix and p.startswith(prefix)]
 
-    assert term.provenance.method is method
-    assert [p for p in READS if p in term.provenance.note] == named
-    if named:
-        assert "no successor" in term.provenance.note
+    assert term.name == f"roofline.{bound}"
+    assert term.provenance.method is (
+        Method.DECLARED if fields or keys else Method.ANALYTICAL
+    )
+    assert [
+        k for k in ("parameter_count", "roofline_floor_s", "weights") if k in note
+    ] == keys
+    assert [p for p in READS if p in note] == fields
+
+
+@pytest.mark.parametrize("meta", [False, True], ids=["stated", "meta-build"])
+def test_a_memory_bound_step_counts_the_weights_the_runner_read(
+    monkeypatch, tmp_path, meta
+):
+    monkeypatch.setattr(test_run_graph_pool, "SimpleNamespace", _with_kv_fields)
+    if meta:
+        with torch.device("meta"):
+            tree = TiedPacked(None)
+        real = compass_run.runner
+        monkeypatch.setattr(compass_run, "runner", lambda r: real(r, tree))
+    datasheet = copy.deepcopy(DOCUMENT)
+    datasheet["provenance"]["origin"] = "datasheet"
+    installed = _installed(
+        monkeypatch,
+        tmp_path,
+        step_linear=law(),
+        roofline_floor_s=0.0,
+        machine=datasheet,
+    )
+    (term,) = installed.roofline.price(view((1, 90000, True))).terms
+    note = term.provenance.note
+
+    assert term.name == "roofline.memory"
+    assert term.provenance.method is (Method.ANALYTICAL if meta else Method.DECLARED)
+    assert ("weights 8000000000 stated parameters" in note) is not meta
+    assert "parameter_count" not in note

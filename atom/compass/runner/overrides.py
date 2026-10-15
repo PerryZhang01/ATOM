@@ -236,6 +236,8 @@ def install_cost_backend(runner: Any, backend: CostBackend) -> None:
 
 HOST_SEGMENTS = ("E", "W_pre", "W_launch", "W_post")  # in the order the host runs them
 FORWARD_KINDS = ("decode", "prefill", "middle")
+#: The format of a simulated run's `dp<r>.cost.jsonl`, its first line.
+COST_TABLE_VERSION = 1
 
 
 class HostDeviceRecurrence:
@@ -881,6 +883,13 @@ class NonAllocatingRunner(
         from atom.model_engine.scheduler import ScheduledBatchOutput
 
         mode = record_step(self, batch)
+        record = getattr(self, "_parity_record", None)
+        if record is not None and record.step == 1:
+            # The record was just created, replacing an earlier run's; so is
+            # the cost table, before anything this step does can stop the run.
+            record.path.with_suffix(".cost.jsonl").write_text(
+                json.dumps({"version": COST_TABLE_VERSION}) + "\n"
+            )
 
         stream = getattr(self, "_token_stream", None)
         if stream is None:
@@ -946,7 +955,9 @@ def _group_step_seconds(
     `charge_s`, that composed with host time (`device_s` with no host);
     `group_s`, after the DP group's max; `terms`, each one's `name`, `seconds`
     and its provenance's `method`, `validated` and `source`; and `refused`,
-    the ``cost:`` reason or None.
+    the ``cost:`` reason or None. Above them, `forward` starts the file with
+    `{"version": COST_TABLE_VERSION}` as the record starts, replacing an
+    earlier run's file.
     """
     from atom.compass.runner.projection import batch_view, dp_group, forward_mode
 
@@ -1011,7 +1022,6 @@ def _group_step_seconds(
         ],
         "refused": refused,
     }
-    # Replaced on a rerun into the same directory, as the record is.
-    with record.path.with_suffix(".cost.jsonl").open("a" if step else "w") as f:
+    with record.path.with_suffix(".cost.jsonl").open("a") as f:
         f.write(json.dumps(line) + "\n")
     return group_s
