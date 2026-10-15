@@ -467,8 +467,7 @@ class ScheduledBatchOutput:
         is_deferred_out: Whether output was deferred from a previous step.
         predicted_s: The step's duration in seconds, as a runner that predicts
             the step rather than running it prices it; None from a real forward.
-        group_targets: Under data parallelism, every DP rank's step duration in
-            seconds, by rank, as such a runner predicts it; None otherwise.
+        group_targets: Each DP rank's predicted step duration, by rank, or None.
     """
 
     def __init__(

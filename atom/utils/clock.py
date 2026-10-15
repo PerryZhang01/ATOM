@@ -208,8 +208,7 @@ class LPRuntime:
         self.owed = [t for t in rounds if t > mine]
 
     def settle(self) -> None:
-        """Join the owed group rounds, in order. They end the step that owed
-        them, so the step loop's idle point does not count them as calls."""
+        """Join the owed rounds; they end the owing step, so `idle` counts none."""
         while self.owed:
             self._step_through(*self._ca_call("TAR", self.owed.pop(0)))
             self.calls -= 1
