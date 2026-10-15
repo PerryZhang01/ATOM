@@ -2,7 +2,9 @@
 """The bench's window: a step's device time, read off the step recording's events.
 
 `BenchWindow.bench_step` runs one batch through the runner's `forward` again
-and again, with the bench standing where `StepRecording`'s record would. Before
+and again, each time a copy whose rows are new requests, so every forward runs
+the batch as it was handed in, and with the bench standing where
+`StepRecording`'s record would. Before
 each forward it queues a preload on the worker's stream, device work meant to
 outlast the host's issue of the whole forward, and records event F at the
 forward's entry; `StepRecording` records A at `run_model` entry and B at the
@@ -25,6 +27,7 @@ the runner manager returns, carries the step charged to its slowest rank.
 """
 
 import copy
+import itertools
 import statistics
 
 import torch
@@ -33,8 +36,11 @@ import torch.distributed as dist
 #: The measuring protocol's version; it changes whenever a count below does.
 PROTOCOL = 1
 WARMUPS = 3
-REPEATS = 10
+REPEATS = 45
 DOUBLINGS = 5
+
+#: Request ids no scheduler hands out, one per row of each forward the bench runs.
+_FRESH = itertools.count(1 << 48)
 
 
 class BenchWindow:
@@ -77,10 +83,14 @@ class BenchWindow:
     def _repeat(self, batch, preload: int) -> list[int]:
         """One forward behind `preload` ns, agreed by every worker:
         [missed, F to B, F to A, A to B, host ns]."""
+        # A real forward may rewrite batch fields in place, and a decode row
+        # under a request id the runner has seen takes the token it sampled
+        # last, not the batch's own: each forward runs a copy, as new requests.
+        batch = copy.deepcopy(batch)
+        batch.req_ids = [next(_FRESH) for _ in batch.req_ids]
         forward = self._parity_record = _Forward(preload)
         try:
-            # A real forward may rewrite batch fields in place.
-            self.forward(copy.deepcopy(batch))
+            self.forward(batch)
         finally:
             self._parity_record = None
         group = self.bench_group()
