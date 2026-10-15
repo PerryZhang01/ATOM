@@ -437,6 +437,39 @@ def test_outliers_are_dropped_until_settled_and_the_hull_is_the_kept_views():
         load_and_price(mapping, planted).factor(wide)
 
 
+def relative_error(member, triple):
+    """`member`'s output over `triple`'s target, less 1; 0 output in a band it
+    holds no factor for, an error of 1."""
+    v, lookup, measured = triple
+    try:
+        output = member(v, tuple(features(v).values()))
+    except LookupError:
+        output = 0.0
+    return output / (measured / lookup) - 1.0
+
+
+def test_the_report_is_each_members_spread_where_fitted_and_error_where_held_out():
+    triples = triples_of(planted)
+    held = fit(triples, seed=0)[1]["held_out"]
+    dev = [i for i in range(len(triples)) if i not in held]
+    # A held-out 600-token chunk, in a band no fitted triple reaches.
+    unseen = view((600, 600, False))
+    triples[held[0]] = (unseen, 1e-3, 1e-3 * planted(unseen))
+    mapping, report = fit(triples, seed=0)
+
+    for name, reported in report["members"].items():
+        ((_, _, member),) = Residual({**mapping, "selected": {name: 1.0}}).members
+        r = np.array([relative_error(member, triples[i]) for i in dev])
+        mad = 1.4826 * np.median(np.abs(r - np.median(r)))
+        held_out = [abs(relative_error(member, triples[i])) for i in held]
+        assert (reported["centre"], reported["mad"]) == pytest.approx(
+            (np.median(r), mad), rel=1e-9, abs=1e-12
+        )
+        assert reported["held_out_error"] == pytest.approx(
+            np.median(held_out), rel=1e-9
+        )
+
+
 def test_the_target_is_measured_over_lookup_and_the_seed_fixes_the_split():
     triples = triples_of(planted)
     fitted_once = fit(triples, seed=0)

@@ -56,7 +56,7 @@ else answers: no renormalising over the other members, and no lookup alone.
 
 `fit(triples, seed)` makes that mapping from (batch view, lookup seconds,
 measured seconds) triples; its target is measured over lookup, whatever timed
-the measurement. `seed` holds out `HELD_OUT` of the triples. Three members
+the measurement. `seed` holds out `HELD_OUT` of the triples. The members
 are fitted on the rest, each as relative error: linear over every recipe
 feature, `identity` on the target and `exp` on its log, and `band`, one
 factor per band the triples reach. A feature constant over them gets
