@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: MIT
-"""A simulated 1P1D run above DP width 1, behind a router without ``--dp-aware``.
+"""A simulated 1P1D run above DP width 1, behind the router LP.
 
 `scripts/compass/pd_sim.sh` starts each side at ``-tp 2 --enable-dp-attention``:
-two DP ranks per side, each a member of its side's engine LP, and ATOM's own
-DP dispatch on each side picks the rank a request runs on. Decode sends each
-write request to the prefill rank the relayed ``dp_rank`` names, on the
-channel of that decode and prefill rank pair. The run is made twice, with
+two DP ranks per side, each a member of its side's engine LP, and the router,
+``--dp-aware`` as in the real cell, picks the rank a request runs on. Decode
+sends each write request to the prefill rank the relayed ``dp_rank`` names, on
+the channel of that decode and prefill rank pair. The run is made twice, with
 different `PYTHONHASHSEED`, and the two step tables are compared byte for byte.
 
 The run tests skip as `test_pd_slice`'s do; the rest run anywhere.
@@ -27,7 +27,7 @@ import pytest
 from test_dp_slice import MAX_TOKENS, Requests
 from test_kv_remote_prefill import Script, connector
 from test_kv_simulated_connector import PEAKS, geometry, model_for  # noqa: F401
-from test_pd_slice import NEEDS_A_PD_RUN, PD, PORTS, PdTraffic
+from test_pd_slice import NEEDS_A_PD_RUN, PD, PORTS
 from test_vertical_slice import MODEL, TREE, WALL_S, _free_port, _run_file
 
 from atom.compass import run as compass_run
@@ -43,7 +43,7 @@ KV = "engine-D->engine-P:kv_write_req#dp{}.dp{}"
 
 
 class PdRequests(Requests):
-    http, stream = PdTraffic.http, PdTraffic.stream
+    http, stream = "traffic->router:http", "router->traffic:stream"
 
 
 def run_pd_dp(out: Path, seed: str) -> dict:
@@ -129,7 +129,7 @@ def test_every_request_is_served_with_a_kv_transfer_per_request_over_its_rank_pa
     print("summary:", json.dumps(run["summary"]["schedule"], sort_keys=True))
     assert sum(line == DONE for _, line in run["events"]) == len(MAX_TOKENS)
     assert sum(pairs.values()) == len(MAX_TOKENS)
-    # ATOM's dispatch spread the requests over both ranks of each side.
+    # The router spread the requests over both ranks of each side.
     assert {p.split(".")[0] for p in pairs} == {"dp0", "dp1"}
     assert {p.split(".")[1] for p in pairs} == {"dp0", "dp1"}
     assert run["summary"]["schedule"]["refusals"]["count"] == 0

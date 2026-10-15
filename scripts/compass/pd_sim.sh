@@ -22,6 +22,16 @@
 #   SERVER_ARGS         more API server flags (default: --enforce-eager
 #                       --max-model-len 2048)
 #   ATOMESH             the router binary (default: atomesh)
+#   ROUTER_POLICY       a DP-attention cell's router policy: dp_sticky unless
+#                       this is cache_aware, as the real launch picks it
+#   SEED                the run's seed, which the router LP's policies draw
+#                       from (default 20260707, aiperf's in cctraces_sim.sh)
+#
+# With --enable-dp-attention in SERVER_ARGS the router is launched as the real
+# DP-attention cell's is (`start_router` in .github/scripts/atomesh/pd_server_atom.sh):
+# --dp-aware, so it chooses among DP ranks on load that responses move, which
+# makes it LP `router` of the run. RUN_FILE then gains `router_in_s`, unless it
+# has one already.
 #
 # It runs its own tree, as the gates do. Logs go beside RUN_FILE. It prints
 # `pd_sim: ready` once the router answers; start the traffic LP then. It exits
@@ -81,6 +91,37 @@ wait_for() { # what pid url
     done
 }
 
+# Without DP attention the router has one worker per role, and its policy
+# nothing to choose. With the health check, circuit breaker and retries off,
+# no wall-clock failure detector can resend or drop a request.
+router=(--policy random)
+router_env=()
+if [[ " $SERVER_ARGS " == *" --enable-dp-attention "* ]]; then
+    # A worker per DP rank, and the real cell's policy and arguments.
+    router=(--dp-aware --policy dp_sticky)
+    [[ ${ROUTER_POLICY:-} == cache_aware ]] && router=(--dp-aware --policy cache_aware
+        --prefill-policy cache_aware --decode-policy cache_aware --cache-threshold 0.8
+        --balance-abs-threshold "${ROUTER_BALANCE_ABS_THRESHOLD:-20}"
+        --balance-rel-threshold 2.0 --eviction-interval 300
+        --atom-pd-rank-mapping-policy none)
+    # The hop into the router takes the run's ipc_s, its declared floor for one
+    # hop between two local processes; the rest of each path's lookahead stays
+    # on the hop out.
+    lookaheads=$(python3 - "$RUN_FILE" <<'EOF'
+import json, sys
+from atom.compass.run import ROUTER, channel_table
+
+run = json.load(open(sys.argv[1]))
+run.setdefault("router_in_s", run["ipc_s"])
+json.dump(run, open(sys.argv[1], "w"))
+table = channel_table(run)
+print(json.dumps({c.name: table.lookahead(c.name) for c in table.channels_from(ROUTER)}))
+EOF
+)
+    router_env=(ATOM_COMPASS_CLOCK_ENDPOINT="$CLOCK" ATOM_COMPASS_SEED="${SEED:-20260707}"
+        ATOM_COMPASS_ROUTER_LOOKAHEADS="$lookaheads")
+fi
+
 python3 -m atom.compass.run --compass-run "$RUN_FILE" --compass-clock-endpoint "$CLOCK" \
     >"$OUT/authority.log" 2>&1 &
 authority=$!
@@ -96,12 +137,9 @@ decode=$!
 wait_for prefill $prefill "http://127.0.0.1:$PREFILL_PORT/health"
 wait_for decode $decode "http://127.0.0.1:$DECODE_PORT/health"
 
-# One worker per role, so the policy has nothing to choose. With the health
-# check, circuit breaker and retries off, no wall-clock failure detector can
-# resend or drop a request.
-"$ATOMESH" launch --host 127.0.0.1 --port "$ROUTER_PORT" --pd-disaggregation \
+env "${router_env[@]}" "$ATOMESH" launch --host 127.0.0.1 --port "$ROUTER_PORT" --pd-disaggregation \
     --prefill "http://127.0.0.1:$PREFILL_PORT" --decode "http://127.0.0.1:$DECODE_PORT" \
-    --policy random --backend atom --disable-health-check --disable-circuit-breaker \
+    "${router[@]}" --backend atom --disable-health-check --disable-circuit-breaker \
     --disable-retries --prometheus-port "$PROMETHEUS_PORT" --log-level info \
     >"$OUT/router.log" 2>&1 &
 wait_for router $! "http://127.0.0.1:$ROUTER_PORT/v1/models"
