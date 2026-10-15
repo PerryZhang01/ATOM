@@ -205,32 +205,52 @@ def prefill_decode_table(
     router_s: float,
     kv_write_req_s: float,
     dp: int = 1,
+    router_in_s: float | None = None,
 ) -> ChannelTable:
     """One prefill and one decode deployment behind the router, each with the
     channels of its `dp` data-parallel ranks.
 
-    Requests enter at frontend-P and the stream leaves from frontend-D. The
-    router has no choice to make with one of each, so it is not a process of its
-    own: its per-request forward cost `router_s` is added to every channel that
-    crosses it -- the request, the stream and the relay from frontend-P to
-    frontend-D. Decode posts the KV write request to prefill engine to engine,
-    above width one on a channel per decode and prefill rank pair,
+    Requests enter at frontend-P and the stream leaves from frontend-D. Three
+    paths cross the router -- the request, the stream and the relay from
+    frontend-P to frontend-D -- and each carries its per-request forward cost
+    `router_s`. Without `router_in_s` the router has no choice to make, so it is
+    not a process of its own and each path is one channel. With it the router
+    is LP ``router``, and each path is a hop in, whose lookahead is
+    `router_in_s`, and a hop out, which keeps the rest of the path's lookahead;
+    both are positive, so `router_in_s` lies strictly between 0 and `router_s`.
+    The router receives each hop in on a thread and handles it before the next.
+    Decode posts the KV write request to prefill engine to engine, above width
+    one on a channel per decode and prefill rank pair,
     ``kv_write_req#dp<decode rank>.dp<prefill rank>``.
     """
+    paths = [
+        ("traffic", "frontend-P", "http", ADMISSION_DELAY_S[admission_path] + router_s),
+        ("frontend-D", "traffic", "stream", stream_s + router_s),
+        ("frontend-P", "frontend-D", "relay", router_s),
+    ]
+    lps = ("traffic", "frontend-P", "engine-P", "frontend-D", "engine-D")
+    if router_in_s is None:
+        hops = [(src, dst, kind, total, "inline") for src, dst, kind, total in paths]
+    elif 0.0 < router_in_s < router_s:
+        lps += ("router",)
+        hops = [
+            hop
+            for src, dst, kind, total in paths
+            for hop in (
+                (src, "router", kind, router_in_s, "thread"),
+                ("router", dst, kind, total - router_in_s, "inline"),
+            )
+        ]
+    else:
+        raise ValueError(
+            f"router_in_s is {router_in_s!r} and router_s {router_s!r}; each hop "
+            "through the router LP needs a positive lookahead, so 0 < router_in_s "
+            "< router_s"
+        )
     pairs = [""] if dp == 1 else [f"#dp{d}.dp{p}" for d in range(dp) for p in range(dp)]
     return _table(
-        ("traffic", "frontend-P", "engine-P", "frontend-D", "engine-D"),
-        [
-            (
-                "traffic",
-                "frontend-P",
-                "http",
-                ADMISSION_DELAY_S[admission_path] + router_s,
-                "inline",
-            ),
-            ("frontend-D", "traffic", "stream", stream_s + router_s, "inline"),
-            ("frontend-P", "frontend-D", "relay", router_s, "inline"),
-        ]
+        lps,
+        hops
         + [
             ("engine-D", "engine-P", "kv_write_req" + pair, kv_write_req_s, "inline")
             for pair in pairs
