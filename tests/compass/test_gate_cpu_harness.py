@@ -61,6 +61,6 @@ def test_the_tests_import_the_trees_own_compass_harness(tmp_path):
         "    assert '/site/compass_harness/' in compass_harness.__file__\n"
     )
     out = _run(root, "{gate}")
-    # 98 is the GPU-tier answer every _tree run ends on, after a green pytest.
+    # 98 is the GPU-gate answer every _tree run ends on, after a green pytest.
     assert out.returncode == 98, out.stdout + out.stderr
     assert "pytest: rc=0" in out.stdout and "2 passed" in out.stdout, out.stdout

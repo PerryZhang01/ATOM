@@ -273,16 +273,16 @@ PRICED = [
         "seconds": 1.0,
         "analytical_steps": 0,
         "analytical_seconds": 0.0,
-        "extrapolated_steps": 1,
-        "extrapolated_seconds": 0.25,
+        "unvalidated_steps": 1,
+        "unvalidated_seconds": 0.25,
     },
     {
         "steps": 3,
         "seconds": 3.0,
         "analytical_steps": 1,
         "analytical_seconds": 0.5,
-        "extrapolated_steps": 2,
-        "extrapolated_seconds": 0.75,
+        "unvalidated_steps": 2,
+        "unvalidated_seconds": 0.75,
     },
 ]
 
@@ -336,11 +336,11 @@ def test_the_run_summary_sums_every_ranks_priced_steps(monkeypatch, tmp_path):
     schedule = json.loads((tmp_path / compass_run.SUMMARY_FILE).read_text())["schedule"]
     assert schedule["refusals"]["steps"] == 5
     assert schedule["predicted_seconds"] == 4.0
-    assert schedule["analytical"] == {
+    assert schedule["seconds_by_method"]["analytical"] == {
         "steps": 1,
         "fraction_of_predicted_seconds": 0.125,
     }
-    assert schedule["extrapolated"] == {
+    assert schedule["seconds_by_method"]["unvalidated"] == {
         "steps": 3,
         "fraction_of_predicted_seconds": 0.25,
     }

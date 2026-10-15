@@ -35,7 +35,7 @@ import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
-from atom.compass.backends.provenance import Provenance, Refusal, Species
+from atom.compass.backends.provenance import Method, Provenance, Refusal
 
 
 def fold_seconds(values: Iterable[float]) -> float:
@@ -175,27 +175,39 @@ class StepCost:
         """
         return fold_seconds(t.seconds for t in self.terms if t.provenance.is_refused)
 
-    def seconds_by_species(self) -> Mapping[Species, float]:
-        """Seconds grouped by how they were obtained, terms in stored order.
+    def seconds_by_method(self) -> Mapping[tuple[Method, bool], float]:
+        """Seconds grouped by (method, validated), terms in stored order.
 
         Each group is the fold of its own terms, in the order they appear in
         the breakdown. Grouping re-associates, so folding these group totals
         is a *different* sum from `seconds` and is not bit-equal to it: three
-        terms of 0.1, 0.2 and 0.15 whose first and third share a species fold
+        terms of 0.1, 0.2 and 0.15 whose first and third share a group fold
         flat to 0.45000000000000007 and grouped to 0.45. The mixture is for
-        reporting which species the time went to. `rows()` is the view that
+        reporting how the time was obtained. `rows()` is the view that
         re-folds to the total, and is what a reader checks a total against.
         """
-        grouped: dict[Species, list[float]] = {}
+        grouped: dict[tuple[Method, bool], list[float]] = {}
         for term in self.terms:
-            grouped.setdefault(term.provenance.species, []).append(term.seconds)
-        return {species: fold_seconds(vals) for species, vals in grouped.items()}
+            key = (term.provenance.method, term.provenance.validated)
+            grouped.setdefault(key, []).append(term.seconds)
+        return {key: fold_seconds(vals) for key, vals in grouped.items()}
 
     def rows(self) -> tuple[tuple[str, float, str], ...]:
         """The breakdown as an artifact writes it: name, seconds, provenance."""
         return tuple(
             (t.name, t.seconds, str(t.provenance)) for t in _checked(self.terms)
         )
+
+
+#: How a run summary groups seconds: a method each, estimated seconds split
+#: into validated (`estimated`) and not (`unvalidated`).
+GROUPS = ("analytical", "declared", "measured", "estimated", "unvalidated")
+
+
+def group(method: Method, validated: bool) -> str:
+    """The `GROUPS` entry of a (method, validated) key."""
+    unvalidated = method is Method.ESTIMATED and not validated
+    return "unvalidated" if unvalidated else method.value
 
 
 class ProvenanceMix:
@@ -218,8 +230,8 @@ class ProvenanceMix:
         self.seconds = 0.0
         self.refused_steps = 0
         self.refused_seconds = 0.0
-        self._species_seconds: dict[Species, float] = {}
-        self._species_steps: dict[Species, int] = {}
+        self._method_seconds: dict[tuple[Method, bool], float] = {}
+        self._method_steps: dict[tuple[Method, bool], int] = {}
         self._reasons: dict[tuple[str, str], int] = {}
 
     def record(self, step: StepCost) -> None:
@@ -228,11 +240,11 @@ class ProvenanceMix:
         if step.is_refused:
             self.refused_steps += 1
             self.refused_seconds = fold_step(self.refused_seconds, step.refused_seconds)
-        for species, seconds in step.seconds_by_species().items():
-            self._species_seconds[species] = fold_step(
-                self._species_seconds.get(species, 0.0), seconds
+        for key, seconds in step.seconds_by_method().items():
+            self._method_seconds[key] = fold_step(
+                self._method_seconds.get(key, 0.0), seconds
             )
-            self._species_steps[species] = self._species_steps.get(species, 0) + 1
+            self._method_steps[key] = self._method_steps.get(key, 0) + 1
         for refusal in step.refusals:
             key = (refusal.source, refusal.reason)
             self._reasons[key] = self._reasons.get(key, 0) + 1
@@ -260,12 +272,13 @@ class ProvenanceMix:
             )
         return self.refused_seconds / self.seconds
 
-    def seconds_by_species(self) -> Mapping[Species, float]:
-        return dict(self._species_seconds)
+    def seconds_by_method(self) -> Mapping[tuple[Method, bool], float]:
+        """Seconds by (method, validated)."""
+        return dict(self._method_seconds)
 
-    def steps_by_species(self) -> Mapping[Species, int]:
-        """Steps with at least one term of each species."""
-        return dict(self._species_steps)
+    def steps_by_method(self) -> Mapping[tuple[Method, bool], int]:
+        """Steps with at least one term of each (method, validated)."""
+        return dict(self._method_steps)
 
     def reasons(self) -> Mapping[tuple[str, str], int]:
         """Distinct (source, reason) pairs with the number of terms each hit."""

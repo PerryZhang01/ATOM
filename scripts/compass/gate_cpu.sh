@@ -11,7 +11,7 @@
 #                          collecting. That file names which is which and
 #                          which is generated; README.md's row counts both.
 #
-# What this tier cannot see is not left to memory. gpu_gate_triggers.txt lists
+# What this gate cannot see is not left to memory. gpu_gate_triggers.txt lists
 # the source paths whose only coverage is in the excluded set; a diff touching
 # one of them fails this gate with an instruction to run gate_gpu.sh. Before
 # that, the rule was a sentence in a design document and nothing read it.
@@ -119,7 +119,7 @@ while IFS= read -r line || [ -n "$line" ]; do
 done <"$EXCLUDE"
 printf 'gate:   %s files excluded + tests/plugin\n' "$NEX"
 
-# --- does this change need the GPU tier? -------------------------------------
+# --- does this change need the GPU gate? -------------------------------------
 # Answered here, enforced after pytest, so a run yields both answers rather than
 # trading one for the other. That includes the case where the question cannot be
 # answered at all: it is recorded, not exited on, so the suite still reports.
@@ -199,7 +199,7 @@ fi
 printf '\n'
 
 # Identify the tree before running, not after: an attestation that this diff
-# already passed the GPU tier is per-tree, so it cannot be honoured on a tree we
+# already passed the GPU gate is per-tree, so it cannot be honoured on a tree we
 # cannot name.
 HEAD_SHA=$(compass_head_sha "$ROOT") || HEAD_SHA=UNKNOWN
 
@@ -239,7 +239,7 @@ if [ "$RC" -ne 0 ]; then
     # line. Either way the reader still ends up holding the test's identity.
     # Appending to this block -- or inserting after the class name -- breaks
     # that, and nothing here will fail if it does.
-    printf 'CPU tier of the test gate FAILED. The baseline is measured, not read:\n' >&2
+    printf 'CPU gate FAILED. The baseline is measured, not read:\n' >&2
     printf 'run this script on the integration head this branch forked from and\n' >&2
     printf 'compare -- see scripts/compass/README.md.\n' >&2
     printf 'Before you read it as your diff, check the FAILED line above. One test in\n' >&2
@@ -252,23 +252,23 @@ if [ "$RC" -ne 0 ]; then
 fi
 
 if [ -n "$GPU_SRC_UNKNOWN" ]; then
-    printf 'The CPU tier is green, but the test gate is not passed: %s.\n' "$GPU_SRC_UNKNOWN" >&2
-    printf 'So this run cannot tell whether the diff needs the GPU tier, and an\n' >&2
+    printf 'pytest is green, but the CPU gate is not passed: %s.\n' "$GPU_SRC_UNKNOWN" >&2
+    printf 'So this run cannot tell whether the diff needs the GPU gate, and an\n' >&2
     printf 'unanswered question is not a "no". It is not a finding about the tree.\n' >&2
     printf '  Fix by any one of: stage with scripts/compass/snapshot.sh, which stamps\n' >&2
     printf '  .compass-changed; set COMPASS_CHANGED_FILES=<file listing the diff>; or\n' >&2
     printf '  run in a tree where %s resolves.\n' "$INTEGRATION" >&2
-    finish 98 "unknown whether this diff needs the GPU tier: $GPU_SRC_UNKNOWN"
+    finish 98 "unknown whether this diff needs the GPU gate: $GPU_SRC_UNKNOWN"
 fi
 
-# A green CPU tier is not a passed gate when the diff lands in the blind spot:
-# the GPU tier has to have run on this same tree, and to have said so.
+# A green pytest run is not a passed gate when the diff lands in the blind spot:
+# the GPU gate has to have run on this same tree, and to have said so.
 if [ -n "$GPU_NEEDED" ]; then
     DONE=${COMPASS_GPU_GATE_DONE:-}
     if [ -z "$DONE" ]; then
-        printf 'this diff touches the CPU tier'"'"'s blind spot; the GPU tier has not run.\n' >&2
+        printf 'this diff touches the CPU gate'"'"'s blind spot; the GPU gate has not run.\n' >&2
         printf '  Run gate_gpu.sh, then re-run with COMPASS_GPU_GATE_DONE=<that tree'"'"'s HEAD>\n' >&2
-        finish 98 "this diff needs the GPU tier, which has not run; run gate_gpu.sh"
+        finish 98 "this diff needs the GPU gate, which has not run; run gate_gpu.sh"
     fi
     # An attestation names a tree. Without a commit we cannot check it names
     # THIS tree, and accepting it unchecked would make the whole rule
@@ -282,7 +282,7 @@ if [ -n "$GPU_NEEDED" ]; then
     fi
     if [ "$DONE" != "$HEAD_SHA" ]; then
         printf 'COMPASS_GPU_GATE_DONE=%s but this tree is %s.\n' "$DONE" "$HEAD_SHA" >&2
-        printf '  The GPU tier passed on a different tree. Re-run it here.\n' >&2
+        printf '  The GPU gate passed on a different tree. Re-run it here.\n' >&2
         finish 98 "COMPASS_GPU_GATE_DONE names a different tree; run gate_gpu.sh here"
     fi
     printf 'gpu:    satisfied by COMPASS_GPU_GATE_DONE=%s\n' "${DONE:0:9}"

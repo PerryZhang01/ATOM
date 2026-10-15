@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2024-2025, Advanced Micro Devices, Inc. All rights reserved.
 
-"""Tier a's law fitted from real step records.
+"""The step linear law fitted from real step records.
 
-    python -m atom.compass.backends.coarse_fit RECORD... --out LAW [--form FORM] [--dp N]
+    python -m atom.compass.backends.step_linear_fit RECORD... --out LAW [--form FORM] [--dp N]
 
 Each RECORD is a real run's step record (`steps/dp0.jsonl`, written with
 `ATOM_COMPASS_PARITY_RECORD`). A step's label is its device busy time,
@@ -36,15 +36,16 @@ vector reports, under `fit.all_rows`, the centre and scaled MAD of the fit on
 every rank's row, each step priced as its max over ranks, and under
 `fit.passes` the refits the alternation took, null when the picks still moved
 after `MAD_PASSES` refits. Held-out errors are
-printed at `--dp 1` only.
+printed and written at `--dp 1` only.
 
 Records with a host key (`dp0.key.json`, from the real runner) also give the
 host laws as a run file's `host` entry: `key`, and `laws[kind][segment]`,
 seconds on `(1, tokens, seqs)`. `E` runs from the previous forward's exit,
 cut as idle when the two batches share no request; `W_pre` to the launch, less
 the staging gate's wait; `W_post` from the launch to the exit, less the token
-copy wait, and a middle chunk has none. They take tier a's solver, MAD drops
-and hulls; `seqs` equal to `tokens` on every sample gets zero. Two keys refuse.
+copy wait, and a middle chunk has none. They take the step linear law's
+solver, MAD drops and hulls; `seqs` equal to `tokens` on every sample gets
+zero. Two keys refuse.
 
 Each equation is divided by its own label and the coefficients are bound to be
 non-negative. Steps whose relative residual is more than `MAD_K` scaled MADs
@@ -57,16 +58,16 @@ the dropped ones, never charged. A feature with no variance gets coefficient
 zero and is named. Each vector reports its samples,
 warm and dropped counts, the centre and scaled MAD of its relative residuals,
 the condition number of its column-scaled design and
-the convex hull of its fitted steps, which `CoarseLaw` reads. A vector with
+the convex hull of its fitted steps, which `StepLinearLaw` reads. A vector with
 no more fitted steps than coefficients, or whose steps span no hull, is left
-out and named under `unfitted`; `CoarseBackend` refuses its steps.
+out and named under `unfitted`; `StepLinearBackend` refuses its steps.
 
-Forms (`FORMS`): `law`, the features `CoarseLaw` always prices; `history`,
+Forms (`FORMS`): `base`, the features `StepLinearLaw` always prices; `history`,
 prefill plus `Sum (N_KV - N_Q)`, the KV a short chunk reads on a deep history;
 `shared`, decode with the context and padding slopes shared by every rung and
 an intercept per rung.
 
-Outside `shared`, a decode rung may adopt a `rowmod(k)` column (`CoarseLaw`),
+Outside `shared`, a decode rung may adopt a `rowmod(k)` column (`StepLinearLaw`),
 read from its rows in scheduled order, by the rule `_rowmod` states; the
 vector then names `k` and records, under `fit.rowmod`, the MAD without the
 column, the mean MAD with each step's rows shuffled, and per held-out record
@@ -75,7 +76,10 @@ the p50 error without and with it.
 With two or more records it also prints, per form, the error on each record of
 a law fitted on the others, warm steps left out: per kind and rung, or prefill
 token band, the p10, p50 and p90 of `predicted / measured - 1`; and the same
-per host law.
+per host law. The law's own form's errors are written into it: under each
+vector's `held_out`, the convex hull of the steps they were measured on and
+their percentiles per band, which `StepLinearLaw` reads to mark a term
+validated. A vector whose held-out steps span no hull gets none.
 """
 
 from __future__ import annotations
@@ -83,12 +87,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from collections import deque
 from pathlib import Path
 
 import numpy as np
 
-from atom.compass.backends.coarse import DECODE, EAGER, HISTORY, PREFILL, ROWMOD, rowmod
 from atom.compass.backends.shape import (
     BatchView,
     RequestShape,
@@ -97,8 +101,16 @@ from atom.compass.backends.shape import (
     sum_query_square,
     sum_tokens,
 )
+from atom.compass.backends.step_linear import (
+    DECODE,
+    EAGER,
+    HISTORY,
+    PREFILL,
+    ROWMOD,
+    rowmod,
+)
 
-FORMS = ("law", "history", "shared")
+FORMS = ("base", "history", "shared")
 MAD_K = 3.5
 #: A relative residual this small is never an outlier, however tight the rest.
 MAD_FLOOR = 0.01
@@ -157,11 +169,11 @@ def _launch_exposed(lines) -> set[int]:
     return exposed
 
 
-def samples(record, form: str = "law", dp: int = 1) -> tuple[list[tuple], dict]:
+def samples(record, form: str = "base", dp: int = 1) -> tuple[list[tuple], dict]:
     """One record's fittable steps as (vector, features, seconds, step, context), and
     what was cut.
 
-    `vector` is `prefill` or a decode rung's key; features are in `CoarseLaw`'s
+    `vector` is `prefill` or a decode rung's key; features are in `StepLinearLaw`'s
     order, plus `history` for that form and, above `dp` 1, `moe_rows` on prefill;
     `context` is the decode rows' N_KV in scheduled order, empty for prefill.
     """
@@ -390,7 +402,7 @@ def _rowmod(members, rung: int, base: dict) -> tuple | None:
 
 
 def _hull(points: np.ndarray, names: tuple[str, ...]) -> dict:
-    """`CoarseLaw`'s hull over the non-intercept features of the fitted steps."""
+    """`StepLinearLaw`'s hull over the non-intercept features of the fitted steps."""
     from scipy.spatial import ConvexHull
 
     equal = {
@@ -463,8 +475,8 @@ def _slowest(groups, prefill: list[str]) -> tuple[list[tuple], dict]:
     return rows, report
 
 
-def fit(records, form: str = "law", dp: int = 1) -> dict:
-    """The law over `records`, runs of `dp` ranks each, as the mapping `CoarseLaw` reads."""
+def fit(records, form: str = "base", dp: int = 1) -> dict:
+    """The law over `records`, runs of `dp` ranks each, as the mapping `StepLinearLaw` reads."""
     from scipy.spatial import QhullError
 
     if form not in FORMS:
@@ -486,7 +498,7 @@ def fit(records, form: str = "law", dp: int = 1) -> dict:
         for r in records
     ]
     law = {
-        "provenance": f"coarse_fit {form} on {len(records)} real records "
+        "provenance": f"step_linear_fit {form} on {len(records)} real records "
         f"({', '.join(digests)})",
         "form": form,
         "cut": cut,
@@ -594,25 +606,65 @@ def _band(key: str, counts) -> str:
     return f"prefill tokens {lo}-{hi}"
 
 
-def held_out(records, form: str = "law") -> dict:
-    """Per band, the relative errors on each record of the law fitted on the others."""
-    warm = fit(records, form)["warm_steps"]
-    errors: dict[str, list[float]] = {}
+def _held_out(records, form: str, warm=None):
+    """Each step of each record, warm steps left out, priced by the law fitted
+    on the other records: (vector, band, counts, context, relative error), the
+    error nan where that law has no vector for the step."""
+    if warm is None:
+        warm = fit(records, form)["warm_steps"]
     for i, record in enumerate(records):
         law = fit(records[:i] + records[i + 1 :], form)
         for key, counts, seconds, step, context in samples(record, form)[0]:
             if step in warm[i]:
                 continue
             vector = law["decode"].get(key) if key != "prefill" else law.get(key)
-            band = _band(key, counts)
-            if vector is None:
-                errors.setdefault(f"{band} (no vector)", []).append(float("nan"))
-                continue
-            if "rowmod" in vector:
-                counts += (rowmod(context, vector["rowmod"]),)
-            price = np.dot(list(vector["coefficients"].values()), counts)
-            errors.setdefault(band, []).append(float(price) / seconds - 1.0)
+            error = float("nan")
+            if vector is not None:
+                x = counts + _rowmod_count(vector, context)
+                price = np.dot(list(vector["coefficients"].values()), x)
+                error = float(price) / seconds - 1.0
+            yield key, _band(key, counts), counts, context, error
+
+
+def _rowmod_count(vector: dict, context) -> tuple:
+    return (rowmod(context, vector["rowmod"]),) if "rowmod" in vector else ()
+
+
+def held_out(records, form: str = "base") -> dict:
+    """Per band, the relative errors on each record of the law fitted on the others."""
+    errors: dict[str, list[float]] = {}
+    for _, band, _, _, error in _held_out(records, form):
+        band = band if not math.isnan(error) else f"{band} (no vector)"
+        errors.setdefault(band, []).append(error)
     return errors
+
+
+def mark_held_out(law: dict, records, form: str = "base") -> None:
+    """Write under each of `law`'s vectors, as `held_out`, the hull of its steps
+    `_held_out` priced and their errors per band."""
+    from scipy.spatial import QhullError
+
+    rows = [
+        r for r in _held_out(records, form, law["warm_steps"]) if not math.isnan(r[4])
+    ]
+    for key, vector in [("prefill", law.get("prefill")), *law["decode"].items()]:
+        mine = [r for r in rows if r[0] == key]
+        if vector is None or not mine:
+            continue
+        points = [c + _rowmod_count(vector, x) for _, _, c, x, _ in mine]
+        try:
+            hull = _hull(
+                np.array(points, dtype=np.float64)[:, 1:],
+                tuple(vector["coefficients"])[1:],
+            )
+        except (ValueError, QhullError):
+            continue
+        bands = {}
+        for band in sorted({r[1] for r in mine}):
+            e = [r[4] for r in mine if r[1] == band]
+            p10, p50, p90 = np.percentile(e, (10, 50, 90)).tolist()
+            bands[band] = {"steps": len(e), "p10": p10, "p50": p50, "p90": p90}
+        vector["held_out"] = {"hull": hull, "bands": bands}
 
 
 def host_held_out(records) -> dict:
@@ -642,19 +694,21 @@ def _table(errors: dict) -> str:
 
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(
-        prog="python -m atom.compass.backends.coarse_fit",
+        prog="python -m atom.compass.backends.step_linear_fit",
         description=__doc__.split("\n\n")[0],
     )
     parser.add_argument("records", nargs="+", help="real step records, steps/dp0.jsonl")
     parser.add_argument(
         "--out", required=True, help="where the law is written, as JSON"
     )
-    parser.add_argument("--form", choices=FORMS, default="law")
+    parser.add_argument("--form", choices=FORMS, default="base")
     parser.add_argument(
         "--dp", type=int, default=1, help="ranks per run, the records in rank order"
     )
     args = parser.parse_args(argv)
     law = fit(args.records, args.form, args.dp)
+    if len(args.records) > 1 and args.dp == 1:
+        mark_held_out(law, args.records, args.form)
     Path(args.out).write_text(json.dumps(law) + "\n")
     print(f"cut: {json.dumps(law['cut'])}")
     for name, vector in [("prefill", law.get("prefill"))] + list(law["decode"].items()):

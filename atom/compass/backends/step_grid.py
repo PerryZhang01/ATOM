@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2024-2025, Advanced Micro Devices, Inc. All rights reserved.
 
-"""Tier a: a step looked up in a grid of measured whole forwards.
+"""The step grid: a step looked up in a grid of measured whole forwards.
 
 A batch maps to the homogeneous shape that keeps its token count and its
 attention work, Sum (N_Q.c + N_Q(N_Q+1)/2) over rows with c the cached
@@ -27,11 +27,11 @@ say whether it produces output, and under a replay bundle a decode step that
 replays no graph, being wider than the widest rung or eager.
 
 The answer is the lookup times the residual's factor for the batch's ordered
-rows (`step_fit_residual.py`), which the residual may refuse. It is one
-`fitted` term for the whole forward, never multiplied by the TP width, since
-the measurement already holds the collectives. Its detail keeps the lookup's
-own species, `measured` only for a homogeneous batch on a node and
-`interpolated` otherwise, and each member's output.
+rows (`step_grid_residual.py`), which the residual may refuse. It is one
+`estimated` term for the whole forward, unvalidated, never multiplied by the TP
+width, since the measurement already holds the collectives. Its detail calls
+the lookup `measured` for a homogeneous batch on a node and `interpolated`
+otherwise, and gives each member's output.
 
 The grid is a mapping, as a bundle holds it:
 
@@ -55,10 +55,10 @@ from collections.abc import Mapping, Sequence
 from fractions import Fraction
 from typing import TYPE_CHECKING
 
-from atom.compass.backends.base import CostBackend, Tier
+from atom.compass.backends.base import CostBackend, Granularity
 from atom.compass.backends.cost import CostTerm, StepCost
-from atom.compass.backends.ladder import CostRefused
-from atom.compass.backends.provenance import Provenance, Refusal, Species
+from atom.compass.backends.provenance import Method, Provenance, Refusal
+from atom.compass.backends.resolver import CostRefused
 from atom.compass.backends.shape import (
     BatchView,
     RequestShape,
@@ -68,9 +68,9 @@ from atom.compass.backends.shape import (
 )
 
 if TYPE_CHECKING:
-    from atom.compass.backends.step_fit_residual import Residual
+    from atom.compass.backends.step_grid_residual import Residual
 
-SOURCE = "step-fit"
+SOURCE = "step-grid"
 UNITS = {"s": Fraction(1), "ms": Fraction(1, 10**3), "us": Fraction(1, 10**6)}
 
 
@@ -178,7 +178,7 @@ class _Cells:
         return value, len(corners) == 1, cell
 
 
-class StepFitGrid:
+class StepGrid:
     """A bundle's grids: prefill by whether a chunk produces output, and decode."""
 
     def __init__(self, bundle: Mapping) -> None:
@@ -284,18 +284,18 @@ class StepFitGrid:
         return cells, at
 
 
-class StepFitBackend(CostBackend):
+class StepGridBackend(CostBackend):
     """Prices a step as the grid's value at its equivalent shape, times the
     residual; `bundle` names the artifact both came from, for `describe`."""
 
-    def __init__(self, grid: StepFitGrid, residual: Residual, bundle: str) -> None:
+    def __init__(self, grid: StepGrid, residual: Residual, bundle: str) -> None:
         self.grid, self.residual, self.bundle = grid, residual, bundle
 
     @property
-    def tier(self) -> Tier:
-        return Tier.COARSE
+    def granularity(self) -> Granularity:
+        return Granularity.STEP
 
-    def estimate(self, batch_view: BatchView) -> StepCost:
+    def price(self, batch_view: BatchView) -> StepCost:
         if not isinstance(batch_view, BatchView):
             raise TypeError(
                 f"this backend prices a BatchView, not {type(batch_view).__name__}"
@@ -304,18 +304,18 @@ class StepFitBackend(CostBackend):
         cells, at = self.grid.locate(view)
         value, on_node, cell = cells.lookup(view, at)
         homogeneous = len({(r.query_tokens, r.context_tokens) for r in rows}) == 1
-        species = Species.MEASURED if on_node and homogeneous else Species.INTERPOLATED
+        looked_up = "measured" if on_node and homogeneous else "interpolated"
         lookup = float(value * self.grid.unit)
         factor, summed = self.residual.factor(view)
         detail = (
-            f"lookup {lookup!r} s, {species}; {cells.name} cell {cell}; "
+            f"lookup {lookup!r} s, {looked_up}; {cells.name} cell {cell}; "
             f"residual {factor!r} = {summed}"
         )
-        fitted = Provenance(Species.FITTED, detail, SOURCE)
-        return StepCost([CostTerm("forward", lookup * factor, fitted)])
+        estimated = Provenance(Method.ESTIMATED, detail, SOURCE)
+        return StepCost([CostTerm("forward", lookup * factor, estimated)])
 
     def describe(self) -> str:
         return (
-            f"tier-a step fit, bundle {self.bundle}; {self.grid.graph_mode} "
+            f"step grid, bundle {self.bundle}; {self.grid.graph_mode} "
             f"decode grid, timing scope {self.grid.scope}; {self.residual.describe()}"
         )

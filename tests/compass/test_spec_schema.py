@@ -49,8 +49,8 @@ import pytest
 
 from atom.compass import spec as spec_package
 from atom.compass.spec import (
-    DECLARED,
     DEPLOYMENT_OWNED,
+    FIELDS,
     SCHEMA,
     SCHEMA_VERSION,
     Backend,
@@ -91,7 +91,7 @@ DOCUMENT = {
     "provenance": {
         "authored_by": "a person",
         "date": "2026-09-18",
-        "method": "probed",
+        "origin": "probed",
     },
     "host": {
         "cpu": {"cores_physical": 96, "cores_logical": 192},
@@ -407,6 +407,19 @@ BREAKAGES = {
         "device.memory.capacity_bytes", "lots"
     ),
     "one field written under two spellings": lambda: both_spellings(True),
+    "an origin nobody defined": lambda: written("provenance.origin", "guessed"),
+    "the key the origin used to be written under": lambda: written(
+        "provenance.method", "probed"
+    ),
+    "a subject on a document nobody probed": lambda: dict(
+        document(),
+        provenance={
+            "authored_by": "a",
+            "date": "d",
+            "origin": "assumed",
+            "subject": {"model": "m"},
+        },
+    ),
 }
 
 #: The same rule named by the verbs other than the reader, each driven through
@@ -879,7 +892,7 @@ def test_a_measured_width_answers():
 def test_no_derate_is_declared_by_hand():
     # Each one is derived from a field marked as a spec peak, so a peak number
     # added later cannot arrive without one.
-    assert not [f for f in DECLARED if f.kind is Kind.DERATE]
+    assert not [f for f in FIELDS if f.kind is Kind.DERATE]
     derated = {f.block for f in SCHEMA if f.kind is Kind.DERATE}
     assert derated == {f.block for f in SCHEMA if f.peak}
     assert len(derated) == 4

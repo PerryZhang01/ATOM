@@ -13,7 +13,7 @@ the thing `tests/conftest.py`'s own header records as having silently stopped
 four test modules from running, so the binding lives in
 `test_kv_budget_engine.py` and runs where there is a driver.
 
-What this tier holds is the half that decides whether the binding is right
+What this file holds is the half that decides whether the binding is right
 rather than whether it runs: that ATOM's budget method reaches the device
 through one call and through no other, that the four figures are handed back
 under the names they were taken by, that four named proxies for that

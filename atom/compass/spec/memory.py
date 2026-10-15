@@ -32,7 +32,7 @@ about each other first, where the rank that produced them can still be named.
 engine starts died on a negative cache budget with a neighbour holding 152.01 GB
 while the rank itself had reserved 2.94 GB. The record does not say which width
 that ran at, so the most forgiving reading of it is against the largest reserve
-any measured width predicts, 11.2e9, which it exceeds by a factor of thirteen;
+any probed width predicts, 11.2e9, which it exceeds by a factor of thirteen;
 against the single-card prediction it is a factor of a hundred and fifty-six.
 The honest readings sit just above their own predictions: 926 MiB at width 1,
 6906 at 2, 7266 at 4 and 10704 at 8, against 970.0e6, 7.2e9, 7.6e9 and 11.2e9.
@@ -84,7 +84,7 @@ receives only the difference cannot tell those apart.
 **The prediction is the caller's, and there is one case with nothing to supply
 it.** What the collective terms predict for the width comes from a spec: the
 table already written for this machine, or a transferred one for a machine of
-the same type. On a card nobody has measured -- which is the case an engine is
+the same type. On a card nobody has probed -- which is the case an engine is
 being started for -- that number is the one the probe is about to produce, and
 there is nothing to pass. This function neither answers that nor hides it: the
 prediction is a required argument with no default, so a caller with nothing to
@@ -95,7 +95,7 @@ how the term moves with width, and it belongs to whoever is building the spec.
 **A reading whose free memory was binding describes the neighbours.** The engine
 clamps its cache to what is free on the card, `min(budget, free)`, so when free
 is the smaller of the two the cache it built is the size of the gap somebody
-else left, and every constant measured beside it moves with whoever was on the
+else left, and every constant probed beside it moves with whoever was on the
 box. That is a reading to take again rather than a number to write down, and it
 is asked per rank, where the rank that produced it can still be named.
 
@@ -133,7 +133,7 @@ NON_TORCH = "non_torch"
 #: The largest multiple of the reserve predicted for a width that a device-wide
 #: reading may be. Not a bound on this process: the reading counts the whole
 #: card, so this says how much of the card may belong to somebody else before
-#: nothing measured on it can be trusted. Provisional -- every reading it is
+#: nothing probed on it can be trusted. Provisional -- every reading it is
 #: calibrated against came from one machine, and the readings bound it to an
 #: interval rather than to this point. What it accepts, it hands on: a reading
 #: just under it becomes the width's reserve with no further question asked.
@@ -224,7 +224,7 @@ def non_torch_across_ranks(
                 f"budget of {reading.kv_budget_bytes!r}, so what was free on "
                 f"the card set the cache size and not the budget ({reading})",
                 "a cache sized by the gap a neighbour left is a property of "
-                "the neighbour, and every constant measured beside it moves "
+                "the neighbour, and every constant probed beside it moves "
                 "when they do; take the readings again on a card this engine "
                 "has to itself",
             )
