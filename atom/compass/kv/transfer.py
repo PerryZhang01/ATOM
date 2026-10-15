@@ -32,6 +32,9 @@ It charges the same duration to both ends of the same wire. A push and a pull
 of the same blocks cost the same here, which is a claim about the fabric being
 symmetric that this model cannot check.
 
+Writes in flight together share one `Link`'s bandwidth equally. Writes on
+different links do not contend, even where real ones would share a NIC.
+
 Nothing in this module imports the engine or a tensor library. Reaching it
 through the package around it is not the same import: `atom.compass.kv` loads
 the connector beside it, and that brings the engine's connector interface, its
@@ -44,6 +47,7 @@ having, and it is not a bare import of this file.
 from __future__ import annotations
 
 import enum
+import math
 from dataclasses import dataclass
 
 
@@ -123,3 +127,62 @@ class TransferModel:
     def release_at(self, issue_time_s: float, blocks: int) -> float:
         """The time this transfer may be reported finished, and not before."""
         return issue_time_s + self.duration_s(blocks)
+
+
+class Link:
+    """The writes on one link, sharing its bandwidth equally.
+
+    A write arriving at `a` moves its bytes at `bandwidth / n` while `n` writes
+    are in flight, and completes the model's latency after the last byte. The
+    state moves only at arrivals and completions, never at a query's time, so
+    two holders fed the same arrivals in the same order compute bitwise the
+    same completion times. A write alone on the link completes at
+    `a + duration_s(blocks)`.
+    """
+
+    def __init__(self, model: TransferModel) -> None:
+        self._model = model
+        self._t = -math.inf  # the last event, before the latency
+        self._left: dict = {}  # in flight: key -> bytes not yet moved
+        self._done: list = []  # (key, completion), not yet returned
+
+    def _complete(self, due) -> None:
+        """Retire completions in order while `due(event, completion)` holds."""
+        while self._left:
+            m = min(self._left.values())
+            work = m * len(self._left) / self._model.bandwidth_bytes_per_s
+            event = self._t + work
+            completion = self._t + (self._model.latency_s + work)
+            if not due(event, completion):
+                return
+            for key in [k for k, v in self._left.items() if v == m]:
+                del self._left[key]
+                self._done.append((key, completion))
+            self._left = {k: v - m for k, v in self._left.items()}
+            self._t = event
+
+    def start(self, key, a: float, blocks: int) -> None:
+        """A write of `blocks` arrives at `a`."""
+        self._model.duration_s(blocks)  # refuses a negative count by name
+        if a < self._t:
+            raise ValueError(
+                f"write {key!r} arrives at {a}, after this link already moved "
+                f"to {self._t}; its arrivals must come in time order"
+            )
+        self._complete(lambda event, _: event <= a)
+        if self._left:
+            served = (a - self._t) * self._model.bandwidth_bytes_per_s / len(self._left)
+            self._left = {k: max(0.0, v - served) for k, v in self._left.items()}
+        self._t = a
+        self._left[key] = blocks * self._model.bytes_per_block
+
+    def finished(self, t: float, notify: float = 0.0) -> dict:
+        """The writes known done at `t`, `notify` after completion, each once:
+        key -> completion."""
+        self._complete(lambda _, completion: completion + notify <= t)
+        out = {k: c for k, c in self._done if c + notify <= t}
+        self._done = [(k, c) for k, c in self._done if c + notify > t]
+        return out
+
+    def busy(self) -> bool:
+        return bool(self._left or self._done)

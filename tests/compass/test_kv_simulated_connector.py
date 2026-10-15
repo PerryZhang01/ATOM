@@ -29,6 +29,7 @@ from atom.compass.kv import (
     TransferModel,
     UnboundSeam,
 )
+from atom.compass.kv.transfer import Link
 from atom.compass.spec import MachineSpec, SpecRefusal
 from atom.kv_transfer.disaggregation.factory import KVConnectorFactory
 from atom.kv_transfer.disaggregation.types import ConnectorMetadata
@@ -197,3 +198,53 @@ def test_a_negative_block_count_is_refused(geometry):
     """A transfer that finished before it started is not a fast transfer."""
     with pytest.raises(ValueError, match="not a transfer"):
         model_for(geometry, PEAKS[0]).duration_s(-1)
+
+
+# -- Writes sharing one link ----------------------------------------------
+
+#: Binary-exact numbers, so completion times compare with `==`.
+EXACT = TransferModel(latency_s=0.5, bandwidth_bytes_per_s=4.0, bytes_per_block=2)
+
+
+def test_a_lone_write_completes_at_its_duration():
+    link = Link(EXACT)
+    link.start("x", 1.0, 3)
+    done = 1.0 + EXACT.duration_s(3)
+    assert link.finished(done - TICK) == {}
+    assert link.finished(done) == {"x": done}
+    assert not link.busy()
+
+
+def test_writes_in_flight_together_share_the_bandwidth():
+    """x and y share 4 B/s from 0, so x's 2 bytes are through at 1, when z
+    arrives; z and y then share it until z's 2 bytes are through at 2."""
+    link = Link(EXACT)
+    link.start("x", 0.0, 1)
+    link.start("y", 0.0, 3)
+    link.start("z", 1.0, 1)
+    assert link.finished(2.0) == {"x": 1.5}
+    assert link.finished(10.0, notify=0.25) == {"z": 2.5, "y": 3.0}
+
+
+def test_two_ends_asking_at_different_times_compute_the_same_times(geometry):
+    """One end polls between every pair of arrivals, the other only at the end."""
+    model = model_for(geometry, PEAKS[0])
+    arrivals = [(k, 0.37 * (k // 3) + 1e-3 * k, 1 + (7 * k) % 5) for k in range(12)]
+    asked, once = Link(model), Link(model)
+    seen = {}
+    for i, (key, a, blocks) in enumerate(arrivals):
+        asked.start(key, a, blocks)
+        once.start(key, a, blocks)
+        if i + 1 < len(arrivals):
+            seen |= asked.finished((a + arrivals[i + 1][1]) / 2)
+    seen |= asked.finished(float("inf"))
+    assert seen == once.finished(float("inf"))
+    assert len(seen) == len(arrivals)
+
+
+def test_an_arrival_behind_an_event_the_link_has_passed_is_refused():
+    link = Link(EXACT)
+    link.start("x", 0.0, 1)
+    link.finished(10.0)
+    with pytest.raises(ValueError, match="arrives at 0.25, after this link"):
+        link.start("y", 0.25, 1)

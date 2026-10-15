@@ -1693,13 +1693,17 @@ A `SimulatedKVConnector` is registered through the existing factory. It reproduc
 `start_prefill` and `start_decode`), and implements **scheduler-side hooks only**: sends
 and receives both run on the engine's step loop, and no worker takes part.
 
-- `T = latency + bytes / bandwidth`. `bytes` is exactly computable from block count x
+- Each decode and prefill rank pair is one link station: a write arriving at `a` moves
+  its bytes at `bandwidth / n` while `n` writes are in flight on that pair (processor
+  sharing), and completes `latency` after its last byte, at `c`. Alone on the link,
+  `c = a + latency + bytes / bandwidth`. `bytes` is exactly computable from block count x
   per-block bytes — no measurement needed. `latency` and `bandwidth` are
-  configuration, satisfying the "interconnect is configurable" requirement directly.
+  configuration (`05`, the `interconnect` link the run file's `kv_link` names),
+  satisfying the "interconnect is configurable" requirement directly.
 - **Decode** posts the write request in `update_state_after_alloc` (called from
   `Scheduler._notify_connector_after_prefill_alloc`): channel
   `engine-D->engine-P:kv_write_req`, sent at `t`, arriving at `a = t + request latency`.
-  It computes its own ready time `a + T + notify latency` and reports the request in
+  It computes its own ready time `c + notify latency` and reports the request in
   `finished_recving` from `process_completions` as the pipelined funnel would: at the
   call after the first one whose clock reached it. A local event of engine-D.
 - **Prefill** records the data-ready time `r` in `request_finished` and takes the write
@@ -1712,7 +1716,7 @@ and receives both run on the engine's step loop, and no worker takes part.
   request it sends to prefill (`atom/mesh/src/core/placement/backend/atom.rs`).
   `Scheduler.postprocess` parks a finished request in `deferred_free_blocks` only while
   `should_defer_free` finds the claim; any other finished request frees at once. At
-  `max(a, r) + T`, reported the same way, prefill reports `finished_sending`, and
+  `c`, reported the same way, prefill reports `finished_sending`, and
   `Scheduler._update_from_kv_xfer_finished` retires the claim through `send_finished`
   and frees the parked blocks. `source_blocks_released` does nothing. A local event of
   engine-P. Scheduler code is unchanged.
@@ -1720,9 +1724,12 @@ and receives both run on the engine's step loop, and no worker takes part.
   ends (`mooncake_connector.py::MooncakeConnector._send_write_done`). Both ends compute
   that time instead, for two reasons: the router forwards strictly in sequence (D2), so
   the decode request, and with it the write request, exists only after prefill has
-  returned, i.e. `r <= a`, which prefill asserts and refuses otherwise; and `T` depends
-  only on this request's bytes and the configuration, not on other writes in flight. No
-  channel is added; one message whose time both ends already know is not simulated.
+  returned, i.e. `r <= a`, which prefill asserts and refuses otherwise, so a write starts
+  at `a`; and `c` depends only on the writes on this rank pair, which both ends see:
+  decode sends them and prefill receives them, in the channel's order. Both advance the
+  station only at arrivals and completions, never at a poll time, so both compute the
+  same `c` (owner ruling on #1157). No channel is added; one message whose time both
+  ends already know is not simulated.
 - **The write request keeps Mooncake's channel** (D3). The real `MSG_WRITE_REQUEST`
   leaves a decode worker (`MooncakeConnector.start_load_kv`) for a prefill worker's
   listener thread (`MooncakeConnector._write_listener`); the simulated one leaves and
@@ -1730,11 +1737,12 @@ and receives both run on the engine's step loop, and no worker takes part.
   and no worker ever sends or receives across LPs. A prefill-side local timer would not
   do: when decode posts depends on its own admission, which prefill cannot know, and
   assuming "at once" frees prefill's blocks early exactly when decode is congested.
-- **Ceiling.** Pricing bandwidth contention between concurrent writes would make `T`
-  depend on prefill's other writes, which decode cannot see. That model needs the
-  write-done message back, plus protocol support for a thread that handles a write
-  request sending a message; in this protocol only an LP's clock owner registers a
-  send (D3).
+- **Ceiling.** Writes on different rank pairs do not contend, though above DP width one
+  real pairs can share a NIC. Pricing that would make `c` depend on writes one end
+  cannot see, which needs the write-done message back, plus protocol support for a
+  thread that handles a write request sending a message; in this protocol only an LP's
+  clock owner registers a send (D3). Mooncake's send-worker cap
+  (`num_worker_threads`) on writes in flight per producer rank is not modelled either.
 - It must still emit the `kv_transfer_params` blob that Atomesh relays, so
   `AtomAdapter` works unmodified. The router hard-errors if it is absent
   (`http_pd_router.rs::PDRouter::dispatch_atom_relay_internal`). The two backends emit
@@ -2187,7 +2195,7 @@ Ordered by how much they could cost.
 | D4 | Every synchronization site maps to one of the PDES mechanisms K1-K9, none undecided; the boundary is the LP, not the process; a DP step is one TAR costing the `max` over ranks, exchanged inside the forward by a K6 wait with no cost, and the lockstep `all_reduce` is K1 for its own cost; handler threads stay and TSO delivery runs them at their message's timestamp. A forward's K1 charge is one recurrence per runner over the backend's device busy time and four host segments (`E`, `W_pre`, `W_launch`, `W_post`), with wait rules R1, R4 and R6 to R8; `host.skip` makes a what-if; ATOM's sync stalls are fixed in ATOM and listed with their issues | 2026-09-18; revised 2026-09-28, 2026-10-01 and 2026-10-11 (#815) |
 | D5 | Every timer and clock read the CA can reach runs on the LP clock; only what it cannot reach is configured or left real; metric cadence is virtual time (revising `11` D72); the profiler and RL control commands are refused by the simulated runner with a reply, counted, and make the run a coverage report | 2026-09-18; revised 2026-09-28, 2026-10-09 |
 | D5.1 | The simulated run uses stdlib asyncio, not uvloop: only a Python event loop can host virtual time | 2026-09-28 |
-| D6 | KV transfer is simulated through a connector registered in the existing factory, reproducing Mooncake (what ATOM's PD CI deploys) through scheduler-side hooks only | 2026-09-18; revised 2026-09-28 |
+| D6 | KV transfer is simulated through a connector registered in the existing factory, reproducing Mooncake (what ATOM's PD CI deploys) through scheduler-side hooks only; concurrent writes on a rank pair share its link | 2026-09-18; revised 2026-09-28; link sharing 2026-10-16 (#1157) |
 | D7 | Atomesh gets no virtual clock: mesh-only mode; in 1P1D the router is one segment of a channel, not an LP, and its relay latency is that channel's lookahead; its bounds are configured (health check and circuit breaker off, `--worker-request-timeout-secs` set large); timestamps ride carriers it already relays; xPyD is deferred; under `--dp-aware` the router is LP `router`, handling requests, prefill responses and stream events in timestamp order (#449) | 2026-09-18; revised 2026-09-30, 2026-10-15 |
 | D8 | Arrivals are messages in transit, covered by the send and receive counts for closed and open workloads alike; the arrival timestamp rides the `tracestate` header | 2026-09-18; revised 2026-09-28 |
 | D9 | The ATOM diff is enumerated (~1,980 lines with tests) and completeness enforced by test rather than by review; ATOM's own suite is the gate (`08` D43.1) | 2026-09-18; revised 2026-09-28 |

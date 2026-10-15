@@ -302,6 +302,52 @@ def test_decode_learns_of_a_write_at_the_poll_the_engines_aggregation_reports_it
     assert [simulated(t) for t in polls] == [False, False, True, False]
 
 
+def test_writes_posted_together_share_the_link_on_both_ends(pd, seq_factory):
+    """Two writes posted at once move their bytes at half the bandwidth each:
+    the smaller is done once both have moved its size, the larger once both
+    are through, and each end reports them at those times."""
+    prompts = [PROMPT[:20], PROMPT]
+    xs = [
+        Sequence(
+            p,
+            4,
+            sampling_params=SamplingParams(max_tokens=1),
+            kv_transfer_params=dict(TO_PREFILL),
+        )
+        for p in prompts
+    ]
+    for x in xs:
+        pd.p.add(x)
+    engine_step(pd.p, pd.rt_p, R)
+    at(pd.rt_d, SEND)
+    ys = [
+        seq_factory(p, kv_transfer_params=dict(x.kv_transfer_params_output))
+        for p, x in zip(prompts, xs)
+    ]
+    for y in ys:
+        pd.d.add(y)
+    pd.d.schedule()
+
+    a = SEND + L
+    small, large = (len(y.block_table) * pd.model.bytes_per_block for y in ys)
+    bw = pd.model.bandwidth_bytes_per_s
+    first = a + pd.model.latency_s + 2 * small / bw
+    last = a + pd.model.latency_s + (small + large) / bw
+    d = (last - first) / 4
+    engine_step(pd.p, pd.rt_p, a, (0, a), (1, a))
+    # Each poll reports what the one before it saw.
+    polls = [first + d, first + 2 * d, last + d, last + 2 * d]
+    held = [[True, True], [False, True], [False, True], [False, False]]
+    for t, want in zip(polls, held):
+        engine_step(pd.p, pd.rt_p, t)
+        assert [x.id in pd.p.deferred_free_blocks for x in xs] == want, t
+    for t, want in zip(polls, held):
+        engine_step(pd.d, pd.rt_d, t + L)
+        pd.d.schedule()
+        waiting = [y.status is SequenceStatus.WAITING_FOR_REMOTE_KVS for y in ys]
+        assert waiting == want, t
+
+
 def test_a_prefill_the_router_does_not_send_on_is_freed_at_once(pd):
     """No `do_remote_decode`, no send claim: the blocks go back at finish."""
     total = free_blocks(pd.p)
@@ -403,7 +449,7 @@ def test_an_idle_producer_frees_every_finished_prefill(pd, seq_factory, follower
     admitted(pd, seqs, seq_factory, SEND)
     a = SEND + L
     engine_step(pd.p, pd.rt_p, a, *[(k, a) for k in range(len(seqs))])
-    T = pd.model.duration_s(max(len(seq.block_table) for seq in seqs))
+    T = pd.model.duration_s(sum(len(seq.block_table) for seq in seqs))
     engine_step(pd.p, pd.rt_p, a + T)
     engine_step(pd.p, pd.rt_p, a + T + TICK)
     assert pd.p.deferred_free_blocks == {}
