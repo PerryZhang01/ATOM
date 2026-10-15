@@ -28,11 +28,11 @@ member, the frontend's included, connects to.
   finish, each handing in its LP's refusals; the frontend's, when it co-hosts
   the authority, then writes the step table and the run summary. A SIGINT or
   SIGTERM that stopped the frontend's event loop
-  (`atom.utils.compass_loop.CompassEventLoop.stopped`) is a stop:
-  `frontend_done` first ends every LP's run through the authority, so each
-  engine leaves its loop at its ``+inf`` grant and hands in, then hands the
-  stop in as an ``ended:`` reason, and the server leaves once the summary is
-  written from every hand-in.
+  (`atom.utils.compass_loop.CompassEventLoop.stopped`) is a stop: the
+  frontend's runtime first ends every LP's run through the authority, so each
+  engine leaves its loop at its ``+inf`` grant and hands in; `frontend_done`
+  hands the stop in as an ``ended:`` reason, and the server leaves once the
+  summary is written from every hand-in.
 - `engine_loop(engine)` wraps the engine's loop: under ``step_grid`` it asks the
   workers for the bundle before it, `engine_done` after it, and if either
   raises, the engine hands in the exception as an ``ended:`` reason, with the
@@ -435,6 +435,21 @@ class _PublishedClock(clock.LPRuntime):
         self._now = self.slot[0] = t
 
 
+class _StoppingClock(clock.LPRuntime):
+    """An LP runtime that, when its run ends before its ``+inf`` grant, at a
+    stop, first ends every LP's run through the authority with a TAR to
+    ``+inf``, so each engine leaves its loop and hands in before the server
+    closes the engines. A run a refusal ended has nothing left to end."""
+
+    def end_run(self) -> None:
+        if self.now != math.inf:
+            with contextlib.suppress(ClockAbort):
+                self.conn.send((TAR, math.inf, [], math.inf))
+                while self.conn.recv()[0] != math.inf:  # up to its own +inf grant
+                    pass
+        super().end_run()
+
+
 def _runtime(lp: LpId, run: dict, member=None, cls=clock.LPRuntime) -> clock.LPRuntime:
     rt = cls(lp, channel_table(run), connect(lp, run["clock_endpoint"], member))
     clock.install(rt)
@@ -515,7 +530,7 @@ def frontend(config):
             target=_write_on_early_end, args=(run, authority), name="compass early end"
         )
         _early_end.start()
-    rt = _runtime(lp, run)
+    rt = _runtime(lp, run, cls=_StoppingClock)
     rt.client_run_ended = lambda k: _frontend_hand_in(run, rt, k)
     return _start_on_leaving(rt, authority)
 
@@ -942,19 +957,16 @@ def _write_on_early_end(run: dict, a: "_RecordingAuthority") -> None:
 
 def frontend_done(llm_engine) -> bool:
     """Whether the server left at a simulated run's finish, or at a stop: a
-    signal that ended its event loop's run. At a stop, first end every LP's run
-    through the authority (`_stop_run`), so each engine leaves its loop and
-    hands in. At either, stop the engines and hand in the frontend's refusals,
-    at a stop with an ``ended:`` reason naming the signal. With the authority
-    co-hosted, then write the step table and the run summary; at a stop, after
-    the early end's writer, which has written its own if a refusal ended the
-    run first, so the summary left counts every hand-in."""
+    signal that ended its event loop's run. At either, stop the engines and
+    hand in the frontend's refusals, at a stop with an ``ended:`` reason naming
+    the signal. With the authority co-hosted, then write the step table and the
+    run summary; at a stop, after the early end's writer, which has written its
+    own if an LP handed in before the stop, so the summary left counts every
+    hand-in."""
     rt = clock.installed()
     stop = None if rt is None else getattr(rt.loop, "stopped", None)
     if rt is None or (rt.now != math.inf and stop is None):
         return False
-    if rt.now != math.inf:
-        _stop_run(rt)
     llm_engine.close()
     run = spec()
     ended = [] if stop is None else [f"ended:{rt.me.name} stopped by {stop}"]
@@ -964,16 +976,6 @@ def frontend_done(llm_engine) -> bool:
             _early_end.join()
         _write_summary(run, _authority, ended=stop is not None)
     return True
-
-
-def _stop_run(rt) -> None:
-    """End every LP's run through the authority with a TAR to ``+inf``, and
-    read `rt`'s replies up to its ``+inf`` grant. A run a refusal ended has
-    nothing left to end."""
-    with contextlib.suppress(ClockAbort):
-        rt.conn.send((TAR, math.inf, [], math.inf))
-        while rt.conn.recv()[0] != math.inf:
-            pass
 
 
 def _frontend_hand_in(run: dict, rt, client_run=None, ended=()) -> None:

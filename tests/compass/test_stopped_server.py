@@ -109,8 +109,9 @@ with compass_run.engine_loop(SimpleNamespace(runner_mgr=SimpleNamespace(call_fun
     while not clock.idle(lambda: math.inf):
         pass
 """
-#: A co-hosting frontend, as `SERVER`'s, over `ENGINE` in a process it starts
-#: and a bare app. Its ``close`` waits for the engine, then kills it, as
+#: A co-hosting frontend, as `SERVER`'s, over `ENGINE` in a process it starts.
+#: Its app closes the engine at shutdown, before `frontend_done`, as the API
+#: server's lifespan does: it waits for the engine, then kills it, as
 #: `CoreManager.close` does.
 ENGINE_SERVER = """\
 import subprocess, sys
@@ -139,12 +140,17 @@ def close():
         engine.kill()
 
 async def app(scope, receive, send):
+    while scope["type"] == "lifespan":
+        kind = (await receive())["type"].rpartition(".")[2]
+        if kind == "shutdown":
+            close()
+        await send({"type": f"lifespan.{kind}.complete"})
     await send({"type": "http.response.start", "status": 200, "headers": []})
     await send({"type": "http.response.body", "body": b"ok"})
 
 uvicorn.run(app, host="127.0.0.1", port=int(sys.argv[1]),
-            loop=api_server._loop_impl(), lifespan="off", log_level="warning")
-print("frontend_done:", compass_run.frontend_done(SimpleNamespace(close=close)))
+            loop=api_server._loop_impl(), lifespan="on", log_level="warning")
+print("frontend_done:", compass_run.frontend_done(SimpleNamespace(close=lambda: None)))
 """
 
 
