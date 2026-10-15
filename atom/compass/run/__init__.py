@@ -546,8 +546,6 @@ def _refuse_sync_utility_commands() -> None:
     from atom.model_engine.engine_core_mgr import CoreManager
 
     sync = CoreManager.broadcast_utility_command_sync
-    if getattr(sync, "refuses_on_clock_owner", False):
-        return
 
     @functools.wraps(sync)
     def refusing(self, cmd, *args, **kwargs):
@@ -561,7 +559,6 @@ def _refuse_sync_utility_commands() -> None:
             )
         return sync(self, cmd, *args, **kwargs)
 
-    refusing.refuses_on_clock_owner = True
     CoreManager.broadcast_utility_command_sync = refusing
 
 
