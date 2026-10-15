@@ -169,8 +169,7 @@ def test_two_client_runs_on_one_server_each_with_its_own_summary(runs):
         assert ours["predicted_seconds"] == pytest.approx(
             fresh_one["predicted_seconds"], rel=1e-12
         )
-        for key in ("analytical", "extrapolated"):
-            assert ours[key] == fresh_one[key], key
+        assert ours["seconds_by_method"] == fresh_one["seconds_by_method"]
         assert _refusals(ours) == _refusals(fresh_one)
         assert (
             mine["summary"]["coverage_report"] == theirs["summary"]["coverage_report"]

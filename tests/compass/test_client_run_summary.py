@@ -34,7 +34,7 @@ HTTP, STREAM = "traffic->frontend:http", "frontend->traffic:stream"
 CLIENT_RUNS = (
     (
         ["command:profile on rank 0"],
-        {"steps": 3, "seconds": 0.75, "extrapolated_steps": 1},
+        {"steps": 3, "seconds": 0.75, "estimated_steps": 1},
         [],
     ),
     (
@@ -43,7 +43,6 @@ CLIENT_RUNS = (
         ["executor:render"],
     ),
 )
-COUNTS = ("steps", "seconds", "analytical_steps", "analytical_seconds")
 
 
 def _serve(monkeypatch, out: Path, client_runs, served) -> Path:
@@ -148,7 +147,9 @@ def test_each_client_run_has_its_own_summary_over_its_own_steps(served):
         )
         assert schedule["refusals"]["steps"] == priced["steps"]
         assert schedule["predicted_seconds"] == priced["seconds"]
-        assert schedule["analytical"]["steps"] == priced.get("analytical_steps", 0)
+        by_method = schedule["seconds_by_method"]
+        assert by_method["analytical"]["steps"] == priced.get("analytical_steps", 0)
+        assert by_method["estimated"]["steps"] == priced.get("estimated_steps", 0)
         assert summary["coverage_report"] is True
     # The server's summary counts both client runs.
     assert whole["schedule"]["refusals"]["count"] == 4
@@ -168,7 +169,7 @@ def test_a_later_client_run_s_summary_is_a_fresh_server_s(
         "start": 0.0,
         "end": fresh["cost"]["simulated_seconds"],
     }
-    for key in ("predicted_seconds", "refusals", "analytical", "extrapolated"):
+    for key in ("predicted_seconds", "refusals", "seconds_by_method"):
         assert later["schedule"][key] == fresh["schedule"][key], key
     for key in ("coverage_report", "configuration", "schema_version"):
         assert later[key] == fresh[key], key
