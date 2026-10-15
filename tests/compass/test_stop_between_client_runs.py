@@ -6,9 +6,10 @@ A co-hosting frontend, an engine and one traffic LP, each the run bootstrap's
 own runtime, run over the authority the frontend serves; the frontend's
 runtime stops the run as its event loop does at a signal. A client run is open
 from the client's bind to its end. A server whose ``client_runs`` is ``null``,
-stopped between client runs, writes a summary with no refusal reason; one with
-a client bound, or one that declares how many client runs it serves, writes an
-early end naming the signal. Only a frontend's TAR to ``+inf`` is a stop.
+stopped between client runs, writes a summary with no refusal reason once
+every server LP has handed in; one with a client bound, or one that declares
+how many client runs it serves, writes an early end naming the signal. Only a
+frontend's TAR to ``+inf`` is a stop.
 """
 
 import json
@@ -104,3 +105,19 @@ def test_only_a_frontends_tar_to_inf_is_a_stop(monkeypatch, tmp_path):
     with pytest.raises(ValueError, match="the TAR target of engine must be a finite"):
         authority.on_request(compass_run.ENGINE, "TAR", INF, [])
     assert (authority.stopped, authority.final_clocks) == (False, None)
+
+
+def test_a_whole_stop_waits_for_every_server_lps_hand_in(monkeypatch, tmp_path):
+    """As at the finish: the summary is not written without the engine's."""
+    run = _run(monkeypatch, tmp_path, None)
+    authority = compass_run._RecordingAuthority(run)
+    authority.on_request(compass_run.FRONTEND, "TAR", INF, [])
+    frontend = LPRuntime(compass_run.FRONTEND, compass_run.channel_table(run), None)
+    executor = SimpleNamespace(refusals=[])
+    frontend.loop = SimpleNamespace(executor=executor, stopped="SIGTERM")
+    monkeypatch.setattr(clock, "_installed", frontend)
+    monkeypatch.setattr(compass_run, "_authority", authority)
+    monkeypatch.setattr(compass_run, "_early_end", SimpleNamespace(join=lambda: None))
+    monkeypatch.setattr(compass_run, "HAND_IN_WAIT_S", 0.2)
+    with pytest.raises(TimeoutError, match=r"no lp-engine\.json in"):
+        compass_run.frontend_done(SimpleNamespace(close=lambda: None))
