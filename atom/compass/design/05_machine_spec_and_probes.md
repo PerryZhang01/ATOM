@@ -237,7 +237,7 @@ one spec would silently share one set of terms.
 
 The obvious fix is to key by model type. Rejected, for one reason: **models share
 tokenizers, routinely.** Every size in a family ships the same tokenizer, and
-distillations and fine-tunes inherit it. Keying by model means measuring the same
+distillations and fine-tunes inherit it. Keying by model means probing the same
 tokenizer once per model, storing N copies of one number, and letting them drift — and
 drift here is invisible, because nothing ever compares the copies.
 
@@ -248,16 +248,16 @@ So the key is the **tokenizer**, with model names as an index into it — the
 |---|---|
 | `id` | author-chosen, stable, human-readable; what `merge` conflicts on |
 | `backend` | `fast` (Rust) and `slow` (Python) run an order of magnitude apart on the same `tokenizer.json`, and which one loads depends on the environment, not the model |
-| `fingerprint` | sha256 of the `tokenizer.json` actually measured — the check that the numbers belong to this tokenizer |
+| `fingerprint` | sha256 of the `tokenizer.json` actually probed — the check that the numbers belong to this tokenizer |
 | `applies_to` | the model architectures that resolve to it; one entry, many models |
 
 Resolution at run time: match the model architecture against `applies_to`; if the loaded
 tokenizer's `tokenizer.json` hash does not equal `fingerprint`, **warn and name both**.
-No match at all is a **refusal**, not a default — an unmeasured tokenizer on an 88,768-token
+No match at all is a **refusal**, not a default — an unprobed tokenizer on an 88,768-token
 p50 prompt is a ~44 ms per-request error that would land entirely inside TTFT.
 
 **What this does not solve:** one spec still describes one *host*. Two tokenizers
-measured on different CPUs must not be merged into one spec — that is what
+probed on different CPUs must not be merged into one spec — that is what
 `provenance` and `merge`'s conflict check are for.
 
 ### Open issues

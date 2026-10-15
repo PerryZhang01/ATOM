@@ -347,7 +347,7 @@ not own cannot measure any of them.
 
 ### Options considered
 
-1. Per-field provenance tags on the spec, measured where possible and a stated transfer
+1. Per-field provenance tags on the spec, probed where possible and a stated transfer
    otherwise.
 2. A separate calibration table keyed by (device, ROCm build, topology) — which would make
    explicit that these constants belong to the **software** stack as much as the silicon.
@@ -374,7 +374,7 @@ none read from a runtime:
 The runtime and library memory constants above are not in it (revised 2026-10-14):
 `compass measure memory` takes them on the target per configuration, and a run reads that
 `memory_readings` entry and refuses without it (`07` D38, Phase 2). For a card nobody has
-run, developer tooling outside the CLI declares the entry, every reading marked assumed,
+run, developer tooling outside the CLI states the entry, every reading marked assumed,
 and a run records that it is.
 
 ### The one honesty measure retained

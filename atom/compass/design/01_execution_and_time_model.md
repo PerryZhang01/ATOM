@@ -6,6 +6,10 @@ written against it yet; implementation follows the execution plan in `16`.
 
 **Branch:** `feature/atomcompass_new` (clean fork of upstream `main` at `0b4f1ddb`).
 
+**Revised 2026-10-14 by the naming record in
+[#952](https://github.com/jgong5/ATOM/issues/952):** the run summary reports predicted
+seconds by method (`seconds_by_method`), each with its step count and share (D3.5).
+
 **Scope of this document.** The execution architecture: what a simulated run *is*,
 which processes exist, how virtual time advances, and what contract the rest of the
 system must honour. It does **not** cover the cost model, the memory model, model

@@ -591,13 +591,13 @@ Three things symbolic shapes do **not** buy, stated so nobody expects them:
   (`MT256x1...` -> `MT256x2...`), and prefill attention sits on plateaus quantised in
   sequence length with a step of ~2.27 us/token at `ceil(L / 2530)`. A cost function over
   a symbolic shape must be piecewise and dispatch-band aware.
-- **`Ctx` is a multiset, and row order is an undeclared treatment.** At one fixed 32-row
+- **`Ctx` is a multiset, and row order is an unstated treatment.** At one fixed 32-row
   context multiset, row **order alone** moves measured decode attention across **1.77x**
   (grouped-descending 276.1 us, grouped-ascending 292.2 us, alternating 376.5 us,
   ladder-interleaved 489.5 us). KV-pool footprint, co-residency, shape and launch-wave
   packing were all refuted as causes. Every candidate feature is a function of the
   multiset and therefore blind to this. A corpus that mixes orderings is fitting an
-  undeclared treatment.
+  unstated treatment.
 - **Data-dependent shapes stay unknown.** MoE per-expert token counts depend on the
   router. `ShapeEnv.allow_dynamic_output_shape_ops` defaults True so they trace as
   unbacked symbols (`u0`), and branching on one raises rather than guessing
@@ -1195,4 +1195,4 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 | T6 | Validate that `Repeat` grouping reproduces the flat prices term by term | needs a first trace |
 | T7 | Validate `Par` reconstruction from stream ids | not exercised until M2 (DeepSeek-V4-Pro) |
 | T8 | Decide whether a step-level form is fitted independently or derived from the op level | the op-level backend does not exist yet |
-| T9 | Declare a row-ordering treatment for decode attention | 1.77x effect, invisible to every current feature |
+| T9 | State a row-ordering treatment for decode attention | 1.77x effect, invisible to every current feature |
