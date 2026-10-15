@@ -181,7 +181,9 @@ Compass target must carry the prefix), in `atom/mesh` before pytest, with `CARGO
 it, and fails after pytest if they fail. `tests/compass/test_mesh_clock_client.py`
 skips when `cargo metadata` fails, and the gate runs the same probe first: when it
 fails and the diff touches `atom/mesh`, the gate exits 96 before pytest and names
-cargo's error; otherwise it prints a `mesh:` line and goes on.
+cargo's error; otherwise it prints a `mesh:` line and goes on. It skips one test by
+its exact name, `core::worker::tests::test_load_counter_performance`: a wall-clock
+throughput floor that fails on a loaded host (#515).
 
 The tree has no `Cargo.lock` (`atom/mesh/.gitignore`). The gate copies one in from
 `COMPASS_CARGO_LOCK`, default `/app/ATOM/atom/mesh/Cargo.lock`, the lockfile the
