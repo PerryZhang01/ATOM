@@ -16,7 +16,9 @@ member, the frontend's included, connects to.
 - `frontend(config)` wraps the `CoreManager` construction in `LLMEngine`: it
   selects the simulated runner, serves the authority and installs the
   frontend LP's runtime; leaving it, after READY from every engine, starts
-  the run.
+  the run. It refuses an `LLMEngine` the API server is not building and the
+  Atomesh entrypoints, and makes a sync utility command on the frontend's
+  clock owner refuse.
 - `engine(config)` wraps the engine's construction in its own process the
   same way, and maps every DP rank to the engine LP for the process-group
   check.
@@ -86,7 +88,9 @@ naming its name now.
 
 A run file that also has ``router_s`` and ``kv_write_req_s`` describes a
 prefill-decode run over `prefill_decode_table`, and ``kv_link`` (``intra_node``
-or ``inter_node``) names the link its KV transfers are priced on. A deployment
+or ``inter_node``) names the link its KV transfers are priced on. An optional
+``router_in_s`` makes the router the ``router`` LP, with that lookahead on each
+hop into it; it prices no work, so it is no server LP and hands nothing in. A deployment
 whose ``kv_connector`` is ``compass`` is its prefill (``kv_producer``) or
 decode side: `engine(config)` makes it the ``engine-P`` or ``engine-D`` LP and
 binds the connector's transfer model. The write-request address comes with the
@@ -107,6 +111,7 @@ carries.
 
 import ast
 import contextlib
+import functools
 import hashlib
 import json
 import math
@@ -115,8 +120,10 @@ import platform
 import re
 import shutil
 import signal
+import sys
 import threading
 import time
+import traceback
 from collections import Counter
 from pathlib import Path
 
@@ -144,6 +151,7 @@ CLOCK_ENV = "ATOM_COMPASS_CLOCK_ENDPOINT"
 #: The file an engine LP's clock is mapped from, for its model runner workers.
 NOW_ENV = "ATOM_COMPASS_NOW"
 FRONTEND, ENGINE, TRAFFIC = LpId("frontend"), LpId("engine"), LpId("traffic")
+ROUTER = LpId("router")
 ATOM_RUNNER = "atom.model_engine.model_runner.ModelRunner"
 #: Keys that differ between two runs of one configuration, kept out of its name.
 PER_RUN = ("clock_endpoint", "out_dir", "client_runs")
@@ -255,6 +263,7 @@ def channel_table(run: dict):
             router_s=run["router_s"],
             kv_write_req_s=run["kv_write_req_s"],
             dp=_dp(run),
+            router_in_s=run.get("router_in_s"),
         )
     return single_engine_table(**common, dp=_dp(run))
 
@@ -321,8 +330,12 @@ def configuration(run: dict) -> dict:
 
 
 def _servers(run: dict) -> list[str]:
-    """The run's server LPs by name: every LP but the traffic LP."""
-    return [lp.name for lp in channel_table(run).registry.ids() if lp != TRAFFIC]
+    """The run's server LPs by name: every LP but the traffic and router LPs."""
+    return [
+        lp.name
+        for lp in channel_table(run).registry.ids()
+        if lp not in (TRAFFIC, ROUTER)
+    ]
 
 
 def _hand_ins(run: dict) -> list[str]:
@@ -484,6 +497,7 @@ def frontend(config):
                 )
             config.runner_qualname = parity.RUNNER
         return contextlib.nullcontext()
+    _refuse_unserved()
     pc = config.parallel_config
     widths = (pc.data_parallel_size, config.pipeline_parallel_size)
     if widths[1] != 1 or config.enable_rapidserve:
@@ -519,6 +533,7 @@ def frontend(config):
             "the channel table declares, and a rank that never joins holds the run"
         )
     config.runner_qualname = COMPASS_RUNNER_QUALNAME
+    _refuse_sync_utility_commands()
     lp = FRONTEND if side is None else LpId(f"{FRONTEND.name}-{side}")
     authority = None
     if not standalone:
@@ -533,6 +548,56 @@ def frontend(config):
     rt = _runtime(lp, run, cls=_StoppingClock)
     rt.client_run_ended = lambda k: _frontend_hand_in(run, rt, k)
     return _start_on_leaving(rt, authority)
+
+
+def _refuse_unserved() -> None:
+    """Refuse the frontends no client of a simulated run reaches: the Atomesh
+    standalone service, and an `LLMEngine` that the API server's ``main`` is
+    not building, such as an offline one."""
+    from atom.utils import envs
+
+    if envs.USE_ATOMESH_ENTRYPOINTS:
+        raise ValueError(
+            "USE_ATOMESH_ENTRYPOINTS=1 serves through the Atomesh standalone "
+            "service, whose worker thread sends each request, and only the "
+            "frontend's clock owner may; serve a simulated run with the API server"
+        )
+    root = Path(atom.__file__).parent
+    on_stack = {
+        (Path(f.f_code.co_filename), f.f_code.co_name)
+        for f, _ in traceback.walk_stack(sys._getframe())
+    }
+    building = (root / "model_engine" / "llm_engine.py", "__init__") in on_stack
+    served = (root / "entrypoints" / "openai" / "api_server.py", "main") in on_stack
+    if building and not served:
+        raise ValueError(
+            "an offline LLMEngine has no client to bind the traffic LP, so no "
+            "grant passes its first request; serve a simulated run with the API "
+            "server's --compass-run"
+        )
+
+
+def _refuse_sync_utility_commands() -> None:
+    """Make `CoreManager.broadcast_utility_command_sync` refuse a call on the
+    frontend's clock owner, which waits on wall time for replies that reach it
+    only at that owner's next clock call."""
+    from atom.model_engine.engine_core_mgr import CoreManager
+
+    sync = CoreManager.broadcast_utility_command_sync
+
+    @functools.wraps(sync)
+    def refusing(self, cmd, *args, **kwargs):
+        rt = clock.installed()
+        if rt is not None and threading.current_thread() is rt.owner:
+            why = f"sync utility command {cmd!r} on the clock owner"
+            rt.refusals.append(f"clock:{why}")
+            raise RuntimeError(
+                f"{rt.me}: {why}, which would wait on wall time for replies "
+                "released only at its next clock call"
+            )
+        return sync(self, cmd, *args, **kwargs)
+
+    CoreManager.broadcast_utility_command_sync = refusing
 
 
 def engine(config):
@@ -683,10 +748,13 @@ def runner(model_runner, tree) -> None:
             replay.now = lambda: float(slot[0])
     model_runner.compass_abort = run.get("on_refusal") == "abort"
     reserved, captured = _graph_pool(model_runner, machine, model)
-    # Under DP-attention the reserve and the residue are keyed by the layout;
-    # one rank of it is a TP1 engine.
+    # Under DP-attention the reserve and the residue are keyed by the layout,
+    # and by the EP width when the experts shard; one rank of it is a TP1 engine.
     dp = config.parallel_config.data_parallel_size
-    layout = f"{tp}x{dp}" if dp > 1 and config.enable_dp_attention else tp
+    layout = tp
+    if dp > 1 and config.enable_dp_attention:
+        ep = f"x{tp * dp}" if config.enable_expert_parallel else ""
+        layout = f"{tp}x{dp}{ep}"
     readings = device_readings(
         machine, tp_width=layout, model=model, cudagraph_overhead=reserved
     )

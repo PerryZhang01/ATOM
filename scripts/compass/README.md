@@ -509,7 +509,9 @@ ITL and request throughput in simulated time, and the run's refusals. A
 A run file with `router_s` and `kv_write_req_s` makes the cell 1P1D: `pd_sim.sh`
 deploys it, taking `DECODE_EXEC` and `ATOMESH` from the environment, and aiperf
 drives the atomesh router. The traffic LP sends to `frontend-P` and reads the
-stream from `frontend-D`, as the run file's channel table names them. The result
+stream from `frontend-D`, as the run file's channel table names them; with
+`--enable-dp-attention` in `SERVER_ARGS` the cell is agentic, its router is
+`--dp-aware` and LP `router`, and the traffic LP talks to `router`. The result
 line adds `kv_transfers` and `kv_transfer_mean_s`, from the line the prefill
 engine logs per KV transfer.
 
@@ -561,21 +563,15 @@ lists its environment.
 Given two or more records, the command also prints each form's error on every
 record under a law fitted on the others, per decode rung and prefill token band.
 
-`scripts/compass/laws/qwen3.8-27b-tp1-mi308x-hjbog39.json` is the `history` form
-with the host laws (`host`), labelled by device time, fitted on these
-hjbog-srdc-39 records in this order: concurrency 1, 4, 16, 64 and 256 as
-`calib_capture.sh` captured them at f454bc71a, then 64 and 256 captured at
-3b32a9bd5 with `AIPERF_EXTRA_ARGS="--trajectory-start-min-ratio 0
---trajectory-start-max-ratio 0"`, which start every trajectory at its first
-turn so those cells decode at rungs 16 and up. Its host key is the one at
-3b32a9bd5: `host_key` gives f454bc71a's tree the same `atom` digest, so the
-earlier records were fitted with that key in place of the one they carry.
-
 `scripts/compass/laws/qwen3.8-27b-tp1-mi308x-hjbog39-661ef7661.json` is the
-same fit, with the same arguments, on records captured on hjbog-srdc-39 at
-ce625ddd9 (ROCm/ATOM 661ef7661) in the nightly-20261013 image: seven cells in
-the order above, then first-turn cells at concurrency 8 and 14, which give it
-its rung-8 vector. It carries the host key the records carry with its `atom`
+`history` form with the host laws (`host`), labelled by device time, fitted on
+records captured on hjbog-srdc-39 at ce625ddd9 (ROCm/ATOM 661ef7661) in the
+nightly-20261013 image, in this order: concurrency 1, 4, 16, 64 and 256 as
+`calib_capture.sh` captures them, then first-turn cells at concurrency 64 and
+256, which decode at rungs 16 and up, and at 8 and 14, which give it its rung-8
+vector. A first-turn cell runs with `AIPERF_EXTRA_ARGS="--trajectory-start-min-ratio 0
+--trajectory-start-max-ratio 0"`, which starts every trajectory at its first
+turn. The law carries the host key the records carry with its `atom`
 digest replaced by the one `host_key` gives 5148ceda2's tree, which adds
 `ScheduledBatchOutput.group_targets` and changes `clock.charge`, neither of
 which changes a real run's host time.

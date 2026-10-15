@@ -155,6 +155,11 @@ if [[ $MODE == 1p1d ]]; then
     # pd_sim.sh takes the authority's port from its own variable; the run file
     # names the same one for the traffic LP.
     export MODEL SERVER_ARGS WAIT_S CLOCK_PORT DECODE_PORT ROUTER_PORT KV_WRITE_REQ_PORT PROMETHEUS_PORT
+    # An agentic cell, as the real one is launched: under DP attention its
+    # router is the --dp-aware router LP, which draws from the cell's seed, and
+    # its dp_sticky keys off X-Session-ID, which the real cell's aiperf sends.
+    export BENCHMARK_KIND=aiperf_agentic SEED=${SEED:-20260707}
+    [[ " $SERVER_ARGS " == *" --enable-dp-attention "* ]] && export AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID=true
     PREFILL_PORT=$PORT bash "$ROOT/scripts/compass/pd_sim.sh" "$OUT/run.json" >"$OUT/pd_sim.log" 2>&1 &
     ready=("pd_sim: ready" "$OUT/pd_sim.log")
     PORT=$ROUTER_PORT
