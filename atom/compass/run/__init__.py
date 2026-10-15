@@ -532,7 +532,6 @@ def runner(model_runner, tree) -> None:
     if run is None:
         return
     from atom.compass.backends.geometry import KvGeometry, Parallelism
-    from atom.compass.backends.provenance import Method
     from atom.compass.backends.step_linear import StepLinearBackend, StepLinearLaw
     from atom.compass.backends.step_roofline import (
         StepFallbackBackend,
@@ -606,13 +605,10 @@ def runner(model_runner, tree) -> None:
             parallelism=Parallelism(tp_size=tp),
             kv_dtype=config.kv_cache_dtype,
         )
-        w = model.weights
-        stated = f"{w.source} ({w.note})" if w.method is Method.DECLARED else ""
         roofline = StepRooflineBackend(
             machine,
             parameters=run["parameter_count"] // tp,
             weight_bytes=model.weights.nbytes,
-            weights_stated=stated,
             kv_token_bytes=kv.layers * kv.bytes_per_token_per_layer,
             host_floor_s=run["roofline_floor_s"],
         )

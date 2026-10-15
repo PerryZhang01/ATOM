@@ -15,13 +15,10 @@ import types
 
 import pytest
 import test_run_graph_pool
-import torch
 from test_backend_step_linear import IN_HULL, _installed, backend, graphed, law, view
 from test_memory_readings import CONFIG_JSON, DOCUMENT
-from test_weights_meta_build import TiedPacked
 from transformers import PretrainedConfig
 
-from atom.compass import run as compass_run
 from atom.compass.backends import (
     CostRefused,
     Granularity,
@@ -51,7 +48,6 @@ def roofline(floor=0.0):
         MACHINE,
         parameters=PARAMETERS,
         weight_bytes=WEIGHTS,
-        weights_stated="",
         kv_token_bytes=KV,
         host_floor_s=floor,
     )
@@ -205,7 +201,6 @@ def test_a_roofline_term_is_declared_iff_an_input_its_bound_reads_is_stated(
         spec,
         parameters=PARAMETERS,
         weight_bytes=WEIGHTS,
-        weights_stated="",
         kv_token_bytes=KV,
         host_floor_s=floor,
     )
@@ -223,16 +218,10 @@ def test_a_roofline_term_is_declared_iff_an_input_its_bound_reads_is_stated(
     assert [p for p in READS if p in note] == fields
 
 
-@pytest.mark.parametrize("meta", [False, True], ids=["stated", "meta-build"])
-def test_a_memory_bound_step_counts_the_weights_the_runner_read(
-    monkeypatch, tmp_path, meta
+def test_a_memory_bound_step_over_meta_build_weights_is_analytical(
+    monkeypatch, tmp_path
 ):
     monkeypatch.setattr(test_run_graph_pool, "SimpleNamespace", _with_kv_fields)
-    if meta:
-        with torch.device("meta"):
-            tree = TiedPacked(None)
-        real = compass_run.runner
-        monkeypatch.setattr(compass_run, "runner", lambda r: real(r, tree))
     datasheet = copy.deepcopy(DOCUMENT)
     datasheet["provenance"]["origin"] = "datasheet"
     installed = _installed(
@@ -246,6 +235,5 @@ def test_a_memory_bound_step_counts_the_weights_the_runner_read(
     note = term.provenance.note
 
     assert term.name == "roofline.memory"
-    assert term.provenance.method is (Method.ANALYTICAL if meta else Method.DECLARED)
-    assert ("weights 8000000000 stated parameters" in note) is not meta
-    assert "parameter_count" not in note
+    assert term.provenance.method is Method.ANALYTICAL
+    assert "weights" not in note and "parameter_count" not in note
