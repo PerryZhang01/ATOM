@@ -97,7 +97,6 @@ def test_the_identity_holds_its_entries_and_no_workload(planted):
         "device": [],
         "stack": {"rocm": "7.2.4", "torch": torch.__version__, "aiter": "v0"},
         "profiled": False,
-        "phases": {},
     }
     json.dumps(run)
 
@@ -130,26 +129,3 @@ def test_each_named_gpu_is_recorded_with_its_model(planted):
     ]
     with pytest.raises(GpuRefusal, match=r"^rocm-smi lists no GPU \[8\]"):
         drive.identity(*served, ARGV, (7, 8))
-
-
-def test_a_run_is_profiled_only_once_it_enters_its_profiling_phase(planted):
-    *_, served = planted
-    run = drive.identity(*served, ARGV)
-    with drive.phase(run, "warm-up"):
-        pass
-    assert run["profiled"] is False
-    with drive.phase(run, "profiling"):
-        assert run["profiled"] is True
-        assert "end" not in run["phases"]["profiling"]
-    for edges in run["phases"].values():
-        for clock in ("wall", "monotonic"):
-            assert edges["start"][clock] <= edges["end"][clock]
-    assert (
-        run["phases"]["warm-up"]["end"]["monotonic"]
-        <= run["phases"]["profiling"]["start"]["monotonic"]
-    )
-    with (
-        pytest.raises(ValueError, match="'profile' is not a phase"),
-        drive.phase(run, "profile"),
-    ):
-        pass

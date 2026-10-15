@@ -9,9 +9,7 @@ served is read from its step record.
 
 import json
 import os
-import time
 from collections.abc import Sequence
-from contextlib import contextmanager
 from pathlib import Path
 
 import torch
@@ -26,8 +24,6 @@ from atom.compass.run import host_key_of
 from atom.compass.run.step_grid import BOUNDS
 
 FORMAT_VERSION = 1
-#: The phases whose boundaries a run records; ops are profiled only in "profiling".
-PHASES = ("warm-up", "profiling")
 #: What names a GPU's model, from rocm-smi's product listing.
 CARD_FIELDS = {"series": "Card Series", "sku": "Card SKU", "gfx": "GFX Version"}
 
@@ -56,8 +52,7 @@ def identity(
             "torch": torch.__version__,
             "aiter": git_described_root("aiter", module_root("aiter")).revision,
         },
-        "profiled": False,
-        "phases": {},
+        "profiled": False,  # a command that profiles ops sets it
     }
 
 
@@ -74,19 +69,3 @@ def _device(gpus: tuple[int, ...]) -> list[dict]:
         {"index": gpu, **{k: cards[f"card{gpu}"][f] for k, f in CARD_FIELDS.items()}}
         for gpu in gpus
     ]
-
-
-@contextmanager
-def phase(run: dict, name: str):
-    """Record the start and the end of the phase `name` in `run`, each in wall
-    and monotonic seconds. A run that enters its profiling phase is profiled."""
-    if name not in PHASES:
-        raise ValueError(f"{name!r} is not a phase; the phases are {PHASES}")
-    run["profiled"] = run["profiled"] or name == "profiling"
-    edges = run["phases"][name] = {"start": _now()}
-    yield
-    edges["end"] = _now()
-
-
-def _now() -> dict:
-    return {"wall": time.time(), "monotonic": time.monotonic()}
