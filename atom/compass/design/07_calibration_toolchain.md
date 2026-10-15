@@ -642,14 +642,23 @@ its own, and a population is keyed by the backend that priced it.
 | `machine_spec` | doc 05 probes | (device, software stack) |
 | `shape_population` | Phase 0, `trace steps` | (model, workload, engine config, the pricing backend's digest) |
 | `op_graph` | Phase 1a, `trace ops` | **structure** — not shape |
-| `price_list` | Phase 1b, `fit ops` | **(model, width, source-root digest)** — a triple, never a path |
-| `region_terms` | Phase 1c, `fit ops` | (model, width) |
+| `price_list` | Phase 1b, `fit ops` | **(model, parallel layout, source-root digest)** — a tuple, never a path |
+| `region_terms` | Phase 1c, `fit ops` | (model, parallel layout) |
 | `memory_readings` | Phase 2, `measure memory`; published with every reading assumed for a device never measured | (model, device, parallel, engine config) |
 | `coverage_hull` | derived | the price list it was built from |
 | `step_measurement` | Phase 1c, `measure steps` | (model, device, parallel, engine config, source-root digest, sampling, step kind, the batch's digest) |
 | `step_linear_law` | `fit steps --backend step-linear` | (model, device, parallel, engine config, source-root digest, form) |
 | `host_laws` | `fit host` | (host CPU, ATOM source, model, engine config), as the run reads its host key |
 | step grid bundle (`step_grid_bundle`) | `fit steps --backend step-grid` | `17` D101 |
+
+The **parallel layout** of a `price_list`, `region_terms` and `memory_readings` key is
+`dp`, `pp`, `pcp`, `tp`, `enable_expert_parallel`, `enable_dp_attention` and
+`decode_context_parallel_size` (owner ruling on
+[#165](https://github.com/jgong5/ATOM/issues/165)), held in
+`atom/compass/artifacts/keys.py::LAYOUT`. No entry answers for another layout: a TP2 price
+list does not answer for `-tp 2 -dp 2`, and a transfer between layouts, if one is wanted,
+is an explicit record backed by a measurement. A read miss names the fields in which the
+nearest entry of its kind differs.
 
 ### Four rules
 
@@ -829,7 +838,7 @@ So: every gate's state is written into the artifact and checked there.
 | D38 | Phase 0 discovery (shapes only) -> 1a trace -> 1b price -> 1c in-situ (+ one TP2 transfer test) -> Phase 2 memory. Client count and workload are not calibration axes. `13` D80's commands run them: `trace steps`, `trace ops`, `measure ops` and `fit ops`, `record` and `measure steps` then `fit steps\|host`, and `measure memory` for Phase 2, one engine start per configuration whose `memory_readings` a run reads and refuses without; `measure` writes per point, `fit` makes laws, bundles and leaves. | 2026-09-18; commands 2026-10-13 (#851); Phase 2 2026-10-14 (#851) |
 | D39 | The bench is `EngineCore` without its scheduler: every TP rank's `RecordingModelRunner` started through its runner manager in its order, at any TP width, a step charged to its slowest rank, fed **replayed** batches rebuilt from step records by a versioned rule. One window for both step kinds: device time from an event at the forward's entry to one at its exit, with device work queued ahead, a repeat counting only if the entry event is still pending when the forward returns; whatever is fitted on it states that value kind. Op prices may use synthetic shapes; step and region measurements may not, the step grid's excepted (`17` D98). | 2026-09-18; revised 2026-10-13 (#851) |
 | D40 | Four classes of communication, priced separately. Scaling is measured per width, never modelled. A collective's measured duration is an upper bound on device work. | 2026-09-18 |
-| D41 | Artifacts, each with key, digest, fingerprint and provenance. Keys are tuples; source roots are `git archive` digests; resolution names its answer; handed-off artifacts are immutable. `step_measurement`, `step_linear_law` and `host_laws` added, and `shape_population` keyed by its pricing backend. `memory_readings` from `measure memory`, keyed as `step_linear_law` is, or published with every reading assumed for a device never measured. | 2026-09-18; kinds 2026-10-13 (#851); `memory_readings` 2026-10-14 (#851) |
+| D41 | Artifacts, each with key, digest, fingerprint and provenance. Keys are tuples; source roots are `git archive` digests; resolution names its answer; handed-off artifacts are immutable. `step_measurement`, `step_linear_law` and `host_laws` added, and `shape_population` keyed by its pricing backend. `memory_readings` from `measure memory`, keyed as `step_linear_law` is, or published with every reading assumed for a device never measured. `price_list`, `region_terms` and `memory_readings` keyed by the parallel layout, not a scalar width. | 2026-09-18; kinds 2026-10-13 (#851); `memory_readings` 2026-10-14 (#851); parallel layout 2026-10-15 (#165, #537) |
 | D42 | Trace is JIT and cached; pricing is offline or opt-in `--measure`. A `--measure` run is never an acceptance run. New shape is fine; a new operator kind falls to its analytical law, and refuses without one. | 2026-09-18 |
 | D43 | Per-artifact invalidation matrix, not a global fingerprint. Every gate's state is written into the artifact and checked there. Rows for `shape_population`, `step_measurement`, `step_linear_law` and `host_laws`, and a host-CPU axis. | 2026-09-18; rows 2026-10-13 (#851) |
 | D38.1 | One recommended flow per half: steps (`measure memory`, `record`, `trace steps`, `measure steps` with the step grid's planner, `fit host` and `fit steps`, `run --coverage`, then grading outside the CLI), each server driven by a client started apart, and ops (`trace ops`, `measure ops`, `fit ops`). Phases unchanged; the bench hosts 1b and 1c, Phase 2 is a plain startup `measure memory` runs. | 2026-09-19; revised 2026-10-13 and 2026-10-14 (#851) |

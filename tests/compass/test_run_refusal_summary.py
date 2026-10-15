@@ -53,7 +53,7 @@ def by_method(**groups):
     return {g: groups.get(g, NONE_APART) for g in GROUPS}
 
 
-class AnalyticBelow(StepStubBackend):
+class AnalyticalBelow(StepStubBackend):
     """The stub's seconds, answered by an analytical source after two sources above
     it declined a prefill of `tokens` or more."""
 
@@ -65,9 +65,9 @@ class AnalyticBelow(StepStubBackend):
         cost = super().price(batch_view)
         if sum(r.query_tokens for r in batch_view.prefill) < self.tokens:
             return cost
-        analytic = Provenance(Method.ANALYTICAL, "roofline", "class0", CHAIN)
+        analytical = Provenance(Method.ANALYTICAL, "roofline", "class0", CHAIN)
         return StepCost(
-            [CostTerm(t.name, t.seconds, analytic) for t in cost.terms if t.seconds]
+            [CostTerm(t.name, t.seconds, analytical) for t in cost.terms if t.seconds]
         )
 
 
@@ -115,7 +115,7 @@ def summary(monkeypatch, tmp_path, backend, *prompts, clock_refusals=(), jobs=()
 def test_a_step_a_lower_rung_answered_is_not_refused_and_its_answer_is_apart(
     monkeypatch, tmp_path
 ):
-    backend = AnalyticBelow(STAGE1, tokens=40)
+    backend = AnalyticalBelow(STAGE1, tokens=40)
     out = summary(monkeypatch, tmp_path, backend, 8, 8, 8, 40)
 
     short, long = seconds(backend, 8), seconds(backend, 40)

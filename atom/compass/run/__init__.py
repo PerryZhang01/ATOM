@@ -661,10 +661,13 @@ def runner(model_runner, tree) -> None:
             replay.now = lambda: float(slot[0])
     model_runner.compass_abort = run.get("on_refusal") == "abort"
     reserved, captured = _graph_pool(model_runner, machine, model)
-    # Under DP-attention the reserve and the residue are keyed by the layout;
-    # one rank of it is a TP1 engine.
+    # Under DP-attention the reserve and the residue are keyed by the layout,
+    # and by the EP width when the experts shard; one rank of it is a TP1 engine.
     dp = config.parallel_config.data_parallel_size
-    layout = f"{tp}x{dp}" if dp > 1 and config.enable_dp_attention else tp
+    layout = tp
+    if dp > 1 and config.enable_dp_attention:
+        ep = f"x{tp * dp}" if config.enable_expert_parallel else ""
+        layout = f"{tp}x{dp}{ep}"
     readings = device_readings(
         machine, tp_width=layout, model=model, cudagraph_overhead=reserved
     )

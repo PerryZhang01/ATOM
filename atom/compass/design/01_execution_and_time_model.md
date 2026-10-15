@@ -1480,11 +1480,11 @@ loop.
   unless `runner_qualname` is in `RAPIDSERVE_RUNNERS`. The cost, for a runner that list
   names, is two real seconds of startup and no modelled time, because it runs before
   READY and therefore before any arrival.
-- The scanner's boundary is a list of directories, not a graph. It reads every `.py`
-  file under `SCANNED_ROOTS`, so a module added beside a scanned one is caught; but a
-  blocking call under a directory `UNSCANNED_ROOTS` names is invisible to the test, and
-  so is one reached through a call shape the scanner does not know. The offload
-  connectors are the largest exclusion.
+- The scanner's boundary is a list of exclusions, not a graph. It reads every `.py`
+  file under `atom/` except the entries `UNSCANNED_ROOTS` names, each with its reason,
+  so a package added anywhere is caught; but a blocking call under an excluded entry is
+  invisible to the test, and so is one reached through a call shape the scanner does
+  not know.
 
 ---
 

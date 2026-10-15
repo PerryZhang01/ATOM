@@ -62,13 +62,22 @@ K8, C2 K7, `ignore` K9 — and wherever a row's mechanism is a different one,
 
 The `send_multipart` calls the scanner found once it knew that shape carry no
 category: the front end's request and control sends (K4), and the sends in the
-KV event publisher and the transfer backends (K9). The rows per mechanism,
+KV event publisher and the transfer backends (K9). Compass's own runtime is
+scanned too, for the waits it adds to a simulated run: the data-parallel
+group's per-step all_gather in the simulated runner (K6), the two ends of the
+KV write request between a decode and a prefill deployment (K4, K5), the
+engine's RPCs to its own workers for its hand-ins (K6), and the joins and
+waits that close a run (K9). Reading the whole tree brought in the rest of
+`atom/utils/`, `atom/metrics/`, `atom/spec_decode/`, `atom/rollout/`,
+`atom/config.py` and Compass's parity tools, among them the parity traffic LP's
+wait for its own reader thread (K6). The rows per mechanism,
 crossed with the first classification's categories, are printed by
 `pytest tests/compass/test_sync_inventory.py -s -k crosstab`.
 
 ## What the scanner does, and where it can be wrong
 
-It parses every file under `SCANNED_ROOTS` and reports calls whose **shape** can
+It parses every Python file under `atom/` that `UNSCANNED_ROOTS` does not name,
+and reports calls whose **shape** can
 park a thread: sleeps, socket receives, pollers, queue operations, joins, lock
 and event waits, collectives, device synchronization, sends, thread-pool
 hand-offs, and the worker RPC. It also reports `while` loops that go around
@@ -80,11 +89,12 @@ blocking reading can take that form: `d.get(key)` always passes the key
 positionally and `q.get()` never does; `",".join(parts)` always passes one
 iterable and `t.join(5)` a lone number. Those rules have their own tests.
 
-**Roots are directories, not a list of files.** A file allowlist declares its
-blind spot at a finer grain than it excludes: a module added beside a scanned
-one is invisible while the exclusion list still reads complete. Scanning the
-directory makes a new file a test failure on the day it lands, and a test
-asserts no scanned file is also declared unscanned.
+**The scanned set is read off the tree, minus named exclusions**, as the
+clock-source lint reads `CORE_ROOTS`. An allow-list declares its blind spot
+silently: a package added beside the listed ones is invisible while the list
+still reads complete. Here a new package is scanned the day it lands, and its
+blocking calls fail the inventory test until they are classified or an
+`UNSCANNED_ROOTS` entry names it with its reason.
 
 It over-reports on purpose. A `.send()` that never blocks in practice is still
 listed, because that is where a message leaves one process for another. The
@@ -97,8 +107,8 @@ It can be wrong in two directions, and both are visible rather than hidden:
   a thread-local buffer, a `result()` on a task already finished, a `while` loop
   walking a string. They carry a K9 row saying so.
 - **Toward silence.** A blocking call reached through a name the shapes do not
-  know, or in a directory outside `SCANNED_ROOTS`, is invisible.
-  `UNSCANNED_ROOTS` names each excluded directory and why, so the boundary is
+  know, or under an entry `UNSCANNED_ROOTS` names, is invisible. Each entry
+  carries its reason, so the boundary is
   arguable rather than implicit, and a test asserts every named root exists.
 
 ## How a row keeps naming the same call
