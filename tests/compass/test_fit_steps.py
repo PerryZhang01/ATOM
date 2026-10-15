@@ -37,6 +37,7 @@ HOST = {
     "model": "sha256:" + "1" * 64,
     "engine": ENGINE,
 }
+LINEAR = ("--backend", "step-linear")
 STACK = {"rocm": "7.2.4", "torch": "2.10.0", "aiter": "v0.1.21"}
 
 
@@ -45,25 +46,24 @@ def planted_roots(monkeypatch):
     monkeypatch.setattr(publish, "roots_for", lambda modules: (ATOM_ROOT, AITER_ROOT))
 
 
-def record(directory, seed, key=HOST, keyed=True, stack=STACK, trace=None):
+def record(directory, seed, key=HOST, keyed=True, stack=STACK, trace="trace"):
     """`directory`, a record of `_steps(seed)`; without `keyed`, no host key
-    beside it. With `trace`, every request is named, and `directory/client.json`
-    is the export of one client run sending them all, each from trace
-    `<trace>.<k>`, `k` its first step's index over 100."""
+    beside it. Every request is named, and `directory/client.json` is the
+    export of one client run sending them all, each from trace `<trace>.<k>`,
+    `k` its first step's index over 100."""
     steps = directory / "steps"
     steps.mkdir(parents=True)
     path = steps / "dp0.jsonl"
     _timed_record(path, _steps(seed), key=key if keyed else None)
-    if trace:
-        lines = [json.loads(x) for x in path.read_text().splitlines()]
-        sent = {}
-        for i, line in enumerate(lines):
-            line["named"] = [[r[0], f"r{r[0]}"] for r in line["batch"]]
-            for r in line["batch"]:
-                at = {"trace": f"{trace}.{i // 100}", "sampling": SAMPLING}
-                sent.setdefault(f"r{r[0]}", at)
-        path.write_text("".join(json.dumps(x) + "\n" for x in lines))
-        (directory / "client.json").write_text(json.dumps({"requests": sent}))
+    lines = [json.loads(x) for x in path.read_text().splitlines()]
+    sent = {}
+    for i, line in enumerate(lines):
+        line["named"] = [[r[0], f"r{r[0]}"] for r in line["batch"]]
+        for r in line["batch"]:
+            at = {"trace": f"{trace}.{i // 100}", "sampling": SAMPLING}
+            sent.setdefault(f"r{r[0]}", at)
+    path.write_text("".join(json.dumps(x) + "\n" for x in lines))
+    (directory / "client.json").write_text(json.dumps({"requests": sent}))
     engine = {**key["engine"], **dict.fromkeys(BOUNDS, 4096), "num_kvcache_blocks": 900}
     (steps / "dp0.engine.json").write_text(json.dumps(engine))
     run = {
@@ -108,7 +108,7 @@ def test_the_law_published_is_the_one_step_linear_fits_command_writes_less_its_h
     tmp_path, form
 ):
     a, b = record(tmp_path / "a", 19), record(tmp_path / "b", 20)
-    fit(tmp_path, "fit steps", "--backend", "step-linear", "--form", form, a, b)
+    fit(tmp_path, "fit steps", *LINEAR, "--form", form, a, b, *clients(a, b))
 
     law = member(tmp_path / "store", law_key(form), "params")
     # The command names runs in argument order, the samples in digest order.
@@ -133,10 +133,10 @@ def test_fit_steps_twice_on_the_same_inputs_refuses_the_second_as_the_same_membe
     tmp_path,
 ):
     a, b = record(tmp_path / "a", 19), record(tmp_path / "b", 20)
-    fit(tmp_path, "fit steps", "--backend", "step-linear", "--seed", 7, a, b)
+    fit(tmp_path, "fit steps", *LINEAR, "--seed", 7, a, b, *clients(a, b))
 
     with pytest.raises(SystemExit, match="this publish holds the same members"):
-        fit(tmp_path, "fit steps", "--backend", "step-linear", "--seed", 7, b, a)
+        fit(tmp_path, "fit steps", *LINEAR, "--seed", 7, b, a, *clients(b, a))
 
 
 def clients(*records):
@@ -161,14 +161,15 @@ def served(key, traced) -> list[dict]:
 def test_the_report_names_each_run_with_every_trace_its_steps_served(tmp_path):
     a = record(tmp_path / "a", 19, trace="trace-a")
     b = record(tmp_path / "b", 20, trace="trace-b")
-    fit(tmp_path, "fit steps", "--backend", "step-linear", a, b, *clients(a, b))
+    fit(tmp_path, "fit steps", *LINEAR, a, b, *clients(a, b))
 
     report = member(tmp_path / "store", law_key(), "report")
     assert report["provenance"] == served(HOST, {a: "trace-a", b: "trace-b"})
 
 
 def test_the_entry_s_readings_are_the_ones_its_records_state(tmp_path):
-    fit(tmp_path, "fit steps", "--backend", "step-linear", record(tmp_path / "a", 19))
+    a = record(tmp_path / "a", 19)
+    fit(tmp_path, "fit steps", *LINEAR, a, *clients(a))
 
     entry = ArtifactStore(tmp_path / "store").read(law_key())
     assert dict(entry.fingerprints[Row.STEP_LINEAR_LAW].cells) == {
@@ -190,7 +191,7 @@ def test_records_under_two_stacks_refuse_naming_the_component_and_both_values(
 
     named = f'stack torch: "2.10.0" in {a}; "2.9.0" in {b}'
     with pytest.raises(SystemExit, match=re.escape(named)):
-        fit(tmp_path, "fit steps", "--backend", "step-linear", a, b)
+        fit(tmp_path, "fit steps", *LINEAR, a, b, *clients(a, b))
 
 
 @pytest.mark.parametrize(
@@ -212,5 +213,13 @@ def test_what_step_linear_does_not_fit_refuses_by_name(tmp_path, args, named):
     a = record(tmp_path / "a", 19)
 
     with pytest.raises(SystemExit, match=re.escape(named)):
-        fit(tmp_path, "fit steps", *args, a)
+        fit(tmp_path, "fit steps", *args, a, *clients(a))
+    assert not (tmp_path / "store").exists()
+
+
+def test_a_record_no_client_run_names_refuses_naming_it(tmp_path):
+    a = record(tmp_path / "a", 19)
+
+    with pytest.raises(SystemExit, match=re.escape(f"{a} is named by no --client-run")):
+        fit(tmp_path, "fit steps", *LINEAR, a)
     assert not (tmp_path / "store").exists()

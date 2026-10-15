@@ -3,9 +3,10 @@
 
 A fit reads record directories, each with the client runs its server served,
 by their exports (`--client-run RECORD EXPORT`, in the order they ran), and
-loads their samples under one configuration (`samples.load`).
+loads their samples under one configuration (`samples.load`). A record no
+`--client-run` names refuses: its steps would name no trace they served.
 
-`publish` hands off one store entry with two members, `params`, what a run
+`publish` hands off one store entry whose members are `params`, what a run
 file carries, and `report`, the fit's report, and writes both, with the
 entry's key and token, as `<kind>.json` in `--out`. The entry's readings are
 the ones its inputs were recorded under, read from their configuration; its
@@ -43,7 +44,7 @@ def parser(prog: str, description: str) -> argparse.ArgumentParser:
         action="append",
         default=[],
         metavar=("RECORD", "EXPORT"),
-        help="a client run RECORD's server served, by its export; repeat per run",
+        help="a client run RECORD's server served, by its export; every RECORD has one",
     )
     p.add_argument("--store", required=True, help="the artifact store's root")
     p.add_argument("--out", required=True, help="where the readable copy goes")
@@ -63,6 +64,12 @@ def inputs(args, sources) -> tuple[list, dict]:
         raise ValueError(
             f"{', '.join(other)} is not a record directory (no run.json), and "
             f"this fit takes {' and '.join(sources)} samples only"
+        )
+    unnamed = [str(d) for d, exports in runs.items() if not exports]
+    if unnamed:
+        raise ValueError(
+            f"{', '.join(unnamed)} is named by no --client-run; name the client "
+            "runs its server served, so the fit records the traces they sent"
         )
     return load(runs)
 
@@ -97,7 +104,7 @@ def publish(args, command: str, key, config, params, report):
     """Hand `params` and `report` off at `key` in `args.store`, and write their
     readable copy in `args.out`."""
     members = {"params": params, "report": report}
-    entry = ArtifactStore(args.store).publish(
+    ArtifactStore(args.store).publish(
         key,
         provenance=Provenance(
             command,
@@ -117,4 +124,3 @@ def publish(args, command: str, key, config, params, report):
     copy = {"key": key.values, "token": key.token(), **members}
     (out / f"{key.kind}.json").write_text(json.dumps(copy, indent=1) + "\n")
     print(f"published {key} as {key.token()}")
-    return entry

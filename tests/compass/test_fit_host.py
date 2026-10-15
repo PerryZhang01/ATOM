@@ -66,5 +66,5 @@ def test_a_record_without_its_host_key_refuses(tmp_path):
 
     named = f"{digest(a / 'steps/dp0.jsonl')} holds steps with no host labels under a host key"
     with pytest.raises(SystemExit, match=re.escape(named)):
-        fit(tmp_path, "fit host", a)
+        fit(tmp_path, "fit host", a, *clients(a))
     assert not (tmp_path / "store").exists()

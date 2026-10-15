@@ -2,7 +2,7 @@
 """`compass fit steps`: a step-level backend fitted on labelled samples and published.
 
     compass fit steps --backend step-linear [--form FORM] [--seed S] RECORD...
-        [--client-run RECORD EXPORT]... --store ROOT --out DIR
+        --client-run RECORD EXPORT... --store ROOT --out DIR
 
 Each backend in `BACKENDS` states the kind it publishes, the label sources it
 takes and its fit, which returns the key fields the configuration does not
