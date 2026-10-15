@@ -22,6 +22,9 @@
 #   SERVER_ARGS         more API server flags (default: --enforce-eager
 #                       --max-model-len 2048)
 #   ATOMESH             the router binary (default: atomesh)
+#   ATOM_COMPASS_PARITY_RECORD
+#                       when set, each server records its steps
+#                       (atom/compass/parity) under it, in prefill/ and decode/
 #
 # It runs its own tree, as the gates do. Logs go beside RUN_FILE. It prints
 # `pd_sim: ready` once the router answers; start the traffic LP then. It exits
@@ -63,7 +66,7 @@ server() { # role port kv_role dp_port [exec]
     # connections on the wall clock: which comes first, and with it whether the
     # timeout takes a grant, would differ between runs. Only the router closes.
     # shellcheck disable=SC2086 # DECODE_EXEC and SERVER_ARGS are word lists
-    ${5:-} env "${passed[@]}" python3 -m atom.entrypoints.openai_server \
+    ${5:-} env "${passed[@]}" ${ATOM_COMPASS_PARITY_RECORD:+"ATOM_COMPASS_PARITY_RECORD=$ATOM_COMPASS_PARITY_RECORD/$1"} python3 -m atom.entrypoints.openai_server \
         --model "$MODEL" --host 127.0.0.1 --server-port "$2" --timeout-keep-alive 1000000 \
         --data-parallel-master-port "$4" \
         $SERVER_ARGS \

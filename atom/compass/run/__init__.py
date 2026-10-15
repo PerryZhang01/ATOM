@@ -332,7 +332,8 @@ def _hand_ins(run: dict) -> list[str]:
 
 class _RecordingAuthority(ClockAuthority):
     """The authority, recording the step table: a row per reply and a row per
-    message each reply releases; and the wall seconds of the run, from its start
+    message each reply releases, from the receiver's clock before that grant to
+    the message's arrival; and the wall seconds of the run, from its start
     to the end of each client run in `ends` and to the finish, which sets `done`.
     A co-hosting frontend starts the run as it starts its own; otherwise it
     starts once every server LP, and every member of one declared with members,
@@ -351,6 +352,7 @@ class _RecordingAuthority(ClockAuthority):
         self.ends = []  # the wall time each client run ended
         self.done = threading.Event()
         self._joining = set(_hand_ins(run))
+        self._clock_before = {}  # LP -> its clock before its latest grant
         # A rerun into the same out_dir starts from none of the last run's files.
         out = Path(run["out_dir"])
         for name in (
@@ -374,6 +376,7 @@ class _RecordingAuthority(ClockAuthority):
         )
 
     def record(self, lp, time_from, time_to, kind, recovered) -> None:
+        self._clock_before[lp] = time_from
         self.steps.record(lp, time_from, time_to, kind, detail="recovered" * recovered)
 
     def on_request(self, lp, kind, t, log, t_daemon=math.inf, member=None) -> list:
@@ -386,7 +389,9 @@ class _RecordingAuthority(ClockAuthority):
             lp = to[0] if isinstance(to, tuple) else to
             for ch, msgs in released.items():
                 for seq, arrival in msgs:
-                    self.steps.record(lp, arrival, arrival, "release", ch, seq)
+                    # From the receiver's clock as the grant found it.
+                    clock = self._clock_before[lp]
+                    self.steps.record(lp, clock, arrival, "release", ch, seq)
         while len(self.ends) < len(self.ended):
             self.ends.append(time.monotonic())
             if self.final_clocks is None:  # an end before the last
