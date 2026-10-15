@@ -874,8 +874,8 @@ class NonAllocatingRunner(
         to own its memory, carries the same one of the two.
 
         The reply's `predicted_s` is the step's duration: this rank's batch
-        priced by the installed cost backend, then its DP group target. Only
-        TP rank 0 replies; any other rank of the engine returns None.
+        priced by the installed cost backend, then its DP group target, on TP
+        rank 0; the engine reads no other rank's reply, and it reports 0 s.
         A runner with no backend refuses the step rather than report one that
         took no time. ATOM's `dummy_execution` answers with this reply too, so
         an idle DP rank's dummy batch is priced and joins the group's targets.
@@ -891,10 +891,6 @@ class NonAllocatingRunner(
                 f"{type(batch).__name__} cannot say whether its batch produces "
                 "output; there is nothing here to report from."
             )
-        if self.rank != 0:
-            # The engine reads only TP rank 0's reply; the other ranks' forwards
-            # and their collectives are inside the step that rank prices.
-            return None
         backend = _installed_backend(self)
         # Imported at call time, not at module scope: the scheduler so this
         # module stays importable where there is no driver (by the time a step
@@ -957,6 +953,8 @@ def _group_step_seconds(
 ) -> float:
     """This rank's step priced from its own batch, then its DP group target.
 
+    Only TP rank 0 prices; any other TP rank of the engine charges 0 s.
+
     `mode` is the step's `ForwardMode` when the step record already settled
     it; without one it is settled here, which runs the DP collective.
 
@@ -987,6 +985,10 @@ def _group_step_seconds(
     """
     from atom.compass.runner.projection import batch_view, dp_group, forward_mode
 
+    if runner.rank != 0:
+        # The engine reads TP rank 0's reply only, and the other ranks'
+        # collectives are inside the step that rank prices.
+        return 0.0
     if int(_config_field(runner, "pipeline_parallel_size") or 1) > 1:
         raise RunnerRefusal(
             "this runner is one stage of a pipeline and runs only its own "

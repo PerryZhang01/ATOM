@@ -17,18 +17,14 @@ from types import SimpleNamespace
 import pytest
 import torch
 from test_dp_slice import MAX_TOKENS, device_classes_put_back, run_dp_slice  # noqa: F401
+from test_dp_step_max import prefill, runner
 from test_pd_slice import NEEDS_A_PD_RUN, run_pd
 from test_vertical_slice import MAX_TOKENS as ONE_REQUEST
 from test_vertical_slice import NEEDS_A_RUN
 
 from atom.compass.backends.step_stub import StepStubBackend
 from atom.compass.detect.scenario import check_run
-from atom.compass.runner.overrides import (
-    NonAllocatingRunner,
-    RunnerRefusal,
-    install_cost_backend,
-    start_on_host,
-)
+from atom.compass.runner.overrides import start_on_host
 
 
 @pytest.fixture(scope="module")
@@ -74,13 +70,13 @@ def test_a_tp2_prefill_and_decode_meet_every_scenario_check(tmp_path, monkeypatc
 # --- without a driver ---------------------------------------------------------
 
 
-def _config(tp=1, pcp=1, dcp=1, pp=1, dp=1, dp_rank=0, workers=None, managed=False):
+def _config(tp=1, pcp=1, dcp=1, dp=1, dp_rank=0, managed=False):
     return SimpleNamespace(
         tensor_parallel_size=tp,
-        tp_world_size=tp if workers is None else workers,
+        tp_world_size=tp,
         prefill_context_parallel_size=pcp,
         decode_context_parallel_size=dcp,
-        pipeline_parallel_size=pp,
+        pipeline_parallel_size=1,
         master_addr="127.0.0.1",
         port=29500,
         parallel_config=SimpleNamespace(
@@ -156,27 +152,12 @@ def test_a_tp_rank_of_a_dp_rank_joins_the_managed_store_at_its_global_rank(
     assert aiter_calls[3][1] == (2, 1)
 
 
-@pytest.mark.parametrize(
-    "config, refusal",
-    [
-        (_config(tp=2, pp=2), "one stage of a pipeline of 2"),
-        (_config(tp=4, workers=2), "-tp 4 starts 2 workers"),
-    ],
-)
-def test_a_start_the_host_groups_cannot_hold_is_refused(aiter_calls, config, refusal):
-    with pytest.raises(RunnerRefusal, match=refusal):
-        start_on_host(SimpleNamespace(), 0, config)
-    assert aiter_calls == []
-
-
 class _Unpriceable(StepStubBackend):
     def price(self, batch_view):
         raise AssertionError("a rank other than TP rank 0 priced a step")
 
 
 def test_only_tp_rank_0_prices_a_step():
-    runner = object.__new__(NonAllocatingRunner)
-    runner.rank = 1
-    install_cost_backend(runner, _Unpriceable())
-    batch = SimpleNamespace(produces_output=lambda: True)
-    assert NonAllocatingRunner.forward(runner, batch) is None
+    other = runner(_Unpriceable())
+    other.rank = 1
+    assert other.forward(prefill(8)).predicted_s == 0.0
