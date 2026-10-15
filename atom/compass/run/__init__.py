@@ -91,7 +91,9 @@ A run file that also has ``router_s`` and ``kv_write_req_s`` describes a
 prefill-decode run over `prefill_decode_table`, and ``kv_link`` (``intra_node``
 or ``inter_node``) names the link its KV transfers are priced on. An optional
 ``router_in_s`` makes the router the ``router`` LP, with that lookahead on each
-hop into it; it prices no work, so it is no server LP and hands nothing in. A deployment
+hop into it; it prices no work, so it is no server LP and hands nothing in.
+Its ``router`` entry, `router_binary`'s record of the binary that ran it, is
+per-run and goes to the summary as it is. A deployment
 whose ``kv_connector`` is ``compass`` is its prefill (``kv_producer``) or
 decode side: `engine(config)` makes it the ``engine-P`` or ``engine-D`` LP and
 binds the connector's transfer model. The write-request address comes with the
@@ -121,6 +123,7 @@ import platform
 import re
 import shutil
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -155,7 +158,7 @@ FRONTEND, ENGINE, TRAFFIC = LpId("frontend"), LpId("engine"), LpId("traffic")
 ROUTER = LpId("router")
 ATOM_RUNNER = "atom.model_engine.model_runner.ModelRunner"
 #: Keys that differ between two runs of one configuration, kept out of its name.
-PER_RUN = ("clock_endpoint", "out_dir", "client_runs")
+PER_RUN = ("clock_endpoint", "out_dir", "client_runs", "router")
 LP_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
     "lp-{}.json",  # by LP name, or <lp>.<member> for a member
     "step_table.txt",
@@ -167,7 +170,7 @@ CLIENT_DIR = "client-{}"
 HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field is added, changes
 #: meaning or goes.
-SUMMARY_SCHEMA_VERSION = 4
+SUMMARY_SCHEMA_VERSION = 5
 #: Compass source the host-law key leaves out, by path under the package: all
 #: of it (None), or the top-level names (def, class or assigned) only a simulated
 #: run reaches, with the comments above each and the module docstring.
@@ -328,6 +331,46 @@ def _bind_transfer(config, run: dict) -> None:
 def configuration(run: dict) -> dict:
     """The run file without its per-run keys."""
     return {k: v for k, v in run.items() if k not in PER_RUN}
+
+
+def router_binary(path: str, mesh: str | None = None) -> dict:
+    """The router binary `path` names, resolved on PATH, as the run summary
+    records it: where it is, and the commit and git status it was built at.
+
+    Refuses, naming the binary, one built from an uncommitted tree or at no
+    commit, and one whose router source differs from `mesh` (this tree's
+    ``atom/mesh`` by default), the working tree included. A stamped snapshot
+    has no history to diff, so there only its own commit matches."""
+    exe = shutil.which(path) or path
+    text = subprocess.run(
+        [exe, "--version-verbose"], capture_output=True, text=True, check=True
+    ).stdout
+    built = dict(re.findall(r"^\s*Git (Commit|Status): *(\S*)", text, re.MULTILINE))
+    commit, status = built.get("Commit", ""), built.get("Status", "")
+    named = f"router binary {exe} (commit {commit or '?'}, status {status or '?'})"
+    if status != "clean":
+        raise ValueError(f"{named} was built from an uncommitted tree; rebuild it")
+    if not re.fullmatch(r"[0-9a-f]{7,40}", commit):
+        raise ValueError(f"{named} names no commit; build it in a git checkout")
+    mesh = mesh or os.path.join(provenance.module_root("atom"), "mesh")
+    tree = provenance.git_tree_root("atom", mesh)
+    if tree.revision_kind == "commit":
+        if not tree.revision.startswith(commit):
+            raise ValueError(
+                f"{named} is not this snapshot's commit {tree.revision}; "
+                "a snapshot has no history to compare the router source across"
+            )
+    else:
+        diff = subprocess.run(
+            ["git", "-C", mesh, "diff", "--quiet", commit, "--", "."],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if diff.returncode:
+            why = diff.stderr.strip() or "it differs from the tree's"
+            raise ValueError(f"{named}: router source at {mesh}: {why}")
+    return {"path": exe, "commit": commit, "status": status}
 
 
 def _servers(run: dict) -> list[str]:
@@ -1165,6 +1208,8 @@ def _summary(run: dict, a, record, wall: float, hand_ins: dict, since: dict) -> 
     summary["configuration"] = configuration(run)
     summary["schema_version"] = SUMMARY_SCHEMA_VERSION
     summary["source_root"] = a.source_root.as_json()
+    if "router" in run:
+        summary["router"] = run["router"]
     # Any refusal, of any source, leaves part of the run unsimulated; a run
     # that ended early handed in why.
     summary["coverage_report"] = bool(reasons)

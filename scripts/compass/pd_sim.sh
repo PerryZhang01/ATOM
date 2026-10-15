@@ -35,7 +35,9 @@
 # --enable-dp-attention in SERVER_ARGS, under BENCHMARK_KIND=aiperf_agentic or a
 # rank mapping policy other than none, that is --dp-aware: the router chooses
 # among DP ranks on load that responses move, which makes it LP `router` of the
-# run, and RUN_FILE gains `router_in_s` unless it has one already. Otherwise
+# run, and RUN_FILE gains `router_in_s` unless it has one already, and
+# `router`, the binary that runs it, refused unless built from this tree's
+# atom/mesh (`router_binary` in atom/compass/run). Otherwise
 # the router has one worker per side, and ATOM's own DP dispatch picks the rank.
 #
 # It runs its own tree, as the gates do. Logs go beside RUN_FILE. It prints
@@ -125,13 +127,17 @@ if ((${#dp_aware[@]})); then
     # The hop into the router takes the run's ipc_s, its declared floor for one
     # hop between two local processes; the rest of each path's lookahead stays
     # on the hop out.
-    lookaheads=$(python3 - "$RUN_FILE" <<'EOF'
+    lookaheads=$(python3 - "$RUN_FILE" "$ATOMESH" <<'EOF'
 import json, sys
 from pathlib import Path
-from atom.compass.run import ROUTER, channel_table
+from atom.compass.run import ROUTER, channel_table, router_binary
 
 path = Path(sys.argv[1])
 run = json.loads(path.read_text())
+try:
+    run["router"] = router_binary(sys.argv[2])
+except Exception as e:
+    sys.exit(f"pd_sim: {e}")
 run.setdefault("router_in_s", run["ipc_s"])
 path.write_text(json.dumps(run))
 table = channel_table(run)
