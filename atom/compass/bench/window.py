@@ -14,10 +14,10 @@ beside it.
 
 A repeat counts only if F is still pending once the forward has returned and B
 is recorded: the device was still in the preload, so nothing the host did shows
-between F and B. Otherwise it is discarded and the preload doubles. A forward
-with a host synchronisation inside never qualifies, and its point refuses after
-`DOUBLINGS` doublings in a row; a host that stalls now and then only discards
-the repeats it stalls.
+between F and B. Otherwise it is discarded and the preload doubles, at most
+`DOUBLINGS` times in a point. A forward with a host synchronisation inside never
+qualifies, and its point refuses after more than `DOUBLINGS` misses in a row; a
+host that stalls now and then only discards the repeats it stalls.
 
 `WARMUPS` forwards run first, with no preload, and size the first preload: the
 longest the host took to issue one of them. Then `REPEATS` repeats are kept,
@@ -56,6 +56,7 @@ class BenchWindow:
     def bench_step(self, batch) -> dict:
         """`batch` measured: its kept repeats and their median, or a refusal."""
         preload = max(self._repeat(batch, 0)[4] for _ in range(WARMUPS))
+        longest = preload << DOUBLINGS
         kept, discarded, in_a_row = [], 0, 0
         while len(kept) < REPEATS:
             missed, *times, _host = self._repeat(batch, preload)
@@ -74,7 +75,7 @@ class BenchWindow:
                         "synchronisation inside the forward"
                     ),
                 }
-            preload *= 2
+            preload = min(2 * preload, longest)
         return {
             "protocol": PROTOCOL,
             "median_ns": statistics.median(ns for ns, _, _ in kept),
@@ -122,11 +123,10 @@ class _Forward:
         _stamps, window = runner.step_stamps()  # records B
         host = runner.step_clock_ns() - start
         missed = entry.query()
-        exit_event = runner._last_exit
         fields = window(True)
         self.values = [
             int(missed),
-            round(entry.elapsed_time(exit_event) * 1e6),
+            round(entry.elapsed_time(runner._last_exit) * 1e6),
             fields["d_gap_ns"],
             fields["d_busy_ns"],
             host,
