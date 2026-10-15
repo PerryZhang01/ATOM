@@ -70,14 +70,13 @@ def test_host_laws_from_another_spec_refuse_naming_both_digests(tmp_path, monkey
         str(_timed_record(tmp_path / f"dp0-{s}.jsonl", _steps(s), key=key)[0])
         for s in (19, 20)
     ]
-    (tmp_path / "n18.json").write_text(json.dumps(N18))
     main(
         [
             *records,
             "--out",
             str(tmp_path / "law.json"),
-            "--machine",
-            str(tmp_path / "n18.json"),
+            "--machine-spec",
+            digest(N18),
         ]
     )
     law = json.loads((tmp_path / "law.json").read_text())
