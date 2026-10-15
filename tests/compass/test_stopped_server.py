@@ -7,9 +7,14 @@ the loop gives each signal back the handler it had. A server whose engine waits
 for a grant no client run will give, since no traffic LP binds, leaves on the
 signal alone, its summary written as an early end naming the signal, whether
 or not a stamped request it holds, which only a grant would release, is open.
+The stop first ends every LP's run through the authority, so an engine in a
+process of its own leaves its loop and hands in what its steps cost, whether
+the signal reaches the server alone or its process group, whose SIGTERM would
+have ATOM's handler stop the engine's workers.
 """
 
 import asyncio
+import contextlib
 import http.client
 import json
 import math
@@ -73,6 +78,73 @@ def stamp(scope):
 uvicorn.run(HttpChannel(app, stamp), host="127.0.0.1", port=int(sys.argv[1]),
             loop=api_server._loop_impl(), lifespan="off", log_level="warning")
 print("frontend_done:", compass_run.frontend_done(SimpleNamespace(close=lambda: None)))
+"""
+
+
+#: An engine in a process of its own: the run bootstrap's engine LP over its
+#: loop, which asks for time until the ``+inf`` grant. Its workers answer what
+#: their steps cost until a SIGTERM to its handler, standing in for ATOM's,
+#: stops them. It says ``ready`` once bound to the authority.
+ENGINE = """\
+import math, signal
+from types import SimpleNamespace
+from atom.compass import run as compass_run
+from atom.utils import clock
+
+rank = SimpleNamespace(data_parallel_size=1, data_parallel_rank=0)
+with compass_run.engine(SimpleNamespace(parallel_config=rank, kv_transfer_config={})):
+    pass
+stopped = []
+signal.signal(signal.SIGTERM, lambda *_: stopped.append(True))
+said = {"refused_commands": [], "predicted_memory": {}}
+said["priced_steps"] = {"steps": 3, "seconds": 0.75}
+
+def call_func(name, wait_out):
+    if stopped:
+        raise RuntimeError("the workers stopped")
+    return said[name]
+
+print("ready", flush=True)
+with compass_run.engine_loop(SimpleNamespace(runner_mgr=SimpleNamespace(call_func=call_func))):
+    while not clock.idle(lambda: math.inf):
+        pass
+"""
+#: A co-hosting frontend, as `SERVER`'s, over `ENGINE` in a process it starts
+#: and a bare app. Its ``close`` waits for the engine, then kills it, as
+#: `CoreManager.close` does.
+ENGINE_SERVER = """\
+import subprocess, sys
+from types import SimpleNamespace
+import uvicorn
+from atom.compass import run as compass_run
+from atom.entrypoints.openai import api_server
+
+deployment = SimpleNamespace(
+    parallel_config=SimpleNamespace(data_parallel_size=1, data_parallel_rank=0),
+    tensor_parallel_size=1,
+    enable_dp_attention=False,
+    pipeline_parallel_size=1,
+    enable_rapidserve=False,
+    runner_qualname=compass_run.ATOM_RUNNER,
+    kv_transfer_config={},
+)
+with compass_run.frontend(deployment):
+    engine = subprocess.Popen([sys.executable, "-c", sys.argv[2]], stdout=subprocess.PIPE)
+    assert engine.stdout.readline() == b"ready\\n"
+
+def close():
+    try:
+        engine.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        engine.kill()
+
+async def app(scope, receive, send):
+    await send({"type": "http.response.start", "status": 200, "headers": []})
+    await send({"type": "http.response.body", "body": b"ok"})
+
+uvicorn.run(app, host="127.0.0.1", port=int(sys.argv[1]),
+            loop=api_server._loop_impl(), lifespan="off", log_level="warning")
+print("frontend_done:", compass_run.frontend_done(SimpleNamespace(close=close)))
 """
 
 
@@ -175,3 +247,53 @@ def test_a_stopped_server_leaves_with_its_summary_written(tmp_path, sig, held):
     reasons = dict(summary["schedule"]["refusals"]["reasons"])
     assert reasons == {f"ended:frontend stopped by {sig.name}": 1}
     assert summary["coverage_report"] is True
+
+
+@pytest.mark.parametrize("group", [False, True], ids=["server", "group"])
+def test_a_stopped_servers_summary_carries_its_engines_priced_steps(tmp_path, group):
+    run_file = tmp_path / "run.json"
+    run_file.write_text(
+        json.dumps(
+            {
+                "clock_endpoint": f"tcp://127.0.0.1:{_free_port()}",
+                "bound_s": 100.0,
+                "admission_path": "serving",
+                "ipc_s": 2.0**-10,
+                "stream_s": 2.0**-9,
+                "out_dir": str(tmp_path),
+            }
+        )
+    )
+    port = _free_port()
+    env = dict(os.environ, PYTHONPATH=str(TREE), **{compass_run.ENV: str(run_file)})
+    log = tmp_path / "server.log"
+    with log.open("w") as sink:
+        server = subprocess.Popen(
+            [sys.executable, "-c", ENGINE_SERVER, str(port), ENGINE],
+            cwd=TREE,
+            env=env,
+            stdout=sink,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    try:
+        deadline = time.monotonic() + 120
+        while not _answers(port):
+            assert server.poll() is None, log.read_text()
+            assert time.monotonic() < deadline, "no answer in 120 wall seconds"
+            time.sleep(0.2)
+        if group:
+            os.killpg(server.pid, signal.SIGTERM)
+        else:
+            server.send_signal(signal.SIGTERM)
+        server.wait(timeout=30)
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(server.pid, signal.SIGKILL)
+        server.wait()
+    out = log.read_text()
+    assert server.returncode == 0 and "frontend_done: True" in out, out
+    summary = json.loads((tmp_path / compass_run.SUMMARY_FILE).read_text())
+    reasons = dict(summary["schedule"]["refusals"]["reasons"])
+    assert reasons == {"ended:frontend stopped by SIGTERM": 1}, out
+    assert summary["schedule"]["predicted_seconds"] == 0.75, out

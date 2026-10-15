@@ -28,13 +28,16 @@ member, the frontend's included, connects to.
   finish, each handing in its LP's refusals; the frontend's, when it co-hosts
   the authority, then writes the step table and the run summary. A SIGINT or
   SIGTERM that stopped the frontend's event loop
-  (`atom.utils.compass_loop.CompassEventLoop.stopped`) is an early end:
-  `frontend_done` hands it in as an ``ended:`` reason, and the server leaves
-  once the summary is written from every hand-in.
+  (`atom.utils.compass_loop.CompassEventLoop.stopped`) is a stop:
+  `frontend_done` first ends every LP's run through the authority, so each
+  engine leaves its loop at its ``+inf`` grant and hands in, then hands the
+  stop in as an ``ended:`` reason, and the server leaves once the summary is
+  written from every hand-in.
 - `engine_loop(engine)` wraps the engine's loop: under ``step_grid`` it asks the
   workers for the bundle before it, `engine_done` after it, and if either
   raises, the engine hands in the exception as an ``ended:`` reason, with the
-  bundle; `engine_done` raises for a loop that left before the finish. A
+  bundle; `engine_done` raises for a loop that left before the finish. The
+  engine ignores SIGTERM until it has handed in. A
   hand-in before the finish is an early end: the authority's host writes the
   step table and the run summary at once, each LP's clock as it stands, from
   what has been handed in.
@@ -111,6 +114,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import threading
 import time
 from collections import Counter
@@ -121,6 +125,8 @@ import numpy as np
 import atom
 from atom.compass.artifacts import provenance
 from atom.compass.clock import (
+    TAR,
+    ClockAbort,
     ClockAuthority,
     LpId,
     RefusalTally,
@@ -337,7 +343,11 @@ class _RecordingAuthority(ClockAuthority):
     A co-hosting frontend starts the run as it starts its own; otherwise it
     starts once every server LP, and every member of one declared with members,
     has asked once. Each client run that ends before the last has its summary
-    written once every server LP has handed in."""
+    written once every server LP has handed in. A TAR to ``+inf`` before the
+    finish is a stop: it finishes the run there and sets `stopped`. Every LP
+    but the client, which holds no connection before it binds or between
+    client runs, is granted ``+inf``; the client learns of the stop when the
+    authority's process ends its connection."""
 
     def __init__(self, run: dict) -> None:
         # The tree that runs, read before the run so an unidentifiable one is
@@ -349,6 +359,7 @@ class _RecordingAuthority(ClockAuthority):
         self.run = run
         self.started = self.finished = None
         self.ends = []  # the wall time each client run ended
+        self.stopped = False
         self.done = threading.Event()
         self._joining = set(_hand_ins(run))
         # A rerun into the same out_dir starts from none of the last run's files.
@@ -380,7 +391,11 @@ class _RecordingAuthority(ClockAuthority):
         self._joining.discard(f"{lp.name}.{member}" if member else lp.name)
         if not self._joining and self.started is None:
             self.started = time.monotonic()
-        replies = super().on_request(lp, kind, t, log, t_daemon, member)
+        if kind == TAR and t == math.inf and self.final_clocks is None:
+            self.stopped = True
+            replies = [r for r in self._address(self._finish()) if r[0] != TRAFFIC]
+        else:
+            replies = super().on_request(lp, kind, t, log, t_daemon, member)
         for to, _, released, *_ in replies:
             # A member's reply is addressed (lp, member); its channels name its rank.
             lp = to[0] if isinstance(to, tuple) else to
@@ -868,7 +883,11 @@ def engine_loop(engine_core):
     that was before the finish. If either raises in a run, hand in the engine's
     refused clock calls and the exception, and what the workers say in 10 wall
     seconds unless one died. Under ``step_grid`` the workers are asked for the bundle
-    before the loop, so a run that ends early still hands it in."""
+    before the loop, so a run that ends early still hands it in.
+
+    In a run the engine ignores SIGTERM until it has handed in: ATOM's handler
+    would stop the workers inside a clock call, before they say what their
+    steps cost. A stop reaches the engine as the ``+inf`` grant instead."""
     run, sections = spec(), {}
     if run is not None and "step_grid" in run:
         workers = engine_core.runner_mgr
@@ -877,6 +896,7 @@ def engine_loop(engine_core):
         clock.installed().client_run_ended = lambda k: _engine_hand_in(
             run, engine_core, sections, k
         )
+        before = signal.signal(signal.SIGTERM, signal.SIG_IGN)
     try:
         yield
         engine_done(engine_core, **sections)
@@ -897,6 +917,9 @@ def engine_loop(engine_core):
                 run, lp, reasons + [f"ended:{lp} raised {e!r}"], **said, **sections
             )
         raise
+    finally:
+        if run is not None and before is not None:  # None: not set from Python
+            signal.signal(signal.SIGTERM, before)
 
 
 def _until_end(run: dict, a: "_RecordingAuthority") -> bool:
@@ -919,15 +942,19 @@ def _write_on_early_end(run: dict, a: "_RecordingAuthority") -> None:
 
 def frontend_done(llm_engine) -> bool:
     """Whether the server left at a simulated run's finish, or at a stop: a
-    signal that ended its event loop's run. At either, stop the engines and
-    hand in the frontend's refusals, at a stop with an ``ended:`` reason naming
-    the signal. With the authority co-hosted, then write the step table and the
-    run summary; at a stop, once the early end's writer has written its own at
-    the first hand-in, so the summary left counts every hand-in."""
+    signal that ended its event loop's run. At a stop, first end every LP's run
+    through the authority (`_stop_run`), so each engine leaves its loop and
+    hands in. At either, stop the engines and hand in the frontend's refusals,
+    at a stop with an ``ended:`` reason naming the signal. With the authority
+    co-hosted, then write the step table and the run summary; at a stop, after
+    the early end's writer, which has written its own if a refusal ended the
+    run first, so the summary left counts every hand-in."""
     rt = clock.installed()
     stop = None if rt is None else getattr(rt.loop, "stopped", None)
     if rt is None or (rt.now != math.inf and stop is None):
         return False
+    if rt.now != math.inf:
+        _stop_run(rt)
     llm_engine.close()
     run = spec()
     ended = [] if stop is None else [f"ended:{rt.me.name} stopped by {stop}"]
@@ -937,6 +964,16 @@ def frontend_done(llm_engine) -> bool:
             _early_end.join()
         _write_summary(run, _authority, ended=stop is not None)
     return True
+
+
+def _stop_run(rt) -> None:
+    """End every LP's run through the authority with a TAR to ``+inf``, and
+    read `rt`'s replies up to its ``+inf`` grant. A run a refusal ended has
+    nothing left to end."""
+    with contextlib.suppress(ClockAbort):
+        rt.conn.send((TAR, math.inf, [], math.inf))
+        while rt.conn.recv()[0] != math.inf:
+            pass
 
 
 def _frontend_hand_in(run: dict, rt, client_run=None, ended=()) -> None:
@@ -963,14 +1000,15 @@ def _read_hand_ins(run: dict, where: Path, wait: bool) -> dict:
 def _write_summary(run: dict, a: _RecordingAuthority, ended: bool = False) -> None:
     """Write the step table, then the run summary once every server LP has
     handed in its refusals, or after an early end, from those handed in so far;
-    after the finish, the last client run's summary too."""
+    after the finish, unless a stop brought it, the last client run's summary
+    too."""
     out = Path(run["out_dir"])
     _write_whole(out / STEP_TABLE_FILE, a.steps.text())
     hand_ins = _read_hand_ins(run, out, not ended)
     end = a.finished or time.monotonic()
     summary = _summary(run, a, a, end - (a.started or end), hand_ins, {})
     _write_whole(out / SUMMARY_FILE, json.dumps(summary, sort_keys=True, indent=1))
-    if not ended and a.ended:
+    if not ended and a.ended and not a.stopped:
         _write_client_run(run, a, len(a.ended) - 1, hand_ins)
 
 
