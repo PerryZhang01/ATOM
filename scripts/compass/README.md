@@ -600,9 +600,10 @@ nightly-20261013 image, in this order: concurrency 1, 4, 16, 64 and 256 as
 vector. A first-turn cell runs with `AIPERF_EXTRA_ARGS="--trajectory-start-min-ratio 0
 --trajectory-start-max-ratio 0"`, which starts every trajectory at its first
 turn. The law carries the host key the records carry with its `atom`
-digest replaced by the one `host_key` gives 5148ceda2's tree, which adds
-`ScheduledBatchOutput.group_targets` and changes `clock.charge`, neither of
-which changes a real run's host time. The law and its host key state
+digest replaced by the one `host_key` gives a tree that
+adds `ScheduledBatchOutput.group_targets`, changes `clock.charge` and makes the
+plugin and diffusion bootstraps refuse a simulated run; none of these changes a
+real run's host time. The law and its host key state
 `machine_spec`, the digest `machine_spec_digest` gives
 `scripts/compass/machines/mi308x-hjbog39.json`, so it refuses under any other
 spec's device or software stack.
