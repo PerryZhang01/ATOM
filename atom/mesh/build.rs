@@ -24,30 +24,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
         println!("cargo:rerun-if-changed=proto");
     }
-    // Rebuild triggers: every top-level entry but `target`, which each build
-    // writes, and the git files a commit, checkout or `git add` rewrites, so
-    // the commit and status below are re-read when they change. A new file
-    // directly in this directory is not seen: watching `.` would include
-    // `target` and rerun this script, and recompile the crate, on every build.
+    // Rebuild triggers: every top-level entry but `target` (each build writes
+    // it), and the git files a commit, checkout or `git add` rewrites. A new
+    // file directly in this directory is not seen until one of those changes.
     for entry in std::fs::read_dir(".")?.flatten() {
         if entry.file_name() != "target" {
             println!("cargo:rerun-if-changed={}", entry.path().display());
         }
     }
-    let git_paths = run_cmd(
-        "git",
-        &[
-            "rev-parse",
-            "--git-path",
-            "HEAD",
-            "--git-path",
-            "index",
-            "--git-path",
-            "logs/HEAD",
-        ],
-    );
-    for path in git_paths.iter().flat_map(|p| p.lines()) {
-        if std::path::Path::new(path).exists() {
+    for name in ["HEAD", "index", "logs/HEAD"] {
+        let path = run_cmd("git", &["rev-parse", "--git-path", name]).unwrap_or_default();
+        if std::path::Path::new(&path).exists() {
             println!("cargo:rerun-if-changed={path}");
         }
     }
@@ -124,15 +111,11 @@ fn git_commit() -> Option<String> {
     run_cmd("git", &["rev-parse", "--short", "HEAD"])
 }
 
-/// Status of this package's directory only, the source the binary is built
-/// from. `--no-optional-locks` keeps git from rewriting the index, which the
-/// rebuild triggers watch.
+/// This directory's status only; `--no-optional-locks` keeps git from
+/// rewriting the index, a rebuild trigger.
 fn git_status() -> Option<String> {
-    run_cmd(
-        "git",
-        &["--no-optional-locks", "status", "--porcelain", "--", "."],
-    )
-    .map(|s| if s.is_empty() { "clean" } else { "dirty" }.into())
+    let args = ["--no-optional-locks", "status", "--porcelain", "--", "."];
+    run_cmd("git", &args).map(|s| if s.is_empty() { "clean" } else { "dirty" }.into())
 }
 
 fn rustc_version() -> Option<String> {
