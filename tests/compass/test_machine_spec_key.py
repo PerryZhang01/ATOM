@@ -58,6 +58,16 @@ def test_a_law_that_states_no_machine_spec_refuses(monkeypatch, tmp_path):
         _installed(monkeypatch, tmp_path, step_linear=unkeyed, machine=N39)
 
 
+def test_the_fit_refuses_without_a_machine_spec_and_writes_no_law(tmp_path, capsys):
+    from atom.compass.backends.step_linear_fit import main
+
+    record = _timed_record(tmp_path / "dp0.jsonl", _steps(19))[0]
+    with pytest.raises(SystemExit):
+        main([str(record), "--out", str(tmp_path / "law.json")])
+    assert "--machine-spec" in capsys.readouterr().err
+    assert not (tmp_path / "law.json").exists()
+
+
 def test_host_laws_from_another_spec_refuse_naming_both_digests(tmp_path, monkeypatch):
     from test_run_step_grid import deployment, run_file
 

@@ -3,7 +3,7 @@
 
 """The step linear law fitted from real step records.
 
-    python -m atom.compass.backends.step_linear_fit RECORD... --out LAW [--form FORM] [--dp N]
+    python -m atom.compass.backends.step_linear_fit RECORD... --out LAW --machine-spec DIGEST [--form FORM] [--dp N]
 
 Each RECORD is a real run's step record (`steps/dp0.jsonl`, written with
 `ATOM_COMPASS_PARITY_RECORD`), labelled by `step_labels`, whose docstring
@@ -35,8 +35,8 @@ Records with a host key (`dp0.key.json`, from the real runner) also give the
 host laws as a run file's `host` entry: `key`, and `laws[kind][segment]`,
 seconds on `(1, tokens, seqs)`, fitted on the samples' host labels. They take
 the step linear law's solver, MAD drops and hulls; `seqs` equal to `tokens` on
-every sample gets zero. Two keys refuse. With `--machine-spec`, the law and the
-host key state that `machine_spec_digest`, which a run's spec must match.
+every sample gets zero. Two keys refuse. The law and the host key state the
+`--machine-spec` digest, which a run's spec must match.
 
 Each equation is divided by its own label and the coefficients are bound to be
 non-negative. Steps whose relative residual is more than `MAD_K` scaled MADs
@@ -662,6 +662,7 @@ def main(argv=None) -> None:
     )
     parser.add_argument(
         "--machine-spec",
+        required=True,
         help="the machine_spec_digest of the spec of the platform the records ran "
         "on, which keys the law and its host laws",
     )
@@ -673,10 +674,9 @@ def main(argv=None) -> None:
     law, report = fit(samples, options)
     if any(s.provenance["config"] for s in samples):
         law["host"], law["host_fit"] = fit_host(samples)
-    if args.machine_spec:
-        law["machine_spec"] = args.machine_spec
-        if "host" in law:
-            law["host"]["key"]["machine_spec"] = args.machine_spec
+    law["machine_spec"] = args.machine_spec
+    if "host" in law:
+        law["host"]["key"]["machine_spec"] = args.machine_spec
     if len(args.records) > 1 and args.dp == 1:
         mark_held_out(law, report, samples, options)
     Path(args.out).write_text(json.dumps(law) + "\n")

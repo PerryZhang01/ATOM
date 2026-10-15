@@ -40,6 +40,7 @@ DECODE = {
     "2": {"step": 0.021, "context": 1e-7, "graph_padding": 4e-8},
     "4": {"step": 0.022, "context": 1.2e-7, "graph_padding": 3e-8},
 }
+SPEC = ("--machine-spec", "sha256:" + "0" * 64)
 
 
 def _price(rows, rung, history=0.0):
@@ -249,7 +250,7 @@ def test_a_rung_a_mad_pass_drops_entirely_gets_coefficient_zero():
 
 def test_the_command_writes_a_law_a_run_file_can_carry(tmp_path, capsys):
     records = [str(_record(tmp_path / f"dp0-{s}.jsonl", _steps(s))) for s in (6, 7)]
-    main([*records, "--out", str(tmp_path / "law.json")])
+    main([*records, "--out", str(tmp_path / "law.json"), *SPEC])
 
     law = StepLinearLaw(json.loads((tmp_path / "law.json").read_text()))
     assert "2 real records" in law.fitted_on
@@ -459,7 +460,7 @@ def test_records_under_two_host_keys_are_refused(tmp_path):
     for pair in ([a, b], [a, c]):
         with pytest.raises(ValueError, match="2 host keys"):
             fit_host(label_records(pair)[0])
-    main([str(c), "--out", str(tmp_path / "law.json")])
+    main([str(c), "--out", str(tmp_path / "law.json"), *SPEC])
     assert "host" not in json.loads((tmp_path / "law.json").read_text())
 
 
@@ -488,7 +489,7 @@ def test_the_command_writes_host_laws_a_run_file_takes_and_scores_them_held_out(
     records = [
         str(_timed_record(tmp_path / f"dp0-{s}.jsonl", _steps(s))[0]) for s in (19, 20)
     ]
-    main([*records, "--out", str(tmp_path / "law.json")])
+    main([*records, "--out", str(tmp_path / "law.json"), *SPEC])
 
     law = json.loads((tmp_path / "law.json").read_text())
     StepLinearLaw(law)
@@ -796,7 +797,7 @@ def test_the_command_writes_held_out_errors_and_validates_only_inside_their_hull
     tmp_path,
 ):
     records = [str(_record(tmp_path / f"dp0-{s}.jsonl", _steps(s))) for s in (6, 7)]
-    main([*records, "--out", str(tmp_path / "law.json")])
+    main([*records, "--out", str(tmp_path / "law.json"), *SPEC])
     written = json.loads((tmp_path / "law.json").read_text())
 
     bands = written["decode"]["2"]["held_out"]["bands"]
@@ -821,7 +822,7 @@ def test_a_rung_only_one_record_holds_gets_no_held_out_errors(tmp_path):
         str(_record(tmp_path / "dp0-6.jsonl", _steps(6))),
         str(_record(tmp_path / "dp0-7.jsonl", no_fours)),
     ]
-    main([*records, "--out", str(tmp_path / "law.json")])
+    main([*records, "--out", str(tmp_path / "law.json"), *SPEC])
     written = json.loads((tmp_path / "law.json").read_text())
 
     assert "held_out" in written["decode"]["2"]
@@ -843,7 +844,7 @@ def test_a_shape_only_a_dropped_outlier_reached_prices_extrapolated_and_validate
         str(_record(tmp_path / "dp0-6.jsonl", steps, stretch={101: 3.0})),
         str(_record(tmp_path / "dp0-7.jsonl", _steps(7))),
     ]
-    main([*records, "--out", str(tmp_path / "law.json")])
+    main([*records, "--out", str(tmp_path / "law.json"), *SPEC])
     written = json.loads((tmp_path / "law.json").read_text())
 
     assert written["decode"]["2"]["fit"]["dropped"] == 1
@@ -854,7 +855,7 @@ def test_a_shape_only_a_dropped_outlier_reached_prices_extrapolated_and_validate
 
 def test_a_law_without_held_out_errors_prices_every_term_unvalidated(tmp_path):
     record = str(_record(tmp_path / "dp0-6.jsonl", _steps(6)))
-    main([record, "--out", str(tmp_path / "law.json")])
+    main([record, "--out", str(tmp_path / "law.json"), *SPEC])
     written = json.loads((tmp_path / "law.json").read_text())
 
     assert "held_out" not in json.dumps(written)

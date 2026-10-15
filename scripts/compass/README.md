@@ -542,7 +542,7 @@ the log of one rank.
 
 ## The step linear law from real cells — `step_linear_fit`
 
-`python -m atom.compass.backends.step_linear_fit RECORD... --out LAW [--form FORM] [--dp N]`
+`python -m atom.compass.backends.step_linear_fit RECORD... --out LAW --machine-spec DIGEST [--form FORM] [--dp N]`
 fits the law a run file's `step_linear` key holds (`atom/compass/backends/step_linear.py`) from
 the step records of real cells, `OUT_DIR/steps/dp0.jsonl` of `REAL=1
 cctraces_sim.sh` runs. `atom/compass/backends/step_labels.py` states the label
@@ -551,6 +551,20 @@ reading, `dp0.cost.jsonl`; the module's docstring states how outliers are
 dropped. The written law also carries, per vector, its samples, warm and dropped
 counts and condition number, and names any vector it could not fit under
 `unfitted`.
+
+`DIGEST` keys the law and its host laws to the platform the records ran on: a
+run whose machine spec has another digest refuses the law. It is the
+`machine_spec_digest` of that platform's spec in `scripts/compass/machines/`,
+printed by
+
+```
+python -c 'import json, sys
+from atom.compass.artifacts import machine_spec_digest
+from atom.compass.run import _width_keys
+from atom.compass.spec import MachineSpec
+spec = MachineSpec.from_mapping(_width_keys(json.load(open(sys.argv[1]))))
+print(machine_spec_digest(spec))' scripts/compass/machines/mi308x-hjbog39.json
+```
 
 Calibration cells replay traces the graded cells do not: `FIRST_SESSION=256
 SESSIONS=137` against graded traces 0 to 255, by the
