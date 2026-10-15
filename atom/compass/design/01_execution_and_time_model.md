@@ -1195,8 +1195,7 @@ The rules that settle the boundaries #53's categories left in the wrong place:
 - **A bound in Python is a virtual timer; only what the CA cannot reach is a real
   bound.** #53 split bounded waits by purpose, failure detector (C1) against pacing (C2).
   Both run on the LP clock now (K7, D5). K8 is the Rust router's bounds and health check,
-  OS-level process-death detection, and the out-of-band control-command reply deadline
-  (D5). The C1 bounds inside the TP group
+  OS-level process-death detection and the control-command reply deadline (D5). The C1 bounds inside the TP group
   (`AsyncIOProcManager.process_output_sockets`, `process_kv_output_sockets` and
   `call_func_with_aggregation`) are K6: real-time bounds on in-LP transport that the
   simulated runner answers in real milliseconds, so they never fire and stay as they are.
@@ -1532,8 +1531,9 @@ the frontend's event loop itself runs on LP time (D5.1): the Anthropic SSE ping
 `atom/entrypoints/openai/api_server.py`), uvicorn's `--timeout-keep-alive` (parsed and
 applied in that file's `main`), and the stream silence warning (`SILENCE_LOG_SECONDS`,
 30.0 s, clock reads in `FrameWait` and `longest_silence_seconds` in
-`atom/entrypoints/openai/streaming_dispatch.py`). Each fires only if the simulated
-system is really that slow, which is when a real one would fire it too.
+`atom/entrypoints/openai/streaming_dispatch.py`).
+Each fires only if the simulated system is really that slow, which is when a real one
+would fire it too.
 
 The pacing timers are local next events the clock owner hands to
 `next_event(t, t_daemon)` (D4, K3):
@@ -1576,13 +1576,10 @@ The only requirement is that these stay on the *same* clock as each other:
 `CoreManager.close`'s `time.monotonic() + 5` is patchable while `monitor_procs`'s wait
 is not, so virtualizing only the former makes the two halves of shutdown disagree.
 
-The control-command reply deadline also stays real, though the CA could reach it (K8,
-owner ruling on #964, 2026-10-14): the clock reads in `CoreManager._broadcast_and_wait`
-and `CoreManager.collective_rpc` (`atom/model_engine/engine_core_mgr.py`) and in
-`_remaining_timeout` (`atom/model_engine/engine_utility.py`). A control command is
+The control-command reply deadline stays real too (K8, ruling on #964, 2026-10-14; its
+reads are in `_KEPT_REAL`, `atom/compass/detect/clock_source.py`): a control command is
 out-of-band and produces no simulated event (#886), and the LP clock moves only while
-its owner takes a grant, so a deadline on it would never expire while the owner waits
-for the reply. `_KEPT_REAL` in `atom/compass/detect/clock_source.py` lists these reads.
+its owner takes a grant, so a deadline on it would never expire while the owner waits.
 
 ### D5.1. The simulated run uses stdlib asyncio, not uvloop
 
@@ -1607,9 +1604,8 @@ replies on the output channel.
 
 | Commands | Simulated run | Why |
 |---|---|---|
-| `abort_request`, `get_mtp_stats`, `finish_weight_sync`, `get_weight_sync_status` — call no worker | **run as usual**, unchanged | engine state only, inside the LP. `abort_request` fires when a client disconnects and changes scheduling, so it must stay |
-| `get_mtp_statistics`, `get_cache_statistics` — call no worker | **run as usual** in the engine; **refused by the frontend** when sent from its clock owner, as the HTTP routes `/debug/mtp_stats` and `/debug/cache_stats` send them | the sender waits for the reply (below) |
-| `start_profile`, `stop_profile` (HTTP routes `start_profile` and `stop_profile` in `api_server.py`), reaching worker methods `start_profiler`, `stop_profiler` | **refused**, by the frontend when sent from its clock owner, and by the runner | a real profiler slows every later step; charging it zero is a silent simplification, and a profiled system is not what is simulated |
+| `abort_request`, `get_mtp_stats`, `get_mtp_statistics`, `get_cache_statistics`, `finish_weight_sync`, `get_weight_sync_status` — call no worker | **run as usual** in the engine; the two statistics commands are refused by the frontend from its clock owner (below), as `/debug/mtp_stats` and `/debug/cache_stats` send them | engine state only, inside the LP. `abort_request` fires when a client disconnects and changes scheduling, so it must stay |
+| `start_profile`, `stop_profile` (HTTP routes `start_profile` and `stop_profile` in `api_server.py`), reaching worker methods `start_profiler`, `stop_profiler` | **refused**, by the frontend from its clock owner and by the runner | a real profiler slows every later step; charging it zero is a silent simplification, and a profiled system is not what is simulated |
 | `update_weights`, `update_weights_shm`, `update_weights_ipc` (worker methods `update_weights_from_shm`, `update_weights_from_ipc`), `discard_failed_weight_sync`, `release_memory`, `resume_memory`, `clear_kv_cache`, `configure_hidden_states` | **refused** | RL weight sync and sleep/wake. The API server has no route to them; the only senders in the tree are in `atom/rollout/` (`async_engine.py`, `weight_sync.py`), a Python interface for external RL frameworks whose `AsyncLLMEngine` a simulated run refuses at startup as an offline engine. Simulating them needs cost models for weight transfer and memory release that do not exist |
 | `collective_rpc` | **as the worker method it names** | it runs a method `COLLECTIVE_RPC_METHODS` (`atom/model_engine/collective_rpc.py`) opens, on every rank; the runner refuses `configure_hidden_states` and answers a name it does not define with ATOM's missing-method reply. Its only sender is `AsyncLLMEngine`, refused as above |
 
@@ -1624,14 +1620,11 @@ after it is no longer the deployment being simulated.
 ATOM's handlers are unchanged, the command travels its real channel, and a refusal is
 visible rather than a silent zero.
 
-A command sent with `CoreManager.broadcast_utility_command_sync` from the frontend's
-clock owner is refused by the frontend before it is sent (`_refuse_sync_utility_commands`
-in `atom/compass/run/__init__.py`, #1114; ruling on #1076, 2026-10-15). The sender waits
-for the replies on the real clock (above), and they reach the frontend only at its
-owner's next clock call. The call raises with a reason naming the command, the HTTP
-route answers 500 with it, and the frontend LP hands it in among its refusals as
-`clock:sync utility command '<cmd>' on the clock owner`. Off the clock owner the call is
-ATOM's.
+The frontend refuses `CoreManager.broadcast_utility_command_sync` called on its clock
+owner (`_refuse_sync_utility_commands`, `atom/compass/run/__init__.py`; ruling on #1076,
+2026-10-15): the replies reach it only at that owner's next clock call. The HTTP route
+answers 500 naming the command, and the frontend hands in a `clock:` refusal. Off the
+clock owner the call is ATOM's.
 
 ### Deleted for free by D6
 

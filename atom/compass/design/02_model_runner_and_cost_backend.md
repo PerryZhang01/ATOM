@@ -58,13 +58,11 @@ runner must answer all of: `get_num_blocks`, `allocate_kv_cache`, `capture_cudag
 `engine_core.py::EngineCore.__init__`, not in the worker. The two ways that contract breaks do not fail
 alike. A reply of the wrong **shape** arrives and raises where it is unpacked,
 in-process and with a traceback. A reply that never **arrives** queues nothing: a name
-sent by `call_func` that the runner does not define is skipped by `busy_loop`, a method
-that answers `None` is called and its result declined, and `call_func`'s
-`outputs_queue.get()` takes no timeout either way. That silence parks somebody only
-where somebody is waiting: ten of the twelve names above have a caller that waits for
-the reply, and `exit` and `process_kvconnector_output` do not. A name sent over the
-all-rank RPC (`utility_rpc`, `collective_rpc`) is always answered: a missing method
-gets an error reply. `atom/compass/runner/overrides.py` carries the
+`call_func` sends that the runner does not define is skipped by `busy_loop` (the all-rank RPC answers one with an error), a method that answers `None` is
+called and its result declined, and `call_func`'s `outputs_queue.get()` takes no
+timeout either way. That silence parks somebody only where somebody is waiting: ten of
+the twelve names above have a caller that waits for the reply, and `exit` and
+`process_kvconnector_output` do not. `atom/compass/runner/overrides.py` carries the
 third case — a method that raises — and the table of which names wait.
 
 **`flush_pp_send` keeps ATOM's own answer, and the control-command worker methods are
@@ -78,8 +76,8 @@ refused** (revised 2026-09-28 and 2026-09-30, #443):
   Q3). The runner gains the two methods that loop calls to move one `pp_data` or `pp_ack`
   frame over the PP CPU group; only the stage loop's hooks call them, never ATOM.
 - The runner defines and refuses by name the worker methods the profiler and RL
-  control commands reach, as
-  [`01` D5's control-command table](01_execution_and_time_model.md#control-commands)
+  control commands reach, listed in [`01`'s table](01_execution_and_time_model.md#control-commands), as
+  [`01` D5](01_execution_and_time_model.md#d5-timers-clock-reads-and-control-commands)
   decides.
 
 ### Three semantics `forward()` must reproduce
