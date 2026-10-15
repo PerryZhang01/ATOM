@@ -225,6 +225,22 @@ def test_only_host_laws_depend_on_the_host_cpu():
         assert axes_of(row) == axes_of(Row.STEP_GRID_BUNDLE)
 
 
+def test_host_laws_published_on_one_host_cpu_refuse_another_naming_it(tmp_path):
+    store = ArtifactStore(tmp_path)
+    key = Key.of(
+        Kind.HOST_LAWS,
+        host_cpu=BASE.reading(Axis.HOST_CPU).value,
+        atom_src="0f1e2d3c",
+        model="sha256:191e0af2",
+        engine_config="{}",
+    )
+    publish(store, key)
+    with pytest.raises(ArtifactRefusal) as refused:
+        store.load(key, conditions=moved(BASE, Axis.HOST_CPU), gates=GATES)
+    assert refused.value.rule is Rule.INVALIDATED
+    assert "`host_laws` x `host CPU`" in str(refused.value)
+
+
 # --- every cell, the zeroes as hard as the crosses -------------------------
 
 
