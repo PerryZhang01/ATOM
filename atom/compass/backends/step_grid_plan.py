@@ -88,9 +88,8 @@ def _target(definition: dict, engines: dict) -> dict:
         raise ValueError("no input states the engine its steps ran on")
     (first, engine), *rest = engines.items()
     for name, other in rest:
-        differ = sorted(
-            k for k in engine.keys() | other.keys() if engine.get(k) != other.get(k)
-        )
+        keys = sorted(engine.keys() | other.keys())
+        differ = [k for k in keys if engine.get(k) != other.get(k)]
         if differ:
             raise ValueError(
                 f"{first} and {name} state two engines, which differ on "
