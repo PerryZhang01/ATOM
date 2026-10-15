@@ -454,3 +454,16 @@ def test_an_idle_engine_runs_at_once_a_request_a_finished_transfer_left_ready(
     assert engine._idle_deadline() == INF
     engine.scheduler.finished_recving_kv_req_ids.append(7)
     assert engine._idle_deadline() == 2.0
+
+
+def test_behind_the_router_lp_the_summary_waits_for_no_hand_in_from_it(
+    tmp_path, monkeypatch
+):
+    """The router LP prices no work, so the summary's writer waits only for the
+    four server LPs' refusals."""
+    run = json.loads(_run_file(tmp_path, **PD, router_in_s=2.0**-14).read_text())
+    assert LpId("router") in compass_run.channel_table(run).registry.ids()
+    monkeypatch.setattr(compass_run, "HAND_IN_WAIT_S", 1.0)
+    for lp in LPS[:-1]:
+        (tmp_path / compass_run.LP_FILE.format(lp)).write_text('{"refusals": []}')
+    assert sorted(compass_run._read_hand_ins(run, tmp_path, True)) == LPS[:-1]
