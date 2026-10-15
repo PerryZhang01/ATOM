@@ -9,11 +9,15 @@ each record's rank wrote. A plan's lines are written as a step record, read
 back by `parity.read` and located by the plan's grid. Bundles are published to
 an `ArtifactStore` and loaded by `run.step_grid.load` under
 `test_run_step_grid`'s deployment, at the same scheduler's bounds and ladder.
+The module command runs as `python -m` on this tree, over the same files.
 """
 
 import copy
 import json
+import os
 import re
+import subprocess
+import sys
 import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -46,6 +50,7 @@ ENGINE = {
     "num_kvcache_blocks": 4096,
     "ladder": LADDER,
 }
+TREE = Path(__file__).resolve().parents[2]
 #: Prompt lengths. Their decode steps replay rung 4: MIXED's at B = 3 on
 #: cached context 90 to 92, SHORT's at B = 4 on 42.5 to 44.5.
 MIXED, SHORT = (200, 20, 50), (40, 30, 90, 10)
@@ -150,6 +155,21 @@ def coverage(tmp_path, member, *records, grid=KEY["grid"], **config):
     spec = {"store": str(tmp_path / "store"), **KEY, "grid": grid}
     backend, _ = load(spec, r.config, MachineSpec.from_mapping(DOCUMENT))
     return step_grid_plan.coverage(backend, steps(*records)[0])
+
+
+def command(*argv):
+    """The module command run on this tree: its exit code and printed JSON."""
+    done = subprocess.run(
+        [sys.executable, "-m", "atom.compass.backends.step_grid_plan"]
+        + [str(a) for a in argv],
+        cwd=TREE,
+        env=dict(os.environ, PYTHONPATH=str(TREE)),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode in (0, 1), done.stderr
+    return done.returncode, json.loads(done.stdout)
 
 
 def test_every_planned_point_read_back_is_a_homogeneous_batch_on_its_own_node(
@@ -601,3 +621,28 @@ def test_no_step_is_refused(tmp_path):
         plan(tmp_path)
     with pytest.raises(ValueError, match="there is no step to read"):
         step_grid_plan.coverage(None, [])
+
+
+def test_the_module_command_plans_from_record_files(tmp_path, monkeypatch):
+    records = [record(tmp_path, monkeypatch, *n) for n in (MIXED, SHORT)]
+    path = tmp_path / "definition.json"
+    path.write_text(json.dumps({**DEFINITION, "margin": 1}))
+
+    assert command("plan", path, *records) == (0, plan(*records, margin=1))
+
+
+def test_the_module_command_checks_coverage_from_a_bundle_file(tmp_path, monkeypatch):
+    """The bundle read from its file covers what it covers loaded by key, and
+    one without a decode point exits 1, naming the point."""
+    records = [record(tmp_path, monkeypatch, *n) for n in (MIXED, SHORT)]
+    planned = plan(*records)
+    points = located(tmp_path, planned)
+    at = points["decode"][0]
+    whole, holed = tmp_path / "whole.json", tmp_path / "holed.json"
+    whole.write_text(json.dumps(measured(planned, points)))
+    holed.write_text(json.dumps(measured(planned, points, drop=("decode", at))))
+
+    by_key = coverage(tmp_path, measured(planned, points), *records)
+    assert command("coverage", whole, *records) == (0, by_key)
+    code, out = command("coverage", holed, *records)
+    assert code == 1 and out["missing"] == {f"decode rung {at[0]}": [at[1:]]}
