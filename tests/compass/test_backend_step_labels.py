@@ -18,7 +18,7 @@ from test_backend_step_linear_fit import (
     _timed_record,
     _view,
 )
-from test_memory_readings import META_8B
+from test_memory_readings import DOCUMENT, META_8B
 from test_parity_device_window import BUSY, GAP, _recorded
 from test_parity_record import _config, _drive
 
@@ -201,7 +201,16 @@ def test_the_command_s_laws_load_in_a_run_file(tmp_path, monkeypatch):
         str(_timed_record(tmp_path / f"dp0-{s}.jsonl", _steps(s), key=key)[0])
         for s in (19, 20)
     ]
-    main([*records, "--out", str(tmp_path / "law.json")])
+    (tmp_path / "machine.json").write_text(json.dumps(DOCUMENT))
+    main(
+        [
+            *records,
+            "--out",
+            str(tmp_path / "law.json"),
+            "--machine",
+            str(tmp_path / "machine.json"),
+        ]
+    )
     law = json.loads((tmp_path / "law.json").read_text())
 
     run = run_file(tmp_path, monkeypatch, step_linear=law, host=law["host"])

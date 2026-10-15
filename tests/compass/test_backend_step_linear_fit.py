@@ -654,18 +654,21 @@ def test_the_host_key_leaves_out_a_listed_files_module_docstring(tmp_path, monke
 
 
 def test_a_run_refuses_host_laws_fitted_under_another_key(tmp_path, monkeypatch):
-    from test_memory_readings import META_8B
+    from test_memory_readings import DOCUMENT, META_8B
     from test_run_step_grid import deployment, publish, run_file
 
     from atom.compass import run as compass_run
+    from atom.compass.artifacts import machine_spec_digest
+    from atom.compass.spec import MachineSpec
 
     laws = {"decode": {"E": [1e-4, 0.0, 0.0]}}
+    spec = machine_spec_digest(MachineSpec.from_mapping(DOCUMENT))
     cases = (("same", {}), ("other", {"host_cpu": "another cpu"}), ("none", None))
     for name, other in cases:
         (tmp_path / name).mkdir()
         r = deployment(tmp_path / name)
         publish(tmp_path / name, r)
-        key = compass_run.host_key(r.config)
+        key = dict(compass_run.host_key(r.config), machine_spec=spec)
         host = {"laws": laws}
         if other is not None:
             host["key"] = dict(key, **other)

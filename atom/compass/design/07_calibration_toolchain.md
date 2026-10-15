@@ -642,13 +642,13 @@ its own, and a population is keyed by the backend that priced it.
 | `machine_spec` | doc 05 probes | (device, software stack) |
 | `shape_population` | Phase 0, `trace steps` | (model, workload, engine config, the pricing backend's digest) |
 | `op_graph` | Phase 1a, `trace ops` | **structure** — not shape |
-| `price_list` | Phase 1b, `fit ops` | **(model, parallel layout, source-root digest)** — a tuple, never a path |
-| `region_terms` | Phase 1c, `fit ops` | (model, parallel layout) |
+| `price_list` | Phase 1b, `fit ops` | **(model, parallel layout, machine-spec digest, source-root digest)** — a tuple, never a path |
+| `region_terms` | Phase 1c, `fit ops` | (model, parallel layout, machine-spec digest) |
 | `memory_readings` | Phase 2, `measure memory`; published with every reading assumed for a device never measured | (model, device, parallel, engine config) |
 | `coverage_hull` | derived | the price list it was built from |
 | `step_measurement` | Phase 1c, `measure steps` | (model, device, parallel, engine config, source-root digest, sampling, step kind, the batch's digest) |
-| `step_linear_law` | `fit steps --backend step-linear` | (model, device, parallel, engine config, source-root digest, form) |
-| `host_laws` | `fit host` | (host CPU, ATOM source, model, engine config), as the run reads its host key |
+| `step_linear_law` | `fit steps --backend step-linear` | (model, machine-spec digest, parallel, engine config, source-root digest, form) |
+| `host_laws` | `fit host` | (host CPU, ATOM source, model, engine config, machine-spec digest), as the run reads its host key |
 | step grid bundle (`step_grid_bundle`) | `fit steps --backend step-grid` | `17` D101 |
 
 The **parallel layout** of a `price_list`, `region_terms` and `memory_readings` key is
@@ -659,6 +659,11 @@ The **parallel layout** of a `price_list`, `region_terms` and `memory_readings` 
 list does not answer for `-tp 2 -dp 2`, and a transfer between layouts, if one is wanted,
 is an explicit record backed by a measurement. A read miss names the fields in which the
 nearest entry of its kind differs.
+
+The **machine-spec digest** is the digest of the machine spec's own key, its device and
+software stack (`atom/compass/artifacts/keys.py::machine_spec_digest`), so an entry
+measured on one platform does not answer on another, and a spec edit outside those two
+moves no key ([#952](https://github.com/jgong5/ATOM/issues/952) S2).
 
 ### Four rules
 

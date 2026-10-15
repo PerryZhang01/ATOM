@@ -35,7 +35,8 @@ Records with a host key (`dp0.key.json`, from the real runner) also give the
 host laws as a run file's `host` entry: `key`, and `laws[kind][segment]`,
 seconds on `(1, tokens, seqs)`, fitted on the samples' host labels. They take
 the step linear law's solver, MAD drops and hulls; `seqs` equal to `tokens` on
-every sample gets zero. Two keys refuse.
+every sample gets zero. Two keys refuse. With `--machine`, the law and the host
+key state `machine_spec`, the digest of that spec, which a run must match.
 
 Each equation is divided by its own label and the coefficients are bound to be
 non-negative. Steps whose relative residual is more than `MAD_K` scaled MADs
@@ -659,6 +660,11 @@ def main(argv=None) -> None:
     parser.add_argument(
         "--dp", type=int, default=1, help="ranks per run, the records in rank order"
     )
+    parser.add_argument(
+        "--machine",
+        help="the machine spec of the platform the records ran on, whose digest "
+        "keys the law and its host laws",
+    )
     args = parser.parse_args(argv)
     options = {"form": args.form, "dp": args.dp}
     samples, tables = label_records(args.records, args.dp)
@@ -667,6 +673,17 @@ def main(argv=None) -> None:
     law, report = fit(samples, options)
     if any(s.provenance["config"] for s in samples):
         law["host"], law["host_fit"] = fit_host(samples)
+    if args.machine:
+        from atom.compass.artifacts import machine_spec_digest
+        from atom.compass.run import _width_keys
+        from atom.compass.spec import MachineSpec
+
+        spec = json.loads(Path(args.machine).read_text())
+        law["machine_spec"] = machine_spec_digest(
+            MachineSpec.from_mapping(_width_keys(spec))
+        )
+        if "host" in law:
+            law["host"]["key"]["machine_spec"] = law["machine_spec"]
     if len(args.records) > 1 and args.dp == 1:
         mark_held_out(law, report, samples, options)
     Path(args.out).write_text(json.dumps(law) + "\n")

@@ -572,7 +572,10 @@ vector. A first-turn cell runs with `AIPERF_EXTRA_ARGS="--trajectory-start-min-r
 turn. The law carries the host key the records carry with its `atom`
 digest replaced by the one `host_key` gives 5148ceda2's tree, which adds
 `ScheduledBatchOutput.group_targets` and changes `clock.charge`, neither of
-which changes a real run's host time.
+which changes a real run's host time. The law and its host key state
+`machine_spec`, the digest `machine_spec_digest` gives
+`scripts/compass/machines/mi308x-hjbog39.json`, so it refuses under any other
+spec's device or software stack.
 
 ## Cost accuracy on a real run's own steps — `validate.cost`
 
