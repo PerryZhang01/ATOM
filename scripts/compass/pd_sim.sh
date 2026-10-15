@@ -22,16 +22,18 @@
 #   SERVER_ARGS         more API server flags (default: --enforce-eager
 #                       --max-model-len 2048)
 #   ATOMESH             the router binary (default: atomesh)
-#   ROUTER_POLICY       a DP-attention cell's router policy: dp_sticky unless
-#                       this is cache_aware, as the real launch picks it
+#   BENCHMARK_KIND ROUTER_POLICY ATOM_PD_RANK_MAPPING_POLICY
+#                       as `start_router` in .github/scripts/atomesh/pd_server_atom.sh
+#                       reads them (defaults random, random, none)
 #   SEED                the run's seed, which the router LP's policies draw
 #                       from (default 20260707, aiperf's in cctraces_sim.sh)
 #
-# With --enable-dp-attention in SERVER_ARGS the router is launched as the real
-# DP-attention cell's is (`start_router` in .github/scripts/atomesh/pd_server_atom.sh):
-# --dp-aware, so it chooses among DP ranks on load that responses move, which
-# makes it LP `router` of the run. RUN_FILE then gains `router_in_s`, unless it
-# has one already.
+# The router is launched as `start_router` launches the real cell's. With
+# --enable-dp-attention in SERVER_ARGS, under BENCHMARK_KIND=aiperf_agentic or a
+# rank mapping policy other than none, that is --dp-aware: the router chooses
+# among DP ranks on load that responses move, which makes it LP `router` of the
+# run, and RUN_FILE gains `router_in_s` unless it has one already. Otherwise
+# the router has one worker per side, and ATOM's own DP dispatch picks the rank.
 #
 # It runs its own tree, as the gates do. Logs go beside RUN_FILE. It prints
 # `pd_sim: ready` once the router answers; start the traffic LP then. It exits
@@ -91,19 +93,32 @@ wait_for() { # what pid url
     done
 }
 
-# Without DP attention the router has one worker per role, and its policy
-# nothing to choose. With the health check, circuit breaker and retries off,
-# no wall-clock failure detector can resend or drop a request.
-router=(--policy random)
-router_env=()
+# The real cell's router arguments, chosen as `start_router` chooses them. With
+# the health check, circuit breaker and retries off, no wall-clock failure
+# detector can resend or drop a request.
+policy=${ROUTER_POLICY:-random}
+mapping=${ATOM_PD_RANK_MAPPING_POLICY:-none}
+mapping_args=()
+dp_aware=()
 if [[ " $SERVER_ARGS " == *" --enable-dp-attention "* ]]; then
-    # A worker per DP rank, and the real cell's policy and arguments.
-    router=(--dp-aware --policy dp_sticky)
-    [[ ${ROUTER_POLICY:-} == cache_aware ]] && router=(--dp-aware --policy cache_aware
-        --prefill-policy cache_aware --decode-policy cache_aware --cache-threshold 0.8
+    [[ $mapping == none ]] || mapping_args=(--atom-pd-rank-mapping-policy "$mapping")
+    if [[ ${BENCHMARK_KIND:-random} == aiperf_agentic ]]; then
+        [[ $policy == cache_aware ]] || policy=dp_sticky
+        dp_aware=(--dp-aware)
+    elif ((${#mapping_args[@]})); then
+        dp_aware=(--dp-aware)
+    fi
+fi
+router=(--policy "$policy")
+if [[ $policy == cache_aware ]]; then
+    router+=(--prefill-policy cache_aware --decode-policy cache_aware --cache-threshold 0.8
         --balance-abs-threshold "${ROUTER_BALANCE_ABS_THRESHOLD:-20}"
-        --balance-rel-threshold 2.0 --eviction-interval 300
-        --atom-pd-rank-mapping-policy none)
+        --balance-rel-threshold 2.0 --eviction-interval 300)
+    mapping_args=(--atom-pd-rank-mapping-policy "$mapping")
+fi
+router+=("${mapping_args[@]}" "${dp_aware[@]}")
+router_env=()
+if ((${#dp_aware[@]})); then
     # The hop into the router takes the run's ipc_s, its declared floor for one
     # hop between two local processes; the rest of each path's lookahead stays
     # on the hop out.
