@@ -673,15 +673,32 @@ COLLECTIVES = (  # noqa: SIM905
 ).split()
 
 
+def _on_host(args, kwargs) -> bool:
+    """No tensor among a call's arguments, or in a list of them, is off the CPU."""
+    import torch
+
+    for a in (*args, *kwargs.values()):
+        for x in a if isinstance(a, (list, tuple)) else (a,):
+            if isinstance(x, torch.Tensor) and x.device.type != "cpu":
+                return False
+    return True
+
+
 def settle_before_collectives() -> None:
-    """The clock owner pays its owed group rounds before any `torch.distributed`
-    collective: a host barrier releases at the latest arrival."""
+    """The clock owner pays its owed group rounds before a host collective, a
+    `torch.distributed` collective whose tensors are all on the CPU, or that
+    has none: it returns at the latest arrival. A device collective returns
+    once enqueued, so it settles nothing."""
     import torch.distributed as dist
 
     def settled(fn):
         def call(*args, **kwargs):
             rt = _installed
-            if rt is not None and threading.current_thread() is rt.owner:
+            if (
+                rt is not None
+                and threading.current_thread() is rt.owner
+                and _on_host(args, kwargs)
+            ):
                 rt.settle()
             return fn(*args, **kwargs)
 

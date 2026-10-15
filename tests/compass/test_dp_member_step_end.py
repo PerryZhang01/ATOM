@@ -15,6 +15,7 @@ import uuid
 from types import SimpleNamespace
 
 import pytest
+import torch
 import torch.distributed as dist
 import zmq
 from test_dp_slice import _deployment
@@ -206,3 +207,22 @@ def test_every_collective_the_inventory_lists_on_torch_distributed_settles_first
     assert len(settled) == len(calls)
     _thread(dist.barrier).join()
     assert len(settled) == len(calls)
+
+
+@pytest.mark.parametrize("device, settles", [("cpu", True), ("meta", False)])
+def test_a_host_collective_settles_first_and_a_device_collective_does_not(
+    monkeypatch, collectives, device, settles
+):
+    settled = []
+    stub = SimpleNamespace(
+        owner=threading.current_thread(), now=0.0, settle=lambda: settled.append(1)
+    )
+    monkeypatch.setattr(clock, "_installed", stub)
+    clock.settle_before_collectives()
+    t = torch.zeros(2, device=device)
+
+    dist.all_reduce(t)
+    dist.all_gather([t, t], torch.zeros(2))
+    dist.broadcast(tensor=t, src=0)
+
+    assert len(settled) == (3 if settles else 0)

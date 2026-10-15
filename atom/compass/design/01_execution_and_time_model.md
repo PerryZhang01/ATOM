@@ -450,8 +450,10 @@ waits on its device, one with output other than the DP dummy, ends at the group'
 any other ends at its own seconds, as a real idle rank takes in arrivals when its own
 forward returns. Each member asks one TAR per distinct end, ascending, returns at its own
 and owes the rest. Until they are paid its sends are stamped at its own end; a TAR before
-the last owed round and any NER are refused; and every `torch.distributed` collective on
-its clock owner thread pays them first, as a host barrier releases at the latest arrival.
+the last owed round and any NER are refused; and every host collective on its clock owner
+thread, a `torch.distributed` collective whose tensors are all on the CPU or that has none,
+pays them first, as it returns at the latest arrival. A device collective returns once
+enqueued and pays nothing.
 
 One LP per rank is rejected: under NER a rank woken by a message blocks in the lockstep
 `all_reduce` on a rank that waits at the CA with no message. Precedents: dist-gem5, where
