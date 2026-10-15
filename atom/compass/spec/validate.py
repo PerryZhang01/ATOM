@@ -52,10 +52,9 @@ field of the merged document, by the decision below, so `validate(document)`
 can never ask that condition however the document was built, and the same spec
 is refused as a `Merge` and clear as a document. That is not a wrong number,
 but it must be visible, because a caller that holds only the document cannot
-ask it. Merging the document again does not recover the pin: a merge whose
-fragments disagree on an origin states `mixed`, so a `Merge` holding the saved
-document reports the transfer as not asked too, or as asked only in part when
-another fragment states a transfer and a stack pin resolved. No command
+ask it. Merging the document again recovers the transfer, since each field keeps
+its own origin, but not the pin, so a `Merge` holding the saved document is
+refused by the transfer check below, which names the merge. No command
 validates a machine file: a per-machine script such as
 `scripts/compass/mi308x_spec.py` merges its fragments and calls this module,
 and nothing in this package reads a spec file. `CONDITIONS` is what a count of
@@ -99,8 +98,11 @@ probed widths 1 and 2 is complete and correct, and is still the wrong spec for
 a run at width 8 -- which is a fact about the pair, not about the document.
 
 **A transferred constant is checked against its source's stack pin.** The
-fragment that carried it declares the stack the source spec was pinned to, which
-is why the merge keeps that declaration aside instead of contributing it. Here
+fragment that carried it declares the stack the source spec was pinned to, in
+pin fields whose own origin is the transfer, which is why the merge keeps that
+declaration aside instead of contributing it. A fragment counts as a transfer
+here only for a field it carried outside `host.`; a tokenizer swept on another
+host carries no stack to check. Here
 the two are compared, and a transfer out of a differently-pinned spec is refused
 by name. A transfer that declares no stack at all is refused too: the evidence
 that these constants move with the compute stack is the whole reason a transfer
@@ -271,22 +273,8 @@ def _reach(
             "pin is in no field of one; ask this of the `Merge` while the "
             "fragments are still in hand"
         )
-    else:
-        if merged.transfers:
-            reached(TRANSFERS, STACK_PINS)
-        # Where a transfer is stated and a pin did not resolve, `reached` has
-        # already reported the condition once.
-        hidden = [repr(f.source) for f in merged.fragments if f.origin == "mixed"]
-        if hidden and not any(c.startswith(TRANSFERS) for c in unasked + partial):
-            why = (
-                f"{TRANSFERS} -- origin `mixed` in {', '.join(hidden)} does not "
-                "say whether a transfer went into it, and a transfer's source "
-                "pin is in no field of a document"
-            )
-            if merged.transfers:
-                partial.append(f"{why}; it was asked of the transfers stated")
-            else:
-                unasked.append(why)
+    elif merged.transfers:
+        reached(TRANSFERS, STACK_PINS)
     return tuple(unasked), tuple(partial)
 
 
@@ -357,9 +345,10 @@ def _probes(tp_widths: Sequence[int], resolved: Mapping[str, Any]):
 def _transfers(resolved: Mapping[str, Any], merged: Merge):
     for fragment in merged.transfers:
         declared = {
-            component: fragment.values[f"{PINNED_BLOCK}.{component}"]
+            component: fragment.values[pin]
             for component in PINNED
-            if f"{PINNED_BLOCK}.{component}" in fragment.values
+            if (pin := f"{PINNED_BLOCK}.{component}") in fragment.values
+            and fragment.carried_from(pin)
         }
         listed = fragment.values.get("provenance.fragments")
         if not declared and listed:
