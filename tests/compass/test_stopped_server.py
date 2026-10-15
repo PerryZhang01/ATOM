@@ -41,17 +41,14 @@ TABLE = single_engine_table(admission_path="serving", ipc_s=0.001, stream_s=0.00
 SIGNALS = pytest.mark.parametrize(
     "sig", [signal.SIGTERM, signal.SIGINT], ids=["SIGTERM", "SIGINT"]
 )
-#: The API server's sequence on a co-hosting frontend, with an app that only
-#: answers behind the server's `HttpChannel`: the run bootstrap, uvicorn on the
-#: loop it names, `frontend_done`. It prints each stamp it reads.
-SERVER = """\
-import math, sys
+#: What a server script starts with: the modules it serves with, and the
+#: deployment a co-hosting frontend reads.
+BOOTSTRAP = """\
+import math, subprocess, sys
 from types import SimpleNamespace
 import uvicorn
 from atom.compass import run as compass_run
-from atom.compass.clock_transport import connect
 from atom.entrypoints.openai import api_server
-from atom.utils.compass_loop import HttpChannel
 
 deployment = SimpleNamespace(
     parallel_config=SimpleNamespace(data_parallel_size=1, data_parallel_rank=0),
@@ -62,6 +59,14 @@ deployment = SimpleNamespace(
     runner_qualname=compass_run.ATOM_RUNNER,
     kv_transfer_config={},
 )
+"""
+#: The API server's sequence on a co-hosting frontend, with an app that only
+#: answers behind the server's `HttpChannel`: the run bootstrap, uvicorn on the
+#: loop it names, `frontend_done`. It prints each stamp it reads.
+SERVER = BOOTSTRAP + """\
+from atom.compass.clock_transport import connect
+from atom.utils.compass_loop import HttpChannel
+
 with compass_run.frontend(deployment):
     engine = connect(compass_run.ENGINE, compass_run.spec()["clock_endpoint"])
     engine.send(("NER", math.inf, [], math.inf))
@@ -113,22 +118,7 @@ with compass_run.engine_loop(SimpleNamespace(runner_mgr=SimpleNamespace(call_fun
 #: Its app closes the engine at shutdown, before `frontend_done`, as the API
 #: server's lifespan does: it waits for the engine, then kills it, as
 #: `CoreManager.close` does.
-ENGINE_SERVER = """\
-import subprocess, sys
-from types import SimpleNamespace
-import uvicorn
-from atom.compass import run as compass_run
-from atom.entrypoints.openai import api_server
-
-deployment = SimpleNamespace(
-    parallel_config=SimpleNamespace(data_parallel_size=1, data_parallel_rank=0),
-    tensor_parallel_size=1,
-    enable_dp_attention=False,
-    pipeline_parallel_size=1,
-    enable_rapidserve=False,
-    runner_qualname=compass_run.ATOM_RUNNER,
-    kv_transfer_config={},
-)
+ENGINE_SERVER = BOOTSTRAP + """\
 with compass_run.frontend(deployment):
     engine = subprocess.Popen([sys.executable, "-c", sys.argv[2]], stdout=subprocess.PIPE)
     assert engine.stdout.readline() == b"ready\\n"
@@ -171,6 +161,49 @@ def _answers(port: int) -> bool:
         return False
 
 
+@contextlib.contextmanager
+def _serve(tmp_path, script, *argv):
+    """`script` as a co-hosting simulated server on a free port, in a session
+    of its own, once ``/health`` answers: its process, port and log. Leaving
+    kills what is left of its process group."""
+    run_file = tmp_path / "run.json"
+    run_file.write_text(
+        json.dumps(
+            {
+                "clock_endpoint": f"tcp://127.0.0.1:{_free_port()}",
+                "bound_s": 100.0,
+                "admission_path": "serving",
+                "ipc_s": 2.0**-10,
+                "stream_s": 2.0**-9,
+                "out_dir": str(tmp_path),
+            }
+        )
+    )
+    port = _free_port()
+    env = dict(os.environ, PYTHONPATH=str(TREE), **{compass_run.ENV: str(run_file)})
+    log = tmp_path / "server.log"
+    with log.open("w") as sink:
+        server = subprocess.Popen(
+            [sys.executable, "-c", script, str(port), *argv],
+            cwd=TREE,
+            env=env,
+            stdout=sink,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    try:
+        deadline = time.monotonic() + 120
+        while not _answers(port):
+            assert server.poll() is None, log.read_text()
+            assert time.monotonic() < deadline, "no answer in 120 wall seconds"
+            time.sleep(0.2)
+        yield server, port, log
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(server.pid, signal.SIGKILL)
+        server.wait()
+
+
 @SIGNALS
 @pytest.mark.parametrize("finished", [False, True], ids=["in-run", "after-finish"])
 def test_a_stop_signal_ends_a_run_in_progress_and_closing_puts_the_handler_back(
@@ -204,51 +237,22 @@ def test_a_stop_signal_ends_a_run_in_progress_and_closing_puts_the_handler_back(
 @SIGNALS
 @pytest.mark.parametrize("held", [False, True], ids=["idle", "holding-a-request"])
 def test_a_stopped_server_leaves_with_its_summary_written(tmp_path, sig, held):
-    run_file = tmp_path / "run.json"
-    run_file.write_text(
-        json.dumps(
-            {
-                "clock_endpoint": f"tcp://127.0.0.1:{_free_port()}",
-                "bound_s": 100.0,
-                "admission_path": "serving",
-                "ipc_s": 2.0**-10,
-                "stream_s": 2.0**-9,
-                "out_dir": str(tmp_path),
-            }
-        )
-    )
-    port = _free_port()
-    env = dict(os.environ, PYTHONPATH=str(TREE), **{compass_run.ENV: str(run_file)})
-    log = tmp_path / "server.log"
-    with log.open("w") as sink:
-        server = subprocess.Popen(
-            [sys.executable, "-c", SERVER, str(port)],
-            cwd=TREE,
-            env=env,
-            stdout=sink,
-            stderr=subprocess.STDOUT,
-        )
-    client = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-    try:
-        deadline = time.monotonic() + 120
-        while not _answers(port):
-            assert server.poll() is None, log.read_text()
-            assert time.monotonic() < deadline, "no answer in 120 wall seconds"
-            time.sleep(0.2)
+    with (
+        _serve(tmp_path, SERVER) as (server, port, log),
+        contextlib.closing(
+            http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        ) as client,
+    ):
         if held:  # stamped by a client no grant lets in; its connection stays open
             client.request(
                 "POST", "/", b"{}", {"tracestate": tracestate_with("", 1.0, 0)}
             )
+            deadline = time.monotonic() + 120
             while "stamped (1.0, 0)" not in log.read_text():
                 assert time.monotonic() < deadline, "not held in 120 wall seconds"
                 time.sleep(0.2)
         server.send_signal(sig)
         server.wait(timeout=30)
-    finally:
-        client.close()
-        if server.poll() is None:
-            server.kill()
-            server.wait()
     out = log.read_text()
     assert server.returncode == 0 and "frontend_done: True" in out, out
     summary = json.loads((tmp_path / compass_run.SUMMARY_FILE).read_text())
@@ -259,46 +263,12 @@ def test_a_stopped_server_leaves_with_its_summary_written(tmp_path, sig, held):
 
 @pytest.mark.parametrize("group", [False, True], ids=["server", "group"])
 def test_a_stopped_servers_summary_carries_its_engines_priced_steps(tmp_path, group):
-    run_file = tmp_path / "run.json"
-    run_file.write_text(
-        json.dumps(
-            {
-                "clock_endpoint": f"tcp://127.0.0.1:{_free_port()}",
-                "bound_s": 100.0,
-                "admission_path": "serving",
-                "ipc_s": 2.0**-10,
-                "stream_s": 2.0**-9,
-                "out_dir": str(tmp_path),
-            }
-        )
-    )
-    port = _free_port()
-    env = dict(os.environ, PYTHONPATH=str(TREE), **{compass_run.ENV: str(run_file)})
-    log = tmp_path / "server.log"
-    with log.open("w") as sink:
-        server = subprocess.Popen(
-            [sys.executable, "-c", ENGINE_SERVER, str(port), ENGINE],
-            cwd=TREE,
-            env=env,
-            stdout=sink,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-    try:
-        deadline = time.monotonic() + 120
-        while not _answers(port):
-            assert server.poll() is None, log.read_text()
-            assert time.monotonic() < deadline, "no answer in 120 wall seconds"
-            time.sleep(0.2)
+    with _serve(tmp_path, ENGINE_SERVER, ENGINE) as (server, _, log):
         if group:
             os.killpg(server.pid, signal.SIGTERM)
         else:
             server.send_signal(signal.SIGTERM)
         server.wait(timeout=30)
-    finally:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(server.pid, signal.SIGKILL)
-        server.wait()
     out = log.read_text()
     assert server.returncode == 0 and "frontend_done: True" in out, out
     summary = json.loads((tmp_path / compass_run.SUMMARY_FILE).read_text())
