@@ -18,6 +18,7 @@ from test_backend_step_linear_fit import (
     _timed_record,
     _view,
 )
+from test_memory_readings import META_8B
 from test_parity_device_window import BUSY, GAP, _recorded
 from test_parity_record import _config, _drive
 
@@ -210,7 +211,7 @@ def test_the_command_s_laws_load_in_a_run_file(tmp_path, monkeypatch):
     compass_run._PublishedClock(
         compass_run.ENGINE, compass_run.channel_table(run), None
     )
-    compass_run.runner(r)
+    compass_run.runner(r, META_8B)
     assert isinstance(r.compass_backend, StepLinearBackend)
     assert r.compass_host.laws == law["host"]["laws"]
     rows = [(1, 900, True), (1, 400, True)]

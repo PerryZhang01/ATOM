@@ -586,6 +586,7 @@ def test_the_host_key_leaves_out_what_only_a_simulated_run_reaches(
 
 
 def test_a_run_refuses_host_laws_fitted_under_another_key(tmp_path, monkeypatch):
+    from test_memory_readings import META_8B
     from test_run_step_grid import deployment, publish, run_file
 
     from atom.compass import run as compass_run
@@ -606,12 +607,12 @@ def test_a_run_refuses_host_laws_fitted_under_another_key(tmp_path, monkeypatch)
             compass_run.ENGINE, compass_run.channel_table(run), None
         )
         if other == {}:
-            compass_run.runner(r)
+            compass_run.runner(r, META_8B)
             assert r.compass_host.laws == laws
         else:
             differ = list(other or key)
             with pytest.raises(ValueError, match=re.escape(f"another {differ}")):
-                compass_run.runner(r)
+                compass_run.runner(r, META_8B)
 
 
 ROWMOD = {"step": 0.02, "context": 1e-8, "graph_padding": 5e-9, "rowmod": 3e-7}

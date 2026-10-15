@@ -16,10 +16,10 @@ written, one token's KV spanning every paged layer. The host floor is the
 stated launches x h of one step. The step's one term is named by the bound
 that won. It is `declared`, its note naming each stated input, when an input
 that bound reads is stated, and `analytical` otherwise: compute reads
-`parameter_count` and `device.compute` (`FIELDS`), memory `device.memory` and
-the weights, host `roofline_floor_s`. A spec field from a datasheet or probe
-is not stated, the weights are when `weights_stated` names how, and the run
-file's numbers always are.
+`parameter_count` and `device.compute` (`FIELDS`), memory `device.memory`,
+host `roofline_floor_s`. A spec field from a datasheet or probe is not stated,
+the run file's numbers always are, and the weights never are: they are read
+off a meta build.
 
 `StepFallbackBackend` asks a backend first and the roofline only for a step
 that backend refuses, so a law with no vector for a step still prices it. The
@@ -64,7 +64,6 @@ class StepRooflineBackend(CostBackend):
         *,
         parameters: int,
         weight_bytes: int,
-        weights_stated: str,
         kv_token_bytes: int,
         host_floor_s: float,
     ) -> None:
@@ -93,7 +92,7 @@ class StepRooflineBackend(CostBackend):
         origins = {path: machine.origin(path)["origin"] for path in FIELDS}
         stated = {
             "compute": ["parameter_count stated in the run file"],
-            "memory": [f"weights {weights_stated}"] if weights_stated else [],
+            "memory": [],
             "host": ["roofline_floor_s stated in the run file"],
         }
         spec = f"in the machine spec {machine.value('name')}"

@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from test_dp_step_max import runner
+from test_memory_readings import META_8B
 from test_parity_record import _config, _Runner
 from test_run_step_grid import B37, decode, deployment, publish, run_file
 from test_runner_step_semantics import _drive
@@ -136,7 +137,7 @@ def test_a_runs_runner_charges_at_the_clock_its_engine_publishes(tmp_path, monke
     engine = compass_run._PublishedClock(
         compass_run.ENGINE, compass_run.channel_table(run), None
     )
-    compass_run.runner(r)
+    compass_run.runner(r, META_8B)
     price = 8897.5e-6  # `test_run_step_grid`'s price of this batch
     # The first output forward waits for nothing; the next, called at the same
     # time, for the first one's device work.
