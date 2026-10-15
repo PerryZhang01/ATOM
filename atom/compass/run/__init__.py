@@ -148,7 +148,8 @@ HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field changes meaning or goes.
 SUMMARY_SCHEMA_VERSION = 3
 #: Compass source the host-law key leaves out, by path under the package: all
-#: of it (None), or the top-level names only an installed LP runtime reaches.
+#: of it (None), or the top-level names only an installed LP runtime reaches
+#: (with the module docstring, which describes them).
 COMPASS_ONLY = {
     "compass": None,
     "utils/compass_loop.py": None,
@@ -741,8 +742,10 @@ def host_key(config) -> dict:
         if skip is None:
             continue
         lines = path.read_bytes().splitlines(keepends=True)
-        for node in reversed(ast.parse(b"".join(lines)).body if skip else []):
-            if getattr(node, "name", None) in skip:
+        tree = ast.parse(b"".join(lines)) if skip else None
+        doc = tree.body[0] if tree and ast.get_docstring(tree) is not None else None
+        for node in reversed(tree.body if tree else []):
+            if node is doc or getattr(node, "name", None) in skip:
                 del lines[node.lineno - 1 : node.end_lineno]
         digest.update(f"{relative}\0".encode() + b"".join(lines))
     return {
