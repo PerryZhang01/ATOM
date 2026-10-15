@@ -83,10 +83,13 @@ class _Server:
         address = (lp, *member) if member else lp
         slot = queue.Queue()
         if lp not in self._lps or self._slots.setdefault(address, slot) is not slot:
-            state = "already bound" if lp in self._lps else "not a participant"
+            state, why = "not a participant", ""
+            if lp in self._lps:
+                state = "already bound"
+                why = "a second instance of one role, as xPyD starts, has no LP; "
             raise KeyError(
                 f"{' member '.join(map(str, rest))} is {state} at {self.endpoint}; "
-                "participants: " + ", ".join(map(str, self._lps))
+                f"{why}participants: " + ", ".join(map(str, self._lps))
             )
         return address, slot, self._authority.on_bind(lp)
 
