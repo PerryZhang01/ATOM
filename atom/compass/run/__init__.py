@@ -26,7 +26,11 @@ member, the frontend's included, connects to.
   ``decode`` to the frontend's clock, at the rates the machine spec measured.
 - `engine_done(engine)` and `frontend_done(engine)` close each side after the
   finish, each handing in its LP's refusals; the frontend's, when it co-hosts
-  the authority, then writes the step table and the run summary.
+  the authority, then writes the step table and the run summary. A SIGINT or
+  SIGTERM that stopped the frontend's event loop
+  (`atom.utils.compass_loop.CompassEventLoop.stopped`) is an early end:
+  `frontend_done` hands it in as an ``ended:`` reason, and the server leaves
+  once the summary is written from every hand-in.
 - `engine_loop(engine)` wraps the engine's loop: under ``step_grid`` it asks the
   workers for the bundle before it, `engine_done` after it, and if either
   raises, the engine hands in the exception as an ``ended:`` reason, with the
@@ -172,6 +176,8 @@ def refuse_renamed_keys(run: dict, where) -> None:
 
 
 _authority: "_RecordingAuthority | None" = None
+#: The co-hosted authority's early-end writer.
+_early_end: threading.Thread | None = None
 #: This engine process's member name in the engine LP, None at DP width one.
 _member: str | None = None
 
@@ -427,7 +433,7 @@ def frontend(config):
     through the recording one, and refuses any other runner, which would
     record nothing.
     """
-    global _authority
+    global _authority, _early_end
     run = spec()
     if run is None:
         from atom.compass import parity
@@ -482,9 +488,10 @@ def frontend(config):
         serve(_authority, run["clock_endpoint"])
         # Not a daemon: the API server's main thread may die of the early end
         # before this thread has written the summary.
-        threading.Thread(
+        _early_end = threading.Thread(
             target=_write_on_early_end, args=(run, authority), name="compass early end"
-        ).start()
+        )
+        _early_end.start()
     rt = _runtime(lp, run)
     rt.client_run_ended = lambda k: _frontend_hand_in(run, rt, k)
     return _start_on_leaving(rt, authority)
@@ -895,23 +902,32 @@ def _write_on_early_end(run: dict, a: "_RecordingAuthority") -> None:
 
 
 def frontend_done(llm_engine) -> bool:
-    """Whether the stopped server was a simulated run's finish. If it was, stop
-    the engines, hand in the frontend's refusals and, with the authority
-    co-hosted, write the step table and the run summary."""
+    """Whether the server left at a simulated run's finish, or at a stop: a
+    signal that ended its event loop's run. At either, stop the engines and
+    hand in the frontend's refusals, at a stop with an ``ended:`` reason naming
+    the signal. With the authority co-hosted, then write the step table and the
+    run summary; at a stop, once the early end's writer has written its own at
+    the first hand-in, so the summary left counts every hand-in."""
     rt = clock.installed()
-    if rt is None or rt.now != math.inf:
+    stop = None if rt is None else getattr(rt.loop, "stopped", None)
+    if rt is None or (rt.now != math.inf and stop is None):
         return False
     llm_engine.close()
     run = spec()
-    _frontend_hand_in(run, rt)
+    ended = [] if stop is None else [f"ended:{rt.me.name} stopped by {stop}"]
+    _frontend_hand_in(run, rt, ended=ended)
     if _authority is not None:
-        _write_summary(run, _authority)
+        if stop is not None:
+            _early_end.join()
+        _write_summary(run, _authority, ended=stop is not None)
     return True
 
 
-def _frontend_hand_in(run: dict, rt, client_run=None) -> None:
-    """Hand in the frontend's executor's refused jobs and its refused clock calls."""
-    _hand_in(run, rt.me.name, rt.loop.executor.refusals + rt.refusals, client_run)
+def _frontend_hand_in(run: dict, rt, client_run=None, ended=()) -> None:
+    """Hand in the frontend's executor's refused jobs, its refused clock calls
+    and the ``ended:`` reasons in `ended`."""
+    reasons = rt.loop.executor.refusals + rt.refusals + list(ended)
+    _hand_in(run, rt.me.name, reasons, client_run)
 
 
 def _read_hand_ins(run: dict, where: Path, wait: bool) -> dict:
