@@ -78,15 +78,14 @@ ARGS += ["--disagg-constrained"]
 @pytest.fixture
 def planted(tmp_path, monkeypatch):
     """The planted server, and an `identity` that records what it is called
-    with and whether the server is still running then."""
+    with and whether the server's child, in its process group, still runs."""
     (tmp_path / "planted.py").write_text(PLANTED)
     monkeypatch.setattr(serve, "SERVER", (sys.executable, str(tmp_path / "planted.py")))
     monkeypatch.setenv("PLANTED_DIR", str(tmp_path))
 
     def identity(*args):
-        out = Path(args[0]).parents[1]
-        pid = json.loads((out / serve.READY_FILE).read_text())["pid"]
-        return {"args": [str(a) for a in args], "server running": _running(pid)}
+        child = (tmp_path / "child").read_text()
+        return {"args": [str(a) for a in args], "group running": _running(child)}
 
     monkeypatch.setattr(serve, "identity", identity)
     return tmp_path
@@ -149,7 +148,7 @@ def test_atom_arguments_pass_verbatim_and_the_driver_assigns_the_rest(
     engine = out / serve.STEPS / "dp0.engine.json"
     assert json.loads((out / serve.RUN_JSON).read_text()) == {
         "args": [str(engine), "m", str(sys.argv), "()"],
-        "server running": False,
+        "group running": False,
     }
 
 
