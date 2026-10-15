@@ -103,6 +103,11 @@ machine = json.loads(Path(machine).read_text())
 # as parity_one_node.sh does; only arrival latency reads it.
 arch = json.loads((Path(model) / "config.json").read_text())["architectures"][0]
 machine["host"]["tokenizers"][0]["applies_to"].append(arch)
+# ponytail: a DP rank's device constants read as TP1's, as test_dp_slice.py's
+# machine reads them; measure the 1x2 layout to drop this.
+for name in ("driver_and_collective_reserve_bytes", "allocator_retained_after_load_bytes"):
+    width = machine["device"]["runtime_constants"][name]
+    width.setdefault("1x2", width["1"])
 Path(run).write_text(json.dumps({
     "clock_endpoint": f"tcp://127.0.0.1:{port}", "bound_s": 1e7,
     "admission_path": "serving", "ipc_s": 2.0**-14, "stream_s": 2.0**-12,
@@ -138,11 +143,35 @@ from pathlib import Path
 
 from atom.compass.parity import _request_ranks, read
 
+
+def ranks_of(record: Path) -> dict:
+    """Each request's [prefill rank, decode rank], by its prefill key. Decode
+    digests no prompt, so a decode request is the prefill request whose prompt
+    is one token shorter than its first context; the workload's prompts all
+    differ in length."""
+    prefill = read(record / "prefill")
+    prompt = {}  # key -> prompt length, its longest prefill window's context
+    for steps in prefill.values():
+        for s in steps:
+            for key, num, context in s["batch"]:
+                if num > 1:
+                    prompt[key] = max(prompt.get(key, 0), context)
+    by_length = {n: key for key, n in prompt.items()}
+    if len(by_length) != len(prompt):
+        raise ValueError("two prompts have one length, so decode cannot name them")
+    ranks = {key: [rank, None] for key, rank in _request_ranks("prefill", prefill).items()}
+    first = {}  # (decode rank, request id) -> its first context
+    for rank, steps in read(record / "decode").items():
+        for s in steps:
+            for rid, _, context in s["batch"]:
+                first.setdefault((rank, rid), context)
+    for (rank, rid), context in first.items():
+        ranks[by_length[context - 1]][1] = rank
+    return ranks
+
+
 out = Path(sys.argv[1])
-ranks = {}
-for run in ("real", "sim"):
-    sides = [_request_ranks(s, read(out / run / "record" / s)) for s in ("prefill", "decode")]
-    ranks[run] = {k: [sides[0].get(k), sides[1].get(k)] for k in sides[0]}
+ranks = {run: ranks_of(out / run / "record") for run in ("real", "sim")}
 differ = sorted(k for k in ranks["real"] if ranks["real"][k] != ranks["sim"].get(k))
 (out / "ranks.json").write_text(json.dumps(ranks | {"differ": differ}, indent=1))
 print(f"parity_pd: {len(ranks['real'])} requests, (prefill, decode) ranks differ on {len(differ)}")
