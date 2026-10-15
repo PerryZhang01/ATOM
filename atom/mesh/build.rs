@@ -25,14 +25,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("cargo:rerun-if-changed=proto");
     }
     // Rebuild triggers: every top-level entry but `target` (each build writes
-    // it), and the git files a commit, checkout or `git add` rewrites. A new
+    // it), and the git files a commit or checkout rewrites. A new
     // file directly in this directory is not seen until one of those changes.
     for entry in std::fs::read_dir(".")?.flatten() {
         if entry.file_name() != "target" {
             println!("cargo:rerun-if-changed={}", entry.path().display());
         }
     }
-    for name in ["HEAD", "index", "logs/HEAD"] {
+    for name in ["HEAD", "logs/HEAD"] {
         let path = run_cmd("git", &["rev-parse", "--git-path", name]).unwrap_or_default();
         if std::path::Path::new(&path).exists() {
             println!("cargo:rerun-if-changed={path}");
@@ -112,7 +112,7 @@ fn git_commit() -> Option<String> {
 }
 
 /// This directory's status only; `--no-optional-locks` keeps git from
-/// rewriting the index, a rebuild trigger.
+/// taking the index lock a concurrent git command in the tree needs.
 fn git_status() -> Option<String> {
     let args = ["--no-optional-locks", "status", "--porcelain", "--", "."];
     run_cmd("git", &args).map(|s| if s.is_empty() { "clean" } else { "dirty" }.into())

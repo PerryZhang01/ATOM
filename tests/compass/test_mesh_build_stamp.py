@@ -8,6 +8,7 @@ git repository of its own, and reads the stamp back after each change. Skips
 where cargo cannot resolve the script's build dependencies offline.
 """
 
+import os
 import pathlib
 import shutil
 import subprocess
@@ -96,3 +97,10 @@ def test_an_incremental_build_restamps_after_an_edit_and_after_a_commit(tmp_path
     second = _git(repo, "rev-parse", "--short", "HEAD")
     assert second != first
     assert stamp() == ((second, "clean"), True)
+
+    index = repo / ".git" / "index"
+    written = index.stat().st_mtime_ns
+    os.utime(repo / ".gitignore")
+    _git(repo, "status")
+    assert index.stat().st_mtime_ns != written, "git status left the index alone"
+    assert stamp() == ((second, "clean"), False), "git status reran build.rs"
