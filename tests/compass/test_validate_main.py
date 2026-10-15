@@ -18,7 +18,7 @@ from atom.compass.backends.cost import GROUPS
 from atom.compass.run import LP_FILE
 from atom.compass.validate.__main__ import main
 
-TERM = {"basis": "spec", "source": "planted"}
+TERM = {"method": "measured", "source": "planted"}
 SHARE = {"steps": 3, "fraction_of_predicted_seconds": 0.4}
 
 

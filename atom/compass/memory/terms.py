@@ -19,68 +19,23 @@ design, so this one cannot be:
   which is the rule against reporting an aggregate without its decomposition,
   made structural rather than remembered.
 
-**`Basis` is not `Species`.** `backends/provenance.py` answers *how a cost was
-obtained* -- analytical, measured, fitted, interpolated, extrapolated. This enum
-answers a different question about a different subject: *where this memory
-term's bytes came from* -- a named field of the machine spec, a knob ATOM's
-own config states, arithmetic over other readings, or a coefficient somebody
-wrote down. There is deliberately no `GEOMETRY` member: a serving knob is a
-property of the deployment rather than of the machine or the model, and
-every term read off a model config here is a declared formula, and labelling
-one `GEOMETRY` would say it was not.
-
-`OBTAINED` is what a declared term is not: **the number was read off the
-thing it describes** -- a meta build of the model, a recording of a card, a
-traced graph. That is the whole of the definition, and it is deliberately not
-"a recording": a term on either side of a comparison can carry it, and the
-predicted side does whenever a meta build or a liveness walk produced the
-number. It is the successor every `DECLARED` term names, so a term that carries
-it is a term that no longer owes one. The weights term read off the simulated
-runner's meta build carries it.
-
-`OBTAINED` is also not `Species.MEASURED` under another name, for the same
-reason the paragraph above separates the two enums at all. `Species` answers
-*how a cost answer was obtained* and its members are the ways a cost model can
-have been fitted; `MEASURED` there means a timing came from a benchmark rather
-than from a law. `OBTAINED` here answers *where a memory term's bytes came
-from*, and a meta build is neither a benchmark nor a law -- it is arithmetic
-over the model's own tensors. The two words sit on different subjects and one
-would be the wrong answer on the other's.
-
-The two vocabularies are kept apart deliberately. A declared coefficient has no
-word in `Species`, and whether to add one is left open, so nothing
-here touches that enum; `Basis.DECLARED` carries the distinction on this side of
-the boundary, and it is the one place an answer would have to reach.
-
-A declared term must say what replaces it. That is the whole difference between
-a declared number and a guess: `Term` refuses to hold `DECLARED` without a note,
-so the record of what is still owed is written where the number is, not in a
-document beside it.
+Each term carries the `Method` a cost term carries (`backends/provenance.py`),
+with the same rules: `validated` only on an estimated term, and a declared term
+holds a note stating its origin and what replaces it, so the record of what is
+still owed is written where the number is.
 """
 
 from __future__ import annotations
 
-import enum
 import textwrap
 from dataclasses import dataclass
 
-
-class Basis(enum.Enum):
-    """Where a term's bytes came from."""
-
-    SPEC = "spec"
-    DEPLOYMENT = "deployment"
-    DECLARED = "declared"
-    DERIVED = "derived"
-    OBTAINED = "obtained"
-
-    def __str__(self) -> str:
-        return self.value
+from atom.compass.backends.provenance import Method, Provenance, combine
 
 
 @dataclass(frozen=True, slots=True)
 class Term:
-    """One named quantity of bytes, with the place it came from.
+    """One named quantity of bytes, how it was obtained, and where it came from.
 
     `source` is the dotted path of the spec field, the config fields that were
     read, or the readings that were composed -- specific enough that a reader
@@ -91,15 +46,14 @@ class Term:
 
     name: str
     nbytes: int
-    basis: Basis
+    method: Method
     source: str
     note: str = ""
+    validated: bool = False
 
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("a term is named, or the table it sits in is unreadable")
-        if not isinstance(self.basis, Basis):
-            raise TypeError(f"{self.name}: basis must be a Basis, got {self.basis!r}")
         if isinstance(self.nbytes, bool) or not isinstance(self.nbytes, int):
             raise TypeError(
                 f"{self.name}: bytes are whole, got {self.nbytes!r}; round at the "
@@ -110,15 +64,52 @@ class Term:
                 f"{self.name} states no source; a number without one is a "
                 "defect, and this is the field that carries it"
             )
-        if self.basis is Basis.DECLARED and not self.note.strip():
-            raise ValueError(
-                f"{self.name} is declared and does not say what replaces it; a "
-                "declared coefficient that records no successor is a guess"
-            )
+        try:
+            Provenance(self.method, validated=self.validated, note=self.note)
+        except (TypeError, ValueError) as e:
+            raise type(e)(f"{self.name}: {e}") from None
 
     @property
     def mib(self) -> float:
         return self.nbytes / (1 << 20)
+
+    @property
+    def method_label(self) -> str:
+        """The method, and for an estimated term whether it is validated."""
+        if self.method is not Method.ESTIMATED:
+            return str(self.method)
+        return f"estimated, {'' if self.validated else 'un'}validated"
+
+
+def spec_term(
+    spec,
+    name: str,
+    path: str,
+    nbytes: int,
+    *,
+    width: int | None = None,
+    probed: Method = Method.MEASURED,
+    source: str = "",
+    note: str = "",
+) -> Term:
+    """A spec field used as a term, its method read off the field's origin.
+
+    A datasheet value is analytical, a probed one is `probed` -- measured when
+    the term is the probed value itself, estimated when it projects one -- and
+    an assumed or transferred one is declared, with a note naming the origin.
+    """
+    origin = spec.origin(path, width)["origin"]
+    method = {"datasheet": Method.ANALYTICAL, "probed": probed}.get(
+        origin, Method.DECLARED
+    )
+    if method is Method.DECLARED:
+        stated = (
+            f"{path} is {origin} in the machine spec {spec.value('name')}; a "
+            "probe of this platform replaces it"
+        )
+        note = f"{stated}. {note}" if note else stated
+    labelled = path if width is None else f"{path}[{width}]"
+    return Term(name, nbytes, method, source or labelled, note)
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,19 +145,36 @@ class Reading:
 
     @property
     def declared(self) -> tuple[str, ...]:
-        """The terms still standing on a declared coefficient."""
-        return tuple(t.name for t in self.terms if t.basis is Basis.DECLARED)
+        """The terms still standing on a declared input."""
+        return tuple(t.name for t in self.terms if t.method is Method.DECLARED)
+
+    def as_term(self, name: str = "", *, sign: int = 1, source: str = "") -> Term:
+        """This reading as one term, whose method combines its terms' methods."""
+        method = combine(t.method for t in self.terms)
+        note = ""
+        if method is Method.DECLARED:
+            note = (
+                f"It sums {', '.join(self.declared)}, which are declared; each "
+                f"states its origin and successor in the {self.name} table"
+            )
+        return Term(
+            name or self.name,
+            sign * self.total,
+            method,
+            source or " + ".join(t.name for t in self.terms),
+            note,
+        )
 
     def table(self) -> str:
         """The per-term table: what this reading is, never only what it totals."""
-        rows = [(t.name, f"{t.mib:,.1f}", str(t.basis), t.source) for t in self.terms]
+        rows = [(t.name, f"{t.mib:,.1f}", t.method_label, t.source) for t in self.terms]
         rows.append((f"= {self.name}", f"{self.total / (1 << 20):,.1f}", "", ""))
         widths = [max(len(row[col]) for row in rows) for col in range(4)]
         lines = [f"{self.name}  (MiB)"]
-        for name, mib, basis, source in rows:
+        for name, mib, method, source in rows:
             lines.append(
                 f"  {name:<{widths[0]}}  {mib:>{widths[1]}}  "
-                f"{basis:<{widths[2]}}  {source}".rstrip()
+                f"{method:<{widths[2]}}  {source}".rstrip()
             )
         for term in self.terms:
             if term.note:
