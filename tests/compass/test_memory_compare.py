@@ -817,6 +817,20 @@ def test_both_graph_pool_numbers_are_reported_against_the_recorded_pool(
     assert f"{comparison.predicts_relative:+.2%}" in rendered
 
 
+def test_each_graph_pool_row_prints_its_method(spec, qwen):
+    # An assumed pool line makes predicts() declared, which must not read like
+    # a measured row.
+    comparison = compare_graph_pool(
+        recorded_pool(RECORDED_POOL_W1, "a printout"),
+        reserves=reserved(qwen, int(spec.value("device.memory.capacity_bytes"))),
+        predicts=predicts(spec_of("assumed"), tp_width=1, captured_tokens=1023),
+    )
+    rows = {line.split()[0]: line for line in comparison.table().splitlines()[2:5]}
+    assert "declared" in rows["predicts()"]
+    assert "analytical" in rows["reserves()"]
+    assert "measured" in rows["recorded"]
+
+
 def test_the_disagreement_is_inside_the_recorded_four_to_nineteen_times(spec, qwen):
     total_bytes = int(spec.value("device.memory.capacity_bytes"))
     captured = sum(ladder())

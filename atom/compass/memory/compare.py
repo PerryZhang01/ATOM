@@ -705,33 +705,36 @@ class GraphPoolComparison:
 
     def table(self) -> str:
         rows = [
-            ("function", "role", "bytes", "vs recorded"),
+            ("function", "role", "method", "bytes", "vs recorded"),
             (
                 "reserves()",
                 "reserves the memory",
+                self.reserves.as_term().method_label,
                 f"{self.reserves.total:,}",
                 f"{self.reserves_relative:+.2%}",
             ),
             (
                 "predicts()",
                 "reserves nothing",
+                self.predicts.as_term().method_label,
                 f"{self.predicts.total:,}",
                 f"{self.predicts_relative:+.2%}",
             ),
             (
                 "recorded",
                 self.recorded.source,
+                self.recorded.method_label,
                 f"{self.recorded.nbytes:,}",
                 "",
             ),
         ]
-        widths = [max(len(r[i]) for r in rows) for i in range(4)]
+        widths = [max(len(r[i]) for r in rows) for i in range(5)]
         lines = [f"graph pool against {self.recorded.name}"]
         for row in rows:
             lines.append(
                 "  "
                 + "  ".join(
-                    cell.rjust(widths[i]) if i > 1 else cell.ljust(widths[i])
+                    cell.rjust(widths[i]) if i > 2 else cell.ljust(widths[i])
                     for i, cell in enumerate(row)
                 ).rstrip()
             )
