@@ -687,17 +687,23 @@ def test_one_transferred_constant_makes_a_mixed_fragment_a_transfer():
     )
 
 
-def test_a_fragment_whose_fields_name_two_source_specs_is_refused_by_name():
-    origins = _class2_origins(
-        **{
-            RESERVE_8: "transferred-from:mi300x-8gpu",
-            "device.runtime_constants.cudagraph_pool.w_gt1_flat_bytes": (
-                "transferred-from:mi325x-8gpu"
-            ),
-        }
-    )
+@pytest.mark.parametrize(
+    "other",
+    [
+        "device.runtime_constants.cudagraph_pool.w_gt1_flat_bytes",
+        # A host field asks for no stack pin, but it still names a source.
+        "host.cpu.cores_physical",
+    ],
+)
+def test_a_fragment_whose_fields_name_two_source_specs_is_refused_by_name(other):
+    body = CLASS0 | CLASS2
+    origins = merge([fragment("class2", body)]).document["provenance"]["origins"]
+    origins |= {
+        RESERVE_8: {"origin": "transferred-from:mi300x-8gpu"},
+        other: {"origin": "transferred-from:mi325x-8gpu"},
+    }
     with pytest.raises(SpecRefusal) as refused:
-        fragment("class2", CLASS2, origin="mixed", origins=origins)
+        fragment("class2", body, origin="mixed", origins=origins)
     assert refused.value.rule is Rule.PINNED_STACK
     assert refused.value.what == (
         "fragment 'class2' carries fields transferred from 'mi300x-8gpu' and "
@@ -1627,10 +1633,18 @@ def test_the_fragment_states_where_it_is_authored_for_and_how(tmp_path):
         authored_by="ana",
         date="2026-09-22",
         origin="probed",
+        subject={"model": "Qwen/Qwen3-8B"},
         processors=published_topology(tmp_path, cores_physical=8),
     )
     assert emitted.machine == "node-18"
     assert emitted.origin == "mixed" and emitted.transferred_from is None
+    # The subject is what the sweep ran on; the core counts are of the host.
+    stated = emitted.values["provenance.origins"]
+    assert stated["host.tokenizers[qwen3-151k-bpe fast]"] == {
+        "origin": "probed",
+        "model": "Qwen/Qwen3-8B",
+    }
+    assert stated["host.cpu.cores_physical"] == {"origin": "probed"}
     assert "by ana on 2026-09-22" in emitted.stanza()
 
 
