@@ -233,13 +233,32 @@ def test_calls_that_share_an_ordinal_are_answered_the_same_way(listed):
     )
 
 
-def test_scanned_and_unscanned_roots_all_exist():
-    for rel, _why in sync_scan.SCANNED_ROOTS + sync_scan.UNSCANNED_ROOTS:
-        assert (TREE / rel).exists(), f"{rel} is named in the scanner but is gone"
+def test_every_excluded_root_exists():
+    for rel, _why in sync_scan.UNSCANNED_ROOTS:
+        assert (TREE / rel).exists(), f"{rel} is excluded in the scanner but is gone"
+
+
+def test_a_new_package_under_atom_fails_until_classified_or_excluded(
+    tmp_path, listed, monkeypatch
+):
+    """The scanned set is read off the tree: a package nobody named is scanned,
+    so its blocking call is a site the inventory does not classify."""
+    for rel, body in {
+        "atom/brand_new/loop.py": "def run(q):\n    return q.get()\n",
+        "atom/models/m.py": "def f(q):\n    return q.get()\n",
+    }.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(body)
+    unclassified = {s.file for s in sync_scan.scan(tmp_path) if s.id not in listed}
+    assert unclassified == {"atom/brand_new/loop.py"}
+
+    named = (("atom/brand_new/", "a reason"),)
+    monkeypatch.setattr(sync_scan, "UNSCANNED_ROOTS", sync_scan.UNSCANNED_ROOTS + named)
+    assert sync_scan.scan(tmp_path) == []
 
 
 def test_no_scanned_file_is_also_declared_unscanned():
-    """The two lists are at one granularity, so a file cannot be in both."""
+    """No file under an excluded entry is scanned."""
     scanned_files = set(sync_scan.iter_scanned_files(TREE))
     for rel, _why in sync_scan.UNSCANNED_ROOTS:
         inside = {f for f in scanned_files if f == rel or f.startswith(rel)}
