@@ -15,8 +15,9 @@ beside it.
 A repeat counts only if F is still pending once the forward has returned and B
 is recorded: the device was still in the preload, so nothing the host did shows
 between F and B. Otherwise it is discarded and the preload doubles. A forward
-with a host synchronisation inside never qualifies, and after `DOUBLINGS`
-doublings its point refuses.
+with a host synchronisation inside never qualifies, and its point refuses after
+`DOUBLINGS` doublings in a row; a host that stalls now and then only discards
+the repeats it stalls.
 
 `WARMUPS` forwards run first, with no preload, and size the first preload: the
 longest the host took to issue one of them. Then `REPEATS` repeats are kept,
@@ -55,14 +56,16 @@ class BenchWindow:
     def bench_step(self, batch) -> dict:
         """`batch` measured: its kept repeats and their median, or a refusal."""
         preload = max(self._repeat(batch, 0)[4] for _ in range(WARMUPS))
-        kept, discarded = [], 0
+        kept, discarded, in_a_row = [], 0, 0
         while len(kept) < REPEATS:
             missed, *times, _host = self._repeat(batch, preload)
             if not missed:
                 kept.append(times)
+                in_a_row = 0
                 continue
             discarded += 1
-            if discarded > DOUBLINGS:
+            in_a_row += 1
+            if in_a_row > DOUBLINGS:
                 return {
                     "protocol": PROTOCOL,
                     "refused": (
