@@ -51,7 +51,7 @@ async fn sends_its_log_and_reads_grants_and_refusals() {
         json!({"kind": "JOINED", "now": 1.5, "seqs": {"router->traffic:stream": 3}}),
         json!({"kind": "GRANT", "G": 2.5, "released": {
             "traffic->router:http": [[1, 2.0], [0, 1.75]],
-            "frontend-P->router:relay": [[0, 2.0]],
+            "frontend-P->router:relay": [[2, 2.0]],
         }}),
         json!({"kind": "GRANT", "G": "+inf", "released": {}, "ended": 0}),
         json!({"kind": "REFUSED", "error": "BackdatedEvent", "reason": "late", "table": null}),
@@ -73,7 +73,7 @@ async fn sends_its_log_and_reads_grants_and_refusals() {
             time: 2.5,
             released: vec![
                 released(1.75, "traffic->router:http", 0),
-                released(2.0, "frontend-P->router:relay", 0),
+                released(2.0, "frontend-P->router:relay", 2),
                 released(2.0, "traffic->router:http", 1),
             ],
         }
