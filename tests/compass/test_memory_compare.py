@@ -30,6 +30,9 @@ for every branch at once lives in `test_memory_readings.py` and globs the
 package, so `compare.py` is inside it already.
 """
 
+import copy
+import dataclasses
+import hashlib
 import json
 
 import pytest
@@ -53,6 +56,7 @@ from atom.compass.memory import (
     TermComparison,
     Verdict,
     capture_token_shapes,
+    check,
     compare,
     compare_graph_pool,
     device_readings,
@@ -61,9 +65,12 @@ from atom.compass.memory import (
     predicts,
     reserves,
 )
+from atom.compass.spec import MachineSpec
 from tests.compass.test_memory_readings import (
+    ACTIVATIONS,
     CAPTURE_SIZES,
     CONFIG_JSON,
+    DOCUMENT,
     GPU_MEMORY_UTILIZATION,
     MAX_NUM_BATCHED_TOKENS,
     PARAMETERS,
@@ -72,6 +79,7 @@ from tests.compass.test_memory_readings import (
 )
 
 MIB = 1 << 20
+CAPACITY = "device.memory.capacity_bytes"
 
 
 @pytest.fixture(autouse=True)
@@ -913,3 +921,112 @@ def test_the_footprint_is_peak_torch_and_non_torch_and_nothing_else(spec, qwen):
     assert "capacity" not in {t.name for t in prediction.terms}
     assert "per-token x captured tokens" not in {t.name for t in prediction.terms}
     assert readings.spec_digest in prediction.label
+
+
+# --- a term against the run it was built from --------------------------------
+
+GIB = 1 << 30
+
+
+def _server_log(path, *, peak, non_torch, start="08:31:41"):
+    """The two lines `python -m atom.compass.memory.check` reads off a server."""
+    path.write_text(
+        f"[atom {start}] Model Runner0/1: warmup_model 40.35 seconds with 1 reqs "
+        f"{WARMUP_TOKENS} tokens\n"
+        f"[atom {start}] Memory budget: total_gpu=191.98GB, free=139.49GB, "
+        f"peak_torch={peak / GIB:.2f}GB, non_torch={non_torch / GIB:.2f}GB, "
+        "cudagraph_est=0.55GB\n"
+    )
+    return path
+
+
+def _hand_in(tmp_path, qwen, record):
+    """A hand-in sized off the suite's document, probed on the run `record`
+    names, with this model's activations measured on that run."""
+    document = copy.deepcopy(DOCUMENT)
+    document["provenance"] |= {"origin": "probed", "subject": {"record": record}}
+    document["device"]["activations"] = [ACTIVATIONS]
+    spec = MachineSpec.from_mapping(document)
+    entry = spec.activations_for(
+        ACTIVATIONS["applies_to"][0], ACTIVATIONS["fingerprint"], 1
+    )
+    model = ModelTerms.from_config(
+        qwen,
+        parameter_count=PARAMETERS,
+        tp_size=1,
+        warmup_tokens=WARMUP_TOKENS,
+        activations_entry=entry,
+    )
+    # The weights a meta build gives, so peak_torch can discharge its gate.
+    model = dataclasses.replace(
+        model,
+        weights=Term(
+            "weights", model.weights.nbytes, Method.ANALYTICAL, "a meta build"
+        ),
+    )
+    readings = device_readings(
+        spec,
+        tp_width=1,
+        model=model,
+        cudagraph_overhead=reserved(qwen, int(spec.value(CAPACITY))),
+    )
+    path = tmp_path / "lp-engine.json"
+    hand_in = check.record(readings, tokens=WARMUP_TOKENS, pool=None)
+    path.write_text(json.dumps({"memory": hand_in}))
+    return path, readings
+
+
+def _digest(path):
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("factor", [1.0, 2.0])
+def test_a_term_compared_with_its_own_source_run_is_not_passed(tmp_path, qwen, factor):
+    _, readings = _hand_in(tmp_path, qwen, "sha256:none")
+    source = _server_log(
+        tmp_path / "source.log",
+        peak=readings.peak_torch.total,
+        non_torch=readings.non_torch.total * factor,
+    )
+    record = _digest(source)
+    hand_in, readings = _hand_in(tmp_path, qwen, record)
+    # The activations come off the entry, and the entry names its run.
+    by_name = {t.name: t for t in readings.peak_torch.terms}
+    assert by_name["activations"].method is Method.ESTIMATED
+    assert by_name["activations"].records == (record,)
+
+    comparison = check.parts(hand_in, source)[0]
+    verdicts = {t.name: t.verdict for t in comparison.compared}
+    assert verdicts["peak_torch"] is Verdict.NOT_DISCHARGED
+    # Built from the run or not, a term outside its gate fails.
+    expected = Verdict.FAIL if factor > 1 else Verdict.NOT_DISCHARGED
+    assert verdicts["non_torch"] is expected
+    named = f"this term was built from record {record}, the run it is compared with"
+    why = {t.name: t.why for t in comparison.compared}
+    assert named in why["peak_torch"]
+    assert (named in why["non_torch"]) is (factor == 1.0)
+    assert (
+        f"* peak_torch: within the gate, and the gate is not discharged: {named}"
+        in comparison.table()
+    )
+
+
+@pytest.mark.parametrize("factor, verdict", [(1.0, Verdict.PASS), (2.0, Verdict.FAIL)])
+def test_another_run_of_the_same_configuration_is_judged_on_its_numbers(
+    tmp_path, qwen, factor, verdict
+):
+    _, readings = _hand_in(tmp_path, qwen, "sha256:none")
+    peak, non_torch = readings.peak_torch.total, readings.non_torch.total
+    source = _server_log(tmp_path / "source.log", peak=peak, non_torch=non_torch)
+    other = _server_log(
+        tmp_path / "other.log",
+        peak=peak,
+        non_torch=non_torch * factor,
+        start="16:32:07",
+    )
+    hand_in, _ = _hand_in(tmp_path, qwen, _digest(source))
+
+    comparison = check.parts(hand_in, other)[0]
+    verdicts = {t.name: t.verdict for t in comparison.compared}
+    assert verdicts == {"peak_torch": Verdict.PASS, "non_torch": verdict}
+    assert "built from record" not in comparison.table()

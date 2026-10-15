@@ -414,16 +414,19 @@ class MachineSpec:
 
     def activations_for(
         self, architecture: str | None, fingerprint: str | None, tp_width: int
-    ) -> tuple[str, float] | None:
-        """The id of the entry measured for this model and its activation bytes
-        per token at this width, or None when nothing was measured for it."""
+    ) -> tuple[str, float, tuple[str, ...]] | None:
+        """The id of the entry measured for this model, its activation bytes
+        per token at this width and the records of the runs it was read off,
+        or None when nothing was measured for it."""
         for entry in self.values.get(ACTIVATIONS, ()):
             if (
                 architecture in entry["applies_to"]
                 and fingerprint == entry["fingerprint"]
                 and tp_width in entry["bytes_per_token"]
             ):
-                return entry["id"], entry["bytes_per_token"][tp_width]
+                record = self.origin(ACTIVATIONS).get("record")
+                records = (record,) if record else ()
+                return entry["id"], entry["bytes_per_token"][tp_width], records
         return None
 
     def check_stack(

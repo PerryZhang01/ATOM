@@ -28,7 +28,7 @@ would be a comparator nobody could run against the card they are sizing for.
 |---|---|
 | `Verdict.PASS` | both sides present, within the gate, and the predicted side is not declared |
 | `Verdict.FAIL` | both sides present and outside the gate -- **including** when the predicted side is declared, because a recording that contradicts a declared input is evidence |
-| `Verdict.NOT_DISCHARGED` | both sides present and within the gate, but the predicted side is declared. The error is reported and the gate is not called discharged |
+| `Verdict.NOT_DISCHARGED` | both sides present and within the gate, but the predicted side is declared, or was built from the run it is compared with. The error is reported and the gate is not called discharged |
 | a `TermRefusal` | the two sides cannot be compared at all: the run records no such term, the run records it as zero bytes, the shapes disagree, or the recorded peak is the warmup prefill's |
 
 **A declared term can fail its gate but cannot pass it.** Every other method
@@ -36,6 +36,9 @@ can: analytical, measured and estimated (validated or not) are in
 `DISCHARGES`. Agreement with one run does not turn an assumed input into an
 observation. The recorded side is measured: every term of a recording was
 read off the card.
+
+**Nor can a term pass against the run it was built from**: when a term's
+`records` hold the recording's own, the verdict names that record.
 
 ## The traps this module refuses rather than papers over
 
@@ -159,6 +162,9 @@ class Recorded:
     than inferred: which terms move with the shape is a property of how the
     breakdown was produced, and the one thing this module must not do is guess
     it from a term's name.
+
+    `record` is the digest of the run's record, the one a predicted term built
+    from this run names among its `records`.
     """
 
     run: str
@@ -166,6 +172,7 @@ class Recorded:
     high_water_reset: bool
     terms: tuple[Term, ...]
     at_shape: frozenset[str] = frozenset()
+    record: str = ""
 
     def __post_init__(self) -> None:
         if not self.run.strip():
@@ -523,9 +530,17 @@ def _refuse_zero(name: str, run: str) -> TermRefusal:
     )
 
 
-def _verdict(predicted: Term, relative: float, gate: float) -> tuple[Verdict, str]:
+def _verdict(
+    predicted: Term, relative: float, gate: float, record: str
+) -> tuple[Verdict, str]:
     if abs(relative) > gate:
         return Verdict.FAIL, ""
+    if record and record in predicted.records:
+        return Verdict.NOT_DISCHARGED, (
+            f"within the gate, and the gate is not discharged: this term was "
+            f"built from record {record}, the run it is compared with, so "
+            "agreeing with it is no evidence; compare it with another run"
+        )
     if predicted.method in DISCHARGES:
         return Verdict.PASS, ""
     return Verdict.NOT_DISCHARGED, (
@@ -623,7 +638,7 @@ def compare(
             )
             continue
         relative = (term.nbytes - recording.nbytes) / recording.nbytes
-        verdict, why = _verdict(term, relative, gate)
+        verdict, why = _verdict(term, relative, gate, recorded.record)
         compared.append(
             TermComparison(
                 name=name,

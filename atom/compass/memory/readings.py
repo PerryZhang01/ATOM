@@ -133,7 +133,7 @@ class ModelTerms:
         warmup_tokens: int,
         dtype_bytes: int | None = None,
         config_json: dict | None = None,
-        activations_entry: tuple[str, float] | None = None,
+        activations_entry: tuple[str, float, tuple[str, ...]] | None = None,
         tree=None,
     ) -> ModelTerms:
         """All three, each labelled with where its bytes came from.
@@ -164,7 +164,8 @@ class ModelTerms:
 
         `activations_entry`, what `MachineSpec.activations_for` returns,
         replaces the activation formula with that entry's bytes per token
-        times `warmup_tokens`, an estimate; the scratch is inside it.
+        times `warmup_tokens`, an estimate; the scratch is inside it. The term
+        keeps the records of the runs the entry was read off.
         """
         if tp_size < 1:
             raise ValueError(f"tensor-parallel width is at least 1: {tp_size}")
@@ -316,13 +317,14 @@ class ModelTerms:
             "layer rather than all of them",
         )
         if activations_entry is not None:
-            entry, per_token = activations_entry
+            entry, per_token, records = activations_entry
             activations = Term(
                 "activations",
                 int(warmup_tokens * per_token),
                 Method.ESTIMATED,
                 f"{warmup_tokens} warmup tokens x {per_token} B/token, "
                 f"device.activations[{entry}].bytes_per_token[{tp_size}]",
+                records=records,
             )
         return cls(weights, buffers, activations)
 

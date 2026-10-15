@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -102,9 +103,11 @@ def recorded(log: Path) -> tuple[Recorded, Term | None]:
     """The real server's two readings, and the pool its capture reserved.
 
     ATOM logs GiB to two places, so each recorded term is good to 5 MiB.
+    The run is named by the log's path and its record by the log's digest.
     The pool is None when the server captured no graph.
     """
-    text = log.read_text(errors="replace")
+    data = log.read_bytes()
+    text = data.decode(errors="replace")
     peak_torch, non_torch = _one(_BUDGET, text, log)
     (tokens,) = _one(_WARMUP, text, log)
     run = Recorded(
@@ -117,6 +120,7 @@ def recorded(log: Path) -> tuple[Recorded, Term | None]:
             source="the Memory budget line",
         ),
         at_shape=SHAPED,
+        record="sha256:" + hashlib.sha256(data).hexdigest(),
     )
     pools = _POOL.findall(text)
     if not pools:
