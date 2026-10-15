@@ -49,8 +49,9 @@ Run file keys: ``clock_endpoint``, ``bound_s`` (finite), ``admission_path``,
 priced by `StepStubBackend`), ``step_linear`` (a `StepLinearLaw` mapping,
 priced by `StepLinearBackend`), ``step_grid`` (an artifact store's root and a
 bundle's key, priced by `StepGridBackend`; see `step_grid`) and ``replay`` (a
-real run's parity record directory: each step ends when the real one did, by
-`atom.compass.parity.replay`),
+real run's parity record directory, or for a prefill-decode run one holding
+each side's as ``prefill/`` and ``decode/``: each step ends when the real one
+did, by `atom.compass.parity.replay`),
 ``step_roofline`` (optional, ``true`` or ``false``: with ``true`` a
 `StepRooflineBackend` prices the steps the backend refuses, through
 `StepFallbackBackend`),
@@ -680,7 +681,8 @@ def runner(model_runner, tree) -> None:
         from atom.compass.parity.replay import ReplayBackend
 
         dp_rank = config.parallel_config.data_parallel_rank
-        backend = replay = ReplayBackend(run["replay"], dp_rank)
+        side = {"P": "prefill", "D": "decode"}.get(_pd_side(config), "")
+        backend = replay = ReplayBackend(Path(run["replay"]) / side, dp_rank)
     if "step_linear" in run:
         if tp != 1:
             raise ValueError(
