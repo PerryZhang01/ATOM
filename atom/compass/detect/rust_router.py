@@ -106,10 +106,10 @@ _KEPT = (
     ("core/worker_manager.rs", "RandomState", LATENCY, _LOOKUP, 2),
     ("core/worker_manager.rs", "tokio::time", DECISION,
      "polls worker loads on a wall interval into power_of_two's cached loads", 1),
-    ("core/worker_registry.rs", "RandomState", DECISION, (
-        "get_all lists workers in the order of a random hasher over random worker "
-        "ids; a request naming no model gets its candidates in that order, and "
-        "policy tie-breaks read it"), 7),
+    ("core/worker_registry.rs", "RandomState", LATENCY, (
+        "maps read by key; under the router LP get_all and each model's list are "
+        "sorted by URL and DP rank; the other listings feed startup, status and "
+        "the root of cache_aware's tree, which no affinity match reads"), 7),
     ("core/worker_registry.rs", "tokio::time", BOUND, "the health check; --disable-health-check", 2),
     *((f"ext_proc/{name}", pattern, OFF_LP, _EXT_PROC, n) for name, pattern, n in (
         ("executor.rs", "Instant::now", 2), ("executor.rs", "RandomState", 1),
