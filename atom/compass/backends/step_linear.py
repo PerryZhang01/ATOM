@@ -16,12 +16,11 @@ group's MoE gather carries (`BatchView.moe_rows`), which every rank's MoE runs o
 
 A law is keyed by the `(dp, ep)` it was fitted at, `(1, 1)` when it states
 none, and prices one rank's step; the runner takes the group's step as the max
-over its ranks. It also states `machine_spec`, the digest
-(`machine_spec_digest`) of the spec of the platform it was fitted on; a run
-whose spec has another digest refuses it, naming both, and so does a run given
-a law that states none. Above `dp` 1 every step it prices names
-`UNIFORM_ROUTING` among its treatments: the MoE segment is priced as if
-routing spread tokens evenly over the experts, which no feature carries.
+over its ranks. A backend built for another key is refused, naming both.
+Above `dp` 1 every step it prices names `UNIFORM_ROUTING` among its
+treatments: the MoE segment is priced as if routing spread tokens evenly over
+the experts, which no feature carries. A run refuses a law whose
+`machine_spec` is not its spec's `machine_spec_digest`, naming both.
 
 A decode vector may add `rowmod`, `rowmod(k)` over its rows in scheduled
 order: the largest summed N_KV over the rows `i = r (mod k)`, with `k` the
@@ -41,8 +40,7 @@ law without one prices every term unvalidated. A step the law has no vector for
 is refused: prefill when the law has no prefill vector, a decode rung with
 none, or a step mixing prefill and decode rows.
 
-The law is a mapping, as a run file holds it, `key`, `machine_spec` and
-`prefill` optional:
+The law is a mapping, as a run file holds it, `key` and `prefill` optional:
 
     {"provenance": "<what it was fitted on>",
      "key": [dp, ep],
