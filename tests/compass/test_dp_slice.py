@@ -370,6 +370,8 @@ def test_a_dp_rank_starts_on_the_host_with_no_device_communicator(monkeypatch):
     monkeypatch.delenv("MASTER_PORT", raising=False)
     config = SimpleNamespace(
         tensor_parallel_size=1,
+        tp_world_size=1,
+        decode_context_parallel_size=1,
         prefill_context_parallel_size=1,
         pipeline_parallel_size=1,
         master_addr="127.0.0.1",
@@ -395,7 +397,12 @@ def test_a_dp_rank_starts_on_the_host_with_no_device_communicator(monkeypatch):
         "data_parallel_rank": 1,
     }
     assert calls["world"] == ((), world)
-    groups = {"data_parallel_size": 2, "custom_group_config": {}}
+    groups = {
+        "decode_context_model_parallel_size": 1,
+        "data_parallel_size": 2,
+        "prefill_context_model_parallel_size": 1,
+        "custom_group_config": {},
+    }
     assert calls["groups"] == ((1, 1), groups)
 
 
@@ -430,6 +437,8 @@ def test_a_dp_rank_under_a_managed_store_joins_it_before_aiter_builds_groups(
     monkeypatch.delenv("MASTER_PORT", raising=False)
     config = SimpleNamespace(
         tensor_parallel_size=1,
+        tp_world_size=1,
+        decode_context_parallel_size=1,
         prefill_context_parallel_size=1,
         pipeline_parallel_size=1,
         master_addr="127.0.0.1",
