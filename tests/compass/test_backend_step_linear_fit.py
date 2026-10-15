@@ -585,6 +585,44 @@ def test_the_host_key_leaves_out_what_only_a_simulated_run_reaches(
     assert edited("model_engine/scheduler.py", "\n", "\nedited = 1\n") != key
 
 
+def test_the_host_key_hashes_clock_code_by_whether_a_real_run_reaches_it(
+    tmp_path, monkeypatch
+):
+    import shutil
+    from pathlib import Path
+
+    import atom
+    from atom.compass.run import host_key
+
+    src, tree = Path(atom.__file__).parent, tmp_path / "atom"
+    (tree / "utils").mkdir(parents=True)
+    shutil.copy(src / "utils/clock.py", tree / "utils/clock.py")
+    monkeypatch.setattr(atom, "__file__", str(tree / "__init__.py"))
+    config = SimpleNamespace(
+        model=str(tmp_path / "model"),
+        enforce_eager=True,
+        kv_cache_block_size=16,
+        kv_cache_dtype="bf16",
+        quant_config=SimpleNamespace(compute_hash=lambda: "q"),
+        tensor_parallel_size=1,
+    )
+    text = (src / "utils/clock.py").read_text()
+
+    def key(old="", new=""):
+        assert old in text
+        (tree / "utils/clock.py").write_text(text.replace(old, new, 1))
+        return host_key(config)["atom"]
+
+    base = key()
+    assert key("in COLLECTIVES:", "in COLLECTIVES[:1]:") == base
+    assert key('"all_gather all_gather_into', '"all_gather_into') == base
+    assert key("#: The `torch.distributed` collectives", "\n\n#: The ones") == base
+    assert key("return True\n\n\ndef settle", "return False\n\n\ndef settle") == base
+    assert key("REPLY_WAIT_S = 10.0", "REPLY_WAIT_S = 20.0") == base
+    assert key(" or (reply.predicted_s,)", "") != base
+    assert key('_installed: "LPRuntime | None" = None', "_installed = None") != base
+
+
 def test_the_host_key_leaves_out_a_listed_files_module_docstring(tmp_path, monkeypatch):
     import atom
     from atom.compass.run import host_key
