@@ -43,8 +43,8 @@ Everything in the table is required. A machine has an interconnect whether or
 not a particular run drives it, and the value of refusing a missing term is that
 the refusal happens while a person is authoring the document rather than in the
 middle of a simulated run. The exceptions are the provenance fields `merge`
-fills in later, and the activation entries, whose absence falls back to a
-declared form.
+fills in later, the activation entries, whose absence falls back to a
+declared form, and `fp4_flops`, which a device with no FP4 matrix core omits.
 
 **Every field says where it came from.** `provenance.origin` is one of
 `ORIGINS` or `transferred-from:<spec>`, and anything else is refused. A
@@ -150,6 +150,7 @@ FIELDS = (
     Field("device.memory.bandwidth_bytes_per_s", Kind.QUANTITY, peak=True),
     Field("device.compute.bf16_flops", Kind.QUANTITY, peak=True),
     Field("device.compute.fp8_flops", Kind.QUANTITY, peak=True),
+    Field("device.compute.fp4_flops", Kind.QUANTITY, peak=True, required=False),
     Field(
         "device.runtime_constants.driver_and_collective_reserve_bytes",
         Kind.WIDTH_TABLE,
@@ -170,6 +171,7 @@ FIELDS = (
     Field("device.software_pinned_to.aiter", Kind.TEXT),
     Field("device.software_pinned_to.rccl", Kind.TEXT),
     Field("interconnect.intra_node.topology", Kind.TEXT),
+    Field("interconnect.intra_node.domain_devices", Kind.COUNT),
     Field(
         "interconnect.intra_node.link_bandwidth_bytes_per_s", Kind.QUANTITY, peak=True
     ),

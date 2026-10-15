@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: MIT
-"""A simulated 1P1D run above DP width 1, behind a router without ``--dp-aware``.
+"""A simulated 1P1D run above DP width 1, behind each form of the router.
 
 `scripts/compass/pd_sim.sh` starts each side at ``-tp 2 --enable-dp-attention``:
-two DP ranks per side, each a member of its side's engine LP, and ATOM's own
-DP dispatch on each side picks the rank a request runs on. Decode sends each
-write request to the prefill rank the relayed ``dp_rank`` names, on the
-channel of that decode and prefill rank pair. The run is made twice, with
-different `PYTHONHASHSEED`, and the two step tables are compared byte for byte.
+two DP ranks per side, each a member of its side's engine LP. Without
+``--dp-aware`` ATOM's own DP dispatch on each side picks the rank a request
+runs on; an agentic cell's router is ``--dp-aware``, the router LP, and picks
+it. Decode sends each write request to the prefill rank the relayed
+``dp_rank`` names, on the channel of that decode and prefill rank pair. Each
+form is run twice, with different `PYTHONHASHSEED`, and `check_run` holds the
+two to the scenario checks.
 
 The run tests skip as `test_pd_slice`'s do; the rest run anywhere.
 """
@@ -24,20 +26,19 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from test_dp_slice import MAX_TOKENS, Requests
+from test_dp_slice import DP_MACHINE, MAX_TOKENS, Requests
 from test_kv_remote_prefill import Script, connector
 from test_kv_simulated_connector import PEAKS, geometry, model_for  # noqa: F401
 from test_pd_slice import NEEDS_A_PD_RUN, PD, PORTS, PdTraffic
-from test_vertical_slice import MODEL, TREE, WALL_S, _free_port, _run_file
+from test_vertical_slice import CONSTANT, MODEL, TREE, WALL_S, _free_port, _run_file
 
 from atom.compass import run as compass_run
 from atom.compass.clock import NER, ClockAbort, LpId, prefill_decode_table
-from atom.compass.detect.determinism import compare_step_tables
+from atom.compass.detect.scenario import check_run
 from atom.kv_transfer.disaggregation.types import KVConnectorOutput
 from atom.utils.clock import LPRuntime
 
 DP = 2
-DONE = "data: [DONE]"
 SERVER_ARGS = "-tp 2 --enable-dp-attention --enforce-eager --max-model-len 2048"
 KV = "engine-D->engine-P:kv_write_req#dp{}.dp{}"
 
@@ -46,8 +47,20 @@ class PdRequests(Requests):
     http, stream = PdTraffic.http, PdTraffic.stream
 
 
-def run_pd_dp(out: Path, seed: str) -> dict:
+class RouterLpRequests(Requests):
+    http, stream = "traffic->router:http", "router->traffic:stream"
+
+
+# Each router form: the cell's environment and its traffic LP.
+FORMS = {
+    "dispatch": ({}, PdRequests),
+    "router_lp": ({"BENCHMARK_KIND": "aiperf_agentic"}, RouterLpRequests),
+}
+
+
+def run_pd_dp(out: Path, seed: str, form: str) -> dict:
     """One run under `pd_sim.sh` at DP width 2 on each side."""
+    cell, requests = FORMS[form]
     out.mkdir()
     ports = {name: _free_port() for name in PORTS}
     # The write requests take DP * DP ports from KV_WRITE_REQ_PORT; successive
@@ -61,6 +74,8 @@ def run_pd_dp(out: Path, seed: str) -> dict:
         out,
         clock_endpoint=f"tcp://127.0.0.1:{ports['CLOCK_PORT']}",
         data_parallel_size=DP,
+        step_stub=CONSTANT,
+        machine=DP_MACHINE,
         **PD,
     )
     env = dict(
@@ -68,8 +83,10 @@ def run_pd_dp(out: Path, seed: str) -> dict:
         PYTHONHASHSEED=seed,
         PYTHONPATH=str(TREE),
         AITER_LOG_LEVEL="WARNING",
+        ATOM_COMPASS_PARITY_RECORD=str(out / "parity"),
         MODEL=MODEL,
         SERVER_ARGS=SERVER_ARGS,
+        **cell,
         **{name: str(port) for name, port in ports.items()},
     )
     log = out / "pd_sim.log"
@@ -90,9 +107,7 @@ def run_pd_dp(out: Path, seed: str) -> dict:
             assert sim.poll() is None, f"pd_sim.sh exited:\n{log.read_text()}"
             assert time.monotonic() < deadline, f"no router in {WALL_S} wall seconds"
             time.sleep(0.5)
-        traffic = PdRequests(
-            json.loads(run_file.read_text()), ports["ROUTER_PORT"], sim
-        )
+        traffic = requests(json.loads(run_file.read_text()), ports["ROUTER_PORT"], sim)
         traffic.run()
         code = sim.wait(timeout=120)
     finally:
@@ -101,6 +116,7 @@ def run_pd_dp(out: Path, seed: str) -> dict:
             os.killpg(sim.pid, signal.SIGKILL)
     assert code == 0, f"pd_sim.sh exited {code}:\n{log.read_text()[-4000:]}"
     return {
+        "out": out,
         "table": (out / compass_run.STEP_TABLE_FILE).read_text(),
         "summary": json.loads((out / compass_run.SUMMARY_FILE).read_text()),
         "handed_in": sorted(f.name for f in out.glob(compass_run.LP_FILE.format("*"))),
@@ -108,14 +124,14 @@ def run_pd_dp(out: Path, seed: str) -> dict:
     }
 
 
-@pytest.fixture(scope="module")
-def runs(tmp_path_factory):
-    root = tmp_path_factory.mktemp("pd_dp")
-    return [run_pd_dp(root / f"seed{seed}", seed) for seed in ("1", "2")]
+@pytest.fixture(scope="module", params=FORMS)
+def runs(request, tmp_path_factory):
+    root = tmp_path_factory.mktemp(f"pd_dp_{request.param}")
+    return [run_pd_dp(root / f"seed{s}", s, request.param) for s in ("1", "2")]
 
 
 @NEEDS_A_PD_RUN
-def test_every_request_is_served_with_a_kv_transfer_per_request_over_its_rank_pair(
+def test_every_request_meets_every_scenario_check_with_a_kv_transfer_over_its_rank_pair(
     runs,
 ):
     run = runs[0]
@@ -126,27 +142,23 @@ def test_every_request_is_served_with_a_kv_transfer_per_request_over_its_rank_pa
         if r[3] == "release" and ":kv_write_req#" in r[4]
     )
     print("\nKV transfers per decode.prefill rank pair:", dict(sorted(pairs.items())))
-    print("summary:", json.dumps(run["summary"]["schedule"], sort_keys=True))
-    assert sum(line == DONE for _, line in run["events"]) == len(MAX_TOKENS)
+    parity = run["out"] / "parity"
+    failed = check_run(
+        [r["out"] for r in runs],
+        MAX_TOKENS,
+        [line for _, line in run["events"]],
+        {"engine-P": parity / "prefill", "engine-D": parity / "decode"},
+    )
+    assert not failed, "\n".join(failed)
     assert sum(pairs.values()) == len(MAX_TOKENS)
-    # ATOM's dispatch spread the requests over both ranks of each side.
+    # The requests were spread over both ranks of each side.
     assert {p.split(".")[0] for p in pairs} == {"dp0", "dp1"}
     assert {p.split(".")[1] for p in pairs} == {"dp0", "dp1"}
-    assert run["summary"]["schedule"]["refusals"]["count"] == 0
     assert run["handed_in"] == sorted(
         compass_run.LP_FILE.format(n)
         for n in ["frontend-P", "frontend-D"]
         + [f"engine-{s}.dp{r}" for s in "PD" for r in range(DP)]
     )
-
-
-@NEEDS_A_PD_RUN
-def test_two_hash_seeds_give_byte_identical_step_tables(runs):
-    left, right = (r["table"] for r in runs)
-    code, report = compare_step_tables(left, right, "seed 1", "seed 2")
-    print(f"\n{report}")
-    assert code == 0, report
-    assert left == right
 
 
 # --- without a driver ---------------------------------------------------------

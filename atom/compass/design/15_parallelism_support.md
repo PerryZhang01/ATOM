@@ -739,7 +739,7 @@ milestones are `16` D95's:
 
 | | **M1 — plumbing, with fake models; no parity test** | **M2 — scheduling parity, then accuracy** |
 |---|---|---|
-| **TP** | LP collapse; width as an artifact key | priced collectives at the widths the nightly configurations run; width transfer (T21) comes after v1 |
+| **TP** | LP collapse; the parallel layout as an artifact key | priced collectives at the widths the nightly configurations run; width transfer (T21) comes after v1 |
 | **DP** | both collectives run for real; `max`-over-ranks step duration; dummy-batch pricing for idle ranks | the collectives' own cost, including the gather sized by the peers' token counts |
 | **EP** | none: EP's plumbing moved into M2's EP8 step | in the EP8 step, group membership established — it is `dp × pcp × tp` within one PP stage, built in aiter (D92); `exclusive` occupancy honoured in the IR; then the MORI all-to-all within a node priced as a stated node by a routing model |
 

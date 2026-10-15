@@ -19,7 +19,8 @@ none, and prices one rank's step; the runner takes the group's step as the max
 over its ranks. A backend built for another key is refused, naming both.
 Above `dp` 1 every step it prices names `UNIFORM_ROUTING` among its
 treatments: the MoE segment is priced as if routing spread tokens evenly over
-the experts, which no feature carries.
+the experts, which no feature carries. A run refuses a law whose
+`machine_spec` is not its spec's `machine_spec_digest`, naming both.
 
 A decode vector may add `rowmod`, `rowmod(k)` over its rows in scheduled
 order: the largest summed N_KV over the rows `i = r (mod k)`, with `k` the
@@ -43,6 +44,7 @@ The law is a mapping, as a run file holds it, `key` and `prefill` optional:
 
     {"provenance": "<what it was fitted on>",
      "key": [dp, ep],
+     "machine_spec": "sha256:<hex>",
      "prefill": VECTOR,
      "decode": {"eager": VECTOR, "1": VECTOR, "2": VECTOR, ...}}
 

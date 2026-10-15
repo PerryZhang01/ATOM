@@ -97,10 +97,12 @@ class _StreamServer:
                     try:
                         if slot is None:
                             address, slot, joined = self._server.bind(frame)
+                            try:
+                                reply = encode((JOINED, *joined))
+                            except MalformedMessage as refused:
+                                reply = encode(_refusal(refused))
                             threading.Thread(
-                                target=_write,
-                                args=(sock, slot, (JOINED, *joined)),
-                                daemon=True,
+                                target=_write, args=(sock, slot, reply), daemon=True
                             ).start()
                         else:
                             self._server.submit(address, frame)
@@ -120,11 +122,10 @@ class _StreamServer:
                 slot.put(None)
 
 
-def _write(sock: socket.socket, slot, joined: tuple) -> None:
-    """Send `joined`, then each reply `slot` gets, on `sock` until its reader
+def _write(sock: socket.socket, slot, reply: bytes) -> None:
+    """Send `reply`, then each reply `slot` gets, on `sock` until its reader
     puts `None`; then end `sock`."""
-    with contextlib.suppress(MalformedMessage, OSError):
-        reply = encode(joined)
+    with contextlib.suppress(OSError):
         while reply is not None:
             sock.sendall(_framed(reply))
             reply = slot.get()

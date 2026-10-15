@@ -24,7 +24,8 @@
 # export, and cctraces_sim.sh exits with aiperf's status. Fit the
 # records with
 #   python -m atom.compass.backends.step_linear_fit --form history \
-#       OUT_DIR/c{1,4,16,64,256}/steps/dp0.jsonl --out LAW
+#       OUT_DIR/c{1,4,16,64,256}/steps/dp0.jsonl --out LAW --machine-spec DIGEST
+# DIGEST as scripts/compass/README.md (step_linear_fit) prints it.
 set -uo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/_lib.sh"
 
