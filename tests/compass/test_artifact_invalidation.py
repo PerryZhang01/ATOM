@@ -83,7 +83,7 @@ GATES = GateState.of(PRICE_KERNELS)
 
 #: One rank per tensor-parallel rank, and no other axis.
 TP2 = Topology(tp=2)
-#: The layout the three layout-keyed rows state, the one `TP2` publishes at.
+#: The layout the layout-keyed rows state, the one `TP2` publishes at.
 LAYOUT = {
     "dp": 1,
     "pp": 1,

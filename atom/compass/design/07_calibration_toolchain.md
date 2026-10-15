@@ -657,9 +657,8 @@ The **parallel layout** of a `price_list`, `region_terms` and `memory_readings` 
 [#165](https://github.com/jgong5/ATOM/issues/165)), held in
 `atom/compass/artifacts/keys.py::LAYOUT`. No entry answers for another layout: a TP2 price
 list does not answer for `-tp 2 -dp 2`, and a transfer between layouts, if one is wanted,
-is an explicit record backed by a measurement. A publish whose key states a rank width its
-topology does not have is refused naming the axis, and a read miss names the fields in
-which the nearest entry of its kind differs.
+is an explicit record backed by a measurement. A read miss names the fields in which the
+nearest entry of its kind differs.
 
 ### Four rules
 

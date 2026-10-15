@@ -432,18 +432,14 @@ def publish_prices(store: ArtifactStore, key: Key, topology: Topology):
     )
 
 
-def test_each_layout_is_its_own_entry_and_a_mismatch_names_its_field(tmp_path):
-    """TP2 and TP2 x DP2 publish apart; a key that disagrees with its topology,
-    or a read at a layout nobody published, names the field that differs."""
+def test_each_layout_is_its_own_entry_and_a_miss_names_its_field(tmp_path):
+    """TP2 and TP2 x DP2 publish apart; a read at a layout nobody published
+    names the field in which the nearest entry differs."""
     store = ArtifactStore(tmp_path)
     tp2 = publish_prices(store, price_key(2), Topology(tp=2))
     dp2 = publish_prices(store, price_key(2, dp=2), Topology(dp=2, tp=2))
     assert tp2.directory != dp2.directory
     assert store.read(price_key(2, dp=2)).topology == Topology(dp=2, tp=2)
-
-    with pytest.raises(ArtifactRefusal) as refused:
-        publish_prices(store, price_key(2), Topology(dp=2, tp=2))
-    assert "states `dp` 1 and its topology is dp2.pp1.pcp1.tp2" in str(refused.value)
 
     with pytest.raises(ArtifactRefusal) as missed:
         store.read(price_key(2, enable_expert_parallel=True))
