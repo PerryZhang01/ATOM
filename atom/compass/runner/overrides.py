@@ -856,10 +856,10 @@ class NonAllocatingRunner(
         to own its memory, carries the same one of the two.
 
         The reply's `predicted_s` is the step's duration: this rank's batch
-        priced by the installed cost backend, then the max over its DP group.
+        priced by the installed cost backend, then its DP group target.
         A runner with no backend refuses the step rather than report one that
         took no time. ATOM's `dummy_execution` answers with this reply too, so
-        an idle DP rank's dummy batch is priced and joins the group's max.
+        an idle DP rank's dummy batch is priced and joins the group's targets.
         """
         if not hasattr(batch, "produces_output"):
             # Not reachable from the engine, which only ever passes a scheduled
@@ -920,25 +920,28 @@ class NonAllocatingRunner(
                 ),
             )
             self._token_stream = stream
+        tokens = stream.step(batch)
+        seconds = _group_step_seconds(self, batch, backend, mode)
         return ScheduledBatchOutput(
-            **stream.step(batch),
-            predicted_s=_group_step_seconds(self, batch, backend, mode),
+            **tokens,
+            predicted_s=seconds,
+            group_targets=getattr(self, "_group_targets", None),
         )
 
 
 def _group_step_seconds(
     runner: Any, batch: Any, backend: CostBackend, mode: Any = None
 ) -> float:
-    """This rank's step priced from its own batch, then the max over its DP group.
+    """This rank's step priced from its own batch, then its DP group target.
 
     `mode` is the step's `ForwardMode` when the step record already settled
     it; without one it is settled here, which runs the DP collective.
 
     In a run, `compass_host` composes the price, device seconds, with host time.
-    The `all_reduce(MAX)` stands in for the cross-rank collectives a real
-    forward makes, which a predicted one does not run, so every rank leaves the
-    step at the group's seconds. With one rank there is no group to exchange
-    with.
+    The `all_gather` stands in for the cross-rank collectives a real forward
+    makes: a rank with output, not the DP dummy, waits for them and leaves at
+    the group's max, any other at its own seconds; `_group_targets` holds all,
+    by rank, or None with one rank.
 
     A pipeline stage is refused: it runs only its own layers, and a backend
     prices the whole step, so every stage would charge the whole model.
@@ -953,7 +956,7 @@ def _group_step_seconds(
     `compass_host` that reports them, each of `HOST_SEGMENTS` in seconds and
     `skipped`, those its `skip` charged as 0; `device_s`, the backend's price;
     `charge_s`, that composed with host time (`device_s` with no host);
-    `group_s`, after the DP group's max; `terms`, each one's `name`, `seconds`
+    `group_s`, its DP group target; `terms`, each one's `name`, `seconds`
     and its provenance's `method`, `validated` and `source`; and `refused`,
     the ``cost:`` reason or None. Above them, `forward` starts the file with
     `{"version": COST_TABLE_VERSION}` as the record starts, replacing an
@@ -989,13 +992,17 @@ def _group_step_seconds(
         device_s, terms = cost.seconds, cost.terms
     host = getattr(runner, "compass_host", None)
     charge_s = device_s if host is None else host.charge(batch, device_s)
-    group_s = charge_s
+    group_s, targets = charge_s, None
     if mode.sync is not None:
-        group_max = torch.tensor([charge_s], dtype=torch.float64)
-        torch.distributed.all_reduce(
-            group_max, op=torch.distributed.ReduceOp.MAX, group=dp_group()
-        )
-        group_s = group_max.item()
+        group = dp_group()
+        waits = batch.produces_output() and not batch.is_dummy_run
+        mine = torch.tensor([charge_s, waits], dtype=torch.float64)
+        rows = [torch.empty_like(mine) for _ in range(group.size())]
+        torch.distributed.all_gather(rows, mine, group=group)
+        top = max(r[0].item() for r in rows)
+        targets = tuple(top if w else s for s, w in (r.tolist() for r in rows))
+        group_s = targets[group.rank()]
+    vars(runner)["_group_targets"] = targets
     record = getattr(runner, "_parity_record", None)
     if record is None:
         return group_s
