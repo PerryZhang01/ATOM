@@ -5,7 +5,8 @@ The frontend's event loop ends its run at the signal, as the ``+inf`` grant
 ends it at the finish, and after the finish the signal changes nothing; closing
 the loop gives each signal back the handler it had. A server whose engine waits
 for a grant no client run will give, since no traffic LP binds, leaves on the
-signal alone, its summary written as an early end naming the signal.
+signal alone, its summary written as an early end naming the signal, whether
+or not a stamped request it holds, which only a grant would release, is open.
 """
 
 import asyncio
@@ -24,6 +25,7 @@ from types import SimpleNamespace
 import pytest
 
 from atom.compass import run as compass_run
+from atom.compass.carriers import tracestate_with
 from atom.compass.clock import LpId, single_engine_table
 from atom.utils import clock
 from atom.utils.clock import LPRuntime
@@ -35,7 +37,8 @@ SIGNALS = pytest.mark.parametrize(
     "sig", [signal.SIGTERM, signal.SIGINT], ids=["SIGTERM", "SIGINT"]
 )
 #: The API server's sequence on a co-hosting frontend, with an app that only
-#: answers: the run bootstrap, uvicorn on the loop it names, `frontend_done`.
+#: answers behind the server's `HttpChannel`: the run bootstrap, uvicorn on the
+#: loop it names, `frontend_done`. It prints each stamp it reads.
 SERVER = """\
 import math, sys
 from types import SimpleNamespace
@@ -43,6 +46,7 @@ import uvicorn
 from atom.compass import run as compass_run
 from atom.compass.clock_transport import connect
 from atom.entrypoints.openai import api_server
+from atom.utils.compass_loop import HttpChannel
 
 deployment = SimpleNamespace(
     parallel_config=SimpleNamespace(data_parallel_size=1, data_parallel_rank=0),
@@ -61,7 +65,12 @@ async def app(scope, receive, send):
     await send({"type": "http.response.start", "status": 200, "headers": []})
     await send({"type": "http.response.body", "body": b"ok"})
 
-uvicorn.run(app, host="127.0.0.1", port=int(sys.argv[1]),
+def stamp(scope):
+    got = api_server._tracestate_stamp(scope)
+    print("stamped", got, flush=True)
+    return got
+
+uvicorn.run(HttpChannel(app, stamp), host="127.0.0.1", port=int(sys.argv[1]),
             loop=api_server._loop_impl(), lifespan="off", log_level="warning")
 print("frontend_done:", compass_run.frontend_done(SimpleNamespace(close=lambda: None)))
 """
@@ -113,7 +122,8 @@ def test_a_stop_signal_ends_a_run_in_progress_and_closing_puts_the_handler_back(
 
 
 @SIGNALS
-def test_a_stopped_server_leaves_with_its_summary_written(tmp_path, sig):
+@pytest.mark.parametrize("held", [False, True], ids=["idle", "holding-a-request"])
+def test_a_stopped_server_leaves_with_its_summary_written(tmp_path, sig, held):
     run_file = tmp_path / "run.json"
     run_file.write_text(
         json.dumps(
@@ -138,15 +148,24 @@ def test_a_stopped_server_leaves_with_its_summary_written(tmp_path, sig):
             stdout=sink,
             stderr=subprocess.STDOUT,
         )
+    client = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     try:
         deadline = time.monotonic() + 120
         while not _answers(port):
             assert server.poll() is None, log.read_text()
             assert time.monotonic() < deadline, "no answer in 120 wall seconds"
             time.sleep(0.2)
+        if held:  # stamped by a client no grant lets in; its connection stays open
+            client.request(
+                "POST", "/", b"{}", {"tracestate": tracestate_with("", 1.0, 0)}
+            )
+            while "stamped (1.0, 0)" not in log.read_text():
+                assert time.monotonic() < deadline, "not held in 120 wall seconds"
+                time.sleep(0.2)
         server.send_signal(sig)
         server.wait(timeout=30)
     finally:
+        client.close()
         if server.poll() is None:
             server.kill()
             server.wait()

@@ -47,11 +47,13 @@ a daemon one, such as uvicorn's keep-alive timeout, keeps the run alive no more
 than any other daemon timer. A cross-LP send such a handler makes is refused
 (`LPRuntime.stamp_send`).
 A SIGINT or SIGTERM ends the run as the ``+inf`` grant does, at the LP clock,
-and `CompassEventLoop.stopped` names it. A loop built in the main thread takes
-both with ``add_signal_handler``, so one wakes it from a wait for the grant over
-a socket; uvicorn, which catches them while it serves and raises a caught one
-again once it has shut down, raises it into that handler, so ``uvicorn.run``
-returns. Closing the loop puts back the handlers it found.
+and `CompassEventLoop.stopped` names it; uvicorn then cancels the requests still
+open rather than wait for them, since only a grant would finish them. A loop
+built in the main thread takes both with ``add_signal_handler``, so one wakes it
+from a wait for the grant over a socket; uvicorn, which catches them while it
+serves and raises a caught one again once it has shut down, raises it into that
+handler, so ``uvicorn.run`` returns. Closing the loop puts back the handlers it
+found.
 `HttpChannel` is the inline receive of HTTP requests.
 """
 
@@ -324,7 +326,10 @@ class CompassEventLoop(asyncio.SelectorEventLoop):
         for task in asyncio.all_tasks(self):
             coro = task.get_coro()
             if getattr(coro, "__qualname__", None) == "Server.serve":  # uvicorn's
-                coro.cr_frame.f_locals["self"].should_exit = True
+                server = coro.cr_frame.f_locals["self"]
+                server.should_exit = True
+                if self.stopped is not None:  # what is open, only a grant finishes
+                    server.config.timeout_graceful_shutdown = 0
                 return
         for h in self._scheduled:
             h.cancel()
