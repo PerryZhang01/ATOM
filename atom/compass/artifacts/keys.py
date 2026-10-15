@@ -4,16 +4,24 @@
 The table below is the whole of artifact identity. An entry is addressed by the
 values that decide what it contains and by nothing else -- not by where someone
 put the file, and not by a name a script composed. `price_list` is the row that
-earns the rule: it is keyed by **(model, width, source-root digest)**, and a
-bare or merged price file states no width, so it silently prices nothing while
-looking layered.
+earns the rule: it is keyed by **(model, parallel layout, source-root
+digest)**, and a bare or merged price file states no layout, so it silently
+prices nothing while looking layered.
+
+The parallel layout (`LAYOUT`) is the four rank widths and the three settings
+that change kernels and groups at a fixed rank count. A `price_list`,
+`region_terms` or `memory_readings` entry answers only at the layout it was
+keyed at: a TP2 price list does not answer for `-tp 2 -dp 2`. A width is a
+whole number of at least one and a switch is a `bool`. A `bool` is refused in
+every other field, because `True == 1` would make two keys equal whose
+canonical texts, and so directories, differ.
 
 Two refusals follow from that, and between them they are why this module
 exists rather than a dict of strings.
 
 **A field the kind does not have is refused with the kind's whole tuple.** The
 most likely mistake is reaching for `path=`, and the message that helps is not
-"unknown field" but "a price_list is keyed by (model, width, source_root)".
+"unknown field" but the whole tuple a `price_list` is keyed by.
 
 **A value that is a path is refused where it sits.** Deterministically, without
 asking the filesystem: an `os.PathLike`, an absolute path, anything with a
@@ -35,6 +43,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from .naming import AXES
 from .rules import ArtifactRefusal, Rule
 
 
@@ -54,16 +63,22 @@ class Kind(enum.Enum):
         return self.value
 
 
+#: The layout switches: a `bool` each, and no other field takes one.
+SWITCHES = ("enable_expert_parallel", "enable_dp_attention")
+#: The parallel layout a key states: the rank widths, then what changes kernels
+#: and groups at a fixed rank count.
+LAYOUT = (*AXES, *SWITCHES, "decode_context_parallel_size")
+
 #: What keys each artifact, in the order a key reads.
 KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
     Kind.MACHINE_SPEC: ("device", "software_stack"),
     Kind.SHAPE_POPULATION: ("model", "workload", "engine_config"),
     Kind.OP_GRAPH: ("structure",),
-    Kind.PRICE_LIST: ("model", "width", "source_root"),
-    Kind.REGION_TERMS: ("model", "width"),
+    Kind.PRICE_LIST: ("model", *LAYOUT, "source_root"),
+    Kind.REGION_TERMS: ("model", *LAYOUT),
     Kind.MEMORY_READINGS: (
         "model",
-        "width",
+        *LAYOUT,
         "utilization",
         "max_num_seqs",
         "max_model_len",
@@ -167,14 +182,22 @@ class Key:
                     "key is written, and the key would then no longer say what "
                     "the entry holds",
                 )
-            simple = isinstance(value, (str, int, float)) and not isinstance(
-                value, bool
-            )
-            if not simple or (isinstance(value, str) and not value.strip()):
+            if name in SWITCHES:
+                ok, want = isinstance(value, bool), "write True or False there"
+            elif name in LAYOUT:
+                ok = type(value) is int and value >= 1
+                want = "write a width of at least one there"
+            else:
+                ok = isinstance(value, (str, int, float)) and not isinstance(
+                    value, bool
+                )
+                ok = ok and not (isinstance(value, str) and not value.strip())
+                want = "write a non-empty string or a number there"
+            if not ok:
                 raise ArtifactRefusal(
                     Rule.KEY_IS_A_TUPLE,
                     f"`{kind}.{name}` holds {value!r}, which a key cannot compare by",
-                    "write a non-empty string or a number there",
+                    want,
                 )
             fields.append((name, value))
         return cls(kind, tuple(fields))

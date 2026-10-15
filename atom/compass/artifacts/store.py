@@ -72,7 +72,7 @@ from .fingerprints import Conditions, Fingerprint, OnMismatch, fingerprint, veri
 from .gates import GateState
 from .keys import Key, Kind, refuse_not_a_key
 from .matrix import Row, rows_for
-from .naming import RankCoords, Topology, member_name, read_back
+from .naming import AXES, RankCoords, Topology, member_name, read_back
 from .provenance import Provenance
 from .resolution import Resolution
 from .rules import ArtifactRefusal, Rule
@@ -210,6 +210,17 @@ class ArtifactStore:
                 "is not text would leave the entry's identity depending on how "
                 "json.dumps happened to render it",
             )
+        for axis in AXES:
+            stated = key.values.get(axis, getattr(topology, axis))
+            if stated != getattr(topology, axis):
+                raise ArtifactRefusal(
+                    Rule.RESOLUTION,
+                    f"{key} states `{axis}` {stated} and its topology is "
+                    f"{topology.text}",
+                    "key an entry at the layout it was produced at; an entry "
+                    "keyed at one layout and holding another answers for a "
+                    "deployment nobody measured",
+                )
         prints = self._fingerprints(key, conditions, gates)
         self._check_members(key, topology, members)
         if self.directory_for(key).exists():
@@ -264,7 +275,7 @@ class ArtifactStore:
         if not (directory / ENTRY_FILE).is_file():
             raise ArtifactRefusal(
                 Rule.RESOLUTION,
-                f"no entry for {key}",
+                f"no entry for {key}{self._nearest(key)}",
                 f"nothing is published at {directory}; a refusal names the key "
                 "that missed, because a missing price is not a missing graph",
             )
@@ -318,6 +329,28 @@ class ArtifactStore:
             prints,
             gate_state,
         )
+
+    def _nearest(self, key: Key) -> str:
+        """The fields the nearest entry of the key's kind differs in, as text.
+
+        A miss at `-tp 2 --enable-expert-parallel` beside an entry at `-tp 2`
+        then says so, rather than leaving the reader to diff two keys by eye.
+        Fields compare as their JSON text, so `True` and `1` differ.
+        """
+        best = None
+        for path in sorted((self.root / key.kind.value).glob(f"*/{ENTRY_FILE}")):
+            try:
+                there = json.loads(path.read_bytes())["key"]
+                differ = [
+                    f"{name} ({there.get(name)!r} there)"
+                    for name, value in key.fields
+                    if json.dumps(there.get(name)) != json.dumps(value)
+                ]
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            if differ and (best is None or len(differ) < len(best)):
+                best = differ
+        return f"; the nearest entry differs in {', '.join(best)}" if best else ""
 
     def load(
         self,
