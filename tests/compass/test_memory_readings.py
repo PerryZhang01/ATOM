@@ -43,8 +43,8 @@ from transformers import PretrainedConfig
 
 import atom.compass.memory as memory_package
 from atom.compass.backends.geometry import dtype_bytes as element_bytes
+from atom.compass.backends.provenance import Method, combine
 from atom.compass.memory import (
-    Basis,
     MemoryRefusal,
     ModelTerms,
     PiecewiseCapture,
@@ -167,6 +167,13 @@ def no_device_readings(monkeypatch):
 
     monkeypatch.setattr(torch.cuda, "mem_get_info", refuse)
     monkeypatch.setattr(torch.cuda, "memory_stats", refuse)
+
+
+def spec_of(origin):
+    """The suite's document, stated at one origin."""
+    document = copy.deepcopy(DOCUMENT)
+    document["provenance"]["origin"] = origin
+    return MachineSpec.from_mapping(document)
 
 
 @pytest.fixture(scope="module")
@@ -313,7 +320,10 @@ def test_free_is_a_clean_box_and_not_a_reading(spec, qwen, tp_width):
     assert readings.free.total == (
         readings.total.total - readings.peak_torch.total - readings.non_torch.total
     )
-    assert all(term.basis is Basis.DERIVED for term in readings.free.terms)
+    for term, reading in zip(
+        readings.free.terms, (readings.total, readings.peak_torch, readings.non_torch)
+    ):
+        assert term.method is combine(t.method for t in reading.terms)
 
 
 @pytest.mark.parametrize("tp_width", [1, 2])
@@ -322,18 +332,18 @@ def test_every_term_names_where_it_came_from(spec, qwen, tp_width):
     for name, reading in readings.as_dict().items():
         for term in reading.terms:
             assert term.source.strip(), f"{name}.{term.name}"
-            if term.basis is Basis.SPEC:
+            if term.source.startswith("device."):
                 path = term.source.partition("[")[0].partition(" x ")[0]
                 assert path in spec.values, f"{name}.{term.name} names {path!r}"
-            if term.basis is Basis.DECLARED:
+            if term.method is Method.DECLARED:
                 assert term.note.strip(), f"{name}.{term.name}"
 
 
-def test_the_declared_terms_are_exactly_weights_buffers_and_activations(spec, qwen):
-    # Each is a declared formula until its source exists: a meta build for
-    # weights, a recording for buffers, a liveness walk for activations.
-    readings = readings_at(spec, qwen, 1)
-    assert set(readings.peak_torch.declared) == {"weights", "buffers", "activations"}
+def test_on_a_probed_spec_the_declared_terms_are_weights_and_activations(qwen):
+    # Each is declared until its source exists: a meta build for weights, a
+    # measured entry or a liveness walk for activations.
+    readings = readings_at(spec_of("probed"), qwen, 1)
+    assert set(readings.peak_torch.declared) == {"weights", "activations"}
 
 
 @pytest.mark.parametrize("tp_width", [1, 2])
@@ -466,7 +476,7 @@ def test_enforce_eager_reserves_nothing_and_says_why():
 
 def test_a_reading_cannot_be_spent_as_a_number():
     # A summed check read +13.8% while holding a 25% error in one term.
-    reading = Reading("x", (Term("a", 3, Basis.DERIVED, "somewhere"),))
+    reading = Reading("x", (Term("a", 3, Method.ANALYTICAL, "somewhere"),))
     assert not hasattr(reading, "__int__")
     assert not hasattr(reading, "__index__")
     assert "a" in str(reading) and "somewhere" in str(reading)
@@ -474,12 +484,12 @@ def test_a_reading_cannot_be_spent_as_a_number():
 
 def test_a_term_without_a_source_is_refused():
     with pytest.raises(ValueError, match="states no source"):
-        Term("a", 3, Basis.SPEC, "  ")
+        Term("a", 3, Method.MEASURED, "  ")
 
 
 def test_a_declared_term_must_say_what_replaces_it():
-    with pytest.raises(ValueError, match="does not say what replaces it"):
-        Term("a", 3, Basis.DECLARED, "a coefficient")
+    with pytest.raises(ValueError, match="a: a declared answer needs a note"):
+        Term("a", 3, Method.DECLARED, "a coefficient")
 
 
 def test_a_reading_with_no_terms_is_refused():
@@ -489,8 +499,8 @@ def test_a_reading_with_no_terms_is_refused():
 
 def test_the_total_follows_the_terms_rather_than_being_stored():
     terms = (
-        Term("a", 10, Basis.SPEC, "device.memory.capacity_bytes"),
-        Term("b", -4, Basis.DERIVED, "a reading"),
+        Term("a", 10, Method.MEASURED, "device.memory.capacity_bytes"),
+        Term("b", -4, Method.ESTIMATED, "a reading"),
     )
     assert Reading("x", terms).total == 6
 
@@ -513,6 +523,9 @@ def test_an_absent_partial_rotary_factor_says_so_in_the_table(qwen):
     assert "absent from config, assumed" in assumed.buffers.source
     assert "absent from config, assumed" not in stated.buffers.source
     assert assumed.buffers.nbytes == 4 * stated.buffers.nbytes
+    assert stated.buffers.method is Method.ANALYTICAL
+    assert assumed.buffers.method is Method.DECLARED
+    assert "1.0 is assumed" in assumed.buffers.note
 
 
 def test_the_model_dtype_sizes_the_model_terms(qwen):
@@ -566,7 +579,7 @@ def test_a_measured_entry_prices_the_activations_only_for_its_model_and_width(qw
         ).activations
 
     term = activations(arch, digest, 1)
-    assert term.basis is Basis.SPEC
+    assert term.method is Method.ESTIMATED and not term.validated
     assert term.nbytes == WARMUP_TOKENS * 180_480
     assert "device.activations[qwen3.8-27b].bytes_per_token[1]" in term.source
     # Another size of the same architecture, an unmeasured width, and another
@@ -577,7 +590,7 @@ def test_a_measured_entry_prices_the_activations_only_for_its_model_and_width(qw
         ("Qwen3ForCausalLM", digest, 1),
     ):
         fallback = activations(*key)
-        assert fallback.basis is Basis.DECLARED, key
+        assert fallback.method is Method.DECLARED, key
         assert fallback.nbytes == MODEL_TERMS_BY_DTYPE["bfloat16"]["activations"]
 
 
@@ -640,11 +653,9 @@ def test_the_negative_box_refusal_carries_its_decomposition(spec, qwen):
     assert "gpu-memory-utilization" in message
 
 
-def test_a_deployment_flag_is_not_labelled_geometry():
-    # enforce_eager is a serving knob, so it belongs to the deployment rather
-    # than to the machine or the model.
-    assert reserves(enforce_eager=True).terms[0].basis is Basis.DEPLOYMENT
-    assert not hasattr(Basis, "GEOMETRY")
+def test_the_eager_branch_mirrors_atom_and_is_analytical():
+    # ATOM reserves nothing under enforce_eager; mirroring that is exact.
+    assert reserves(enforce_eager=True).terms[0].method is Method.ANALYTICAL
 
 
 # --- fields the model's config.json does not state ---------------------------

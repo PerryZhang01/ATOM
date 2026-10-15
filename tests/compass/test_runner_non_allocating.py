@@ -636,7 +636,7 @@ def test_every_other_module_imports_here(path):
     A source scan cannot see a driver reached through an import of an import,
     and the scan's own predicate is blind to a module-scope `try:`/`except
     ImportError:` in a module it does not read. Running the import is blind to
-    neither. On the tier that has no driver this is the whole property; on a
+    neither. In the CPU gate, with no driver, this is the whole property; on a
     machine that has one it degrades to a syntax and resolution check, which is
     why the scan above is kept as well.
     """
