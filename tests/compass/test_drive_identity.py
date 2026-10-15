@@ -1,16 +1,17 @@
 # SPDX-License-Identifier: MIT
 """run.json's identity. The source digest and aiter's version are read off
 planted git checkouts through `git_tree_root` and `git_described_root`, the host
-key through `run.host_key`, and the device off a planted `rocm-smi`."""
+key off the engine file a parity record wrote, and the device off a planted
+`rocm-smi`."""
 
 import json
 import os
 import shutil
 import subprocess
-from types import SimpleNamespace
 
 import pytest
 import torch
+from test_parity_record import _drive
 
 from atom.compass.drive import identity as drive
 from atom.compass.drive.gpu import GpuRefusal
@@ -66,20 +67,28 @@ def planted(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
     (tmp_path / "model").mkdir()
     (tmp_path / "model" / "config.json").write_text('{"hidden_size": 8}')
-    config = SimpleNamespace(
-        model=str(tmp_path / "model"),
-        enforce_eager=True,
-        kv_cache_block_size=16,
-        kv_cache_dtype="bf16",
-        quant_config=SimpleNamespace(compute_hash=lambda: "q"),
-        tensor_parallel_size=1,
-    )
-    return trees, config
+    config = _drive(tmp_path / "steps", monkeypatch, {0: [0]})[0][2].config
+    config.model = str(tmp_path / "model")
+    return trees, config, (tmp_path / "steps" / "dp0.engine.json", config.model)
+
+
+def test_the_host_key_is_the_one_the_config_that_wrote_the_engine_file_gives(
+    planted,
+):
+    _, config, served = planted
+    key = drive.identity(*served, ARGV)["host_key"]
+    assert key == host_key(config)
+    assert key["model"].startswith("sha256:") and key["engine"]["ladder"] == [
+        1,
+        2,
+        4,
+        8,
+    ]
 
 
 def test_the_identity_holds_its_entries_and_no_workload(planted):
-    _, config = planted
-    run = drive.identity(config, ARGV)
+    _, config, served = planted
+    run = drive.identity(*served, ARGV)
     assert run == {
         "format_version": drive.FORMAT_VERSION,
         "argv": ARGV,
@@ -90,19 +99,18 @@ def test_the_identity_holds_its_entries_and_no_workload(planted):
         "profiled": False,
         "phases": {},
     }
-    assert run["host_key"]["model"].startswith("sha256:")
     json.dumps(run)
 
 
 def test_the_source_digest_is_the_tree_git_archive_ships(planted):
-    trees, config = planted
-    source = drive.identity(config, ARGV)["source"]
+    trees, _, served = planted
+    source = drive.identity(*served, ARGV)["source"]
     assert source["revision"] == _git(trees["atom"], "rev-parse", "HEAD^{tree}")
     assert (source["revision_kind"], source["dirty"]) == ("tree", 0)
 
     (trees["atom"] / "a.py").write_text("a = 2\n")
     (trees["aiter"] / "a.py").write_text("a = 2\n")
-    run = drive.identity(config, ARGV)
+    run = drive.identity(*served, ARGV)
     assert (run["source"]["revision"], run["source"]["dirty"]) == (
         source["revision"],
         1,
@@ -110,23 +118,23 @@ def test_the_source_digest_is_the_tree_git_archive_ships(planted):
     assert run["stack"]["aiter"] == "v0-dirty"
 
     _git(trees["atom"], "commit", "-qam", "edit")
-    assert drive.identity(config, ARGV)["source"]["revision"] != source["revision"]
+    assert drive.identity(*served, ARGV)["source"]["revision"] != source["revision"]
 
 
 def test_each_named_gpu_is_recorded_with_its_model(planted):
-    _, config = planted
+    *_, served = planted
     model = {"series": "AMD Instinct MI308X", "sku": "M3080202", "gfx": "gfx942"}
-    assert drive.identity(config, ARGV, (7, 6))["device"] == [
+    assert drive.identity(*served, ARGV, (7, 6))["device"] == [
         {"index": 7, **model},
         {"index": 6, **model},
     ]
     with pytest.raises(GpuRefusal, match=r"^rocm-smi lists no GPU \[8\]"):
-        drive.identity(config, ARGV, (7, 8))
+        drive.identity(*served, ARGV, (7, 8))
 
 
 def test_a_run_is_profiled_only_once_it_enters_its_profiling_phase(planted):
-    _, config = planted
-    run = drive.identity(config, ARGV)
+    *_, served = planted
+    run = drive.identity(*served, ARGV)
     with drive.phase(run, "warm-up"):
         pass
     assert run["profiled"] is False
