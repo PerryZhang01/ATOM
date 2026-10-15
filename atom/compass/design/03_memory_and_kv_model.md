@@ -109,13 +109,13 @@ scans is not. ATOM already computes these sums itself — `detailed_sqsq`, `deta
 and `detailed_sk` on `scheduler.py::ScheduledBatch` are exactly `Σ N_Q²`, `Σ N_Q·N_KV` and
 `Σ N_KV`, so the features are read from the batch rather than recomputed.
 
-**3. The calibration must have *seen* high-hit steps, or they are all extrapolated.**
+**3. The calibration must have *seen* high-hit steps, or they are all outside the hull.**
 This is the consequence with teeth, and it belongs here because it is easy to miss. A
 cache-hit step has a shape that a prefix-cache-disabled sweep **never produces**: small
 `N_Q`, very large `N_KV_cached`, a ratio far off the `N_Q ≈ N_KV` diagonal that an
 uncached chunked prefill walks. Calibrating with prefix caching off and predicting with
 it on puts every hit step outside the convex hull of doc `09` D58, and the honest
-outcome is most of the workload priced `extrapolated`, reported apart from the measured
+outcome is most of the workload priced `estimated` and unvalidated, reported apart from the validated
 result (`08` D50.1).
 
 So: **doc `07`'s Phase 0 discovery must run with prefix caching enabled**, matching the
@@ -244,7 +244,7 @@ Where each reading comes from:
   cannot bind. The prior design needed a `free_was_binding()` guard to refuse records
   where it had; that guard is unnecessary here.
 
-### Declared scope boundary
+### Stated scope boundary
 
 Compass therefore models a **dedicated** device. It will not predict the OOM that a
 shared box produces, and it will not reproduce a neighbour-induced admission cliff. That
@@ -347,13 +347,13 @@ not own cannot measure any of them.
 
 ### Options considered
 
-1. Per-field provenance tags on the spec, measured where possible and declared transfer
+1. Per-field provenance tags on the spec, probed where possible and a stated transfer
    otherwise.
 2. A separate calibration table keyed by (device, ROCm build, topology) — which would make
    explicit that these constants belong to the **software** stack as much as the silicon.
 3. Model `non_torch` analytically from its parts. Attempted in the prior work and failed —
    no fixed-plus-per-peer form fits. Open research, not a task.
-4. Plain declared configuration, authored outside Compass.
+4. Plain stated configuration, authored outside Compass.
 
 ### Decision
 
@@ -374,7 +374,7 @@ none read from a runtime:
 The runtime and library memory constants above are not in it (revised 2026-10-14):
 `compass measure memory` takes them on the target per configuration, and a run reads that
 `memory_readings` entry and refuses without it (`07` D38, Phase 2). For a card nobody has
-run, developer tooling outside the CLI declares the entry, every reading marked assumed,
+run, developer tooling outside the CLI states the entry, every reading marked assumed,
 and a run records that it is.
 
 ### The one honesty measure retained
@@ -414,10 +414,10 @@ KV gate, a spec that cannot be recovered from the artifact makes an error unattr
   above W=1" is well supported as a *shape*; what rests on one point is the claim that the
   transition happens at W=2 rather than being a function that merely looks flat over the
   widths measured. A fourth width would not help; a second *model* would.
-- The spec-authoring tools are doc `05` D26's (probe tiers emitting fragments,
+- The spec-authoring tools are doc `05` D26's (probe classes emitting fragments,
   `merge`/`validate`/`explain`); the memory readings are doc `07`'s Phase 2,
   `measure memory`. The tools probe a real card where one is available and fall back to
-  declared datasheet values plus a mandatory derate where one is not.
+  datasheet values plus a mandatory derate where one is not.
 
 ---
 
@@ -451,7 +451,7 @@ source per term; the bullets below say why each is what it is.
 | Term | Source | Issue |
 |---|---|---|
 | weights | the meta build the simulated runner's `_build_and_load_model` already makes for the KV-pool walk: the model class under `torch.device("meta")` with ATOM's own quantisation config and groups at the deployment's widths, bytes summed over unique parameter storages, so a tied `lm_head`, which shares the embedding's storage, counts once | [#699](https://github.com/jgong5/ATOM/issues/699) |
-| buffers | the declared formula over fields the model's `config.json` states, labelled declared, until a recording exists | [#701](https://github.com/jgong5/ATOM/issues/701) |
+| buffers | the formula over fields the model's `config.json` states, analytical, or declared where it assumes `partial_rotary_factor`, until a recording exists | [#701](https://github.com/jgong5/ATOM/issues/701) |
 | activations | one coefficient per model and width, from a machine-spec entry keyed by architecture, `config.json` sha256 and tensor-parallel width: a real run's `peak - current` after warmup over the warmup tokens, times the deployment's warmup tokens. A model with no entry takes a geometry form, labelled declared. The liveness walk replaces both once capture lands | [#704](https://github.com/jgong5/ATOM/issues/704), [#705](https://github.com/jgong5/ATOM/issues/705) |
 | invisible scratch | inside the activation coefficient; a term of its own only under the liveness walk (`04` T4) | [#704](https://github.com/jgong5/ATOM/issues/704) |
 | persistent | `persistent_forward_buffer_bytes` in the run's `memory_readings` entry | — |
@@ -471,14 +471,14 @@ term against the same term of a recorded real run, wired for stage 2's paired ru
   `__init__`, so the meta build already shares the embedding's storage, and the loader
   copies into that storage, so the head is resident once and counting each storage once
   counts it once. Counting it per parameter instead adds one embedding, 0.290 GiB on the
-  0.6B, which was the whole of a gap once. A declared `parameter_count × dtype / TP`
+  0.6B, which was the whole of a gap once. A stated `parameter_count × dtype / TP`
   is not a substitute: one dtype cannot state FP4 experts with e8m0 scales beside FP8
   and bf16 parameters, and under DP-attention TP is 1 while the experts shard over the
   DP group, so at the nightly DeepSeek-V4-Pro DPA cell it was refused at 10.76x the card
   (#545).
-- **Buffers** — the declared formula over fields `config.json` states, labelled declared,
-  until a recording exists (`ModelTerms.from_declared_config`,
-  [#701](https://github.com/jgong5/ATOM/issues/701)). The label is there because the
+- **Buffers** — the formula over fields `config.json` states, analytical, or declared
+  where it assumes `partial_rotary_factor`, until a recording exists (`ModelTerms.from_config`,
+  [#701](https://github.com/jgong5/ATOM/issues/701)). The assumption is named because the
   first formula, which matched the 0.6B exactly, was 4x wrong on the 27B (partial rotary).
 - **Activations** — until capture lands, the coefficient measured on a real run (the
   table above), keyed by architecture, `config.json` sha256 and tensor-parallel width,
@@ -525,7 +525,7 @@ for the model — which is the per-term rule above, not the aggregate.
   measured coefficient, and a model with no entry takes a labelled geometry form, whose
   error against the coefficient is what #705 measures (`10` T34). **Cross-check against
   `04`, for when the walk lands:** the liveness walk is `04` D22, which resolves observationally
-  under fake tensors and treats an opaque leaf's internal scratch as a *declared per-leaf
+  under fake tensors and treats an opaque leaf's internal scratch as a *stated per-leaf
   constant* rather than a walked one. So this term is not simply "blocked on a graph" —
   it is blocked on a graph **plus** the scratch constants of `04` T4, and the second is
   the one with no law behind it. The measured spread that makes it load-bearing:
@@ -548,6 +548,6 @@ for the model — which is the per-term rule above, not the aggregate.
 | # | Decision | Date |
 |---|---|---|
 | D13 | Do not simulate the KV pool. Stub `allocate_kv_cache`; ATOM's real `BlockManager`, `BlockPool`, prefix index and `plan_pools` run unmodified. | 2026-09-18 |
-| D14 | Substitute the five device readings, reuse ATOM's budget arithmetic and `plan_pools`. Compass models a dedicated device; that is a declared scope boundary. | 2026-09-18 |
+| D14 | Substitute the five device readings, reuse ATOM's budget arithmetic and `plan_pools`. Compass models a dedicated device; that is a stated scope boundary. | 2026-09-18 |
 | D15 | The device specification is an input artifact authored outside Compass, carrying capacity, compute, bandwidth, interconnect and derate factors. It is echoed into every run artifact. The runtime memory constants are `measure memory`'s `memory_readings` entries, per configuration, which a run refuses without. | 2026-09-18; revised 2026-10-14 (#851) |
 | D16 | Validate every non-KV memory term individually, never as a sum. Keep ATOM's graph-pool estimator and the measured one as two separate functions. Revised: one source per term. Weights come from a meta build in the simulated runner at the deployment's group widths. Activations come from a coefficient keyed by architecture, `config.json` sha256 and tensor-parallel width, with the scratch inside it and a geometry form as fallback, until the liveness walk lands. The graph pool reserves for the deployment's own capture mode, and the per-term check is wired. | 2026-09-18; revised 2026-10-10 |

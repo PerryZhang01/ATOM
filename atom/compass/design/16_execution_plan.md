@@ -14,7 +14,7 @@ numbers that a single figure here cannot distinguish.
 **Revised 2026-09-30 by D95, and aligned with the e2e stage order
 of [#627](https://github.com/jgong5/ATOM/issues/627).** Priorities changed: M1 is #627's
 stages 1 and 1b, and M2 is v1, its stage 3. Phase 0 through Wave 3 stand, with
-the rows D95 changes marked in place; Phase 0b is new; Waves 4–6 replace the coarse
+the rows D95 changes marked in place; Phase 0b is new; Waves 4–6 replace the rough
 sketch that followed Wave 3.
 
 **Revised 2026-10-13 by the owner's ruling on
@@ -23,6 +23,10 @@ toolchain's steps half (`13` D80) is stage 2's, S2.7, built ahead of the ops hal
 stays W4.1's; the module layout names where each piece goes. Revised 2026-10-14 by the
 owner's [ruling on #937](https://github.com/jgong5/ATOM/pull/937#issuecomment-6161726104):
 S2.7 adds `measure memory`, and grading decides whether a run is gradeable.
+
+**Revised 2026-10-14 by the naming record in
+[#952](https://github.com/jgong5/ATOM/issues/952):** tasks and gates carry its names, the
+step linear law, the step grid (`17`), the analytical laws, and the CPU and GPU gates.
 
 **Scope.** How the work is organised, allocated and gated; what happens first; and what
 each stage must produce. It is **detailed through M2**. Work after v1 is listed, not
@@ -78,7 +82,7 @@ part of v1, added after that
 - **The TTFT target is 15%, not 10%** (`README.md`). TTFT is the hardest serving metric
   to predict in every surveyed tool, and it carries prefill, queueing and P/D transfer at
   once. The other targets stand.
-- **Tier 0 moves onto the critical path.** `10` D68 authored analytic laws during the
+- **The analytical laws move onto the critical path.** `10` D68 authored analytical laws during the
   empirical campaign as a side wave; the MI455 projection makes them an M2 deliverable.
 - **A projection is sound, not graded.** MI455 has no ground truth in M2, so the
   projection is held to these checks instead of an error bar: the roofline is a lower
@@ -107,7 +111,7 @@ part of v1, added after that
   `-tp 2 --enable-dp-attention --enable-expert-parallel`, the form in which the all-to-all
   runs, and is the cheap leg of the EP8 step's parity test.
 - The width-transfer question (T21) leaves the critical path: M2 is graded at the widths
-  the nightly configurations run, not extrapolated across width.
+  the nightly configurations run, not projected across width.
 - Target dates live outside the design; the plan stays sized in lines of code, per
   *What this plan does not contain*.
 
@@ -122,7 +126,7 @@ atom/compass/
   clock/      CA core, grant rule, channel table and path distances, LP registry, both transports
   detect/     straggler check, stall diagnostic, CI clock-source lint
   runner/     CompassModelRunner - the seam, RPC surface, forward semantics
-  backends/   CostBackend interface, StepCost, provenance; tier 0 / a / b
+  backends/   CostBackend interface, StepCost, provenance and method; the step-level and op-level backends
   memory/     device-reading substitution, per-term model
   ir/         Cost IR (Seq/Repeat/Par), nested-Repeat detector, opaque leaves
   capture/    FakeTensorMode capture, guard domains
@@ -134,7 +138,7 @@ atom/compass/
   validate/   grading: whether a client run is gradeable, the separable results
   metrics/    per-step sampling, backfill
   kv/         simulated KV connector
-  cli.py      the `compass` console script, declared in pyproject.toml (13 D80); it parses and dispatches only
+  cli.py      the `compass` console script, registered in pyproject.toml (13 D80); it parses and dispatches only
 tests/compass/          mirrors the above
 <out-of-tree package>   the aiperf adapter (never inside ATOM)
 ```
@@ -162,7 +166,7 @@ five-slot cap.
 
 **Why these seven.** Each can invalidate work that would otherwise be built on top of it.
 P0.3 swung an estimate by ~2,000 lines for one hour's work; it has since run and the swing
-did not happen. P0.4 decides whether tier b has an IR at all, and **it is the task most
+did not happen. P0.4 decides whether the op-level backend has an IR at all, and **it is the task most
 likely to reshape Waves 2–4** — if tracing does not work at TP>1, `capture/` and `ir/`
 change shape. The plan marks that edge rather than pretending the DAG is stable across it.
 
@@ -186,7 +190,7 @@ on anything else, and each ends in an escalation, not a decision.
 | **P0b.1** | Trace DeepSeek-V4-Pro under `FakeTensorMode` with `--load_dummy empty` at the nightly shape (TP8 with DP-attention, MTP on), with expert parallelism off as the nightly runs it and at EP8. Name every operator with no fake or meta implementation — the FP4 MoE, the CSA indexer, mHC, MORI dispatch/combine at EP8, the MTP draft path are the expected ones — and whether each needs a shape rule only or more. **Answered on #501** | spike → `capture/` | ~200 LOC | CPU container; a clean node only if model construction reaches the driver |
 | **P0b.2** | DP-attention in the fake-model run, expert parallelism off and at EP8: which per-step exchanges the DP group makes (metadata sync, dummy batches for idle ranks, the variable-size gather of the peers' tokens with EP off, the MORI all-to-all at EP8), and whether each is already a classified site in `atom/compass/audit/sync_sites.json` | reading + one CPU run | ~50 LOC | — |
 | **P0b.3** | What the real side needs recorded: per-request timings and the exact launch configuration. The nightly P/D runs of `recipes/mesh/DeepSeek-V4.md` define the configurations, not ground truth: the owner ruled on #503 that the paired runs are re-run on the dedicated MI355X pair. What is left is reading what a run records from the upstream workflow (`.github/workflows/atomesh-benchmark.yaml`) and its bench scripts, so W4.3 records the same | reading | ~0 | — |
-| **P0b.4** | The MI455 inputs: which fields of the `05` machine spec the tier-0 laws need for DeepSeek-V4-Pro's operator families (matrix-core rate per precision including FP4 and FP8, HBM and LDS bandwidth, the in-node fabric), and for each one a source or an "assumed" mark | reading + owner input | ~0 | — |
+| **P0b.4** | The MI455 inputs: which fields of the `05` machine spec the analytical laws need for DeepSeek-V4-Pro's operator families (matrix-core rate per precision including FP4 and FP8, HBM and LDS bandwidth, the in-node fabric), and for each one a source or an "assumed" mark | reading + owner input | ~0 | — |
 
 **P0b.1 is the one most likely to reshape Waves 4–6**, for the reason P0.4 was: if the
 trace fails, `capture/` and the whole pricing path change shape. **P0b.4 needs the
@@ -200,7 +204,7 @@ question, not an engineering one.
 P0.2's result, and the reason the agents' original test gate cannot be run as written.
 That gate, `08` D43.1 and ATOM's own `CLAUDE.md` all assert the same thing — that the
 187-file suite under `tests/` runs GPU-free and green — and P0.2 measured both halves
-false. What is GPU-free is a **tier**, run per task; the rest is a GPU superset, run per
+false. What is GPU-free is the **CPU gate**, run per task; the rest is the GPU gate, a superset, run per
 wave as a delta. Re-derived on 2026-09-20 after review: the first derivation iterated
 *whole-suite collection* to a fixed point, which measures a property of the collection
 order, not of the files.
@@ -229,7 +233,7 @@ both carried, "32 files reach the driver, 28 of them at collection time via `roc
 joined two real numbers wrongly: the 28 counts `rocminfo` across the *whole* suite,
 `tests/plugin/` included (25 + 3), and was attached to a non-plugin set of 32.
 
-- **Per task — the CPU tier, re-measured by P0.1 and superseding the counts above.**
+- **Per task — the CPU gate, re-measured by P0.1 and superseding the counts above.**
   `tests/` minus `tests/plugin/` (30 files) minus the 29 driver-dependent files in
   `scripts/compass/cpu_gate_exclude.txt`, driven by `scripts/compass/gate_cpu.sh`:
   **130 of the 189 test files at `105ca4197`, 4030 passed, 0 failed, 149 skipped, 3 xfailed,
@@ -294,24 +298,24 @@ header read "never hand-edit", and three of those four — `test_dp_metadata.py`
 `test_dp_sync_layout.py` and `test_forward_mode.py` — collect *and pass* in a driverless
 container. Prose saying the list is 32, or that those three need the driver, is stale.
 
-The list is regenerated under the *batch* the tier runs, because that is the configuration
+The list is regenerated under the *batch* the CPU gate runs, because that is the configuration
 whose green is claimed — and the per-file census above is a separate question, not a
 replacement for it. Both are needed: `test_postprocess_width.py` and
-`test_v4_checkpoint_slot_copy.py` sit inside the tier, module-skip in the batch
+`test_v4_checkpoint_slot_copy.py` sit inside the CPU gate, module-skip in the batch
 ("model_runner imports aiter at module load", "the V4 builder's module imports aiter at
 load"), and fail collection with `rocminfo` when run alone; the three CPU-green files above
 go the other way. That pair is also the whole difference between the two counts of silent
-files — 20 per file, 22 in the tier. Recording only the batch is how three CPU-green files
+files — 20 per file, 22 in the CPU gate. Recording only the batch is how three CPU-green files
 stayed excluded and how one attributed cause replaced four.
 
-**The CPU tier's blind spot is a file, not a sentence.** P0.2 stated it as prose naming four
+**The CPU gate's blind spot is a file, not a sentence.** P0.2 stated it as prose naming four
 areas — EPLB, DP metadata, cudagraph bounds, block tables — which nothing read, and which
-named two files (`test_dp_metadata`, `test_dp_sync_layout`) the CPU tier does in fact cover.
+named two files (`test_dp_metadata`, `test_dp_sync_layout`) the CPU gate does in fact cover.
 It is now `scripts/compass/gpu_gate_triggers.txt`, **30 paths** in the tree committed here,
 generated by `regen_gpu_gate_triggers.sh` and never hand-edited — the counts in its own
-header included (at `fada7424e`: 189 test files, 130 CPU tier, 108 of them collecting, 47 candidates, 99
+header included (at `fada7424e`: 189 test files, 130 CPU gate, 108 of them collecting, 47 candidates, 99
 covered). The rule it applies: an `atom` module named by an excluded test is a blind spot
-**unless a CPU-tier test that actually runs names it too**. A module both tiers import is
+**unless a CPU-gate test that actually runs names it too**. A module both gates import is
 covered when the CPU gate runs, so triggering on it would make the gate cry wolf. A trailing
 `/` matches a subtree. `gate_cpu.sh` matches the diff against that file and **exits 98 unless
 `COMPASS_GPU_GATE_DONE` names this tree's own HEAD**; where it can compute neither a diff nor
@@ -327,8 +331,8 @@ what keeps the headline example, and one currently changes no path:
   column 0 on both sides and silently dropped `atom/model_ops/topK.py`, whose only
   excluded-side reference is `test_moe_dp_token_capacity.py::test_dpa_capacity_fits_gathered_topk_metadata`, indented under exactly such
   a guard.
-- *Coverage is credited only for a module-level import.* An indented import in a CPU-tier
-  file is not proof that the CPU tier executes it, and crediting it would let a never-taken
+- *Coverage is credited only for a module-level import.* An indented import in a CPU-gate
+  file is not proof that the CPU gate executes it, and crediting it would let a never-taken
   branch suppress a trigger. **This is the part that keeps
   `atom/model_engine/model_runner.py`** — the module Compass's runner seam replaces.
   `tests/test_mla_index_cache.py` imports `ModelRunner` at
@@ -337,24 +341,24 @@ what keeps the headline example, and one currently changes no path:
   `xiaobizh_n18_cpu`: crediting coverage at any indentation drops the set 30 → 29, losing
   `topK.py`; doing that *and* crediting non-collecting files drops it 30 → 27, losing
   `model_runner.py`, `aiter_mla.py` and `topK.py`.
-- *Coverage is credited only from a CPU-tier file that collects at least one test.* 22 of the
-  130 CPU-tier files collect none. On this tree that probe **removes no path**: 30 triggers
+- *Coverage is credited only from a CPU-gate file that collects at least one test.* 22 of the
+  130 CPU-gate files collect none. On this tree that probe **removes no path**: 30 triggers
   with it, 30 without, difference empty — measured at `236abfd9a` in `xiaobizh_n18_cpu`,
   where it withholds 15 coverage paths, and the only one of those that is also a candidate,
   `atom/model_ops/v4_kernels/state_writes.py`, is absorbed either way by the candidate
   subtree entry above it. It is kept as a forward guard for trees this one does not
-  represent, and it is not free: a full `pytest --collect-only` over the CPU tier and one
+  represent, and it is not free: a full `pytest --collect-only` over the CPU gate and one
   more refusal path (exit 97). Whether that guard earns its cost is an open call
   (principle 3), not a settled one.
 
 **That file errs in both directions, so do not cite it as a floor.** Toward *firing*: an
-indented import in a CPU-tier test that does run is not credited, so a module can be listed
-although the CPU tier reaches it, and coverage is subtracted by exact string, so a candidate
+indented import in a CPU-gate test that does run is not credited, so a module can be listed
+although the CPU gate reaches it, and coverage is subtracted by exact string, so a candidate
 subtree entry is never cancelled by coverage of a file under it. Toward *silence*: imports
 are read as text, not resolved as a graph, so a transitive import, an `importlib` call or a
 re-export is invisible. A path *absent* from `gpu_gate_triggers.txt` is not a claim that the
-CPU tier covers it, and a path *present* is not proof that it does not. Of the two mistakes
-this gate prefers the first, because running the GPU tier when in doubt is never the wrong
+CPU gate covers it, and a path *present* is not proof that it does not. Of the two mistakes
+this gate prefers the first, because running the GPU gate when in doubt is never the wrong
 one. Judging that a change sits outside the blind spot remains the task's own call.
 
 **A task touching EPLB, CUDA-graph capture bounds, block tables, the paged index builders or
@@ -367,7 +371,7 @@ and `test_prefill_prefix_vs_native.py`, the paged-index and prefix-cache areas `
 are CPU-green, measured above, and booking a GPU for them spends the resource the booking
 queue below exists to ration.
 
-**Three files are covered by neither tier**, measured in `xiaobizh_n18` at `83daf636d`:
+**Three files are covered by neither gate**, measured in `xiaobizh_n18` at `83daf636d`:
 `test_prefix_cache_accuracy.py` (`no tests ran`), `test_kv_connector_scheduler.py` and
 `test_transfer_engine.py` (`1 skipped`, ATOM #690). The first and the second are cited by
 `08` D43.1 as coverage Compass keeps. See T80 in [`12_open_items.md`](12_open_items.md).
@@ -402,8 +406,8 @@ Phase 0's environment. All CPU-only.
 | **W1.2** | Synthetic-LP harness modelling ATOM's **verified** topology — the ZMQ/shm/Gloo links of `01` D1 and the K1–K9 mechanisms of D4 — plus adversarial scenarios: a send missing from the sender's send log (induced straggler), a duplicate seq on one channel, a wait the CA cannot see | `tests/compass/clock/` | 400–600 | consumes W1.1 |
 | **W1.3** | Causality detectors (`01` D3.2): straggler check on arrival and at each drain (fails the run), `DIAG_S` stall diagnostic (keeps waiting, never aborts), CI clock-source lint | `detect/` | 250–400 | consumes W1.1 |
 | **W1.4** | `CompassModelRunner` skeleton: the `--runner-qualname` subclass, the full RPC surface, and the three forward semantics of `02` D10 (deferred output, the meaningful-step unit, `produces_output`) | `runner/` | 400–600 | implements the runner seam |
-| **W1.5** | `CostBackend` interface, `StepCost` with its breakdown, the provenance vocabulary and the resolver ladder | `backends/` | 200–300 | implements the backend API |
-| **W1.6** | M1 fake model: HF-config geometry plus the shape-analytic cost stub of `02` D12, including the quadratic query term | `backends/` | 300–450 | consumes W1.5 |
+| **W1.5** | `CostBackend` interface, `StepCost` with its breakdown, the provenance vocabulary and the resolver | `backends/` | 200–300 | implements the backend API |
+| **W1.6** | M1 fake model: HF-config geometry plus the step stub of `02` D12, including the quadratic query term | `backends/` | 300–450 | consumes W1.5 |
 | **W1.7** | Machine-spec schema, `merge` / `validate` / `explain`. No probes yet | `spec/` | 400–600 | implements the spec artifact |
 | **W1.8** | Wire-contract fields on ATOM's real endpoint: one `compass` object each direction (`06` D28) | ATOM entrypoints | 100–200 | implements the wire contract |
 | **W1.9** | aiperf adapter package, out of tree: clock client, pacing redirect, latency anchors from response fields | out-of-tree | 450–650, reopened | consumes W1.8 |
@@ -489,7 +493,7 @@ with expert parallelism on: EP2 in its non-degenerate form,
 `-tp 2 --enable-dp-attention --enable-expert-parallel` (T84), then EP8. PP2 left the test
 with W3.2. ATOM's own `test_dp_load_balance.py`, `test_dp_metadata.py`,
 `test_dp_sync_layout.py` and `test_forward_mode.py` already cover the pieces, CPU-only —
-all four are in the CPU tier at `3afcb4880`, which was not true when this was written: the
+all four are in the CPU gate at `3afcb4880`, which was not true when this was written: the
 last three sat in a 32-entry exclusion list until they were re-measured and found green.
 
 **Schedule early: a saturated cell on the PDES runtime.** As soon as the vertical slice
@@ -501,31 +505,31 @@ structurally, that is worth knowing while the fake model is still the only thing
 
 ## Waves 4–6 — M2, which is v1
 
-Detailed now, because M2 overlaps M1: calibration and tier 0 run alongside Waves 1–3 on
-their own hardware, and a coarse wave cannot be claimed as an issue. Every row that Phase
+Detailed now, because M2 overlaps M1: calibration and the analytical laws run alongside Waves 1–3 on
+their own hardware, and a rough wave cannot be claimed as an issue. Every row that Phase
 0b can reshape says so.
 
 ### Stage 2 — Qwen3.8-27B TP1 on MI308X, M2's first gate
 
 #627's stage 2 (D95): paired real and simulated cc-traces, graded by `08`. S2.1, the real
 side, serves any candidate backend. #627 ruled on 2026-10-10 that stage 2 prices with
-`09` D54's tier-a law, whose tasks #627 files, and that step fit stays off the stage-2 path
-for now. The rows after S2.1 are step fit's stage-2 evaluation (`17` D96), off stage 2's
+`09` D54's step linear law, whose tasks #627 files, and that the step grid stays off the stage-2 path
+for now. The rows after S2.1 are the step grid's stage-2 evaluation (`17` D96), off stage 2's
 critical path: no stage-2 issue waits on them, their MI308X measurements run only when node
-18 is idle from that path, S2.4 builds on the tier-a backend #738 delivered (#759), and none
+18 is idle from that path, S2.4 builds on the step linear backend #738 delivered (#759), and none
 of S2.2 to S2.6 depends on or edits #741's or #742's code. S2.7 builds the toolchain's
-steps half that step fit's rows run on (`13` D80), ahead of the ops half (W4.1); it edits
+steps half that the step grid's rows run on (`13` D80), ahead of the ops half (W4.1); it edits
 `validate/`, #741's and #742's code, through #902 and #920, and no stage-2 issue waits on
 it.
 
 | ID | Task | Module | Effort | Depends on |
 |---|---|---|---|---|
-| **S2.1** | The real side: Qwen3.8-27B TP1 on MI308X, aggregated, driven by cc-traces at `08` D50's stage-2 client counts; three or more spaced runs per client count (`08` D45), with per-request records and per-step tables, each forward's batch and unprofiled seconds (`08` D49 item 1). Filed under #627's stage-2 plan; step fit reads #743's registered runs read only, or, if they do not exist when it is ready, runs its own under the same rules, named apart from stage 2's (`17` D96) | `scripts/compass/` | 150–300 | GPU queue |
-| **S2.2** | Step fit's grid: a grid definition with its margin, and the boundary nodes the planner adds from the target's bounds (per decode rung, each B node's KV limit and `max_model_len - 1` as c nodes and B nodes where shapes cross the rung's limit; prefill on `(B, T, c)` with the token budget, `max_num_seqs` and `max_model_len - max_num_batched_tokens` as nodes), planned by step fit's planner, beside its backend and run inside `measure steps` (#909) from Phase 0 on the registered case set, then from the shapes of S2.1's step tables, any trace's shapes and never its timings; the cells the planned shapes fall in measured on MI308X per point by `measure steps` while node 18 is idle from the critical path, then topped up in the cells real batches fall in (`17` D98) | `backends/`, calibration | 300–500 | S2.7, S2.1, T27, GPU queue |
-| **S2.3** | Step fit's residual, fitted on real-run step times, bench replays or both, of traces 256 to 392, pooled with no source term and reported by source; the bundle from `fit steps --backend step-fit` (`17` D100; #907, #919) | `backends/`, calibration | 250–400 | S2.2 |
-| **S2.4** | `StepFitBackend` with its production wiring, built on the tier-a backend #738 delivered (#759): lookup, residual, bundle and startup checks, the run record and the `step_fit` run-file key (`17` D99–D104) | `backends/`, wiring | 500–800 | W2.4, S2.3 |
+| **S2.1** | The real side: Qwen3.8-27B TP1 on MI308X, aggregated, driven by cc-traces at `08` D50's stage-2 client counts; three or more spaced runs per client count (`08` D45), with per-request records and per-step tables, each forward's batch and unprofiled seconds (`08` D49 item 1). Filed under #627's stage-2 plan; the step grid reads #743's registered runs read only, or, if they do not exist when it is ready, runs its own under the same rules, named apart from stage 2's (`17` D96) | `scripts/compass/` | 150–300 | GPU queue |
+| **S2.2** | The step grid: a grid definition with its margin, and the boundary nodes the planner adds from the target's bounds (per decode rung, each B node's KV limit and `max_model_len - 1` as c nodes and B nodes where shapes cross the rung's limit; prefill on `(B, T, c)` with the token budget, `max_num_seqs` and `max_model_len - max_num_batched_tokens` as nodes), planned by the step grid's planner, beside its backend and run inside `measure steps` (#909) from Phase 0 on the registered case set, then from the shapes of S2.1's step tables, any trace's shapes and never its timings; the cells the planned shapes fall in measured on MI308X per point by `measure steps` while node 18 is idle from the critical path, then topped up in the cells real batches fall in (`17` D98) | `backends/`, calibration | 300–500 | S2.7, S2.1, T27, GPU queue |
+| **S2.3** | The step grid's residual, fitted on real-run step times, bench replays or both, of traces 256 to 392, pooled with no source term and reported by source; the bundle from `fit steps --backend step-grid` (`17` D100; #907, #919) | `backends/`, calibration | 250–400 | S2.2 |
+| **S2.4** | `StepGridBackend` with its production wiring, built on the step linear backend #738 delivered (#759): lookup, residual, bundle and startup checks, the run record and the `step_grid` run-file key (`17` D99–D104) | `backends/`, wiring | 500–800 | W2.4, S2.3 |
 | **S2.5** | `09` D59's validation of the residual: data held out from the fit within traces 256 to 392, three or more candidate families, a second axis (`17` D96) | calibration | 150–250 | S2.3 |
-| **S2.6** | Grading step fit by stage 2's protocol: `08` D44's three results on traces 0 to 255 of S2.1's real runs, no ranking gate; a run with any refusal is a coverage report (`17` D102) | `validate/` | 150–250 | S2.4, S2.5 |
+| **S2.6** | Grading the step grid by stage 2's protocol: `08` D44's three results on traces 0 to 255 of S2.1's real runs, no ranking gate; a run with any refusal is a coverage report (`17` D102) | `validate/` | 150–250 | S2.4, S2.5 |
 | **S2.7** | The toolchain's steps half (`13` D80): `record`, `trace steps`, `measure steps` on the bench of `07` D39, `measure memory`, `fit steps` and `fit host`, `run` with `--coverage` and what grading reads, the artifact kinds and rows of `07` D41 and D43, and the one entry; its tasks are #901 to #920 but for #909 (S2.2's) and #907 and #919 (S2.3's), and an issue for `measure memory` | `drive/`, `bench/`, `fit/`, `artifacts/` | 2700–3800 | W2.4, GPU queue |
 
 ### Wave 4 — DeepSeek-V4-Pro on MI355X
@@ -544,14 +548,14 @@ it.
 | **W4.10** | M2's EP8 step: `exclusive` occupancy honoured in the IR; group membership per P0.6; MORI dispatch/combine carried as the group's collective in W4.6's step, in place of the gather, and priced from W4.12 by a routing model (#501) | `ir/`, `backends/` | 350–600 | **P0.6**, **P0b.2**, W4.6, W4.12 |
 | **W4.11** | The EP8 real side: W4.3's DP-attention cells re-run with `--enable-expert-parallel` on the MI355X pair, with the same records and repeat, since no nightly cell passes it | `scripts/compass/` | 50–100 | W4.3, GPU queue |
 | **W4.12** | MORI dispatch/combine within a node on MI355X, measured and fitted (`09`) for W4.10's routing model | `backends/`, calibration | 150–300 | W4.1, W4.2, GPU queue |
-| **W4.13** | Step fit evaluated on DeepSeek-V4-Pro, not graded (`17` D105): a workload-planned grid and fit on the nightly TP cell (TP8, no DP-attention, no MTP, expert parallelism off) on MI355X, prefill node and decode node, compared with W4.3's per-step tables and with tier b where available, reported per `08` D47. Competes with W4.4 and W4.12 for MI355X | calibration | 200–350 | S2.2–S2.6, W4.3, GPU queue |
+| **W4.13** | The step grid evaluated on DeepSeek-V4-Pro, not graded (`17` D105): a workload-planned grid and fit on the nightly TP cell (TP8, no DP-attention, no MTP, expert parallelism off) on MI355X, prefill node and decode node, compared with W4.3's per-step tables and with the op-level backend where available, reported per `08` D47. Competes with W4.4 and W4.12 for MI355X | calibration | 200–350 | S2.2–S2.6, W4.3, GPU queue |
 
 ### Wave 5 — MI455 by roofline
 
 | ID | Task | Module | Effort | Depends on |
 |---|---|---|---|---|
 | **W5.1** | The MI455 machine spec in the `05` schema; every field sourced or marked assumed | `spec/` | 100–200 | **P0b.4** |
-| **W5.2** | Tier-0 laws for DeepSeek-V4-Pro's operator families, per precision (`10`) | `backends/` | 400–600 | W4.2 |
+| **W5.2** | Analytical laws for DeepSeek-V4-Pro's operator families, per precision (`10`) | `backends/` | 400–600 | W4.2 |
 | **W5.3** | The soundness check (`08` D50.2): the roofline at the spec's peaks, derates at 1 and no host floor, composed by the step's `Par` joins and TBO's overlap, is a lower bound on every measured MI355X step; the measured-to-roofline efficiency reported per operator family from W4.4's tables | `backends/`, `validate/` | 150–250 | W4.4, W4.6, W5.2 |
 | **W5.4** | The projection: MI355X efficiencies from W5.3 carried onto the MI455 spec, with every assumption written into the artifact | `backends/`, `artifacts/` | 150–300 | W5.1, W5.3 |
 | **W5.5** | The method's error: Qwen3.8-27B's MI308X tables projected to MI355X by W5.4's method and scored against real MI355X runs | `validate/` | 150–250 | W5.4, GPU queue |
@@ -578,7 +582,7 @@ Listed so it is not mistaken for an omission; each is re-planned when v1 lands.
 - EP beyond one node, and the multi-node rank mapping of T85.
 - GLM-5.2, Kimi-K3 and other models; MXFP4 beyond DeepSeek-V4-Pro's own experts.
 - DCP (decode context parallelism).
-- Step fit for Kimi-K3 with DCP: a grid and fit for that target, with DCP's correction as
+- The step grid for Kimi-K3 with DCP: a grid and fit for that target, with DCP's correction as
   an optional recipe (`17` D100).
 - Width transfer (T21) as a claim.
 - The upstream RFC for ATOM-core edits.
@@ -590,7 +594,7 @@ Listed so it is not mistaken for an omission; each is re-planned when v1 lands.
 **M2's hardware, by D95.** An RDMA-connected MI355X pair for the paired runs of W4.3 and W4.11, and a
 third MI355X node for W4.4 and W4.12, so that calibration does not queue behind the pairs; an MI308X
 node for development, the CPU-and-GPU gates, W5.5's MI308X side, stage 2's real side
-(S2.1), and step fit's grid measurement (S2.2) while it is idle from stage 2's critical
+(S2.1), and the step grid's measurement (S2.2) while it is idle from stage 2's critical
 path. Until dedicated nodes
 exist, the shared pools below serve, with the pre-flight gate as written.
 
@@ -666,7 +670,7 @@ decision that belongs to the project owner, not to the agent that ran it.
 | Trigger | What the escalation carries |
 |---|---|
 | ~~**T10** fails~~ | ~~adapter cost rises to ~2,000 vendored lines — vendor, fork, or restrict the harness~~ — **did not fire.** P0.3, 2026-09-20: the subclass works and nothing is vendored. The escalation this row prepared for never arose |
-| **T5** fails | tier b has no IR at TP>1 — options and their effect on M2 onward |
+| **T5** fails | the op-level backend has no IR at TP>1 — options and their effect on M2 onward |
 | ~~**P0b.1** finds an operator that needs more than a shape rule~~ | **ruled by the owner on #501**: two rows needed more, MORI at EP8 and the DP gather with EP off, both sized by the peers' token counts. W4.2 takes the launch interceptor; M2 runs expert parallelism off first, then EP8 with a MORI routing model (W4.10) |
 | ~~**P0b.3** finds the nightly runs unusable~~ | **ruled by the owner on #503**: every paired cell is re-run on the dedicated pair, and W4.3 is booked for it |
 | **P0b.4** leaves an MI455 input unsourced | the projection ships with that input marked assumed, or waits — the owner's call |
@@ -692,7 +696,7 @@ GitHub, not only inside an agent's report.
 Stated so it is not mistaken for an omission.
 
 - **Dates.** Effort is LOC; wall-clock appears only where it is machine time with a
-  measured basis (`agent-team` plugin, `plan.md`).
+  measurement behind it (`agent-team` plugin, `plan.md`).
 - **Detail past v1.** Deliberate — see *After v1*.
 - **Agent prompts.** Task briefs are written to be close to a prompt and generated from at
   launch, because embedded prompts go stale as tasks move.
@@ -710,4 +714,4 @@ This topic's items only. The consolidated register is [`12_open_items.md`](12_op
 |---|---|---|
 | ~~T71~~ | ~~Add Wave 4+ detail as Phase 0 and T21 answers arrive~~ — **done by D95**: Waves 4–6 are detailed | — |
 | T72 | Decide whether reviewer agents use ATOM's existing `review-pr` skill or a Compass-specific checklist | needs one review cycle to tell |
-| T80 | Raise with ATOM's owners: `tests/test_prefix_cache_accuracy.py` has no test function — it is an `argparse` script driving a live server — and `test_kv_connector_scheduler.py` / `test_transfer_engine.py` have been dead since #690. Measured: all three run nothing in **either** tier | not a Compass change; needs the disaggregation and prefix-cache owners |
+| T80 | Raise with ATOM's owners: `tests/test_prefix_cache_accuracy.py` has no test function — it is an `argparse` script driving a live server — and `test_kv_connector_scheduler.py` / `test_transfer_engine.py` have been dead since #690. Measured: all three run nothing in **either** gate | not a Compass change; needs the disaggregation and prefix-cache owners |

@@ -13,7 +13,7 @@ import pathlib
 
 import pytest
 from test_spec_schema import DOCUMENT
-from test_spec_verbs import LINKS, STACK, TIER0, TIER1, TIER2, fragment
+from test_spec_verbs import CLASS0, CLASS1, CLASS2, LINKS, STACK, fragment
 
 from atom.compass.spec import MachineSpec, Rule, SpecRefusal, explain, merge
 from atom.compass.spec.fields import SCHEMA, Kind
@@ -55,12 +55,12 @@ def labels(spec):
 
 def four_origins():
     """Probed, transferred and assumed fragments of one machine."""
-    carried = copy.deepcopy(TIER2)
+    carried = copy.deepcopy(CLASS2)
     carried["device"]["software_pinned_to"] = dict(STACK)
     return [
-        fragment("tier0", TIER0, subject={"model": "Qwen/Qwen3-8B"}),
-        fragment("tier1", TIER1, subject=CARD),
-        fragment("tier2", carried, origin="transferred-from:mi300x-8gpu"),
+        fragment("class0", CLASS0, subject={"model": "Qwen/Qwen3-8B"}),
+        fragment("class1", CLASS1, subject=CARD),
+        fragment("class2", carried, origin="transferred-from:mi300x-8gpu"),
         fragment("links", LINKS, origin="assumed"),
     ]
 
@@ -154,7 +154,7 @@ def test_a_document_of_one_origin_answers_without_the_map():
 )
 def test_an_origin_nobody_defined_is_refused(stated):
     with pytest.raises(SpecRefusal, match="which is not an origin"):
-        fragment("tier0", TIER0, origin=stated)
+        fragment("class0", CLASS0, origin=stated)
 
 
 def test_one_field_is_never_mixed_and_only_a_probed_one_has_a_subject():

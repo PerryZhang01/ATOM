@@ -46,8 +46,9 @@ priced by `StepLinearBackend`), ``step_grid`` (an artifact store's root and a
 bundle's key, priced by `StepGridBackend`; see `step_grid`) and ``replay`` (a
 real run's parity record directory: each step ends when the real one did, by
 `atom.compass.parity.replay`),
-``roofline_floor_s`` (optional: a `StepRooflineBackend` with this host floor
-prices the steps the backend refuses, through `StepFallbackBackend`),
+``step_roofline`` (optional, ``true`` or ``false``: with ``true`` a
+`StepRooflineBackend` prices the steps the backend refuses, through
+`StepFallbackBackend`),
 ``on_refusal`` (optional: ``mark``, the default, prices a step no cost source
 answers at 0 s, hands in its ``cost:`` reason and continues; ``abort`` ends
 the run there, which still writes the summary),
@@ -59,7 +60,7 @@ on ``(1, tokens, seqs)``, zero where absent; ``key``, the `host_key` they were
 fitted under, which a run with laws must match; ``skip``, segments zeroed for
 a what-if run, which the graders refuse),
 ``machine`` (a machine spec mapping), ``parameter_count`` (read with
-``roofline_floor_s``), and ``out_dir``,
+``step_roofline``), and ``out_dir``,
 where the step table, the run summary and each server LP's hand-in go, one
 file written as the LP leaves its loop. It holds the LP's refusals: an
 engine's are the worker's refused commands and the engine's refused clock
@@ -165,6 +166,7 @@ RENAMED_KEYS = {
     "coefficients": "step_stub",
     "law": "step_linear",
     "step_fit": "step_grid",
+    "roofline_floor_s": "step_roofline",
 }
 
 
@@ -607,7 +609,13 @@ def runner(model_runner, tree) -> None:
         ),
         tree=tree,
     )
-    if "roofline_floor_s" in run:
+    fallback = run.get("step_roofline", False)
+    if not isinstance(fallback, bool):
+        raise TypeError(
+            f"the run file's step_roofline is {fallback!r}; it is true, which "
+            "prices the steps the backend refuses by the step roofline, or false"
+        )
+    if fallback:
         kv = KvGeometry.from_hf_config(
             config.hf_config,
             block_size=config.kv_cache_block_size,
@@ -619,7 +627,6 @@ def runner(model_runner, tree) -> None:
             parameters=run["parameter_count"] // tp,
             weight_bytes=model.weights.nbytes,
             kv_token_bytes=kv.layers * kv.bytes_per_token_per_layer,
-            host_floor_s=run["roofline_floor_s"],
         )
         backend = StepFallbackBackend(backend, roofline)
     install_cost_backend(model_runner, backend)

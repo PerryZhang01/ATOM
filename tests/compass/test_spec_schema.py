@@ -11,7 +11,7 @@ a claim about ATOM's argument surface, not about a list somebody wrote once. So
 the surface is parsed out of the engine's arguments dataclass and compared both
 ways: every knob the refusal message names has to be a real one, and no field of
 the spec's machine sections may collide with it. Parsed rather than imported --
-reading the source needs no driver, and this tier has none.
+reading the source needs no driver, and the CPU gate has none.
 
 Three sections are about the echo rather than about what a spec may hold, and
 they are one claim: the echo equals the document that was read, because that is

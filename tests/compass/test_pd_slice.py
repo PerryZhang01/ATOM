@@ -202,9 +202,9 @@ def test_a_frontend_answers_a_request_from_outside_the_run_while_its_grant_is_ou
     """A router registering its workers asks them over HTTP, unstamped, before
     any traffic, so before any frontend can be granted time."""
     authority = clock_transport.serve(ClockAuthority(TABLE), "tcp://127.0.0.1:0")
-    clock_transport.connect(LpId("engine"), authority.endpoint).send(
-        (NER, INF, [], INF)
-    )
+    # Kept referenced: a dropped connection closes its socket, ending the run.
+    engine = clock_transport.connect(LpId("engine"), authority.endpoint)
+    engine.send((NER, INF, [], INF))
     rt = LPRuntime(
         LpId("frontend"),
         TABLE,
