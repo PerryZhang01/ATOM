@@ -95,8 +95,8 @@ KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
         "source_root",
         "form",
     ),
-    # The four values `run.host_key` reads, the engine config as its sorted
-    # JSON, since a key holds only strings and numbers.
+    # The values `run.host_key` reads, the engine config as its sorted JSON,
+    # since a key holds only strings and numbers.
     Kind.HOST_LAWS: ("host_cpu", "atom_src", "model", "engine_config"),
     # `engine_config` names the one the grid was planned for; `grid` names
     # the grid definition with its margin.

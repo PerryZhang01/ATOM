@@ -349,7 +349,7 @@ def test_a_machine_spec_is_three_rows_and_a_device_change_moves_two(tmp_path):
 def test_an_aiter_bump_refuses_while_its_meaning_is_open(tmp_path):
     """The default, because what an aiter bump means is left open (#168).
 
-    The four rows that carry ROCm/AITER/RCCL refuse a bump; `machine_spec`'s
+    The rows that carry ROCm/AITER/RCCL refuse a bump; `machine_spec`'s
     capacity does not, because the silicon did not move. If it is settled as
     "warn", this is the test that changes, and one cell of `MATRIX` with it.
     """

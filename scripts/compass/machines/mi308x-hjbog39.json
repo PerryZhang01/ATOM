@@ -97,6 +97,7 @@
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "width": 1,
+        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
         "source_root": "commit:ce625ddd9"
       },
       "host.ipc.zmq_roundtrip_s": {
