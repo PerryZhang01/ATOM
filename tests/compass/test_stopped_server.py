@@ -129,26 +129,28 @@ def test_a_stopped_server_leaves_with_its_summary_written(tmp_path, sig):
     )
     port = _free_port()
     env = dict(os.environ, PYTHONPATH=str(TREE), **{compass_run.ENV: str(run_file)})
-    server = subprocess.Popen(
-        [sys.executable, "-c", SERVER, str(port)],
-        cwd=TREE,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
+    log = tmp_path / "server.log"
+    with log.open("w") as sink:
+        server = subprocess.Popen(
+            [sys.executable, "-c", SERVER, str(port)],
+            cwd=TREE,
+            env=env,
+            stdout=sink,
+            stderr=subprocess.STDOUT,
+        )
     try:
         deadline = time.monotonic() + 120
         while not _answers(port):
-            assert server.poll() is None, server.communicate()[0]
+            assert server.poll() is None, log.read_text()
             assert time.monotonic() < deadline, "no answer in 120 wall seconds"
             time.sleep(0.2)
         server.send_signal(sig)
-        out = server.communicate(timeout=30)[0]
+        server.wait(timeout=30)
     finally:
         if server.poll() is None:
             server.kill()
-            server.communicate()
+            server.wait()
+    out = log.read_text()
     assert server.returncode == 0 and "frontend_done: True" in out, out
     summary = json.loads((tmp_path / compass_run.SUMMARY_FILE).read_text())
     reasons = dict(summary["schedule"]["refusals"]["reasons"])
