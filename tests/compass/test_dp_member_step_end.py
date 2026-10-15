@@ -17,15 +17,18 @@ from types import SimpleNamespace
 import pytest
 import torch.distributed as dist
 import zmq
+from test_dp_slice import _deployment
 from test_dp_step_max import dp2, prefill, runner  # noqa: F401
+from test_vertical_slice import _run_file
 
 from atom.compass import clock_transport
+from atom.compass import run as compass_run
 from atom.compass.audit import sync_scan
 from atom.compass.backends.step_stub import Coefficients, StepStubBackend
 from atom.compass.clock import NER, ClockAuthority, LpId, single_engine_table
-from atom.compass.run import _members
 from atom.utils import clock
 from atom.utils.clock import LPRuntime, WrappedSocket
+from atom.utils.distributed import utils
 
 TABLE = single_engine_table(
     admission_path="serving", ipc_s=2.0**-14, stream_s=2.0**-12, dp=2
@@ -44,8 +47,20 @@ def collectives(monkeypatch):
         monkeypatch.setattr(
             dist, name, lambda *a, **k: seen.append(clock.installed().now)
         )
-    clock.settle_before_collectives()
     return seen
+
+
+class Conn:
+    """A clock connection granting each request its own target."""
+
+    def __init__(self):
+        self.sent = []
+
+    def send(self, request):
+        self.sent.append(request[:2])
+
+    def recv(self):
+        return self.sent[-1][1], {}
 
 
 def _thread(target, *args):
@@ -59,7 +74,7 @@ def test_the_early_member_takes_in_only_what_arrived_by_its_own_step_end(
 ):
     endpoint = f"inproc:test-dp-member-{uuid.uuid4().hex}"
     server = clock_transport.serve(
-        ClockAuthority(TABLE, members=_members(TABLE, 2)), endpoint
+        ClockAuthority(TABLE, members=compass_run._members(TABLE, 2)), endpoint
     )
     clock_transport.connect(LpId("traffic"), endpoint).send(
         (NER, math.inf, [], math.inf)
@@ -89,6 +104,7 @@ def test_the_early_member_takes_in_only_what_arrived_by_its_own_step_end(
     rt = LPRuntime(ENGINE, TABLE, clock_transport.connect(ENGINE, endpoint, "dp1"))
     rt.start_run()
     monkeypatch.setattr(clock, "_installed", rt)
+    clock.settle_before_collectives()
     intake, returned = queue.Queue(), []
     sock = WrappedSocket(rt, pull, REQUEST)
 
@@ -122,6 +138,15 @@ def test_the_early_member_takes_in_only_what_arrived_by_its_own_step_end(
     ctx.destroy(linger=0)
 
 
+def test_a_tar_past_the_owed_rounds_joins_them_first():
+    rt = LPRuntime(ENGINE, TABLE, Conn())
+
+    rt.advance_group(TARGETS, TARGETS[0])
+    rt.advance_to(0.3)
+
+    assert rt.conn.sent == [("TAR", TARGETS[0]), ("TAR", TARGETS[1]), ("TAR", 0.3)]
+
+
 def test_an_idle_ranks_dummy_returns_at_its_own_seconds_a_busy_rank_at_the_max(
     dp2,  # noqa: F811
 ):
@@ -138,8 +163,15 @@ def test_an_idle_ranks_dummy_returns_at_its_own_seconds_a_busy_rank_at_the_max(
 
 
 def test_every_collective_the_inventory_lists_on_torch_distributed_settles_first(
-    monkeypatch, collectives
+    monkeypatch, tmp_path, collectives
 ):
+    monkeypatch.setenv(compass_run.ENV, str(_run_file(tmp_path, data_parallel_size=2)))
+    monkeypatch.setattr(compass_run, "connect", lambda *_: None)
+    monkeypatch.setattr(compass_run, "_member", None)
+    monkeypatch.setattr(clock, "_installed", None)
+    monkeypatch.setattr(utils, "LP_OF_RANK", None, raising=False)
+    with compass_run.engine(_deployment(dp=2, rank=1)):
+        pass
     settled = []
     stub = SimpleNamespace(
         owner=threading.current_thread(), now=0.0, settle=lambda: settled.append(1)
