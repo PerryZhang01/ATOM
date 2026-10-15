@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 """`atom/compass/backends/step_grid_plan.py`: the step grid's points planned
-from batch shapes, and steps checked for coverage against a loaded backend.
+from batch shapes.
 
 Steps are ATOM's `Scheduler`'s, recorded through the parity step record by
 `test_parity_record._drive` at a 64-token budget, with the simulated runner
@@ -8,16 +8,13 @@ replaying decode on the ladder [1, 2, 4, 8], and planned for the engine file
 each record's rank wrote. A plan's lines are written as a step record, read
 back by `parity.read` and located by the plan's grid. Bundles are published to
 an `ArtifactStore` and loaded by `run.step_grid.load` under
-`test_run_step_grid`'s deployment, at the same scheduler's bounds and ladder.
-The module command runs as `python -m` on this tree, over the same files.
+`test_run_step_grid`'s deployment, at the same scheduler's bounds and ladder,
+and price each step.
 """
 
 import copy
 import json
-import os
 import re
-import subprocess
-import sys
 import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -50,7 +47,6 @@ ENGINE = {
     "num_kvcache_blocks": 4096,
     "ladder": LADDER,
 }
-TREE = Path(__file__).resolve().parents[2]
 #: Prompt lengths. Their decode steps replay rung 4: MIXED's at B = 3 on
 #: cached context 90 to 92, SHORT's at B = 4 on 42.5 to 44.5.
 MIXED, SHORT = (200, 20, 50), (40, 30, 90, 10)
@@ -92,6 +88,15 @@ def plan(*records, engine=(), **changes):
     return step_grid_plan.plan({**DEFINITION, **changes}, named, engines)
 
 
+def view(line):
+    """A step-record line as the view a simulated runner prices."""
+    return BatchView(
+        tuple(RequestShape(*row) for row in line["rows"]),
+        capture_rung=line["rung"],
+        produces_output=line["produces_output"],
+    )
+
+
 def located(tmp_path, planned):
     """The plan's lines, written as a step record and read back by
     `parity.read`, each at the node the plan's grid locates it on: prefill's
@@ -109,13 +114,8 @@ def located(tmp_path, planned):
         (n_q, context, decode), b = rows[0], len(rows)
         assert line["origin"] == "plan" and all(row == rows[0] for row in rows)
         own = (b, context - 1) if decode else (b, b * n_q, context - n_q)
-        view = BatchView(
-            tuple(RequestShape(*row) for row in rows),
-            capture_rung=rung,
-            produces_output=line["produces_output"],
-        )
-        cells, at = grid.locate(view)
-        assert cells.corners(view, at) == [(own, 1)]
+        cells, at = grid.locate(view(line))
+        assert cells.corners(view(line), at) == [(own, 1)]
         counts[cells.name] += 1
         out["decode" if decode else cells.name].append(
             [rung, *own] if decode else list(own)
@@ -124,9 +124,8 @@ def located(tmp_path, planned):
     return dict(out)
 
 
-def measured(planned, points, residual=None, drop=None):
-    """A bundle of the plan's grid, each located point but `drop` timed, `drop`
-    being a (grid, point) pair as `located` names them."""
+def measured(planned, points):
+    """A bundle of the plan's grid, each located point timed."""
     keys = ("graph_mode", "scope", "prefill", "decode")
     grid = copy.deepcopy({k: planned[k] for k in keys})
     lists = {
@@ -135,41 +134,24 @@ def measured(planned, points, residual=None, drop=None):
         "decode": grid["decode"]["points"],
     }
     for name, ats in points.items():
-        lists[name] += [
-            point(*at, time=100 + sum(at)) for at in ats if (name, at) != drop
-        ]
+        lists[name] += [point(*at, time=100 + sum(at)) for at in ats]
     return {
         "grid": {**grid, "unit": "us"},
-        "residual": residual or fitted({"unit": linear()}, {"unit": 1.0}),
+        "residual": fitted({"unit": linear()}, {"unit": 1.0}),
         "bounds": planned["bounds"],
     }
 
 
-def coverage(tmp_path, member, *records, grid=KEY["grid"], **config):
-    """`coverage` of `records` over `member`, published under the deployment at
-    the scheduler's bounds and ladder, or `config`, named by grid `grid`, and
-    loaded as a run loads it."""
+def priced(tmp_path, member, *records):
+    """Each step of `records` priced by `member`, published under the
+    deployment at the scheduler's bounds and ladder and loaded as a run loads
+    it; a step whose cell has an unmeasured corner refuses."""
     bounds = {k: ENGINE[k] for k in ("max_num_seqs", "max_num_batched_tokens")}
-    r = deployment(tmp_path, **{**bounds, **config}, capture_sizes=LADDER)
-    publish(tmp_path, r, member=member, grid=grid)
-    spec = {"store": str(tmp_path / "store"), **KEY, "grid": grid}
+    r = deployment(tmp_path, **bounds, capture_sizes=LADDER)
+    publish(tmp_path, r, member=member)
+    spec = {"store": str(tmp_path / "store"), **KEY}
     backend, _ = load(spec, r.config, MachineSpec.from_mapping(DOCUMENT))
-    return step_grid_plan.coverage(backend, steps(*records)[0])
-
-
-def command(*argv):
-    """The module command run on this tree: its exit code and printed JSON."""
-    done = subprocess.run(
-        [sys.executable, "-m", "atom.compass.backends.step_grid_plan"]
-        + [str(a) for a in argv],
-        cwd=TREE,
-        env=dict(os.environ, PYTHONPATH=str(TREE)),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert done.returncode in (0, 1), done.stderr
-    return done.returncode, json.loads(done.stdout)
+    return [backend.price(view(line)) for _, line in steps(*records)[0]]
 
 
 def test_every_planned_point_read_back_is_a_homogeneous_batch_on_its_own_node(
@@ -192,61 +174,14 @@ def test_every_planned_point_read_back_is_a_homogeneous_batch_on_its_own_node(
     } == {(0, False, "plan")}
 
 
-def test_planned_points_measured_and_published_cover_every_step_and_name_a_dropped_one(
-    tmp_path, monkeypatch
-):
+def test_planned_points_measured_and_published_price_every_step(tmp_path, monkeypatch):
     records = [record(tmp_path, monkeypatch, *n) for n in (MIXED, SHORT)]
     planned = plan(*records)
-    points = located(tmp_path, planned)
     assert planned["infeasible"] == planned["unplaced"] == []
 
-    out = coverage(tmp_path, measured(planned, points), *records)
+    member = measured(planned, located(tmp_path, planned))
 
-    assert out == {
-        "steps": 15,
-        "covered": 15,
-        "share": 1.0,
-        "missing": {},
-        "refused": [],
-        "prefill_above_top_c": 0,
-    }
-    for i, name in enumerate(["prefill output", "prefill no_output", "decode"]):
-        at = points[name][0]
-        out = coverage(
-            tmp_path,
-            measured(planned, points, drop=(name, at)),
-            *records,
-            grid=f"minus-{i}",
-        )
-        if name == "decode":
-            name, at = f"decode rung {at[0]}", at[1:]
-        assert out["missing"] == {name: [at]}
-        assert out["refused"] == [] and out["covered"] < 15
-
-
-def test_a_step_outside_the_residuals_hull_is_refused_and_fails_coverage(
-    tmp_path, monkeypatch
-):
-    records = [record(tmp_path, monkeypatch, *MIXED)]
-    planned = plan(*records)
-    # The default box, its first facet tightened to tokens / 2^10 <= 32 / 2^10.
-    box = fitted({"unit": linear()}, {"unit": 1.0})["hull"]["facets"]
-    box[0][-1] = -32 / 2**10
-    hull = fitted({"unit": linear()}, {"unit": 1.0}, hull={"facets": box})
-    member = measured(planned, located(tmp_path, planned), residual=hull)
-
-    out = coverage(tmp_path, member, *records)
-
-    assert out["missing"] == {}
-    # Every step but the final 8 + 20 token chunk and the decode steps.
-    refused = {r["step"].rsplit(" ", 1)[1]: r["reasons"] for r in out["refused"]}
-    assert sorted(refused, key=int) == ["0", "1", "2", "4"]
-    assert all(
-        reasons[0].startswith("the step at tokens=")
-        and "outside the residual's hull" in reasons[0]
-        for reasons in refused.values()
-    )
-    assert out["covered"] == out["steps"] - 4
+    assert len(priced(tmp_path, member, *records)) == 15
 
 
 def test_prefill_is_planned_by_whether_the_chunk_produces_output(tmp_path, monkeypatch):
@@ -314,8 +249,7 @@ def test_a_rung_between_planned_rungs_is_planned_so_the_bundle_loads(
     assert [p for p in decode if p[0] == 4] == [
         [4, b, c] for b in (3, 4) for c in c_nodes
     ]
-    out = coverage(tmp_path, measured(planned, points), *records)
-    assert out["share"] == 1.0
+    priced(tmp_path, measured(planned, points), *records)
 
 
 def test_a_rung_between_planned_rungs_is_planned_on_its_own_c_nodes(
@@ -331,8 +265,7 @@ def test_a_rung_between_planned_rungs_is_planned_on_its_own_c_nodes(
     rung4 = planned["decode"]["nodes"]["c"]["4"]
     assert {47, 239}.isdisjoint(rung4)
     assert {c for r, _, c in points["decode"] if r == 4} <= set(rung4)
-    out = coverage(tmp_path, measured(planned, points), *records)
-    assert out["share"] == 1.0
+    priced(tmp_path, measured(planned, points), *records)
 
 
 def test_the_margin_reads_a_neighbouring_rungs_own_c_nodes(tmp_path, monkeypatch):
@@ -454,11 +387,10 @@ def test_a_rung_gains_a_b_node_where_steps_reach_past_the_rungs_kv_limit(
     assert decode["nodes"]["c"]["8"] == [0, 64, 128, 191, 192, 255, 256, 319, 2047]
     assert points["decode"] == [[8, 6, 192], [8, 6, 255]]
     assert planned["infeasible"] == []
-    out = coverage(tmp_path, measured(planned, points), directory)
-    assert out["share"] == 1.0
+    priced(tmp_path, measured(planned, points), directory)
 
 
-def test_coverage_counts_apart_the_prefill_steps_cached_past_the_top_c_node(
+def test_a_prefill_step_cached_past_the_top_c_node_is_listed_unplaced(
     tmp_path, monkeypatch
 ):
     """At a 48-token budget prefill's top c node is 2048 - 48 = 2000; a
@@ -469,17 +401,6 @@ def test_coverage_counts_apart_the_prefill_steps_cached_past_the_top_c_node(
     reason = "c=2016 is outside the prefill output grid's nodes 0..2000"
     assert planned["bounds"]["max_num_batched_tokens"] == 48
     assert planned["unplaced"] == [{"step": last, "reason": reason}]
-
-    out = coverage(
-        tmp_path,
-        measured(planned, located(tmp_path, planned)),
-        directory,
-        max_num_batched_tokens=48,
-    )
-
-    assert out["prefill_above_top_c"] == 1
-    assert out["refused"] == [{"step": last, "reasons": [reason]}]
-    assert out["covered"] == out["steps"] - 1
 
 
 def test_a_step_off_the_targets_ladder_is_listed_unplaced(tmp_path, monkeypatch):
@@ -619,30 +540,3 @@ def test_a_target_whose_model_length_is_below_the_token_budget_is_refused(
 def test_no_step_is_refused(tmp_path):
     with pytest.raises(ValueError, match="there is no step to read"):
         plan(tmp_path)
-    with pytest.raises(ValueError, match="there is no step to read"):
-        step_grid_plan.coverage(None, [])
-
-
-def test_the_module_command_plans_from_record_files(tmp_path, monkeypatch):
-    records = [record(tmp_path, monkeypatch, *n) for n in (MIXED, SHORT)]
-    path = tmp_path / "definition.json"
-    path.write_text(json.dumps(DEFINITION))
-
-    assert command("plan", path, *records) == (0, plan(*records))
-
-
-def test_the_module_command_checks_coverage_from_a_bundle_file(tmp_path, monkeypatch):
-    """The bundle read from its file covers what it covers loaded by key, and
-    one without a decode point exits 1, naming the point."""
-    records = [record(tmp_path, monkeypatch, *n) for n in (MIXED, SHORT)]
-    planned = plan(*records)
-    points = located(tmp_path, planned)
-    at = points["decode"][0]
-    whole, holed = tmp_path / "whole.json", tmp_path / "holed.json"
-    whole.write_text(json.dumps(measured(planned, points)))
-    holed.write_text(json.dumps(measured(planned, points, drop=("decode", at))))
-
-    by_key = coverage(tmp_path, measured(planned, points), *records)
-    assert command("coverage", whole, *records) == (0, by_key)
-    code, out = command("coverage", holed, *records)
-    assert code == 1 and out["missing"] == {f"decode rung {at[0]}": [at[1:]]}
