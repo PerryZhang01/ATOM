@@ -6,8 +6,8 @@ prefill and a decode API server on the simulated KV connector, and atomesh in
 PD mode between them. The traffic LP is the vertical slice's `Traffic`, in
 this process: it sends through the router and scrapes the prefill server,
 since the router serves no metrics. The run is made twice with different
-`PYTHONHASHSEED`, and the two step tables the authority writes are compared
-byte for byte.
+`PYTHONHASHSEED`, under a constant stub with each side's step record on, and
+`check_run` holds the two to the scenario checks.
 
 The run tests skip as the vertical slice's do, and without `atomesh` on PATH.
 With `ATOM_COMPASS_PD_DECODE_EXEC` set, such as ``docker exec <container>``,
@@ -37,7 +37,16 @@ import uvicorn
 from aiter_stub import stubbed_aiter
 from conftest import atom_config_double
 from starlette.responses import JSONResponse
-from test_vertical_slice import MODEL, TREE, WALL_S, Traffic, _free_port, _run_file
+from test_vertical_slice import (
+    CONSTANT,
+    MAX_TOKENS,
+    MODEL,
+    TREE,
+    WALL_S,
+    Traffic,
+    _free_port,
+    _run_file,
+)
 
 from atom.compass import clock_transport
 from atom.compass import run as compass_run
@@ -48,7 +57,7 @@ from atom.compass.clock import (
     prefill_decode_table,
     single_engine_table,
 )
-from atom.compass.detect.determinism import compare_step_tables
+from atom.compass.detect.scenario import check_run
 from atom.utils import clock
 from atom.utils.clock import LPRuntime
 from atom.utils.compass_loop import HttpChannel
@@ -84,12 +93,13 @@ def run_pd(out: Path, seed: str) -> dict:
     out.mkdir()
     ports = {name: _free_port() for name in PORTS}
     endpoint = f"tcp://127.0.0.1:{ports['CLOCK_PORT']}"
-    run_file = _run_file(out, clock_endpoint=endpoint, **PD)
+    run_file = _run_file(out, clock_endpoint=endpoint, step_stub=CONSTANT, **PD)
     env = dict(
         os.environ,
         PYTHONHASHSEED=seed,
         PYTHONPATH=str(TREE),
         AITER_LOG_LEVEL="WARNING",
+        ATOM_COMPASS_PARITY_RECORD=str(out / "parity"),
         MODEL=MODEL,
         DECODE_EXEC=os.environ.get("ATOM_COMPASS_PD_DECODE_EXEC", ""),
         **{name: str(port) for name, port in ports.items()},
@@ -127,6 +137,7 @@ def run_pd(out: Path, seed: str) -> dict:
             os.killpg(sim.pid, signal.SIGKILL)
     assert code == 0, f"pd_sim.sh exited {code}:\n{log.read_text()[-4000:]}"
     return {
+        "out": out,
         "table": (out / compass_run.STEP_TABLE_FILE).read_text(),
         "summary": json.loads((out / compass_run.SUMMARY_FILE).read_text()),
         "handed_in": sorted(f.name for f in out.glob(compass_run.LP_FILE.format("*"))),
@@ -154,41 +165,28 @@ def test_one_request_crosses_atomesh_to_prefill_and_decode(runs):
     (relay,) = _rows(run["table"], "release", RELAY)
     (write_req,) = _rows(run["table"], "release", KV_WRITE_REQ)
     print(
-        f"\nrequest 0: arrive {arrive!r} relayed {relay[1]} write request "
-        f"{write_req[1]} first token {first_token!r} leave {leave!r}"
+        f"\nrequest 0: arrive {arrive!r} relayed {relay[2]} write request "
+        f"{write_req[2]} first token {first_token!r} leave {leave!r}"
     )
     print(run["table"])
-    assert run["events"][-1][1] == "data: [DONE]"
-    assert len(run["events"]) > 1
-    assert arrive < float(relay[1]) < float(write_req[1]) < first_token <= leave
+    assert arrive < float(relay[2]) < float(write_req[2]) < first_token <= leave
     # Every event reached the traffic LP with its stamp, through the router.
     assert len(_rows(run["table"], "release", STREAM)) == len(run["events"])
-    rows = run["table"].splitlines()[1:]
-    finish = [r for r in rows if " inf " in r]
-    assert sorted(r.split()[0] for r in finish) == LPS
-    assert rows[-len(LPS) :] == finish
 
 
 @NEEDS_A_PD_RUN
-def test_the_run_summary_holds_every_server_lps_refusals(runs):
+def test_one_request_meets_every_scenario_check(runs):
     run = runs[0]
-    summary = run["summary"]
-    print("\nsummary:", json.dumps(summary, sort_keys=True))
+    parity = run["out"] / "parity"
+    failed = check_run(
+        [r["out"] for r in runs],
+        [MAX_TOKENS],
+        [line for _, line in run["events"]],
+        {"engine-P": parity / "prefill", "engine-D": parity / "decode"},
+    )
+    assert not failed, "\n".join(failed)
     assert run["handed_in"] == [compass_run.LP_FILE.format(lp) for lp in LPS[:-1]]
-    assert summary["schedule"]["grants_total"] > 0
-    assert summary["schedule"]["refusals"]["count"] == 0
-    assert summary["schedule"]["refusals"]["steps"] > 0
-    assert summary["coverage_report"] is False
-    assert 0 < summary["cost"]["wall_seconds"]
-
-
-@NEEDS_A_PD_RUN
-def test_two_hash_seeds_give_byte_identical_step_tables(runs):
-    left, right = (r["table"] for r in runs)
-    code, report = compare_step_tables(left, right, "seed 1", "seed 2")
-    print(f"\n{report}")
-    assert code == 0, report
-    assert left == right
+    assert 0 < run["summary"]["cost"]["wall_seconds"]
 
 
 # --- without a driver ---------------------------------------------------------

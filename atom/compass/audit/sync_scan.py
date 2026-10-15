@@ -22,7 +22,8 @@ Two detectors:
     Parses every file under ``atom/`` outside :data:`UNSCANNED_ROOTS` and
     reports calls whose shape can park a thread -- sleeps, socket receives,
     pollers, queue operations, joins, lock and event waits, collectives,
-    device synchronization, sends.
+    device synchronization, sends, device-event polling loops -- and calls
+    that start a thread or process.
     Shapes are matched on the call's own text and argument form, never on what
     a name happens to be bound to at runtime, so the match is local and stable.
 
@@ -168,6 +169,10 @@ class Shape:
     why: str
     # Optional extra predicate over the ast.Call node.
     form: object = None
+    # Matched only inside a `while` or `for` loop.
+    in_loop: bool = False
+    # False for a call that cannot park, so a loop around it can still spin.
+    parks: bool = True
 
 
 def _no_positional(node: ast.Call) -> bool:
@@ -235,6 +240,11 @@ def _worker_rpc_form(node: ast.Call) -> bool:
     )
 
 
+def _starts_one(node: ast.Call) -> bool:
+    """``psutil.Process(pid)`` attaches to a running process; it starts none."""
+    return not ast.unparse(node.func).startswith("psutil.")
+
+
 SHAPES: tuple[Shape, ...] = (
     Shape(
         "sleep",
@@ -285,12 +295,12 @@ SHAPES: tuple[Shape, ...] = (
     ),
     Shape(
         "event_wait",
-        frozenset({"wait", "wait_for", "result"}),
+        frozenset({"wait", "wait_for", "result", "as_completed"}),
         "parks until another thread signals, or a future resolves",
     ),
     Shape(
         "barrier",
-        frozenset({"barrier"}),
+        frozenset({"barrier", "monitored_barrier"}),
         "parks until every rank arrives",
     ),
     Shape(
@@ -328,7 +338,7 @@ SHAPES: tuple[Shape, ...] = (
     ),
     Shape(
         "executor_handoff",
-        frozenset({"run_in_executor", "submit"}),
+        frozenset({"run_in_executor", "submit", "to_thread"}),
         "runs a callable on a thread pool; an awaited hand-off parks the caller "
         "until it returns, and a full pool parks it longer",
     ),
@@ -337,6 +347,39 @@ SHAPES: tuple[Shape, ...] = (
         frozenset({"call_func", "call_func_with_aggregation"}),
         "sends work to the worker processes and parks until their reply arrives",
         _worker_rpc_form,
+    ),
+    Shape(
+        "object_collective",
+        frozenset(
+            {
+                "broadcast_object_list",
+                "all_gather_object",
+                "gather_object",
+                "send_object_list",
+                "recv_object_list",
+            }
+        ),
+        "pickles Python objects across ranks and parks until every rank in the "
+        "group, or the one peer, arrives",
+    ),
+    Shape(
+        "event_poll",
+        frozenset({"query"}),
+        "polls a device event's completion in a loop, which holds the thread "
+        "until the device finishes unless the loop stops at an unfinished event",
+        lambda node: not node.args and not node.keywords,
+        in_loop=True,
+        parks=False,
+    ),
+    Shape(
+        "thread_start",
+        frozenset(
+            {"Thread", "Process", "Popen", "ThreadPoolExecutor", "ProcessPoolExecutor"}
+        ),
+        "starts a thread or process; it parks nothing itself, but whatever the "
+        "new one waits on belongs to exactly one LP, which the row names",
+        _starts_one,
+        parks=False,
     ),
 )
 
@@ -425,6 +468,15 @@ class _ScopedVisitor(ast.NodeVisitor):
 
 
 class _CallVisitor(_ScopedVisitor):
+    _loops = 0  # enclosing `while` and `for` loops
+
+    def _loop(self, node) -> None:
+        self._loops += 1
+        self.generic_visit(node)
+        self._loops -= 1
+
+    visit_While = visit_For = visit_AsyncFor = _loop
+
     def visit_Call(self, node: ast.Call) -> None:
         func = node.func
         if isinstance(func, ast.Attribute):
@@ -436,6 +488,8 @@ class _CallVisitor(_ScopedVisitor):
         if name is not None and name not in NON_BLOCKING_NAMES:
             for shape in _SHAPE_BY_CALL.get(name, ()):
                 if shape.form is not None and not shape.form(node):
+                    continue
+                if shape.in_loop and not self._loops:
                     continue
                 text = ast.get_source_segment(self.source, func) or name
                 text = " ".join(text.split())
@@ -489,7 +543,8 @@ class _SpinVisitor(_ScopedVisitor):
                     if isinstance(func, ast.Attribute)
                     else func.id if isinstance(func, ast.Name) else None
                 )
-                if name in _SHAPE_BY_CALL and name not in NON_BLOCKING_NAMES:
+                parks = any(s.parks for s in _SHAPE_BY_CALL.get(name, ()))
+                if parks and name not in NON_BLOCKING_NAMES:
                     return False
         return has_continue
 

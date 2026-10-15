@@ -70,7 +70,10 @@ engine's RPCs to its own workers for its hand-ins (K6), and the joins and
 waits that close a run (K9). Reading the whole tree brought in the rest of
 `atom/utils/`, `atom/metrics/`, `atom/spec_decode/`, `atom/rollout/`,
 `atom/config.py` and Compass's parity tools, among them the parity traffic LP's
-wait for its own reader thread (K6). The rows per mechanism,
+wait for its own reader thread (K6). The `/metrics` render the frontend hands
+to `asyncio.to_thread` is K1, a job on the frontend's executor station that a
+simulated run refuses at the hand-off, since no service time is modelled for
+it. The rows per mechanism,
 crossed with the first classification's categories, are printed by
 `pytest tests/compass/test_sync_inventory.py -s -k crosstab`.
 
@@ -79,10 +82,19 @@ crossed with the first classification's categories, are printed by
 It parses every Python file under `atom/` that `UNSCANNED_ROOTS` does not name,
 and reports calls whose **shape** can
 park a thread: sleeps, socket receives, pollers, queue operations, joins, lock
-and event waits, collectives, device synchronization, sends, thread-pool
-hand-offs, and the worker RPC. It also reports `while` loops that go around
-without calling anything that parks. Shapes match on the call's own text and
-argument form, never on what a name is bound to at runtime.
+and event waits, collectives (object collectives included), device
+synchronization, sends, thread-pool hand-offs (`asyncio.to_thread` included),
+the worker RPC, and a loop polling a device event's `query()`. It also reports
+`while` loops that go around without calling anything that parks. Shapes match
+on the call's own text and argument form, never on what a name is bound to at
+runtime.
+
+It reports every call that starts a thread or process (`Thread`, `Process`,
+`Popen`, a thread or process pool) too. Starting one parks nothing, so the start
+itself is K9, but each such row names in `lp` the one LP the new thread or
+process belongs to, from the `lps` list in `sync_sites.json`, and a test
+requires it there and nowhere else. A thread added to a simulated path is then
+a row someone has to place in an LP.
 
 Where a name alone is ambiguous, the argument form settles it, because only the
 blocking reading can take that form: `d.get(key)` always passes the key
