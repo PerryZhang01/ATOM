@@ -69,8 +69,11 @@ def recording(r, directory, monkeypatch):
 
 
 def cost_lines(directory, dp_rank=0):
+    """A rank's cost lines, below the version line its table starts with."""
     text = (directory / f"dp{dp_rank}.cost.jsonl").read_text()
-    return [json.loads(line) for line in text.splitlines()]
+    version, *lines = [json.loads(line) for line in text.splitlines()]
+    assert version == {"version": overrides.COST_TABLE_VERSION}
+    return lines
 
 
 def drive(r, requests=3):
@@ -213,6 +216,24 @@ def test_under_abort_the_refused_step_ends_the_run_and_the_summary_is_written(
     [[reason, count]] = out["schedule"]["refusals"]["reasons"]
     assert (reason.startswith("ended:engine raised CostRefused("), count) == (True, 1)
     assert out["coverage_report"] is True
+
+
+def test_an_aborted_step_0_rerun_leaves_its_cost_table_the_version_line_alone(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(torch.distributed, "all_reduce", None)
+    _, replies = drive(recording(runner(backend()), tmp_path, monkeypatch))
+    assert len(cost_lines(tmp_path)) == len(replies) > 1
+    no_prefill = law()
+    del no_prefill["prefill"]
+    r = runner(StepLinearBackend(StepLinearLaw(no_prefill)))
+    r.compass_abort = True
+
+    with pytest.raises(CostRefused):
+        drive(recording(r, tmp_path, monkeypatch))
+
+    assert [s["step"] for s in parity.read(tmp_path)[0]] == [0]
+    assert cost_lines(tmp_path) == []
 
 
 def test_a_refused_rank_still_joins_the_group_targets(dp2):  # noqa: F811

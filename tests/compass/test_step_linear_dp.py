@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from test_backend_step_linear import law, view
-from test_backend_step_linear_fit import _record
+from test_backend_step_linear_fit import _fit, _record
 
 from atom.compass.backends import (
     BatchView,
@@ -23,7 +23,6 @@ from atom.compass.backends import (
     StepLinearBackend,
     StepLinearLaw,
 )
-from atom.compass.backends.step_linear_fit import fit
 
 DP = 4
 PREFILL = {
@@ -113,7 +112,7 @@ def test_the_alternating_fit_recovers_the_per_rank_law_and_every_row_does_not(
     # One step whose ranks fall to different vectors: rank 0 prefills.
     mixed = groups[1][0].copy()
     mixed[0] = groups[0][0][0]
-    law_ = fit(_records(tmp_path, groups + [(mixed, 1.0)]), dp=DP)
+    law_ = _fit(_records(tmp_path, groups + [(mixed, 1.0)]), dp=DP)
 
     assert law_["key"] == [DP, 1]
     assert law_["cut"]["ranks"] == 1
@@ -162,6 +161,6 @@ def test_the_fit_records_whether_the_alternation_settled(
     from atom.compass.backends import step_linear_fit
 
     monkeypatch.setattr(step_linear_fit, "MAD_PASSES", cap)
-    law_ = fit(_records(tmp_path, _groups(0)), dp=DP)
+    law_ = _fit(_records(tmp_path, _groups(0)), dp=DP)
     assert law_["prefill"]["fit"]["passes"] == 1
     assert law_["decode"]["4"]["fit"]["passes"] == decode

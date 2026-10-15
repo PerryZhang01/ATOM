@@ -9,7 +9,7 @@ RECORD is a real run's step record directory (`ATOM_COMPASS_PARITY_RECORD`,
 from schedule error: both sides run the same batches.
 
 Each step is labelled as the fit labels it, by its device time
-(`step_linear_fit.samples`, which also says which steps carry no label and refuses a
+(`step_labels.label`, which also says which steps carry no label and refuses a
 record without device windows), and priced by `StepLinearBackend`. The
 error of a step is `priced / real - 1`. Per kind the report gives the error
 on totals, on totals holding out the step that contributes most to their error,
@@ -36,16 +36,14 @@ from pathlib import Path
 
 import numpy as np
 
-from atom.compass import parity
 from atom.compass.backends import (
-    BatchView,
     CostRefused,
-    RequestShape,
     StepLinearBackend,
     StepLinearLaw,
+    step_labels,
     step_linear_fit,
 )
-from atom.compass.backends.step_linear_fit import WARM_FACTOR, _band, samples
+from atom.compass.backends.step_linear_fit import WARM_FACTOR, _band, _features
 
 WITHIN = 0.10
 
@@ -106,27 +104,22 @@ def _summary(steps: list[tuple]) -> dict:
 
 def cost_accuracy(record, law) -> dict:
     """The report for `law`, a mapping `StepLinearLaw` reads, on the record directory `record`."""
-    ranks = parity.read(record)
+    ranks = sorted(Path(record).glob("dp*[0-9].jsonl"))
     if len(ranks) != 1:
         raise ValueError(
             f"{record} holds {len(ranks)} DP ranks' records; this prices one rank's"
         )
-    ((rank, steps),) = ranks.items()
-    labelled, cut = samples(Path(record) / f"dp{rank}.jsonl")
-    by_step = {s["step"]: s for s in steps}
+    got = step_labels.label(ranks[0])[0]
+    labelled, cut = _features(got, "base", 1)
+    views = {s.step: s.view for s in got}
     backend = StepLinearBackend(StepLinearLaw(law))
     groups = {"validated": {}, "unvalidated": {}}
     refused: dict[str, dict] = {}
     warm, priced = [], []
     for key, counts, seconds, step, _ in labelled:
-        line = by_step[step]
-        view = BatchView(
-            tuple(RequestShape(q, c, bool(d)) for q, c, d in line["rows"]),
-            capture_rung=line["rung"],
-        )
         band = _band(key, counts)
         try:
-            cost = backend.price(view)
+            cost = backend.price(views[step])
         except CostRefused:
             r = refused.setdefault(band, {"steps": 0, "real_s": 0.0})
             r["steps"] += 1
