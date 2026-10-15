@@ -568,7 +568,7 @@ the log of one rank.
 
 ## The step linear law from real cells — `step_linear_fit`
 
-`python -m atom.compass.backends.step_linear_fit RECORD... --out LAW [--form FORM] [--dp N]`
+`python -m atom.compass.backends.step_linear_fit RECORD... --out LAW --machine-spec DIGEST [--form FORM] [--dp N]`
 fits the law a run file's `step_linear` key holds (`atom/compass/backends/step_linear.py`) from
 the step records of real cells, `OUT_DIR/steps/dp0.jsonl` of `REAL=1
 cctraces_sim.sh` runs. `atom/compass/backends/step_labels.py` states the label
@@ -577,6 +577,10 @@ reading, `dp0.cost.jsonl`; the module's docstring states how outliers are
 dropped. The written law also carries, per vector, its samples, warm and dropped
 counts and condition number, and names any vector it could not fit under
 `unfitted`.
+
+`DIGEST` is the `machine_spec_digest` of the capture host's spec in
+`scripts/compass/machines/`, which a run's spec must match, printed by
+`python -c 'import json, sys; from atom.compass.artifacts import machine_spec_digest as d; from atom.compass.run import _width_keys as w; from atom.compass.spec import MachineSpec as M; print(d(M.from_mapping(w(json.load(open(sys.argv[1]))))))' SPEC.json`.
 
 Calibration cells replay traces the graded cells do not: `FIRST_SESSION=256
 SESSIONS=137` against graded traces 0 to 255, by the
@@ -598,7 +602,10 @@ vector. A first-turn cell runs with `AIPERF_EXTRA_ARGS="--trajectory-start-min-r
 turn. The law carries the host key the records carry with its `atom`
 digest replaced by the one `host_key` gives 5148ceda2's tree, which adds
 `ScheduledBatchOutput.group_targets` and changes `clock.charge`, neither of
-which changes a real run's host time.
+which changes a real run's host time. The law and its host key state
+`machine_spec`, the digest `machine_spec_digest` gives
+`scripts/compass/machines/mi308x-hjbog39.json`, so it refuses under any other
+spec's device or software stack.
 
 ## Cost accuracy on a real run's own steps — `validate.cost`
 

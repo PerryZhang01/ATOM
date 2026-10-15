@@ -4,9 +4,14 @@
 The table below is the whole of artifact identity. An entry is addressed by the
 values that decide what it contains and by nothing else -- not by where someone
 put the file, and not by a name a script composed. `price_list` is the row that
-earns the rule: it is keyed by **(model, parallel layout, source-root
-digest)**, and a bare or merged price file states no layout, so it silently
-prices nothing while looking layered.
+earns the rule: it is keyed by **(model, parallel layout, machine-spec digest,
+source-root digest)**, and a bare or merged price file states no layout, so it
+silently prices nothing while looking layered.
+
+The machine-spec digest (`machine_spec_digest`) is the digest of the spec's own
+key, its device and software stack, so a `price_list` or `region_terms` entry
+measured on one platform does not answer on another, and a spec edit outside
+those two (an interconnect field, a re-probed constant) moves no key.
 
 The parallel layout (`LAYOUT`) is the rank widths (`AXES`) plus the settings
 that change kernels and groups at a fixed rank count: the switches
@@ -75,8 +80,8 @@ KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
     Kind.MACHINE_SPEC: ("device", "software_stack"),
     Kind.SHAPE_POPULATION: ("model", "workload", "engine_config"),
     Kind.OP_GRAPH: ("structure",),
-    Kind.PRICE_LIST: ("model", *LAYOUT, "source_root"),
-    Kind.REGION_TERMS: ("model", *LAYOUT),
+    Kind.PRICE_LIST: ("model", *LAYOUT, "machine_spec", "source_root"),
+    Kind.REGION_TERMS: ("model", *LAYOUT, "machine_spec"),
     Kind.MEMORY_READINGS: (
         "model",
         *LAYOUT,
@@ -237,6 +242,24 @@ class Key:
     def __str__(self) -> str:
         stated = ", ".join(f"{name}={value!r}" for name, value in self.fields)
         return f"{self.kind}({stated})"
+
+
+def machine_spec_key(machine) -> Key:
+    """A `MachineSpec`'s own key: the device and the software stack it states."""
+    from atom.compass.spec.fields import PINNED
+
+    pins = (f"{c} {machine.value(f'device.software_pinned_to.{c}')}" for c in PINNED)
+    return Key.of(
+        Kind.MACHINE_SPEC,
+        device=f"{machine.value('device.name')} {machine.value('device.arch')}",
+        software_stack=" / ".join(pins),
+    )
+
+
+def machine_spec_digest(machine) -> str:
+    """What an artifact measured on `machine` is keyed by: its key's digest."""
+    canonical = machine_spec_key(machine).canonical()
+    return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def refuse_not_a_key(given: object) -> None:

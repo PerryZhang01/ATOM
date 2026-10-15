@@ -59,7 +59,8 @@ LP after another, 1 when absent and ``null`` for no limit; each ends when no
 essential work is left, and the last one's end finishes the run),
 ``host`` (optional: ``laws``, per forward kind and host segment, coefficients
 on ``(1, tokens, seqs)``, zero where absent; ``key``, the `host_key` they were
-fitted under, which a run with laws must match; ``skip``, segments zeroed for
+fitted under and the ``machine_spec`` digest of the spec of the platform they
+were fitted on, which a run with laws must match; ``skip``, segments zeroed for
 a what-if run, which the graders refuse),
 ``machine`` (a machine spec mapping), ``parameter_count`` (read with
 ``step_roofline``), and ``out_dir``,
@@ -618,6 +619,7 @@ def runner(model_runner, tree) -> None:
     run = spec()
     if run is None:
         return
+    from atom.compass.artifacts import machine_spec_digest
     from atom.compass.backends.geometry import KvGeometry, Parallelism
     from atom.compass.backends.step_linear import StepLinearBackend, StepLinearLaw
     from atom.compass.backends.step_roofline import (
@@ -667,6 +669,14 @@ def runner(model_runner, tree) -> None:
             stack_layers=config.hf_config.num_hidden_layers,
         )
     machine = MachineSpec.from_mapping(_width_keys(run["machine"]))
+    platform = machine_spec_digest(machine)
+    fitted_on = run.get("step_linear", {}).get("machine_spec")
+    if "step_linear" in run and fitted_on != platform:
+        raise ValueError(
+            f"the step linear law was fitted on machine spec {fitted_on} and this "
+            f"run's is {platform}; a law measured on one platform is no evidence "
+            "about another"
+        )
     bundle = None
     if "step_grid" in run:
         from atom.compass.run.step_grid import load
@@ -709,12 +719,13 @@ def runner(model_runner, tree) -> None:
     if NOW_ENV in os.environ:
         slot = np.memmap(os.environ[NOW_ENV], np.float64, "r", shape=(1,))
         host = run.get("host", {})
-        ours, theirs = host.get("laws") and host_key(config), host.get("key") or {}
+        ours = host.get("laws") and {**host_key(config), "machine_spec": platform}
+        theirs = host.get("key") or {}
         if ours and theirs != ours:
             differ = [k for k in ours if theirs.get(k) != ours[k]]
             raise ValueError(
                 f"the run file's host laws were fitted under another {differ}; "
-                f"this run's key is {ours}"
+                f"this run's key is {ours}, and theirs is {theirs}"
             )
         model_runner.compass_host = replay or HostDeviceRecurrence(
             host.get("laws", {}), host.get("skip", ()), lambda: float(slot[0])
