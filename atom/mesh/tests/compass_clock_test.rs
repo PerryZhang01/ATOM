@@ -40,12 +40,6 @@ async fn scripted(replies: Vec<Value>) -> (String, tokio::task::JoinHandle<Vec<S
 }
 
 #[tokio::test]
-async fn no_endpoint_binds_nothing() {
-    std::env::remove_var(ENDPOINT_ENV);
-    assert!(ClockClient::from_env("router").await.is_none());
-}
-
-#[tokio::test]
 async fn sends_its_log_and_reads_grants_and_refusals() {
     let (endpoint, served) = scripted(vec![
         json!({"kind": "JOINED", "now": 1.5, "seqs": {"router->traffic:stream": 3}}),
@@ -58,7 +52,6 @@ async fn sends_its_log_and_reads_grants_and_refusals() {
     ])
     .await;
     let mut clock = ClockClient::bind(&endpoint, "router").await.unwrap();
-    assert_eq!(clock.joined_at, 1.5);
     assert_eq!(clock.send("router->traffic:stream", 2.0), 3);
     assert_eq!(clock.send("router->frontend-D:relay", 2.25), 0);
     let grant = clock.next_event(INF, 10.0).await.unwrap();
@@ -100,16 +93,31 @@ async fn sends_its_log_and_reads_grants_and_refusals() {
     );
 }
 
+/// A 17-digit time, as the authority writes it, reads back as the same f64.
+#[tokio::test]
+async fn reads_each_time_exactly() {
+    let t = 10.759668308661709;
+    let (endpoint, _served) = scripted(vec![
+        json!({"kind": "JOINED", "now": t, "seqs": {"router->traffic:stream": 2}}),
+        json!({"kind": "GRANT", "G": t, "released": {"traffic->router:http": [[1, t]]}}),
+    ])
+    .await;
+    let mut clock = ClockClient::bind(&endpoint, "router").await.unwrap();
+    assert_eq!(clock.send("router->traffic:stream", t), 2);
+    let grant = clock.next_event(INF, INF).await.unwrap();
+    assert_eq!(grant.time.to_bits(), f64::to_bits(t));
+    assert_eq!(grant.released[0].arrival.to_bits(), f64::to_bits(t));
+    assert_eq!(grant.released[0].seq, 1);
+}
+
 /// Run by `tests/compass/test_mesh_clock_client.py`, which serves the Python
 /// authority with LPs `traffic` and `router` and sends one request from
 /// `traffic` at 0.5; the router answers on its stream channel 0.25 later.
 #[tokio::test]
 #[ignore = "needs the Python authority; run by tests/compass/test_mesh_clock_client.py"]
 async fn python_authority_releases_a_message_to_the_router() {
-    let mut clock = ClockClient::from_env("router")
-        .await
-        .expect(ENDPOINT_ENV)
-        .unwrap();
+    let endpoint = std::env::var(ENDPOINT_ENV).expect(ENDPOINT_ENV);
+    let mut clock = ClockClient::bind(&endpoint, "router").await.unwrap();
     let grant = clock.next_event(INF, INF).await.unwrap();
     let request = Released {
         arrival: 0.5,
