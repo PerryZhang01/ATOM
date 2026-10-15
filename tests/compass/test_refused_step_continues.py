@@ -173,7 +173,7 @@ def test_a_refused_steps_cost_line_holds_its_reason_and_no_device_time(
             assert line["device_s"] > 0 and line["terms"]
 
 
-def test_a_refused_ranks_cost_line_charges_nothing_and_leaves_at_the_group_max(
+def test_a_refused_ranks_cost_line_charges_nothing_and_its_dummy_leaves_at_once(
     dp2, tmp_path, monkeypatch  # noqa: F811
 ):
     ranks = [
@@ -185,7 +185,7 @@ def test_a_refused_ranks_cost_line_charges_nothing_and_leaves_at_the_group_max(
 
     [refused], [line] = cost_lines(tmp_path, 0), cost_lines(tmp_path, 1)
     assert [refused[k] for k in ("refused", "device_s", "charge_s")] == [REFUSED, 0, 0]
-    assert refused["group_s"] == line["group_s"] == priced.predicted_s > 0
+    assert refused["group_s"] == 0 and line["group_s"] == priced.predicted_s > 0
     assert line["charge_s"] == line["device_s"] == priced.predicted_s
 
 
@@ -236,7 +236,7 @@ def test_an_aborted_step_0_rerun_leaves_its_cost_table_the_version_line_alone(
     assert cost_lines(tmp_path) == []
 
 
-def test_a_refused_rank_still_joins_the_group_max(dp2):  # noqa: F811
+def test_a_refused_rank_still_joins_the_group_targets(dp2):  # noqa: F811
     ranks = [
         runner(no_eager_rung(), dp_size=2, dp_rank=0),
         runner(backend(), dp_size=2, dp_rank=1),
@@ -245,7 +245,7 @@ def test_a_refused_rank_still_joins_the_group_max(dp2):  # noqa: F811
     refused, priced = dp2(ranks[0].dummy_execution, ranks[1].dummy_execution)
 
     assert priced.predicted_s > 0
-    assert refused.predicted_s == priced.predicted_s
+    assert refused.group_targets == priced.group_targets == (0, priced.predicted_s)
     assert ranks[0].refused_commands() == (REFUSED,)
     assert ranks[1].refused_commands() == ()
 

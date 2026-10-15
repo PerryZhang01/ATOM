@@ -494,7 +494,7 @@ def engine(config):
     """Around the engine's construction in its process; a no-op context on a real run.
 
     At DP width above one, the process joins the engine LP as the member of its
-    DP rank.
+    DP rank, and its host collectives first join the group rounds it owes.
     """
     global _member
     run = spec()
@@ -511,6 +511,7 @@ def engine(config):
     _member = f"dp{pc.data_parallel_rank}" if pc.data_parallel_size > 1 else None
     name = lp.name if _member is None else f"{lp.name}.{_member}"
     os.environ[NOW_ENV] = str(Path(run["out_dir"]) / f"now-{name}.bin")
+    clock.settle_before_collectives()
     return _named(_start_on_leaving(_runtime(lp, run, _member, _PublishedClock)))
 
 
