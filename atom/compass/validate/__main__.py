@@ -5,14 +5,13 @@ A CELL holds runs of one workload: `step_linear/` (at its run file's step linear
 and two or more `real*/`. `cctraces_sim.sh` writes each run.json as the run file with
 the `workload` every run must share; `record` and `run` write their own, the run file
 as `run_file`, and `validate.runs` decides which client run of theirs is graded, and
-whether one is. Rows: `validate.runs`' grades, TTFT p50 per
-band of uncached prompt tokens graded alike; per run `record` or `run` wrote, its
-warmup: how many requests its export names as such and how many steps hold only
-those, or that it states none; `validate.cost` on the steps graded (with the steps
-it leaves out) and `memory.check` per real run; and the simulated run's refusals by
-source, shares and speed. Any refusal makes a `cctraces_sim.sh` cell a coverage
-report; the shares grade nothing, and neither do the counts but preemptions and
-prefill tokens.
+whether one is. Rows: `validate.runs`' grades, TTFT p50 per band of uncached prompt
+tokens graded alike; per run `record` or `run` wrote, its warmup: how many requests
+its export names as such and how many steps hold only those; `validate.cost` on the
+steps graded (with the steps it leaves out) and `memory.check` per real run; and the
+simulated run's refusals by source, shares and speed. Any refusal makes a
+`cctraces_sim.sh` cell a coverage report; the shares grade nothing, and neither do the
+counts but preemptions and prefill tokens.
 """
 
 from __future__ import annotations
@@ -70,13 +69,9 @@ def _runs(real: list[Path], law: Path):
 
 
 def _warmup(run: Path, warmup: dict | None):
-    if warmup is None:  # a run `cctraces_sim.sh` wrote, graded whole
-        return
-    where, n = f"warmup {run.name}", warmup["requests"]
-    if n:
-        yield where, "warmup", f"requests {n}, steps {warmup['steps']}", "not graded"
-    else:
-        yield where, "warmup", "its export states no warmup", "-"
+    if warmup is not None:  # None: a run `cctraces_sim.sh` wrote, graded whole
+        value = f"requests {warmup['requests']}, steps {warmup['steps']}"
+        yield f"warmup {run.name}", "warmup", value, "not graded"
 
 
 def _cost(run: Path, law: dict, steps: list[dict]):

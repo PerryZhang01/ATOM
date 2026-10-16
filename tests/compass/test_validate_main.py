@@ -252,7 +252,7 @@ def _as_recorded(cell, warmup=()):
     """Lay `cell`'s runs out as `record` and `run` write them: each request
     named at its last prefill row, by key `k<id>` and response id `id-<id>`;
     an export naming them all, from trace `t<id>`, those in `warmup` as its
-    warmup's; and run.json's identity,
+    warmup's, else request `w`, which no step holds; and run.json's identity,
     with `run`'s grading entries for `step_linear/`, its law and host laws in
     its run file and its refusals its summary's."""
     for d in sorted(cell.iterdir()):
@@ -269,6 +269,8 @@ def _as_recorded(cell, warmup=()):
         for r in last:
             part = "warmup" if r in warmup else "requests"
             export[part][f"id-{r}"] = {"trace": f"t{r}", "sampling": {}}
+        if not export["warmup"]:
+            export["warmup"]["id-w"] = {"trace": "tw", "sampling": {}}
         (d / CLIENT_RUN).write_text(json.dumps(export))
         run = {"format_version": 2}
         if d.name == "step_linear":
@@ -299,8 +301,8 @@ def test_a_cell_record_and_run_wrote_grades_as_the_one_cctraces_sim_wrote(
     graded = _graded(capsys, tmp_path / "c4")
     stated = [graded.pop(k) for k in list(graded) if k[0].startswith("warmup ")]
     assert graded == rows
-    # Each run says its export names no warmup; a `cctraces_sim.sh` run reads none.
-    assert stated == [["its export states no warmup", "-"]] * 4
+    # Each run's export names a warmup no step holds; a `cctraces_sim.sh` run reads none.
+    assert stated == [["requests 1, steps 0", "not graded"]] * 4
 
 
 def test_a_refusal_in_the_client_run_record_and_run_wrote_refuses_the_cell(
@@ -319,9 +321,8 @@ def test_runs_record_and_run_wrote_that_served_other_traces_are_not_one_cell(
     _rows(capsys, tmp_path)
     _as_recorded(tmp_path / "c4")
     export = tmp_path / "c4" / "real1" / CLIENT_RUN
-    export.write_text(
-        json.dumps({"requests": {"id-0": {"trace": "t9", "sampling": {}}}})
-    )
+    t9 = {"requests": {"id-0": {"trace": "t9", "sampling": {}}}}
+    export.write_text(json.dumps(json.loads(export.read_text()) | t9))
 
     with pytest.raises(ValueError, match=r"sent different traces; .*real1': \['t9'\]"):
         main([str(tmp_path / "c4")])

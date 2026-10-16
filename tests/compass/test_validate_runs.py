@@ -213,12 +213,13 @@ GRADED = {
 }
 
 
-def _recorded(cell, sent=None, warmup=None, **run):
+def _recorded(cell, sent=None, warmup=("kw",), **run):
     """`cell` as `record` lays it out, or with `run`'s entries as `run` does:
     each named request also named by its response id `id-<key>`, and the
     export naming those whose keys are in `sent` (all by default), each from
-    trace `trace-<key>`; and, when `warmup` is given, its warmup naming those
-    whose keys are in it."""
+    trace `trace-<key>`; and its warmup naming those whose keys are in
+    `warmup`, by default `kw`, which `_schedule` holds no step of. With
+    `warmup` None the export has no warmup entry."""
     path = cell / "steps" / "dp0.jsonl"
     lines = [json.loads(x) for x in path.read_text().splitlines()]
     for line in lines:
@@ -359,6 +360,16 @@ def test_a_step_of_a_request_neither_its_own_nor_its_warmup_s_before_them_refuse
     )
 
     with pytest.raises(ValueError, match="r0 is not graded: steps of requests it did"):
+        grade(real, simulated)
+
+
+@pytest.mark.parametrize("warmup", [None, ()])
+def test_a_client_run_whose_export_names_no_warmup_is_refused(tmp_path, warmup):
+    *real, simulated = (_recorded(c) for c in _four(tmp_path))
+    _recorded(real[2], warmup=warmup)
+
+    cold = "its export names no warmup, so its first steps may be cold"
+    with pytest.raises(ValueError, match=f"r2 is not graded: {cold}$"):
         grade(real, simulated)
 
 

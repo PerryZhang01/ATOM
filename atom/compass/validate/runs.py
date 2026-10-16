@@ -15,7 +15,8 @@ its steps are graded, and every run must have served the same traces. A step
 holding only requests its export names as its warmup's (`warmup`) is its
 warmup, and not graded. It is refused, naming every reason, when steps of any
 other request precede its own: it is then not its server's first client run,
-and meets the prefix cache an earlier one left. A simulated run, whose
+and meets the prefix cache an earlier one left; and when its export names no
+warmup, since its first steps may then be cold. A simulated run, whose
 run.json holds `run_file`, is also refused when it skips host segments, or its
 run file has no host laws and so prices no host time; when the step roofline
 was on; when its first client run refused anything, or has no summary to say;
@@ -185,6 +186,8 @@ def _client_run(cell, run) -> tuple[list[dict], list[str], dict]:
     traces = sorted({t for s, m in zip(split, mine) if m for t in s["traces"]})
     before = warm[: mine.index(True)]
     why = [] if all(before) else ["steps of requests it did not send precede its own"]
+    if not warmup_names:
+        why.append("its export names no warmup, so its first steps may be cold")
     if "run_file" in run:
         why += _not_graded(run, traces)
     if why:
