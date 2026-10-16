@@ -37,7 +37,7 @@ _OPERATION_TOMBSTONE_LIMIT = 4096
 class _PendingLoad:
     completion: LoadCompletionId
     future: Any | None
-    started_at: float = field(default_factory=lambda: time.monotonic())
+    started_at: float = field(default_factory=lambda: clock.now(time.monotonic))
 
 
 @dataclass
@@ -46,7 +46,7 @@ class _PendingSave:
     future: Any | None
     start: int
     end: int
-    started_at: float = field(default_factory=lambda: time.monotonic())
+    started_at: float = field(default_factory=lambda: clock.now(time.monotonic))
 
 
 _DEFAULT_TRANSFER_DEADLINE_S = 1200.0

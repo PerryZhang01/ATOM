@@ -81,6 +81,16 @@ def now(real) -> float:
     return real() if runtime is None else runtime.read_clock()
 
 
+def sleep(seconds: float, real) -> None:
+    """In a run, the clock owner's idle point until `seconds` from now or its
+    next arrival, whichever is first; otherwise `real(seconds)`."""
+    runtime = _installed
+    if runtime is None or not runtime.in_run:
+        real(seconds)
+    else:
+        runtime.next_event(runtime.now + seconds)
+
+
 #: The station job this thread is serving, as ``job.cur = (station, k)``; the
 #: executor running the job sets it and clears it.
 job = threading.local()
@@ -555,7 +565,7 @@ class RelayQueue:
 
     put_nowait = put
 
-    def get(self):
+    def get(self, block: bool = True):
         me = threading.current_thread()
         if self.consumer not in (None, me):
             raise RuntimeError(
@@ -568,8 +578,11 @@ class RelayQueue:
                 f"{self.wsock.ch}: the item stamped (arrival {self.pending[0]}, seq "
                 f"{self.pending[1]}) was taken and never sent"
             )
-        self.pending, item = self.q.get()
+        self.pending, item = self.q.get(block)
         return item
+
+    def get_nowait(self):
+        return self.get(False)
 
     def take_stamp(self) -> tuple:
         if self.pending is None:

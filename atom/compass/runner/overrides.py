@@ -842,20 +842,27 @@ class NonAllocatingRunner(
 
         An empty registry still goes through ATOM's `set_kv_cache_data`: it is
         the one call that builds the worker-side KV connector, which the engine
-        polls for transfer completions.
+        polls for transfer completions. An `lmcache_mp` one, alone or in a
+        `multi`, is built as `compass`'s worker half, which moves nothing.
         """
+        from atom.compass.kv.lmcache_mp import substitute
         from atom.kv_transfer.disaggregation.factory import KVConnectorFactory
         from atom.utils.forward_context import set_kv_cache_data
 
-        kv = _config_field(self, "kv_transfer_config")
-        if kv:
-            name = KVConnectorFactory.canonical_name(kv.get("kv_connector", "moriio"))
-            if name != "compass":
+        names = []
+        if _config_field(self, "kv_transfer_config"):
+            names = [
+                n for n, _ in KVConnectorFactory.leaf_connectors(self.config) or ()
+            ]
+        for name in names:
+            if name not in ("compass", "lmcache_mp"):
                 raise RunnerRefusal(
                     f"kv_connector {name!r} is a real transfer backend; this "
-                    "runner simulates only 'compass', and an unset kv_connector "
-                    "means 'moriio'."
+                    "runner simulates only 'compass' and 'lmcache_mp', and an "
+                    "unset kv_connector means 'moriio'."
                 )
+        if "lmcache_mp" in names:
+            substitute()
         set_kv_cache_data({}, self.config, num_blocks=num_kvcache_blocks)
         self.config.num_kvcache_blocks = num_kvcache_blocks
         logger.info(
