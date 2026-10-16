@@ -1,18 +1,11 @@
 # SPDX-License-Identifier: MIT
 """The mi355-gpu-45 MI355X machine spec, from a tokenizer swept here and one real start.
 
-    python3 scripts/compass/mi355x_spec.py [--model M] [--out PATH]
+    python3 scripts/compass/mi355x_spec.py [--out PATH]
 
-Run on mi355-gpu-45, in a container that has the model's files; the fragment
-and sweep functions are `mi308x_spec.py`'s. The device fragment is the readings
-ATOM's own `ModelRunner` took at one DeepSeek-V4-Pro engine start at the
-nightly DPA-TP8 prefill side's arguments (`FLAGS`; expert parallelism and MTP
-off). Every rank of it runs attention at TP 1 inside 8-wide DP groups, so the
-reserve and the load residue are keyed by the layout 1x8 and the activations
-entry by width 1. The device peaks are AMD's MI355X datasheet; every other
-field is assumed. Writes the merged document to `--out` when `validate`
-passes at 1x8, then prints `explain`'s rows by origin and the basis of
-`kv_blocks`.
+The device fragment is one DeepSeek-V4-Pro start at the nightly DPA-TP8 prefill
+side's arguments (`FLAGS`): the reserve and load residue sit at layout 1x8, the
+activations at width 1. The peaks are the datasheet's; the rest is assumed.
 """
 
 import argparse
@@ -28,17 +21,14 @@ from mi308x_spec import fragment, swept
 from atom.compass.spec import Fragment, merge, validate
 
 NAME = "mi355x-gpu45"
-# The shared fragment and sweep functions name the machine they describe.
-base.NAME = NAME
+base.NAME = NAME  # the shared fragment and sweep functions name this machine
 MODEL = "/models/DeepSeek-V4-Pro"
 LAYOUT = "1x8"
 FLAGS = "-tp 8 --enable-dp-attention --enable-tbo"
 
-#: What ATOM's `ModelRunner` read at the start, the second of two back to back
-#: so the compile cache was warm, at commit COMMIT (image nightly-20261013):
-#: `non_torch`, the minimum over the 8 ranks; from that
-#: rank, `allocated` and the unique parameter and buffer bytes right after the
-#: model loaded, then the allocator's current and peak after warmup.
+#: What `ModelRunner` read at the second of two starts (warm compile cache): the
+#: minimum `non_torch` over the 8 ranks; that rank's bytes after the model loaded
+#: and the allocator's current and peak after warmup.
 DATE, COMMIT = "2026-10-16", "409bedc98"
 READ = {
     "total": 309220868096,
@@ -52,6 +42,8 @@ READ = {
 }
 #: The sha256 of the start's server log.
 RECORD = "02618dade3d07bcaac510da11cf8a279a1fe3ef2fce72d41e88a76f2df7c32c6"
+RESIDUE = READ["loaded"] - READ["parameters"] - READ["buffers"]
+PER_TOKEN = (READ["peak"] - READ["current"]) / READ["warmup_tokens"]
 SUBJECT = {"model": MODEL, "width": 8, "source_root": f"commit:{COMMIT}"}
 SUBJECT["record"] = f"sha256:{RECORD}"
 #: The sha256 of the model's config.json, which the run fingerprints.
@@ -66,9 +58,7 @@ DEVICE = {
         "memory": {"capacity_bytes": READ["total"]},
         "runtime_constants": {
             "driver_and_collective_reserve_bytes": {LAYOUT: READ["non_torch"]},
-            "allocator_retained_after_load_bytes": {
-                LAYOUT: READ["loaded"] - READ["parameters"] - READ["buffers"]
-            },
+            "allocator_retained_after_load_bytes": {LAYOUT: RESIDUE},
             "persistent_forward_buffer_bytes": READ["current"] - READ["loaded"],
         },
         "activations": [
@@ -76,9 +66,7 @@ DEVICE = {
                 "id": "deepseek-v4-pro",
                 "applies_to": ["DeepseekV4ForCausalLM"],
                 "fingerprint": CONFIG_JSON,
-                "bytes_per_token": {
-                    1: (READ["peak"] - READ["current"]) / READ["warmup_tokens"]
-                },
+                "bytes_per_token": {1: PER_TOKEN},
             }
         ],
         "software_pinned_to": {"rocm": "7.2.4", "aiter": "9205e1059", "rccl": "2.27.7"},
@@ -148,14 +136,10 @@ def device_fragments() -> list[Fragment]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--model", default=MODEL)
-    parser.add_argument(
-        "--out",
-        type=Path,
-        default=base.ROOT / "scripts/compass/machines" / f"{NAME}.json",
-    )
+    out = Path(__file__).resolve().parent / "machines" / f"{NAME}.json"
+    parser.add_argument("--out", type=Path, default=out)
     args = parser.parse_args(argv)
-    merged = merge([swept(args.model), *device_fragments()])
+    merged = merge([swept(MODEL), *device_fragments()])
     verdict = validate(merged, tp_widths=(LAYOUT,))
     print(verdict)
     if not verdict.ok:

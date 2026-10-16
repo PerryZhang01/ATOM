@@ -248,8 +248,7 @@ def swept(model: str) -> Fragment:
 
 
 def report(merged, tp_width=1) -> str:
-    """`explain`'s rows grouped by origin, and the basis of `kv_blocks`, at
-    `tp_width`, or at every key a width table holds when it is None."""
+    """`explain`'s rows grouped by origin, and the basis of `kv_blocks`."""
     spec = MachineSpec.from_mapping(merged.document)
     groups: dict[str, list[str]] = {}
     for block in ("host", "device", "interconnect"):
