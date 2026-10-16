@@ -28,7 +28,6 @@ from pathlib import Path
 from atom.compass import run
 from atom.compass.artifacts import ArtifactStore, Kind, member_name
 from atom.compass.fit.publish import RANK
-from atom.compass.spec import MachineSpec
 
 #: Each backend flag's store kind; the step stub's coefficients are a file.
 KINDS = {run.STEP_LINEAR: Kind.STEP_LINEAR_LAW, run.STEP_GRID: Kind.STEP_GRID_BUNDLE}
@@ -63,19 +62,18 @@ def build(args, atom_args) -> dict:
     engine = _engine_args(atom_args)
     # Under DP-attention every TP rank is a DP rank, as `run.frontend` counts.
     ranks = engine.tensor_parallel_size if engine.enable_dp_attention else 1
-    machine = json.loads(Path(args.machine).read_text())
-    # Read as `compass fit` and the runner read it, so a spec they would
-    # refuse refuses before a server starts.
-    MachineSpec.from_mapping(run._width_keys(machine))
     out = {
         **FIXED,
         "client_runs": None,
         "data_parallel_size": engine.data_parallel_size * ranks,
-        "machine": machine,
+        "machine": json.loads(Path(args.machine).read_text()),
         "store": str(store.root),
         "on_refusal": args.on_refusal,
         "step_roofline": args.step_roofline,
     }
+    # Read as the runner and `compass fit` read it, so a spec they would
+    # refuse refuses before a server starts.
+    run._machine(out)
     if stub := getattr(args, run.STEP_STUB):
         out[run.STEP_STUB] = json.loads(Path(stub).read_text())
         stated = json.dumps(out[run.STEP_STUB], sort_keys=True).encode()
