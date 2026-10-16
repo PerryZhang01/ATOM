@@ -25,10 +25,10 @@ holds device time. A `shape_population`'s pricing backend is in its key rather
 than its row: another backend addresses another entry instead of invalidating
 this one.
 
-**One artifact this store holds has no row at all.** `coverage_hull` appears
-in the artifact key table and nowhere in this one. Guessing a row for it is the
-failure this package exists to prevent -- an artifact answering under
-conditions nobody checked -- so `rows_for` refuses and names what is missing.
+**`coverage_hull` has no row at all.** It appears in the artifact key table
+and nowhere in this one. Guessing a row for it is the failure this package
+exists to prevent -- an artifact answering under conditions nobody checked --
+so `rows_for` refuses and names what is missing.
 """
 
 import enum

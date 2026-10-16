@@ -1,12 +1,15 @@
 # SPDX-License-Identifier: MIT
 """Grade cells from every source, in one table: `python -m atom.compass.validate CELL...`
 
-A CELL holds `cctraces_sim.sh` runs of one workload: `step_linear/` (at its run file's
-step linear law) and two or more `real*/`. Rows: `validate.runs`' grades, TTFT p50 per
+A CELL holds runs of one workload: `step_linear/` (at its run file's step linear law)
+and two or more `real*/`. `cctraces_sim.sh` writes each run.json as the run file with
+the `workload` every run must share; `record` and `run` write their own, the run file
+as `run_file`, and `validate.runs` decides which client run of theirs is graded, and
+whether one is. Rows: `validate.runs`' grades, TTFT p50 per
 band of uncached prompt tokens graded alike, `validate.cost` (with the steps it leaves
 out) and `memory.check` per real run, and the simulated run's refusals by source,
-shares and speed. Any refusal makes the cell a coverage report; the shares grade
-nothing, and neither do the counts but preemptions and prefill tokens.
+shares and speed. Any refusal makes a `cctraces_sim.sh` cell a coverage report; the
+shares grade nothing, and neither do the counts but preemptions and prefill tokens.
 """
 
 from __future__ import annotations
@@ -129,14 +132,15 @@ def rows(cell) -> list[tuple]:
     run = {r.name: json.loads((r / "run.json").read_text()) for r in (*real, law)}
     for name, f in run.items():
         refuse_renamed_keys(f, cell / name / "run.json")
-    if len({json.dumps(f["workload"], sort_keys=True) for f in run.values()}) != 1:
+    if len({json.dumps(f.get("workload"), sort_keys=True) for f in run.values()}) != 1:
         raise ValueError(f"{cell}'s runs {sorted(run)} ran different workloads")
     summary = json.loads((law / "summary.json").read_text())
     verdict = "coverage report" if summary["coverage_report"] else "graded"
     out = [("cell", "verdict", f"{len(real)} real runs", verdict)]
     out += _runs(real, law)
     for r in real:
-        out += [*_cost(r, run["step_linear"]["step_linear"]), *_memory(law, r)]
+        law_file = run["step_linear"].get("run_file", run["step_linear"])
+        out += [*_cost(r, law_file["step_linear"]), *_memory(law, r)]
     out += _summary(law, summary)
     return out
 

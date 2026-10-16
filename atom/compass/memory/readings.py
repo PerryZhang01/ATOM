@@ -14,7 +14,7 @@ substitution exists to avoid, and upstream will change it.
 |---|---|
 | `total` | `device.memory.capacity_bytes` |
 | `peak_torch` | weights + buffers + load residue + persistent + activations |
-| `non_torch` | `driver_and_collective_reserve_bytes`, a width table |
+| `non_torch` | the `memory_readings` entry's `driver_and_collective_reserve_bytes` |
 | `cudagraph_overhead` | `graph_pool.reserves()` -- the number that reserves |
 | `free` | derived as a clean box: `total - peak_torch - non_torch` |
 
@@ -22,7 +22,8 @@ substitution exists to avoid, and upstream will change it.
 `(total - free) - reserved`, and `total - free` counts every process on the
 card: six prior runs died at start-up with `non_torch=152.01GB` because a
 neighbour held 152 GB while this rank had reserved 2.9 GB. Taking `non_torch`
-from a spec removes that contamination by construction. And with `free` derived
+from an entry measured on a card checked quiet before and after keeps that
+contamination out of the run. And with `free` derived
 as the box that is left, the `min(budget, free)` clamp cannot bind -- the prior
 design needed a `free_was_binding()` guard to refuse records where it had, and
 this one does not. Making it inert is this module's job; ATOM's own budget
@@ -39,13 +40,15 @@ deduped by storage, which needs a module tree, which needs the engine, which
 this package does not import; the simulated runner builds one and hands it in,
 and `from_config` reads the weights off that tree's parameter storages. Each term
 carries its own method: the buffers are analytical unless the rotary fraction
-is assumed, and the activations are a declared formula unless a real run
-measured their bytes per token in the machine spec. The spec fields used as
-terms take their method from the origin the spec records for them.
+is assumed, and the activations are a declared formula unless the run's
+`memory_readings` entry measured them. The capacity takes its method from the
+origin the spec records for it; an entry's readings are measured, since the
+entry is keyed by the configuration the run is.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from atom.compass.backends.geometry import dtype_bytes as element_bytes
@@ -53,9 +56,22 @@ from atom.compass.backends.provenance import Method
 from atom.compass.memory import graph_pool
 from atom.compass.memory.terms import Reading, Term, spec_term
 
-#: Gate and up are both live before their product, so the MLP's intermediate
-#: activation is resident twice at the peak. Geometry, not a coefficient.
-_LIVE_INTERMEDIATE = 2
+#: What one rank's member of a `memory_readings` entry holds, in bytes but for
+#: `warmup_tokens` and `record`: an engine start's readings (`compass measure
+#: memory`), with the activation coefficient as `activation_bytes` over
+#: `warmup_tokens`, `cudagraph_pool_bytes` null for an engine that captures
+#: nothing, and `record` the digest of the start's log, as
+#: `python -m atom.compass.memory.check` names a run.
+ENTRY_FIELDS = (
+    "capacity_bytes",
+    "driver_and_collective_reserve_bytes",
+    "allocator_retained_after_load_bytes",
+    "persistent_forward_buffer_bytes",
+    "activation_bytes",
+    "warmup_tokens",
+    "cudagraph_pool_bytes",
+    "record",
+)
 
 
 class MemoryRefusal(Exception):
@@ -127,21 +143,16 @@ class ModelTerms:
         cls,
         config,
         *,
-        tp_size: int,
-        warmup_tokens: int,
+        activations: Term,
         dtype_bytes: int | None = None,
         config_json: dict | None = None,
-        activations_entry: tuple[str, float, tuple[str, ...]] | None = None,
         tree,
     ) -> ModelTerms:
         """All three, each labelled with where its bytes came from.
 
         `config_json` is the model's config.json as loaded; without it, a
         field `config`'s class has a default for is refused, since the
-        default cannot be told from a stated value. An MoE model, one that
-        states `moe_intermediate_size`, takes its live intermediate from its
-        expert fields, or from `intermediate_size` when it states dense layers
-        wider than that.
+        default cannot be told from a stated value.
 
         `tree` is the model's module tree built on the meta device, with
         ATOM's own quantisation config and process groups; the weights are the
@@ -149,26 +160,15 @@ class ModelTerms:
         `lm_head` that shares the embedding's storage counts once, as it is
         resident once.
 
-        Every declared term below names its successor: assumed buffers are
-        owed a config that states the rotary fraction, and the activation
-        formula an entry measured on the model
-        or a liveness walk over a traced op graph *plus* the per-leaf
-        invisible-scratch constants -- and the second is the one with no law
-        behind it. The measured spread that makes it load-bearing is
-        0.1 KB/token on the 0.6B against 39.6 KB/token on the 27B, the
-        difference between -35.0% and +3.4% held out. A formula does not
-        stand in for that on a real model.
-
-        `activations_entry`, what `MachineSpec.activations_for` returns,
-        replaces the activation formula with that entry's bytes per token
-        times `warmup_tokens`, an estimate; the scratch is inside it. The term
-        keeps the records of the runs the entry was read off.
+        `activations` is what `MemoryReadings.activations` gives: a real run's
+        warmup peak, the invisible scratch inside it. No form in the model's
+        geometry stands in for it; 0.1 KB/token of scratch on the 0.6B
+        against 39.6 KB/token on the 27B is the difference between -35.0% and
+        +3.4% held out. Assumed buffers are owed a config that states the
+        rotary fraction.
         """
-        if tp_size < 1:
-            raise ValueError(f"tensor-parallel width is at least 1: {tp_size}")
         file = config_json or {}
         file = file.get("text_config", file)
-        hidden = int(_geometry(config, file, "hidden_size"))
         positions = int(_geometry(config, file, "max_position_embeddings"))
         if dtype_bytes is None:
             dtype_bytes = element_bytes(_dtype(config))
@@ -194,58 +194,6 @@ class ModelTerms:
                 f"int({head_dim} head_dim x {partial} "
                 f"partial_rotary_factor{assumed})"
             )
-        experts = _stated(config, file, "moe_intermediate_size")
-        if experts is None:
-            intermediate = int(_geometry(config, file, "intermediate_size"))
-            live = f"{intermediate} intermediate"
-        else:
-            # Each token's routed experts and the shared ones are live at once.
-            routed = int(_geometry(config, file, "num_experts_per_tok"))
-            text = getattr(config, "text_config", config)
-            klass = type(text)
-            named = sorted(k for k in vars(text) if "shared" in k)
-            shared, why = _stated(config, file, "n_shared_experts"), ""
-            if shared is None and hasattr(klass, "shared_expert_intermediate_size"):
-                # One shared expert sized by its own width (Qwen2MoeConfig and
-                # its successors), live beside the routed ones.
-                width = int(_geometry(config, file, "shared_expert_intermediate_size"))
-                intermediate = routed * int(experts) + width
-                live = (
-                    f"({routed} num_experts_per_tok x {experts} moe_intermediate_size"
-                    f" + {width} shared_expert_intermediate_size)"
-                )
-            elif shared is None:
-                if named:
-                    raise MemoryRefusal(
-                        "this config states no `n_shared_experts`, and the "
-                        "memory model reads it",
-                        "state it in the model's config.json; this config "
-                        f"names a shared expert as {', '.join(named)}",
-                    )
-                if not klass.model_type:
-                    # A bare PretrainedConfig names no architecture.
-                    _geometry(config, file, "n_shared_experts")
-                # An architecture's own config class that names no shared
-                # expert, in its fields or in config.json (Qwen3MoeConfig),
-                # has none: 0 is its geometry.
-                shared, why = 0, f" ({klass.__name__} has none)"
-            if shared is not None:
-                shared = int(shared)
-                intermediate = (routed + shared) * int(experts)
-                live = (
-                    f"({routed} num_experts_per_tok + {shared} n_shared_experts{why}) "
-                    f"x {experts} moe_intermediate_size"
-                )
-            # ATOM builds a dense MLP in these layers instead; the wider form
-            # is the one live at the peak.
-            if (
-                _stated(config, file, "first_k_dense_replace")
-                or _stated(config, file, "mlp_only_layers")
-                or (_stated(config, file, "decoder_sparse_step") or 1) > 1
-            ):
-                dense = int(_geometry(config, file, "intermediate_size"))
-                intermediate = max(dense, intermediate)
-                live = f"max({dense} intermediate_size, {live})"
         # Parameters that share a storage (a tied head, a view) are one
         # allocation; `_cdata` names the storage even on meta, where every
         # data pointer is zero.
@@ -279,38 +227,70 @@ class ModelTerms:
             "fp32 they are computed in (RotaryEmbedding.__init__, with the "
             "default dtype set in ModelRunner.__init__)",
         )
-        activations = Term(
-            "activations",
-            int(
-                warmup_tokens
-                * dtype_bytes
-                * (
-                    graph_pool.LIVE_TENSORS_PER_LAYER * hidden
-                    + _LIVE_INTERMEDIATE * intermediate
-                )
-            ),
-            Method.DECLARED,
-            f"{warmup_tokens} warmup tokens x {dtype_bytes} B x "
-            f"({graph_pool.LIVE_TENSORS_PER_LAYER} x {hidden} hidden + "
-            f"{_LIVE_INTERMEDIATE} x {live})",
-            "a device.activations entry, or a liveness walk over a traced op "
-            "graph plus the per-leaf "
-            "invisible-scratch constants, replace this; the per-layer "
-            "coefficient is ATOM's own "
-            "(ModelRunner._piecewise_per_token_bytes), over one live "
-            "layer rather than all of them",
-        )
-        if activations_entry is not None:
-            entry, per_token, records = activations_entry
-            activations = Term(
-                "activations",
-                int(warmup_tokens * per_token),
-                Method.ESTIMATED,
-                f"{warmup_tokens} warmup tokens x {per_token} B/token, "
-                f"device.activations[{entry}].bytes_per_token[{tp_size}]",
-                records=records,
-            )
         return cls(weights, buffers, activations)
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryReadings:
+    """One rank's member of a `memory_readings` entry, and the entry it is from.
+
+    Each reading is a term of the run's readings, measured: the entry is keyed
+    by the model, platform, layout and engine config the run is.
+    """
+
+    values: Mapping[str, object]
+    source: str
+
+    @classmethod
+    def from_member(cls, member: object, source: str) -> MemoryReadings:
+        """The readings of a member, or a refusal naming what it holds instead."""
+        fields = set(member) if isinstance(member, Mapping) else None
+        if fields != set(ENTRY_FIELDS):
+            raise MemoryRefusal(
+                f"{source} holds {sorted(fields or ())}, not one rank's readings",
+                f"a member states exactly {', '.join(ENTRY_FIELDS)}; take the "
+                "entry again with compass measure memory",
+            )
+        for name in ENTRY_FIELDS:
+            value = member[name]
+            whole = isinstance(value, int) and not isinstance(value, bool)
+            if name == "record":
+                whole = isinstance(value, str) and value.startswith("sha256:")
+            elif whole:
+                whole = value >= (name == "warmup_tokens")
+            if not (whole or (value is None and name == "cudagraph_pool_bytes")):
+                raise MemoryRefusal(
+                    f"{source} holds {name} {value!r}, which is no reading",
+                    "a reading is a whole number of bytes, or of warmup tokens, "
+                    "and the record a log's sha256",
+                )
+        return cls(dict(member), source)
+
+    def term(self, name: str, field: str) -> Term:
+        """The reading `field` as the term `name`."""
+        return Term(
+            name,
+            self.values[field],
+            Method.MEASURED,
+            f"{self.source} {field}",
+            records=(self.values["record"],),
+        )
+
+    def activations(self, warmup_tokens: int) -> Term:
+        """The activations at `warmup_tokens`: the reading at its own warmup
+        tokens, or the coefficient times these, an estimate."""
+        nbytes, tokens = self.values["activation_bytes"], self.values["warmup_tokens"]
+        source = f"{self.source} activation_bytes over {tokens} warmup tokens"
+        records = (self.values["record"],)
+        if warmup_tokens == tokens:
+            return Term("activations", nbytes, Method.MEASURED, source, records=records)
+        return Term(
+            "activations",
+            round(nbytes * warmup_tokens / tokens),
+            Method.ESTIMATED,
+            f"{source}, x {warmup_tokens} warmup tokens",
+            records=records,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -356,11 +336,13 @@ class DeviceReadings:
 def device_readings(
     spec,
     *,
+    memory: MemoryReadings,
     tp_width: int | str,
     model: ModelTerms,
     cudagraph_overhead: Reading,
 ) -> DeviceReadings:
-    """The five readings for one width, or a refusal naming the field and width.
+    """The five readings: the capacity off `spec`, the reserve, residue and
+    persistent buffers off `memory`, the run's `memory_readings` member.
 
     `cudagraph_overhead` is the reading `graph_pool.reserves()` returns, and a
     reading from `graph_pool.predicts()` is refused here by name. The two
@@ -368,16 +350,8 @@ def device_readings(
     so which one reserves is settled at this call site by the code rather than
     by a comment beside it.
 
-    A width absent from either width table refuses, and the spec's own refusal
-    names the field and the width -- `driver_and_collective_reserve_bytes` and
-    `allocator_retained_after_load_bytes` are `Kind.WIDTH_TABLE` because no
-    fixed-plus-per-peer form fits 5980/6340/9138 at widths 2/4/8, so there is
-    nothing to interpolate along. Nothing here catches that refusal.
-
-    Under DP-attention `tp_width` is the layout key, `"<tp>x<dp>"`, or
-    `"<tp>x<dp>x<ep>"` with expert parallelism, where `ep` is `tp * dp`: every
-    rank runs attention at TP 1 inside DP-wide groups, which reserve what
-    neither width alone does.
+    `tp_width` labels the table: the width, or under DP-attention the layout,
+    `"<tp>x<dp>"`, or `"<tp>x<dp>x<ep>"` with expert parallelism.
     """
     if isinstance(tp_width, int) and tp_width < 1:
         raise ValueError(f"tensor-parallel width is at least 1: {tp_width}")
@@ -390,10 +364,6 @@ def device_readings(
             "costs and the two disagree by 4-19x, so substituting it would "
             "produce a block count ATOM would never reach",
         )
-    rc = "device.runtime_constants."
-    reserve = "driver_and_collective_reserve_bytes"
-    residue = "allocator_retained_after_load_bytes"
-    persistent = "persistent_forward_buffer_bytes"
     capacity = "device.memory.capacity_bytes"
     total = Reading(
         "total",
@@ -402,12 +372,8 @@ def device_readings(
     non_torch = Reading(
         "non_torch",
         (
-            spec_term(
-                spec,
-                "driver and collective reserve",
-                rc + reserve,
-                int(spec.runtime_constant(reserve, tp_width)),
-                width=tp_width,
+            memory.term(
+                "driver and collective reserve", "driver_and_collective_reserve_bytes"
             ),
         ),
     )
@@ -416,19 +382,8 @@ def device_readings(
         (
             model.weights,
             model.buffers,
-            spec_term(
-                spec,
-                "load residue",
-                rc + residue,
-                int(spec.runtime_constant(residue, tp_width)),
-                width=tp_width,
-            ),
-            spec_term(
-                spec,
-                "persistent",
-                rc + persistent,
-                int(spec.runtime_constant(persistent)),
-            ),
+            memory.term("load residue", "allocator_retained_after_load_bytes"),
+            memory.term("persistent", "persistent_forward_buffer_bytes"),
             model.activations,
         ),
     )

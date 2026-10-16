@@ -49,7 +49,8 @@ async fn run(
         format!("tcp://{}", listener.local_addr().unwrap()),
     );
     std::env::set_var(SEED_ENV, seed.to_string());
-    std::env::set_var(LOOKAHEADS_ENV, r#"{"router->frontend-P:http": 0.125}"#);
+    let lookaheads = r#"{"router->frontend-P:http": 0.125, "router->frontend-D:relay": 0.125}"#;
+    std::env::set_var(LOOKAHEADS_ENV, lookaheads);
     let released = |seqs: std::ops::Range<u64>, from: f64| {
         let pairs: Vec<Value> = seqs
             .map(|s| json!([s, from + (s % 8 + 1) as f64 / 16.0]))
@@ -108,7 +109,7 @@ async fn run(
                 };
                 let rank = policy.select_worker(&workers, &info).await.unwrap();
                 picks.lock().unwrap().push(rank);
-                compass_router::placed();
+                compass_router::placed("http://p", "http://d");
             }
         }
     };

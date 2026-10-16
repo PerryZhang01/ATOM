@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-"""Grading a cell: `python -m atom.compass.validate` on runs laid out as `cctraces_sim.sh` writes them.
+"""Grading a cell: `python -m atom.compass.validate` on runs laid out as `cctraces_sim.sh` writes them,
+and as `record` and `run` do (`_as_recorded`).
 
 Every run's step record is `test_validate_cost`'s, periods at its planted law's
 price; the export and the server log are as `test_validate_runs` and
@@ -17,6 +18,7 @@ from test_validate_runs import EXPORT
 from atom.compass.backends.cost import GROUPS
 from atom.compass.run import LP_FILE
 from atom.compass.validate.__main__ import main
+from atom.compass.validate.runs import CLIENT_RUN
 
 TERM = {"method": "measured", "source": "planted"}
 SHARE = {"steps": 3, "fraction_of_predicted_seconds": 0.4}
@@ -244,3 +246,74 @@ def test_a_cell_of_renamed_names_is_refused_naming_their_names_now(capsys, tmp_p
     (cell / "step_linear").rename(cell / "law")
     with pytest.raises(ValueError, match="now named step_linear/"):
         main([str(cell)])
+
+
+def _as_recorded(cell):
+    """Lay `cell`'s runs out as `record` and `run` write them: each request
+    named at its last prefill row, by key `k<id>` and response id `id-<id>`;
+    an export naming them all, from trace `t<id>`; and run.json's identity,
+    with `run`'s grading entries for `step_linear/`, its law and host laws in
+    its run file and its refusals its summary's."""
+    for d in sorted(cell.iterdir()):
+        path = d / "steps" / "dp0.jsonl"
+        lines = [json.loads(x) for x in path.read_text().splitlines()]
+        last = {}
+        for i, line in enumerate(lines):
+            for (r, *_), (_q, _c, decode) in zip(line["batch"], line["rows"]):
+                last[r] = i if not decode else last.get(r, i)
+        for r, i in last.items():
+            lines[i]["named"].append([r, f"k{r}", f"id-{r}"])
+        path.write_text("".join(json.dumps(x) + "\n" for x in lines))
+        sent = {f"id-{r}": {"trace": f"t{r}", "sampling": {}} for r in last}
+        (d / CLIENT_RUN).write_text(json.dumps({"requests": sent}))
+        run = {"format_version": 2}
+        if d.name == "step_linear":
+            summary = json.loads((d / "summary.json").read_text())
+            run |= {
+                "run_file": {"step_linear": LAW, "host": {"laws": {}}},
+                "step_roofline": False,
+                "skip": [],
+                "refusals": summary["schedule"]["refusals"] | {"reasons": []},
+                "coverage": None,
+                "provenance": {"digest": "sha256:0", "provenance": None},
+            }
+        (d / "run.json").write_text(json.dumps(run))
+
+
+def _graded(capsys, cell):
+    main([str(cell)])
+    out = capsys.readouterr().out.splitlines()
+    return {tuple(r.split(" | ")[1:3]): r.split(" | ")[3:] for r in out[1:]}
+
+
+def test_a_cell_record_and_run_wrote_grades_as_the_one_cctraces_sim_wrote(
+    capsys, tmp_path
+):
+    rows = _rows(capsys, tmp_path)
+    _as_recorded(tmp_path / "c4")
+
+    assert _graded(capsys, tmp_path / "c4") == rows
+
+
+def test_a_refusal_in_the_client_run_record_and_run_wrote_refuses_the_cell(
+    capsys, tmp_path
+):
+    _rows(capsys, tmp_path, law=[("clock", 1)])
+    _as_recorded(tmp_path / "c4")
+
+    with pytest.raises(ValueError, match="step_linear is not graded: it refused 1"):
+        main([str(tmp_path / "c4")])
+
+
+def test_runs_record_and_run_wrote_that_served_other_traces_are_not_one_cell(
+    capsys, tmp_path
+):
+    _rows(capsys, tmp_path)
+    _as_recorded(tmp_path / "c4")
+    export = tmp_path / "c4" / "real1" / CLIENT_RUN
+    export.write_text(
+        json.dumps({"requests": {"id-0": {"trace": "t9", "sampling": {}}}})
+    )
+
+    with pytest.raises(ValueError, match=r"sent different traces; .*real1': \['t9'\]"):
+        main([str(tmp_path / "c4")])

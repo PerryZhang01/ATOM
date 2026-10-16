@@ -254,23 +254,41 @@ class HostDeviceRecurrence:
     device work two forwards back, or on a pipeline stage `stage = (rank, pp)`,
     `pp` forwards back; an output forward, after launch, waits for the previous
     output forward's, or on the last stage for its own, and on any other stage
-    for nothing. `ends[-1]` is the last forward's device end. `laws[kind][segment]` are coefficients on `(1,
-    tokens, seqs)`, zero where absent. `now` reads the engine LP's clock.
+    for nothing. With `mtp`, a forward's device work is its target's and then
+    its draft's, and a single-stage output forward waits before launch, for
+    the previous output forward's target. `ends[-1]` is the last forward's device end. `laws[kind][segment]` are coefficients on `(1,
+    tokens, seqs)`; `charge` says what an absent one costs. `now` reads the engine LP's clock.
     `segments` holds the seconds the last `charge` charged each segment, 0 for
     one in `skip`.
     """
 
-    def __init__(self, laws: dict, skip, now, stage=None) -> None:
+    def __init__(self, laws: dict, skip, now, stage=None, mtp=False) -> None:
         self.laws, self.skip, self.now = laws, frozenset(skip), now
         ring = 2 if stage is None else stage[1]
         self.ends = collections.deque([-math.inf] * ring, maxlen=ring)  # n-ring..n-1
         self.last = None if stage is None else stage[0] == stage[1] - 1
-        self.output_end = -math.inf  # device end of the last output forward
+        self.output_end = -math.inf  # target end of the last output forward
+        self.mtp = mtp
 
-    def charge(self, batch: Any, device_s: float) -> float:
-        """The forward's exit less `now`; advances the device state."""
+    def charge(
+        self, batch: Any, device_s: float, draft_s: float = 0.0, refuse: bool = True
+    ) -> float:
+        """The forward's exit less `now`, for `device_s` of target device time
+        and then `draft_s` of draft; advances the device state. With any
+        laws and `refuse`, a forward whose kind lacks one for a segment it runs
+        is refused, naming each ``<kind>.<segment>``, the state as it was;
+        without `refuse` that segment is 0. A segment in `skip` needs none, and
+        a middle chunk runs no `W_post`."""
         kind = "decode" if batch.total_seqs_num_prefill == 0 else "prefill"
-        law = self.laws.get(kind if batch.produces_output() else "middle", {})
+        kind = kind if batch.produces_output() else "middle"
+        law = self.laws.get(kind, {})
+        ran = HOST_SEGMENTS[: 3 if kind == "middle" else 4]
+        missing = [s for s in ran if s not in {*law, *self.skip}]
+        if refuse and self.laws and missing:
+            from atom.compass.backends.resolver import CostRefused, Refusal
+
+            named = ", ".join(f"{kind}.{s}" for s in missing)
+            raise CostRefused(kind, [Refusal("host", f"no law for {named}")])
         x = (1, batch.total_tokens_num, batch.total_seqs_num)
         self.segments = {
             s: float(np.dot(law.get(s, (0, 0, 0)), x)) * (s not in self.skip)
@@ -279,15 +297,18 @@ class HostDeviceRecurrence:
         e, pre, launch, post = self.segments.values()
         now = self.now()
         host = max(now + e, self.ends[0]) + pre
+        output = batch.produces_output()
+        if self.mtp and output:  # output_end stays -inf on a PP stage
+            host = max(host, self.output_end)
         launch_end = host + launch
-        device_end = max(self.ends[-1], host) + device_s
-        self.ends.append(max(device_end, launch_end))
+        target_end = max(self.ends[-1], host) + device_s
+        self.ends.append(max(target_end + draft_s, launch_end))
         released = launch_end
-        if batch.produces_output():
+        if output:
             if self.last is None:
-                released, self.output_end = max(launch_end, self.output_end), device_end
+                released, self.output_end = max(launch_end, self.output_end), target_end
             elif self.last:
-                released = max(launch_end, device_end)
+                released = max(launch_end, target_end)
         return released + post - now
 
 
@@ -1046,7 +1067,8 @@ def _group_step_seconds(
     A step no cost source answers costs 0 s on this rank and still counts as
     a priced step; its reason, ``cost:`` and what each source said, joins the
     refusals the summary reads. With `compass_abort` set it raises instead,
-    which ends the worker.
+    which ends the worker. A forward `compass_host` refuses takes the same path,
+    charged with each segment it named at 0; a step both refuse has one reason.
 
     On the rank that keeps the parity record, each step also appends its cost
     line to `dp<r>.cost.jsonl` beside it: the record's `step`; with a
@@ -1087,13 +1109,21 @@ def _group_step_seconds(
         mix.steps += 1
         said = "; ".join(f"{r.source}: {r.reason}" for r in refusal.declined)
         refused = f"cost:{said or 'no cost source was consulted'}"
-        vars(runner).setdefault("_refused_commands", []).append(refused)
         device_s = 0.0
     else:
         mix.record(cost)
         device_s, terms = cost.seconds, cost.terms
     host = getattr(runner, "compass_host", None)
-    charge_s = device_s if host is None else host.charge(batch, device_s)
+    try:
+        charge_s = device_s if host is None else host.charge(batch, device_s)
+    except CostRefused as refusal:
+        if getattr(runner, "compass_abort", False):
+            raise
+        said = "; ".join(f"{r.source}: {r.reason}" for r in refusal.declined)
+        refused = (f"{refused}; " if refused else "cost:") + said
+        charge_s = host.charge(batch, device_s, refuse=False)
+    if refused:
+        vars(runner).setdefault("_refused_commands", []).append(refused)
     group_s, targets = charge_s, None
     if mode.sync is not None:
         group = dp_group()
