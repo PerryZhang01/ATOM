@@ -171,18 +171,69 @@ def _frontend_engine(frontend: str, engine: str, ipc_s: float, dp: int = 1) -> l
     ]
 
 
+def _pipeline(pp: int, ipc_s: float, links=()) -> tuple[tuple[str, ...], list]:
+    """The engine LPs ``engine-pp<k>`` of a `pp`-stage pipeline and their channels.
+
+    Each stage is an engine of its own to the frontend, tagged with the index
+    ATOM's engine core manager gives it, ``#dp<k>``. The head sends each
+    downstream stage its batch on ``meta#pp<k>``, the last stage sends the
+    head its output on ``tokens``, and each downstream stage reports KV status
+    to the head on ``kv_status``. These are ZMQ IPC messages, so each takes
+    `ipc_s`, which must be positive: head to stage and back is a cycle.
+
+    With `links`, ``(L_data, L_ack)``, each stage sends the next its forward's
+    output on ``pp_data#dp0`` and the next returns a rendezvous send's
+    completion on ``pp_ack#dp0``, with those lookaheads.
+    """
+    if not ipc_s > 0.0:
+        raise ValueError(
+            f"ipc_s is {ipc_s!r}; the {pp} pipeline stages send to the head and "
+            "the head to them, a cycle that needs a positive lookahead"
+        )
+    stages = tuple(f"engine-pp{k}" for k in range(pp))
+    head, last = stages[0], stages[-1]
+    rows = [(last, head, "tokens", ipc_s, "inline")]
+    for k, stage in enumerate(stages):
+        rows += [
+            ("frontend", stage, f"request#dp{k}", ipc_s, "thread"),
+            ("frontend", stage, f"control#dp{k}", ipc_s, "thread"),
+            (stage, "frontend", f"output#dp{k}", ipc_s, "thread"),
+        ]
+        if k:
+            rows += [
+                (head, stage, f"meta#pp{k}", ipc_s, "inline"),
+                (stage, head, "kv_status", ipc_s, "inline"),
+            ]
+            if links:
+                rows += [
+                    (stages[k - 1], stage, "pp_data#dp0", links[0], "inline"),
+                    (stage, stages[k - 1], "pp_ack#dp0", links[1], "inline"),
+                ]
+    return stages, rows
+
+
 def single_engine_table(
-    *, admission_path: str, ipc_s: float, stream_s: float, dp: int = 1
+    *,
+    admission_path: str,
+    ipc_s: float,
+    stream_s: float,
+    dp: int = 1,
+    pp: int = 1,
+    pp_links=(),
 ) -> ChannelTable:
     """Traffic, one frontend, one engine, and the channels of each of its `dp`
-    data-parallel ranks, ``#dp<rank>``.
+    data-parallel ranks, ``#dp<rank>``; above pipeline width one, an engine
+    LP per stage instead (`_pipeline`).
 
     The request channel's lookahead is the measured admission delay of
     `admission_path` (``serving`` or ``offline_batch``). The other lookaheads
     have no measurement behind them, so the caller declares them.
     """
+    engines, rows = ("engine",), _frontend_engine("frontend", "engine", ipc_s, dp)
+    if pp > 1:
+        engines, rows = _pipeline(pp, ipc_s, pp_links)
     return _table(
-        ("traffic", "frontend", "engine"),
+        ("traffic", "frontend", *engines),
         [
             (
                 "traffic",
@@ -193,7 +244,7 @@ def single_engine_table(
             ),
             ("frontend", "traffic", "stream", stream_s, "inline"),
         ]
-        + _frontend_engine("frontend", "engine", ipc_s, dp),
+        + rows,
     )
 
 
