@@ -38,7 +38,9 @@ from atom.compass.artifacts import (
     Topology,
 )
 from atom.compass.backends.step_stub import Coefficients
+from atom.compass.bench import measure
 from atom.compass.drive import serve, trace_steps
+from atom.compass.parity.served import served
 
 TREE = Path(__file__).resolve().parents[2]
 #: run.json's identity, as `serve` writes it once its server stops.
@@ -200,6 +202,18 @@ def test_each_dp_rank_publishes_its_steps_engine_and_requests(tmp_path, monkeypa
     assert stated == {k: engine[k] for k in stated}
     assert {"max_num_seqs", "num_kvcache_blocks"}.isdisjoint(stated)
     assert key.values["model"] == IDENTITY["host_key"]["model"]
+
+
+def test_measure_steps_reads_a_published_population_by_its_token(tmp_path, monkeypatch):
+    out, _ = stopped(tmp_path, monkeypatch, {0: [0, 1]})
+    run = build(tmp_path, "--step-stub", str(stub(tmp_path, 0)))
+    key = trace_steps.publish(out, run, "compass trace steps")
+
+    store, engine = ArtifactStore(run["store"]), json.loads(key.values["engine_config"])
+    source, lines, stated = measure._read(key.token(), store, [], None, engine, {})
+    assert source == str(key)
+    assert stated == json.loads((out / serve.STEPS / "dp0.engine.json").read_text())
+    assert lines == served(out / serve.STEPS)[0]
 
 
 def test_a_shape_population_key_without_its_backend_refuses_naming_four_fields():

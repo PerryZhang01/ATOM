@@ -50,7 +50,6 @@ from atom.compass.backends.shape import RequestShape
 from atom.compass.backends.step_grid_residual import raggedness
 from atom.compass.drive import runfile, serve
 from atom.compass.run.step_grid import BOUNDS
-from atom.compass.spec import MachineSpec
 
 PROG = "compass trace steps"
 
@@ -118,7 +117,7 @@ def publish(out, run: dict, command: str) -> Key:
         engine_config=engine_config,
         backend=run["backend"]["digest"],
     )
-    machine = MachineSpec.from_mapping(compass_run._width_keys(run["machine"]))
+    machine = compass_run._machine(run)
     ArtifactStore(run["store"]).publish(
         key,
         provenance=Provenance(
