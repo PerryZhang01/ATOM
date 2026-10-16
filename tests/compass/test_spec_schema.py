@@ -11,7 +11,7 @@ a claim about ATOM's argument surface, not about a list somebody wrote once. So
 the surface is parsed out of the engine's arguments dataclass and compared both
 ways: every knob the refusal message names has to be a real one, and no field of
 the spec's machine sections may collide with it. Parsed rather than imported --
-reading the source needs no driver, and this tier has none.
+reading the source needs no driver, and the CPU gate has none.
 
 Three sections are about the echo rather than about what a spec may hold, and
 they are one claim: the echo equals the document that was read, because that is
@@ -70,7 +70,7 @@ PACKAGE = REPO / "atom" / "compass" / "spec"
 ENGINE_ARGS = REPO / "atom" / "model_engine" / "arg_utils.py"
 
 #: The stack the constants below were measured against.
-STACK = {"rocm": "7.2.4", "aiter": "f4e7c7509", "rccl": "2.22.3"}
+STACK = {"rocm": "7.2.4", "aiter": "f4e7c7509", "rccl": "2.22.3", "torch": "2.10.0"}
 
 TOKENIZER = {
     "id": "qwen3-151k-bpe",
@@ -134,6 +134,7 @@ DOCUMENT = {
     "interconnect": {
         "intra_node": {
             "topology": "fully_connected",
+            "domain_devices": 8,
             "link_bandwidth_bytes_per_s": 1.0e12,
             "link_latency_s": 2.0e-6,
             "derate": 0.80,
@@ -407,6 +408,9 @@ BREAKAGES = {
         "device.memory.capacity_bytes", "lots"
     ),
     "one field written under two spellings": lambda: both_spellings(True),
+    "a fabric joining fewer devices than the node holds": lambda: written(
+        "interconnect.intra_node.domain_devices", 4
+    ),
     "an origin nobody defined": lambda: written("provenance.origin", "guessed"),
     "the key the origin used to be written under": lambda: written(
         "provenance.method", "probed"
@@ -908,8 +912,12 @@ def test_a_layout_answers_beside_the_widths_and_names_them_when_unprobed():
     assert "width 1x4; this spec has [1, '1x8', 2, 4, 8]" in refusal.value.what
 
 
-@pytest.mark.parametrize("key", ["0x8", "1x", "x8", "1x8x2", "1X8", "01x8", "8"])
-def test_a_layout_key_is_two_positive_integers(key):
+@pytest.mark.parametrize(
+    "key",
+    ["0x8", "1x", "x8", "1x8x2", "1X8", "01x8", "8"]
+    + ["1x8x4", "1x8x16", "2x4x4", "1x8x08", "1x8x8x8"],
+)
+def test_a_layout_key_is_tp_x_dp_with_an_ep_spanning_every_rank(key):
     edited = document()
     edited["device"]["runtime_constants"][RESERVE][key] = 1.0
     with pytest.raises(SpecRefusal):
@@ -931,6 +939,22 @@ def test_a_layout_nobody_probed_is_refused_by_name_in_validation():
     assert len(checked.refusals) == 2
     assert all("width 1x8" in refusal.what for refusal in checked.refusals)
     assert validate(with_layout(), tp_widths=(1, "1x8")).ok
+
+
+def test_an_expert_parallel_layout_is_its_own_entry():
+    edited = with_layout()
+    constants = edited["device"]["runtime_constants"]
+    constants[RESERVE]["1x8x8"] = 9.5e9
+    machine = MachineSpec.from_mapping(edited)
+    assert machine.runtime_constant(RESERVE, "1x8x8") == 9.5e9
+    assert machine.runtime_constant(RESERVE, "1x8") == 8.19e9
+    # The residue table has no EP entry: validation names it, and only it.
+    checked = validate(edited, tp_widths=("1x8", "1x8x8"))
+    (refusal,) = checked.refusals
+    assert "allocator_retained_after_load_bytes" in refusal.what
+    assert "width 1x8x8" in refusal.what
+    constants["allocator_retained_after_load_bytes"]["1x8x8"] = 2.3e9
+    assert validate(edited, tp_widths=("1x8", "1x8x8")).ok
 
 
 # --- a derate wherever a spec peak appears -----------------------------------
@@ -997,7 +1021,9 @@ def test_a_stack_mismatch_warns_and_names_both_versions():
 
 def test_a_stack_component_nobody_reported_is_a_mismatch_not_a_pass():
     with pytest.warns(StackMismatch):
-        differences = read().check_stack({"rocm": "7.2.4", "aiter": "f4e7c7509"})
+        differences = read().check_stack(
+            {"rocm": "7.2.4", "aiter": "f4e7c7509", "torch": "2.10.0"}
+        )
     assert differences == (("rccl", "2.22.3", None),)
 
 

@@ -790,7 +790,9 @@ impl PDRouter {
             .plan(&descriptor)
             .await
             .map_err(|error| placement_err_to_response(error, context.model_id))?;
-        self.reserve_pair(plan, context.headers.as_deref())
+        let pair = self.reserve_pair(plan, context.headers.as_deref());
+        crate::compass_router::placed();
+        pair
     }
 
     async fn execute_reserved(
@@ -1125,7 +1127,7 @@ impl PDRouter {
             );
         }
 
-        let prefill_body: Value = match prefill_resp.json().await {
+        let mut prefill_body: Value = match prefill_resp.json().await {
             Ok(v) => v,
             Err(e) => {
                 error!(
@@ -1141,8 +1143,10 @@ impl PDRouter {
             }
         };
 
+        let relayed = crate::compass_router::relay(&mut prefill_body).await;
         // P has completed its work; D's output stream must not keep P loaded.
         drop(prefill_guard);
+        drop(relayed);
 
         let mut kv_params = match prefill_body.get("kv_transfer_params").cloned() {
             Some(v) => v,
@@ -1520,6 +1524,7 @@ impl PDRouter {
         headers: Option<HeaderMap>,
         decode_guard: WorkerLoadGuard,
     ) -> Response {
+        let (stream, decode_guard) = crate::compass_router::stream(stream, decode_guard);
         // Poll the upstream only when the downstream asks for data. Dropping the
         // response also drops the upstream, including while it is idle.
         let stream = futures_util::stream::unfold(

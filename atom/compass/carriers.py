@@ -18,6 +18,8 @@ whose body names the cancelled request's seq: ``{"compass_cancel": <seq>}``.
 import json
 import re
 
+from atom.utils.clock import channel_of
+
 _NUM = r"(inf|\d[\d.e+-]*)"
 _ENTRY = re.compile(rf"a:{_NUM};s:(\d+)")
 _COMMENT = re.compile(rf": compass a={_NUM} s=(\d+)")
@@ -60,11 +62,12 @@ def tracestate_with(header: str | None, arrival: float, seq: int) -> str:
 def stamp_events(text: str, rt) -> str:
     """`text` with a stamped comment line before each SSE event in it.
 
-    Each event is one send on the runtime's stream channel to the traffic LP.
+    Each event is one send on the runtime's stream channel, to the traffic LP
+    or to the router LP in front of it.
     A write must end its last frame in a blank line: text after it is refused,
     since the next write's comment would land inside that frame.
     """
-    ch = f"{rt.me}->traffic:stream"
+    ch = channel_of(rt, "stream")
     *events, tail = text.split("\n\n")
     if tail:
         raise ValueError(f"unterminated SSE frame {tail!r}: no blank line after it")

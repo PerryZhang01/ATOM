@@ -132,18 +132,18 @@ def test_an_answer_must_name_a_source():
 def test_a_stand_in_answer_renders_the_refusal_it_replaced():
     """Reading the record, a fall-through is visible without comparing runs."""
     p = Provenance(Method.ANALYTICAL, "roofline").resolved(
-        "analytic_law", [Refusal("price_list", "unpriced leaf")]
+        "analytical_law", [Refusal("price_list", "unpriced leaf")]
     )
     assert p.is_refused
     assert str(p) == (
-        "refused(price_list: unpriced leaf) -> analytical (roofline) via analytic_law"
+        "refused(price_list: unpriced leaf) -> analytical (roofline) via analytical_law"
     )
 
 
 def test_every_source_that_declined_is_kept_not_just_the_first():
     """A count of reasons that drops the middle of the chain undercounts."""
     p = Provenance(Method.ANALYTICAL).resolved(
-        "analytic_law",
+        "analytical_law",
         [
             Refusal("price_list", "unpriced leaf"),
             Refusal("nearest_key", "outside the measured range"),
@@ -153,7 +153,7 @@ def test_every_source_that_declined_is_kept_not_just_the_first():
     assert p.refusal == Refusal("price_list", "unpriced leaf")
     assert str(p) == (
         "refused(price_list: unpriced leaf; nearest_key: outside the measured range)"
-        " -> analytical via analytic_law"
+        " -> analytical via analytical_law"
     )
 
 

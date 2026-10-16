@@ -573,7 +573,9 @@ def _frontend_on_tcp(monkeypatch, poke, main):
     time at the finish.
     """
     authority = clock_transport.serve(ClockAuthority(TABLE), "tcp://127.0.0.1:0")
-    clock_transport.connect(TRAFFIC, authority.endpoint).send((NER, INF, [], INF))
+    # Kept referenced: a dropped connection closes its socket, ending the run.
+    traffic = clock_transport.connect(TRAFFIC, authority.endpoint)
+    traffic.send((NER, INF, [], INF))
     engine = clock_transport.connect(ENGINE, authority.endpoint)
     rt = LPRuntime(
         FRONTEND, TABLE, clock_transport.connect(FRONTEND, authority.endpoint)

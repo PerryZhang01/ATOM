@@ -7,6 +7,10 @@ written against it yet; implementation follows the execution plan in `16`.
 **Depends on:** `02` (the cost form), `03` (KV and memory), `04` (structures), `07`
 (calibration), `08` (validation). This topic changes something in each of them.
 
+**Revised 2026-10-14 by the naming record in
+[#952](https://github.com/jgong5/ATOM/issues/952):** acceptance is a stated input carrying
+a method, reported in the run summary and propagated into no cost term (D83, D84, D87).
+
 **Scope.** What speculative decoding — Eagle3, DSpark, and MTP heads — changes for a
 simulator, and why one of those changes is different in kind from everything else in this
 design. The draft path it prices is DeepSeek-V4-Pro's serial MTP, in M2 (D87, *Milestone
@@ -34,14 +38,14 @@ does not run the model. There is no cost model that can produce it and no amount
 calibration that would help.
 
 This is the first thing in the whole design that Compass cannot derive and cannot measure
-its way to. It has to be **declared**, like device bandwidth is declared.
+its way to. It has to be **stated**, like device bandwidth is stated, and it carries a method like any input (D84).
 
 The good news, and it is substantial: **ATOM already built the mechanism**, for its own
 reasons, before Compass existed.
 
 ---
 
-## D83. Acceptance is a declared input, and ATOM's existing synthetic path is the mechanism
+## D83. Acceptance is a stated input, and ATOM's existing synthetic path is the mechanism
 
 ### What is already in the tree
 
@@ -61,7 +65,7 @@ sequentially, and force-accepting accordingly.
 
 ### Decision
 
-> **Compass does not build an acceptance model. It declares acceptance through ATOM's
+> **Compass does not build an acceptance model. It states acceptance through ATOM's
 > existing `--spec-decode-acceptance-*` flags, and applies ATOM's acceptance *policy*.**
 
 ### The sampler is a cost and a value, and only one of them can be traced
@@ -99,7 +103,7 @@ the step counter and a run is reproducible, which is what `12` M-e asks for else
 
 Everything downstream of the value: `SpecStats` accumulation, the bonus-token bookkeeping,
 the anchor gather, and the scheduler's `max_tokens` interaction
-(`tests/test_scheduler_mtp_max_tokens.py`). The declared acceptance enters at the same
+(`tests/test_scheduler_mtp_max_tokens.py`). The stated acceptance enters at the same
 point the kernel's output would, so the *consequences* of an acceptance are ATOM's, not a
 reimplementation.
 
@@ -110,7 +114,7 @@ driven with the identical argument, which is what makes a paired comparison a pa
 and it means the *policy* being applied is the same object in both runs even though the
 draw happens in different places.
 
-**Recorded as T62:** the host draw and the Triton kernel must agree. Same declared rates,
+**Recorded as T62:** the host draw and the Triton kernel must agree. Same stated rates,
 same seed, same accepted-count distribution over a few thousand draws. A cheap test, and
 without it the two halves of the pairing can drift silently.
 
@@ -158,7 +162,7 @@ an equivalence.
 
 | # | Contract | Cost | Reproduces |
 |---|---|---|---|
-| **1** | The user declares acceptance rates from prior knowledge and passes them to Compass | **cheapest** — no real run needed | the declared distribution |
+| **1** | The user states acceptance rates from prior knowledge and passes them to Compass | **cheapest** — no real run needed | the stated distribution |
 | **2** | The user collects statistical acceptance rates from a real run (via Compass tooling) and passes them | one real run | the *measured* distribution, marginals only |
 | **3** | Each request carries a per-token acceptance list, passed like any other HTTP attribute | **heaviest** — per-request payload, and the trace has to exist | the realisation, including correlation |
 
@@ -218,15 +222,18 @@ rather than collapsed to its mean.
 Small, useful to ATOM independently of Compass, and it is the same shape of ask as
 `--preprocess-pool-width` in `05` D24. Recorded as **T63**.
 
-**Three tiers of acceptance input, ordered, with provenance:**
+**Three acceptance inputs, ordered, each with its method** (#952):
 
-| Tier | Input | When | Provenance tag |
+| # | Input | When | Method |
 |---|---|---|---|
-| 1 | measured per-position rates from a paired real run | acceptance cells | `measured (acceptance)` |
-| 2 | measured mean AL, expanded by the min-variance schedule | a real run exists but only its mean was recorded | `measured (acceptance, mean only)` |
-| 3 | a declared AL from a datasheet or a published figure | exploration, day zero, a draft head that does not exist yet | `declared` |
+| 1 | measured per-position rates from a paired real run | acceptance cells | `measured` |
+| 2 | measured mean AL, expanded by the min-variance schedule | a real run exists but only its mean was recorded | `estimated` |
+| 3 | a stated AL from a datasheet or a published figure | exploration, day zero, a draft head that does not exist yet | `declared` |
 
-Tier 3 is legitimate and is what makes *"what if the draft head reaches AL 3.0"* a question
+The run summary reports the input's method. It propagates into no cost term: a step's
+terms carry the methods their own inputs give them, whatever the acceptance input's.
+
+Input 3 is legitimate and is what makes *"what if the draft head reaches AL 3.0"* a question
 Compass can answer. It is **not** legitimate in an acceptance run, and `08`'s hygiene
 refusals gain a row saying so.
 
@@ -297,13 +304,12 @@ the count — which is `07` Phase 0's "never reimplement" rule applying to memor
 ### The rule
 
 > **A throughput or TPOT result for a speculative configuration is a statement
-> *conditional on the acceptance input*, and the artifact names which tier that input
-> came from.**
+> *conditional on the acceptance input*, and the run summary names that input's method.**
 
 Concretely, for acceptance cells:
 
 1. Run the real side. Record `SpecStats.distribution`.
-2. Feed the measured per-position rates to the simulated side (D84 tier 1).
+2. Feed the measured per-position rates to the simulated side (D84 input 1).
 3. Report the three results of `08` D44 as usual — **plus** an acceptance-agreement check
    between the two sides, at the right strength — which is weaker than exact agreement,
    for the reason D84 gives. What is checkable:
@@ -316,7 +322,7 @@ Concretely, for acceptance cells:
    | within-sequence temporal correlation | **not reproduced** by a rate-based feed | not a result |
 
 4. **If the two aggregate rows disagree materially, the plumbing is wrong, not the cost
-   model** — rates were mis-converted, the seed was not set, or the wrong tier was fed.
+   model** — rates were mis-converted, the seed was not set, or the wrong input was fed.
    That is a refusal, not a finding.
 5. **Schedule agreement (`08` D44's second result) is graded more loosely for speculative
    cells than for dense ones**, and the artifact says so. Two runs whose acceptance
@@ -335,7 +341,7 @@ Concretely, for acceptance cells:
   will achieve on a workload. Nothing in this design attempts that, and a result that
   appeared to show it would be an artifact of the input.
 
-A new hygiene refusal for `08` D49: **a speculative acceptance cell run at tier 3
+A new hygiene refusal for `08` D49: **a speculative acceptance cell run on input 3
 (declared acceptance) is not acceptance evidence.** It is exploration.
 
 ### Milestone placement
@@ -356,7 +362,7 @@ on Qwen3.8-27B and the claim on Kimi-K3, was retired with those milestones.
 | draft KV | one slot (`_num_draft_kv_layers` returns `num_nextn_predict_layers`) in the target's pool, at index `n_layers` (`mtp_start_layer_idx`) | D86 as written: call the method |
 
 **Every M2 MTP cell is an acceptance cell.** Its per-position rates are measured from the
-paired real run, tier 1 of D84 (`16` W4.7), and never declared. Tier 1 needs T63's
+paired real run, input 1 of D84 (`16` W4.7), and never declared. Input 1 needs T63's
 transport, so T63 is on M2's path. For MTP1 the curve has one position and the mean
 carries it whole; MTP3 is where its shape matters.
 
@@ -386,11 +392,11 @@ carries it whole; MTP3 is where its shape matters.
 | # | Decision | Date |
 |---|---|---|
 | D82 | Spec decode changes four things; three are routine and acceptance is different in kind, because it is a behaviour Compass cannot compute. | 2026-09-19 |
-| D83 | Acceptance is a **declared input**, supplied through ATOM's existing `--spec-decode-acceptance-*` flags. The sampler splits: its **cost** is traced and priced like any op, its **value** (`num_bonus_tokens`) needs a ~15-line device-free host draw, because the synthetic sampler is a Triton kernel and no kernel runs. Compass builds no acceptance *model*. | 2026-09-19 |
-| D84 | Feed the **measured per-position distribution**, not the mean - the minimum-variance schedule matches an aggregate and not a schedule. Contracts 1 and 2 (declared or measured statistical rates) are the design; contract 3 (per-request per-token lists) is recorded and not built. Transport for a list does not exist today and needs an ATOM flag (T63). Three input tiers with provenance; tier 3 is not acceptance evidence. | 2026-09-19 |
+| D83 | Acceptance is a **stated input**, carrying a method, supplied through ATOM's existing `--spec-decode-acceptance-*` flags. The sampler splits: its **cost** is traced and priced like any op, its **value** (`num_bonus_tokens`) needs a ~15-line device-free host draw, because the synthetic sampler is a Triton kernel and no kernel runs. Compass builds no acceptance *model*. | 2026-09-19 |
+| D84 | Feed the **measured per-position distribution**, not the mean - the minimum-variance schedule matches an aggregate and not a schedule. Contracts 1 and 2 (stated or measured statistical rates) are the design; contract 3 (per-request per-token lists) is recorded and not built. Transport for a list does not exist today and needs an ATOM flag (T63). Three acceptance inputs, measured, estimated and declared; the summary reports the method, which propagates into no cost term; input 3 is not acceptance evidence. | 2026-09-19; revised 2026-10-14 (#952) |
 | D85 | No new cost form. Drop the separate decode form and price every step with the general one; non-speculative decode is the `N_Q = 1` case. | 2026-09-19 |
 | D86 | Draft weights are Class A; draft KV layers come from `_num_draft_kv_layers()` and are never re-derived. | 2026-09-19 |
-| D87 | A speculative throughput result is **conditional on its acceptance input**, and the artifact names the tier. Mean AL and the accepted-count histogram are gated; per-step realisation and within-sequence correlation are **not reproduced and not claimed**. Schedule agreement is graded more loosely for speculative cells. Predicting acceptance itself is explicitly not attempted. | 2026-09-19 |
+| D87 | A speculative throughput result is **conditional on its acceptance input**, and the run summary names its method. Mean AL and the accepted-count histogram are gated; per-step realisation and within-sequence correlation are **not reproduced and not claimed**. Schedule agreement is graded more loosely for speculative cells. Predicting acceptance itself is explicitly not attempted. | 2026-09-19 |
 
 ---
 
