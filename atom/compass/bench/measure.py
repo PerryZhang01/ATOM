@@ -74,7 +74,7 @@ from atom.compass.fit.publish import RANK, conditions
 from atom.compass.fit.samples import run_fields
 from atom.compass.parity.served import requests, served
 from atom.compass.run import _write_whole
-from atom.compass.run.step_grid import BOUNDS, keyed
+from atom.compass.run.step_grid import BOUNDS, keyed, keyed_of
 
 PROG = "compass measure steps"
 #: A measurement's one member: the bench replies for the whole TP group.
@@ -354,7 +354,7 @@ def _read(name: str, store, client_runs, sessions, engine: dict, sampling: dict)
             )
         ((rank, lines),) = record.items()
         stated = json.loads((steps / f"dp{rank}.engine.json").read_text())
-    ran = {k: v for k, v in stated.items() if k not in (*BOUNDS, "num_kvcache_blocks")}
+    ran = keyed_of(stated)
     differ = [
         k for k in sorted(ran.keys() | engine.keys()) if ran.get(k) != engine.get(k)
     ]

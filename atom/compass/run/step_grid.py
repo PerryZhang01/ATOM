@@ -57,6 +57,12 @@ from atom.compass.runner.overrides import schedulable_ladder
 MEMBER = ("bundle", Topology().ranks()[0], "json")
 
 
+def keyed_of(engine: dict) -> dict:
+    """`keyed`'s fields of an engine file's mapping `engine`, which adds the
+    scheduler's bounds and the KV block count to them."""
+    return {k: v for k, v in engine.items() if k not in (*BOUNDS, "num_kvcache_blocks")}
+
+
 def keyed(config) -> dict:
     """The conditions a bundle is measured under, as the resolved config holds them."""
     return {
