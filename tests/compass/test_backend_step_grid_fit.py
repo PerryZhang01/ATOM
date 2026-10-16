@@ -113,9 +113,10 @@ def run(tmp_path):
     return r, here, configuration
 
 
-def record(tmp_path, run, lines, name="a"):
+def record(tmp_path, run, lines, name="a", trace="trace-300"):
     """`tmp_path/name`, a real run's record of `lines`, each timed at its lookup
-    times `factor`, with the export `client.json` of the client run sending it."""
+    times `factor`, with the export `client.json` of the client run sending it
+    from `trace`."""
     r, _, configuration = run
     directory = tmp_path / name
     path = directory / "steps" / "dp0.jsonl"
@@ -125,9 +126,7 @@ def record(tmp_path, run, lines, name="a"):
     for line, x in zip(written, lines):
         line |= {"produces_output": x["produces_output"]}
         line["named"] = [[q[0], f"r{q[0]}"] for q in line["batch"]]
-        sent |= {
-            n: {"trace": "trace-300", "sampling": SAMPLING} for _, n in line["named"]
-        }
+        sent |= {n: {"trace": trace, "sampling": SAMPLING} for _, n in line["named"]}
     path.write_text("".join(json.dumps(x) + "\n" for x in written))
     (directory / "client.json").write_text(json.dumps({"requests": sent}))
     engine = {**step_grid.keyed(r.config), **BOUNDS, "num_kvcache_blocks": 1024}
@@ -177,11 +176,12 @@ def measured(tmp_path, run, line, origin="plan", seconds=None, conditions=None):
 
 
 def fitted(tmp_path, *args, grid="a"):
-    """`fit steps --backend step-grid` over `tmp_path/grid` and `args`; the
-    readable copy it writes."""
+    """`fit steps --backend step-grid` over each `tmp_path/<name>` of the names
+    `grid` lists, and `args`; the readable copy it writes."""
     path = tmp_path / "definition.json"
     path.write_text(json.dumps(DEFINITION))
-    fit(tmp_path, "fit steps", *GRID, tmp_path / grid, "--grid-definition", path, *args)
+    inputs = [tmp_path / name for name in grid.split()]
+    fit(tmp_path, "fit steps", *GRID, *inputs, "--grid-definition", path, *args)
     return json.loads((tmp_path / "out/step_grid_bundle.json").read_text())
 
 
@@ -234,6 +234,29 @@ def test_a_planned_point_the_store_does_not_hold_refuses_naming_each(tmp_path, r
         fitted(tmp_path, a, *clients(a))
     assert "2 of the 22 planned points are not measured" in str(refused.value)
     assert all(key in str(refused.value) for key in named)
+
+
+def test_a_grid_measured_under_sessions_fits_given_the_same_sessions(tmp_path, run):
+    """`a` serves trace 3 and `b` trace 7, so `measure steps --grid a b
+    --sessions 0:4` plans over `a`'s lines alone: every node but decode's at c
+    1023, which only `b`'s lines reach."""
+    top = [x for x in nodes() if x["rows"][0][2] and x["rows"][0][1] == 1024]
+    a = record(tmp_path, run, [x for x in nodes() if x not in top], trace="trace-3")
+    b = record(tmp_path, run, top, name="b", trace="trace-7")
+    for line in nodes():
+        if line not in top:
+            measured(tmp_path, run, line)
+    t = record(tmp_path, run, mixed(), name="t")
+    named = [*clients(a), *clients(b), *clients(t)]
+
+    with pytest.raises(SystemExit, match="2 of the 22 planned points are not measured"):
+        fitted(tmp_path, t, *named, grid="a b")
+    copy = fitted(tmp_path, t, "--sessions", "0:4", *named, grid="a b")
+
+    grid = copy["params"]["grid"]
+    decode = [p["at"] for p in grid["decode"]["points"]]
+    assert sorted(decode) == sorted([8, n, c] for n in (1, 8) for c in (0, 512))
+    assert sum(len(grid["prefill"][k]) for k in ("output", "no_output")) == 16
 
 
 @pytest.mark.parametrize("sources", [["record"], ["replay"], ["record", "replay"]])
