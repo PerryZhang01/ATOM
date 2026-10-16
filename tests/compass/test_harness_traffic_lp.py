@@ -307,7 +307,8 @@ def test_a_client_stopped_mid_stream_names_its_open_request(tmp_path):
         return clock_transport.connect(lp, server.endpoint)
 
     traffic = LPRuntime(compass_run.TRAFFIC, TABLE, connect(compass_run.TRAFFIC))
-    connect(ENGINE).send((NER, INF, [], 50.0))
+    engine = connect(ENGINE)  # held: a closed connection ends the run
+    engine.send((NER, INF, [], 50.0))
 
     def stop():
         frontend = compass_run._StoppingClock(FRONTEND, TABLE, connect(FRONTEND))
