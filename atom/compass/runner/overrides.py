@@ -918,6 +918,13 @@ class NonAllocatingRunner(
         )
         return 0.0, [], 0
 
+    def process_kvconnector_output(self, meta: Any) -> None:
+        """ATOM's, after the parity record keeps the offload decisions in `meta`."""
+        from atom.compass.parity import record_kv
+
+        record_kv(self, meta)
+        return super().process_kvconnector_output(meta)
+
     @torch.inference_mode()
     def forward(self, batch: Any) -> Any:
         """Report what a step produced, without running one.

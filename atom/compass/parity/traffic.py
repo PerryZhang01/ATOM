@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: MIT
 """The parity workload: distinct completions sent on a schedule, to a real or a simulated run.
 
-    python -m atom.compass.parity.traffic PORT MODEL RECORD [REQUESTS [GAP_S]]
+    python -m atom.compass.parity.traffic PORT MODEL RECORD [REQUESTS [GAP_S [PREFIX_WORDS]]]
 
-Request k's prompt starts with k, and it asks for a fixed number of tokens
-with ``ignore_eos``, streamed. On a real run (`ATOM_COMPASS_RUN` unset)
+Request k's prompt starts with PREFIX_WORDS words every request shares (none
+by default), then k, and it asks for a fixed number of tokens with
+``ignore_eos``, streamed. On a real run (`ATOM_COMPASS_RUN` unset)
 request k is sent GAP_S * k wall seconds after the first and not before the
 server has admitted request k - 1, each on its own thread; the worker clock's
 reading as each was sent, and as its response headers arrived (the server
@@ -66,11 +67,17 @@ def post(port: int, body: dict, headers: dict):
 
 
 def real(
-    port: int, requests: list[dict], gap_s: float, record: Path, wait: bool = True
+    port: int,
+    requests: list[dict],
+    gap_s: float,
+    record: Path,
+    wait: bool = True,
+    prefix_words: int = 0,
 ) -> None:
     """Send request k at `gap_s` * k, once k - 1 is admitted when `wait`, read
-    each to its end, write `ARRIVALS`. Through a prefill-decode router a request
-    is admitted only once its prefill returns, so `wait` keeps prefills apart."""
+    each to its end, write `ARRIVALS` with the requests' `prefix_words`.
+    Through a prefill-decode router a request is admitted only once its
+    prefill returns, so `wait` keeps prefills apart."""
     sent, start = [0] * len(requests), time.monotonic()
     admitted = [threading.Event() for _ in requests]
     admitted_ns = [0] * len(requests)
@@ -90,7 +97,7 @@ def real(
 
     with ThreadPoolExecutor(len(requests)) as pool:
         list(pool.map(one, range(len(requests))))
-    arrivals = {"sent_ns": sent, "admitted_ns": admitted_ns}
+    arrivals = {"sent_ns": sent, "admitted_ns": admitted_ns, "prefix_words": prefix_words}
     (record / ARRIVALS).write_text(json.dumps(arrivals))
 
 
@@ -163,8 +170,10 @@ if __name__ == "__main__":
     run, record = compass_run.spec(), Path(record)
     if run is None:
         n, gap_s = int(rest[0]) if rest else 64, float(rest[1]) if rest[1:] else 0.05
-        real(int(port), bodies(model, n), gap_s, record)
+        prefix = int(rest[2]) if rest[2:] else 0
+        real(int(port), bodies(model, n, prefix), gap_s, record, prefix_words=prefix)
     else:
-        sent = json.loads((record / ARRIVALS).read_text())["sent_ns"]
+        arrivals = json.loads((record / ARRIVALS).read_text())
+        sent, prefix = arrivals["sent_ns"], arrivals.get("prefix_words", 0)
         offsets = [(t - min(sent)) / 1e9 for t in sent]
-        Traffic(run, int(port), bodies(model, len(sent)), offsets).run()
+        Traffic(run, int(port), bodies(model, len(sent), prefix), offsets).run()

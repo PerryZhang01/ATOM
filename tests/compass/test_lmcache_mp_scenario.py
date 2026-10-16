@@ -94,11 +94,11 @@ def _measure(out: Path, machine: Path, width: list) -> None:
     )
 
 
-def run_scenario(root: Path, seed: str, dp: int) -> dict:
+def run_scenario(root: Path, seed: str, dp: int, lmcache_port: int) -> dict:
     """One run in its own process tree, reading the readings in ``root/store``."""
     out = root / f"seed{seed}"
     out.mkdir()
-    port, lmcache_port = _free_port(), _free_port()
+    port = _free_port()
     flags = ["--host", "127.0.0.1", "--port", str(lmcache_port)]
     flags += ["--chunk-size", "256", "--l1-size-gb", "1", "--eviction-policy", "LRU"]
     machine = json.loads((root / "machine.json").read_text())
@@ -170,7 +170,8 @@ def runs(request, tmp_path_factory):
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("AITER_LOG_LEVEL", "WARNING")  # the readings are keyed by it
         _measure(root, machine, DP2 if dp > 1 else [])
-    return dp, [run_scenario(root, seed, dp) for seed in ("1", "2")]
+    lmcache_port = _free_port()  # the run file names it, so both runs share it
+    return dp, [run_scenario(root, seed, dp, lmcache_port) for seed in ("1", "2")]
 
 
 def _rows(table: str):
