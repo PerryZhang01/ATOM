@@ -36,11 +36,12 @@ member, the frontend's included, connects to.
   (`atom.utils.compass_loop.CompassEventLoop.stopped`) is a stop: the
   frontend's runtime first ends every LP's run through the authority, so each
   engine leaves its loop at its ``+inf`` grant and hands in, and a client
-  still bound gets ``+inf`` with every event sent it; `frontend_done`
-  hands in the signal, which the summary counts as an ``ended:`` reason, and
-  the server leaves once the summary is written from every hand-in. A server
-  whose ``client_runs`` is ``null`` serves until it is stopped: a stop with no
-  client run open is its run's end, summarised as the finish would be.
+  still bound gets ``+inf`` too, each grant releasing every message sent its
+  LP; `frontend_done` hands in the signal, which the summary counts as an
+  ``ended:`` reason, and the server leaves once the summary is written from
+  every hand-in. A server whose ``client_runs`` is ``null`` serves until it is
+  stopped: a stop with no client run open is its run's end, summarised as the
+  finish would be.
 - `engine_loop(engine)` wraps the engine's loop: under ``step_grid`` it asks the
   workers for the bundle before it, `engine_done` after it, and if either
   raises, the engine hands in the exception as an ``ended:`` reason, with the
@@ -477,10 +478,10 @@ class _RecordingAuthority(ClockAuthority):
     before the finish is a stop: it registers that frontend's send log,
     finishes the run there and sets `stopped`. Every LP but the client is
     granted ``+inf``, and the client too while a client run is open, from its
-    bind to its end, its grant releasing every message registered for it;
-    outside one it holds no connection. A stop with none open, on a server
-    whose ``client_runs`` is ``null``, sets `stopped_whole`: the run ended as
-    its run file says, as at the finish."""
+    bind to its end; outside one it holds no connection. Each such grant
+    releases every message registered for its receiver. A stop with none open,
+    on a server whose ``client_runs`` is ``null``, sets `stopped_whole`: the
+    run ended as its run file says, as at the finish."""
 
     def __init__(self, run: dict) -> None:
         # The tree that runs, read before the run so an unidentifiable one is
@@ -539,7 +540,7 @@ class _RecordingAuthority(ClockAuthority):
                 self._client_runs == math.inf and not self.client_run_open
             )
             replies = [
-                (to, g, self._release_all(released) if to == TRAFFIC else released)
+                (to, g, self._release_all(released))
                 for to, g, released in self._address(self._finish())
                 if to != TRAFFIC or self.client_run_open
             ]
