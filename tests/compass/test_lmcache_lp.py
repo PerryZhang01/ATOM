@@ -133,13 +133,18 @@ def test_the_rows_join_each_dp_rank_and_writer_to_lmcache(tmp_path, stated):
     assert "lmcache" in compass_run._hand_ins(run)
 
 
-def test_a_prefill_decode_run_joins_lmcache_to_the_prefill_engine(tmp_path):
+@pytest.mark.parametrize("widths", [(), (2, 1)], ids=["no-widths", "P2D1"])
+def test_a_prefill_decode_run_joins_lmcache_to_the_prefill_engine(tmp_path, widths):
     run = _run(tmp_path)
     run.update(router_s=2.0**-12, kv_write_req_s=2.0**-10)
+    run.update(zip(compass_run.DP_WIDTHS.values(), widths))
     table = compass_run.channel_table(run)
-    assert {c.target for c in table.channels_from(LpId("lmcache"))} == {
-        LpId("engine-P")
-    }
+    lm = LpId("lmcache")
+    assert {c.target for c in table.channels_from(lm)} == {LpId("engine-P")}
+    # One lookup channel per prefill DP rank, at the prefill side's own width.
+    lookups = {c.name for c in table.channels_into(lm) if ":lookup#" in c.name}
+    ranks = widths[0] if widths else 1
+    assert lookups == {f"engine-P->lmcache:lookup#dp{r}" for r in range(ranks)}
 
 
 def test_a_zero_lmcache_ipc_s_is_refused_as_a_cycle(tmp_path):
