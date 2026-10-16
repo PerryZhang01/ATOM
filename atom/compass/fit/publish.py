@@ -5,9 +5,10 @@ A fit reads record directories, each with the client runs its server served,
 by their exports (`--client-run RECORD EXPORT`, in the order they ran), and
 loads their samples under one configuration (`samples.load`). A record no
 `--client-run` names refuses: its steps would name no trace they served.
-`--machine M` names the spec of the platform the records ran on; the
-configuration gains its `machine_spec_digest`, which a fit's key and params
-state.
+`--machine M` names the spec of the platform the records ran on: records
+whose device, software stack or torch is not the one it states refuse, naming
+each and both values. The configuration gains its `machine_spec_digest`, which
+a fit's key and params state.
 
 `publish` hands off one store entry whose members are `params`, what a run
 file carries, and `report`, the fit's report, and writes both, with the
@@ -29,9 +30,11 @@ from atom.compass.artifacts import (
     Reading,
     Topology,
     machine_spec_digest,
+    machine_spec_key,
     member_name,
     roots_for,
 )
+from atom.compass.artifacts.keys import platform_key
 from atom.compass.fit.samples import load
 from atom.compass.run import _width_keys
 from atom.compass.spec import MachineSpec
@@ -82,6 +85,18 @@ def inputs(args, sources) -> tuple[list, dict]:
     spec = MachineSpec.from_mapping(
         _width_keys(json.loads(Path(args.machine).read_text()))
     )
+    torch = spec.value("device.software_pinned_to.torch")
+    ran, stated = platform(config), {**machine_spec_key(spec).values, "torch": torch}
+    differ = [
+        f"{axis} {ran[axis]!r} in the records and {stated[axis]!r} in {args.machine}"
+        for axis in stated
+        if ran[axis] != stated[axis]
+    ]
+    if differ:
+        raise ValueError(
+            "the records ran on another platform than --machine states: "
+            + "; ".join(differ)
+        )
     return samples, {**config, "machine_spec": machine_spec_digest(spec)}
 
 
@@ -96,16 +111,19 @@ def runs(samples) -> list[dict]:
     return [{**run, "traces": sorted(run["traces"])} for run in held.values()]
 
 
+def platform(config) -> dict:
+    """The device, software-stack and torch readings `config`, the inputs'
+    configuration, states, the first two joined as a machine spec's key."""
+    stack = config["stack"]
+    return {**platform_key(config["device"], stack).values, "torch": stack["torch"]}
+
+
 def conditions(config) -> Conditions:
     """The readings `config`, the inputs' configuration, states for every axis."""
-    stack = dict(config["stack"])
-    torch = stack.pop("torch")
     return Conditions.of(
-        software_stack=" / ".join(f"{c} {v}" for c, v in stack.items()),
-        torch=torch,
+        **platform(config),
         atom_src=Reading(*config["source_root"].split("-", 1)),
         model=config["model"],
-        device=config["device"],
         host_cpu=config["host_key"]["host_cpu"],
         engine_config=json.dumps(config["engine_config"], sort_keys=True),
     )
