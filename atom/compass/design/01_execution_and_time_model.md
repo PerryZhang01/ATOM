@@ -457,10 +457,17 @@ frames. The CA completes the LP's request only when every member has called:
 
 With `lmcache_mp` above DP width 1, a park request amends rules 1, 2 and 5 (D6.1).
 
-Every member's step end is a round (owner ruling 2026-10-15, #988). A rank whose forward
-waits on its device, one with output other than the DP dummy, ends at the group's `max`;
-any other ends at its own seconds, as a real idle rank takes in arrivals when its own
-forward returns. Each member asks one TAR per distinct end, ascending, returns at its own
+Every member's step end is a round (owner ruling 2026-10-15, #988; revised 2026-10-16,
+#1267). With host time, the group's `max` is taken on each forward's device end, a time on
+the LP clock, by one `all_reduce(MAX)` over the DP group that every forward kind joins, the
+DP dummy included: per-layer collectives hold every rank's device until the slowest. Each
+rank writes the result back as its last device end, and as its output end on an output
+forward, and ends at its own release composed from it, as a real rank returns at its own
+launch end and takes in arrivals before `_sync_dp_state`. A replay rank ends at its own
+replayed return. With no host time, a rank whose forward waits on its device, one with
+output other than the DP dummy, ends at the group's `max` of step seconds; any other ends
+at its own seconds, as a real idle rank takes in arrivals when its own forward returns.
+Each member asks one TAR per distinct end, ascending, returns at its own
 and owes the rest. Until they are paid its sends are stamped at its own end; a TAR before
 the last owed round and any NER are refused; and every host collective on its clock owner
 thread, a `torch.distributed` collective whose tensors are all on the CPU or that has none,

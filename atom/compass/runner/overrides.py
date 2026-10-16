@@ -94,6 +94,7 @@ source and compare it with this table.
 from __future__ import annotations
 
 import collections
+import functools
 import json
 import logging
 import math
@@ -257,7 +258,7 @@ class HostDeviceRecurrence:
     for nothing. With `mtp`, a forward's device work is its target's and then
     its draft's, and a single-stage output forward waits before launch, for
     the previous output forward's target. `ends[-1]` is the last forward's device end. `laws[kind][segment]` are coefficients on `(1,
-    tokens, seqs)`; `charge` says what an absent one costs. `now` reads the engine LP's clock.
+    tokens, seqs)`; `device_end` says what an absent one costs. `now` reads the engine LP's clock.
     `segments` holds the seconds the last `charge` charged each segment, 0 for
     one in `skip`.
     """
@@ -271,10 +272,24 @@ class HostDeviceRecurrence:
         self.mtp = mtp
 
     def charge(
+        self,
+        batch: Any,
+        device_s: float,
+        draft_s: float = 0.0,
+        refuse: bool = True,
+        join=float,
+    ) -> float:
+        """The forward's exit less `now`: `release` of `join` of `device_end`.
+        `join` maps this forward's device end to the one its rank waits for,
+        a DP group's latest."""
+        return self.release(join(self.device_end(batch, device_s, draft_s, refuse)))
+
+    def device_end(
         self, batch: Any, device_s: float, draft_s: float = 0.0, refuse: bool = True
     ) -> float:
-        """The forward's exit less `now`, for `device_s` of target device time
-        and then `draft_s` of draft; advances the device state. With any
+        """When the forward's device work ends, on the `now` clock, for
+        `device_s` of target device time and then `draft_s` of draft, its
+        launch included; `release` finishes the charge. With any
         laws and `refuse`, a forward whose kind lacks one for a segment it runs
         is refused, naming each ``<kind>.<segment>``, the state as it was;
         without `refuse` that segment is 0. A segment in `skip` needs none, and
@@ -302,7 +317,18 @@ class HostDeviceRecurrence:
             host = max(host, self.output_end)
         launch_end = host + launch
         target_end = max(self.ends[-1], host) + device_s
-        self.ends.append(max(target_end + draft_s, launch_end))
+        end = max(target_end + draft_s, launch_end)
+        self._held = now, launch_end, target_end, draft_s, end, output, post
+        return end
+
+    def release(self, end: float) -> float:
+        """The exit less `now` of the forward `device_end` just priced, its
+        device work ending at `end`, no earlier than `device_end` said; a later
+        `end` moves its target's end with it."""
+        now, launch_end, target_end, draft_s, own, output, post = self._held
+        if end > own:
+            target_end = end - draft_s
+        self.ends.append(end)
         released = launch_end
         if output:
             if self.last is None:
@@ -1055,10 +1081,13 @@ def _group_step_seconds(
     it; without one it is settled here, which runs the DP collective.
 
     In a run, `compass_host` composes the price, device seconds, with host time.
-    The `all_gather` stands in for the cross-rank collectives a real forward
-    makes: a rank with output, not the DP dummy, waits for them and leaves at
-    the group's max, any other at its own seconds; `_group_targets` holds all,
-    by rank, or None with one rank.
+    Under DP a `HostDeviceRecurrence`'s device end, on the LP clock, is
+    replaced by the group's latest, an `all_reduce(MAX)` that stands in for the
+    cross-rank collectives a real forward makes, before it composes this rank's
+    own exit. Every rank then leaves at its own charge, except with no
+    `compass_host`: there a rank with output, not the DP dummy, leaves at the
+    group's max. An `all_gather` fills `_group_targets` with every rank's, by
+    rank, or None with one rank.
 
     A pipeline stage runs only its own layers, so it is refused unless its
     backend states the `stage_share` it prices; any other backend prices the
@@ -1114,20 +1143,29 @@ def _group_step_seconds(
         mix.record(cost)
         device_s, terms = cost.seconds, cost.terms
     host = getattr(runner, "compass_host", None)
+    group = dp_group() if mode.sync is not None else None
+    charge = getattr(host, "charge", None)
+    if group is not None and isinstance(host, HostDeviceRecurrence):
+
+        def join(end: float) -> float:
+            t = torch.tensor([end], dtype=torch.float64)
+            torch.distributed.all_reduce(t, torch.distributed.ReduceOp.MAX, group)
+            return t.item()
+
+        charge = functools.partial(host.charge, join=join)
     try:
-        charge_s = device_s if host is None else host.charge(batch, device_s)
+        charge_s = device_s if host is None else charge(batch, device_s)
     except CostRefused as refusal:
         if getattr(runner, "compass_abort", False):
             raise
         said = "; ".join(f"{r.source}: {r.reason}" for r in refusal.declined)
         refused = (f"{refused}; " if refused else "cost:") + said
-        charge_s = host.charge(batch, device_s, refuse=False)
+        charge_s = charge(batch, device_s, refuse=False)
     if refused:
         vars(runner).setdefault("_refused_commands", []).append(refused)
     group_s, targets = charge_s, None
-    if mode.sync is not None:
-        group = dp_group()
-        waits = batch.produces_output() and not batch.is_dummy_run
+    if group is not None:
+        waits = host is None and batch.produces_output() and not batch.is_dummy_run
         mine = torch.tensor([charge_s, waits], dtype=torch.float64)
         rows = [torch.empty_like(mine) for _ in range(group.size())]
         torch.distributed.all_gather(rows, mine, group=group)
