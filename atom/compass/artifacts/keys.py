@@ -63,6 +63,7 @@ class Kind(enum.Enum):
     REGION_TERMS = "region_terms"
     MEMORY_READINGS = "memory_readings"
     COVERAGE_HULL = "coverage_hull"
+    STEP_MEASUREMENT = "step_measurement"
     STEP_LINEAR_LAW = "step_linear_law"
     HOST_LAWS = "host_laws"
     STEP_GRID_BUNDLE = "step_grid_bundle"
@@ -80,7 +81,9 @@ LAYOUT = (*AXES, *SWITCHES, "decode_context_parallel_size")
 #: What keys each artifact, in the order a key reads.
 KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
     Kind.MACHINE_SPEC: ("device", "software_stack"),
-    Kind.SHAPE_POPULATION: ("model", "workload", "engine_config"),
+    # `workload` is the digest of the requests its steps name; `backend` the
+    # pricing backend's digest, so another backend addresses another entry.
+    Kind.SHAPE_POPULATION: ("model", "workload", "engine_config", "backend"),
     Kind.OP_GRAPH: ("structure",),
     Kind.PRICE_LIST: ("model", *LAYOUT, "machine_spec", "source_root"),
     Kind.REGION_TERMS: ("model", *LAYOUT, "machine_spec"),
@@ -94,6 +97,17 @@ KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
         "block_size",
     ),
     Kind.COVERAGE_HULL: ("price_list",),
+    # `view` is the digest of the batch view the step was measured as.
+    Kind.STEP_MEASUREMENT: (
+        "model",
+        "device",
+        "parallel",
+        "engine_config",
+        "source_root",
+        "sampling",
+        "step_kind",
+        "view",
+    ),
     Kind.STEP_LINEAR_LAW: (
         "model",
         "machine_spec",
@@ -257,17 +271,25 @@ class Key:
         return f"{self.kind}({stated})"
 
 
-def machine_spec_key(machine) -> Key:
-    """A `MachineSpec`'s own key: the device and the software stack it states,
-    ROCm, AITER and RCCL; its torch pin is an axis of its own."""
+def platform_key(device: str, stack: Mapping[str, str]) -> Key:
+    """The machine-spec key of `device`, `<name> <arch>`, running `stack`,
+    {component: version} as a spec pins it: its ROCm, AITER and RCCL, in that
+    order; its torch is an axis of its own. A spec's key and the readings of a
+    record taken on it are both this join."""
     from atom.compass.spec.fields import PINNED
 
-    stack = (c for c in PINNED if c != "torch")
-    pins = (f"{c} {machine.value(f'device.software_pinned_to.{c}')}" for c in stack)
-    return Key.of(
-        Kind.MACHINE_SPEC,
-        device=f"{machine.value('device.name')} {machine.value('device.arch')}",
-        software_stack=" / ".join(pins),
+    pins = (f"{c} {stack[c]}" for c in PINNED if c != "torch")
+    return Key.of(Kind.MACHINE_SPEC, device=device, software_stack=" / ".join(pins))
+
+
+def machine_spec_key(machine) -> Key:
+    """A `MachineSpec`'s own key: the `platform_key` of the device and the
+    software stack it states."""
+    from atom.compass.spec.fields import PINNED
+
+    return platform_key(
+        f"{machine.value('device.name')} {machine.value('device.arch')}",
+        {c: machine.value(f"device.software_pinned_to.{c}") for c in PINNED},
     )
 
 

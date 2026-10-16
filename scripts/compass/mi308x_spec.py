@@ -252,16 +252,16 @@ def swept(model: str) -> Fragment:
     )
 
 
-def report(merged) -> str:
+def report(merged, tp_width=1) -> str:
     """`explain`'s rows grouped by origin, and the basis of `kv_blocks`."""
     spec = MachineSpec.from_mapping(merged.document)
     groups: dict[str, list[str]] = {}
     for block in ("host", "device", "interconnect"):
-        for row in explain(spec, block, tp_width=1, origin=merged).contributions:
+        for row in explain(spec, block, tp_width=tp_width, origin=merged).contributions:
             groups.setdefault(row.origin["origin"], []).append(f"  {row}")
     lines = [line for origin, rows in groups.items() for line in (f"{origin}:", *rows)]
     return "\n".join(
-        lines + [str(explain(spec, "kv_blocks", tp_width=1, origin=merged))]
+        lines + [str(explain(spec, "kv_blocks", tp_width=tp_width, origin=merged))]
     )
 
 

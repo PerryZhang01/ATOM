@@ -49,14 +49,12 @@ from atom.compass.artifacts import (
     module_root,
 )
 from atom.compass.backends.step_grid import StepGrid, StepGridBackend
+from atom.compass.backends.step_grid_plan import BOUNDS, SCOPE
 from atom.compass.backends.step_grid_residual import Residual
 from atom.compass.runner.overrides import schedulable_ladder
 
 #: The bundle's one member: a group's step has a single writer.
 MEMBER = ("bundle", Topology().ranks()[0], "json")
-#: The one timing scope a bundle may declare, the whole `ModelRunner.forward`.
-SCOPE = "forward"
-BOUNDS = ("max_num_seqs", "max_num_batched_tokens", "max_model_len")
 
 
 def keyed(config) -> dict:

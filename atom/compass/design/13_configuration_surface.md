@@ -135,7 +135,7 @@ python -m atom.entrypoints.openai_server <ATOM arguments> \
 | `--store` | the artifact store keys resolve in, the configuration's `memory_readings` included (`07` D41) | **none — refuses** |
 | `--host-laws` | the host laws by store key (`09` D54), composed by `01` D4's recurrence | none: the run charges no host time and records that |
 | `--on-refusal` | `mark`: a refused step costs 0 s, its reason is recorded, and the run continues. `abort`: stop at the first refusal; the run summary is still written. Either way a refusal makes the run a coverage report (`08` D50.1) | `mark` (`08` D50.1) |
-| `--roofline-floor-s` | superseded by the owner's ruling on [#1047](https://github.com/jgong5/ATOM/issues/1047): the step roofline has no host bound, so this setting is a switch with no value, the run-file key `step_roofline`. On, it composes `StepFallbackBackend`: the step roofline (`10` D64) prices the device time of the steps the backend refuses, with the method its inputs give it | off; `run.json` records it when on |
+| `--step-roofline` | a switch, named by its run-file key `step_roofline`, with no value: the step roofline has no host bound (the owner's ruling on [#1047](https://github.com/jgong5/ATOM/issues/1047)). On, it composes `StepFallbackBackend`: the step roofline (`10` D64) prices the device time of the steps the backend refuses, with the method its inputs give it | off; `run.json` records it when on |
 | `--coverage` | `shape_population` keys and `record` directories the backend's coverage check reads before the run starts; a failed check refuses the run (`07` D37) | off; `run.json` records the check's result, or that none ran |
 
 `run` reads the `memory_readings` entry for its configuration (`07` D41) and refuses when
@@ -178,9 +178,11 @@ compass measure steps  [<batches>...] [--grid <population>...] <sample> \
                        --sampling P --out D --store S -- <ATOM args>          [GPU]
 compass measure ops               (ops half)                                  [GPU]
 compass measure memory                        --out D --store S -- <ATOM args> [GPU]
-compass fit steps      --backend step-linear|step-grid <sample>... --machine M \
+compass fit steps      --backend step-linear|step-grid [--form FORM] [--seed SEED] \
+                       RECORD... --client-run RECORD EXPORT... --machine M \
                        --out D --store S
-compass fit host       <record>... --machine M  --out D --store S
+compass fit host       RECORD... --client-run RECORD EXPORT... --machine M \
+                       --out D --store S
 compass fit ops                   (ops half)
 compass run            <backend> --machine M  --out D --store S -- <ATOM args>
 
@@ -199,8 +201,8 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
 | `measure steps` | 1c, on the bench | GPU | its `<batches>`, and `--grid`'s inputs | `--store`: one `step_measurement` per distinct batch |
 | `measure ops` | 1b, collectives included | GPU, each width | the signatures `trace ops` captured; the stated collective entry points (`07` D40) | per-signature measurements |
 | `measure memory` | 2 | GPU | ATOM's arguments | `--store`: one `memory_readings` for the configuration; `--out`: `run.json`, logs |
-| `fit steps` | from 1c's measurements | none | `record` directories and `step_measurement` entries, as the backend accepts | `--store`: a `step_linear_law` or a step grid bundle, with its report; `--out`: a readable copy |
-| `fit host` | from real runs | none | `record` directories only | `--store`: `host_laws`, with its report |
+| `fit steps` | from 1c's measurements | none | the machine spec; `record` directories, each with the exports of the client runs its server served, and `step_measurement` entries, as the backend accepts | `--store`: a `step_linear_law` or a step grid bundle, with its report; `--out`: a readable copy |
+| `fit host` | from real runs | none | the machine spec; `record` directories only, each with the exports of the client runs its server served | `--store`: `host_laws`, with its report |
 | `fit ops` | from 1b's and 1c's measurements | none | `measure ops`'s measurements, and 1c's for the region terms | `price_list`, `region_terms` |
 | `run` | a simulated serve | none | a backend, the machine spec, the configuration's `memory_readings`, ATOM's arguments; the requests clients send | `--out`: the step record with its cost lines, the step table, the run summary, `run.json` with the run file and what grading reads (below), logs |
 
@@ -223,9 +225,10 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
   Compass tree's source digest, the host key, and the device and stack.
 - **A GPU command refuses rather than warns** (`07` D42): it names its GPU, with no
   default device; it checks that GPU is quiet before and after, keeping both process
-  listings; it records whether it was profiled. `fit` refuses profiled inputs, and inputs
-  from two machines or two configurations: the configuration travels with the data, and
-  the user passes none.
+  listings; it records whether it was profiled. `fit` refuses profiled inputs, inputs
+  from two machines or two configurations, and inputs from another device, stack or torch
+  than its `--machine` spec states: the configuration travels with the data, and the user
+  passes none.
 
 **Instances and client runs:**
 
@@ -315,7 +318,6 @@ Audited, because an absent flag is a decision and should be a visible one:
 | virtual-clock enable/disable | there is no simulated run without one. A switch would create an untested second configuration. |
 | per-term memory overrides | a memory term comes from the machine spec or a `memory_readings` entry, where it is echoed and fingerprinted |
 | a workload, the client's settings | no command starts the client: a client started apart sends them, and grading reads which traces it served from the client run |
-| a perturbed price for grading's sensitivity control (`08` D45) | grading's tooling, outside the CLI, publishes a copy of the law with its prefill price scaled by 0.97 as its own `step_linear_law` entry, its provenance "scaled from <key> by 0.97", and the control is `run --step-linear <that key>` |
 | acceptance rate for speculative decoding | **ATOM's own flag** — `--spec-decode-acceptance-length` / `--spec-decode-acceptance-rate` already exist (`14` D83) |
 | thread-pool widths | ATOM's, per `05` D24 |
 | the run file's lookaheads, bound and admission path | fixed in code: no measurement backs the lookaheads (`atom/compass/clock/channels.py::single_engine_table`), and `run` always drives the API server |

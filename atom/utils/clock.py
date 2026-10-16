@@ -153,6 +153,9 @@ class LPRuntime:
         # caller such as an output thread or an HTTP handler may log and drop
         # the exception.
         self.refusals: list[str] = []
+        # Whether the owner holds work a bounded poll must not idle past: then
+        # the poll's bound is an essential deadline, else a daemon one.
+        self.holds_work = lambda: False
 
     def start_run(self) -> None:
         self.in_run = True
@@ -167,8 +170,9 @@ class LPRuntime:
         t = current_job_time()
         return self.now if t is None else t
 
-    def stamp_send(self, ch: str) -> tuple[float, int]:
-        """Register one message on `ch` as produced now; returns its ``(arrival, seq)``.
+    def stamp_send(self, ch: str, at: float | None = None) -> tuple[float, int]:
+        """Register one message on `ch` as produced now, arriving `at` or, by
+        default, after the channel's lookahead; returns its ``(arrival, seq)``.
 
         Refused while a next-event request is out, as a run-summary reason
         ``clock:stamp_send on <channel> while a next-event request is out``: the
@@ -184,7 +188,7 @@ class LPRuntime:
         with self.lock:
             seq = self.next_seq[ch]
             self.next_seq[ch] = seq + 1
-            arrival = self.now + self.table.lookahead(ch)
+            arrival = self.now + self.table.lookahead(ch) if at is None else at
             self.send_log.append((ch, seq, arrival))
         return arrival, seq
 
@@ -314,6 +318,15 @@ class LPRuntime:
             f"{self.now} without it (lookahead {self.table.lookahead(ch)})"
         )
 
+    def receive(self, ch: str, seq: int) -> None:
+        """The owner's inline receive of a message no socket carries: idle
+        until (`ch`, `seq`) is released, then count it taken."""
+        while seq not in self.released[ch]:
+            self.next_event(math.inf)
+        with self.lock:
+            self.arrived[ch].add(seq)
+            self.count_done_locked(ch, seq)
+
     def inline_pending(self) -> bool:
         """Is there a released inline message not yet taken?"""
         with self.lock:
@@ -380,10 +393,11 @@ class WrappedSocket:
     The header is its own frame: first, or after the identity frame on a ROUTER.
     Frames read are held back until the runtime releases them, then handed over
     in ``(arrival, seq)`` order; frames sent outside the run pass straight through.
+    A socket that several LPs send to receives each of `more`'s channels too.
     """
 
-    def __init__(self, rt: LPRuntime, raw: zmq.Socket, ch: str) -> None:
-        self.rt, self.raw, self.ch = rt, raw, ch
+    def __init__(self, rt: LPRuntime, raw: zmq.Socket, ch: str, *more: str) -> None:
+        self.rt, self.raw, self.ch, self.into = rt, raw, ch, (ch, *more)
         self.relay: RelayQueue | None = None
         self.buf: list[tuple] = []  # (ch, arrival, seq, payload frame) read, not taken
 
@@ -456,7 +470,7 @@ class WrappedSocket:
         while True:
             self.pull()
             with self.rt.lock:
-                if self.rt.released[self.ch] <= self.rt.arrived[self.ch]:
+                if all(self.rt.released[c] <= self.rt.arrived[c] for c in self.into):
                     return
             self.raw.poll()
 
@@ -470,7 +484,9 @@ class WrappedSocket:
         return payload
 
     def poll(self, timeout_ms: int | None = None) -> bool:
-        """A bounded poll is an idle point until ``now + timeout``; zero never idles.
+        """A bounded poll is an idle point until an arrival or its bound. The
+        bound is an essential deadline while the owner holds work, else a daemon
+        one, which paces the loop without keeping the run alive. Zero never idles.
 
         Outside the run there is no clock to ask: it waits on the socket itself.
         """
@@ -481,7 +497,8 @@ class WrappedSocket:
             elif timeout_ms is None:
                 self.rt.next_event(math.inf)
             else:
-                self.rt.next_event(self.rt.now + timeout_ms / 1000.0)
+                bound = self.rt.now + timeout_ms / 1000.0
+                self.rt.next_event(bound if self.rt.holds_work() else math.inf, bound)
             self.settle()
         return self.ready()
 
@@ -564,13 +581,27 @@ class RelayQueue:
 # ---- channel endpoints: named by ATOM's wiring, read by `atom.utils.zmq_shim` ----
 
 
-def channel_of(rt: LPRuntime, kind: str) -> str:
-    """The one channel of `rt`'s LP whose name ends ``:kind``."""
-    names = [
+def _of_kind(rt: LPRuntime, kind: str) -> list[str]:
+    return [
         c.name
         for c in rt.table.channels_from(rt.me) + rt.table.channels_into(rt.me)
         if c.name.endswith(":" + kind)
     ]
+
+
+def socket_channels(rt: LPRuntime, kind: str) -> tuple[str, ...]:
+    """The channels one socket of `rt`'s LP carries for `kind`: its one channel,
+    or every one of that kind into the LP, when several LPs send to one socket
+    it binds, as each downstream pipeline stage sends the head its KV status."""
+    names = _of_kind(rt, kind)
+    if len(names) > 1 and all(rt.table.channel(n).target == rt.me for n in names):
+        return tuple(names)
+    return (channel_of(rt, kind),)
+
+
+def channel_of(rt: LPRuntime, kind: str) -> str:
+    """The one channel of `rt`'s LP whose name ends ``:kind``."""
+    names = _of_kind(rt, kind)
     if len(names) != 1:
         raise KeyError(
             f"{rt.me} has {len(names)} channels of kind {kind!r} ({names}); a "
@@ -587,26 +618,32 @@ def name_endpoints(
     A socket this LP binds or connects to a recorded address becomes that
     channel's `WrappedSocket`; the channel is looked up then, so an address no
     socket of this LP opens is never resolved. An engine passes its `config`,
-    which holds its pipeline-stage and prefill/decode addresses.
+    which holds its pipeline-stage and prefill/decode addresses; a pipeline
+    stage's own channels carry the index ATOM's engine core manager gives it,
+    its stage, as the frontend names them (ATOM runs no pipeline beside DP),
+    and the head's batch to
+    stage ``k`` goes on ``meta#pp<k>``.
     """
     rt = _installed
     if rt is None:
         return
-    tag = f"#dp{dp}"
-    kinds = {
-        input_address: "request" + tag,
-        control_address: "control" + tag,
-        output_address: "output" + tag,
-    }
+    kinds = {}
     if config is not None:
         pc = config.parallel_config
-        kinds |= dict.fromkeys(pc.pp_meta_addrs, "meta")
+        dp += getattr(pc, "pipeline_parallel_rank", 0)
+        kinds |= {a: f"meta#pp{k}" for k, a in enumerate(pc.pp_meta_addrs)}
         kinds |= {
             pc.pp_token_addr: "tokens",
             pc.pp_kv_status_addr: "kv_status",
             config.disagg_p2d_addr: "prefill_done",
             config.disagg_d2p_addr: "block_assignment",
         }
+    tag = f"#dp{dp}"
+    kinds |= {
+        input_address: "request" + tag,
+        control_address: "control" + tag,
+        output_address: "output" + tag,
+    }
     kinds.pop("", None)  # an address the deployment does not use
     rt.endpoints |= kinds
 
@@ -614,13 +651,15 @@ def name_endpoints(
 def relay_queue(dp: int):
     """The engine's output queue: a `RelayQueue` on its output channel, else a `queue.Queue`.
 
-    Its socket is opened later, on the output thread, and takes the relay's
-    placeholder when it connects to the output address.
+    The channel is rank `dp`'s, or the LP's only one: a pipeline stage is an
+    LP of its own. Its socket is opened later, on the output thread, and takes
+    the relay's placeholder when it connects to the output address.
     """
     rt = _installed
     if rt is None:
         return queue.Queue()
-    ch = channel_of(rt, f"output#dp{dp}")
+    outs = [c.name for c in rt.table.channels_from(rt.me) if ":output#" in c.name]
+    ch = outs[0] if len(outs) == 1 else channel_of(rt, f"output#dp{dp}")
     rt.relays[ch] = RelayQueue(rt, WrappedSocket(rt, None, ch))
     return rt.relays[ch]
 
