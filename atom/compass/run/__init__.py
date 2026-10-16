@@ -9,8 +9,9 @@ and ATOM runs as it always does.
 One engine LP at one stage, one frontend LP, and the traffic LP the harness
 drives, over `single_engine_table`. At data-parallel width above one, each DP
 rank's engine process is a member ``dp<rank>`` of the one engine LP and owns
-its rank's channels. At pipeline width above one, each stage's engine process
-is an engine LP of its own, ``engine-pp<stage>``. The Clock Authority is co-hosted in the frontend's
+its rank's channels. Each pipeline stage's engine process is an engine LP of
+its own, ``engine-pp<stage>``, though `frontend` still refuses a pipeline: no
+stage's forward waits for the stage before it. The Clock Authority is co-hosted in the frontend's
 process and served at the run file's ``clock_endpoint``, which every LP and
 member, the frontend's included, connects to.
 
@@ -573,8 +574,14 @@ def frontend(config):
         return contextlib.nullcontext()
     _refuse_unserved()
     pc = config.parallel_config
-    if config.enable_rapidserve:
-        raise ValueError("a simulated run here is an engine LP without RapidServe")
+    widths = (pc.data_parallel_size, config.pipeline_parallel_size)
+    if widths[1] != 1 or config.enable_rapidserve:
+        raise ValueError(
+            f"a simulated run here is one engine LP at pipeline width 1 without "
+            f"RapidServe, got (dp, pp)={widths}, rapidserve={config.enable_rapidserve}; "
+            "a pipeline runs once each stage's forward waits for the stage "
+            "before it (#468)"
+        )
     if config.pipeline_parallel_size != _pp(run):
         raise ValueError(
             f"the deployment runs {config.pipeline_parallel_size} pipeline stages "

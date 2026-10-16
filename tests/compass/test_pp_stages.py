@@ -6,9 +6,10 @@ stage. The head schedules, sends each downstream stage its batch on
 ``meta#pp<k>``, and the last stage sends the head its output on ``tokens``;
 each stage's worker starts on the host with its groups, the PP group among
 them, on gloo. The hidden states one stage hands the next inside the forward
-are not modelled here.
+are not modelled yet, so `compass_run.frontend` refuses a pipeline and the run
+test is skipped until #468 lifts that refusal.
 
-The run tests need a driver and `ATOM_COMPASS_SLICE_MODEL`, as in
+The run test needs a driver and `ATOM_COMPASS_SLICE_MODEL`, as in
 `test_vertical_slice`; the rest run anywhere.
 """
 
@@ -44,6 +45,7 @@ def pipeline(request, tmp_path_factory):
     ]
 
 
+@pytest.mark.skip(reason="frontend refuses a pipeline until #468")
 @NEEDS_A_RUN
 def test_a_pipeline_meets_the_run_properties_and_uses_every_stage_channel(pipeline):
     pp, runs = pipeline
@@ -115,12 +117,21 @@ def _stage(rank, pp=2):
     return deployment
 
 
-def test_a_deployment_whose_pipeline_the_run_file_does_not_state_is_refused(
+def test_a_pipeline_is_refused_by_the_issue_that_lifts_it(monkeypatch, tmp_path):
+    run = _run_file(tmp_path, pipeline_parallel_size=2)
+    monkeypatch.setenv(compass_run.ENV, str(run))
+    with pytest.raises(ValueError, match=r"\(dp, pp\)=\(1, 2\).*#468"):
+        compass_run.frontend(_stage(0))
+    assert clock.installed() is None
+
+
+def test_a_run_file_stating_a_pipeline_the_deployment_does_not_run_is_refused(
     monkeypatch, tmp_path
 ):
-    monkeypatch.setenv(compass_run.ENV, str(_run_file(tmp_path)))
-    with pytest.raises(ValueError, match="pipeline_parallel_size is 1"):
-        compass_run.frontend(_stage(0))
+    run = _run_file(tmp_path, pipeline_parallel_size=2)
+    monkeypatch.setenv(compass_run.ENV, str(run))
+    with pytest.raises(ValueError, match="pipeline_parallel_size is 2"):
+        compass_run.frontend(_stage(0, pp=1))
     assert clock.installed() is None
 
 
