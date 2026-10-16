@@ -159,8 +159,8 @@ mixed the two would misprice both. Its `W_post` is zero and not fitted.
 They use the step linear law's solver: D53's relative error and MAD drops, D57's report, D58's hull. An
 `E` sample whose gap spans an idle engine is cut as idle and counted apart.
 
-- **Key:** the host CPU, the `atom` source digest, the model and the engine config. A
-  mismatch refuses. There is no transfer mode: the MI455 projection prices no host floor
+- **Key:** the host CPU, the `atom` source digest, the model, the engine config and the
+  machine-spec digest (`07` D41). A mismatch refuses. There is no transfer mode: the MI455 projection prices no host floor
   (`08` D50.2).
 - **Home:** beside the step linear law, not in the machine spec's `host.*` (`05` D25).
 - **Use:** the runner composes them with any backend's device time by `01` D4's

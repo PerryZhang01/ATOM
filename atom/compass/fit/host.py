@@ -1,12 +1,15 @@
 # SPDX-License-Identifier: MIT
 """`compass fit host`: the host laws, fitted on real runs' records and published.
 
-    compass fit host RECORD... [--client-run RECORD EXPORT]... --store ROOT --out DIR
+    compass fit host RECORD... --client-run RECORD EXPORT... --machine M
+        --store ROOT --out DIR
 
 `host_laws` fits the samples' host labels by `step_linear_fit.fit_host`, under
 the host key the real runner writes beside each record, and its report names
-each run with every trace its steps served. The entry is keyed by that host
-key's four values and holds the run file's `host` entry as its params.
+each run with every trace its steps served. The host key gains the
+configuration's `machine_spec`, which a run's spec must match; the entry is
+keyed by that host key's values and holds the run file's `host` entry as its
+params.
 """
 
 import json
@@ -39,11 +42,13 @@ def main(argv: list[str]) -> None:
     samples, config = publish.inputs(args, ("record",))
     host, report = host_laws(samples)
     k = host["key"]
+    k["machine_spec"] = config["machine_spec"]
     key = Key.of(
         Kind.HOST_LAWS,
         host_cpu=k["host_cpu"],
         atom_src=k["atom"],
         model=k["model"],
         engine_config=json.dumps(k["engine"], sort_keys=True),
+        machine_spec=k["machine_spec"],
     )
     publish.publish(args, " ".join([PROG, *argv]), key, config, host, report)

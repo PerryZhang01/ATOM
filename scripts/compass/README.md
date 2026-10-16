@@ -19,6 +19,7 @@ on, because until 2026-09-20 it was not — see "Which tree a script acts on" be
 | `snapshot.sh` | either | Build the `git archive` tarball a gate runs against (never `rsync`). Stamps `.compass-commit` (so output names its tree, and a `COMPASS_GPU_GATE_DONE` attestation can be checked) and `.compass-changed` (so the blind-spot question is answerable without `.git`). Refuses a dirty tree. |
 | `pd_sim.sh` | GPU container | A simulated 1P1D run: the standalone clock authority (`python -m atom.compass.run`), a prefill and a decode API server on the simulated KV connector, and `atomesh` in PD mode between them. `tests/compass/test_pd_slice.py` drives one request through it. Its variables are in its header. |
 | `parity_one_node.sh` | GPU container, two devices | The scheduling-parity test: one workload (`python -m atom.compass.parity.traffic`) on a real `-tp 2 --enable-dp-attention` server with the step record on, then on a simulated one whose steps each end when the real one's did (`atom/compass/parity/replay.py`), and `python -m atom.compass.parity` over the two records. The last lines are the real run's admission (send to response headers: minimum, median, maximum) and, per DP rank, the steps compared, the steps identical and the first divergence. Its variables are in its header. |
+| `python -m atom.compass.detect.scenario` | either | The acceptance checks every simulated deployment's runs are held to, over the out_dirs of one run file run under different `PYTHONHASHSEED`: each run reached its finish with no refusal, the step tables are byte-identical, and each channel's messages were released to their receiver once each and none behind its clock. With `--record LP=DIR`, an engine LP's TAR rows must equal the timeline a constant step stub implies, computed from the parity record in `DIR` (`pd_sim.sh` writes one per side when `ATOM_COMPASS_PARITY_RECORD` is set). Prints each failure and exits 1. The vertical, DP, PD and PD-DP slices in `tests/compass/` hold their runs to it, with the traffic's outputs too. |
 | `mi308x_spec.py` | GPU container, node 18 or hjbog-srdc-39 | `python3 scripts/compass/mi308x_spec.py`: rebuild `machines/mi308x-hjbog18.json`, the node-18 MI308X machine spec, by sweeping Qwen3.8-27B's tokenizer on this host and merging it with the device readings of one real engine start recorded in the script; with `COMPASS_MACHINE=mi308x-hjbog39`, the same for hjbog-srdc-39 into `machines/mi308x-hjbog39.json`. Prints `validate`'s verdict and `explain`'s fields grouped by origin; on either host a value no probe fills reads `assumed`. |
 | `cpu_gate_exclude.txt` | — | Excluded test files in two marked sections: **GENERATED** (`# BEGIN GENERATED`, driver-dependent at *collection* time; never hand-edit — `regen_cpu_gate_exclude.sh` rewrites it wholesale) and **MANUAL** (`# BEGIN MANUAL`, collects cleanly then fails on a driver call or for want of a `.git`, so the regenerator cannot see it). The MANUAL section **is** hand-edited; every entry must carry its observed failure above it. |
 | `gpu_gate_triggers.txt` | — | The source paths that no *running* CPU-gate test names. Generated, not hand-written; matched by `gate_cpu.sh`. A trailing `/` matches a subtree. |
@@ -171,6 +172,32 @@ COMPASS_AGENTX_HARNESS=<dir>/aiperf-0.12.0-py3-none-any.whl scripts/compass/gate
 
 `compass_harness` checks the installed `aiperf` source against its pinned
 functions on import, so a wheel from another commit fails the same way.
+
+## atomesh's cargo tests run offline, from the container's crate cache
+
+`gate_cpu.sh` runs atomesh's unit tests (`cargo test --lib`) and every Compass
+cargo target, selected by file name (`atom/mesh/tests/compass_*.rs`, so a new
+Compass target must carry the prefix), in `atom/mesh` before pytest, with `CARGO_NET_OFFLINE=true` unless the caller set
+it, and fails after pytest if they fail. `tests/compass/test_mesh_clock_client.py`
+skips when `cargo metadata` fails, and the gate runs the same probe first: when it
+fails and the diff touches `atom/mesh`, the gate exits 96 before pytest and names
+cargo's error; otherwise it prints a `mesh:` line and goes on. It skips one test by
+its exact name, `core::worker::tests::test_load_counter_performance`: a wall-clock
+throughput floor that fails on a loaded host (#515).
+
+The tree has no `Cargo.lock` (`atom/mesh/.gitignore`). The gate copies one in from
+`COMPASS_CARGO_LOCK`, default `/app/ATOM/atom/mesh/Cargo.lock`, the lockfile the
+gate image built atomesh with, unless the tree already has one. The image's cargo
+cache holds only what its release build downloaded, so a new gate container needs
+the rest fetched once, with the network, outside any netns:
+
+```
+docker exec <container> bash -c 'cd /app/ATOM/atom/mesh && cargo fetch --locked'
+```
+
+A change to atomesh's `Cargo.toml` that needs a crate the cache lacks makes the
+probe fail, and so the gate exit 96, until `cargo fetch` runs in that tree's
+`atom/mesh` in the container, with the network.
 
 ## A red CPU gate that may not be your diff — one flaky test in ATOM's suite
 
@@ -509,7 +536,9 @@ ITL and request throughput in simulated time, and the run's refusals. A
 A run file with `router_s` and `kv_write_req_s` makes the cell 1P1D: `pd_sim.sh`
 deploys it, taking `DECODE_EXEC` and `ATOMESH` from the environment, and aiperf
 drives the atomesh router. The traffic LP sends to `frontend-P` and reads the
-stream from `frontend-D`, as the run file's channel table names them. The result
+stream from `frontend-D`, as the run file's channel table names them; with
+`--enable-dp-attention` in `SERVER_ARGS` the cell is agentic, its router is
+`--dp-aware` and LP `router`, and the traffic LP talks to `router`. The result
 line adds `kv_transfers` and `kv_transfer_mean_s`, from the line the prefill
 engine logs per KV transfer.
 
@@ -542,7 +571,7 @@ the log of one rank.
 
 ## The step linear law from real cells — `step_linear_fit`
 
-`python -m atom.compass.backends.step_linear_fit RECORD... --out LAW [--form FORM] [--dp N]`
+`python -m atom.compass.backends.step_linear_fit RECORD... --out LAW --machine-spec DIGEST [--form FORM] [--dp N]`
 fits the law a run file's `step_linear` key holds (`atom/compass/backends/step_linear.py`) from
 the step records of real cells, `OUT_DIR/steps/dp0.jsonl` of `REAL=1
 cctraces_sim.sh` runs. `atom/compass/backends/step_labels.py` states the label
@@ -551,6 +580,10 @@ reading, `dp0.cost.jsonl`; the module's docstring states how outliers are
 dropped. The written law also carries, per vector, its samples, warm and dropped
 counts and condition number, and names any vector it could not fit under
 `unfitted`.
+
+`DIGEST` is the `machine_spec_digest` of the capture host's spec in
+`scripts/compass/machines/`, which a run's spec must match, printed by
+`python -c 'import json, sys; from atom.compass.artifacts import machine_spec_digest as d; from atom.compass.run import _width_keys as w; from atom.compass.spec import MachineSpec as M; print(d(M.from_mapping(w(json.load(open(sys.argv[1]))))))' SPEC.json`.
 
 Calibration cells replay traces the graded cells do not: `FIRST_SESSION=256
 SESSIONS=137` against graded traces 0 to 255, by the
@@ -561,23 +594,22 @@ lists its environment.
 Given two or more records, the command also prints each form's error on every
 record under a law fitted on the others, per decode rung and prefill token band.
 
-`scripts/compass/laws/qwen3.8-27b-tp1-mi308x-hjbog39.json` is the `history` form
-with the host laws (`host`), labelled by device time, fitted on these
-hjbog-srdc-39 records in this order: concurrency 1, 4, 16, 64 and 256 as
-`calib_capture.sh` captured them at f454bc71a, then 64 and 256 captured at
-3b32a9bd5 with `AIPERF_EXTRA_ARGS="--trajectory-start-min-ratio 0
---trajectory-start-max-ratio 0"`, which start every trajectory at its first
-turn so those cells decode at rungs 16 and up. Its host key is the one at
-3b32a9bd5: `host_key` gives f454bc71a's tree the same `atom` digest, so the
-earlier records were fitted with that key in place of the one they carry.
-
 `scripts/compass/laws/qwen3.8-27b-tp1-mi308x-hjbog39-661ef7661.json` is the
-same fit, with the same arguments, on records captured on hjbog-srdc-39 at
-ce625ddd9 (ROCm/ATOM 661ef7661) in the nightly-20261013 image: seven cells in
-the order above, then first-turn cells at concurrency 8 and 14, which give it
-its rung-8 vector. It carries the host key the records carry with its `atom`
-digest replaced by the one `host_key` gives ce625ddd9's tree since it leaves
-out the module docstring of a file `COMPASS_ONLY` lists with names.
+`history` form with the host laws (`host`), labelled by device time, fitted on
+records captured on hjbog-srdc-39 at ce625ddd9 (ROCm/ATOM 661ef7661) in the
+nightly-20261013 image, in this order: concurrency 1, 4, 16, 64 and 256 as
+`calib_capture.sh` captures them, then first-turn cells at concurrency 64 and
+256, which decode at rungs 16 and up, and at 8 and 14, which give it its rung-8
+vector. A first-turn cell runs with `AIPERF_EXTRA_ARGS="--trajectory-start-min-ratio 0
+--trajectory-start-max-ratio 0"`, which starts every trajectory at its first
+turn. The law carries the host key the records carry with its `atom`
+digest replaced by the one `host_key` gives a tree that
+adds `ScheduledBatchOutput.group_targets`, changes `clock.charge` and makes the
+plugin and diffusion bootstraps refuse a simulated run; none of these changes a
+real run's host time. The law and its host key state
+`machine_spec`, the digest `machine_spec_digest` gives
+`scripts/compass/machines/mi308x-hjbog39.json`, so it refuses under any other
+spec's device or software stack.
 
 ## Cost accuracy on a real run's own steps — `validate.cost`
 

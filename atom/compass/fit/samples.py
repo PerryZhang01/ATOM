@@ -1,37 +1,28 @@
 # SPDX-License-Identifier: MIT
-"""Labelled samples from `record` directories and step measurements, under one configuration.
+"""Labelled samples from `record` directories, under one configuration.
 
 A record directory is `record`'s output: `run.json`, holding the run's
 identity in format `FORMAT_VERSION`, and the step record in `steps/`, with the
 client runs its server served (`parity.served`). Its steps are labelled by
-`step_labels`. A step measurement is a `step_measurement` entry, read by key;
-its member `MEMBER` holds the batch view as a step-record line does (`rows`,
-`rung`, `produces_output`, and above DP width 1 `moe_rows`), its device
-seconds (`seconds`), its `origin` (`replay` or `plan`) and the `traces` the
-batch came from. A sample's provenance holds its `source` (`record`, or the
-measurement's origin), its `run` (the record's digests, or the entry's) and
-the `traces` its step served.
+`step_labels`, and a sample's provenance gains the `traces` its step served.
 
-Every input states one configuration, read from the input: `model`, the served
+Every record states one configuration, read from its `run.json`, its
+`dp0.engine.json` and the requests it served: `model`, the served
 config.json's digest; `device`, each GPU's series, SKU and gfx version;
 `parallel`, `tp<T>-dp<D>`; `engine_config`, `keyed`'s fields; `source_root`,
 `<revision_kind>-<revision>`; `sampling`, the request parameters, null for a
-record serving no client run's request; and a record's host key less its model
-and engine, and its `stack`, the software versions run.json names. A record
-reads them from `run.json`, its `dp0.engine.json` and the requests it served;
-a measurement from its key, whose `engine_config` and `sampling` are JSON
-objects as text. A field that differs between inputs
-refuses, naming each value and the inputs holding it; so do a profiled record
-and a record whose requests carry two sets of request parameters.
+record serving no client run's request; its host key less its model and
+engine; and its `stack`, the software versions run.json names. A field that
+differs between records refuses, naming each value and the records holding it;
+so do a profiled record and a record whose requests carry two sets of request
+parameters.
 """
 
 import dataclasses
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from pathlib import Path
 
-from atom.compass.artifacts import ArtifactStore, Topology
-from atom.compass.backends.shape import BatchView, RequestShape
 from atom.compass.backends.step_labels import Sample, digest, label
 from atom.compass.parity import ARRIVALS
 from atom.compass.parity.served import served
@@ -39,25 +30,18 @@ from atom.compass.run.step_grid import BOUNDS
 
 #: The run.json format this reads.
 FORMAT_VERSION = 1
-#: A step measurement's one member.
-MEMBER = ("measurement", Topology().ranks()[0], "json")
 #: What names a GPU's model in run.json's `device`.
 CARD = ("series", "sku", "gfx")
 
 
-def load(
-    records: Mapping, measurements: Sequence = (), store=None
-) -> tuple[list[Sample], dict]:
+def load(records: Mapping) -> tuple[list[Sample], dict]:
     """The samples of `records`, {record directory: the client runs its server
-    served}, and of the `measurements` keys in the store at `store`, in run
-    digest, DP rank and step order; and the configuration they state."""
+    served}, in run digest, DP rank and step order; and the configuration they
+    state."""
     samples, configs = [], {}
     for directory, client_runs in records.items():
         got, configs[str(directory)] = _record(Path(directory), client_runs)
         samples += got
-    for key in measurements:
-        got, configs[str(key)] = _measurement(ArtifactStore(store), key)
-        samples.append(got)
     fields = sorted({f for c in configs.values() for f in c})
     differ = [
         line
@@ -123,35 +107,6 @@ def _record(directory: Path, client_runs) -> tuple[list[Sample], dict]:
 
 def _steps(record: dict) -> list[dict]:
     return [s for steps in record.values() for s in steps]
-
-
-def _measurement(store: ArtifactStore, key) -> tuple[Sample, dict]:
-    entry = store.read(key)
-    try:
-        m = json.loads(entry.read_member(*MEMBER))
-        view = BatchView(
-            tuple(RequestShape(q, c, bool(d)) for q, c, d in m["rows"]),
-            capture_rung=m["rung"],
-            moe_rows=m.get("moe_rows"),
-            produces_output=m["produces_output"],
-        )
-        provenance = {
-            "source": m["origin"],
-            "run": entry.digest,
-            "requests": [],
-            "config": None,
-            "traces": sorted(m["traces"]),
-        }
-        values = key.values
-        config = {
-            **{f: values[f] for f in ("model", "device", "parallel", "source_root")},
-            **{f: json.loads(values[f]) for f in ("engine_config", "sampling")},
-        }
-    except (KeyError, TypeError, ValueError) as error:
-        raise ValueError(
-            f"{key} does not load: {type(error).__name__}: {error}"
-        ) from error
-    return Sample(0, 0, view, m["seconds"], None, {}, False, provenance), config
 
 
 def _differ(field: str, held: dict) -> list[str]:

@@ -95,14 +95,19 @@ own `gh` login. Ownership is the assignee:
   a test installs by monkeypatch or assignment (as `wrap_encode` /
   `wrap_decode` in `atom/utils/compass_loop.py` were), is a violation. One
   exception: a building-block PR may carry code its own head does not reach
-  if it is stacked under a PR that wires that code into an entry point's
-  path. It is sent to review only once the wiring PR is approved, and the
-  wiring PR lands right after it, once a delta review covers its rebased
-  head.
-  A reviewer traces each added or changed non-test symbol at the head to a
-  caller outside `tests/` and on up to an entry point; a violation is a
-  required finding and blocks APPROVE until the PR wires or deletes the
-  code.
+  if its body names the issue whose PR wires that code into an entry
+  point's path (`Wired by #N`). It is reviewed when ready; its review
+  checks the block, and that #N's brief consumes what the block adds. It
+  lands only with its wiring PR, in one batch: the blocks and the wiring
+  PR form one `gh stack`, the blocks below (Re-basing a stack, below).
+  Each block carries `hold landing` until every PR in the stack is
+  approved; one pass then removes the labels and lands the stack
+  bottom-first through `batch.py` (`land.md`, Land a batch), and a batch
+  that stops puts them back.
+  A reviewer traces each added or changed non-test symbol at the head, and
+  a wiring PR's reviewer its blocks' too, to a caller outside `tests/` and
+  on up to an entry point; a violation is a required finding and blocks
+  APPROVE until the PR wires or deletes the code.
 - **Labels.** An issue or PR gets its `module: compass-*` and `dev-process`
   labels from the `compass-labels` skill
   (`.claude/skills/compass-labels/SKILL.md`): run

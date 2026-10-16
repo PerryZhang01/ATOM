@@ -10,12 +10,7 @@ is what holds it -- but the four-ranks-one-file case still needs four ranks to
 be visible at all, and every test that could pass at width one by accident is
 run at width two as well.
 
-Two things these tests deliberately do **not** do. They never bind an artifact
-key's scalar `width` to a topology: at `-tp 2 -dp 2` the tensor-parallel width
-and the rank count are 2 and 4, nothing says which the key field means, and a
-fixture that picked one would settle by example a question filed as #165. The
-multi-axis round trip is therefore keyed on `op_graph`, which has no width in
-its key at all. And nothing here touches a driver, a device or a network:
+Nothing here touches a driver, a device or a network:
 `git` is reached only through an injected runner, so the source-root resolvers
 are exercised without the CPU gate depending on the tree it was staged from.
 """
@@ -88,12 +83,25 @@ def stanza(produced_by: str = "compass calibrate phase-1b") -> Provenance:
     return Provenance(produced_by, "2026-09-22T11:00:00+00:00", (ATOM_ROOT, AITER_ROOT))
 
 
-def price_key(width: int = 2) -> Key:
+#: The layout a key states when a test names only its TP width.
+LAYOUT = {
+    "dp": 1,
+    "pp": 1,
+    "pcp": 1,
+    "tp": 1,
+    "enable_expert_parallel": False,
+    "enable_dp_attention": False,
+    "decode_context_parallel_size": 1,
+}
+
+
+def price_key(tp: int = 2, **layout: object) -> Key:
     return Key.of(
         Kind.PRICE_LIST,
         model="Qwen/Qwen3-32B",
-        width=width,
+        machine_spec="sha256:mi308x",
         source_root=ATOM_ROOT.revision,
+        **{**LAYOUT, "tp": tp, **layout},
     )
 
 
@@ -121,15 +129,16 @@ def test_a_price_list_asked_for_by_path_is_refused_by_name(tmp_path):
     with pytest.raises(ArtifactRefusal) as by_field:
         Key.of(Kind.PRICE_LIST, path="/data/prices.json")
     assert by_field.value.rule is Rule.KEY_IS_A_TUPLE
-    assert "(model, width, source_root)" in str(by_field.value)
+    assert "(model, dp, pp, pcp, tp, enable_expert_parallel," in str(by_field.value)
     assert "states no width and silently prices nothing" in str(by_field.value)
 
     with pytest.raises(ArtifactRefusal) as by_value:
         Key.of(
             Kind.PRICE_LIST,
             model="Qwen/Qwen3-32B",
-            width=2,
+            machine_spec="sha256:mi308x",
             source_root="/measurements/prices.json",
+            **LAYOUT,
         )
     assert "which is a path" in str(by_value.value)
     assert "write the value itself there, not the path" in str(by_value.value)
@@ -144,7 +153,7 @@ def test_a_kind_named_by_string_is_refused_with_the_members_to_pass():
         Key.of(
             "price_list",
             model="Qwen/Qwen3-32B",
-            width=2,
+            **LAYOUT,
             source_root=ATOM_ROOT.revision,
         )
     assert refused.value.rule is Rule.KEY_IS_A_TUPLE
@@ -152,10 +161,10 @@ def test_a_kind_named_by_string_is_refused_with_the_members_to_pass():
     assert "Kind.PRICE_LIST" in str(refused.value)
 
 
-def test_a_key_that_states_no_width_is_refused():
+def test_a_key_that_states_no_layout_is_refused():
     with pytest.raises(ArtifactRefusal) as refused:
-        Key.of(Kind.PRICE_LIST, model="Qwen/Qwen3-32B", width=2)
-    assert "states no source_root" in str(refused.value)
+        Key.of(Kind.PRICE_LIST, model="Qwen/Qwen3-32B", tp=2, source_root="t")
+    assert "states no dp, pp, pcp, enable_expert_parallel" in str(refused.value)
 
 
 def test_a_model_name_with_a_separator_is_not_a_path():
@@ -185,9 +194,12 @@ def test_two_keys_never_share_a_directory(tmp_path):
         ),
         (
             Kind.STEP_LINEAR_LAW,
-            "(model, device, parallel, engine_config, source_root, form)",
+            "(model, machine_spec, parallel, engine_config, source_root, form)",
         ),
-        (Kind.HOST_LAWS, "(host_cpu, atom_src, model, engine_config)"),
+        (
+            Kind.HOST_LAWS,
+            "(host_cpu, atom_src, model, engine_config, machine_spec)",
+        ),
     ],
 )
 def test_a_key_short_of_its_last_field_refuses_naming_the_tuple(kind, fields):
@@ -296,7 +308,7 @@ def test_a_coordinate_taken_in_another_topology_is_refused():
 
 
 def test_the_topology_counts_ranks_without_spending_the_word_width():
-    """`rank_count`, not `width`: #165 is open and the code stays out of it."""
+    """`rank_count`, not `width`: at `-tp 2 -dp 2` the two are 2 and 4."""
     assert not hasattr(Topology(), "width")
     assert Topology(dp=2, tp=2).rank_count == 4
     assert Topology(dp=2, tp=2).widths == {"dp": 2, "pp": 1, "pcp": 1, "tp": 2}
@@ -310,7 +322,7 @@ def test_the_topology_counts_ranks_without_spending_the_word_width():
     [
         (Topology(), price_key(1)),
         (Topology(tp=2), price_key(2)),
-        (Topology(dp=2, tp=2), graph_key("qwen3-moe-48L-tp2dp2")),
+        (Topology(dp=2, tp=2), price_key(2, dp=2)),
     ],
 )
 def test_an_entry_round_trips_through_the_naming_function(tmp_path, topology, key):
@@ -494,14 +506,53 @@ def test_an_entry_moved_by_hand_is_found_out(tmp_path):
     with pytest.raises(ArtifactRefusal) as refused:
         store.read(other)
     assert refused.value.rule is Rule.RESOLUTION
-    assert "width=2" in str(refused.value)
+    assert "tp=2" in str(refused.value)
 
 
 def test_a_missing_entry_names_the_key_that_missed(tmp_path):
     with pytest.raises(ArtifactRefusal) as refused:
         ArtifactStore(tmp_path).read(price_key(8))
     assert "no entry for price_list(" in str(refused.value)
-    assert "width=8" in str(refused.value)
+    assert "tp=8" in str(refused.value)
+
+
+def publish_prices(store: ArtifactStore, key: Key, topology: Topology):
+    return store.publish(
+        key,
+        provenance=stanza(),
+        conditions=CONDITIONS,
+        gates=GATES,
+        topology=topology,
+        members=members_for(topology, "prices", "json"),
+    )
+
+
+def test_each_layout_is_its_own_entry_and_a_miss_names_its_field(tmp_path):
+    """TP2 and TP2 x DP2 publish apart; a read at a layout nobody published
+    names the field in which the nearest entry differs."""
+    store = ArtifactStore(tmp_path)
+    tp2 = publish_prices(store, price_key(2), Topology(tp=2))
+    dp2 = publish_prices(store, price_key(2, dp=2), Topology(dp=2, tp=2))
+    assert tp2.directory != dp2.directory
+    assert store.read(price_key(2, dp=2)).topology == Topology(dp=2, tp=2)
+
+    with pytest.raises(ArtifactRefusal) as missed:
+        store.read(price_key(2, enable_expert_parallel=True))
+    assert "the nearest entry differs in enable_expert_parallel (False there)" in str(
+        missed.value
+    )
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("tp", True), ("tp", 0), ("tp", "2"), ("enable_dp_attention", 1)],
+)
+def test_a_layout_field_takes_only_its_own_type(field, value):
+    """A width is a whole number of at least one and a switch a bool, so `True`
+    and `1` can never name one layout under two directories."""
+    with pytest.raises(ArtifactRefusal) as refused:
+        price_key(**{field: value})
+    assert f"`price_list.{field}` holds {value!r}" in str(refused.value)
 
 
 @pytest.mark.parametrize(

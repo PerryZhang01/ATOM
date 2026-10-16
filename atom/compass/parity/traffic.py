@@ -63,9 +63,12 @@ def post(port: int, body: dict, headers: dict):
     return (raw.decode().rstrip("\r\n") for raw in response)
 
 
-def real(port: int, requests: list[dict], gap_s: float, record: Path) -> None:
-    """Send request k at `gap_s` * k once k - 1 is admitted, read each to its
-    end, write `ARRIVALS`."""
+def real(
+    port: int, requests: list[dict], gap_s: float, record: Path, wait: bool = True
+) -> None:
+    """Send request k at `gap_s` * k, once k - 1 is admitted when `wait`, read
+    each to its end, write `ARRIVALS`. Through a prefill-decode router a request
+    is admitted only once its prefill returns, so `wait` keeps prefills apart."""
     sent, start = [0] * len(requests), time.monotonic()
     admitted = [threading.Event() for _ in requests]
     admitted_ns = [0] * len(requests)
@@ -73,7 +76,7 @@ def real(port: int, requests: list[dict], gap_s: float, record: Path) -> None:
     def one(k: int) -> None:
         time.sleep(max(0.0, start + k * gap_s - time.monotonic()))
         try:
-            if k:
+            if k and wait:
                 admitted[k - 1].wait()
             sent[k] = time.monotonic_ns()
             lines = post(port, requests[k], {})

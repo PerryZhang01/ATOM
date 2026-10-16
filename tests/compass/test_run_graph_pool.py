@@ -44,6 +44,7 @@ def _installed(
     piecewise=False,
     dp=1,
     dpa=False,
+    ep=False,
     sizes=None,
     hf_overrides=None,
     **run,
@@ -65,7 +66,7 @@ def _installed(
             hf_overrides=hf_overrides,
             tensor_parallel_size=1,
             enable_dp_attention=dpa,
-            enable_expert_parallel=False,
+            enable_expert_parallel=ep,
             parallel_config=SimpleNamespace(
                 data_parallel_size=dp, data_parallel_rank=0
             ),
@@ -171,3 +172,48 @@ def test_dp_attention_reads_its_layout_and_plain_dp_its_width(
 def test_dp_attention_refuses_a_spec_without_its_layout(monkeypatch, tmp_path):
     with pytest.raises(SpecRefusal, match="width 1x8; this spec has"):
         _installed(monkeypatch, tmp_path, eager=True, dpa=True, dp=8)
+
+
+def _with_layouts(*keys):
+    """The suite's document with reserve and residue entries at each key."""
+    machine = copy.deepcopy(DOCUMENT)
+    constants = machine["device"]["runtime_constants"]
+    for n, key in enumerate(keys):
+        constants["driver_and_collective_reserve_bytes"][key] = 8.19e9 + n * 1e9
+        constants["allocator_retained_after_load_bytes"][key] = 2.17e9 + n * 1e8
+    return machine
+
+
+@pytest.mark.parametrize(("ep", "key"), [(True, "1x8x8"), (False, "1x8")])
+def test_expert_parallelism_under_dp_attention_reads_its_own_layout(
+    monkeypatch, tmp_path, ep, key
+):
+    machine = _with_layouts("1x8", "1x8x8")
+    constants = machine["device"]["runtime_constants"]
+    runner = _installed(
+        monkeypatch, tmp_path, eager=True, dpa=True, dp=8, ep=ep, machine=machine
+    )
+    readings = runner.compass_memory["readings"]
+    (non_torch,) = readings["non_torch"]
+    (load,) = [row for row in readings["peak_torch"] if row["name"] == "load residue"]
+    assert non_torch["source"].endswith(f"[{key}]")
+    assert load["source"].endswith(f"[{key}]")
+    assert (non_torch["nbytes"], load["nbytes"]) == (
+        int(constants["driver_and_collective_reserve_bytes"][key]),
+        int(constants["allocator_retained_after_load_bytes"][key]),
+    )
+
+
+def test_expert_parallelism_refuses_a_spec_with_only_the_ep_off_layout(
+    monkeypatch, tmp_path
+):
+    with pytest.raises(SpecRefusal, match=r"width 1x8x8; this spec has \[1, '1x8'"):
+        _installed(
+            monkeypatch,
+            tmp_path,
+            eager=True,
+            dpa=True,
+            dp=8,
+            ep=True,
+            machine=_with_layouts("1x8"),
+        )

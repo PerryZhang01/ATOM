@@ -8,6 +8,7 @@ import re
 
 import pytest
 from test_fit_steps import (  # noqa: F401
+    DIGEST,
     clients,
     fit,
     member,
@@ -31,6 +32,7 @@ def host_laws_key(key) -> Key:
         atom_src=key["atom"],
         model=key["model"],
         engine_config=json.dumps(key["engine"], sort_keys=True),
+        machine_spec=DIGEST,
     )
 
 
@@ -47,7 +49,7 @@ def test_the_host_laws_published_are_fit_hosts_and_a_run_file_carrying_them_runs
     host = member(tmp_path / "store", host_laws_key(key), "params")
     paths = [d / "steps/dp0.jsonl" for d in (a, b)]
     laws, report = fit_host(label_records(paths)[0])
-    assert host == laws
+    assert host == {**laws, "key": {**laws["key"], "machine_spec": DIGEST}}
     assert member(tmp_path / "store", host_laws_key(key), "report") == {
         "provenance": served(key, {a: "trace-a", b: "trace-b"}),
         **report,
@@ -66,5 +68,5 @@ def test_a_record_without_its_host_key_refuses(tmp_path):
 
     named = f"{digest(a / 'steps/dp0.jsonl')} holds steps with no host labels under a host key"
     with pytest.raises(SystemExit, match=re.escape(named)):
-        fit(tmp_path, "fit host", a)
+        fit(tmp_path, "fit host", a, *clients(a))
     assert not (tmp_path / "store").exists()

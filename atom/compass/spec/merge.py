@@ -69,11 +69,18 @@ part of one is what a probe does:
   correctly under it, and `'2026-9-9'` does not.
 
 Constants that were transferred from another spec are the exception to combining
-values. Such a fragment carries the stack the *source* spec was pinned to, which
+values. What was transferred is read from each field's own origin, not from the
+fragment's `provenance.origin`, and a fragment is a transfer when a field it
+supplies outside `host.` is `transferred-from:`. Such a fragment states the
+stack the *source* spec was pinned to, as pin fields of that same origin, which
 is provenance about the constants and not a claim about this machine's stack, so
-it is kept aside for checking rather than contributed. Merging it as though it
-described this host would install the source's ROCm version as this one's and
-silence the check that exists to catch exactly that.
+those are kept aside for checking rather than contributed. Merging them as
+though they described this host would install the source's ROCm version as this
+one's and silence the check that exists to catch exactly that. A transferred
+`host.` field, such as a tokenizer swept on another machine, is recorded as
+transferred and makes nothing a transfer: it was measured on a processor, not on
+a device stack. A fragment whose fields name two source specs is refused, since
+it has one pin block to state a source stack in.
 
 The result is a document, not a spec. A merge produces what the fragments
 happened to cover, and whether that is a complete and consistent machine is a
@@ -136,6 +143,21 @@ class Fragment:
                     "themselves says which host produced them",
                 )
         check_subject(values, f"fragment {source!r}")
+        stated = [values["provenance.origin"]]
+        stated += [
+            found["origin"] for found in values.get("provenance.origins", {}).values()
+        ]
+        named = sorted(
+            {o[len(TRANSFERRED) :] for o in stated if o.startswith(TRANSFERRED)}
+        )
+        if len(named) > 1:
+            raise SpecRefusal(
+                Rule.PINNED_STACK,
+                f"fragment {source!r} carries fields transferred from "
+                f"{' and '.join(map(repr, named))}",
+                "a transfer is checked against its source's stack pin, and a "
+                "fragment states one; give each source spec its own fragment",
+            )
         return cls(source, values)
 
     @property
@@ -149,11 +171,23 @@ class Fragment:
         spec, or several of those."""
         return self.values["provenance.origin"]
 
+    def carried_from(self, label: str) -> str | None:
+        """The spec the field under `label` was carried over from, if it was."""
+        stated = field_origin(self.values, label, self.stanza())["origin"]
+        return stated[len(TRANSFERRED) :] if stated.startswith(TRANSFERRED) else None
+
     @property
     def transferred_from(self) -> str | None:
-        """The spec these constants were carried over from, if they were."""
-        if self.origin.startswith(TRANSFERRED):
-            return self.origin[len(TRANSFERRED) :]
+        """The spec this fragment's device or interconnect constants were
+        carried over from, if any were; a transferred `host.` field asks for
+        no stack pin and does not count."""
+        for path, value in self.values.items():
+            if not path.startswith(("device.", "interconnect.")):
+                continue
+            wide = BY_PATH[path].kind is Kind.WIDTH_TABLE
+            for label in [f"{path}[{w}]" for w in value] if wide else [path]:
+                if source := self.carried_from(label):
+                    return source
         return None
 
     def stanza(self) -> str:
@@ -293,7 +327,7 @@ def merge(fragments: Sequence[Fragment]) -> Merge:
         for path, value in fragment.values.items():
             if path == "name" or path == TOKENIZERS or path.startswith("provenance."):
                 continue
-            if path.startswith(PINNED_BLOCK) and fragment.transferred_from:
+            if path.startswith(PINNED_BLOCK) and fragment.carried_from(path):
                 continue
             if BY_PATH[path].kind is Kind.WIDTH_TABLE:
                 table = values.setdefault(path, {})

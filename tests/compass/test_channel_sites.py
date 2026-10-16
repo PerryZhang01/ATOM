@@ -131,7 +131,10 @@ def test_every_channel_row_maps_to_an_address_its_wiring_names(monkeypatch):
     # `flush_pp_send` waits for `pp_ack`, which the stage loop receives before
     # the call, not on an ATOM socket.
     acks = [r for r in rows if "flush_pp_send" in r["expr"]]
-    rows = [r for r in rows if r not in acks]
+    # Compass's own KV connector wraps its socket in `clock.WrappedSocket` on
+    # the channel it reads from the table; no address names that channel.
+    own = [r for r in rows if r["file"] == "atom/compass/kv/connector.py"]
+    rows = [r for r in rows if r not in acks + own]
     root = sync_scan.repo_root_from_here()
     trees = {f: ast.parse((root / f).read_text()) for f in {r["file"] for r in rows}}
     naming = _Naming()
@@ -141,7 +144,7 @@ def test_every_channel_row_maps_to_an_address_its_wiring_names(monkeypatch):
     full = _kinds_named(monkeypatch, _config(["a:m"], "a:t", "a:k", "a:p", "a:d"))
     for r in rows:
         print(r["mechanism"], r["id"], "->", *SITES.get(r["symbol"], ("?",))[0])
-    assert rows and acks
+    assert rows and acks and own
     assert sorted({r["symbol"] for r in rows}) == sorted(SITES), "unmapped or stale"
     passed = {
         fn: {k.arg: ast.unparse(k.value) for k in c.keywords}
