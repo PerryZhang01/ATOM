@@ -356,7 +356,7 @@ def test_a_run_with_no_finite_bound_is_refused(monkeypatch, tmp_path):
 @pytest.mark.parametrize(
     "config, refusal",
     [
-        (_config(pp=2), r"got \(dp, pp\)=\(1, 2\)"),
+        (_config(pp=2), "pipeline_parallel_size is 1"),
         (_config(runner="my.Runner"), "runner 'my.Runner' is named"),
     ],
 )

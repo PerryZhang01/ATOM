@@ -561,8 +561,70 @@ class StepGridBundle:
         return vars(self).get("compass_step_grid", {})
 
 
+class PipelineFrames:
+    """A pipeline stage's send to the next, and the frames its stage loop
+    moves between the stages' TP-rank-0 workers."""
+
+    def _pp_send(self, batch: Any, seconds: float) -> tuple | None:
+        """What this stage's forward sends the next stage, None on the last:
+        when its device work ends, in seconds from the call, and its parts as
+        ``(carrier, bytes)`` in the order the next receives them, the size and
+        the pickled metadata on gloo, then each tensor on RCCL."""
+        pp = int(_config_field(self, "pipeline_parallel_size") or 1)
+        if pp == 1 or self.config.parallel_config.pipeline_parallel_rank == pp - 1:
+            return None
+        from aiter.dist.parallel_state import TensorMetadata
+
+        self._setup_pp_shared_indexer()
+        n, width = batch.total_tokens_num, self.hf_text_config.hidden_size
+        sizes = dict.fromkeys(
+            ("hidden_states", "residual"), ((n, width), self.config.torch_dtype)
+        )
+        if self._pp_send_needs_sparse:
+            sizes["sparse_kv_indices"] = ((n * self._pp_index_topk,), torch.int32)
+        meta = [
+            (k, TensorMetadata("cuda", d, torch.Size(s))) for k, (s, d) in sizes.items()
+        ]
+        tensors = [("rccl", math.prod(s) * d.itemsize) for s, d in sizes.values()]
+        host = getattr(self, "compass_host", None)
+        if isinstance(host, HostDeviceRecurrence):
+            seconds = host.ends[-1] - host.now()
+        return seconds, [("gloo", 8), ("gloo", len(pickle.dumps(meta))), *tensors]
+
+    def send_pp_frame(self, kind: str, frame: dict) -> bool:
+        """Post one stage-loop frame to the next stage (``pp_data``) or the one
+        before (``pp_ack``), from TP rank 0, without waiting for it."""
+        if self.rank == 0:
+            from aiter.dist.parallel_state import get_pp_group
+
+            from atom.distributed.pp_comm import _async_send_object
+
+            pp = get_pp_group()
+            dst = pp.ranks[pp.rank_in_group + (1 if kind == "pp_data" else -1)]
+            # Each in-flight send's work and payload stay alive until it completes.
+            live = [
+                w for w in getattr(self, "_pp_frames", []) if not w.work.is_completed()
+            ]
+            self._pp_frames = live + _async_send_object(frame, dst, pp.cpu_group)
+        return True
+
+    def recv_pp_frame(self, kind: str) -> Any:
+        """Read one released frame from the stage before (``pp_data``) or the
+        next (``pp_ack``), on TP rank 0."""
+        if self.rank != 0:
+            return True
+        from aiter.dist.parallel_state import get_pp_group
+
+        pp = get_pp_group()
+        return pp.recv_object(pp.rank_in_group + (-1 if kind == "pp_data" else 1))
+
+
 class NonAllocatingRunner(
-    RefusedControlCommands, PricedSteps, PredictedMemory, StepGridBundle
+    RefusedControlCommands,
+    PricedSteps,
+    PredictedMemory,
+    StepGridBundle,
+    PipelineFrames,
 ):
     """Overrides that construct a model runner without touching device memory."""
 
@@ -958,59 +1020,6 @@ class NonAllocatingRunner(
         )
         out.pp_send = self._pp_send(batch, seconds)
         return out
-
-    def _pp_send(self, batch: Any, seconds: float) -> tuple | None:
-        """What this stage's forward sends the next stage, None on the last:
-        when its device work ends, in seconds from the call, and its parts as
-        ``(carrier, bytes)`` in the order the next receives them, the size and
-        the pickled metadata on gloo, then each tensor on RCCL."""
-        pp = int(_config_field(self, "pipeline_parallel_size") or 1)
-        if pp == 1 or self.config.parallel_config.pipeline_parallel_rank == pp - 1:
-            return None
-        from aiter.dist.parallel_state import TensorMetadata
-
-        self._setup_pp_shared_indexer()
-        n, width = batch.total_tokens_num, self.hf_text_config.hidden_size
-        sizes = dict.fromkeys(
-            ("hidden_states", "residual"), ((n, width), self.config.torch_dtype)
-        )
-        if self._pp_send_needs_sparse:
-            sizes["sparse_kv_indices"] = ((n * self._pp_index_topk,), torch.int32)
-        meta = [
-            (k, TensorMetadata("cuda", d, torch.Size(s))) for k, (s, d) in sizes.items()
-        ]
-        tensors = [("rccl", math.prod(s) * d.itemsize) for s, d in sizes.values()]
-        host = getattr(self, "compass_host", None)
-        if isinstance(host, HostDeviceRecurrence):
-            seconds = host.ends[-1] - host.now()
-        return seconds, [("gloo", 8), ("gloo", len(pickle.dumps(meta))), *tensors]
-
-    def send_pp_frame(self, kind: str, frame: dict) -> bool:
-        """Post one stage-loop frame to the next stage (``pp_data``) or the one
-        before (``pp_ack``), from TP rank 0, without waiting for it."""
-        if self.rank == 0:
-            from aiter.dist.parallel_state import get_pp_group
-
-            from atom.distributed.pp_comm import _async_send_object
-
-            pp = get_pp_group()
-            dst = pp.ranks[pp.rank_in_group + (1 if kind == "pp_data" else -1)]
-            # Each in-flight send's work and payload stay alive until it completes.
-            live = [
-                w for w in getattr(self, "_pp_frames", []) if not w.work.is_completed()
-            ]
-            self._pp_frames = live + _async_send_object(frame, dst, pp.cpu_group)
-        return True
-
-    def recv_pp_frame(self, kind: str) -> Any:
-        """Read one released frame from the stage before (``pp_data``) or the
-        next (``pp_ack``), on TP rank 0."""
-        if self.rank != 0:
-            return True
-        from aiter.dist.parallel_state import get_pp_group
-
-        pp = get_pp_group()
-        return pp.recv_object(pp.rank_in_group + (-1 if kind == "pp_data" else 1))
 
 
 def _group_step_seconds(

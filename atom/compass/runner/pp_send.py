@@ -20,8 +20,6 @@ stages' TP-rank-0 workers over the PP CPU group.
 import math
 from dataclasses import dataclass, fields
 
-from atom.utils import clock
-
 CARRIERS = ("rccl", "gloo")
 PREFIX = "interconnect.intra_node.pp"
 
@@ -184,6 +182,8 @@ class StageSends:
 def install(engine, spec) -> None:
     """Put `StageSends` in front of a pipeline stage's runner calls, and make
     the stage's bounded polls essential while it holds a send or KV work."""
+    from atom.utils import clock
+
     rt = clock.installed()
     mgr = engine.runner_mgr
     sends = StageSends(

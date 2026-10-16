@@ -89,7 +89,8 @@ each hand-in less the one at client run ``k - 1``'s end; the finish writes the
 last client run's beside the run summary. An optional
 ``data_parallel_size``, 1 when absent, is the deployment's DP width, which
 under DP-attention is its TP size times its DP size, and an optional
-``pipeline_parallel_size``, 1 when absent, its pipeline width; the traffic LP reads the
+``pipeline_parallel_size``, 1 when absent, its pipeline width, above which the
+machine states each stage send carrier under ``interconnect.intra_node.pp``; the traffic LP reads the
 channel table from the run file alone. Each DP rank's engine process hands in
 its own refusals, as ``<lp>.<member>``. A key `RENAMED_KEYS` lists refuses,
 naming its name now.
@@ -587,6 +588,12 @@ def frontend(config):
     pc = config.parallel_config
     if config.enable_rapidserve:
         raise ValueError("a simulated run here is an engine LP without RapidServe")
+    if config.pipeline_parallel_size != _pp(run):
+        raise ValueError(
+            f"the deployment runs {config.pipeline_parallel_size} pipeline stages "
+            f"and the run file's pipeline_parallel_size is {_pp(run)}; the "
+            "channel table every LP reads would declare the wrong stages"
+        )
     if config.pipeline_parallel_size > 1 and config.tensor_parallel_size > 1:
         from atom.utils import envs
 
@@ -596,12 +603,6 @@ def frontend(config):
                 "the next stage all-gathers it, which nothing prices; set "
                 "ATOM_PP_SEND_ALLGATHER=0"
             )
-    if config.pipeline_parallel_size != _pp(run):
-        raise ValueError(
-            f"the deployment runs {config.pipeline_parallel_size} pipeline stages "
-            f"and the run file's pipeline_parallel_size is {_pp(run)}; the "
-            "channel table every LP reads would declare the wrong stages"
-        )
     if config.runner_qualname not in (ATOM_RUNNER, COMPASS_RUNNER_QUALNAME):
         raise ValueError(
             f"runner {config.runner_qualname!r} is named, and a simulated run "
