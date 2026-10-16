@@ -78,10 +78,11 @@ of which a single-process test can show:
 The worker control commands are refused the third way: by a reply. A raise
 would end the engine for a command a client sent while serving, and a None
 would park it, so `RefusedControlCommands` answers each with its reason,
-`command:<method>`. `busy_loop` forwards it, `EngineUtilityHandler` logs it
-and, for all but `update_weights`, sends it back to the client as the
-`UTILITY_RESPONSE` result; the runner also keeps every reason it answered for
-the run summary's refusals.
+`command:<method>`, and logs it. `busy_loop` forwards the reason, and
+`EngineUtilityHandler` sends it back to the client as the `UTILITY_RESPONSE`
+result for every command but `discard_failed_weight_sync`, whose handler
+answers `True` once no rank failed; the runner also keeps every reason it
+answered for the run summary's refusals.
 
 `RPC_SURFACE` records, for each dispatched name, whether its caller waits for
 the reply. The names themselves are not a list anyone typed: they are the ones
@@ -92,6 +93,7 @@ source and compare it with this table.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -99,6 +101,8 @@ from typing import Any
 
 import numpy as np
 import torch
+from torch.overrides import TorchFunctionMode
+from torch.utils._device import _device_constructors
 
 from atom.compass.backends.base import CostBackend
 from atom.compass.memory import EAGER_SOURCE, DeviceReadings, SizedKVPool
@@ -235,6 +239,8 @@ def install_cost_backend(runner: Any, backend: CostBackend) -> None:
 
 HOST_SEGMENTS = ("E", "W_pre", "W_launch", "W_post")  # in the order the host runs them
 FORWARD_KINDS = ("decode", "prefill", "middle")
+#: The format of a simulated run's `dp<r>.cost.jsonl`, its first line.
+COST_TABLE_VERSION = 1
 
 
 class HostDeviceRecurrence:
@@ -244,6 +250,8 @@ class HostDeviceRecurrence:
     device work two forwards back; an output forward, after launch, waits for the
     previous output forward's. `laws[kind][segment]` are coefficients on `(1,
     tokens, seqs)`, zero where absent. `now` reads the engine LP's clock.
+    `segments` holds the seconds the last `charge` charged each segment, 0 for
+    one in `skip`.
     """
 
     def __init__(self, laws: dict, skip, now) -> None:
@@ -256,10 +264,11 @@ class HostDeviceRecurrence:
         kind = "decode" if batch.total_seqs_num_prefill == 0 else "prefill"
         law = self.laws.get(kind if batch.produces_output() else "middle", {})
         x = (1, batch.total_tokens_num, batch.total_seqs_num)
-        e, pre, launch, post = (
-            float(np.dot(law.get(s, (0, 0, 0)), x)) * (s not in self.skip)
+        self.segments = {
+            s: float(np.dot(law.get(s, (0, 0, 0)), x)) * (s not in self.skip)
             for s in HOST_SEGMENTS
-        )
+        }
+        e, pre, launch, post = self.segments.values()
         now = self.now()
         host = max(now + e, self.ends[0]) + pre
         launch_end = host + launch
@@ -320,7 +329,7 @@ class HostEvent:
 
 
 def start_on_host(runner: Any, rank: int, config: Any) -> None:
-    """Start a TP1 runner on the host: no device set, its groups on gloo.
+    """Start a runner on the host: no device set, its groups on gloo.
 
     Replaces ATOM's `_setup_device_and_distributed`, which
     `ModelRunner.__init__` calls before it builds any buffer, so every buffer
@@ -330,26 +339,30 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
     half, a driver allocation. All are replaced for the life of the worker
     process, which hosts this runner and nothing else.
 
-    The groups are the ones ATOM's own call builds, on gloo. At one rank
-    aiter builds no device communicator. At data-parallel width the DP and EP
-    groups span the DP ranks, so they are built with an empty custom group
-    configuration, under which aiter builds no device communicator for any
-    group. A start wider within one engine is refused: a TP, PCP or PP group
-    would need one, and a simulated TP width needs `apply_simulated_tp` on a
-    device group.
+    The groups are the ones ATOM's own call builds -- TP, DCP, PCP, DP and EP
+    over `rank` of the engine's TP x PCP workers -- on gloo and with an empty
+    custom group configuration, under which aiter builds no device
+    communicator for any group. A pipeline stage is refused, and so is a
+    simulated TP width, which starts fewer workers than the TP group
+    `apply_simulated_tp` then reports on a device group.
     """
     pc = config.parallel_config
-    ranks = (
-        config.tensor_parallel_size
-        * config.prefill_context_parallel_size
-        * config.pipeline_parallel_size
-    )
-    if ranks != 1:
+    if config.pipeline_parallel_size != 1:
         raise RunnerRefusal(
-            f"this start is {ranks} ranks wide within its engine; a runner "
-            "starts on the host only at one rank per engine, because aiter "
-            "builds a TP, PCP or PP group's device communicators on the device."
+            f"this runner is one stage of a pipeline of "
+            f"{config.pipeline_parallel_size}; a runner starts on the host only "
+            "at pipeline width 1."
         )
+    if config.tp_world_size != config.tensor_parallel_size:
+        raise RunnerRefusal(
+            f"-tp {config.tensor_parallel_size} starts {config.tp_world_size} "
+            "workers under --fake-eplb, and a runner on the host builds its TP "
+            "group from the ranks that start."
+        )
+    from aiter.dist.parallel_state import (
+        init_distributed_environment,
+        initialize_model_parallel,
+    )
     from aiter.dist.utils import get_distributed_init_method
 
     from atom.utils import CpuGpuBuffer
@@ -368,6 +381,7 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
     method = get_distributed_init_method(
         pc.data_parallel_master_ip, pc.data_parallel_base_port
     )
+    tp, pcp = config.tensor_parallel_size, config.prefill_context_parallel_size
     if pc._managed_distributed_store and not torch.distributed.is_initialized():
         # The engine core manager already listens on the base port; join its
         # store as a client, as ModelRunner does, and aiter reuses the group.
@@ -377,23 +391,11 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
         torch.distributed.init_process_group(
             backend="gloo",
             store=store,
-            rank=pc.data_parallel_rank + rank,
-            world_size=pc.data_parallel_size,
+            rank=pc.data_parallel_rank * tp * pcp + rank,
+            world_size=pc.data_parallel_size * tp * pcp,
         )
-    if pc.data_parallel_size == 1:
-        from aiter import init_dist_env
-
-        init_dist_env(
-            1, rankID=rank, backend="gloo", distributed_init_method=method, local_rank=0
-        )
-        return
-    from aiter.dist.parallel_state import (
-        init_distributed_environment,
-        initialize_model_parallel,
-    )
-
     init_distributed_environment(
-        world_size=1,
+        world_size=tp * pcp,
         rank=rank,
         distributed_init_method=method,
         backend="gloo",
@@ -402,7 +404,12 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
         data_parallel_rank=pc.data_parallel_rank,
     )
     initialize_model_parallel(
-        1, 1, data_parallel_size=pc.data_parallel_size, custom_group_config={}
+        tp,
+        1,
+        decode_context_model_parallel_size=config.decode_context_parallel_size,
+        data_parallel_size=pc.data_parallel_size,
+        prefill_context_model_parallel_size=pcp,
+        custom_group_config={},
     )
 
 
@@ -416,6 +423,24 @@ def _config_field(runner: Any, name: str) -> Any:
             "no default, so a config that lacks it is refused by name rather "
             "than read as if the field were unset."
         ) from None
+
+
+class FactoriesOnMeta(TorchFunctionMode):
+    """Puts what a factory function makes on the meta device, a named device too.
+
+    `torch.device("meta")` fills in only a device the call leaves out, so a
+    module that names one -- ATOM's attention puts its KV scale on this rank's
+    GPU -- would still allocate there and bring up a device context. The
+    functions are the ones `torch.device` itself redirects, `torch.zeros` and
+    `torch.tensor` among them; a `*_like` or `Tensor.new_*` call keeps the
+    device it names.
+    """
+
+    def __torch_function__(self, func, types, args=(), kwargs=None):
+        kwargs = kwargs or {}
+        if func in _device_constructors():
+            kwargs["device"] = "meta"
+        return func(*args, **kwargs)
 
 
 class UnbuiltModel(torch.nn.Module):
@@ -508,6 +533,7 @@ class PricedSteps:
             "seconds": mix.seconds,
             **{f"{g}_steps": steps.get(g, 0) for g in GROUPS},
             **{f"{g}_seconds": seconds.get(g, 0.0) for g in GROUPS},
+            "treatments": dict(mix.treatments),
         }
 
 
@@ -538,8 +564,9 @@ class NonAllocatingRunner(
 
         The base class constructs the model with the default device set to this
         rank's GPU and then fills it from disk. Here it is built on the meta
-        device, shapes and no bytes, because ATOM sizes the KV pool by walking
-        its attention modules; the load is skipped, so no checkpoint is read.
+        device, shapes and no bytes, a factory function's tensor on a named
+        device included, because ATOM sizes the KV pool by walking its attention
+        modules; the load is skipped, so no checkpoint is read.
 
         A speculative config is refused here, because on the last pipeline rank
         the base goes on to build the drafter on this rank's GPU and load its
@@ -565,7 +592,7 @@ class NonAllocatingRunner(
                 "nothing about it; speculative decoding has no step semantics "
                 "here yet."
             )
-        with torch.device("meta"):
+        with FactoriesOnMeta():
             self.model.tree = model_class(self.config)
         from atom.compass import run
 
@@ -850,10 +877,11 @@ class NonAllocatingRunner(
         to own its memory, carries the same one of the two.
 
         The reply's `predicted_s` is the step's duration: this rank's batch
-        priced by the installed cost backend, then the max over its DP group.
+        priced by the installed cost backend, then its DP group target, on TP
+        rank 0; the engine reads no other rank's reply, and it reports 0 s.
         A runner with no backend refuses the step rather than report one that
         took no time. ATOM's `dummy_execution` answers with this reply too, so
-        an idle DP rank's dummy batch is priced and joins the group's max.
+        an idle DP rank's dummy batch is priced and joins the group's targets.
         """
         if not hasattr(batch, "produces_output"):
             # Not reachable from the engine, which only ever passes a scheduled
@@ -877,6 +905,13 @@ class NonAllocatingRunner(
         from atom.model_engine.scheduler import ScheduledBatchOutput
 
         mode = record_step(self, batch)
+        record = getattr(self, "_parity_record", None)
+        if record is not None and record.step == 1:
+            # The record was just created, replacing an earlier run's; so is
+            # the cost table, before anything this step does can stop the run.
+            record.path.with_suffix(".cost.jsonl").write_text(
+                json.dumps({"version": COST_TABLE_VERSION}) + "\n"
+            )
 
         stream = getattr(self, "_token_stream", None)
         if stream is None:
@@ -907,25 +942,30 @@ class NonAllocatingRunner(
                 ),
             )
             self._token_stream = stream
+        tokens = stream.step(batch)
+        seconds = _group_step_seconds(self, batch, backend, mode)
         return ScheduledBatchOutput(
-            **stream.step(batch),
-            predicted_s=_group_step_seconds(self, batch, backend, mode),
+            **tokens,
+            predicted_s=seconds,
+            group_targets=getattr(self, "_group_targets", None),
         )
 
 
 def _group_step_seconds(
     runner: Any, batch: Any, backend: CostBackend, mode: Any = None
 ) -> float:
-    """This rank's step priced from its own batch, then the max over its DP group.
+    """This rank's step priced from its own batch, then its DP group target.
+
+    Only TP rank 0 prices; any other TP rank of the engine charges 0 s.
 
     `mode` is the step's `ForwardMode` when the step record already settled
     it; without one it is settled here, which runs the DP collective.
 
     In a run, `compass_host` composes the price, device seconds, with host time.
-    The `all_reduce(MAX)` stands in for the cross-rank collectives a real
-    forward makes, which a predicted one does not run, so every rank leaves the
-    step at the group's seconds. With one rank there is no group to exchange
-    with.
+    The `all_gather` stands in for the cross-rank collectives a real forward
+    makes: a rank with output, not the DP dummy, waits for them and leaves at
+    the group's max, any other at its own seconds; `_group_targets` holds all,
+    by rank, or None with one rank.
 
     A pipeline stage is refused: it runs only its own layers, and a backend
     prices the whole step, so every stage would charge the whole model.
@@ -934,9 +974,24 @@ def _group_step_seconds(
     a priced step; its reason, ``cost:`` and what each source said, joins the
     refusals the summary reads. With `compass_abort` set it raises instead,
     which ends the worker.
+
+    On the rank that keeps the parity record, each step also appends its cost
+    line to `dp<r>.cost.jsonl` beside it: the record's `step`; with a
+    `compass_host` that reports them, each of `HOST_SEGMENTS` in seconds and
+    `skipped`, those its `skip` charged as 0; `device_s`, the backend's price;
+    `charge_s`, that composed with host time (`device_s` with no host);
+    `group_s`, its DP group target; `terms`, each one's `name`, `seconds`
+    and its provenance's `method`, `validated` and `source`; and `refused`,
+    the ``cost:`` reason or None. Above them, `forward` starts the file with
+    `{"version": COST_TABLE_VERSION}` as the record starts, replacing an
+    earlier run's file.
     """
     from atom.compass.runner.projection import batch_view, dp_group, forward_mode
 
+    if runner.rank != 0:
+        # The engine reads TP rank 0's reply only, and the other ranks'
+        # collectives are inside the step that rank prices.
+        return 0.0
     if int(_config_field(runner, "pipeline_parallel_size") or 1) > 1:
         raise RunnerRefusal(
             "this runner is one stage of a pipeline and runs only its own "
@@ -949,26 +1004,59 @@ def _group_step_seconds(
     if mode is None:
         mode = forward_mode(batch, runner)
     mix = vars(runner).setdefault("_priced", ProvenanceMix())
+    terms, refused = (), None
     try:
         cost = backend.price(batch_view(batch, mode, runner))
-    except CostRefused as refused:
+    except CostRefused as refusal:
         if getattr(runner, "compass_abort", False):
             raise
         mix.steps += 1
-        said = "; ".join(f"{r.source}: {r.reason}" for r in refused.declined)
-        said = said or "no cost source was consulted"
-        vars(runner).setdefault("_refused_commands", []).append(f"cost:{said}")
-        seconds = 0.0
+        said = "; ".join(f"{r.source}: {r.reason}" for r in refusal.declined)
+        refused = f"cost:{said or 'no cost source was consulted'}"
+        vars(runner).setdefault("_refused_commands", []).append(refused)
+        device_s = 0.0
     else:
         mix.record(cost)
-        seconds = cost.seconds
+        device_s, terms = cost.seconds, cost.terms
     host = getattr(runner, "compass_host", None)
-    if host is not None:
-        seconds = host.charge(batch, seconds)
-    if mode.sync is None:
-        return seconds
-    group_max = torch.tensor([seconds], dtype=torch.float64)
-    torch.distributed.all_reduce(
-        group_max, op=torch.distributed.ReduceOp.MAX, group=dp_group()
-    )
-    return group_max.item()
+    charge_s = device_s if host is None else host.charge(batch, device_s)
+    group_s, targets = charge_s, None
+    if mode.sync is not None:
+        group = dp_group()
+        waits = batch.produces_output() and not batch.is_dummy_run
+        mine = torch.tensor([charge_s, waits], dtype=torch.float64)
+        rows = [torch.empty_like(mine) for _ in range(group.size())]
+        torch.distributed.all_gather(rows, mine, group=group)
+        top = max(r[0].item() for r in rows)
+        targets = tuple(top if w else s for s, w in (r.tolist() for r in rows))
+        group_s = targets[group.rank()]
+    vars(runner)["_group_targets"] = targets
+    record = getattr(runner, "_parity_record", None)
+    if record is None:
+        return group_s
+    step = record.step - 1  # the step `record_step` just recorded
+    segments = {}
+    if hasattr(host, "segments"):
+        skipped = [s for s in HOST_SEGMENTS if s in host.skip]
+        segments = {**host.segments, "skipped": skipped}
+    line = {
+        "step": step,
+        **segments,
+        "device_s": device_s,
+        "charge_s": charge_s,
+        "group_s": group_s,
+        "terms": [
+            {
+                "name": t.name,
+                "seconds": t.seconds,
+                "method": t.provenance.method.value,
+                "validated": t.provenance.validated,
+                "source": t.provenance.source,
+            }
+            for t in terms
+        ],
+        "refused": refused,
+    }
+    with record.path.with_suffix(".cost.jsonl").open("a") as f:
+        f.write(json.dumps(line) + "\n")
+    return group_s

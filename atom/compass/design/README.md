@@ -43,7 +43,7 @@ Where a decision looks odd, it is usually principle 1 or 2 being applied literal
 | **3** | **Prioritise simplicity.** Add only what is necessary, and nothing more. | `02` D11: the runner has no modes. `01` D4: the K9 synchronization sites are deliberately left outside the model, measured. |
 | **4** | **Prefer clean abstractions and refactoring over ad-hoc changes.** | `02`'s `CostBackend` boundary, which forbids ATOM imports. `05` D24 pushes thread-pool width into ATOM's config rather than Compass's. |
 | **5** | **Start small; cut work into stages that are individually verifiable.** | M1's fake model exists to validate the clock, the KV path and the harness *before* any real cost model. |
-| **6** | **Refuse rather than fall back.** A declined answer with a named reason is a result. A guessed one is a defect. | Everywhere. The archetypal failure is in *Conventions* below. |
+| **6** | **Refuse rather than guess. The only fallback is along method inside one granularity, and its share is always reported.** A declined answer with a named reason is a result. A guessed one is a defect. | Everywhere. The archetypal failure is in *Conventions* below. |
 
 Two more that the evidence added, and that are not in the original brief:
 
@@ -71,7 +71,7 @@ ATOM's real code owns still never touch a device.
 | **Scheduler / admission / chunking** | **REUSED, unmodified** | The whole point. Same decisions as a real run. `01`, `03` |
 | **API server, tokenizer** | **REUSED, real** | Real HTTP, real uvicorn, real tokenizer — run for its *effect*, with a modelled duration charged for its *time*. `06` D33 |
 | **Device memory readings** | **SUBSTITUTED** | The five readings are built from the machine spec, the model and a `memory_readings` entry `compass measure memory` took on the target, instead of the runtime, so a host without the device can model it. The budget *arithmetic* around them is ATOM's. `03` D14, `07` D38 |
-| **Wall-clock time** | **SUBSTITUTED** | Every clock read and timer the Clock Authority can reach runs on virtual time, failure detectors and metrics cadence included. Only the Atomesh router's bounds and health check, set by its flags, and OS-level process-death detection stay real. `01` D5, `11` D72 |
+| **Wall-clock time** | **SUBSTITUTED** | Every clock read and timer the Clock Authority can reach runs on virtual time, failure detectors and metrics cadence included. Only the Atomesh router's bounds and health check, set by its flags, OS-level process-death detection and the control-command reply deadline stay real ([`01` K8](01_execution_and_time_model.md#d4-the-interception-contract-which-waits-must-be-touched)). `01` D5, `11` D72 |
 | **Collectives / comms** | **SIMULATED** (cost only) | Priced from measurements or the spec; no collective actually runs on a device. `07` D40 |
 | **Atomesh router** | **REUSED, configured** | No Compass change beyond the `--worker-request-timeout-secs` option (#478); a simulated launch sets it large and switches the health check and circuit breaker off. The simulated timeline rides carriers the router already relays: the `compass` entry of the `tracestate` header on requests, a field in `kv_transfer_params` on the prefill-to-decode forward, and SSE comment lines on streamed output. `01` D7, `06` D30 |
 | **Serving *decisions*** | **NOT MODELLED** | Compass predicts the time decisions consume, not the decisions themselves — because it reuses the code that makes them. *(A simple serving simulation is planned as a future part of Compass; explicitly out of scope for this work.)* |
@@ -82,15 +82,16 @@ one most often assumed to be the second.
 
 ### Not modelled at all
 
-Fragmentation. Neighbour contention. A device that has never been measured (except at
-tier-0 fidelity). See **Scope and non-goals** below for where each is recorded.
+Fragmentation. Neighbour contention. A device that has never been measured (except by
+roofline, whose assumed derates make its terms declared). See **Scope and non-goals**
+below for where each is recorded.
 
 ---
 
 ## Architecture
 
 Four views. **A** shows where Compass sits inside ATOM; **A2** is Compass alone, layered;
-**B** follows one step; **C** splits offline from online; **D** is the cost-tier stack.
+**B** follows one step; **C** splits offline from online; **D** is the two axes of a cost, granularity and method.
 
 ### A. Where Compass sits
 
@@ -119,7 +120,7 @@ Four views. **A** shows where Compass sits inside ATOM; **A2** is Compass alone,
            :  :   +-----------------------+-----------------------+       :
            :  :                           |                               :
            :  :   +-----------------------v-----------------------+       :
-           :  :   |  CostBackend (tier 0 / a / b)                 |       :
+           :  :   |  CostBackend (step-level / op-level)          |       :
            :  :   |  MemoryModel . Cost IR . ArtifactStore        |       :
            :  :   +-----------------------+-----------------------+       :
            :  :                           |                               :
@@ -155,7 +156,7 @@ document that owns it. Nothing in `01`–`11` is outside this diagram.
   |  L5  TOOLING          compass record | trace {steps,ops} |          |
   |                       measure {steps,ops,memory} |                  |
   |                       fit {steps,ops,host} | run; the bench;        |
-  |                       step fit's planner, inside measure steps      |
+  |                       step grid's planner, inside measure steps     |
   |                       spec package: probes . merge . validate .     |
   |                       explain, run by per-machine scripts           |
   |                       flags, precedence, the `compass` entry        |
@@ -166,13 +167,16 @@ document that owns it. Nothing in `01`–`11` is outside this diagram.
   |                                                    doc 06           |
   +=====================================================================+
   |  L3  MODELLING        CostBackend          MemoryModel              |
-  |                       +- tier b op-level   +- weights               |
-  |                       +- tier a coarse     +- KV (ATOM's arithmetic)|
-  |                       +- tier 0 analytic   +- activations           |
+  |                       +- op-level graph    +- weights               |
+  |                       +- step-level: stub, +- KV (ATOM's arithmetic)|
+  |                          linear, grid      +- activations           |
+  |                       +- step roofline, a fallback                  |
+  |                       each term: analytical, declared, measured     |
+  |                       or estimated                                  |
   |                       Cost IR: Seq/Repeat/Par, opaque leaves        |
   |                       fitting, law selection, hull guard            |
   |                       spec-decode: draft/verify structures,         |
-  |                       declared acceptance, draft KV                 |
+  |                       acceptance inputs, draft KV                   |
   |                                       docs 02,03,04,09,10,14,17     |
   +=====================================================================+
   |  L2  EXECUTION        CompassModelRunner (the seam)                 |
@@ -192,7 +196,7 @@ document that owns it. Nothing in `01`–`11` is outside this diagram.
   |  L0  ARTIFACTS        machine_spec   op_graph      price_list       |
   |                       region_terms   memory_readings coverage_hull  |
   |                       shape_population  step_measurement            |
-  |                       step_law  host_laws  step fit bundle          |
+  |                       step_linear_law  host_laws  step grid bundle  |
   |                       keys . digests . fingerprints . invalidation  |
   |                                                    docs 05, 07      |
   +=====================================================================+
@@ -215,12 +219,12 @@ document that owns it. Nothing in `01`–`11` is outside this diagram.
 | L2 | Simulated KV connector | [`01`](01_execution_and_time_model.md) | D6 |
 | L2 | Atomesh handling | [`01`](01_execution_and_time_model.md), [`06`](06_workload_harness_contract.md) | D7, D30 |
 | L2 | Prometheus metrics under virtual time | [`11_metrics_support.md`](11_metrics_support.md) | D71–D77 |
-| L3 | `CostBackend` interface, provenance vocabulary | [`02`](02_model_runner_and_cost_backend.md) | D11 |
+| L3 | `CostBackend` interface, granularity, the method vocabulary | [`02`](02_model_runner_and_cost_backend.md) | D11 |
 | L3 | Memory model, KV pool reuse | [`03_memory_and_kv_model.md`](03_memory_and_kv_model.md) | D13–D16 |
 | L3 | Model capture, Cost IR | [`04_model_capture_and_cost_ir.md`](04_model_capture_and_cost_ir.md) | D17–D23 (+ D18.1) |
 | L3 | Fitting, law selection, hull guard | [`09_fitting_and_law_selection.md`](09_fitting_and_law_selection.md) | D53–D62 |
-| L3 | Analytic laws (tier 0) | [`10_analytic_laws.md`](10_analytic_laws.md) | D63–D70 |
-| L3 | Step fit backend (tier a), a stage-2 candidate | [`17_step_fit_backend.md`](17_step_fit_backend.md) | D96–D105 |
+| L3 | Analytical laws, the step roofline | [`10_analytical_laws.md`](10_analytical_laws.md) | D63–D70 |
+| L3 | Step grid backend (step-level), a stage-2 candidate | [`17`](17_step_grid_backend.md) | D96–D105 |
 | L4 | Harness contract, wire fields, adapter | [`06_workload_harness_contract.md`](06_workload_harness_contract.md) | D27–D35 |
 | L5 | The calibration phases, the measurement bench and the recommended flow | [`07_calibration_toolchain.md`](07_calibration_toolchain.md) | D36–D43 |
 | L5 | Machine spec schema and probes | [`05_machine_spec_and_probes.md`](05_machine_spec_and_probes.md) | D24–D26 |
@@ -288,32 +292,37 @@ This is what makes "no GPU at simulation time" work.
 Artifacts are keyed, digested and fingerprinted; a stack or source change **refuses**
 rather than answering from stale data.
 
-### D. The three cost tiers
+### D. Two axes: granularity and method
 
 ```
-  +-------------------------------------------------------------+
-  |  tier b   op-level empirical                                 |
-  |           symbolic IR + priced leaves + region terms         |
-  |           needs: a calibration campaign                      |
-  |           used for: acceptance cells                         |
-  +-------------------------------------------------------------+
-  |  tier a   coarse empirical                                   |
-  |           fitted over features ScheduledBatch already carries|
-  |           needs: measured steps                              |
-  |           used for: structure discovery, sweeps, plumbing    |
-  +-------------------------------------------------------------+
-  |  tier 0   analytic / roofline                                |
-  |           machine spec + model geometry ONLY                 |
-  |           needs: nothing                                     |
-  |           used for: day one; a device never measured         |
-  +-------------------------------------------------------------+
+  GRANULARITY, a property of the backend
+  +--------------------------------------------------------------+
+  |  op-level     symbolic IR + priced leaves + region terms;    |
+  |               an unpriced leaf answered by its analytical law|
+  |               needs: a calibration campaign                  |
+  |               used for: acceptance cells                     |
+  +--------------------------------------------------------------+
+  |  step-level   one whole forward per answer: the step stub,   |
+  |               linear law and grid; the step roofline         |
+  |               needs: measured steps; the roofline only the   |
+  |               machine spec, model geometry, parameter_count  |
+  |               used for: structure discovery, sweeps,         |
+  |               plumbing; day zero, a device never measured    |
+  +--------------------------------------------------------------+
+
+  METHOD, a property of each term
+    analytical | declared | empirical: measured, estimated (+ validated)
 ```
 
-Orthogonal to the tier, every individual answer carries its **provenance** — measured,
-fitted, interpolated, extrapolated or analytical — and a step reports the mixture.
+A backend has a **granularity** (`backends/base.py::Granularity`) and no method of its own;
+every term it returns carries a **method** (`backends/provenance.py::Method`), and a step
+reports its seconds by method (`08` D50.1). Fallback runs only along method inside one
+granularity: an op-level backend answers an unpriced leaf by its analytical law, a
+step-level run falls to the step roofline only where its run file composes
+`StepFallbackBackend`, and nothing falls from op-level to step-level (#952).
 
-One tier-a backend goes beyond its "used for" line by ruling: `17`'s step fit is graded as
-a candidate for #627's stage 2 (`17` D96, `07` D36).
+One step-level backend goes beyond its "used for" line by ruling: `17`'s step grid is
+graded as a candidate for #627's stage 2 (`17` D96, `07` D36).
 
 ---
 
@@ -329,7 +338,7 @@ a candidate for #627's stage 2 (`17` D96, `07` D36).
 | Generalization | predict beyond the configurations used for calibration |
 | Simulation speed | aim ≥ 5×; negotiable, but **faster than a real run** is the floor |
 
-Tier 0 has its own, looser, separately-declared goals, with **configuration ranking** as
+A roofline backend has its own, looser goals, stated in advance, with **configuration ranking** as
 its primary gate rather than latency error (`10` D67.1).
 
 Final proof is **paired simulated and real execution of cc-traces proper**.
@@ -353,7 +362,7 @@ Stated here so they are not discovered at review.
 
 | Not in scope | Where it is recorded |
 |---|---|
-| A device that has never been measured — except at tier-0 fidelity, which is derate-dominated | `10` D69 |
+| A device that has never been measured — except by roofline, which is derate-dominated and declared while its derates are assumed | `10` D69 |
 | Neighbour contention. Compass models a **dedicated** device, so it will not predict an OOM a shared box produces | `03` D14 |
 | Memory fragmentation — not modelled, not planned, and nobody models it | `03` D16 |
 | **Cancellation** — `status` is `"completed"` on all 1,697 subagent wrappers in both corpora. There is nothing to replay. | `06` D35 |
@@ -363,9 +372,9 @@ One thing that **is** in scope and is worth stating as a limit rather than a non
 
 - **Predicting what acceptance rate a speculative draft head will achieve.** Speculative
   decoding and MTP *are* in scope (`14`), but acceptance is a behaviour Compass cannot
-  compute — it is a **declared input**, like device bandwidth. A speculative throughput
-  result is conditional on that input and the artifact says which tier it came from
-  (`14` D83, D87).
+  compute — it is a **stated input**, like device bandwidth. A speculative throughput
+  result is conditional on that input, whose method the run summary reports and which
+  does not propagate into any cost term (`14` D83, D87).
 
 ### In scope, and worth naming because they are easily assumed otherwise
 
@@ -394,8 +403,8 @@ caveats.
 | # | Assumption | If false |
 |---|---|---|
 | **T21** | The in-situ calibration transfers across TP width | the "calibrate at TP1, predict TP2/4/8" recipe collapses. Overhead constants have **already** been measured moving 12% and 7% in *opposite directions* between TP1 and TP2 on the same GPUs. |
-| **T25** | The real-vs-real noise floor stays narrow under closed-loop replay at high client count | those cells become ungradeable. All prior data is 20 requests, one session, declared arrivals. |
-| **T5** | ATOM's model classes trace cleanly under `FakeTensorMode` at TP>1 | tier b has no IR, and docs `04`, `07`, `09` rest on it |
+| **T25** | The real-vs-real noise floor stays narrow under closed-loop replay at high client count | those cells become ungradeable. All prior data is 20 requests, one session, stated arrivals. |
+| **T5** | ATOM's model classes trace cleanly under `FakeTensorMode` at TP>1 | the op-level backend has no IR, and docs `04`, `07`, `09` rest on it |
 | **T52** | `TorchDispatchMode` instrumentation does not hang ATOM at width | capture is unusable at TP>1; gates T5. A mode-induced 8-rank hang was observed while `dspark_scheduler.py::schedule_prefix_lengths_tensor` was written; no landed version makes the call that hung, and the hang is to be root-caused, not worked around. |
 | ~~**T10**~~ | ~~`AgenticReplayStrategy` can be subclassed rather than vendored~~ — **resolved 2026-09-20 by P0.3: yes, and nothing is vendored** | the ~2,000-line consequence does not occur. What the spike found instead is that a subclass reaches only four of the nine pacing calls, so the adapter rebinds the runner's `LoopScheduler` (`06` D34.1) |
 
@@ -460,17 +469,22 @@ The documents use these precisely; a reader will bounce off without them.
 
 | Term | Meaning |
 |---|---|
-| **provenance** | how an answer was obtained. `analytical` (computed without measuring the subject) / `measured` (the unit itself was timed) / `fitted` (a form chosen, coefficients regressed) / `interpolated` (nearby measurements looked up) / `extrapolated` (asked outside the measured range). *"Priced" is not a species* — a price is `measured`, differing only in unit. |
+| **granularity** | what a backend prices as one unit: a whole step (step-level) or the ops in it (op-level), `backends/base.py::Granularity`. A property of the backend, which has no method of its own; no fallback crosses it. |
+| **method** | how one term was produced, `backends/provenance.py::Method`: `analytical`, `declared`, or empirical, which is `measured` or `estimated`. *Analytical*: a form from first principles whose every parameter is model geometry, deployment config, or a device parameter from a datasheet or a model-independent probe on this platform. *Measured*: the query equals an observation of the subject in every variable that affects the value, with no projection. *Estimated*: anything else derived from observations of the subject. One input can give two methods: a probed value used as a parameter is analytical, used as the answer it is measured; its `origin` says where it came from and the term decides the method. A term built from several is declared if any part is, analytical if all are, measured if all are, and estimated otherwise. A price is `measured`; a real run's reading is `measured`, and the prose calls it *real*. |
+| **validated** | on an estimated term only: true when the query lies inside the region where its algorithm's held-out error was measured, false by default. Extrapolation is one algorithm, named in `source`. Each algorithm states its support domain: an unseen discrete value refuses; outside the continuous domain it answers if it extrapolates and refuses otherwise. |
+| **declared** | the method of a term some input of which is assumed, or was observed on another subject (another platform, width, model or engine config). Its note states the origin, and the successor or why there is none. A declared memory term can fail its gate but cannot pass it; declared cost seconds are reported apart and not gated. The word is reserved for the method; for anything else these documents say *stated*. |
+| **subject** | what an empirical term observes: the model, the deployment config, the source root, and the platform the run's machine spec describes, device and software stack, host driver, firmware and power settings included. There is no machine-identity mechanism. |
+| **source** | one thing a resolver asks for a price (`backends/resolver.py::CostSource`). A term's provenance names the source that answered, every one that declined before it, and the algorithm behind an estimated answer. |
+| **analytical fallback** | the analytical law that answers what an empirical source declines, inside one granularity: an op-level backend's law for an unpriced leaf, always on, or the step roofline a run file composes with `StepFallbackBackend`. Its terms carry their own method, declared while an input is assumed, and its share of seconds is always reported. |
 | **opaque leaf** | an operator the tracer records as one node whose internal kernels are invisible, because ATOM deliberately registers a whole subsystem as a single dispatcher op. ~20 of them hold 60–75% of step time. |
 | **logical process (LP)** | the unit the Clock Authority coordinates. *Not* an OS process — a TP group is one LP, a DP group is one LP, because both already have a hardware barrier. |
 | **structure** | a distinct operator list, independent of shape. Prefill has two (chunked, unchunked); decode has one across all CUDA-graph rungs. Traces are cached per structure, not per shape. |
-| **treatment** | a factor that moves cost and is invisible to every feature in the model. Uniform MoE routing under DP is one. Decode **row order** is one to tier b's op-level IR. Tier a's coarse law prices it with `rowmod(k)` (`09` D61); step fit's residual reads it (`17` D100). |
-| **tier** | which cost model was asked (0 analytic / a coarse / b op-level). Orthogonal to provenance. |
-| **refusal** | a declined answer with a named reason. Refusals are results, not errors, and are preferred to fallbacks everywhere. A **refused step** is one no rung of the resolver ladder answered: it costs 0 s, the run continues, and any refusal makes the run a coverage report (`08` D50.1). A rung that declines while a lower one answers is a fall-through, and an analytic or extrapolated answer is reported apart; neither is a refusal. |
-| **step fit** | the tier-a backend of `17`: a grid of step measurements looked up per batch, plus a residual, fitted on real-run step times, bench replays or both, for what the grid's coordinates cannot see (row order, raggedness). |
-| **complete cell** | a cell of step fit's grid whose every corner was measured. Step fit answers only inside one, by exact hit or interpolation; anywhere else it refuses. |
-| **recipe** | step fit's feature functions and the constants frozen with them. Configuration supplies geometry and hardware values, a fit supplies coefficients, and a recipe's version changes only when a function does. |
-| **bundle** | step fit's artifact: a grid, a recipe and the residual fitted with them, identified by a `07` D41 key and a digest, never by a path. |
+| **treatment** | a factor that moves cost and is invisible to every feature in the model. Uniform MoE routing under DP is one. Decode **row order** is one to the op-level IR. The step linear law prices it with `rowmod(k)` (`09` D61); the step grid's residual reads it (`17` D100). |
+| **refusal** | a declined answer with a named reason. Refusals are results, not errors, and are preferred to guesses everywhere. A **refused step** is one with some term still unanswered after method fallback, its reasons listed per term: it costs 0 s, the run continues, and any refusal makes the run a coverage report (`08` D50.1). A source that declines while a later one answers is a fall-through, and an answer of any method, unvalidated included, is reported by its method; neither is a refusal. |
+| **step grid** | the step-level backend of `17`, run-file key `step_grid`: a grid of step measurements looked up per batch, plus a residual, fitted on real-run step times, bench replays or both, for what the grid's coordinates cannot see (row order, raggedness). |
+| **complete cell** | a cell of the step grid whose every corner was measured. The step grid answers only inside one, by exact hit or interpolation; anywhere else it refuses. |
+| **recipe** | the step grid's feature functions and the constants frozen with them. Configuration supplies geometry and hardware values, a fit supplies coefficients, and a recipe's version changes only when a function does. |
+| **bundle** | the step grid's artifact: a grid, a recipe and the residual fitted with them, identified by a `07` D41 key and a digest, never by a path. |
 
 ---
 
@@ -484,7 +498,7 @@ The documents use these precisely; a reader will bounce off without them.
   end of each. TODOs are **`T*`**, likewise continuous.
 - Documents cite each other by number and decision — *"`07` D41"*.
 - Claims carry their measurement. A number without a source is a defect.
-- **Refuse rather than fall back.** The archetypal failure was an oracle asked about a step
+- **Refuse rather than guess.** The archetypal failure was an oracle asked about a step
   kind it had no samples of falling back to the mean of an empty list — zero — producing
   *"a confident, precise, entirely fictional answer"*: a TTFT of 0 ms against a real 7.6 s.
 
@@ -517,8 +531,8 @@ The documents use these precisely; a reader will bounce off without them.
 | [`05`](05_machine_spec_and_probes.md) | Machine Specification and its Probes | The one input artifact describing device, host, interconnect and the software stack it is pinned to. Read this before `03` and `04`, both of which consume it. Probe tools and their contamination refusals. |
 | [`03`](03_memory_and_kv_model.md) | Memory Model and the KV Pool | **Do not simulate the KV pool** — ATOM's real one is pure arithmetic. Substitute the five device readings, never the arithmetic. How a prefix-cache hit reaches the cost model. Validate per term, never as a sum. |
 | [`04`](04_model_capture_and_cost_ir.md) | Model Capture and the Cost IR | Capture with `TorchDispatchMode` + `FakeTensorMode` + `ShapeEnv`. A hierarchical, symbolic, stream-annotated IR whose `Repeat` nests and tolerates non-contiguous layer patterns. **Opaque leaves** are priced, not decomposed. |
-| [`10`](10_analytic_laws.md) | Analytic Laws (Tier 0) | Cost and memory from device parameters and model geometry, with no measurement of the subject. Three classes: exact from geometry, device-parameterised, policy-determined. Declared accuracy goals with **ranking** as the primary gate. **The most speculative document here.** |
-| [`17`](17_step_fit_backend.md) | Step Fit Backend (Tier a) | A measured grid of whole forwards, answered only from complete cells, plus a residual fitted on real-run step times, bench replays or both. A stage-2 candidate, graded by stage 2's protocol and off the stage-2 path for now (#627). |
+| [`10`](10_analytical_laws.md) | Analytical Laws | Cost and memory from device parameters and model geometry, with no observation of the subject. Three classes: exact from geometry, device-parameterised, policy-determined. The analytical fallback, the step roofline and the MI455 projection. Accuracy goals stated in advance with **ranking** as the primary gate. **The most speculative document here.** |
+| [`17`](17_step_grid_backend.md) | Step Grid Backend | A measured grid of whole forwards, answered only from complete cells, plus a residual fitted on real-run step times, bench replays or both. A stage-2 candidate, graded by stage 2's protocol and off the stage-2 path for now (#627). |
 
 ### Part III — How the data is made
 
@@ -532,15 +546,15 @@ The documents use these precisely; a reader will bounce off without them.
 | Doc | Title | What it settles |
 |---|---|---|
 | [`06`](06_workload_harness_contract.md) | Workload Harness Contract | A three-part contract, not a bespoke client. agentx-harness reused with **zero edits** via an out-of-tree plugin. One namespaced stamp each direction, audited for minimality: a `tracestate` entry in, an SSE comment line per event out. The timeline rides carriers Atomesh already forwards, so it needs no change. Tokenizer cost is a queue, not a constant. |
-| [`08`](08_validation_protocol.md) | Validation Protocol | ATOM's own test suite as the first validation layer, in two tiers: a CPU tier over every test file outside `tests/plugin/` and `cpu_gate_exclude.txt`, driver-free **as a batch** and held to green, and a GPU superset judged as a **delta** against pure upstream `661ef7661` on the nightly 20261013 image (`gate_gpu.sh`'s `BASE_*` constants, every failing node-id on file in `gpu_gate_known_failures.txt`). Three separable results, never one number. **The real-vs-real spread is the tolerance.** A metric is admissible only if stable *and* sensitive. |
+| [`08`](08_validation_protocol.md) | Validation Protocol | ATOM's own test suite as the first validation layer, in two gates: a CPU gate over every test file outside `tests/plugin/` and `cpu_gate_exclude.txt`, driver-free **as a batch** and held to green, and a GPU gate, a superset judged as a **delta** against pure upstream `661ef7661` on the nightly 20261013 image (`gate_gpu.sh`'s `BASE_*` constants, every failing node-id on file in `gpu_gate_known_failures.txt`). Three separable results, never one number. **The real-vs-real spread is the tolerance.** A metric is admissible only if stable *and* sensitive. |
 | [`11`](11_metrics_support.md) | Engine Metrics under Virtual Time | ATOM's Prometheus exporter under a virtual clock. Metrics are classified by the **provenance of their value**, not their type. Sample once per engine step — virtual time is discrete-event. The metrics push and refresh are daemon timers on simulated time. |
 
 ### Part V — Cross-cutting
 
 | Doc | Title | What it settles |
 |---|---|---|
-| [`13`](13_configuration_surface.md) | The Configuration Surface | Three homes for a setting, and the test that assigns them. Precedence is CLI > artifact > **refuse**, with no environment tier. `compass run`'s flags, handed to ATOM in a run file; one `compass` entry, the only way users reach Compass, whose commands, with their inputs and outputs, run the toolchain, the original ones deprecated; one instance per `record` or `run`, serving client runs started apart; and an audit of what is deliberately *not* a flag. |
-| [`14`](14_speculative_decoding.md) | Speculative Decoding and MTP | Three of the four changes are routine. Acceptance is a **declared input** through ATOM's existing flags, fed the *measured per-position distribution* rather than a mean. No new cost form — decode becomes the `N_Q = 1` case of the general one. |
+| [`13`](13_configuration_surface.md) | The Configuration Surface | Three homes for a setting, and the test that assigns them. Precedence is CLI > artifact > **refuse**, with no environment level. `compass run`'s flags, handed to ATOM in a run file; one `compass` entry, the only way users reach Compass, whose commands, with their inputs and outputs, run the toolchain, the original ones deprecated; one instance per `record` or `run`, serving client runs started apart; and an audit of what is deliberately *not* a flag. |
+| [`14`](14_speculative_decoding.md) | Speculative Decoding and MTP | Three of the four changes are routine. Acceptance is a **stated input** carrying a method, through ATOM's existing flags, fed the *measured per-position distribution* rather than a mean. No new cost form — decode becomes the `N_Q = 1` case of the general one. |
 | [`15`](15_parallelism_support.md) | Parallelism Support | One frame of four questions per strategy. **Only PP adds logical processes** - TP, DP and EP each sit behind a barrier ATOM already has. DP is the one that couples *scheduling decisions*, through a per-forward collective that rewrites the batch; both its collectives run for real, because both reduce over scheduling metadata rather than model outputs. Explicit M1/M2 split; PP after v1. |
 
 ### Part VI — What is not settled
@@ -553,7 +567,7 @@ The documents use these precisely; a reader will bounce off without them.
 
 | Doc | Title | What it settles |
 |---|---|---|
-| [`16`](16_execution_plan.md) | The Execution Plan | Tasks are a **pool**, capped at 5 in flight, with context durable in the task's GitHub issue and PR rather than in an agent. Phase 0 de-risks five assumptions before any build work. Effort in lines of code, not dates. Detailed through Wave 3, deliberately coarse beyond. |
+| [`16`](16_execution_plan.md) | The Execution Plan | Tasks are a **pool**, capped at 5 in flight, with context durable in the task's GitHub issue and PR rather than in an agent. Phase 0 de-risks five assumptions before any build work. Effort in lines of code, not dates. Detailed through Wave 3, deliberately sketched beyond. |
 
 ---
 
@@ -570,13 +584,13 @@ The documents use these precisely; a reader will bounce off without them.
 | D36 – D43 (+ D38.1, D40.1) | `07` Calibration and Benchmarking Toolchain |
 | D43.1, D44 – D52 (+ D50.1, D50.2) | `08` Validation Protocol |
 | D53 – D62 | `09` Fitting and Law Selection |
-| D63 – D70 (+ D67.1) | `10` Analytic Laws (Tier 0) |
+| D63 – D70 (+ D67.1) | `10` Analytical Laws |
 | D71 – D77 | `11` Engine Metrics under Virtual Time |
 | D78 – D81 | `13` The Configuration Surface |
 | D82 – D87 | `14` Speculative Decoding and MTP |
 | D88 – D94 | `15` Parallelism Support (TP, DP, PP, EP) |
 | D95 | `16` The Execution Plan |
-| D96 – D105 | `17` Step Fit Backend (Tier a) |
+| D96 – D105 | `17` Step Grid Backend |
 
 ### Headline decisions
 
@@ -590,13 +604,13 @@ The documents use these precisely; a reader will bounce off without them.
 | D14 | Substitute the five device readings, never the arithmetic |
 | D18 | Capture with dispatch mode + FakeTensor + ShapeEnv; `_EnablePythonDispatcher()` is mandatory |
 | D19 | Hierarchical, symbolic, stream-annotated IR; no branches in the IR — applicability is a discrete key plus an evaluated guard domain |
-| D20 | Opaque leaves are priced, not decomposed; each carries a declared parameter extractor |
+| D20 | Opaque leaves are priced, not decomposed; each carries a stated parameter extractor |
 | D28 | Stamps on the **real** endpoint, both directions, in carriers a real server ignores: a `tracestate` entry in, SSE comment lines out |
 | D30 | Ride the simulated timeline on carriers Atomesh already forwards, `kv_transfer_params` on the prefill-to-decode hop among them; Atomesh needs zero changes |
-| D36 | Three tiers: analytic, coarse empirical, op-level empirical. Compass models a device it has been measured on |
+| D36 | Two axes: a backend's granularity, step-level or op-level, and each term's method, analytical, declared, measured or estimated; fallback runs only along method inside one granularity. Compass models a device it has been measured on |
 | D37 | The tool tells the user what to measure: the backend that needs a measurement plans it |
 | D45 | The real-vs-real spread is the tolerance; a metric must be stable **and** sensitive |
 | D3.2 | Always-on causality detectors: a straggler, checked on receipt and at each drain, fails the run rather than warning; a stall the Clock Authority cannot see waits for ever and prints one `DIAG_S` diagnostic, never aborting; a CI clock-source lint |
 | D3.3 | The Clock Authority ships two deployment forms from one implementation: co-hosted by default, standalone for multi-container runs |
-| D43.1 | ATOM's suite is a merge gate on every Compass change, unmodified, in two tiers: a CPU tier (every test file outside `tests/plugin/` and `cpu_gate_exclude.txt`, driver-free as a batch, held to green) per change, a GPU superset judged as a delta per wave against `gate_gpu.sh`'s recorded baseline, by an equality on a per-tree expectation rather than "no worse than". The CPU tier **exits 98** rather than reporting "GPU not required" when it cannot tell |
-| D67.1 | Tier 0 is graded on **configuration ranking** first; its latency goals are diagnostics for that, not the result |
+| D43.1 | ATOM's suite is a merge gate on every Compass change, unmodified, in two gates: a CPU gate (every test file outside `tests/plugin/` and `cpu_gate_exclude.txt`, driver-free as a batch, held to green) per change, a GPU gate, a superset judged as a delta per wave against `gate_gpu.sh`'s recorded baseline, by an equality on a per-tree expectation rather than "no worse than". The CPU gate **exits 98** rather than reporting "GPU not required" when it cannot tell |
+| D67.1 | A roofline backend's goals are graded against real runs, **configuration ranking** first; its latency goals are diagnostics for that, not the result |

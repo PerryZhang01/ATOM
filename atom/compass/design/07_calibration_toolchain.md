@@ -15,21 +15,25 @@ defined (D39); new artifact kinds and invalidation rows (D41, D43).
 [ruling on #937](https://github.com/jgong5/ATOM/pull/937#issuecomment-6161726104), which
 [#851](https://github.com/jgong5/ATOM/issues/851)'s decisions carry:** Phase 2 is
 `compass measure memory`, whose `memory_readings` entry a run reads, so the readings leave
-the machine spec (D38, D41, D43); step fit's planner runs inside `measure steps` (D37); no
+the machine spec (D38, D41, D43); the step grid's planner runs inside `measure steps` (D37); no
 command starts the client, and grading decides whether a run is gradeable (D38.1).
+
+**Revised 2026-10-14 by the naming record in
+[#952](https://github.com/jgong5/ATOM/issues/952):** two granularities, step-level and
+op-level, and a method per term replace the earlier three-way split of cost models (D36);
+the backends, artifacts and flags carry the step stub, step linear and step grid names.
 
 **Depends on:** `04_model_capture_and_cost_ir.md` (what is traced and priced),
 `05_machine_spec_and_probes.md` (the machine artifact and its probes).
 
 **Scope.** The offline toolchain that produces the data an online prediction consumes:
 what each phase measures, how its output is keyed and digested, when it must be re-run,
-and what the user actually types. Empirical modelling only — analytic laws are a separate
-design topic (D43).
+and what the user actually types. Empirical modelling only — analytical laws are a separate
+design topic (`10`).
 
-**Terminology, fixed here because the prior effort's taxonomy warns that *"priced is not a
-species"*:**
+**Terminology, fixed here because "priced" is not a method (doc 02 D11):**
 
-| Term | Unit | Obtained by |
+| Term | Unit | Produced by |
 |---|---|---|
 | **op price** | one operator signature | microbenchmark, CUDA-graph replay |
 | **step measurement** | one whole forward | CUDA events in situ |
@@ -38,30 +42,39 @@ species"*:**
 
 "Calibration" must not swallow the other three. A prior conflation applied a 2% kernel
 stability gate to a prefill region whose published value carries a **59.5% relative range**
-as its declared uncertainty, and concluded the region was unmeasurable.
+as its stated uncertainty, and concluded the region was unmeasurable.
 
 ---
 
-## D36. Three tiers, and what each needs
+## D36. Two granularities, and what each needs
 
-| Tier | Needs | Used for |
-|---|---|---|
-| **0 — analytic / roofline** | machine spec + model geometry **only** | day one, before any campaign; a device never measured; fast configuration sweeps |
-| **a — coarse empirical** | fitted over features `ScheduledBatch` already carries | structure discovery, plumbing, sweeps |
-| **b — op-level empirical** | symbolic IR + priced leaves + region terms | acceptance cells |
+Revised 2026-10-14 by the naming record in
+[#952](https://github.com/jgong5/ATOM/issues/952), which retires the earlier three-way
+split of cost models: it mixed what a backend prices as one unit with where each number
+comes from.
 
-Two orthogonal axes: **which tier was asked**, and **how each answer inside it was
-obtained** (the provenance ladder of doc 02 D11, extended). This document covers what tier
-b (and the empirical half of tier a) needs to exist.
+| Granularity | Backends | Needs | Used for |
+|---|---|---|---|
+| **step-level** | the step stub, linear law and grid (run-file keys `step_stub`, `step_linear`, `step_grid`); the step roofline | measured steps, fitted over features `ScheduledBatch` already carries; the roofline only the machine spec, the model geometry and the run file's `parameter_count` | structure discovery, plumbing, sweeps; day zero, a device never measured, fast configuration sweeps |
+| **op-level** | the op graph (`OpGraphBackend`, not built) | symbolic IR + priced leaves + region terms; an analytical law per leaf | acceptance cells |
 
-**One use beyond the table, by ruling.** Topic `17`'s step fit, a tier-a backend, is graded
-as a candidate for #627's stage 2 by the owner's ruling on #696 (`17` D96). The
+Two orthogonal axes: **the granularity of the backend asked**, and **the method of each
+term it returns** (doc 02 D11): analytical, declared, measured or estimated. Fallback runs
+only along method inside one granularity: an op-level backend answers an unpriced leaf by
+its analytical law, always on; a step-level run falls to the step roofline only where its
+run file composes `StepFallbackBackend`; nothing falls from op-level to step-level. This
+document covers what the empirical terms of both need to exist.
+
+**One use beyond the table, by ruling.** Topic `17`'s step grid, a step-level backend, is
+graded as a candidate for #627's stage 2 by the owner's ruling on #696 (`17` D96). The
 "used for" column is otherwise unchanged.
 
 Scope boundary, stated once: **Compass models a device it has been measured on.**
 Configurability — dialling the capacity, bandwidth or interconnect of a measured device —
-stays in scope. Predicting an unmeasured architecture is tier 0's job. Accordingly, doc 05
-D26 has no `transfer` probe: there is no cross-hardware transfer of empirical data.
+stays in scope. An unmeasured architecture is predicted only by analytical laws (`10`),
+declared while their derates are assumed, and a term with an input observed on another
+subject (another platform, width, model or engine config) is declared. Accordingly, doc 05
+D26 has no `transfer` probe: no empirical data crosses hardware as measured.
 
 ---
 
@@ -69,7 +82,7 @@ D26 has no `transfer` probe: there is no cross-hardware transfer of empirical da
 
 ### Problem
 
-The toolchain is several artifacts, phases, hardware tiers and an invalidation matrix.
+The toolchain is several artifacts, phases, hardware classes and an invalidation matrix.
 Expecting a user to know which of those they need is how coverage rots quietly.
 
 ### Decision
@@ -79,7 +92,7 @@ Expecting a user to know which of those they need is how coverage rots quietly.
 **Revised 2026-10-13 by the owner's ruling on
 [#851](https://github.com/jgong5/ATOM/issues/851#issuecomment-6140384791):** no single
 command plans the whole campaign. A backend that needs measurements plans them itself,
-beside its own code, and owns the coverage check over them. Step fit's grid planner and
+beside its own code, and owns the coverage check over them. The step grid's planner and
 coverage check are the first (`17` D98, D99): `measure steps --grid` runs the planner
 over a `shape_population`, and `compass run --coverage` calls the check before the run
 starts, refuses a run that fails it, and records the result for grading; a backend with
@@ -90,15 +103,16 @@ D80's.
 
 | Case | What runs |
 |---|---|
-| new model, on hardware I have | D39's recommended flow: its steps half for tier a and step fit, and its ops half too for tier b |
+| new model, on hardware I have | D39's recommended flow: its steps half for the step-level backends, and its ops half too for the op-level one |
 | new workload, same model and hardware | `trace steps` and the coverage check; a GPU only for steps outside what was measured |
 | new parallel width | `measure memory` and `measure` at that width, since memory readings and collectives are per width (D40) |
 | software upgrade | each entry whose D43 row the change invalidates refuses at load, naming its key; only those are re-measured |
 | configuration sweep | `measure memory` and `run` per configuration, then rank |
-| day zero, nothing measured | tier 0 (`10`), with no measurement: memory from a declared `memory_readings` entry marked assumed (Phase 2) |
+| day zero, nothing measured | the step roofline (`10`), with no measurement, its terms declared while the derates are assumed; memory from a `memory_readings` entry marked assumed (Phase 2) |
 
 The upgrade case is the one the invalidation matrix (D43) exists to make cheap. Day zero
-is why tier 0 is a tier and not a fallback.
+is why the roofline is designed as a backend and not only as a fallback; today a run
+reaches it only as the fallback its run file composes (`StepFallbackBackend`).
 
 ### Preparing a measurement so the empirical model works
 
@@ -106,7 +120,7 @@ This is the question users actually have, and the answer is two tool behaviours 
 than user knowledge:
 
 - **Pre-flight.** The backend's planner names the shapes the sweep must reach, derived
-  from Phase 0's observed population plus a declared margin.
+  from Phase 0's observed population plus a stated margin.
 - **Before a graded run.** The coverage check covers every real step and every Phase 0
   step of the case set, from `record` directories and `shape_population` entries, and
   names any step that falls outside what was measured.
@@ -172,7 +186,7 @@ one cell and over-counted width **5 seqs vs 4** on another, while landing close 
 aggregate.
 
 **Circularity, and how it is closed.** Phase 0's schedule depends on the cost model Phase 1
-produces. Rather than iterate: **over-cover with a declared margin and verify the hull
+produces. Rather than iterate: **over-cover with a stated margin and verify the hull
 post-hoc.** Cheaper, and it fails closed. The population's key names the backend that
 priced it, so populations from two backends coexist and a planner names the one it read.
 
@@ -195,7 +209,7 @@ run (doc `02`).
 *compute* and no GPU *allocation*. It does not mean no ROCm. `FakeTensorMode.__enter__`
 probes the driver to choose the fake device, so a wedged driver hangs a trace that
 touches no GPU — which has happened, and reads exactly like a tracing bug. The probe is
-stubbable (declare a device exists so both `is_available` and
+stubbable (claim a device exists so both `is_available` and
 `_ensureCUDADeviceGuardSet` paths are skipped), but stubbing has its own cost: anything
 that trusts `is_available()` and then really touches the device will hang instead. So
 Phase 1a is *portable*, not *hermetic*, and a hang here is diagnosed with the 30-second
@@ -209,8 +223,8 @@ on a CPU box and the campaign's shape changes — which is why both are gating t
 
 **What it does not produce.** A graph is a structure, not a price. Every leaf in it is
 unpriced until Phase 1b. A run with complete Phase 1a coverage and no Phase 1b has no
-tier-b answer for any step: each falls to tier 0 where one exists and is refused, by
-name, where none does (`08` D50.1). That is the intended behaviour and a useful
+measured leaf: the op-level backend answers every leaf by its analytical law, and the step
+reports those seconds by method (`08` D50.1). That is the intended behaviour and a useful
 diagnostic rather than a failure.
 
 ### Phase 1b — op pricing, and why it cannot leave the worker
@@ -245,7 +259,7 @@ the ratio clusters 0.83-0.93, across all kernels it runs **0.434 to 0.989**.
 **Revised 2026-10-11 by the owner's ruling on
 [#815](https://github.com/jgong5/ATOM/issues/815):** every backend prices device time only
 (`02` D11), so the region terms and the residual are fitted to device busy time, and the
-host floor is no tier-b term. Host time is `09` D54's host laws, composed by `01` D4's
+host floor is no op-level term. Host time is `09` D54's host laws, composed by `01` D4's
 recurrence.
 
 **Plus one full-engine run at TP2**, not to calibrate but to **test whether 1c transfers**.
@@ -301,9 +315,9 @@ campaign and the one with the tightest acceptance gate behind it — KV block co
 refuses it until its readings match a real load's on Qwen3.8-27B TP1 on MI308X (T100).
 
 **A device never measured** has no engine to start. Developer tooling outside the CLI
-publishes a declared entry for its configuration, every reading marked assumed, as `16`
-marks every MI455 input; `run` reads it as any entry and records in its provenance that it
-is assumed.
+publishes an entry for its configuration, every reading marked assumed, as `16` marks every
+MI455 input; `run` reads it as any entry, and every term built on it is declared, its note
+naming the assumption.
 
 **Why it is per width and not fitted across widths:** because it does not fit. The
 measured `non_torch` sequence is 926 / 6906 / 7266 / 10704 MiB at widths 1/2/4/8, and
@@ -365,10 +379,10 @@ without a scheduler: `model_runner.py::ModelRunner.dummy_execution` and
   so the host's launch cannot show in it. A repeat counts only if the entry event is still
   pending when the forward returns; one that is not is discarded, and more work is queued
   ahead. A forward with a host synchronisation inside never qualifies, and its point
-  refuses. For decode the window covers the device work tier a's label covers in a
-  recorded step, device gap and busy window (`09` D54); for prefill it adds, to tier a's
+  refuses. For decode the window covers the device work the step linear law's label covers in a
+  recorded step, device gap and busy window (`09` D54); for prefill it adds, to that label's
   busy window, the device work the step's input preparation queues.
-- **The value kind is declared.** A step fit bundle declares that value kind beside its
+- **The value kind is stated.** A step grid bundle states that value kind beside its
   interval (`02` D10), and loading refuses another (`17` D98).
 - **Replayed by rule.** A batch arrives as a step-record line (`13` D80), its rows in
   order with their query and context tokens, and is rebuilt by a fixed, versioned rule:
@@ -378,7 +392,7 @@ without a scheduler: `model_runner.py::ModelRunner.dummy_execution` and
 
 ```
   record, trace steps;              the bench (GPU): EngineCore's runner
-  step fit's planner, in measure    manager, every TP rank, no scheduler
+  step grid's planner, in measure   manager, every TP rank, no scheduler
   +-------------------+  step-     +--------------------------------+
   | batch: its rows   |  record    | RecordingModelRunner, per rank |
   | in order, their   |  lines     |  .forward(replayed by rule)    |--> step measurement
@@ -409,7 +423,7 @@ wrong in ways that matter:
 
 Op pricing on synthetic shapes is what keeps cc-traces off a GPU during calibration.
 
-**One departure, by ruling.** Topic `17`'s step fit measures its baseline grid on synthetic
+**One departure, by ruling.** Topic `17`'s step grid measures its baseline grid on synthetic
 homogeneous shapes (`17` D98). The residual that carries row order and raggedness is
 fitted to real-run step times, to replayed bench measurements, or to both (`17` D100,
 [#882](https://github.com/jgong5/ATOM/issues/882#issuecomment-6140285611)). The rule
@@ -438,7 +452,7 @@ each server in steps 2, 3 and 6 serves the client runs a client started apart se
 (`13` D80):
 
 ```
- Steps half: tier a and step fit (16 S2.7)
+ Steps half: the step-level backends (16 S2.7)
  1.  compass measure memory -- <ATOM args>                 [GPU, one start]
        -> memory_readings for this configuration
  2.  compass record ... -- <ATOM args>                     [GPU, a server]
@@ -446,9 +460,9 @@ each server in steps 2, 3 and 6 serves the client runs a client started apart se
  3.  compass trace steps <backend> --machine M ... -- <ATOM args>   [CPU, a server]
        -> shape_population, keyed by the backend that priced it
  4.  compass measure steps <records> --grid <populations> ...       [GPU]
-       -> step fit's planner over 3 (17 D98); one step_measurement per distinct batch
- 5.  compass fit host <records>; compass fit steps --backend law|step-fit ...   [CPU]
-       -> host_laws; a step_law or a step fit bundle
+       -> the step grid's planner over 3 (17 D98); one step_measurement per distinct batch
+ 5.  compass fit host <records>; compass fit steps --backend step-linear|step-grid ... [CPU]
+       -> host_laws; a step_linear_law or a step grid bundle
  6.  compass run <backend> --machine M [--coverage <populations, records>] ...  [CPU, a server]
        -> with a backend that has a coverage check, refuses before it starts
           if coverage fails; run.json records what grading reads
@@ -457,7 +471,7 @@ each server in steps 2, 3 and 6 serves the client runs a client started apart se
        -> whether each client run is gradeable, the separable results (08 D44);
           the memory terms, one at a time
 
- Ops half: tier b (16 W4.1)
+ Ops half: the op-level backend (16 W4.1)
  1.  compass trace ops ...                                 [CPU, seconds]
        -> op_graph per structure
  2.  compass measure ops ..., at each width                [GPU each W]
@@ -508,7 +522,7 @@ them `all_reduce_`, coverage **98.3%**. One known failure: `c10d::broadcast_` ta
 registration is *commented out* at `aiter/dist/parallel_state.py:467-468` and
 `all_gather_reg` / `all_gather_unreg` are in `NONE_WRAPPED_OP`. Zero dispatcher events end
 to end — while the RCCL path **is** visible (`c10d::allgather_into_tensor_`). These need
-doc 04 D21's **declared node** plus a dedicated standalone benchmark calling the same entry
+doc 04 D21's **stated node** plus a dedicated standalone benchmark calling the same entry
 point.
 
 **(c) MoE all-to-all (EP)** — MORI, called inside `moe_forward`, invisible at any degree.
@@ -560,15 +574,15 @@ dedicated flow has to be built: **one new tool, shared by (b) and (c); nothing n
 | Class | Command (`13` D80) | Reuses | New work |
 |---|---|---|---|
 | **(a)** dispatcher-visible | `measure ops` at each width — the same bench, the same graph-capture-and-replay method as any operator | **everything**, including the CUDA-graph replay method and the artifact schema | none; it is an op with a process group |
-| **(b)** invisible collectives | `measure ops` at each width, driven from the **declared-node list** rather than from the captured graph | the bench, the timing method, the artifact schema | a **declared-entry-point benchmark**: call `all_gather_reg`/`all_gather_unreg` directly at the shapes the graphs imply |
-| **(c)** MoE all-to-all | `measure ops` at each width and EP degree | the same declared-entry-point benchmark as (b) | the `exclusive` occupancy annotation, and a block-count cap at `get_cu_num()` |
+| **(b)** invisible collectives | `measure ops` at each width, driven from the **stated-node list** rather than from the captured graph | the bench, the timing method, the artifact schema | a **stated-entry-point benchmark**: call `all_gather_reg`/`all_gather_unreg` directly at the shapes the graphs imply |
+| **(c)** MoE all-to-all | `measure ops` at each width and EP degree | the same stated-entry-point benchmark as (b) | the `exclusive` occupancy annotation, and a block-count cap at `get_cu_num()` |
 | **(d)** p2p / PP | `measure ops` at each width and PP degree | same as (a) — `isend`/`recv` are dispatcher-visible | none |
 | **(d)** KV transfer | **not priced** | — | nothing: doc `01` D6 computes it from the machine spec, which is what keeps interconnect configurable |
 
 **So the recommended flow is:** classes (a) and (d)-p2p ride `measure ops` and need no
 separate step at all — they appear in the captured graph and are priced with everything
 else. Classes (b) and (c) ride `measure ops` too, in the **same bench in the same worker
-process**, differing only in where their work list comes from: a declared list of entry
+process**, differing only in where their work list comes from: a stated list of entry
 points beside the captured graph. That is why it is one command and not two.
 
 Three constraints carry over into the flow and are not optional:
@@ -580,14 +594,14 @@ Three constraints carry over into the flow and are not optional:
    one-entry difference deadlocks silently.
 3. **Its output is labelled an upper bound**, not a price — the honesty constraint above,
    where the same collective read **0.23x** between two passes because the number includes
-   peer wait. Doc `02`'s provenance vocabulary tags these `measured (collective, upper
+   peer wait. Doc `02`'s method vocabulary tags these `measured (collective, upper
    bound)` so nothing downstream treats them as device work.
 
 **The open piece:** `c10d::broadcast_` takes a `ProcessGroup` object no JSON artifact can
 hold, so it cannot be replayed from a price list — one operator per step, issued in
 `ModelRunner.postprocess` after the sampler. Since the owner's ruling on
 [#815](https://github.com/jgong5/ATOM/issues/815) (2026-10-11) removed the Phase 1c host
-floor, its device time is inside the forward's device busy time, the label tier a and
+floor, its device time is inside the forward's device busy time, the label the step linear law and
 Phase 1c are fitted to (`09` D54), and its launch is inside the `W_post` host law (`01`
 D4). Recorded as **T55**.
 
@@ -628,14 +642,28 @@ its own, and a population is keyed by the backend that priced it.
 | `machine_spec` | doc 05 probes | (device, software stack) |
 | `shape_population` | Phase 0, `trace steps` | (model, workload, engine config, the pricing backend's digest) |
 | `op_graph` | Phase 1a, `trace ops` | **structure** — not shape |
-| `price_list` | Phase 1b, `fit ops` | **(model, width, source-root digest)** — a triple, never a path |
-| `region_terms` | Phase 1c, `fit ops` | (model, width) |
-| `memory_readings` | Phase 2, `measure memory`; declared and marked assumed for a device never measured | (model, device, parallel, engine config) |
+| `price_list` | Phase 1b, `fit ops` | **(model, parallel layout, machine-spec digest, source-root digest)** — a tuple, never a path |
+| `region_terms` | Phase 1c, `fit ops` | (model, parallel layout, machine-spec digest) |
+| `memory_readings` | Phase 2, `measure memory`; published with every reading assumed for a device never measured | (model, device, parallel, engine config) |
 | `coverage_hull` | derived | the price list it was built from |
 | `step_measurement` | Phase 1c, `measure steps` | (model, device, parallel, engine config, source-root digest, sampling, step kind, the batch's digest) |
-| `step_law` | `fit steps --backend law` | (model, device, parallel, engine config, source-root digest, form) |
-| `host_laws` | `fit host` | (host CPU, ATOM source, model, engine config), as the run reads its host key |
-| step fit bundle | `fit steps --backend step-fit` | `17` D101 |
+| `step_linear_law` | `fit steps --backend step-linear` | (model, machine-spec digest, parallel, engine config, source-root digest, form) |
+| `host_laws` | `fit host` | (host CPU, ATOM source, model, engine config, machine-spec digest), as the run reads its host key |
+| step grid bundle (`step_grid_bundle`) | `fit steps --backend step-grid` | `17` D101 |
+
+The **parallel layout** of a `price_list`, `region_terms` and `memory_readings` key is
+`dp`, `pp`, `pcp`, `tp`, `enable_expert_parallel`, `enable_dp_attention` and
+`decode_context_parallel_size` (owner ruling on
+[#165](https://github.com/jgong5/ATOM/issues/165)), held in
+`atom/compass/artifacts/keys.py::LAYOUT`. No entry answers for another layout: a TP2 price
+list does not answer for `-tp 2 -dp 2`, and a transfer between layouts, if one is wanted,
+is an explicit record backed by a measurement. A read miss names the fields in which the
+nearest entry of its kind differs.
+
+The **machine-spec digest** is the digest of the machine spec's own key, its device and
+software stack (`atom/compass/artifacts/keys.py::machine_spec_digest`), so an entry
+measured on one platform does not answer on another, and a spec edit outside those two
+moves no key ([#952](https://github.com/jgong5/ATOM/issues/952) S2).
 
 ### Four rules
 
@@ -711,7 +739,7 @@ High-occupancy signatures repeat to ~1-3%.
 
 | Activity | When | GPU? |
 |---|---|---|
-| machine spec probes | once per (device, software stack) | tiers 1-3 yes |
+| machine spec probes | once per (device, software stack) | probe classes 1-3 yes |
 | Phase 0 discovery | every run | **no** |
 | Phase 1a trace | **JIT on first use of a structure**, then cached | **no** |
 | Phase 1b op pricing | offline campaign, or opt-in `--measure` | yes |
@@ -722,9 +750,10 @@ This follows the project's own note: the runner has no modes, every run simulate
 happens on demand at first use and is cached, and `--measure` is a separate flag that does
 a real GPU run and caches the result.
 
-**New shape is fine; new operator kind refuses.** Because leaves are shape-parametric, a
-shape never traced is priced from the existing law. Only an operator *kind* with no samples
-refuses. Under the prior flat design a new shape meant a new graph meant a refusal, which
+**New shape is fine; a new operator kind falls to its analytical law.** Because leaves are
+shape-parametric, a shape never traced is priced from the existing fitted law. An operator
+*kind* with no samples is answered by its analytical law (D36), and refuses only without
+one. Under the prior flat design a new shape meant a new graph meant a refusal, which
 is why a fixed-shape oracle cost **+47.9% TTFT** the moment serving varied shapes (3
 prefill steps of 16 / 256 / 16,128 tokens costing 38.6 / 151.0 / 177.6 ms, all answered as
 ~47 ms).
@@ -769,8 +798,8 @@ mismatch **refuses** (warn only under an explicit flag).
 | `op_graph` | - | **X** | **X** | **X** | - | - | X (level, cudagraph mode) |
 | `price_list` | **X** | **X** | X | - *(shape-parametric)* | **X** | - | - |
 | `region_terms` | X | X | **X** | X | X | - | X |
-| `step_measurement`, `step_law` | X | X | X | X | X | - | X |
-| step fit bundle (`17` D101) | X | X | X | X | X | - | X |
+| `step_measurement`, `step_linear_law` | X | X | X | X | X | - | X |
+| step grid bundle (`17` D101) | X | X | X | X | X | - | X |
 | `host_laws` | - | - | **X** | **X** | - | **X** | **X** |
 | `memory_readings` | **X** | X | X | X | **X** | - | **X** |
 | `machine_spec`: capacity | - | - | - | - | **X** | - | - |
@@ -783,7 +812,7 @@ Consequences worth noting:
 - A `shape_population`'s pricing backend is in its key (D41), not its row: another
   backend addresses another entry rather than invalidating this one.
 - `host_laws` time the host, so the host CPU invalidates them and the device does not;
-  `step_measurement` and `step_law` hold device time, so the host CPU does not invalidate
+  `step_measurement` and `step_linear_law` hold device time, so the host CPU does not invalidate
   them.
 - The memory readings depend on the **library build** as much as the silicon, which is
   why ROCm, AITER and RCCL invalidate them. The +5980 MiB appearing the moment width
@@ -809,16 +838,16 @@ So: every gate's state is written into the artifact and checked there.
 
 | # | Decision | Date |
 |---|---|---|
-| D36 | Three tiers: analytic/roofline, coarse empirical, op-level empirical. Compass models a device it has been measured on; cross-hardware transfer of empirical data is out of scope, and doc 05 D26 has no `transfer` probe. | 2026-09-18; probe dropped 2026-10-14 (#937) |
-| D37 | The tool tells the user what to measure: a backend that needs measurements plans them beside its own code and owns the coverage check that `compass run --coverage` calls before the run starts; step fit's planner runs inside `measure steps`; no single command plans the campaign. Coverage checks use a convex hull or k-NN distance, never a bounding box. | 2026-09-18; revised 2026-10-13 and 2026-10-14 (#851) |
+| D36 | Two granularities, step-level and op-level, and a method per term (analytical, declared, measured, estimated) replace the three-way split of cost models; fallback runs only along method inside one granularity. Compass models a device it has been measured on; an input observed on another subject makes a term declared, and doc 05 D26 has no `transfer` probe. | 2026-09-18; probe dropped 2026-10-14 (#937); two granularities 2026-10-14 (#952) |
+| D37 | The tool tells the user what to measure: a backend that needs measurements plans them beside its own code and owns the coverage check that `compass run --coverage` calls before the run starts; the step grid's planner runs inside `measure steps`; no single command plans the campaign. Coverage checks use a convex hull or k-NN distance, never a bounding box. | 2026-09-18; revised 2026-10-13 and 2026-10-14 (#851) |
 | D38 | Phase 0 discovery (shapes only) -> 1a trace -> 1b price -> 1c in-situ (+ one TP2 transfer test) -> Phase 2 memory. Client count and workload are not calibration axes. `13` D80's commands run them: `trace steps`, `trace ops`, `measure ops` and `fit ops`, `record` and `measure steps` then `fit steps\|host`, and `measure memory` for Phase 2, one engine start per configuration whose `memory_readings` a run reads and refuses without; `measure` writes per point, `fit` makes laws, bundles and leaves. | 2026-09-18; commands 2026-10-13 (#851); Phase 2 2026-10-14 (#851) |
-| D39 | The bench is `EngineCore` without its scheduler: every TP rank's `RecordingModelRunner` started through its runner manager in its order, at any TP width, a step charged to its slowest rank, fed **replayed** batches rebuilt from step records by a versioned rule. One window for both step kinds: device time from an event at the forward's entry to one at its exit, with device work queued ahead, a repeat counting only if the entry event is still pending when the forward returns; whatever is fitted on it declares that value kind. Op prices may use synthetic shapes; step and region measurements may not, step fit's grid excepted (`17` D98). | 2026-09-18; revised 2026-10-13 (#851) |
+| D39 | The bench is `EngineCore` without its scheduler: every TP rank's `RecordingModelRunner` started through its runner manager in its order, at any TP width, a step charged to its slowest rank, fed **replayed** batches rebuilt from step records by a versioned rule. One window for both step kinds: device time from an event at the forward's entry to one at its exit, with device work queued ahead, a repeat counting only if the entry event is still pending when the forward returns; whatever is fitted on it states that value kind. Op prices may use synthetic shapes; step and region measurements may not, the step grid's excepted (`17` D98). | 2026-09-18; revised 2026-10-13 (#851) |
 | D40 | Four classes of communication, priced separately. Scaling is measured per width, never modelled. A collective's measured duration is an upper bound on device work. | 2026-09-18 |
-| D41 | Artifacts, each with key, digest, fingerprint and provenance. Keys are tuples; source roots are `git archive` digests; resolution names its answer; handed-off artifacts are immutable. `step_measurement`, `step_law` and `host_laws` added, and `shape_population` keyed by its pricing backend. `memory_readings` from `measure memory`, keyed as `step_law` is, or declared and marked assumed for a device never measured. | 2026-09-18; kinds 2026-10-13 (#851); `memory_readings` 2026-10-14 (#851) |
-| D42 | Trace is JIT and cached; pricing is offline or opt-in `--measure`. A `--measure` run is never an acceptance run. New shape is fine; new operator kind refuses. | 2026-09-18 |
-| D43 | Per-artifact invalidation matrix, not a global fingerprint. Every gate's state is written into the artifact and checked there. Rows for `shape_population`, `step_measurement`, `step_law` and `host_laws`, and a host-CPU axis. | 2026-09-18; rows 2026-10-13 (#851) |
-| D38.1 | One recommended flow per half: steps (`measure memory`, `record`, `trace steps`, `measure steps` with step fit's planner, `fit host` and `fit steps`, `run --coverage`, then grading outside the CLI), each server driven by a client started apart, and ops (`trace ops`, `measure ops`, `fit ops`). Phases unchanged; the bench hosts 1b and 1c, Phase 2 is a plain startup `measure memory` runs. | 2026-09-19; revised 2026-10-13 and 2026-10-14 (#851) |
-| D40.1 | Classes (a) and p2p ride `measure ops` unchanged. Classes (b) and (c) share one new declared-entry-point benchmark inside the same bench, also run by `measure ops`. KV transfer is never priced. Collective prices are labelled upper bounds. | 2026-09-19; one command 2026-10-13 (#851) |
+| D41 | Artifacts, each with key, digest, fingerprint and provenance. Keys are tuples; source roots are `git archive` digests; resolution names its answer; handed-off artifacts are immutable. `step_measurement`, `step_linear_law` and `host_laws` added, and `shape_population` keyed by its pricing backend. `memory_readings` from `measure memory`, keyed as `step_linear_law` is, or published with every reading assumed for a device never measured. `price_list`, `region_terms` and `memory_readings` keyed by the parallel layout, not a scalar width. | 2026-09-18; kinds 2026-10-13 (#851); `memory_readings` 2026-10-14 (#851); parallel layout 2026-10-15 (#165, #537) |
+| D42 | Trace is JIT and cached; pricing is offline or opt-in `--measure`. A `--measure` run is never an acceptance run. New shape is fine; a new operator kind falls to its analytical law, and refuses without one. | 2026-09-18 |
+| D43 | Per-artifact invalidation matrix, not a global fingerprint. Every gate's state is written into the artifact and checked there. Rows for `shape_population`, `step_measurement`, `step_linear_law` and `host_laws`, and a host-CPU axis. | 2026-09-18; rows 2026-10-13 (#851) |
+| D38.1 | One recommended flow per half: steps (`measure memory`, `record`, `trace steps`, `measure steps` with the step grid's planner, `fit host` and `fit steps`, `run --coverage`, then grading outside the CLI), each server driven by a client started apart, and ops (`trace ops`, `measure ops`, `fit ops`). Phases unchanged; the bench hosts 1b and 1c, Phase 2 is a plain startup `measure memory` runs. | 2026-09-19; revised 2026-10-13 and 2026-10-14 (#851) |
+| D40.1 | Classes (a) and p2p ride `measure ops` unchanged. Classes (b) and (c) share one new stated-entry-point benchmark inside the same bench, also run by `measure ops`. KV transfer is never priced. Collective prices are labelled upper bounds. | 2026-09-19; one command 2026-10-13 (#851) |
 
 ---
 
@@ -833,7 +862,7 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 | ~~T17~~ | ~~Draw the boundary of the standalone `ModelRunner` bench~~ — drawn 2026-10-13 on #851: `EngineCore` without its scheduler (D39) | needs a first implementation |
 | T18 | Verify a batch replayed by rule reproduces the recorded step's forward context faithfully, MoE routing included | unverified, and it gates D39 |
 | T19 | Decide the artifact store's physical form: directory convention, manifest, or indexed store | no decision taken |
-| T20 | Build the declared-node + standalone benchmark for invisible collectives | custom all-gather is the default path and is entirely invisible |
+| T20 | Build the stated-node + standalone benchmark for invisible collectives | custom all-gather is the default path and is entirely invisible |
 | T21 | Establish whether Phase 1c transfers across width (the TP2 test run) | it is the recipe's one unproven assumption |
-| T22 | Analytic laws as their own design topic | deferred by decision; rung 4 of the resolver ladder reserves its slot |
+| ~~T22~~ | ~~Analytical laws as their own design topic~~ — **done**, now `10` | — |
 | T100 | Compare `measure memory`'s readings under ATOM's `--load_dummy` with a real load's on Qwen3.8-27B TP1 on MI308X; until they match, `measure memory` refuses `--load_dummy` (D38, Phase 2) | needs `measure memory` built |

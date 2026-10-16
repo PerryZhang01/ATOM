@@ -3,12 +3,13 @@
 
 ``serve(authority, "tcp://host:port")`` listens there; port 0 binds a free one,
 and the result's ``endpoint`` names the port it got. Each accepted connection
-gets one thread. Its first frame binds it to an LP through the serve loop, which
-answers by sending that frame back, or a refusal. After that, for each request
-frame, the thread queues it with the loop and writes back the next reply from
-that LP's slot. The thread waits on its own LP's slot under no lock, so an LP
-whose reply is held stops no other connection. When a bound connection ends,
-however it ends, the thread tells the loop, which ends the run.
+gets a reader thread. Its first frame binds it to an LP through the serve loop,
+which answers with what the LP starts from, or a refusal. After that, the reader
+queues each request frame with the loop, and a writer thread sends each reply
+from that LP's slot. The writer waits on its own LP's slot under no lock, so an
+LP whose reply is held stops no other connection. The reader waits for no reply,
+so when a bound connection ends, however it ends and even while its LP waits for
+a grant, it tells the loop then, which ends the run.
 
 ``connect(lp, "tcp://host:port")`` returns the in-process carrier's connection
 with a socket in place of the loop: the same ``send``, ``recv`` and ``close``,
@@ -24,7 +25,7 @@ import socket
 import threading
 
 from .service import _Connection, _refusal, _reply, _Server
-from .wire import MalformedMessage, encode
+from .wire import JOINED, MalformedMessage, encode
 
 STREAM_SCHEME = "tcp"
 #: A frame is a few hundred bytes. A length far above that is a peer that is not
@@ -32,8 +33,12 @@ STREAM_SCHEME = "tcp"
 LARGEST_FRAME = 1 << 22
 
 
+def _framed(frame: bytes) -> bytes:
+    return len(frame).to_bytes(4, "big") + frame
+
+
 def _send(stream, frame: bytes) -> None:
-    stream.write(len(frame).to_bytes(4, "big") + frame)
+    stream.write(_framed(frame))
     stream.flush()
 
 
@@ -82,32 +87,49 @@ class _StreamServer:
             except OSError:
                 return
             self._open.append(sock)
-            threading.Thread(target=self._carry, args=(sock,), daemon=True).start()
+            threading.Thread(target=self._read, args=(sock,), daemon=True).start()
 
-    def _carry(self, sock: socket.socket) -> None:
-        # ponytail: a thread parked in `slot.get()` when the server closes stays
-        # parked until the process exits; wake it with a sentinel if servers churn.
+    def _read(self, sock: socket.socket) -> None:
         slot = None
-        # The writer flushes again on leaving the block, so a dead peer can
-        # raise there too.
         try:
-            with sock, sock.makefile("rwb") as stream:
+            with sock.makefile("rb") as stream:
                 while (frame := _receive(stream)) is not None:
                     try:
                         if slot is None:
-                            address, slot = self._server.bind(frame)
-                            reply = frame
+                            address, slot, joined = self._server.bind(frame)
+                            try:
+                                reply = encode((JOINED, *joined))
+                            except MalformedMessage as refused:
+                                reply = encode(_refusal(refused))
+                            threading.Thread(
+                                target=_write, args=(sock, slot, reply), daemon=True
+                            ).start()
                         else:
                             self._server.submit(address, frame)
-                            reply = slot.get()
                     except (KeyError, ValueError) as refused:
                         reply = encode(_refusal(refused))
-                    _send(stream, reply)
+                        if slot is None:
+                            sock.sendall(_framed(reply))
+                        else:
+                            slot.put(reply)
         except (MalformedMessage, OSError):
             pass
         finally:
-            if slot is not None:
-                self._server._closed(address)
+            if slot is None:
+                _end(sock)
+            else:
+                self._server._closed(address, slot)
+                slot.put(None)
+
+
+def _write(sock: socket.socket, slot, reply: bytes) -> None:
+    """Send `reply`, then each reply `slot` gets, on `sock` until its reader
+    puts `None`; then end `sock`."""
+    with contextlib.suppress(OSError):
+        while reply is not None:
+            sock.sendall(_framed(reply))
+            reply = slot.get()
+    _end(sock)
 
 
 class _Remote:
@@ -121,11 +143,11 @@ class _Remote:
     def bind(self, frame: bytes) -> tuple:
         _send(self._stream, frame)
         try:
-            _reply(self.get())
+            _, *joined = _reply(self.get())
         except Exception:
             self.close()
             raise
-        return None, self
+        return None, self, tuple(joined)
 
     def submit(self, _lp, frame: bytes) -> None:
         _send(self._stream, frame)

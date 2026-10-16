@@ -44,7 +44,8 @@ from test_memory_readings import (
 from transformers import PretrainedConfig
 
 from atom.compass.backends.geometry import KvGeometry, Parallelism
-from atom.compass.memory import Basis, Reading, Term
+from atom.compass.backends.provenance import Method
+from atom.compass.memory import Reading, Term
 from atom.compass.spec import MachineSpec
 from atom.model_ops.attentions.pool_layout.sub_pool_spec import page_pool
 
@@ -138,7 +139,7 @@ def _runner(spec, qwen, tp_width, *, utilisation=GPU_MEMORY_UTILIZATION, free=No
                     Term(
                         "probe",
                         int(free),
-                        Basis.DERIVED,
+                        Method.ANALYTICAL,
                         "a probe that moves the clamp, not a reading",
                     ),
                 ),

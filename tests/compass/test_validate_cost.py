@@ -123,11 +123,11 @@ def test_unvalidated_and_refused_steps_are_reported_apart(tmp_path):
     report = cost_accuracy(record, LAW)
 
     assert report["cut"] == {"exposed": 0, "mixed": 0}
-    (extrapolated,) = report["unvalidated"].values()
-    assert extrapolated["steps"] == 1
-    assert extrapolated["real_s"] == pytest.approx(2 * _price(wide[0]), rel=1e-9)
-    assert extrapolated["on_totals"] == pytest.approx(-0.5, rel=1e-9)
-    assert extrapolated["bands"]["prefill tokens 2048-8192"]["within_10pct"] == 0.0
+    (unvalidated,) = report["unvalidated"].values()
+    assert unvalidated["steps"] == 1
+    assert unvalidated["real_s"] == pytest.approx(2 * _price(wide[0]), rel=1e-9)
+    assert unvalidated["on_totals"] == pytest.approx(-0.5, rel=1e-9)
+    assert unvalidated["bands"]["prefill tokens 2048-8192"]["within_10pct"] == 0.0
     fitted = report["validated"]["prefill"]
     assert fitted["steps"] == 10
     assert fitted["on_totals"] == pytest.approx(0.0, abs=1e-9)
@@ -226,3 +226,11 @@ def test_a_law_without_held_out_errors_reports_every_priced_step_unvalidated(tmp
         "prefill": 10,
         "decode": 10,
     }
+
+
+def test_the_report_labels_the_record_and_never_reads_the_table_beside_it(tmp_path):
+    record = _record(tmp_path / "steps", _steps(), stretch={4: 0.2})
+    report = cost_accuracy(record, LAW)
+
+    (record / "dp0.cost.jsonl").write_text('{"version": 1}\nnot a row\n')
+    assert cost_accuracy(record, LAW) == report

@@ -1,16 +1,15 @@
 # SPDX-License-Identifier: MIT
 """The step-level fallback: a step the law cannot price is priced by the roofline.
 
-The roofline's answer takes its method from the origins of the spec fields it
-reads, and carries what the law declined. Steps
+The roofline's answer is declared when an input of the bound that won is stated,
+naming each such input, and carries what the law declined. Steps
 reach the backends through the runner's own `dummy_execution` and
 `_group_step_seconds`, and the backends reach the runner through `run.runner`
-from a run file's `step_linear` and `roofline_floor_s` keys.
+from a run file's `step_linear` and `step_roofline` keys.
 """
 
 import copy
 import json
-import math
 import types
 
 import pytest
@@ -43,13 +42,9 @@ BANDWIDTH = MACHINE.value("device.memory.bandwidth_bytes_per_s") * MACHINE.value
 PARAMETERS, WEIGHTS, KV = 10**9, 2 * 10**9, 1000
 
 
-def roofline(floor=0.0):
+def roofline():
     return StepRooflineBackend(
-        MACHINE,
-        parameters=PARAMETERS,
-        weight_bytes=WEIGHTS,
-        kv_token_bytes=KV,
-        host_floor_s=floor,
+        MACHINE, parameters=PARAMETERS, weight_bytes=WEIGHTS, kv_token_bytes=KV
     )
 
 
@@ -58,18 +53,15 @@ def fallback():
 
 
 @pytest.mark.parametrize(
-    "batch,floor,bound,seconds",
+    "batch,bound,seconds",
     [
-        (view((1, 900, True)), 0.0, "memory", (WEIGHTS + KV * 901) / BANDWIDTH),
-        (view((8192, 8192, False)), 0.0, "compute", 2 * PARAMETERS * 8192 / FLOPS),
-        (view((1, 900, True)), 1.0, "host", 1.0),
+        (view((1, 900, True)), "memory", (WEIGHTS + KV * 901) / BANDWIDTH),
+        (view((8192, 8192, False)), "compute", 2 * PARAMETERS * 8192 / FLOPS),
     ],
-    ids=["decode", "long-prefill", "floor"],
+    ids=["decode", "long-prefill"],
 )
-def test_a_step_is_the_largest_of_its_compute_memory_and_host_bounds(
-    batch, floor, bound, seconds
-):
-    (term,) = roofline(floor).price(batch).terms
+def test_a_step_is_the_larger_of_its_compute_and_memory_bounds(batch, bound, seconds):
+    (term,) = roofline().price(batch).terms
 
     assert term.name == f"roofline.{bound}"
     assert term.seconds == seconds
@@ -116,12 +108,6 @@ def test_a_runner_whose_law_lacks_its_rung_prices_the_step_by_the_roofline():
     assert priced == roofline().price(view((1, 1, True), rung=1)).seconds
 
 
-@pytest.mark.parametrize("floor", [-1e-3, math.nan, math.inf])
-def test_a_host_floor_that_is_not_a_duration_is_refused(floor):
-    with pytest.raises(ValueError, match="host floor"):
-        roofline(floor)
-
-
 def _with_kv_fields(**fields):
     """`SimpleNamespace`, adding the KV fields to the runner's config."""
     if "hf_config" in fields:
@@ -129,20 +115,44 @@ def _with_kv_fields(**fields):
     return types.SimpleNamespace(**fields)
 
 
-def test_a_run_file_floor_puts_the_roofline_under_the_law(monkeypatch, tmp_path):
+def test_a_run_file_step_roofline_puts_the_roofline_under_the_law(
+    monkeypatch, tmp_path
+):
     monkeypatch.setattr(test_run_graph_pool, "SimpleNamespace", _with_kv_fields)
-    installed = _installed(
-        monkeypatch, tmp_path, step_linear=law(), roofline_floor_s=0.004
-    )
+    installed = _installed(monkeypatch, tmp_path, step_linear=law(), step_roofline=True)
     hf = PretrainedConfig.from_dict(json.loads(CONFIG_JSON.read_text())["text_config"])
     kv = KvGeometry.from_hf_config(hf, block_size=16, kv_dtype="bf16")
 
     assert isinstance(installed, StepFallbackBackend)
     assert isinstance(installed.first, StepLinearBackend)
-    assert installed.roofline.host_floor_s == 0.004
     assert installed.roofline.parameters == 8_000_000_000
     assert installed.roofline.weight_bytes == 2 * 8_000_000_000
     assert installed.roofline.kv_token_bytes == kv.layers * kv.bytes_per_token_per_layer
+
+
+def test_a_run_file_step_roofline_false_leaves_the_law_alone(monkeypatch, tmp_path):
+    installed = _installed(
+        monkeypatch, tmp_path, step_linear=law(), step_roofline=False
+    )
+
+    assert isinstance(installed, StepLinearBackend)
+
+
+@pytest.mark.parametrize("value", [0.004, 1, "true", None])
+def test_a_run_file_step_roofline_that_is_not_a_bool_is_refused(
+    monkeypatch, tmp_path, value
+):
+    with pytest.raises(TypeError, match=f"step_roofline is {value!r}"):
+        _installed(monkeypatch, tmp_path, step_linear=law(), step_roofline=value)
+
+
+def test_a_run_file_roofline_floor_is_refused_naming_step_roofline(
+    monkeypatch, tmp_path
+):
+    with pytest.raises(
+        ValueError, match=r"renamed: roofline_floor_s \(now step_roofline\)"
+    ):
+        _installed(monkeypatch, tmp_path, step_linear=law(), roofline_floor_s=0.004)
 
 
 def _spec(origin, origins=None):
@@ -162,13 +172,21 @@ READS = (
 )
 
 
+# Each bound's batch, the spec fields it reads and its stated inputs.
+BOUNDS = {
+    "compute": (view((8192, 8192, False)), "device.compute.", ["parameter_count"]),
+    "memory": (view((1, 900, True)), "device.memory.", []),
+}
+
+
+@pytest.mark.parametrize("bound", BOUNDS)
 @pytest.mark.parametrize(
-    "spec,method,named",
+    "spec,named",
     [
-        (_spec("datasheet"), Method.ANALYTICAL, []),
-        (_spec("probed"), Method.ANALYTICAL, []),
-        (_spec("assumed"), Method.DECLARED, list(READS)),
-        (_spec("transferred-from:mi308x-hjbog18"), Method.DECLARED, list(READS)),
+        (_spec("datasheet"), []),
+        (_spec("probed"), []),
+        (_spec("assumed"), list(READS)),
+        (_spec("transferred-from:mi308x-hjbog18"), list(READS)),
         *[
             (
                 _spec(
@@ -176,7 +194,6 @@ READS = (
                     {p: {"origin": "datasheet"} for p in READS}
                     | {path: {"origin": "assumed"}},
                 ),
-                Method.DECLARED,
                 [path],
             )
             for path in READS
@@ -185,19 +202,41 @@ READS = (
     ids=["datasheet", "probed", "assumed", "transferred"]
     + [f"{path}-assumed" for path in READS],
 )
-def test_the_roofline_is_declared_iff_a_spec_field_it_reads_is_not_its_own(
-    spec, method, named
+def test_a_roofline_term_is_declared_iff_an_input_its_bound_reads_is_stated(
+    spec, named, bound
 ):
+    batch, prefix, keys = BOUNDS[bound]
     backend = StepRooflineBackend(
-        spec,
-        parameters=PARAMETERS,
-        weight_bytes=WEIGHTS,
-        kv_token_bytes=KV,
-        host_floor_s=0.0,
+        spec, parameters=PARAMETERS, weight_bytes=WEIGHTS, kv_token_bytes=KV
     )
-    (term,) = backend.price(view((1, 900, True))).terms
+    (term,) = backend.price(batch).terms
+    note = term.provenance.note
+    fields = [p for p in named if p.startswith(prefix)]
 
-    assert term.provenance.method is method
-    assert [p for p in READS if p in term.provenance.note] == named
-    if named:
-        assert "no successor" in term.provenance.note
+    assert term.name == f"roofline.{bound}"
+    assert term.provenance.method is (
+        Method.DECLARED if fields or keys else Method.ANALYTICAL
+    )
+    assert [k for k in ("parameter_count", "weights") if k in note] == keys
+    assert [p for p in READS if p in note] == fields
+
+
+def test_a_memory_bound_step_over_meta_build_weights_is_analytical(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(test_run_graph_pool, "SimpleNamespace", _with_kv_fields)
+    datasheet = copy.deepcopy(DOCUMENT)
+    datasheet["provenance"]["origin"] = "datasheet"
+    installed = _installed(
+        monkeypatch,
+        tmp_path,
+        step_linear=law(),
+        step_roofline=True,
+        machine=datasheet,
+    )
+    (term,) = installed.roofline.price(view((1, 90000, True))).terms
+    note = term.provenance.note
+
+    assert term.name == "roofline.memory"
+    assert term.provenance.method is Method.ANALYTICAL
+    assert "weights" not in note and "parameter_count" not in note

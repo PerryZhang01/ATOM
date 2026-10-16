@@ -13,11 +13,14 @@ import threading
 import time
 
 import pytest
+from test_memory_readings import META_8B
 from test_parity_record import BLOCK, _config, _prompt, _Runner
+from test_pd_slice import PD
 from test_run_step_grid import B37, decode, deployment
 from test_vertical_slice import _run_file
 
 from atom.compass import run as compass_run
+from atom.compass.clock import LpId
 from atom.compass.parity import ARRIVALS, ENV, compare, traffic
 from atom.compass.parity.replay import ReplayBackend
 from atom.compass.runner.overrides import install_cost_backend
@@ -143,7 +146,7 @@ def test_a_run_file_naming_a_record_replays_it_on_the_engine_clock(
     engine = compass_run._PublishedClock(
         compass_run.ENGINE, compass_run.channel_table(run), None
     )
-    compass_run.runner(r)
+    compass_run.runner(r, META_8B)
     engine.now = 0.002
     charged = [r.forward(decode(B37)).predicted_s for _ in "ab"]
     ends = [(ENTER * n + EXIT - SENT[0]) / 1e9 for n in (1, 2)]
@@ -189,3 +192,31 @@ def test_a_real_workload_writes_when_each_request_was_admitted(tmp_path):
     arrivals = json.loads((tmp_path / ARRIVALS).read_text())
     waits = [a - s for s, a in zip(arrivals["sent_ns"], arrivals["admitted_ns"])]
     assert len(waits) == 3 and all(0.02e9 <= w < 0.2e9 for w in waits), waits
+
+
+@pytest.mark.parametrize("role, side", [("kv_producer", "P"), ("kv_consumer", "D")])
+def test_each_side_of_a_prefill_decode_run_replays_its_own_record(
+    real, tmp_path, monkeypatch, role, side
+):
+    directory, _ = real
+    record = directory / {"P": "prefill", "D": "decode"}[side]
+    record.mkdir()
+    for name in ("dp0.jsonl", ARRIVALS):
+        (directory / name).rename(record / name)
+    monkeypatch.delenv(ENV)
+    r = deployment(
+        tmp_path, kv_transfer_config={"kv_connector": "compass", "kv_role": role}
+    )
+    run = json.loads(_run_file(tmp_path, **PD).read_text())
+    del run["step_stub"]
+    (tmp_path / "run.json").write_text(json.dumps(run | {"replay": str(directory)}))
+    monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
+    monkeypatch.setenv(compass_run.NOW_ENV, str(tmp_path / "now.bin"))
+    engine = compass_run._PublishedClock(
+        LpId(f"engine-{side}"), compass_run.channel_table(run), None
+    )
+    compass_run.runner(r, META_8B)
+    engine.now = 0.002
+    charged = [r.forward(decode(B37)).predicted_s for _ in "ab"]
+    ends = [(ENTER * n + EXIT - SENT[0]) / 1e9 for n in (1, 2)]
+    assert charged == pytest.approx([t - engine.now for t in ends])

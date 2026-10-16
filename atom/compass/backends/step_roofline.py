@@ -8,15 +8,18 @@ the machine's derated peaks:
 
     compute = 2 . P . Sum N_Q / flops
     memory  = (weight bytes + KV bytes per token . (Sum N_KV + Sum N_Q)) / bandwidth
-    step    = max(compute, memory, host floor)
+    step    = max(compute, memory)
 
 P is the parameter count one rank holds. The weights are read once per step,
 the KV each row attends over is read and the KV of the tokens computed is
-written, one token's KV spanning every paged layer. The host floor is the
-stated launches x h of one step. The step's one term is named by the bound
-that won. Its method follows the origins of the machine spec fields it reads
-(`FIELDS`): `analytical` when each is from a datasheet or probed, `declared`,
-with a note naming the others, when any is assumed or transferred.
+written, one token's KV spanning every paged layer. The step is device busy
+time only: host time is the runner's host recurrence, which composes it with
+this price. The step's one term is named by the bound that won. It is
+`declared`, its note naming each stated input, when an input that bound reads
+is stated, and `analytical` otherwise: compute reads `parameter_count` and
+`device.compute` (`FIELDS`), memory `device.memory`. A spec field from a
+datasheet or probe is not stated, the run file's numbers always are, and the
+weights never are: they are read off a meta build.
 
 `StepFallbackBackend` asks a backend first and the roofline only for a step
 that backend refuses, so a law with no vector for a step still prices it. The
@@ -29,16 +32,15 @@ of another granularity is refused at construction.
 from __future__ import annotations
 
 import dataclasses
-import math
 
 from atom.compass.backends.base import CostBackend, Granularity
 from atom.compass.backends.cost import CostTerm, StepCost
-from atom.compass.backends.provenance import Method, Provenance, combine
+from atom.compass.backends.provenance import Method, Provenance
 from atom.compass.backends.resolver import CostRefused
 from atom.compass.backends.shape import BatchView, sum_context, sum_tokens
 
 SOURCE = "step-roofline"
-#: The machine spec fields a roofline reads, whose origins decide its method.
+#: The machine spec fields a roofline reads; `device.<bound>` counts in that bound.
 FIELDS = (
     "device.compute.bf16_flops",
     "device.compute.derate",
@@ -53,7 +55,7 @@ def _method(origin: str) -> Method:
 
 
 class StepRooflineBackend(CostBackend):
-    """A step as the larger of its compute time, memory time and host floor."""
+    """A step as the larger of its compute time and memory time."""
 
     def __init__(
         self,
@@ -62,7 +64,6 @@ class StepRooflineBackend(CostBackend):
         parameters: int,
         weight_bytes: int,
         kv_token_bytes: int,
-        host_floor_s: float,
     ) -> None:
         # ponytail: bf16 peak and GEMM flops only; attention flops, a
         # quantized model's rate and TP collectives are left out until a
@@ -78,26 +79,17 @@ class StepRooflineBackend(CostBackend):
                 f"a roofline needs parameters, weight bytes and KV bytes per "
                 f"token, got {parameters}, {weight_bytes} and {kv_token_bytes}"
             )
-        if not math.isfinite(host_floor_s) or host_floor_s < 0.0:
-            raise ValueError(
-                f"the host floor is {host_floor_s} s; it is a non-negative duration"
-            )
         self.parameters = parameters
         self.weight_bytes = weight_bytes
         self.kv_token_bytes = kv_token_bytes
-        self.host_floor_s = float(host_floor_s)
         origins = {path: machine.origin(path)["origin"] for path in FIELDS}
-        self.method = combine(map(_method, origins.values()))
-        stated = [
-            f"{p} {o}" for p, o in origins.items() if _method(o) is Method.DECLARED
-        ]
-        self.note = (
-            f"{', '.join(stated)} in the machine spec {machine.value('name')}; "
-            "no successor: the roofline is the last step-level source, and "
-            "reads analytical once these fields are from a datasheet or probed"
-            if stated
-            else ""
-        )
+        stated = {"compute": ["parameter_count stated in the run file"], "memory": []}
+        spec = f"in the machine spec {machine.value('name')}"
+        for p, o in origins.items():
+            if _method(o) is Method.DECLARED:  # p is device.<bound>.<field>
+                stated[p.split(".")[1]].append(f"{p} {o} {spec}")
+        none = "; no successor: the roofline is the last step-level source"
+        self.note = {b: "; ".join(s) + none for b, s in stated.items() if s}
 
     @property
     def granularity(self) -> Granularity:
@@ -110,25 +102,22 @@ class StepRooflineBackend(CostBackend):
         bounds = {
             "compute": 2 * self.parameters * tokens / self.flops,
             "memory": moved / self.bandwidth,
-            "host": self.host_floor_s,
         }
         bound = max(bounds, key=bounds.get)
         detail = "max of " + ", ".join(f"{k} {v:.6g} s" for k, v in bounds.items())
+        method = Method.DECLARED if bound in self.note else Method.ANALYTICAL
         return StepCost(
             [
                 CostTerm(
                     f"roofline.{bound}",
                     bounds[bound],
-                    Provenance(self.method, detail, SOURCE, note=self.note),
+                    Provenance(method, detail, SOURCE, note=self.note.get(bound, "")),
                 )
             ]
         )
 
     def describe(self) -> str:
-        return (
-            f"step roofline; {self.parameters} parameters, "
-            f"{self.host_floor_s:g} s host floor"
-        )
+        return f"step roofline; {self.parameters} parameters"
 
 
 class StepFallbackBackend(CostBackend):

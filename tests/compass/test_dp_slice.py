@@ -10,6 +10,7 @@ The run tests need a driver and `ATOM_COMPASS_SLICE_MODEL`, as in
 `test_vertical_slice`; the rest run anywhere.
 """
 
+import copy
 import json
 import math
 import os
@@ -22,7 +23,9 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from test_memory_readings import DOCUMENT
 from test_vertical_slice import (
+    CONSTANT,
     MODEL,
     NEEDS_A_RUN,
     TREE,
@@ -35,8 +38,8 @@ from test_vertical_slice import (
 
 from atom.compass import run as compass_run
 from atom.compass.carriers import tracestate_with
-from atom.compass.clock import NER, TAR, LpId
-from atom.compass.detect.determinism import compare_step_tables
+from atom.compass.clock import NER, LpId
+from atom.compass.detect.scenario import check_run
 from atom.compass.parity import read
 from atom.compass.runner.overrides import start_on_host
 from atom.utils import CpuGpuBuffer, clock
@@ -45,7 +48,18 @@ from atom.utils.distributed import utils
 
 #: One request per entry, by its max_tokens; unequal, so one rank finishes first.
 MAX_TOKENS = (2, 4, 6, 8)
+#: The slice's machine with the device constants of the layouts it runs, one
+#: TP1 rank of two, with and without expert parallelism, read as TP1's.
+DP_MACHINE = copy.deepcopy(DOCUMENT)
+for _name in (
+    "driver_and_collective_reserve_bytes",
+    "allocator_retained_after_load_bytes",
+):
+    _width = DP_MACHINE["device"]["runtime_constants"][_name]
+    _width["1x2"] = _width["1x2x2"] = _width[1]
 DONE = "data: [DONE]"
+#: The slice's parallelism: two DP ranks at TP 1, with expert parallelism.
+DP_WIDTH = ["-tp", "2", "--enable-dp-attention", "--enable-expert-parallel"]
 
 
 @pytest.fixture(autouse=True)
@@ -85,10 +99,14 @@ class Requests(Traffic):
         self.open = set(range(done, len(MAX_TOKENS)))
 
 
-def run_dp_slice(out: Path, seed: str) -> dict:
-    """One run in its own process tree: its step table, summary, parity record."""
+def run_dp_slice(out: Path, seed: str, width=DP_WIDTH, dp=2) -> dict:
+    """One run in its own process tree: its step table, summary, parity record.
+
+    `width` is the server's parallelism flags, `dp` the DP ranks they start."""
     out.mkdir()
-    run_file = _run_file(out, data_parallel_size=2)
+    run_file = _run_file(
+        out, data_parallel_size=dp, step_stub=CONSTANT, machine=DP_MACHINE
+    )
     port = _free_port()
     env = dict(
         os.environ,
@@ -98,7 +116,7 @@ def run_dp_slice(out: Path, seed: str) -> dict:
         ATOM_COMPASS_PARITY_RECORD=str(out / "parity"),
     )
     args = ["--model", MODEL, "--host", "127.0.0.1", "--server-port", str(port)]
-    args += ["-tp", "2", "--enable-dp-attention", "--enable-expert-parallel"]
+    args += width
     args += ["--enforce-eager", "--max-model-len", "2048"]
     with open(out / "server.log", "w") as log:
         server = subprocess.Popen(
@@ -122,6 +140,7 @@ def run_dp_slice(out: Path, seed: str) -> dict:
     tail = (out / "server.log").read_text()[-4000:]
     assert code == 0, f"the server exited {code} after the finish:\n{tail}"
     return {
+        "out": out,
         "table": (out / compass_run.STEP_TABLE_FILE).read_text(),
         "summary": json.loads((out / compass_run.SUMMARY_FILE).read_text()),
         "events": traffic.events,
@@ -135,56 +154,22 @@ def runs(tmp_path_factory):
     return [run_dp_slice(root / f"seed{seed}", seed) for seed in ("1", "2")]
 
 
-def step_rows(run: dict) -> list[tuple]:
-    """(step, rank, batch size, dummy, step seconds): each rank's forward calls
-    beside the engine LP's TAR grants, one grant per joined step."""
-    seconds = [
-        float(f[2]) - float(f[1])
-        for f in map(str.split, run["table"].splitlines()[1:])
-        if f[0] == "engine" and f[3] == TAR
-    ]
-    steps = run["parity"]
-    assert sorted(steps) == [0, 1]
-    assert len(steps[0]) == len(steps[1]) == len(seconds)
-    return [
-        (k, rank, len(steps[rank][k]["batch"]), steps[rank][k]["is_dummy_run"], s)
-        for k, s in enumerate(seconds)
-        for rank in (0, 1)
-    ]
-
-
 @NEEDS_A_RUN
-def test_four_requests_are_answered_and_the_run_ends_by_the_finish(runs):
+def test_four_requests_meet_every_scenario_check_on_both_ranks(runs):
     run = runs[0]
-    rows = step_rows(run)
-    print("\nstep rank batch dummy seconds")
-    for row in rows:
-        print(*row)
-    assert sum(line == DONE for _, line in run["events"]) == len(MAX_TOKENS)
-    finish = [r for r in run["table"].splitlines()[1:] if " inf " in r]
-    assert sorted(r.split()[0] for r in finish) == ["engine", "frontend", "traffic"]
-    assert run["summary"]["schedule"]["refusals"]["count"] == 0
-    # Both ranks served requests, and the engine LP's every step took time.
-    assert {rank for _, rank, size, _, _ in rows if size} == {0, 1}
-    assert all(s > 0 for *_, s in rows)
-    # A step where one rank ran a request and the other its dummy batch.
-    by_step = {}
-    for k, rank, size, dummy, _ in rows:
-        by_step.setdefault(k, {})[rank] = (size, dummy)
-    assert any(
-        sorted(d for _, d in ranks.values()) == [False, True]
-        and any(size for size, _ in ranks.values())
-        for ranks in by_step.values()
+    print(f"\n{run['table']}")
+    failed = check_run(
+        [r["out"] for r in runs],
+        MAX_TOKENS,
+        [line for _, line in run["events"]],
+        {"engine": run["out"] / "parity"},
     )
-
-
-@NEEDS_A_RUN
-def test_two_hash_seeds_give_byte_identical_step_tables(runs):
-    left, right = (r["table"] for r in runs)
-    code, report = compare_step_tables(left, right, "seed 1", "seed 2")
-    print(f"\n{report}")
-    assert code == 0, report
-    assert left == right
+    assert not failed, "\n".join(failed)
+    steps = run["parity"]
+    # Both ranks served requests, and in some step one rank ran a request
+    # while the other ran its dummy batch.
+    assert all(any(s["batch"] for s in steps[rank]) for rank in (0, 1))
+    assert any(a["is_dummy_run"] != b["is_dummy_run"] for a, b in zip(*steps.values()))
 
 
 # --- without a driver ---------------------------------------------------------
@@ -250,7 +235,7 @@ def test_the_authority_joins_the_ranks_and_releases_each_its_own_channels(tmp_pa
     assert released["dp1"][request] == [(0, 1.0)]
     assert all(ch.endswith("#dp0") for ch in released["dp0"])
     assert [str(r) for r in ca.steps.rows if r.event == "release"] == [
-        f"engine 1.0 1.0 release {request} 0 -"
+        f"engine 0.0 1.0 release {request} 0 -"
     ]
 
 
@@ -385,6 +370,8 @@ def test_a_dp_rank_starts_on_the_host_with_no_device_communicator(monkeypatch):
     monkeypatch.delenv("MASTER_PORT", raising=False)
     config = SimpleNamespace(
         tensor_parallel_size=1,
+        tp_world_size=1,
+        decode_context_parallel_size=1,
         prefill_context_parallel_size=1,
         pipeline_parallel_size=1,
         master_addr="127.0.0.1",
@@ -410,7 +397,12 @@ def test_a_dp_rank_starts_on_the_host_with_no_device_communicator(monkeypatch):
         "data_parallel_rank": 1,
     }
     assert calls["world"] == ((), world)
-    groups = {"data_parallel_size": 2, "custom_group_config": {}}
+    groups = {
+        "decode_context_model_parallel_size": 1,
+        "data_parallel_size": 2,
+        "prefill_context_model_parallel_size": 1,
+        "custom_group_config": {},
+    }
     assert calls["groups"] == ((1, 1), groups)
 
 
@@ -445,6 +437,8 @@ def test_a_dp_rank_under_a_managed_store_joins_it_before_aiter_builds_groups(
     monkeypatch.delenv("MASTER_PORT", raising=False)
     config = SimpleNamespace(
         tensor_parallel_size=1,
+        tp_world_size=1,
+        decode_context_parallel_size=1,
         prefill_context_parallel_size=1,
         pipeline_parallel_size=1,
         master_addr="127.0.0.1",

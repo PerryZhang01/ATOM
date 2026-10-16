@@ -24,8 +24,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
         println!("cargo:rerun-if-changed=proto");
     }
-    // Rebuild triggers
-    println!("cargo:rerun-if-changed=Cargo.toml");
+    // Rebuild triggers: every top-level entry but `target` (each build writes
+    // it), and the git files a commit or checkout rewrites. A new
+    // file directly in this directory is not seen until one of those changes.
+    for entry in std::fs::read_dir(".")?.flatten() {
+        if entry.file_name() != "target" {
+            println!("cargo:rerun-if-changed={}", entry.path().display());
+        }
+    }
+    for name in ["HEAD", "logs/HEAD"] {
+        let path = run_cmd("git", &["rev-parse", "--git-path", name]).unwrap_or_default();
+        if std::path::Path::new(&path).exists() {
+            println!("cargo:rerun-if-changed={path}");
+        }
+    }
 
     // Set version info environment variables
     let version = read_cargo_version().unwrap_or_else(|_| DEFAULT_VERSION.to_string());
@@ -99,9 +111,11 @@ fn git_commit() -> Option<String> {
     run_cmd("git", &["rev-parse", "--short", "HEAD"])
 }
 
+/// This directory's status only; `--no-optional-locks` keeps git from
+/// taking the index lock a concurrent git command in the tree needs.
 fn git_status() -> Option<String> {
-    run_cmd("git", &["status", "--porcelain"])
-        .map(|s| if s.is_empty() { "clean" } else { "dirty" }.into())
+    let args = ["--no-optional-locks", "status", "--porcelain", "--", "."];
+    run_cmd("git", &args).map(|s| if s.is_empty() { "clean" } else { "dirty" }.into())
 }
 
 fn rustc_version() -> Option<String> {

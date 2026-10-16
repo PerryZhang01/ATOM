@@ -15,9 +15,11 @@ import numpy as np
 import pytest
 import test_run_graph_pool
 from test_dp_step_max import prefill, runner
+from test_memory_readings import DOCUMENT, META_8B
 from test_run_graph_pool import _reserved
 from test_vertical_slice import _run_file
 
+from atom.compass.artifacts import machine_spec_digest
 from atom.compass.backends import (
     BatchView,
     Coefficients,
@@ -29,6 +31,7 @@ from atom.compass.backends import (
     StepLinearLaw,
     StepStubBackend,
 )
+from atom.compass.spec import MachineSpec
 
 STAGE1 = Coefficients(decode_request=0.0)
 
@@ -51,6 +54,7 @@ def law(coefficients=STAGE1, prefill_hull=PREFILL_HULL, **decode_hulls):
     decode["graph_padding"] = c.decode_padding
     return {
         "provenance": "the stage-1 coefficients",
+        "machine_spec": machine_spec_digest(MachineSpec.from_mapping(DOCUMENT)),
         "prefill": {
             "coefficients": {
                 "step": c.prefill_step,
@@ -345,4 +349,4 @@ def test_a_run_file_step_linear_is_refused_above_tensor_parallel_width_one(monke
     monkeypatch.setattr(run, "spec", lambda: {"step_linear": law()})
     tp2 = SimpleNamespace(config=SimpleNamespace(tensor_parallel_size=2))
     with pytest.raises(ValueError, match="tensor_parallel_size 2"):
-        run.runner(tp2)
+        run.runner(tp2, META_8B)

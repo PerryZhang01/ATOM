@@ -17,9 +17,9 @@ applies symmetrically to both sides.
 
 ---
 
-## D43.1. ATOM's own test suite is the first validation layer, in two tiers — one of them free
+## D43.1. ATOM's own test suite is the first validation layer, in two gates — one of them free
 
-Asked directly: can Compass reuse existing ATOM unit tests? **Yes, and the CPU tier of that
+Asked directly: can Compass reuse existing ATOM unit tests? **Yes, and the CPU gate over that
 suite is the cheapest correctness evidence in this document — but it validates a different
 property than everything else here.**
 
@@ -39,44 +39,44 @@ purely a packaging problem: collecting it alone at `236abfd9a`, and again at `fa
 `test_vllm_deepseek_v4_proxy_state_arena_layout.py`), **1 `ModuleNotFoundError: No module
 named 'sglang'`**, and **3 `ImportError: cannot import name 'fused_gdn_gating' from
 'atom.model_ops.attention_gdn' (unknown location)`** — a module left half-initialised by the
-first three, not a fourth cause. With the 2 tier files the table below names, which reach
+first three, not a fourth cause. With the 2 CPU-gate files the table below names, which reach
 `rocminfo` run alone at `fada7424e` too, 29 + 2 + 3 = 34 is a floor: the other 23 plugin files collect
 here and are never run, so nothing is measured about what they would touch.
-`tests/plugin/`'s 30 files at `fada7424e` are dropped whole because the tier targets ATOM and sglang
+`tests/plugin/`'s 30 files at `fada7424e` are dropped whole because the CPU gate targets ATOM and sglang
 and vllm are in neither image — the measured reason for 27 of them, not for all 30. The
-suite as a whole is **not** GPU-free and never was. What is GPU-free is a *tier* of it, and
-that tier is genuinely green.
+suite as a whole is **not** GPU-free and never was. What is GPU-free is a *subset* of it, the CPU gate's, and
+that subset is genuinely green.
 
-### The two tiers
+### The two gates
 
-| Tier | What runs | Measured result |
+| Gate | What runs | Measured result |
 |---|---|---|
-| **CPU tier** — per task, and green is the bar | Every test file outside `tests/plugin/` and `scripts/compass/cpu_gate_exclude.txt`. Driven by `scripts/compass/gate_cpu.sh`; no driver is touched **as a batch**. That is the weaker and correct claim: `test_postprocess_width.py` and `test_v4_checkpoint_slot_copy.py` were both in the tier at `236abfd9a`, and each reached `rocminfo` when run *alone* (`no tests collected, 1 error`, rc=2, each, measured in `xiaobizh_n18_cpu`); inside the gate they module-skipped on the mock an earlier file installs. Driver-freedom here is a property of the batch, not of every file in it. | Green, `GATE_CPU_RC=0`, read at `bdd244c57` in `xiaobizh_n18_cpu`. The counts are not restated here, because they move with every test the tier gains or loses: `gate_cpu.sh` prints them under the `commit:` line of the tree it ran, and `scripts/compass/README.md` says what the tier runs. |
-| **GPU superset** — per wave, judged as a **delta**, never as "green" | `tests/ --ignore=tests/plugin` in the GPU container, driven by `scripts/compass/gate_gpu.sh`. | Pure upstream `661ef7661`, the ATOM the nightly 20261013 image ships, on node 18's MI308X: the run, its toolchain and its counts are the `BASE_*` constants in `scripts/compass/gate_gpu.sh`, and every failing node-id is on file verbatim in `scripts/compass/gpu_gate_known_failures.txt` and compared by name, so "N failed" is checked against "the *same* N failed". Until the upstream merge the baseline was `fe9ea043c` on node 18, whose five failures (four bf16-ULP `allclose` cases in `tests/test_fused_compress_ragged.py` and the bitwise `tests/test_dcp_merge_ops.py::test_row_view_matches_output_slicing_bitwise`) are still in the list. |
+| **CPU gate** — per task, and green is the bar | Every test file outside `tests/plugin/` and `scripts/compass/cpu_gate_exclude.txt`. Driven by `scripts/compass/gate_cpu.sh`; no driver is touched **as a batch**. That is the weaker and correct claim: `test_postprocess_width.py` and `test_v4_checkpoint_slot_copy.py` were both in the gate at `236abfd9a`, and each reached `rocminfo` when run *alone* (`no tests collected, 1 error`, rc=2, each, measured in `xiaobizh_n18_cpu`); inside the gate they module-skipped on the mock an earlier file installs. Driver-freedom here is a property of the batch, not of every file in it. | Green, `GATE_CPU_RC=0`, read at `bdd244c57` in `xiaobizh_n18_cpu`. The counts are not restated here, because they move with every test the gate gains or loses: `gate_cpu.sh` prints them under the `commit:` line of the tree it ran, and `scripts/compass/README.md` says what the gate runs. |
+| **GPU gate**, a superset — per wave, judged as a **delta**, never as "green" | `tests/ --ignore=tests/plugin` in the GPU container, driven by `scripts/compass/gate_gpu.sh`. | Pure upstream `661ef7661`, the ATOM the nightly 20261013 image ships, on node 18's MI308X: the run, its toolchain and its counts are the `BASE_*` constants in `scripts/compass/gate_gpu.sh`, and every failing node-id is on file verbatim in `scripts/compass/gpu_gate_known_failures.txt` and compared by name, so "N failed" is checked against "the *same* N failed". Until the upstream merge the baseline was `fe9ea043c` on node 18, whose five failures (four bf16-ULP `allclose` cases in `tests/test_fused_compress_ragged.py` and the bitwise `tests/test_dcp_merge_ops.py::test_row_view_matches_output_slicing_bitwise`) are still in the list. |
 
 `test_dp_metadata.py`, `test_dp_sync_layout.py`
 and `test_forward_mode.py` were once excluded and were re-measured CPU-green (`16`); prose
 saying those three need the driver is stale.
 
-### The tests that matter to Compass, and which tier each is in
+### The tests that matter to Compass, and which gate runs each
 
-| Test | Tier | Covers |
+| Test | Gate | Covers |
 |---|---|---|
 | `test_scheduler.py` | CPU | `Scheduler` public API — admission, `ScheduledBatch`, `ScheduledBatchOutput`, spec stats |
 | `test_prefill_scheduler.py`, `test_scheduler_partial_prefill_tail.py` | CPU | chunked prefill boundaries |
 | `test_block_manager.py`, `test_block_pool.py` | CPU | the block accounting D13 relies on running unmodified |
-| `test_prefix_cache_accuracy.py` | **neither** | nothing. It holds **no test function at all** — it is an `argparse` script that drives a live server on `localhost:8000`, and `pytest` reports `no tests ran` for it in both containers. The prefix-cache behaviour doc `03` declares correct-by-construction is not covered by this file. |
-| `test_prefill_prefix_vs_native.py` | **GPU only** | the prefix-cache behaviour doc `03` declares correct-by-construction. It module-skips on the CPU tier ("needs a real GPU") and gives 4 passed in the GPU container (`xiaobizh_n18`, one card, at `cb684287f`), so the prefix-cache row is GPU-tier evidence and nothing else. |
+| `test_prefix_cache_accuracy.py` | **neither** | nothing. It holds **no test function at all** — it is an `argparse` script that drives a live server on `localhost:8000`, and `pytest` reports `no tests ran` for it in both containers. The prefix-cache behaviour doc `03` states is correct by construction is not covered by this file. |
+| `test_prefill_prefix_vs_native.py` | **GPU only** | the prefix-cache behaviour doc `03` states is correct by construction. It module-skips on the CPU gate ("needs a real GPU") and gives 4 passed in the GPU container (`xiaobizh_n18`, one card, at `cb684287f`), so the prefix-cache row is GPU-gate evidence and nothing else. |
 | `test_scheduled_batch_marshal.py` | CPU | the IPC payloads the channel wrappers timestamp (`01` D4, K4/K5) |
-| `test_block_table_marshal.py` | **GPU only** | the block-table half of those same payloads — excluded at collection time, so the CPU tier does not see it |
-| `test_kv_connector_scheduler.py` | **neither** | the connector factory doc `01` D6 registers a simulated connector into — except that it runs nothing in either tier: `1 skipped`, because ATOM #690 split `kv_transfer_engine` into `moriio` and the test's imports were never updated. |
+| `test_block_table_marshal.py` | **GPU only** | the block-table half of those same payloads — excluded at collection time, so the CPU gate does not see it |
+| `test_kv_connector_scheduler.py` | **neither** | the connector factory doc `01` D6 registers a simulated connector into — except that it runs nothing in either gate: `1 skipped`, because ATOM #690 split `kv_transfer_engine` into `moriio` and the test's imports were never updated. |
 | `test_disagg_modes.py`, `test_disagg_types.py` | CPU | the PD paths of M1's simulated 1P+1D run and of M2's 1P+1D cells |
 | `test_dp_load_balance.py`, `test_dp_metadata.py`, `test_dp_sync_layout.py` | CPU | the DP paths of M2's DP-attention cells |
 
 **The two "neither" rows above are a finding, not a gap in the table**, and there is a
 third file in the same position that was never listed here at all.
 `test_prefix_cache_accuracy.py`, `test_kv_connector_scheduler.py` and
-`test_transfer_engine.py` run nothing in *either* tier — measured per file by P0.2 in both
+`test_transfer_engine.py` run nothing in *either* gate — measured per file by P0.2 in both
 containers, `no tests ran` for the first and `1 skipped` for the other two. That
 measurement was taken at `83daf636d`, a tree superseded for every pass count in this
 document; it is retained because it is a statement about whether these files contain
@@ -91,7 +91,7 @@ Compass's changes. Every one of doc `01` D4's edits — clock reads on the LP cl
 `next_event` (K3), timestamped sends and counted receives (K4, K5), timers on the LP clock
 (K7) — lands in code these tests cover. A
 simulated run "makes the same scheduling decisions as a real one" is not a hope if the CPU
-tier passes unchanged and the GPU superset's delta is zero; it is the definition of what the
+gate passes unchanged and the GPU gate's delta is zero; it is the definition of what the
 suite checks.
 
 **What it does not prove:** nothing about accuracy. No ATOM test knows what a step should
@@ -100,7 +100,7 @@ suite checks.
 ### How it is used, as four rules
 
 1. **The suite is a merge gate, run on every Compass change, unmodified.** Not adapted, not
-   subsetted by hand. The CPU tier's exclusion list is not an exception to that: it is
+   subsetted by hand. The CPU gate's exclusion list is not an exception to that: it is
    *generated* — `regen_cpu_gate_exclude.sh` iterates collection to a fixed point — and every
    hand-kept entry carries its observed failure above it, so an inconvenient test cannot be
    quietly removed. The moment a Compass change requires editing an ATOM test to keep it
@@ -110,17 +110,17 @@ suite checks.
    decision — which is precisely the sorting rule doc `01` D5 exists to apply, and the test
    found a misclassification.
 3. **New Compass components get tests in the same suite**, in `tests/compass/`, in ATOM's
-   style, so they run in the CPU tier on the same driverless box. The clock protocol, the
+   style, so they run in the CPU gate on the same driverless box. The clock protocol, the
    straggler detector and the cost-backend interface are all testable without a device.
    Those tests are the 74 in the decomposition above.
-4. **The CPU tier refuses rather than reporting "not required" (principle 6).** Green at the
-   CPU tier is not green for the task when the diff lands in what the CPU tier cannot see. That
+4. **The CPU gate refuses rather than reporting "not required" (principle 6).** Green at the
+   CPU gate is not green for the task when the diff lands in what the CPU gate cannot see. That
    blind spot is a file, not a sentence: `scripts/compass/gpu_gate_triggers.txt`, **30 paths**,
    generated rather than hand-written — the counts in its own header included. The rule:
-   an `atom` module named by an excluded test is a blind spot unless a CPU-tier test that
+   an `atom` module named by an excluded test is a blind spot unless a CPU-gate test that
    **actually runs** names it too. Imports are read at any indentation on the excluded side
    (190 of this tree's `import atom.*` lines are indented), but coverage is credited only for
-   a module-level import in a CPU-tier file that collects at least one test — the only
+   a module-level import in a CPU-gate file that collects at least one test — the only
    imports that provably execute. `regen_gpu_gate_triggers.sh` reproduces it, and a trailing
    `/` matches a subtree.
    `gate_cpu.sh` exits **98** when a changed path matches a trigger and
@@ -128,22 +128,22 @@ suite checks.
    cannot determine the diff at all (no git, no `COMPASS_CHANGED_FILES`) or cannot name the
    tree the attestation would apply to. An unanswerable question is refused, not answered
    "no". The previous form of this rule was a prose list of areas — "EPLB, DP metadata,
-   cudagraph bounds, block tables" — which both missed modules and named two the CPU tier
+   cudagraph bounds, block tables" — which both missed modules and named two the CPU gate
    does cover.
 
    **The trigger file errs in both directions, so do not cite it as a floor.** Toward
-   *firing*: an indented import in a CPU-tier test that does run is not credited, so its
-   module can be listed although the CPU tier reaches it. Toward *silence*: imports are read
+   *firing*: an indented import in a CPU-gate test that does run is not credited, so its
+   module can be listed although the CPU gate reaches it. Toward *silence*: imports are read
    as text and not resolved as a graph, so a module reached only transitively is invisible.
-   A path **absent** from the file is not a claim that the CPU tier covers it, and a path
+   A path **absent** from the file is not a claim that the CPU gate covers it, and a path
    **present** is not proof that it does not. `16`'s measured test and lint baselines say
-   which of the two mistakes to prefer — running the GPU tier when in doubt is never the wrong one — and the asymmetry
+   which of the two mistakes to prefer — running the GPU gate when in doubt is never the wrong one — and the asymmetry
    above is that preference written down. Cite it that way wherever it is cited.
 
 `16` states the same rule as the per-task gate, under its measured test and lint
 baselines; the two must be amended together.
 
-**Baseline caveat.** Take each tier's *current* pass/fail state as the baseline before the
+**Baseline caveat.** Take each gate's *current* pass/fail state as the baseline before the
 first Compass commit, and record it with the tree, container and versions it was measured on
 — the GPU baseline above is a standing example of what an unrecorded torch/ROCm version
 costs. A pre-existing failure attributed to Compass costs a day; this has already happened
@@ -227,7 +227,7 @@ consecutive repeats is a lower bound and not a measurement."*
 | 0.6B, 5 real runs: TTFT | 3.55–3.89 s — **9%** |
 
 The conclusion then was *"the real machine is not on the knife edge; only the simulator
-is."* **That was 20 requests from one session under declared arrivals.** Under closed-loop
+is."* **That was 20 requests from one session under stated arrivals.** Under closed-loop
 replay at 256 clients, request *k+1* arrives at `finish(k) + delay`, so step-time jitter
 feeds back into arrival times and *which* requests coexist depends on arrival ordering
 across independent sessions. Mitigating: within-session inter-arrival p50 is **5.61 s** and
@@ -260,7 +260,7 @@ A metric failing either test is reported **inadmissible**, not silently dropped.
 
 ## D46. Three metric families, ordered by robustness
 
-An extensible registry. Each metric declares a **family**, an **extractor** (step table →
+An extensible registry. Each metric states a **family**, an **extractor** (step table →
 value) and a **comparator** (value, value → distance). Admission is measured by D45's
 two-sided test, not asserted. New metrics are expected; the families and the admission
 procedure are the stable part.
@@ -332,12 +332,12 @@ The tool reports **three numbers side by side** — on totals, holding out the l
 contributor, and the median per step:
 
 ```
-prefill  106 steps   measured 235.56 s   priced 228.20 s
+prefill  106 steps   real 235.56 s       priced 228.20 s
   on totals                 -3.13 %
   holding out step 0        -0.27 %      <- the unmodelled cold start
   median per step           -0.09 %
 
-decode  4346 steps   measured  73.17 s   priced  73.10 s
+decode  4346 steps   real  73.17 s       priced  73.10 s
   on totals                 -0.09 %
   holding out step 148      -0.07 %
   median per step           +0.09 %
@@ -376,7 +376,7 @@ Validation costs **no GPU time**: every hardware run already prints the real bre
 
 ### The decision the byte error exists to produce
 
-| | modelled | measured | error |
+| | modelled | real | error |
 |---|---|---|---|
 | 0.6B TP=1 | 96,033 | 96,051 | **−0.02%** |
 | 0.6B TP=2 | 183,709 | 183,745 | **−0.02%** |
@@ -421,11 +421,11 @@ Each of these voided real percentages before.
    family**. Both are doc `09` D58/D59 — the geometry of coverage and the choice of a
    functional form are fitting questions and are argued there, with the measurements.
    Named here because a validation run applies both: a step outside the hull is priced
-   `extrapolated` and reported apart (D50.1), not refused, and a law whose family was
+   `estimated`, unvalidated, and reported apart (D50.1), not refused, and a law whose family was
    chosen by LOO alone is not admissible evidence.
-7. **A speculative acceptance cell run at declared acceptance is not acceptance
+7. **A speculative acceptance cell run at an assumed acceptance is not acceptance
    evidence.** It is exploration. Acceptance cells use the *measured* per-position
-   distribution from the paired real run (`14` D84 tier 1); the artifact names the tier.
+   distribution from the paired real run (`14` D84); the run summary reports the acceptance input's method.
 
 ---
 
@@ -436,7 +436,7 @@ Each of these voided real percentages before.
 Several documents emit refusals — an unpriced leaf, a missing runtime constant, an
 unmatched tokenizer, a guard domain no binding satisfies, a refused control command — and
 none of them says what happens next. Abort the run? Continue and mark the step? And which
-declines are refusals at all, when a lower rung of the resolver ladder can still answer?
+declines are refusals at all, when a later source or the analytical fallback can still answer?
 The answer changes what a result *is*, so it belongs here rather than in any one of them.
 
 ### Options
@@ -450,25 +450,33 @@ The answer changes what a result *is*, so it belongs here rather than in any one
 
 ### Decision
 
-**A step is refused only when no rung answers. A refused step costs 0 s and the run
-continues, and any refusal makes the run a coverage report** (owner ruling on
-[#765](https://github.com/jgong5/ATOM/pull/765#issuecomment-6104630073), 2026-10-11). Concretely:
+**A step is refused only when some term is still unanswered after method fallback. A
+refused step costs 0 s and the run continues, and any refusal makes the run a coverage
+report** (owner ruling on
+[#765](https://github.com/jgong5/ATOM/pull/765#issuecomment-6104630073), 2026-10-11, in
+the terms of [#952](https://github.com/jgong5/ATOM/issues/952)). Concretely:
 
-1. **Refused means no rung of the resolver ladder answered.** A rung that declines while
-   a lower one answers is a fall-through, not a refusal, and the step carries the
-   provenance of the rung that answered. An `analytical` answer (tier 0, where one
-   exists) and an `extrapolated` one (outside the hull, `09` D58) are not refusals
-   either. A refused step costs 0 s and the run continues; it is not skipped, since
+1. **Refused means some term is still unanswered after method fallback**, and the
+   reasons are listed per term. A source that declines while a later one answers is a
+   fall-through, not a refusal, and the term carries the provenance of the source that
+   answered, every declined one listed before it. An answer of any method is not a
+   refusal either: `analytical` (the analytical fallback, where the run has one),
+   `declared`, or `estimated` and unvalidated (outside the hull, `09` D58). A refused step
+   costs 0 s and the run continues; it is not skipped, since
    ATOM's scheduler has already applied the batch, and the clock simply does not advance
    for it.
 2. **The run artifact carries the refused count and the distinct reasons with counts,
-   and reports analytic and extrapolated steps apart from them**, each with its step
-   count and share of predicted seconds. Refusals carry no seconds: a refused step has
-   none.
+   and reports the priced seconds by method apart from them**: analytical, declared,
+   measured, estimated and unvalidated, each with its step count and share of predicted
+   seconds (`seconds_by_method` in the run summary, grouped as
+   `backends/cost.py::GROUPS`). Declared and analytical seconds are reported and not
+   gated. Refusals carry no seconds: a refused step has none. Each assumed treatment
+   the steps were priced under (`09` D61) is listed with its step count (`treatments`
+   in the run summary); it is a property of the query and changes no term's method.
 3. **Any refusal, of any source, makes the run a coverage report** (`coverage_report` in
    the run summary, `01` D3.5), not acceptance evidence. It names exactly what to
-   measure next. There is no threshold. Neither an extrapolated nor an analytic step
-   invalidates a run, whatever its share.
+   measure next. There is no threshold. No answered step invalidates a run, whatever its
+   method or share.
 4. **`compass run --on-refusal abort` exists** (`13` D80) for the case where a refusal is a
    bug being chased. It stops the run at the first refusal, and the run summary is still
    written. It is not the default.
@@ -481,12 +489,14 @@ into as many iterations as there are gaps.
 **Why any refusal makes a coverage report, with no threshold.** A refused step costs
 0 s, so a run with refusals understates its time by an amount nothing measured; a
 threshold on refused seconds would gate on a number that is zero by construction.
-Analytic and extrapolated steps are priced, so their shares of seconds are real, and
-each is reported apart so neither reads as measured. Tier 0 answers only in a run given
-`--roofline-floor-s` (`13` D80), and its share sits beside the verdict, so it cannot become
-a silent fallback — the exact failure the *refuse rather than fall back* principle exists to
-prevent. No cap on that share: an analytic law is expected to differ from the hardware,
-and no fraction of seconds says by how much; the cell's error against the real runs does.
+Steps answered by any method are priced, so their shares of seconds are real, and each
+method is reported apart so none reads as measured. At step level the roofline answers
+only in a run whose run file composes it (`step_roofline`, `13` D80); at op level the
+analytical fallback is always on. Either way its share sits beside the verdict, so it
+cannot become a silent fallback — the exact failure the *refuse rather than guess*
+principle exists to prevent. No cap on that share: an analytical law is expected to differ
+from the hardware, and no fraction of seconds says by how much; the cell's error against
+the real runs does.
 
 ---
 
@@ -529,7 +539,7 @@ comma-separated sweeps.
 and only **144** offer a multi-request episode containing a descendant. A 256-client cell
 requiring genuine fan-out in every root is not constructible without reusing sessions, and
 the recipe's largest DPA concurrency exceeds the corpus's sessions, so the cells at that
-concurrency reuse sessions whatever they require. Whatever is done there must be declared,
+concurrency reuse sessions whatever they require. Whatever is done there must be stated,
 not discovered (T27).
 
 ### The ranking gate
@@ -559,7 +569,7 @@ The owner's DP ruling of 2026-10-01
 acceptance on DeepSeek-V4-Pro's DP-attention configurations on MI355X and no other model;
 D95 narrows those to the recipe's DPA and DPA MTP1 configurations above. Each is judged by
 cc-traces e2e and by the per-step error spread (D47), never by a total. TBO under DP (#531)
-and tier b pricing for V4-Pro are prerequisites, so neither cell is acceptance evidence
+and op-level pricing for V4-Pro are prerequisites, so neither cell is acceptance evidence
 before both exist.
 
 The mechanism tests run device-free on a CPU fake-model DP2: both ranks report the same
@@ -595,24 +605,25 @@ fails the first two, or ships without the third's measurement, is not M2's resul
    never summed across concurrent work. D64's flat `Σ t_leaf` is not a lower bound on a
    step that overlaps work, such as V4's compressor and indexer on side streams or the DPA
    prefill side's TBO. The `max` join, the `resource_bound` join at derate 1 and the
-   `exclusive` sum each still are. Tier 0's own price is not the bound: it is derated and
+   `exclusive` sum each still are. The step roofline's own price is not the bound: it is derated and
    floored, a central estimate (`10` D67.1). Applied as D47 applies cost accuracy, on the
    real runs' own unprofiled steps (D49): no step's bound may exceed its measured time. One
    that does is a defect in a law or in the spec, reported with its operator family; it is
-   a bound, not a statistic, so none is tolerated. The measured-to-roofline efficiency is
+   a bound, not a statistic, so none is tolerated. The implementation efficiency is
    reported per operator family as a distribution, never as a mean alone: a step's measured
-   time has no per-family split, so a family's efficiency is its leaves' roofline time over
+   time has no per-family split, so a family's implementation efficiency is its leaves' roofline time over
    their measured time in `16` W4.4's MI355X calibration tables. `16` W5.3 runs this check.
-2. **Every MI455 input is sourced or marked assumed.** A machine-spec field's source is the
-   provenance of the fragment that supplied it, as `05` D26's `merge` records; which fields
+2. **Every MI455 input is sourced or marked assumed.** A machine-spec field's origin is
+   recorded per field across save, `MachineSpec.origin()` (`05` D26); which fields
    are assumed is rule 5 of `05` D25's schema rules. The projection artifact lists the assumed
-   fields a tier-0 law reads. A field no fragment supplies is refused (principle 6). `16`
+   fields an analytical law reads, and a term that reads one is declared. A field no
+   fragment supplies is refused (principle 6). `16`
    W5.1 and W5.4 carry it.
-3. **The method's error is measured where both sides exist.** The same method —
-   measured-to-roofline efficiencies carried from a measured device onto a target spec —
+3. **The procedure's error is measured where both sides exist.** The same procedure —
+   implementation efficiencies carried from a measured device onto a target spec, declared there —
    projects Qwen3.8-27B from MI308X to MI355X and is scored against real MI355X runs by
    D44's three results (`16` W5.5). That score is the error estimate quoted with the MI455
-   projection. It estimates the method, not MI455: it is taken on another model and another
+   projection. It estimates the procedure, not MI455: it is taken on another model and another
    device pair, because DeepSeek-V4-Pro's FP4 experts do not run on gfx942.
 
 Where a claim about MI455 can be a ranking rather than an absolute, prefer the ranking
@@ -656,7 +667,7 @@ Fail closed. Each of these has a prior incident behind it.
 | **machine contamination** before or after | a tenant compute-bound in 0.7 GB was caught by a health check and would have passed any free-memory test |
 | a **`--measure` flag** on an acceptance run | the instrument changes what it measures — ~11 ms of TTFT on the 27B |
 | an **artifact fingerprint mismatch** | doc 07 D43 |
-| a **gate state** in the artifact disagreeing with the declared configuration | *"a dead gate is worse than no gate"* — a `PRICE_KERNELS` gate read `WORLD_SIZE`, which the engine never sets, so it was false in every worker and the proof was in the artifact: breakdowns present for 164 of 237 entries |
+| a **gate state** in the artifact disagreeing with the stated configuration | *"a dead gate is worse than no gate"* — a `PRICE_KERNELS` gate read `WORLD_SIZE`, which the engine never sets, so it was false in every worker and the proof was in the artifact: breakdowns present for 164 of 237 entries |
 | **saturation** where scheduling fidelity is being claimed | see below |
 | any **refusal**, of any source | the run is a coverage report (D50.1); name every reason |
 
@@ -670,7 +681,7 @@ steps**, the simulated ones cost **3.8% more**, the engine was **99.6% utilised 
 the wait follows."*
 
 A previously-reported *"constant quarter-second admission delay"* was **withdrawn** on
-exactly this basis: per quartile the simulator admits the **first** requests *faster*
+exactly this ground: per quartile the simulator admits the **first** requests *faster*
 (0.000 s vs 0.046 s) and then falls progressively behind. The question as posed —
 *"find why the simulator admits requests late"* — had no answer, because it does not.
 
@@ -690,11 +701,11 @@ claims there are not.
 | D47 | Cost accuracy on the real run's own step sequence; report totals, held-out-worst, and median per step together. | 2026-09-18 |
 | D48 | Memory per term, never as a sum. The gate is whether the top-1 configuration choice survives, not the byte error. | 2026-09-18 |
 | D49 | Seven hygiene refusals, each with a prior incident behind it. | 2026-09-18 |
-| D50.1 | A step is refused only when no rung answers; a fall-through, an `analytical` answer and an `extrapolated` one are not refusals, and the last two are reported apart with their steps and share of predicted seconds. A refused step costs 0 s and the run continues; `--on-refusal abort` stops at the first, and the summary is written either way. Any refusal, of any source, makes the run a coverage report: no refused-seconds fraction, no threshold, and neither an out-of-hull nor an analytic step invalidates a run, at any share. | 2026-09-19; revised 2026-10-11 (#765, and again to drop the analytic cap) |
+| D50.1 | A step is refused only when some term is still unanswered after method fallback, its reasons listed per term; a fall-through and an answer of any method are not refusals, and the priced seconds are reported by method (analytical, declared, measured, estimated, unvalidated) with their steps and share of predicted seconds. A refused step costs 0 s and the run continues; `--on-refusal abort` stops at the first, and the summary is written either way. Any refusal, of any source, makes the run a coverage report: no refused-seconds fraction, no threshold, and no answered step invalidates a run, whatever its method or share. | 2026-09-19; revised 2026-10-11 (#765, and again to drop the analytical cap); 2026-10-14 (#952) |
 | D50 | Everything registered and hashed before evaluation; the case set never shrinks. One simulated run plus a reproducibility assertion; N≥3 spaced real runs. The cells are stage 2's Qwen3.8-27B TP1 on MI308X and M2's four nightly P/D configurations of DeepSeek-V4-Pro on MI355X at their concurrencies, then the DPA two at EP8. M2's ranking gate: the same best configuration as hardware at each concurrency, and rank correlation across all cells, per end-to-end metric, each inside its real-vs-real spread, with Spearman's ρ also at least 0.9. DP mechanism tests run on a CPU fake-model DP2. | 2026-09-18; revised 2026-10-01, 2026-10-09, 2026-10-10 |
-| D50.2 | The MI455 projection is sound, not graded: the roofline at the spec's peaks, derates at 1, no host floor, composed by the step's own joins and never summed across concurrent work, is a lower bound on every measured MI355X step; every MI455 input is sourced or marked assumed; the method's error is measured by projecting Qwen3.8-27B from MI308X to MI355X. | 2026-10-09 |
+| D50.2 | The MI455 projection is sound, not graded: the roofline at the spec's peaks, derates at 1, no host floor, composed by the step's own joins and never summed across concurrent work, is a lower bound on every measured MI355X step; every MI455 input is sourced or marked assumed; the procedure's error is measured by projecting Qwen3.8-27B from MI308X to MI355X. | 2026-10-09 |
 | D51 | Measure a saturated cell early. Account cold costs once; report the simulator's own per-step CPU cost alongside the ratio. | 2026-09-18 |
-| D52 | Fail-closed invalidation conditions; any refusal is one, an out-of-hull or analytic step is not, at any share (D50.1). Scheduling claims require slack; throughput claims at saturation are fine. | 2026-09-18; revised 2026-10-11 twice |
+| D52 | Fail-closed invalidation conditions; any refusal is one, an answered step is not, whatever its method or share (D50.1). Scheduling claims require slack; throughput claims at saturation are fine. | 2026-09-18; revised 2026-10-11 twice |
 
 ---
 
@@ -707,7 +718,7 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 |---|---|---|
 | T23 | Choose the family-2 distance function | needs one cell's real-vs-real data to compare candidates |
 | T24 | Define "structural event" for family 3 beyond prefill streaks | streaks may be an artefact of prefill-first scheduling |
-| T25 | Measure the real-vs-real noise floor under **closed-loop** replay at high client count | the only prior data is 20 requests, one session, declared arrivals |
+| T25 | Measure the real-vs-real noise floor under **closed-loop** replay at high client count | the only prior data is 20 requests, one session, stated arrivals |
 | T26 | Assert simulator bit-reproducibility as a test | depends on the Clock Authority existing |
 | T27 | Decide the construction of the cells the corpus cannot fill without reusing sessions: 256 clients with fan-out in every root, and the recipe's largest DPA concurrency | doc 06 T14, surfaces again here |
 | ~~T28~~ | ~~Establish whether ranking/regret becomes an explicit acceptance gate~~ — **done**: M2's ranking gate, D50 | — |
