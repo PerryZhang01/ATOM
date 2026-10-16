@@ -29,13 +29,14 @@ from atom.model_engine.llm_engine import _load_tokenizer
 
 @pytest.fixture
 def rule(model_dir):  # noqa: F811
-    """The rule for a model of `model_type`, over a pool of `blocks` blocks."""
+    """The rule for a model of `model_type`, over a pool of `blocks` blocks,
+    for the request parameters `sampling`."""
 
-    def build(model_type="llama", blocks=4096):
+    def build(model_type="llama", blocks=4096, sampling=None):
         config = _config(blocks=blocks)
         config.model, config.trust_remote_code = str(model_dir), False
         config.hf_config = SimpleNamespace(model_type=model_type)
-        return replay.ReplayRule(config)
+        return replay.ReplayRule(config, sampling)
 
     return build
 
@@ -146,6 +147,16 @@ def test_prefill_rows_are_final_chunks_exactly_when_the_line_produces_output(
     batch = rule().batch(line)
     assert batch.is_final_chunk == [produces_output] * 2
     assert batch.produces_output() == produces_output
+
+
+def test_every_row_samples_with_the_request_parameters_the_rule_is_given(rule):
+    line = _line([[1, 40, True], [1, 70, True]])
+    stated = rule(sampling={"temperature": 0.0, "top_k": 5, "top_p": 0.5}).batch(line)
+    default = rule().batch(line)
+    assert stated.temperatures.tolist() == [0.0, 0.0]
+    assert stated.top_ks.tolist() == [5, 5] and stated.top_ps.tolist() == [0.5, 0.5]
+    assert default.temperatures.tolist() == [1.0, 1.0]
+    assert default.top_ks.tolist() == [-1, -1] and default.top_ps.tolist() == [1.0, 1.0]
 
 
 def test_the_batch_carries_the_rules_name_and_version(rule):

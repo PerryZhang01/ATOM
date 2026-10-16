@@ -11,6 +11,7 @@ logging them, its workers agreeing over a gloo group.
 
 import itertools
 import multiprocessing
+import signal
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -180,6 +181,21 @@ def test_every_worker_starts_in_engine_cores_order_and_the_slowest_is_charged(
     assert result["repeats"] == [[PREPARE + busy, PREPARE, busy]] * window.REPEATS
     assert result["preload_ns"] == 2 * (1 + 2 * slowest) * MS
     assert result["discarded"] == 1
+
+
+def test_a_stop_from_the_keyboard_reaches_the_process_that_started_the_bench(
+    manager, monkeypatch
+):
+    """The manager ignores SIGINT where it starts, as ATOM's own handler does."""
+    ignore = lambda self: signal.signal(signal.SIGINT, signal.SIG_IGN)
+    monkeypatch.setattr(async_proc, "init_exit_handler", ignore)
+    previous = signal.getsignal(signal.SIGINT)
+    try:
+        bench = engine.Bench(_config(eager=True))
+        bench.exit()
+        assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+    finally:
+        signal.signal(signal.SIGINT, previous)
 
 
 @pytest.mark.parametrize(

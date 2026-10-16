@@ -22,6 +22,8 @@ them the same way for every line:
 - A prefill line that produces output has every row on its final chunk, one
   that does not has none: a line does not say which of its chunks ends a
   prompt, and ATOM's runner samples every row of a step that produces output.
+- Every row samples with the request parameters the rule was given, ATOM's
+  `SamplingParams` defaults unless stated.
 - The batch carries the rule's `NAME` and `VERSION` as `replay_rule`, which a
   measurement records.
 
@@ -38,6 +40,7 @@ from atom.model_engine.sequence import (
     SequenceType,
     new_block_table,
 )
+from atom.sampling_params import SamplingParams
 
 NAME = "fresh-contiguous"
 VERSION = 1
@@ -45,9 +48,11 @@ VERSION = 1
 
 class ReplayRule:
     """The rule for one engine configuration: its tokenizer, block size, KV
-    pool, and whether its model keeps per-request state."""
+    pool, and whether its model keeps per-request state; and for the request
+    parameters `sampling` states, as `SamplingParams` fields."""
 
-    def __init__(self, config) -> None:
+    def __init__(self, config, sampling: dict | None = None) -> None:
+        self.sampling = SamplingParams(**(sampling or {}))
         tokenizer = _load_tokenizer(config.model, config.trust_remote_code)
         self.fillers = filler_token_ids(
             tokenizer, config.eos_token_id, config.stop_token_ids
@@ -84,7 +89,10 @@ class ReplayRule:
         for i, (query, context, _) in enumerate(rows):
             filler = self.fillers[i % len(self.fillers)]
             seq = Sequence(
-                [filler] * context, self.block_size, has_per_req_cache=self.stateful
+                [filler] * context,
+                self.block_size,
+                self.sampling,
+                has_per_req_cache=self.stateful,
             )
             seq.type = SequenceType.DECODE if decode else SequenceType.PREFILL
             seq.num_cached_tokens = context - query

@@ -90,18 +90,25 @@ def _record(directory: Path, client_runs) -> tuple[list[Sample], dict]:
     engine = json.loads((steps / "dp0.engine.json").read_text())
     host = run["host_key"]
     return samples, {
-        "model": host["model"],
-        "device": ", ".join(
-            sorted({" ".join(str(gpu[f]) for f in CARD) for gpu in run["device"]})
-        ),
+        **run_fields(run),
         "parallel": f"tp{engine['tensor_parallel_size']}-dp{len(files)}",
         "engine_config": {
             k: v for k, v in engine.items() if k not in (*BOUNDS, "num_kvcache_blocks")
         },
-        "source_root": f"{run['source']['revision_kind']}-{run['source']['revision']}",
         "stack": run["stack"],
         "sampling": json.loads(sampling[0]) if sampling else None,
         "host_key": {k: v for k, v in host.items() if k not in ("model", "engine")},
+    }
+
+
+def run_fields(run: dict) -> dict:
+    """The `model`, `device` and `source_root` a run.json's identity states."""
+    return {
+        "model": run["host_key"]["model"],
+        "device": ", ".join(
+            sorted({" ".join(str(gpu[f]) for f in CARD) for gpu in run["device"]})
+        ),
+        "source_root": f"{run['source']['revision_kind']}-{run['source']['revision']}",
     }
 
 
