@@ -10,8 +10,10 @@ record's, so a measurement states the record's configuration; the GPU checks
 pass and the provenance names planted trees.
 """
 
+import copy
 import json
-import random
+import re
+import shutil
 from contextlib import nullcontext
 from types import SimpleNamespace
 
@@ -70,24 +72,21 @@ class Bench:
 @pytest.fixture
 def run(tmp_path, monkeypatch, model_dir):  # noqa: F811
     """`run(*args)`: `compass measure steps args --gpu 7 --store S --out D`,
-    with `--sampling` SAMPLING unless given; a client run export per record
-    client run is at `exports`."""
+    with `--sampling` SAMPLING unless given. `run.named(input, sampling)` is
+    the `--client-run` arguments naming the record's two client runs for
+    `input`, their requests sent under `sampling`; run.json's identity is
+    `run.identity`."""
     rec = record(tmp_path, monkeypatch)
     config = _config()
     config.model, config.trust_remote_code = str(model_dir), False
     config.hf_config = SimpleNamespace(model_type="llama")
     monkeypatch.setattr(measure, "atom_config", lambda atom_args: config)
-    identity = json.loads((rec / "run.json").read_text())
-    monkeypatch.setattr(measure, "identity", lambda *_: dict(identity))
+    monkeypatch.setattr(measure, "identity", lambda *_: copy.deepcopy(run.identity))
     monkeypatch.setattr(measure, "quiet", lambda gpus, out: nullcontext())
     monkeypatch.setattr(measure, "roots_for", lambda _: (ATOM_ROOT, AITER_ROOT))
     monkeypatch.setattr(measure, "start_bench", Bench)
     monkeypatch.setattr(Bench, "started", [])
     monkeypatch.setattr(Bench, "measured", [])
-    exports = []
-    for i, requests in enumerate(RUNS):
-        exports.append(tmp_path / f"export{i}.json")
-        exports[-1].write_text(json.dumps({"requests": requests}))
 
     def run(*args, out="out"):
         args = list(args)
@@ -100,8 +99,16 @@ def run(tmp_path, monkeypatch, model_dir):  # noqa: F811
         )
         return ArtifactStore(tmp_path / "store")
 
-    run.record, run.exports, run.tmp = rec, exports, tmp_path
-    run.client_runs = [a for e in exports for a in ("--client-run", str(rec), str(e))]
+    def named(name, sampling=SAMPLING):
+        args = []
+        for i, group in enumerate(([0, 1], [2, 3])):
+            export = tmp_path / f"export{i}-{json.dumps(sampling, sort_keys=True)}"
+            export.write_text(json.dumps({"requests": client_run(group, sampling)}))
+            args += ["--client-run", str(name), str(export)]
+        return args
+
+    run.record, run.tmp, run.named, run.config = rec, tmp_path, named, config
+    run.identity = json.loads((rec / "run.json").read_text())
     return run
 
 
@@ -124,7 +131,8 @@ def by_view(store) -> dict:
 
 
 def test_measuring_one_record_twice_publishes_each_view_once_and_then_nothing(run):
-    store = run(str(run.record), "--sample", "all", *run.client_runs)
+    rec = str(run.record)
+    store = run(rec, "--sample", "all", *run.named(rec))
     lines, split = read(run.record / "steps")[0], served(run.record / "steps", RUNS)[0]
     held = by_view(store)
     assert set(held) == views(lines) and len(Bench.measured) == len(held)
@@ -160,52 +168,107 @@ def test_measuring_one_record_twice_publishes_each_view_once_and_then_nothing(ru
     assert all("end" in edges for edges in phases.values())
 
     Bench.started.clear()
-    run(str(run.record), "--sample", "all", *run.client_runs)
+    run(rec, "--sample", "all", *run.named(rec))
     assert Bench.started == [] and by_view(store).keys() == held.keys()
 
 
+def test_a_held_entry_taken_under_other_readings_refuses_naming_it(run):
+    rec = str(run.record)
+    store = run(rec, "--sample", "all", *run.named(rec))
+    run.identity["stack"]["aiter"] = "v9.9.9"
+    Bench.started.clear()
+    tokens = "|".join(key.token() for key, _ in entries(store))
+    with pytest.raises(
+        SystemExit, match=rf"other readings than this run's:\n({tokens}): .*v9\.9\.9"
+    ):
+        run(rec, "--sample", "all", *run.named(rec))
+    assert Bench.started == []
+
+
 def test_sample_n_draws_n_views_from_each_stratum_by_its_seed(run):
-    lines = read(run.record / "steps")[0]
+    """This record decodes on rungs and prefills in chunks under 512 tokens."""
     strata = {}
-    for s in lines:
-        view = {k: s[k] for k in measure.VIEW}
-        strata.setdefault(measure._stratum(view), set()).add(measure._digest(view))
+    for s in read(run.record / "steps")[0]:
+        decode = s["rows"][0][2]
+        assert decode or sum(q for q, *_ in s["rows"]) < 512
+        stratum = f"rung {s['rung']}" if decode else s["produces_output"]
+        strata.setdefault(stratum, set()).update(views([s]))
     drawn = []
     for seed in (3, 3, 4):
-        store = run(str(run.record), "--sample", "2", "--seed", str(seed))
+        rec = str(run.record)
+        store = run(rec, "--sample", "2", "--seed", str(seed), *run.named(rec))
         drawn.append(set(by_view(store)))
         store.root.rename(run.tmp / f"store{len(drawn)}")
-    rng, expected = random.Random(3), set()
-    for stratum in sorted(strata):
-        views_in = sorted(strata[stratum])
-        expected.update(rng.sample(views_in, min(2, len(views_in))))
-    assert drawn[0] == drawn[1] == expected != drawn[2]
+    assert drawn[0] == drawn[1] != drawn[2]
+    for held in strata.values():
+        for got in drawn:
+            assert len(got & held) == min(2, len(held))
     assert any(len(v) > 2 for v in strata.values())
+
+
+@pytest.mark.parametrize(
+    "rows, rung, output, stratum",
+    [
+        ([[1, 9, True]] * 3, 4, True, "decode rung 4"),
+        ([[1, 9, True]] * 40, None, True, "decode eager"),
+        ([[511, 511, False]], None, True, "prefill with output tokens 0-512"),
+        (
+            [[256, 300, False]] * 2,
+            None,
+            False,
+            "prefill without output tokens 512-2048",
+        ),
+        ([[2048, 2048, False]], None, True, "prefill with output tokens 2048-8192"),
+        ([[4096, 4096, False]] * 2, None, True, "prefill with output tokens 8192-"),
+    ],
+)
+def test_a_batch_is_drawn_by_its_kind_and_rung_or_its_prefill_token_band(
+    rows, rung, output, stratum
+):
+    view = {"rows": rows, "rung": rung, "produces_output": output}
+    assert measure._stratum(view) == stratum
 
 
 @pytest.mark.parametrize(
     "args, refusal",
     [
         ([], "names no input to replay"),
-        (["REC"], "drawn by --sample N --seed S or --sample all"),
+        (["REC", "CR"], "drawn by --sample N --seed S or --sample all"),
         (["--grid", "REC", "--grid-definition", "d", "--sample", "all"], "no replayed"),
-        (["REC", "--sample", "2"], "--sample N needs --seed"),
+        (["REC", "CR", "--sample", "2"], "--sample N needs --seed"),
         (["--grid", "REC"], "--grid-definition FILE"),
-        (["REC", "--sample", "all", "--grid-definition", "d"], "plans no --grid"),
-        (["REC", "--sample", "all", "--client-run", "x", "e"], "names x, which is no"),
-        (["REC", "--sample", "all", "--sampling", '{"temp": 1}'], "SamplingParams"),
-        (["REC", "--sample", "all", "--sessions", "0:1"], "no batch to measure"),
+        (["REC", "CR", "--sample", "all", "--grid-definition", "d"], "plans no --grid"),
+        (["REC", "CR", "--sample", "all", "--client-run", "x", "e"], "names x, which"),
+        (["REC", "--sample", "all"], "REC is named by no --client-run"),
+        (
+            ["--grid", "REC", "--grid-definition", "d"],
+            "REC is named by no --client-run",
+        ),
+        (
+            ["REC", "CR", "--sample", "all", "--sampling", '{"temp": 1}'],
+            "SamplingParams",
+        ),
+        (["REC", "CR", "--sample", "all", "--sessions", "4:9"], "no batch to measure"),
+        (
+            ["REC", "CR", "--sample", "all", "--sampling", '{"temperature": 0.7}'],
+            (
+                'REC served requests under {"temperature": 0.0, "top_p": 1.0}, and '
+                '--sampling states {"temperature": 0.7}'
+            ),
+        ),
     ],
 )
 def test_what_does_not_say_what_to_measure_refuses(run, args, refusal):
-    args = [str(run.record) if a == "REC" else a for a in args]
-    with pytest.raises(SystemExit, match=refusal):
+    rec = str(run.record)
+    args = [a for arg in args for a in (run.named(rec) if arg == "CR" else [arg])]
+    args = [rec if a == "REC" else a for a in args]
+    with pytest.raises(SystemExit, match=re.escape(refusal.replace("REC", rec))):
         run(*args)
     assert Bench.started == []
 
 
-def published_population(run, monkeypatch) -> str:
-    """The record's steps and engine, published as a shape_population; its token.
+def published_population(run, monkeypatch) -> Key:
+    """The record's steps and engine, published as a shape_population.
 
     The kind has no invalidation row until `trace steps` publishes one, so it
     takes the step grid bundle's here.
@@ -232,13 +295,14 @@ def published_population(run, monkeypatch) -> str:
             for (stem, ext), name in files.items()
         },
     )
-    return key.token()
+    return key
 
 
 def test_grid_points_are_measured_with_origin_plan_and_new_shapes_add_only_theirs(
     run, monkeypatch
 ):
-    token = published_population(run, monkeypatch)
+    population = published_population(run, monkeypatch)
+    token, rec = population.token(), str(run.record)
     definition = run.tmp / "definition.json"
     definition.write_text(json.dumps(DEFINITION))
     lines = read(run.record / "steps")[0]
@@ -252,43 +316,84 @@ def test_grid_points_are_measured_with_origin_plan_and_new_shapes_add_only_their
     planned = plan(DEFINITION, [(str(s["step"]), s) for s in lines], engine)["lines"]
     assert views(first) < views(planned)
 
+    grid = ["--grid-definition", str(definition), *run.named(token)]
     with monkeypatch.context() as patch:
         patch.setattr(measure, "plan", prefill)
-        store = run("--grid", token, "--grid-definition", str(definition))
+        store = run("--grid", token, *grid)
     assert set(by_view(store)) == views(first)
     Bench.measured.clear()
-    store = run("--grid", token, str(run.record), "--grid-definition", str(definition))
+    store = run("--grid", token, rec, *grid, *run.named(rec))
 
     assert len(Bench.measured) == len(views(planned) - views(first))
     plan_digest = measure._digest(json.loads((run.tmp / "out/plan.json").read_text()))
+    record_source = measure.file_digest(run.record / "steps/dp0.jsonl")
     for view, (_, member) in by_view(store).items():
-        assert member["origin"] == "plan"
-        assert (member["plan"] == plan_digest) == (view not in views(first))
+        new = view not in views(first)
+        assert member["origin"] == "plan" and (member["plan"] == plan_digest) == new
+        sources = {str(population), record_source} if new else {str(population)}
+        assert member["sources"] == sorted(sources)
+        assert member["traces"] == [f"trace-{i}" for i in range(4)]
 
 
-def test_sessions_keep_the_lines_that_serve_only_those_traces(run, monkeypatch):
-    """All four requests are served at once, so decode steps serve all four traces."""
-    mixed = record(run.tmp, monkeypatch, "mixed", groups=((0, 1, 2, 3),))
-    export = run.tmp / "all.json"
-    export.write_text(json.dumps({"requests": client_run([0, 1, 2, 3])}))
-    store = run(
-        str(mixed),
-        "--sample",
-        "all",
-        "--sessions",
-        "0:1",
-        "--client-run",
-        str(mixed),
-        str(export),
+def test_the_planner_reads_the_engine_every_grid_input_states(run):
+    rec, other = str(run.record), run.tmp / "other"
+    shutil.copytree(run.record, other)
+    engine = other / "steps/dp0.engine.json"
+    engine.write_text(
+        json.dumps(json.loads(engine.read_text()) | {"max_model_len": 1024})
     )
+    definition = run.tmp / "definition.json"
+    definition.write_text(json.dumps(DEFINITION))
+    grid = ["--grid", rec, str(other), "--grid-definition", str(definition)]
+    with pytest.raises(
+        SystemExit, match="state two engines, which differ on max_model_len"
+    ):
+        run(*grid, *run.named(rec), *run.named(other))
 
-    split = served(mixed / "steps", [client_run([0, 1, 2, 3])])[0]
-    kept = [
-        s for s in split if s["traces"] and set(s["traces"]) <= {"trace-0", "trace-1"}
-    ]
+
+def mixed(run, monkeypatch, name=lambda i: f"session-{256 + i}"):
+    """A record serving all four requests at once, so its decode steps serve
+    all four traces; and the `--client-run` naming request i's trace `name(i)`."""
+    rec = record(run.tmp, monkeypatch, "mixed", groups=((0, 1, 2, 3),))
+    requests = client_run([0, 1, 2, 3])
+    for i, sent in enumerate(requests.values()):
+        sent["trace"] = name(i)
+    export = run.tmp / "mixed.json"
+    export.write_text(json.dumps({"requests": requests}))
+    return rec, requests, ["--client-run", str(rec), str(export)]
+
+
+def test_sessions_keep_the_lines_serving_only_traces_numbered_a_to_b(run, monkeypatch):
+    rec, requests, named = mixed(run, monkeypatch)
+    # A step holding a request no client run sent serves no trace.
+    steps = rec / "steps/dp0.jsonl"
+    line = {**json.loads(steps.read_text().splitlines()[-1]), "named": []}
+    line |= {"rows": [[1, 7, True]], "rung": 1, "batch": [["unsent", 1, 7]]}
+    steps.write_text(steps.read_text() + json.dumps(line) + "\n")
+    store = run(str(rec), "--sample", "all", "--sessions", "257:258", *named)
+
+    split = served(rec / "steps", [requests])[0]
+    chosen = {"session-257", "session-258"}
+    kept = [s for s in split if s["traces"] and set(s["traces"]) <= chosen]
     assert kept and set(by_view(store)) == views(kept) < views(split)
-    for _, member in entries(store):
-        assert set(member["traces"]) <= {"trace-0", "trace-1"}
+    # Both ends of the span are measured.
+    assert {t for _, m in entries(store) for t in m["traces"]} == chosen
+
+
+@pytest.mark.parametrize("trace, held", [("warm-up", 0), ("v2-session-3", 2)])
+def test_a_trace_name_holding_no_number_or_two_refuses_sessions(
+    run, monkeypatch, trace, held
+):
+    rec, _, named = mixed(run, monkeypatch, lambda i: trace if i == 1 else f"s{i}")
+    with pytest.raises(SystemExit, match=f"trace '{trace}', which holds {held} num"):
+        run(str(rec), "--sample", "all", "--sessions", "0:9", *named)
+
+
+def test_a_deployment_above_tensor_parallel_1_refuses_naming_the_skew_issue(run):
+    run.config.tensor_parallel_size = 2
+    with pytest.raises(SystemExit, match=r"tensor parallel size 2: .*\(#1188\)"):
+        run(str(run.record), "--sample", "all", *run.named(run.record))
+    assert Bench.started == []
 
 
 def test_a_line_a_dummy_run_wrote_is_not_measured(run):
@@ -296,14 +401,16 @@ def test_a_line_a_dummy_run_wrote_is_not_measured(run):
     dummy = {**json.loads(steps.read_text().splitlines()[-1]), "is_dummy_run": True}
     dummy |= {"rows": [[1, 7, True]], "rung": 1, "batch": [], "named": []}
     steps.write_text(steps.read_text() + json.dumps(dummy) + "\n")
-    store = run(str(run.record), "--sample", "all")
+    store = run(str(run.record), "--sample", "all", *run.named(run.record))
     assert set(by_view(store)) == views(read(run.record / "steps")[0][:-1])
 
 
 def test_the_sampling_joins_the_key_and_reaches_the_rule(run):
+    rec = str(run.record)
     for temperature in (0.0, 0.7):
-        sampling = json.dumps({**SAMPLING, "temperature": temperature})
-        store = run(str(run.record), "--sample", "all", "--sampling", sampling)
+        sampling = {**SAMPLING, "temperature": temperature}
+        named = run.named(rec, sampling)
+        store = run(rec, "--sample", "all", "--sampling", json.dumps(sampling), *named)
         assert Bench.measured
         for batch in Bench.measured:
             assert batch.temperatures.tolist() == pytest.approx(
@@ -333,7 +440,7 @@ def test_an_input_the_bench_cannot_stand_for_refuses_before_it_starts(
     else:
         (steps / file).write_text((steps / "dp0.jsonl").read_text())
     with pytest.raises(SystemExit, match=refusal):
-        run(str(run.record), "--sample", "all")
+        run(str(run.record), "--sample", "all", *run.named(run.record))
     assert Bench.started == []
 
 
@@ -342,7 +449,7 @@ def test_a_batch_the_bench_refuses_is_not_published_and_is_named_after_the_rest(
     refused = Bench.refuse = sum(q for q, *_ in lines[0]["rows"])
     try:
         with pytest.raises(SystemExit, match="batches refused:\n.+a planted refusal"):
-            run(str(run.record), "--sample", "all")
+            run(str(run.record), "--sample", "all", *run.named(run.record))
     finally:
         Bench.refuse = None
     held = entries(ArtifactStore(run.tmp / "store"))

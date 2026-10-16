@@ -13,9 +13,14 @@ entry named by the token `Key.token` prints, whose members are, per DP rank,
 engine file. Its lines are read as `parity.served` reads a record, each with
 the traces the client runs `--client-run` names for it sent. Lines a dummy run
 wrote are dropped; under `--sessions A:B` so is every line serving no trace, or
-one outside the input's traces A to B, counted from 0 in name order, inclusive.
-An input must state the engine ATOM's arguments resolve, `keyed`'s fields, at
-data-parallel width 1, the bench's.
+a trace whose name's number lies outside A to B, inclusive; a trace name
+holding no number, or more than one, refuses.
+An input refuses unless a `--client-run` names it, its kept lines served
+requests under `--sampling` alone, and it states the engine ATOM's arguments
+resolve, `keyed`'s fields, at data-parallel width 1, the bench's.
+
+The bench measures at tensor parallel 1: above it, a point charges the ranks'
+preload skew (#1188), so a deployment of more ranks refuses.
 
 A batch is a line's view: its `rows`, `rung` and `produces_output`. The
 positional inputs' distinct views are replayed, origin `replay`, drawn by
@@ -23,13 +28,14 @@ positional inputs' distinct views are replayed, origin `replay`, drawn by
 in a token band of `step_linear_fit.TOKEN_BANDS`), or all of them by `--sample
 all`. `--grid` runs the step grid's planner over its inputs' lines for the
 engine they state and the nodes and margin `--grid-definition` states, and its
-points are measured with origin `plan` and the digest of the plan, which
-`<out>/plan.json` holds.
+points are measured with origin `plan`, the digest of the plan, which
+`<out>/plan.json` holds, and the `--grid` inputs as their sources.
 
 A measurement's key is the configuration (model, device, parallel layout,
 `keyed` engine, source root, `--sampling`), the step kind and the view's
 digest, so a view the store holds is not measured again and a stopped
-invocation resumes. Its member `MEMBER` holds the view, `seconds` (the median
+invocation resumes; a held entry taken under other readings than this run's
+refuses, naming it. Its member `MEMBER` holds the view, `seconds` (the median
 of the bench's kept repeats), the repeats, the protocol, the replay rule, the
 origin, the inputs it came from (`sources`) and the `traces` their lines
 served. A batch the rule or the bench refuses is not published; the command
@@ -44,10 +50,12 @@ import hashlib
 import json
 import os
 import random
+import re
 import tempfile
 from pathlib import Path
 
 from atom.compass.artifacts import (
+    ArtifactRefusal,
     ArtifactStore,
     GateState,
     Key,
@@ -62,15 +70,15 @@ from atom.compass.backends.step_labels import digest as file_digest
 from atom.compass.backends.step_linear_fit import TOKEN_BANDS
 from atom.compass.drive.gpu import add_gpu_flag, quiet
 from atom.compass.drive.identity import identity, phase
-from atom.compass.fit.publish import conditions
-from atom.compass.fit.samples import CARD
+from atom.compass.fit.publish import RANK, conditions
+from atom.compass.fit.samples import run_fields
 from atom.compass.parity.served import requests, served
 from atom.compass.run import _write_whole
 from atom.compass.run.step_grid import BOUNDS, keyed
 
 PROG = "compass measure steps"
 #: A measurement's one member: the bench replies for the whole TP group.
-MEMBER = ("measurement", Topology().ranks()[0], "json")
+MEMBER = ("measurement", RANK, "json")
 #: What of a step-record line is the batch it measures.
 VIEW = ("rows", "rung", "produces_output")
 
@@ -82,10 +90,16 @@ def main(argv: list[str]) -> None:
     sampling = _sampling(args.sampling)
     os.environ["HIP_VISIBLE_DEVICES"] = ",".join(map(str, args.gpu))
     config = atom_config(argv[cut + 1 :])
+    if config.tensor_parallel_size > 1:
+        raise ValueError(
+            f"tensor parallel size {config.tensor_parallel_size}: above 1 the bench "
+            "charges the ranks' preload skew (#1188), so measure steps measures "
+            "at tensor parallel 1 until that is fixed"
+        )
     engine = keyed(config)
     store, out = ArtifactStore(args.store), Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    points = _points(args, store, engine, out)
+    points = _points(args, store, engine, sampling, out)
     if not points:
         raise ValueError("the inputs hold no batch to measure once filtered")
     engine_file = out / "engine.json"
@@ -93,39 +107,19 @@ def main(argv: list[str]) -> None:
     engine_file.write_text(json.dumps(resolved))
     command = [*PROG.split(), *argv]
     run, phases = identity(engine_file, config.model, command, args.gpu), {}
-    configuration = {
-        "model": run["host_key"]["model"],
-        "device": ", ".join(
-            sorted({" ".join(str(gpu[f]) for f in CARD) for gpu in run["device"]})
-        ),
-        "parallel": f"tp{config.tensor_parallel_size}-dp1",
-        "source_root": f"{run['source']['revision_kind']}-{run['source']['revision']}",
+    configuration = run_fields(run) | {
+        "parallel": f"tp{config.tensor_parallel_size}-dp1"
     }
-    keys = {
-        view: Key.of(
-            Kind.STEP_MEASUREMENT,
-            **configuration,
-            engine_config=json.dumps(engine, sort_keys=True),
-            sampling=json.dumps(sampling, sort_keys=True),
-            step_kind=_kind(point["view"]),
-            view=view,
-        )
-        for view, point in points.items()
-    }
-    todo = [
-        (key, points[v])
-        for v, key in keys.items()
-        if not store.directory_for(key).exists()
-    ]
+    readings = conditions(
+        {**configuration, "engine_config": engine}
+        | {k: run[k] for k in ("stack", "host_key")}
+    )
+    todo = _todo(points, configuration, engine, sampling, store, readings)
     held = len(points) - len(todo)
     print(f"{len(points)} distinct batches, {held} in the store", flush=True)
     refused = []
     try:
         if todo:
-            readings = conditions(
-                {**configuration, "engine_config": engine}
-                | {k: run[k] for k in ("stack", "host_key")}
-            )
             with quiet(args.gpu, out):
                 with phase(phases, "warm-up"):
                     bench = start_bench(config)
@@ -150,6 +144,34 @@ def main(argv: list[str]) -> None:
         raise ValueError(
             f"{len(refused)} of {len(todo)} batches refused:\n" + "\n".join(refused)
         )
+
+
+def _todo(points, configuration, engine, sampling, store, readings) -> list:
+    """Each point's key and the point, for the points the store does not hold;
+    a held entry measured under other readings than this run's refuses."""
+    todo, stale = [], []
+    for view, point in points.items():
+        key = Key.of(
+            Kind.STEP_MEASUREMENT,
+            **configuration,
+            engine_config=json.dumps(engine, sort_keys=True),
+            sampling=json.dumps(sampling, sort_keys=True),
+            step_kind=_kind(point["view"]),
+            view=view,
+        )
+        if not store.directory_for(key).exists():
+            todo.append((key, point))
+            continue
+        try:
+            store.load(key, conditions=readings, gates=GateState.of())
+        except ArtifactRefusal as refusal:
+            stale.append(f"{key.token()}: {refusal}")
+    if stale:
+        raise ValueError(
+            f"{len(stale)} measurements in the store were taken under other "
+            "readings than this run's:\n" + "\n".join(stale)
+        )
+    return todo
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -217,9 +239,14 @@ def _check(args) -> None:
     ):
         if refused:
             raise ValueError(why)
-    stray = sorted({i for i, _ in args.client_run} - named)
-    if stray:
+    exported = {i for i, _ in args.client_run}
+    if stray := sorted(exported - named):
         raise ValueError(f"--client-run names {', '.join(stray)}, which is no input")
+    if unnamed := sorted(named - exported):
+        raise ValueError(
+            f"{', '.join(unnamed)} is named by no --client-run; name the client "
+            "runs its server served, so each measurement records the traces they sent"
+        )
 
 
 def _sampling(text: str) -> dict:
@@ -264,21 +291,21 @@ def start_bench(config):
     return Bench(config)
 
 
-def _points(args, store, engine: dict, out: Path) -> dict[str, dict]:
+def _points(args, store, engine: dict, sampling: dict, out: Path) -> dict[str, dict]:
     """Each distinct view to measure, by its digest: replayed views drawn as
     `--sample` says, then planned points."""
     runs = {}
     for name, export in args.client_run:
         runs.setdefault(name, []).append(export)
     read = {
-        n: _read(n, store, runs.get(n, []), args.sessions, engine)
+        n: _read(n, store, runs[n], args.sessions, engine, sampling)
         for n in dict.fromkeys([*args.inputs, *args.grid])
     }
     points = {}
     for name in args.inputs:
         source, lines, _ = read[name]
         for line in lines:
-            _add(points, line, "replay", source, line["traces"])
+            _add(points, line, "replay", [source], line["traces"])
     strata = {}
     for view, point in points.items():
         strata.setdefault(_stratum(point["view"]), []).append(view)
@@ -298,11 +325,11 @@ def _points(args, store, engine: dict, out: Path) -> dict[str, dict]:
         digest = _digest(planned)
         traces = {t for _, line in steps for t in line["traces"]}
         for line in planned["lines"]:
-            _add(points, line, "plan", ", ".join(args.grid), traces, digest)
+            _add(points, line, "plan", [read[n][0] for n in args.grid], traces, digest)
     return points
 
 
-def _read(name: str, store, client_runs, sessions, engine: dict):
+def _read(name: str, store, client_runs, sessions, engine: dict, sampling: dict):
     """The input `name`: what names it as a source, its kept lines, and the
     engine its rank states."""
     path = Path(name)
@@ -339,24 +366,37 @@ def _read(name: str, store, client_runs, sessions, engine: dict):
             )
         )
     if sessions:
-        traces = sorted({r["trace"] for c in client_runs for r in requests(c).values()})
-        chosen = set(traces[sessions[0] : sessions[1] + 1])
+        chosen = set()
+        for trace in {r["trace"] for c in client_runs for r in requests(c).values()}:
+            if len(number := re.findall(r"\d+", trace)) != 1:
+                raise ValueError(
+                    f"--sessions selects traces by the number in their names, and "
+                    f"{name} served trace {trace!r}, which holds {len(number)} numbers"
+                )
+            if sessions[0] <= int(number[0]) <= sessions[1]:
+                chosen.add(trace)
     lines = [
         line
         for line in lines
         if not line["is_dummy_run"]
         and (not sessions or line["traces"] and set(line["traces"]) <= chosen)
     ]
+    wanted = json.dumps(sampling, sort_keys=True)
+    if sent := sorted({p for line in lines for p in line["sampling"]} - {wanted}):
+        raise ValueError(
+            f"{name} served requests under {' and '.join(sent)}, and --sampling "
+            f"states {wanted}"
+        )
     return source, lines, stated
 
 
-def _add(points: dict, line: dict, origin: str, source: str, traces, plan=None):
+def _add(points: dict, line: dict, origin: str, sources, traces, plan=None):
     view = {k: line[k] for k in VIEW}
     point = points.setdefault(
         _digest(view),
         {"view": view, "origin": origin, "sources": set(), "traces": set()},
     )
-    point["sources"].add(source)
+    point["sources"].update(sources)
     point["traces"].update(traces)
     if plan and point["origin"] == "plan":
         point["plan"] = plan
