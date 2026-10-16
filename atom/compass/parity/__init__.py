@@ -33,8 +33,8 @@ with the variable set.
 A request is named by its key, because request ids are numbered per run: a
 digest of its whole prompt as its prefill windows carry it, taken when its final
 chunk is scheduled, so it does not move with chunking. A line records request
-ids and names each request whose final chunk it holds, with its response id if
-it has one (`carry_response_ids`); `read` puts the keys in.
+ids and names each request whose final chunk it holds; `read` puts the keys in.
+A named request's response id follows its key if it has one (`carry_response_ids`).
 Prefix caching is not covered: the worker never sees a cached prefix, so parity
 runs need caching off or the same cache hits in both runs. Requests of one
 record with one prompt are named in the order their final chunks are scheduled:
@@ -242,6 +242,7 @@ def carry_response_ids() -> None:
 
     for cls in (CoreManager, DisaggCoreManager):
 
+        @functools.wraps(cls.add_request)
         def add_request(self, seqs, add=cls.add_request):
             if len(seqs) == 1 and seqs[0].external_request_id is None:
                 caller = sys._getframe(1).f_locals
