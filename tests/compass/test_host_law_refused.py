@@ -39,21 +39,31 @@ def host(r, laws, skip=()):
     return clock
 
 
+def charged(batches, laws):
+    """A runner that charged `batches` under `laws`, and after each forward
+    its clock and how many refusals it holds."""
+    r = runner(BACKEND)
+    clock, steps = host(r, laws), []
+    for b in batches:
+        clock[0] += overrides._group_step_seconds(r, b, BACKEND)
+        steps.append((clock[0], len(r.refused_commands())))
+    return r, steps
+
+
 def test_a_run_without_middle_laws_refuses_each_middle_chunk_by_name(
     streak, tmp_path, monkeypatch  # noqa: F811
 ):
     monkeypatch.setattr(torch.distributed, "all_reduce", None)
     run = run_file(tmp_path, monkeypatch)
-    r = runner(BACKEND)
-    clock, refused = host(r, OUTPUT), []
-    for b in streak:
-        clock[0] += overrides._group_step_seconds(r, b, BACKEND)
-        refused.append(len(r.refused_commands()))
+    r, steps = charged(streak, OUTPUT)
 
     # Each middle chunk is refused, the streak's first forward among them, and
-    # no output forward.
+    # no output forward; each is charged as if its absent laws were 0.
     middle = [not b.produces_output() for b in streak]
+    refused = [n for _, n in steps]
     assert [b - a for a, b in zip([0, *refused], refused)] == middle
+    zero = {**OUTPUT, "middle": dict.fromkeys(HOST_SEGMENTS, (0, 0, 0))}
+    assert [t for t, _ in steps] == [t for t, _ in charged(streak, zero)[1]]
     out = finish(monkeypatch, tmp_path, run, r)["schedule"]["refusals"]
     assert out["reasons"] == [[f"cost:{NO_MIDDLE}", sum(middle)]]
     assert out["fraction_of_steps"] == sum(middle) / len(streak)
@@ -96,12 +106,13 @@ def test_a_forward_needs_a_law_for_each_segment_it_runs_and_does_not_skip(
         return
     with pytest.raises(CostRefused, match=re.escape(f"(host: no law for {named})")):
         recurrence.charge(batch, 1.0)
-    assert (list(recurrence.ends), recurrence.segments) == ([-float("inf")] * 2, {})
+    assert list(recurrence.ends) == [-float("inf")] * 2
+    filled = {kind: {**dict.fromkeys(HOST_SEGMENTS, (0, 0, 0)), **laws.get(kind, {})}}
+    zero = HostDeviceRecurrence(filled, skip, lambda: 0.0).charge(batch, 1.0)
+    assert recurrence.charge(batch, 1.0, refuse=False) == zero
 
 
-def test_a_step_both_refuse_hands_in_one_reason_and_charges_nothing(
-    monkeypatch, tmp_path
-):
+def test_a_step_both_refuse_hands_in_one_reason(monkeypatch, tmp_path):
     monkeypatch.setattr(torch.distributed, "all_reduce", None)
     r = recording(runner(no_eager_rung()), tmp_path, monkeypatch)
     host(r, {"prefill": OUTPUT["prefill"]})
@@ -112,5 +123,5 @@ def test_a_step_both_refuse_hands_in_one_reason_and_charges_nothing(
     both = f"{REFUSED}; host: no law for {decode}"
     assert lines and [line["refused"] for line in lines] == list(r.refused_commands())
     for line in lines:
-        assert (line["refused"], line["charge_s"], line["skipped"]) == (both, 0.0, [])
-        assert not set(HOST_SEGMENTS) & line.keys()
+        assert (line["refused"], line["device_s"]) == (both, 0.0)
+        assert [line[s] for s in HOST_SEGMENTS] == [0.0] * len(HOST_SEGMENTS)

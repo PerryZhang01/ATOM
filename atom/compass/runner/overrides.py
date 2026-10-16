@@ -255,9 +255,9 @@ class HostDeviceRecurrence:
     `pp` forwards back; an output forward, after launch, waits for the previous
     output forward's, or on the last stage for its own, and on any other stage
     for nothing. `ends[-1]` is the last forward's device end. `laws[kind][segment]` are coefficients on `(1,
-    tokens, seqs)`, 0 with no laws at all. `now` reads the engine LP's clock.
+    tokens, seqs)`; `charge` says what an absent one costs. `now` reads the engine LP's clock.
     `segments` holds the seconds the last `charge` charged each segment, 0 for
-    one in `skip`, and none if it refused.
+    one in `skip`.
     """
 
     def __init__(self, laws: dict, skip, now, stage=None) -> None:
@@ -267,16 +267,18 @@ class HostDeviceRecurrence:
         self.last = None if stage is None else stage[0] == stage[1] - 1
         self.output_end = -math.inf  # device end of the last output forward
 
-    def charge(self, batch: Any, device_s: float) -> float:
+    def charge(self, batch: Any, device_s: float, refuse: bool = True) -> float:
         """The forward's exit less `now`; advances the device state. With any
-        laws, a forward whose kind lacks one for a segment it runs is refused,
-        naming each ``<kind>.<segment>``; a segment in `skip` needs none, and a
-        middle chunk runs no `W_post`."""
+        laws and `refuse`, a forward whose kind lacks one for a segment it runs
+        is refused, naming each ``<kind>.<segment>``, the state as it was;
+        without `refuse` that segment is 0. A segment in `skip` needs none, and
+        a middle chunk runs no `W_post`."""
         kind = "decode" if batch.total_seqs_num_prefill == 0 else "prefill"
         kind = kind if batch.produces_output() else "middle"
-        law, self.segments = self.laws.get(kind, {}), {}
+        law = self.laws.get(kind, {})
         ran = HOST_SEGMENTS[: 3 if kind == "middle" else 4]
-        if self.laws and (missing := [s for s in ran if s not in {*law, *self.skip}]):
+        missing = [s for s in ran if s not in {*law, *self.skip}]
+        if refuse and self.laws and missing:
             from atom.compass.backends.resolver import CostRefused, Refusal
 
             named = ", ".join(f"{kind}.{s}" for s in missing)
@@ -1056,8 +1058,8 @@ def _group_step_seconds(
     A step no cost source answers costs 0 s on this rank and still counts as
     a priced step; its reason, ``cost:`` and what each source said, joins the
     refusals the summary reads. With `compass_abort` set it raises instead,
-    which ends the worker. A forward `compass_host` refuses takes the same path
-    and charges its device seconds alone; a step both refuse has one reason.
+    which ends the worker. A forward `compass_host` refuses takes the same path,
+    charged with each segment it named at 0; a step both refuse has one reason.
 
     On the rank that keeps the parity record, each step also appends its cost
     line to `dp<r>.cost.jsonl` beside it: the record's `step`; with a
@@ -1109,7 +1111,8 @@ def _group_step_seconds(
         if getattr(runner, "compass_abort", False):
             raise
         said = "; ".join(f"{r.source}: {r.reason}" for r in refusal.declined)
-        refused, charge_s = (f"{refused}; " if refused else "cost:") + said, device_s
+        refused = (f"{refused}; " if refused else "cost:") + said
+        charge_s = host.charge(batch, device_s, refuse=False)
     if refused:
         vars(runner).setdefault("_refused_commands", []).append(refused)
     group_s, targets = charge_s, None
