@@ -5,6 +5,9 @@ A fit reads record directories, each with the client runs its server served,
 by their exports (`--client-run RECORD EXPORT`, in the order they ran), and
 loads their samples under one configuration (`samples.load`). A record no
 `--client-run` names refuses: its steps would name no trace they served.
+`--machine M` names the spec of the platform the records ran on; the
+configuration gains its `machine_spec_digest`, which a fit's key and params
+state.
 
 `publish` hands off one store entry whose members are `params`, what a run
 file carries, and `report`, the fit's report, and writes both, with the
@@ -25,10 +28,13 @@ from atom.compass.artifacts import (
     Provenance,
     Reading,
     Topology,
+    machine_spec_digest,
     member_name,
     roots_for,
 )
 from atom.compass.fit.samples import load
+from atom.compass.run import _width_keys
+from atom.compass.spec import MachineSpec
 
 #: The rank every member is written at: a fit has one writer.
 RANK = Topology().ranks()[0]
@@ -46,6 +52,7 @@ def parser(prog: str, description: str) -> argparse.ArgumentParser:
         metavar=("RECORD", "EXPORT"),
         help="a client run RECORD's server served, by its export; every RECORD has one",
     )
+    p.add_argument("--machine", required=True, help="the records' machine spec")
     p.add_argument("--store", required=True, help="the artifact store's root")
     p.add_argument("--out", required=True, help="where the readable copy goes")
     return p
@@ -71,7 +78,11 @@ def inputs(args, sources) -> tuple[list, dict]:
             f"{', '.join(unnamed)} is named by no --client-run; name the client "
             "runs its server served, so the fit records the traces they sent"
         )
-    return load(runs)
+    samples, config = load(runs)
+    spec = MachineSpec.from_mapping(
+        _width_keys(json.loads(Path(args.machine).read_text()))
+    )
+    return samples, {**config, "machine_spec": machine_spec_digest(spec)}
 
 
 def runs(samples) -> list[dict]:

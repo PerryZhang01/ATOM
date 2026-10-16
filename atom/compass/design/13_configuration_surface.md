@@ -178,8 +178,9 @@ compass measure steps  [<batches>...] [--grid <population>...] <sample> \
                        --sampling P --out D --store S -- <ATOM args>          [GPU]
 compass measure ops               (ops half)                                  [GPU]
 compass measure memory                        --out D --store S -- <ATOM args> [GPU]
-compass fit steps      --backend step-linear|step-grid <sample>... --out D --store S
-compass fit host       <record>... --out D --store S
+compass fit steps      --backend step-linear|step-grid <sample>... --machine M \
+                       --out D --store S
+compass fit host       <record>... --machine M  --out D --store S
 compass fit ops                   (ops half)
 compass run            <backend> --machine M  --out D --store S -- <ATOM args>
 

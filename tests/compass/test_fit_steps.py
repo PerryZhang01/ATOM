@@ -10,19 +10,30 @@ cannot name a read-only checkout in every container.
 
 import json
 import re
+from pathlib import Path
 
 import pytest
 from test_artifact_store import AITER_ROOT, ATOM_ROOT
 from test_backend_step_linear_fit import _steps, _timed_record
 from test_fit_samples import DEVICE, SOURCE
+from test_memory_readings import DOCUMENT
 from test_parity_served import SAMPLING
 
 from atom.compass import cli
-from atom.compass.artifacts import ArtifactStore, Axis, Key, Kind, Reading, Row
+from atom.compass.artifacts import (
+    ArtifactStore,
+    Axis,
+    Key,
+    Kind,
+    Reading,
+    Row,
+    machine_spec_digest,
+)
 from atom.compass.backends import StepLinearLaw, step_linear_fit
 from atom.compass.backends.step_labels import digest
 from atom.compass.fit import publish
 from atom.compass.run.step_grid import BOUNDS
+from atom.compass.spec import MachineSpec
 
 ENGINE = {
     "ladder": [],
@@ -38,6 +49,8 @@ HOST = {
     "engine": ENGINE,
 }
 LINEAR = ("--backend", "step-linear")
+#: The digest of the run files' machine spec, the one every fit here names.
+DIGEST = machine_spec_digest(MachineSpec.from_mapping(DOCUMENT))
 STACK = {"rocm": "7.2.4", "torch": "2.10.0", "aiter": "v0.1.21"}
 
 
@@ -80,9 +93,12 @@ def record(directory, seed, key=HOST, keyed=True, stack=STACK, trace="trace"):
 
 
 def fit(tmp_path, command, *args):
-    """`compass <command> <args>`, publishing to `tmp_path/store`."""
-    store, out = str(tmp_path / "store"), str(tmp_path / "out")
-    cli.main([*command.split(), *map(str, args), "--store", store, "--out", out])
+    """`compass <command> <args>` on the run files' machine spec, publishing to
+    `tmp_path/store`."""
+    machine, store, out = (str(tmp_path / f) for f in ("spec.json", "store", "out"))
+    Path(machine).write_text(json.dumps(DOCUMENT))
+    tail = ["--machine", machine, "--store", store, "--out", out]
+    cli.main([*command.split(), *map(str, args), *tail])
 
 
 def law_key(form="base") -> Key:
@@ -94,6 +110,7 @@ def law_key(form="base") -> Key:
         engine_config=json.dumps(ENGINE, sort_keys=True),
         source_root="tree-67c176f0",
         form=form,
+        machine_spec=DIGEST,
     )
 
 
@@ -113,8 +130,9 @@ def test_the_law_published_is_the_one_step_linear_fits_command_writes_less_its_h
     law = member(tmp_path / "store", law_key(form), "params")
     # The command names runs in argument order, the samples in digest order.
     paths = sorted((d / "steps/dp0.jsonl" for d in (a, b)), key=digest)
+    law_file = str(tmp_path / "law.json")
     step_linear_fit.main(
-        [*map(str, paths), "--form", form, "--out", str(tmp_path / "law.json")]
+        [*map(str, paths), "--form", form, "--machine-spec", DIGEST, "--out", law_file]
     )
     written = json.loads((tmp_path / "law.json").read_text())
     assert law == {k: v for k, v in written.items() if k not in ("host", "host_fit")}
