@@ -5,6 +5,8 @@ A record directory is `record`'s output: `run.json`, holding the run's
 identity in format `FORMAT_VERSION`, and the step record in `steps/`, with the
 client runs its server served (`parity.served`). Its steps are labelled by
 `step_labels`, and a sample's provenance gains the `traces` its step served.
+A DP rank no request reached runs only dummy forwards, and gives no sample;
+its file still counts in the run's digest and its DP width.
 
 Every record states one configuration, read from its `run.json`, its
 `dp0.engine.json` and the requests it served: `model`, the served
@@ -84,6 +86,8 @@ def _record(directory: Path, client_runs) -> tuple[list[Sample], dict]:
     files = sorted(steps.glob("dp*[0-9].jsonl"), key=lambda p: int(p.stem[2:]))
     name, samples = ", ".join(map(digest, files)), []
     for path in files:
+        if all(s["is_dummy_run"] for s in record[int(path.stem[2:])]):
+            continue
         for s in label(path, name)[0]:
             traced = {**s.provenance, "traces": traces[s.rank, s.step]}
             samples.append(dataclasses.replace(s, provenance=traced))

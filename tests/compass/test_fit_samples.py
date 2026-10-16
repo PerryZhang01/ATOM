@@ -176,3 +176,20 @@ def test_samples_come_in_one_order_whatever_order_the_inputs_came_in(
     assert forward == backward
     runs = [s.provenance["run"] for s in forward[0]]
     assert runs == sorted(runs) and len(set(runs)) == 2
+
+
+def test_a_dp_rank_no_request_reached_adds_no_sample(tmp_path, monkeypatch):
+    a = record(tmp_path, monkeypatch)
+    alone, config = load({a: RUNS})
+    rank0, rank1 = a / "steps/dp0.jsonl", a / "steps/dp1.jsonl"
+    # The dummy forward a DP rank runs to keep step with its group, at each step.
+    dummy = {"dp_rank": 1, "is_dummy_run": True, "batch": [], "named": []}
+    lines = [{**json.loads(line), **dummy} for line in rank0.read_text().splitlines()]
+    rank1.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+    samples, both = load({a: RUNS})
+    run = f"{digest(rank0)}, {digest(rank1)}"
+    assert samples == [
+        dataclasses.replace(s, provenance={**s.provenance, "run": run}) for s in alone
+    ]
+    assert both == {**config, "parallel": "tp1-dp2"}
