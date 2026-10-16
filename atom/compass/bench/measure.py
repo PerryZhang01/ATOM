@@ -70,15 +70,13 @@ from atom.compass.backends.step_labels import digest as file_digest
 from atom.compass.backends.step_linear_fit import TOKEN_BANDS
 from atom.compass.drive.gpu import add_gpu_flag, quiet
 from atom.compass.drive.identity import identity, phase
-from atom.compass.fit.publish import RANK, conditions
-from atom.compass.fit.samples import run_fields
+from atom.compass.fit.publish import conditions
+from atom.compass.fit.samples import MEMBER, run_fields
 from atom.compass.parity.served import requests, served
 from atom.compass.run import _write_whole
 from atom.compass.run.step_grid import BOUNDS, keyed
 
 PROG = "compass measure steps"
-#: A measurement's one member: the bench replies for the whole TP group.
-MEMBER = ("measurement", RANK, "json")
 #: What of a step-record line is the batch it measures.
 VIEW = ("rows", "rung", "produces_output")
 
@@ -150,15 +148,8 @@ def _todo(points, configuration, engine, sampling, store, readings) -> list:
     """Each point's key and the point, for the points the store does not hold;
     a held entry measured under other readings than this run's refuses."""
     todo, stale = [], []
-    for view, point in points.items():
-        key = Key.of(
-            Kind.STEP_MEASUREMENT,
-            **configuration,
-            engine_config=json.dumps(engine, sort_keys=True),
-            sampling=json.dumps(sampling, sort_keys=True),
-            step_kind=_kind(point["view"]),
-            view=view,
-        )
+    for point in points.values():
+        key = measurement_key(configuration, engine, sampling, point["view"])
         if not store.directory_for(key).exists():
             todo.append((key, point))
             continue
@@ -172,6 +163,19 @@ def _todo(points, configuration, engine, sampling, store, readings) -> list:
             "readings than this run's:\n" + "\n".join(stale)
         )
     return todo
+
+
+def measurement_key(configuration: dict, engine: dict, sampling, view: dict) -> Key:
+    """The key of `view`'s measurement under `configuration` (model, device,
+    parallel layout, source root), `engine`, `keyed`'s fields, and `sampling`."""
+    return Key.of(
+        Kind.STEP_MEASUREMENT,
+        **configuration,
+        engine_config=json.dumps(engine, sort_keys=True),
+        sampling=json.dumps(sampling, sort_keys=True),
+        step_kind=_kind(view),
+        view=_digest(view),
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
