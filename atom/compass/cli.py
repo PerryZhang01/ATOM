@@ -4,14 +4,15 @@
 Each command in `COMMANDS` runs its module's `main` with the arguments after
 its words; a module not yet built refuses as not built. Each command in
 `REFUSED`, the op-level half and the deprecated ones, refuses with its reason.
-A refusal a command raises (`ValueError`, `OSError`, `ArtifactRefusal`) exits
-with its message rather than a traceback.
+A refusal a command raises (`ValueError`, `OSError`, `ArtifactRefusal`,
+`GpuRefusal`) exits with its message rather than a traceback.
 """
 
 import importlib
 import sys
 
 from atom.compass.artifacts import ArtifactRefusal
+from atom.compass.drive.gpu import GpuRefusal
 
 #: Each command, to its module and what it does.
 COMMANDS = {
@@ -81,5 +82,5 @@ def main(argv=None) -> None:
         raise SystemExit(f"compass {name}: not built yet") from missing
     try:
         command.main(argv[len(name.split()) :])
-    except (ValueError, OSError, ArtifactRefusal) as refused:
+    except (ValueError, OSError, ArtifactRefusal, GpuRefusal) as refused:
         raise SystemExit(f"compass {name}: {refused}") from refused

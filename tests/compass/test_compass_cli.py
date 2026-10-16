@@ -14,6 +14,7 @@ import pytest
 import tomllib
 
 from atom.compass import cli
+from atom.compass.drive.gpu import GpuRefusal
 
 VERBS = [
     "record",
@@ -62,6 +63,19 @@ def test_a_command_dispatches_its_arguments_and_its_refusals(monkeypatch):
     with pytest.raises(SystemExit, match="^compass fit steps: planted refusal$"):
         cli.main(["fit", "steps", "--backend", "x", "a"])
     assert got == [["--backend", "x", "a"]]
+
+
+def test_a_gpu_refusal_exits_with_its_message(monkeypatch):
+    def main(argv):
+        raise GpuRefusal("GPU 7 has PID 9 on it before the run, so it was not started")
+
+    monkeypatch.setitem(
+        sys.modules, "planted_measure", types.SimpleNamespace(main=main)
+    )
+    monkeypatch.setitem(cli.COMMANDS, "measure steps", ("planted_measure", ""))
+
+    with pytest.raises(SystemExit, match="^compass measure steps: GPU 7 has PID 9 "):
+        cli.main(["measure", "steps"])
 
 
 def test_a_module_not_built_refuses_and_a_missing_dependency_does_not_read_as_one(
