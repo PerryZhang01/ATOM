@@ -3,7 +3,7 @@
   "name": "mi308x-hjbog39",
   "provenance": {
     "authored_by": "compass agent for jgong5",
-    "date": "2026-10-14",
+    "date": "2026-10-16",
     "origin": "mixed",
     "origins": {
       "host.cpu.cores_physical": {
@@ -119,6 +119,18 @@
       "interconnect.inter_node.derate": {
         "origin": "assumed"
       },
+      "host.http_intake.fixed_s": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "source_root": "commit:2d1d223be",
+        "record": "sha256:40da90fe439e06efa8aeb8d8b3d5a17a955c507afb6f9aa18401cbbc957739de"
+      },
+      "host.http_intake.per_byte_s": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "source_root": "commit:2d1d223be",
+        "record": "sha256:40da90fe439e06efa8aeb8d8b3d5a17a955c507afb6f9aa18401cbbc957739de"
+      },
       "host.tokenizers[qwen3.8-27b fast]": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
@@ -128,9 +140,10 @@
     "fragments": [
       "tokenizer",
       "device",
-      "assumed"
+      "assumed",
+      "intake"
     ],
-    "notes": "one Qwen3.8-27B TP1 start at ce625ddd9 | no probe fills these"
+    "notes": "one Qwen3.8-27B TP1 start at ce625ddd9 | no probe fills these | one real c=256 first-turn cc-traces burst at 2d1d223be"
   },
   "host": {
     "cpu": {
@@ -157,7 +170,11 @@
       "zmq_roundtrip_s": 5e-05,
       "shm_broadcast_s": 2e-05
     },
-    "admission_fixed_s": 0.009
+    "admission_fixed_s": 0.009,
+    "http_intake": {
+      "fixed_s": 0.0021464994614327293,
+      "per_byte_s": 1.869416019632594e-08
+    }
   },
   "device": {
     "name": "MI308X",

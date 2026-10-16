@@ -34,8 +34,9 @@ Everything in the table is required. A machine has an interconnect whether or
 not a particular run drives it, and the value of refusing a missing term is that
 the refusal happens while a person is authoring the document rather than in the
 middle of a simulated run. The exceptions are the provenance fields `merge`
-fills in later and `fp4_flops`, which a device with no FP4 matrix core omits.
-An engine start's memory readings are no field here: `compass measure memory`
+fills in later, `fp4_flops`, which a device with no FP4 matrix core omits, and
+the two `host.http_intake` terms, which a host not probed for them omits. An
+engine start's memory readings are no field here: `compass measure memory`
 publishes them per configuration, as a `memory_readings` entry.
 
 **Every field says where it came from.** `provenance.origin` is one of
@@ -121,6 +122,9 @@ FIELDS = (
     Field("host.ipc.zmq_roundtrip_s", Kind.QUANTITY),
     Field("host.ipc.shm_broadcast_s", Kind.QUANTITY),
     Field("host.admission_fixed_s", Kind.QUANTITY),
+    # The frontend event loop's time to take in one HTTP request.
+    Field("host.http_intake.fixed_s", Kind.QUANTITY, required=False),
+    Field("host.http_intake.per_byte_s", Kind.QUANTITY, required=False),
     Field("device.name", Kind.TEXT),
     Field("device.arch", Kind.TEXT),
     Field("device.count_per_node", Kind.COUNT),

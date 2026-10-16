@@ -69,6 +69,8 @@ QUANTITIES: Mapping[str, tuple[str, ...]] = {
     "kv_blocks": ("device.memory.capacity_bytes",),
     "admission": (
         "host.admission_fixed_s",
+        "host.http_intake.fixed_s",
+        "host.http_intake.per_byte_s",
         "host.ipc.zmq_roundtrip_s",
         "host.ipc.shm_broadcast_s",
         "host.tokenizers",
