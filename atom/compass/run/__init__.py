@@ -762,10 +762,31 @@ def runner(model_runner, tree) -> None:
         ep = dp if config.enable_expert_parallel else 1
         backend = StepLinearBackend(StepLinearLaw(run["step_linear"]), (dp, ep))
     elif "step_stub" in run:
+        # A pipeline stage is priced for its own span of the stack, the span
+        # ATOM's `make_layers` builds it from.
+        hf, pp = config.hf_config, getattr(config, "pipeline_parallel_size", 1)
+        depth, share = hf.num_hidden_layers, None
+        start, end = 0, depth
+        if pp > 1:
+            from atom.compass.backends.geometry import paged_layers
+            from atom.models.utils import get_pp_indices
+
+            pp_rank = config.parallel_config.pipeline_parallel_rank
+            start, end = get_pp_indices(depth, pp_rank, pp)
+            text = getattr(hf, "text_config", hf)
+            paged = paged_layers(text, 0, depth)
+            if not paged:
+                raise ValueError(
+                    "a pipeline stage prices its history terms on its share of the "
+                    "paged layers, and this stack has no layer that holds a cache "
+                    "of every past token"
+                )
+            share = ((end - start) / depth, paged_layers(text, start, end) / paged)
         backend = StepStubBackend(
             Coefficients(**run["step_stub"]),
-            Parallelism(tp_size=tp),
-            stack_layers=config.hf_config.num_hidden_layers,
+            Parallelism(tp_size=tp, pp_size=pp),
+            stack_layers=end - start,
+            stage_share=share,
         )
     machine = MachineSpec.from_mapping(_width_keys(run["machine"]))
     platform = machine_spec_digest(machine)
