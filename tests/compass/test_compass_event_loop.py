@@ -831,7 +831,7 @@ def test_an_intake_waits_for_the_open_tokenizer_job_so_its_result_is_not_late(
     # the first one's real thread takes 0.3 wall seconds. Job 0 completes at
     # 3 ms, inside request 1's intake, so its result runs when that intake
     # ends, at 4 ms, not once the clock has run on through every intake.
-    _intake_run_file(monkeypatch, tmp_path, (2e-3, 0.0))
+    _intake_run_file(monkeypatch, tmp_path, (2e-3, 1e-9))  # empty bodies
     entry = SimpleNamespace(encode_fixed_s=1e-3, encode_tokens_per_s=1.0, derate=1.0)
     encode, done = wrap_encode(list, entry), []
 
