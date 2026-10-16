@@ -12,7 +12,6 @@ served is read from its step record.
 
 import json
 import os
-import subprocess
 import time
 from collections.abc import Sequence
 from contextlib import contextmanager
@@ -20,7 +19,7 @@ from pathlib import Path
 
 import torch
 
-from atom.compass.artifacts.provenance import git_tree_root, module_root
+from atom.compass.artifacts.provenance import _run, git_tree_root, module_root
 from atom.compass.drive.gpu import GpuRefusal, smi
 from atom.compass.run import host_key_of
 from atom.compass.run.step_grid import BOUNDS
@@ -28,6 +27,9 @@ from atom.compass.run.step_grid import BOUNDS
 FORMAT_VERSION = 2
 #: rocm-smi's series is this brand and then the model a machine spec names.
 BRAND = "AMD Instinct "
+#: The hex digits of aiter's commit a machine spec pins; git's own default
+#: follows the checkout's object count, and a shallow clone reads fewer.
+AITER_ABBREV = 9
 
 
 def identity(
@@ -79,10 +81,14 @@ def _device(gpus: tuple[int, ...]) -> list[dict]:
 
 
 def _commit(root: str) -> str:
-    """The commit of the checkout at `root` as git abbreviates it, `-dirty` when
-    a tracked file differs: with every tag excluded, `git describe` names it."""
+    """The commit of the checkout at `root` in `AITER_ABBREV` hex digits, and
+    `-dirty` when a tracked file differs: with every tag excluded, `git
+    describe` names the commit itself. A root git cannot name refuses."""
     argv = ["git", "-C", root, "describe", "--always", "--dirty", "--exclude=*"]
-    return subprocess.check_output(argv, text=True, timeout=30).strip()
+    code, commit, error = _run([*argv, f"--abbrev={AITER_ABBREV}"])
+    if code or not commit:
+        raise ValueError(f"git names no commit at {root}: {error or 'no output'}")
+    return commit
 
 
 @contextmanager

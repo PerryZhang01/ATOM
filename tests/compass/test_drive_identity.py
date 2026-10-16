@@ -5,9 +5,11 @@ and the device off a planted `rocm-smi`."""
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 import torch
@@ -26,6 +28,7 @@ CARD = {
     "GFX Version": "gfx942",
 }
 ARGV = ["compass", "record", "--gpu", "7", "--out", "d", "--", "--model", "m"]
+MACHINES = Path(__file__).parents[2] / "scripts/compass/machines"
 
 pytestmark = pytest.mark.skipif(GIT is None, reason="needs git")
 
@@ -98,7 +101,7 @@ def test_the_identity_holds_its_entries_and_no_workload(planted):
         "device": [],
         "stack": {
             "rocm": "7.2.4",
-            "aiter": _git(trees["aiter"], "rev-parse", "--short", "HEAD"),
+            "aiter": _git(trees["aiter"], "rev-parse", "--short=9", "HEAD"),
             "rccl": "2.27.7",
             "torch": torch.__version__,
         },
@@ -120,11 +123,38 @@ def test_the_source_digest_is_the_tree_git_archive_ships(planted):
         source["revision"],
         1,
     )
-    commit = _git(trees["aiter"], "rev-parse", "--short", "HEAD")
+    commit = _git(trees["aiter"], "rev-parse", "--short=9", "HEAD")
     assert run["stack"]["aiter"] == f"{commit}-dirty"
 
     _git(trees["atom"], "commit", "-qam", "edit")
     assert drive.identity(*served, ARGV)["source"]["revision"] != source["revision"]
+
+
+def test_aiter_s_commit_is_read_at_the_length_every_machine_spec_pins(planted):
+    trees, _, served = planted
+    pins = {
+        json.loads(spec.read_text())["device"]["software_pinned_to"]["aiter"]
+        for spec in MACHINES.glob("*.json")
+    }
+    assert {len(pin) for pin in pins} == {drive.AITER_ABBREV}
+    # This checkout's own abbreviation is shorter, as a shallow clone's is.
+    assert len(_git(trees["aiter"], "rev-parse", "--short", "HEAD")) < len(pins.pop())
+
+    aiter = drive.identity(*served, ARGV)["stack"]["aiter"]
+    assert aiter == _git(trees["aiter"], "rev-parse", "--short=9", "HEAD")
+
+
+def test_an_aiter_root_git_cannot_name_refuses_naming_it(
+    planted, tmp_path, monkeypatch
+):
+    trees, _, served = planted
+    roots = {**trees, "aiter": tmp_path / "plain"}
+    roots["aiter"].mkdir()
+    monkeypatch.setattr(drive, "module_root", lambda module: str(roots[module]))
+
+    named = f"git names no commit at {roots['aiter']}: "
+    with pytest.raises(ValueError, match="^" + re.escape(named)):
+        drive.identity(*served, ARGV)
 
 
 def test_each_named_gpu_is_recorded_with_its_model(planted):

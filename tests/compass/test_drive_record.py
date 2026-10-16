@@ -195,7 +195,7 @@ def test_a_record_s_out_directory_loads_through_the_fit_s_loader(tmp_path, plant
     samples, config = load({out: RUNS})
     steps = _lines(out / "steps/dp0.jsonl")
     assert len(samples) == sum(not s["is_dummy_run"] for s in steps)
-    aiter = _git(tmp_path / "aiter", "rev-parse", "--short", "HEAD")
+    aiter = _git(tmp_path / "aiter", "rev-parse", "--short=9", "HEAD")
     assert (config["device"], config["parallel"], config["stack"]["aiter"]) == (
         "MI308X gfx942",
         "tp1-dp1",
