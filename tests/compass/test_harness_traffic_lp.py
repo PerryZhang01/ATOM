@@ -8,7 +8,8 @@ sends and hands each final event's credit return to the router. aiperf's
 strategy is a stand-in that schedules the next turn a fixed delay after a
 return, on a ``ClockPacedLoopScheduler`` paced by the traffic LP. The hold
 tests replace the authority with a scripted runtime, so a return can be put
-on either side of its final event's release. Skips by name as
+on either side of its final event's release. The stop test serves a run's
+recording authority over TCP and stops it as a SIGTERM does. Skips by name as
 ``test_harness_pacing.py`` does.
 """
 
@@ -63,6 +64,7 @@ from compass_harness.traffic_lp import (
 from compass_harness.transport import addresses, credit_key
 
 from atom.compass import clock_transport
+from atom.compass import run as compass_run
 from atom.compass.clock import (
     NER,
     ClockAuthority,
@@ -246,6 +248,48 @@ def test_a_dropped_response_is_named_at_the_finish(ca, monkeypatch):
     # The router logged it and stopped the loop, which fails the timing manager.
     (message,) = logged
     assert re.search(named, message)
+
+
+def test_a_client_bound_at_a_stop_names_its_open_request(tmp_path):
+    """The frontend, the engine and the traffic LP each hold a TCP connection,
+    as a deployment's processes do. The frontend takes request 0, then stops
+    the run; the engine takes its ``+inf`` and leaves, ending its connection."""
+    run = {**RUN, "bound_s": 100.0, "client_runs": None, "out_dir": str(tmp_path)}
+    authority = compass_run._RecordingAuthority(run)
+    server = clock_transport.serve(authority, "tcp://127.0.0.1:0")
+
+    def runtime(lp, cls=LPRuntime):
+        return cls(lp, TABLE, clock_transport.connect(lp, server.endpoint))
+
+    frontend = runtime(FRONTEND, compass_run._StoppingClock)
+    engine = runtime(ENGINE)
+    engine.ask_next_event(INF, 50.0)
+    frontend.ask_next_event(INF)
+
+    def stop():
+        frontend.take_grant()  # request 0's admission
+        frontend.end_run()  # the stop, as the frontend's event loop makes it
+        engine.take_grant()
+        engine.conn.close()  # the engine's process leaves
+
+    async def client():
+        traffic = TrafficLP(runtime(compass_run.TRAFFIC), str(tmp_path / "lp"))
+        traffic.send(_key(0))
+        await traffic.done
+
+    stopper = threading.Thread(target=stop, daemon=True)
+    stopper.start()
+    try:
+        with pytest.raises(UnansweredRequests) as raised:
+            _run(client())
+    finally:
+        stopper.join(10)
+        server.close()
+    assert str(raised.value) == (
+        f"the run finished with requests [{_key(0)}] sent but never given their "
+        "final response"
+    )
+    assert engine.now == INF and not authority.stopped_whole
 
 
 class ScriptedRuntime:
@@ -561,6 +605,40 @@ def test_a_1p1d_run_file_sends_to_frontend_p_and_reads_from_frontend_d(
     http = "traffic->frontend-P:http"
     assert sent == [(http, 0, table.lookahead(http))]
     assert unreleased == {("frontend-D->traffic:stream", 0): 1.0}
+
+
+def test_behind_the_router_lp_requests_and_the_stream_cross_it_and_cancels_stay_off(
+    tmp_path, monkeypatch
+):
+    """With a router LP the traffic LP sends to it and reads the stream from it,
+    and a cancel, which the router would refuse, is never stamped."""
+    pd = {"router_s": 2.0**-12, "kv_write_req_s": 2.0**-10, "router_in_s": 2.0**-14}
+    endpoint = f"inproc:test-traffic-lp-{uuid.uuid4().hex}"
+    server = clock_transport.serve(
+        ClockAuthority(prefill_decode_table(**RUN, **pd)), endpoint
+    )
+    run_file = tmp_path / "run.json"
+    run_file.write_text(
+        json.dumps({"clock_endpoint": endpoint, "bound_s": 1e6, **RUN, **pd})
+    )
+    monkeypatch.setenv(RUN_ENV, str(run_file))
+    monkeypatch.setenv(ADDRESS_ENV, str(tmp_path / "lp"))
+
+    async def main():
+        traffic = TrafficLP.from_env()
+        try:
+            return traffic.http, traffic.stream, traffic.cancels
+        finally:
+            for task in (*traffic._tasks, traffic.done):
+                task.cancel()
+            traffic._pub.close(linger=0)
+            traffic._pull.close(linger=0)
+
+    try:
+        got = _run(main())
+    finally:
+        server.close()
+    assert got == ("traffic->router:http", "router->traffic:stream", False)
 
 
 def test_a_1p1d_hold_settles_the_frontend_d_stream(tmp_path):

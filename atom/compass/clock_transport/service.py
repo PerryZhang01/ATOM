@@ -8,7 +8,12 @@ member binds its own connection. Each reply that call returns goes to its
 address's own reply slot, whether or not it is waiting on it. A grant only ever
 goes to an LP waiting in TAR or NER; the finish at the end of a run comes when
 every LP waits, and answers each one's request with ``+inf``. A requester whose reply is held gets nothing until a later request
-makes it due, and nothing times it out.
+makes it due, and nothing times it out. A bind is answered with what the LP
+starts from (`ClockAuthority.on_bind`).
+
+The end of a client run before the last answers the client with ``+inf``: it
+has resigned, so its address is unbound, its connection may end without ending
+the run, and the next client binds the same LP.
 
 A `KeyError` or `ValueError` from the authority refuses the request: the
 requester's `recv` raises it as the same type, and the loop goes on serving. A
@@ -17,7 +22,8 @@ bound address's slot, waiting or not, and answers every later request. Any other
 exception from the authority, or while framing a reply, ends the run the same
 way, as a `ClockAbort` that names it; its table is empty when the LP table
 cannot be read or framed. So does the end of a bound socket connection, as a
-`ClockAbort` naming its address: no finish can come without it.
+`ClockAbort` naming its address: no finish can come without it. A resigned
+client's connection is no longer bound, and its end ends nothing.
 
 Frames and closes reach the loop: a carrier hands the serve side encoded frames
 and the serve side decodes them onto the queue, so the in-process carrier here
@@ -26,6 +32,7 @@ request. An LP waits for its reply on its own slot and under no lock shared with
 another connection, so one parked LP holds up no other.
 """
 
+import math
 import queue
 import threading
 
@@ -65,8 +72,8 @@ class _Server:
 
     def bind(self, frame: bytes) -> tuple:
         """Bind a connection to the LP, or LP and member, its first frame names:
-        that addressee and its reply slot. A member's name is checked by the
-        authority at its first request."""
+        that addressee, its reply slot and what it starts from. A member's name
+        is checked by the authority at its first request."""
         kind, *rest = decode(frame)
         if kind != BIND:
             raise MalformedMessage(
@@ -76,12 +83,15 @@ class _Server:
         address = (lp, *member) if member else lp
         slot = queue.Queue()
         if lp not in self._lps or self._slots.setdefault(address, slot) is not slot:
-            state = "already bound" if lp in self._lps else "not a participant"
+            state, why = "not a participant", ""
+            if lp in self._lps:
+                state = "already bound"
+                why = "a second instance of one role, as xPyD starts, has no LP; "
             raise KeyError(
                 f"{' member '.join(map(str, rest))} is {state} at {self.endpoint}; "
-                "participants: " + ", ".join(map(str, self._lps))
+                f"{why}participants: " + ", ".join(map(str, self._lps))
             )
-        return address, slot
+        return address, slot, self._authority.on_bind(lp)
 
     def submit(self, address, frame: bytes) -> None:
         """Queue one request frame from the connection bound to `address`."""
@@ -91,11 +101,11 @@ class _Server:
                 f"{address} sent {message[0]}; a bound connection sends only "
                 + ", ".join(REQUESTS)
             )
-        self._requests.put((address, message))
+        self._requests.put((address, message, None))
 
-    def _closed(self, address) -> None:
-        """The connection bound to `address` closed."""
-        self._requests.put((address, None))
+    def _closed(self, address, slot) -> None:
+        """The connection bound to `address`, replying through `slot`, closed."""
+        self._requests.put((address, None, slot))
 
     def close(self) -> None:
         """Stop the loop and give up the endpoint."""
@@ -107,12 +117,12 @@ class _Server:
     def _loop(self) -> None:
         ended = None  # the refusal frame that ended the run, once one has
         while (item := self._requests.get()) is not None:
-            address, request = item
+            address, request, slot = item
             lp, member = address if isinstance(address, tuple) else (address, None)
-            replies = [(address, ended)]
+            replies, resigned = [(address, ended)], []
             if request is None:
                 replies = []
-                if ended is None:
+                if ended is None and self._slots.get(address) is slot:
                     name = f"{lp} member {member}" if member else f"{lp}"
                     ended = self._ending(
                         f"{name} closed its connection, so the run ends here"
@@ -130,13 +140,18 @@ class _Server:
                     else:
                         # Outside the refusing branch: a grant that cannot be
                         # framed ends the run, and no other grant goes out.
-                        replies = [(i, encode((GRANT, g, r))) for i, g, r in grants]
+                        replies = [(i, encode((GRANT, *reply))) for i, *reply in grants]
+                        # A client run ended: its client, granted +inf, resigned.
+                        if any(len(reply) > 3 for reply in grants):
+                            resigned = [i for i, g, *_ in grants if g == math.inf]
                 except Exception as fault:  # noqa: BLE001 - ends the run, named
                     ended = self._ending(fault)
                     # A copy: a carrier thread may bind a new slot meanwhile.
                     replies = [(i, ended) for i in list(self._slots)]
             for i, frame in replies:
                 self._slots[i].put(frame)
+            for i in resigned:
+                del self._slots[i]
 
     def _ending(self, fault: Exception | str) -> bytes:
         """The refusal frame that ends the run on `fault`, an exception or a
@@ -179,15 +194,17 @@ class _Connection:
 
     def __init__(self, server: _Server, lp: LpId, member: str | None = None) -> None:
         self._server = server
-        self._lp, self._slot = server.bind(encode((BIND, lp, member)))
+        # `joined`: the clock and next sequence numbers the LP starts from.
+        self._lp, self._slot, self.joined = server.bind(encode((BIND, lp, member)))
 
     def send(self, request: tuple) -> None:
         self._server.submit(self._lp, encode(request))
 
     def recv(self) -> tuple:
-        """Block until this LP's reply exists; a refusal raises."""
-        _, g, released = _reply(self._slot.get())
-        return g, released
+        """Block until this LP's reply exists, ``(G, released)`` with the client
+        run's index appended when it marks one's end; a refusal raises."""
+        _, *reply = _reply(self._slot.get())
+        return tuple(reply)
 
     def close(self) -> None:
         """Nothing to release: the reply slot is the LP's, not the connection's."""

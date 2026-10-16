@@ -46,6 +46,14 @@ A timer such a request sets earlier than the time asked for fires at the grant;
 a daemon one, such as uvicorn's keep-alive timeout, keeps the run alive no more
 than any other daemon timer. A cross-LP send such a handler makes is refused
 (`LPRuntime.stamp_send`).
+A SIGINT or SIGTERM ends the run as the ``+inf`` grant does, at the LP clock,
+and `CompassEventLoop.stopped` names it; uvicorn then cancels the requests still
+open rather than wait for them, since only a grant would finish them. A loop
+built in the main thread takes both with ``add_signal_handler``, so one wakes it
+from a wait for the grant over a socket; uvicorn, which catches them while it
+serves and raises a caught one again once it has shut down, raises it into that
+handler, so ``uvicorn.run`` returns. Closing the loop puts back the handlers it
+found.
 `HttpChannel` is the inline receive of HTTP requests.
 """
 
@@ -56,6 +64,7 @@ import logging
 import math
 import select
 import selectors
+import signal
 import sys
 import threading
 import time
@@ -269,6 +278,10 @@ def _is_daemon(callback) -> bool:
     return f is not None
 
 
+#: The signals that stop a simulated server, as they stop a real one.
+STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM)
+
+
 class CompassEventLoop(asyncio.SelectorEventLoop):
     """The frontend's event loop on its LP clock; uvicorn's ``loop`` in a simulated run."""
 
@@ -294,6 +307,12 @@ class CompassEventLoop(asyncio.SelectorEventLoop):
         self.executor = SimExecutor(self)
         self.set_default_executor(self.executor)
         self.rt.loop = self
+        self.stopped = None  # the signal that stopped the run, by name
+        self.handlers_before = {}  # each stop signal's handler before this loop's
+        if threading.current_thread() is threading.main_thread():
+            for sig in STOP_SIGNALS:
+                self.handlers_before[sig] = signal.getsignal(sig)
+                self.add_signal_handler(sig, self.stop_run, sig)
 
     def time(self) -> float:
         if self.ended is None:
@@ -301,17 +320,27 @@ class CompassEventLoop(asyncio.SelectorEventLoop):
         return self.ended[0] + super().time() - self.ended[1]
 
     def finish(self, end: float) -> None:
-        """The ``+inf`` grant ended the run at LP time `end`."""
+        """The run ended at LP time `end`: at the ``+inf`` grant, or at a stop."""
         self.ended = (end, super().time())
         self._write_to_self()  # so the select that got the grant reports an fd
         for task in asyncio.all_tasks(self):
             coro = task.get_coro()
             if getattr(coro, "__qualname__", None) == "Server.serve":  # uvicorn's
-                coro.cr_frame.f_locals["self"].should_exit = True
+                server = coro.cr_frame.f_locals["self"]
+                server.should_exit = True
+                if self.stopped is not None:  # what is open, only a grant finishes
+                    server.config.timeout_graceful_shutdown = 0
                 return
         for h in self._scheduled:
             h.cancel()
         self.stop()
+
+    def stop_run(self, sig: int) -> None:
+        """Signal `sig` ends the run at the LP clock; outside it, nothing."""
+        if self.rt.in_run:
+            self.stopped = signal.Signals(sig).name
+            self.rt.end_run()
+            self.finish(self.rt.now)
 
     def job_begin(self, arrival: float) -> None:
         """A thread took a released frame: handling it is one job on its station."""
@@ -352,8 +381,12 @@ class CompassEventLoop(asyncio.SelectorEventLoop):
         return handle
 
     def close(self) -> None:
-        super().close()
-        self.rt.close()
+        super().close()  # gives each stop signal its default handler
+        for sig, handler in self.handlers_before.items():
+            if handler is not None:  # None: not installed from Python
+                signal.signal(sig, handler)
+        if self.stopped is None:
+            self.rt.close()
 
     def hand_over(self) -> bool:
         """Once every released request has been read, wake the released ones in

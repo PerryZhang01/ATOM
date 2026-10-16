@@ -138,6 +138,20 @@ def check_subject(values: Mapping[str, Any], holder: str) -> None:
         )
 
 
+def _check_domain(values: Mapping[str, Any]) -> None:
+    """Refuse a scale-up fabric that joins fewer devices than one node holds."""
+    joined = values["interconnect.intra_node.domain_devices"]
+    per_node = values["device.count_per_node"]
+    if joined < per_node:
+        raise SpecRefusal(
+            Rule.SHAPE,
+            f"`interconnect.intra_node.domain_devices` is {joined}, fewer than "
+            f"`device.count_per_node` {per_node}",
+            "write the number of devices the intra-node fabric joins, every "
+            "device of the node and any it reaches beyond it",
+        )
+
+
 #: An activation entry: the model it was measured on, keyed by its
 #: architectures and its config.json's sha256 (one architecture serves every
 #: size of a family), and per tensor-parallel width one real run's warmup
@@ -319,6 +333,7 @@ class MachineSpec:
             values[field.path] = check(field, found[field.path], field.path)
         _check_activations(values.get(ACTIVATIONS, ()))
         check_subject(values, "this spec")
+        _check_domain(values)
         return cls(values, table(values[TOKENIZERS]))
 
     def value(self, path: str) -> Any:
@@ -377,7 +392,9 @@ class MachineSpec:
 
     def digest(self) -> str:
         """A fingerprint of the echo, so an artifact can name the spec it used."""
-        canonical = json.dumps(self.echo(), sort_keys=True, separators=(",", ":"))
+        # Keys sort as JSON writes them, so a layout key can sit beside a width.
+        written = json.loads(json.dumps(self.echo()))
+        canonical = json.dumps(written, sort_keys=True, separators=(",", ":"))
         return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
 
     def runtime_constant(self, name: str, tp_width: int | None = None) -> Any:
@@ -393,13 +410,13 @@ class MachineSpec:
             raise SpecRefusal(
                 Rule.NO_DEFAULTS,
                 f"`{name}` is probed per tensor-parallel width and none was given",
-                f"ask for one of the probed widths {sorted(measured)}",
+                f"ask for one of the probed widths {sorted(measured, key=str)}",
             )
         if tp_width not in measured:
             raise SpecRefusal(
                 Rule.NO_DEFAULTS,
                 f"`{name}` was not probed at tensor-parallel width {tp_width}; "
-                f"this spec has {sorted(measured)}",
+                f"this spec has {sorted(measured, key=str)}",
                 "measure the engine at that width and add the entry; the "
                 "probed widths fit no fixed-plus-per-peer form, so there is "
                 "nothing here to interpolate along",
@@ -414,16 +431,19 @@ class MachineSpec:
 
     def activations_for(
         self, architecture: str | None, fingerprint: str | None, tp_width: int
-    ) -> tuple[str, float] | None:
-        """The id of the entry measured for this model and its activation bytes
-        per token at this width, or None when nothing was measured for it."""
+    ) -> tuple[str, float, tuple[str, ...]] | None:
+        """The id of the entry measured for this model, its activation bytes
+        per token at this width and the records of the runs it was read off,
+        or None when nothing was measured for it."""
         for entry in self.values.get(ACTIVATIONS, ()):
             if (
                 architecture in entry["applies_to"]
                 and fingerprint == entry["fingerprint"]
                 and tp_width in entry["bytes_per_token"]
             ):
-                return entry["id"], entry["bytes_per_token"][tp_width]
+                record = self.origin(ACTIVATIONS).get("record")
+                records = (record,) if record else ()
+                return entry["id"], entry["bytes_per_token"][tp_width], records
         return None
 
     def check_stack(

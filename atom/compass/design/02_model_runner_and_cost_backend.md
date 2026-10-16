@@ -58,7 +58,7 @@ runner must answer all of: `get_num_blocks`, `allocate_kv_cache`, `capture_cudag
 `engine_core.py::EngineCore.__init__`, not in the worker. The two ways that contract breaks do not fail
 alike. A reply of the wrong **shape** arrives and raises where it is unpacked,
 in-process and with a traceback. A reply that never **arrives** queues nothing: a name
-the runner does not define is skipped by `busy_loop`, a method that answers `None` is
+`call_func` sends that the runner does not define is skipped by `busy_loop` (the all-rank RPC answers one with an error), a method that answers `None` is
 called and its result declined, and `call_func`'s `outputs_queue.get()` takes no
 timeout either way. That silence parks somebody only where somebody is waiting: ten of
 the twelve names above have a caller that waits for the reply, and `exit` and
@@ -76,9 +76,7 @@ refused** (revised 2026-09-28 and 2026-09-30, #443):
   Q3). The runner gains the two methods that loop calls to move one `pp_data` or `pp_ack`
   frame over the PP CPU group; only the stage loop's hooks call them, never ATOM.
 - The runner defines and refuses by name the worker methods the profiler and RL
-  control commands reach (`start_profiler`, `stop_profiler`, `update_weights`,
-  `update_weights_from_shm`, `update_weights_from_ipc`, `release_memory`,
-  `resume_memory`, `clear_kv_cache`, `configure_hidden_states`), as
+  control commands reach, listed in [`01`'s table](01_execution_and_time_model.md#control-commands), as
   [`01` D5](01_execution_and_time_model.md#d5-timers-clock-reads-and-control-commands)
   decides.
 
@@ -258,7 +256,7 @@ one of `16`'s named escalation points — not a silent substitution.
 |---|---|---|
 | **geometry only** — M1's fake model, configuration sweeps | **HF config, no module tree at all.** | none |
 | **a module tree, no tracing** - parameter enumeration, the weight-bytes term, a structural walk | **`torch.device("meta")` context** with `--load_dummy empty`. ATOM already has this shape at `models/utils.py::no_init_weights`. Weight bytes are Class A, exact from a meta build deduped by storage: measured **-0.00 / +0.00 / -0.02 / +0.01%** at TP 1/2/4/8 (`10` D63); the build runs in the simulated runner (`03` D16, revised 2026-10-10). | none |
-| **a module tree for tracing** - tier b, the liveness walk, structure discovery | **Construct the model inside `FakeTensorMode`**, with `--load_dummy empty` so no checkpoint is read. | none |
+| **a module tree for tracing** - the op-level backend, the liveness walk, structure discovery | **Construct the model inside `FakeTensorMode`**, with `--load_dummy empty` so no checkpoint is read. | none |
 
 The second is not an addition to `04` D18 — it *is* D18, stated from the construction side.
 Building under the mode means every parameter is a `FakeTensor` at creation, so there is no
@@ -334,7 +332,7 @@ campaign, Phase 1a's `trace ops` included; a run that finds every structure alre
 does no lazy work at all, which is also the only way a run is reproducible from its
 artifacts.
 
-**The lazy path is a fallback with a declared cost, not a convenience.** It exists
+**The lazy path has a stated cost; it is not a convenience.** It exists
 because a structure set is discovered, not enumerated (doc `07` Phase 0 is a
 best-effort over-cover), and refusing a whole run because one unforeseen shape appeared
 is worse than tracing it. Its costs, stated so nobody is surprised:
@@ -343,22 +341,25 @@ is worse than tracing it. Its costs, stated so nobody is surprised:
    correspond to virtual time. Harmless to the predicted numbers (the clock does not
    advance during it) but it degrades the ≥5x speed result, so the run artifact records
    lazy-trace count and seconds separately.
-2. A newly traced structure has **no price**. The graph exists; the leaves in it may
-   not. The backend then declines that step (per the rule below) rather than guessing,
-   and the step falls to tier 0 where one exists; with no rung left to answer it is
-   refused (`08` D50.1). So a lazy trace converts "unknown shape" into a *named*
-   decline with a graph attached — which is exactly the input `measure ops` needs to
-   extend the campaign.
+2. A newly traced structure has **no prices**. The graph exists; the leaves in it may
+   not. Each unpriced leaf is answered by its analytical law, which an op-level backend
+   always has, and the step reports that share of its seconds by method (`08` D50.1),
+   so the gap is named with a graph attached, which is exactly the input `measure ops`
+   needs to extend the campaign. A capture that fails is an error and the run exits;
+   with lazy trace disabled an unseen structure is a refusal; an IR guard miss triggers a
+   trace (#952).
 
-**Consequence worth stating plainly:** a lazy trace never rescues a run on its own. It
-makes the gap diagnosable. `measure` closes it, offline, on a machine with a card.
+**Consequence worth stating plainly:** a lazy trace prices a new structure only
+analytically. It makes the gap diagnosable; `measure` closes it, offline, on a machine
+with a card.
 
 ### The backend interface
 
 ```
 CostBackend:
-    estimate(batch_view) -> StepCost          # seconds, plus a breakdown
-    describe() -> str                          # provenance, for the artifact
+    granularity -> Granularity                 # STEP or OP: what one answer prices
+    price(batch_view) -> StepCost              # seconds, plus a breakdown
+    describe() -> str                          # what it answers from, for the artifact
 ```
 
 `batch_view` is a projection of `ScheduledBatch`, not the object itself, so the backend
@@ -370,27 +371,36 @@ it paid for itself.
 backend's: the runner composes it with `seconds` into the forward's charge (`01` D4,
 owner ruling on #815, 2026-10-11).
 
-`StepCost` carries `seconds` **and a breakdown**. The breakdown is not decoration: every
+`StepCost` carries `seconds` **and a breakdown**, each term with its method. The breakdown is not decoration: every
 serious error in the prior effort was found by decomposing a total, and at least six
 times an aggregate hid compensating errors — a +13.8% memory sum that was three errors
 two of which cancelled; a cc-traces latency within 5% that was +52% TTFT against −30%
 decode; a prefill total of +0.04% that was −4.01% pure against +27.28% mixed.
 
-### Provenance vocabulary, carried on every backend
+### The method vocabulary, carried on every term
 
-Adopted from the prior work because it prevented a recurring category error:
+Revised 2026-10-14 by the naming record in
+[#952](https://github.com/jgong5/ATOM/issues/952): a backend has a granularity and no
+method of its own, and each term's provenance carries one (`backends/provenance.py`):
 
-- `analytical` — computed without measuring the subject. **Nothing was analytical in the
-  prior PoC.** The word is reserved, not aspirational.
-- `empirical/measured` — the unit itself was timed
-- `empirical/fitted` — a form chosen, coefficients regressed over measured steps
-- `empirical/interpolated` — no form assumed, nearby measurements looked up
-- `empirical/extrapolated` — asked outside the measured range
+- `analytical` — a form from first principles whose every parameter is model geometry,
+  deployment config, or a device parameter from a datasheet or a model-independent probe
+  on this platform. **Nothing was analytical in the prior PoC.**
+- `declared` — some input is assumed, or was observed on another subject (another
+  platform, width, model or engine config). Its `note` states the origin, and the
+  successor or why there is none; a declared provenance without one is refused.
+- empirical, from observations of the subject:
+  - `measured` — the query equals an observation in every variable that affects the
+    value, with no projection;
+  - `estimated` — anything else derived from them, `validated` only when the query lies
+    inside the region where its algorithm's held-out error was measured. The
+    algorithm, extrapolation included, is named in `source`.
 
-Two rules: **"priced" is not a species** (a price is `measured`, differing only in unit —
-say `measured (op-level)` vs `measured (step-level)`); and **reading a measurement back
-from a file is still `measured`** — what changes is whether the key matched exactly
-(measured), nearest (interpolated) or outside (extrapolated).
+Three rules: **a term built from several** is declared if any part is, analytical if all
+are, measured if all are, and estimated otherwise (`combine`); **"priced" is not a
+method**, a price is `measured`; and **reading a measurement back from a file is still
+`measured`** when its key matches exactly, while a nearest or out-of-range lookup is
+`estimated` and names its algorithm.
 
 ### Open issues
 
@@ -398,13 +408,15 @@ from a file is still `measured`** — what changes is whether the key matched ex
   table above: `measure` is an operator-facing switch and belongs on the command line;
   `trace` needs at most a *disable*, one of the ops-half settings of `13` D80, for runs
   that want a refusal instead of a stall. Neither is an env var: there is no environment
-  tier (`13` D79). The full flag surface is `13`'s.
-- A backend asked about a step kind it has no samples of must **raise**, not fall back.
+  level (`13` D79). The full flag surface is `13`'s.
+- A backend asked about a step kind it has no samples of must **refuse**, raising
+  `CostRefused`, not guess.
   The prior fallback was the mean of an empty list, i.e. zero — "a confident, precise,
   entirely fictional answer", a TTFT of 0 ms against a real 7.6 s.
 - What a refusal *does to the run* is not local to this document and is settled in `08`
-  D50.1: a step is refused only when no rung answers, so an unpriced step falls to tier 0
-  where one exists, and an out-of-hull step is priced `extrapolated`. A refused step
+  D50.1: a step is refused only when some term is still unanswered after method
+  fallback, so an unpriced leaf is answered by its analytical law, and an estimated
+  answer outside its validated region is priced and marked unvalidated. A refused step
   costs 0 s, the run continues, and the run is a coverage report.
 
 ---
@@ -459,8 +471,8 @@ about 40 lines.
   serving (3 prefill steps of 16/256/16128 tokens costing 38.6/151.0/177.6 ms, all
   answered as ~47 ms).
 
-**B. Shape-analytic stub.** A declared linear form over fields `ScheduledBatch` already
-carries.
+**B. Shape stub.** A stated linear form over fields `ScheduledBatch` already carries, its
+terms `declared` (`StepStubBackend`).
 
 - *Pros:* about twenty lines more than A, and it buys a **testable integration property**:
   double the chunk size and every term of the form moves by its own power of the chunk,
@@ -552,5 +564,5 @@ scheduler at shapes no real model has.
 |---|---|---|
 | D10 | Attach at `ModelRunner.forward`, delivered by a `--runner-qualname` subclass; no ATOM change for the injection. Revised: `flush_pp_send` keeps ATOM's own answer and the stage loop settles the pending send before calling it; the control-command refusals are recorded in [`01` D5](01_execution_and_time_model.md#decision-log) | 2026-09-18, revised 2026-09-28 and 2026-09-30 |
 | D10.1 | A model comes into existence three ways, none reading weights: HF-config geometry where only geometry is needed; a `torch.device("meta")` context where a module tree is needed without tracing (no transient, no GPU, covers buffers - ATOM already has this shape at `models/utils.py::no_init_weights`, unused); and `FakeTensorMode` for tracing, the only one with symbolic shapes and the right device branch. `--load_dummy` is reused in all three. `_init_weight_params_on_meta` is not a bug but is superseded by the meta context. The T5 fallback is the meta context plus concrete traces. | 2026-09-20 |
-| D11 | No modes on the runner. Every run simulates; the algorithm comes from a pluggable cost backend. `measure` and `trace` are orthogonal flags. A backend's `seconds` is one forward's device busy time; host time is composed outside it (`01` D4). | 2026-09-18; revised 2026-10-11 (#815) |
-| D12 | M1 fake model = KV/weight geometry from the HF config + a shape-analytic cost stub including the quadratic query term; constant mode retained for bring-up | 2026-09-18 |
+| D11 | No modes on the runner. Every run simulates; the algorithm comes from a pluggable cost backend. `measure` and `trace` are orthogonal flags. A backend has a granularity and `price()`s a step, each term carrying its method. A backend's `seconds` is one forward's device busy time; host time is composed outside it (`01` D4). | 2026-09-18; revised 2026-10-11 (#815) and 2026-10-14 (#952) |
+| D12 | M1 fake model = KV/weight geometry from the HF config + a shape stub, its terms declared, including the quadratic query term; constant mode retained for bring-up | 2026-09-18 |

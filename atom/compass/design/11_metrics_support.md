@@ -72,7 +72,7 @@ self._last_refresh = clock.now(time.time)   # "when was this snapshot taken", re
 ```
 
 **Decision (owner ruling, 2026-10-02): the push and the refresh are timers on simulated
-time, declared daemon.** They follow `01` D5's rule like every other timer the CA can
+time, marked daemon.** They follow `01` D5's rule like every other timer the CA can
 reach. The push reads the engine LP's clock through `atom.utils.clock.now`. The refresh
 sleeps on the frontend's event loop, whose `time()` is the frontend LP's clock (`01` D5.1),
 and `_last_refresh` stamps the simulated instant of the snapshot. As daemon deadlines they
@@ -283,7 +283,7 @@ and to write. The transport still drains on D72's push cadence, so the ZMQ messa
 `collect_metrics()` calls `get_request_counts()`, reads `block_manager.kv`, and calls
 `spec_stats.get_statistics()` and `cache_stats` — none of which has been verified O(1). At
 ~33 decode steps per second on a real run it is almost certainly free, but if it is not, the
-answer is **decimation by a declared K** (every K-th step). Decimation loses information in
+answer is **decimation by a stated K** (every K-th step). Decimation loses information in
 a *known* way; timer aliasing does not.
 
 **Arrivals between steps are the one genuine gap.** A request arriving changes the
@@ -405,7 +405,7 @@ exist so that the next metric is classified rather than assumed.
 | Native histogram | as classic, but **kills the backfill route** (D73) | |
 | Info / StateSet | constant, no clock | always safe |
 | Exemplar | attached to a sample, **carries its own timestamp** → **T** | |
-| Untyped | unclassifiable by definition | must be declared explicitly |
+| Untyped | unclassifiable by definition | must be stated explicitly |
 
 ### Enforcement: declare the class, or refuse
 
@@ -468,7 +468,7 @@ infrastructure and add nothing" should mean in practice.
 | # | Decision | Date |
 |---|---|---|
 | D71 | Scope is ATOM's Prometheus engine metrics only. Harness metrics belong to `06`; simulator observability is run-artifact fields, not a metrics subsystem. | 2026-09-19 |
-| D72 | Counters and gauges are valid by construction. **The metrics push and refresh are timers on simulated time, declared daemon**, so they never keep a run alive (`01` D3, D5); `_last_refresh` stamps simulated time. | 2026-09-19; revised 2026-10-02 |
+| D72 | Counters and gauges are valid by construction. **The metrics push and refresh are timers on simulated time, marked daemon**, so they never keep a run alive (`01` D3, D5); `_last_refresh` stamps simulated time. | 2026-09-19; revised 2026-10-02 |
 | D73 | Histograms observe durations, so the clock audit extends from clock *reads* to observation *arguments*. Ask for classic histograms and for instrumentation that is handed a duration rather than computing one inline. | 2026-09-19 |
 | D74 | **Sample once per engine step** — virtual time is discrete-event, so state changes only at step boundaries and the per-step series is the ground truth. Transport on D72's push cadence; write OpenMetrics with virtual timestamps; backfill into TSDB. Treat the real run identically, for overlay. | 2026-09-19 |
 | D75 | Four classes of invalid metric, refused rather than reported. Emission never advances the virtual clock, and that is asserted. | 2026-09-19 |
@@ -486,7 +486,7 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 |---|---|---|
 | T40 | Confirm which histograms are landing, and that they are **classic** rather than native | decides whether D74's backfill route survives |
 | T41 | Audit every `observe()` site for the provenance of its value; extend the AST test to cover observation arguments | the sites do not exist yet |
-| T42 | Measure `collect_metrics()` cost per step on the **real** side; decide whether decimation by a declared K is needed | `get_statistics()` and the cache/pool reads are not verified O(1) |
+| T42 | Measure `collect_metrics()` cost per step on the **real** side; decide whether decimation by a stated K is needed | `get_statistics()` and the cache/pool reads are not verified O(1) |
 | T43 | Verify the backfill end to end — produce one block, load it, see the series in Grafana | the documented gotchas are silent ones (epoch-dated blocks, retention) |
 | T44 | Sanity-check histogram bucket ranges against simulated latencies | a quantile pinned to `+Inf` is worth catching once rather than discovering |
 | T45 | Tag ATOM's existing metrics with their D77 class | one tag per family in `_AtomMetricsCollector.collect`; mechanical, but it is the gate for everything after |

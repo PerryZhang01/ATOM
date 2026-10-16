@@ -22,6 +22,23 @@
 #   SERVER_ARGS         more API server flags (default: --enforce-eager
 #                       --max-model-len 2048)
 #   ATOMESH             the router binary (default: atomesh)
+#   ATOM_COMPASS_PARITY_RECORD
+#                       when set, each server records its steps
+#                       (atom/compass/parity) under it, in prefill/ and decode/
+#   BENCHMARK_KIND ROUTER_POLICY ATOM_PD_RANK_MAPPING_POLICY
+#                       as `start_router` in .github/scripts/atomesh/pd_server_atom.sh
+#                       reads them (defaults random, random, none)
+#   SEED                the run's seed, which the router LP's policies draw
+#                       from (default 20260707, aiperf's in cctraces_sim.sh)
+#
+# The router is launched as `start_router` launches the real cell's. With
+# --enable-dp-attention in SERVER_ARGS, under BENCHMARK_KIND=aiperf_agentic or a
+# rank mapping policy other than none, that is --dp-aware: the router chooses
+# among DP ranks on load that responses move, which makes it LP `router` of the
+# run, and RUN_FILE gains `router_in_s` unless it has one already, and
+# `router`, the binary that runs it, refused unless built from this tree's
+# atom/mesh (`router_binary` in atom/compass/run). Otherwise
+# the router has one worker per side, and ATOM's own DP dispatch picks the rank.
 #
 # It runs its own tree, as the gates do. Logs go beside RUN_FILE. It prints
 # `pd_sim: ready` once the router answers; start the traffic LP then. It exits
@@ -63,7 +80,7 @@ server() { # role port kv_role dp_port [exec]
     # connections on the wall clock: which comes first, and with it whether the
     # timeout takes a grant, would differ between runs. Only the router closes.
     # shellcheck disable=SC2086 # DECODE_EXEC and SERVER_ARGS are word lists
-    ${5:-} env "${passed[@]}" python3 -m atom.entrypoints.openai_server \
+    ${5:-} env "${passed[@]}" ${ATOM_COMPASS_PARITY_RECORD:+"ATOM_COMPASS_PARITY_RECORD=$ATOM_COMPASS_PARITY_RECORD/$1"} python3 -m atom.entrypoints.openai_server \
         --model "$MODEL" --host 127.0.0.1 --server-port "$2" --timeout-keep-alive 1000000 \
         --data-parallel-master-port "$4" \
         $SERVER_ARGS \
@@ -72,14 +89,55 @@ server() { # role port kv_role dp_port [exec]
         >"$OUT/$1.log" 2>&1 &
 }
 
-wait_for() { # what pid url
-    local deadline=$((SECONDS + WAIT_S))
-    until curl -sf --max-time 10 "$3" >/dev/null; do
-        kill -0 "$2" 2>/dev/null || { echo "pd_sim: $1 exited before it answered" >&2; exit 1; }
-        ((SECONDS < deadline)) || { echo "pd_sim: no $1 after $WAIT_S s" >&2; exit 1; }
-        sleep 1
-    done
-}
+# The real cell's router arguments, chosen as `start_router` chooses them. With
+# the health check, circuit breaker and retries off, no wall-clock failure
+# detector can resend or drop a request.
+policy=${ROUTER_POLICY:-random}
+mapping=${ATOM_PD_RANK_MAPPING_POLICY:-none}
+mapping_args=()
+dp_aware=()
+if [[ " $SERVER_ARGS " == *" --enable-dp-attention "* ]]; then
+    [[ $mapping == none ]] || mapping_args=(--atom-pd-rank-mapping-policy "$mapping")
+    if [[ ${BENCHMARK_KIND:-random} == aiperf_agentic ]]; then
+        [[ $policy == cache_aware ]] || policy=dp_sticky
+        dp_aware=(--dp-aware)
+    elif ((${#mapping_args[@]})); then
+        dp_aware=(--dp-aware)
+    fi
+fi
+router=(--policy "$policy")
+if [[ $policy == cache_aware ]]; then
+    router+=(--prefill-policy cache_aware --decode-policy cache_aware --cache-threshold 0.8
+        --balance-abs-threshold "${ROUTER_BALANCE_ABS_THRESHOLD:-20}"
+        --balance-rel-threshold 2.0 --eviction-interval 300)
+    mapping_args=(--atom-pd-rank-mapping-policy "$mapping")
+fi
+router+=("${mapping_args[@]}" "${dp_aware[@]}")
+router_env=()
+if ((${#dp_aware[@]})); then
+    # The hop into the router takes the run's ipc_s, its declared floor for one
+    # hop between two local processes; the rest of each path's lookahead stays
+    # on the hop out.
+    lookaheads=$(python3 - "$RUN_FILE" "$ATOMESH" <<'EOF'
+import json, sys
+from pathlib import Path
+from atom.compass.run import ROUTER, channel_table, router_binary
+
+path = Path(sys.argv[1])
+run = json.loads(path.read_text())
+try:
+    run["router"] = router_binary(sys.argv[2])
+except Exception as e:
+    sys.exit(f"pd_sim: {e}")
+run.setdefault("router_in_s", run["ipc_s"])
+path.write_text(json.dumps(run))
+table = channel_table(run)
+print(json.dumps({c.name: table.lookahead(c.name) for c in table.channels_from(ROUTER)}))
+EOF
+)
+    router_env=(ATOM_COMPASS_CLOCK_ENDPOINT="$CLOCK" ATOM_COMPASS_SEED="${SEED:-20260707}"
+        ATOM_COMPASS_ROUTER_LOOKAHEADS="$lookaheads")
+fi
 
 python3 -m atom.compass.run --compass-run "$RUN_FILE" --compass-clock-endpoint "$CLOCK" \
     >"$OUT/authority.log" 2>&1 &
@@ -93,18 +151,15 @@ server prefill "$PREFILL_PORT" kv_producer "$PREFILL_DP_PORT"
 prefill=$!
 server decode "$DECODE_PORT" kv_consumer "$DECODE_DP_PORT" "${DECODE_EXEC:-}"
 decode=$!
-wait_for prefill $prefill "http://127.0.0.1:$PREFILL_PORT/health"
-wait_for decode $decode "http://127.0.0.1:$DECODE_PORT/health"
+compass_wait_up prefill $prefill "http://127.0.0.1:$PREFILL_PORT/health"
+compass_wait_up decode $decode "http://127.0.0.1:$DECODE_PORT/health"
 
-# One worker per role, so the policy has nothing to choose. With the health
-# check, circuit breaker and retries off, no wall-clock failure detector can
-# resend or drop a request.
-"$ATOMESH" launch --host 127.0.0.1 --port "$ROUTER_PORT" --pd-disaggregation \
+env "${router_env[@]}" "$ATOMESH" launch --host 127.0.0.1 --port "$ROUTER_PORT" --pd-disaggregation \
     --prefill "http://127.0.0.1:$PREFILL_PORT" --decode "http://127.0.0.1:$DECODE_PORT" \
-    --policy random --backend atom --disable-health-check --disable-circuit-breaker \
+    "${router[@]}" --backend atom --disable-health-check --disable-circuit-breaker \
     --disable-retries --prometheus-port "$PROMETHEUS_PORT" --log-level info \
     >"$OUT/router.log" 2>&1 &
-wait_for router $! "http://127.0.0.1:$ROUTER_PORT/v1/models"
+compass_wait_up router $! "http://127.0.0.1:$ROUTER_PORT/v1/models"
 echo "pd_sim: ready"
 
 rc=0

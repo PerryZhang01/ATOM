@@ -14,7 +14,7 @@ import math
 from types import SimpleNamespace
 
 import pytest
-from test_memory_readings import CAPTURE_SIZES, MAX_NUM_BATCHED_TOKENS
+from test_memory_readings import CAPTURE_SIZES, DOCUMENT, MAX_NUM_BATCHED_TOKENS
 from test_run_graph_pool import _installed
 from test_vertical_slice import _run_file
 
@@ -26,14 +26,16 @@ from atom.utils import clock
 from atom.utils.clock import LPRuntime
 
 GIB = 1 << 30
+#: The suite's machine document as probed, so its spec terms are measured.
+PROBED = DOCUMENT | {"provenance": DOCUMENT["provenance"] | {"origin": "probed"}}
 #: The spec's graph-pool line at width 1, in the suite's machine document.
 POOL_BASE, POOL_PER_TOKEN = 95_500_000, 318_000
 
 
 def _memory(monkeypatch, tmp_path, **kwargs) -> dict:
     """The memory section of the engine's hand-in, with the reservation
-    `run.runner` installed on the worker."""
-    runner = _installed(monkeypatch, tmp_path, **kwargs)
+    `run.runner` installed on the worker, from the probed document."""
+    runner = _installed(monkeypatch, tmp_path, machine=PROBED, **kwargs)
     engine = LPRuntime(
         compass_run.ENGINE, compass_run.channel_table(compass_run.spec()), None
     )
@@ -133,7 +135,7 @@ def test_each_reading_is_one_row_with_its_own_verdict(
     )
     assert rows["non_torch"].endswith(verdict)
     # The predicted readings' own terms are printed under the table.
-    assert rows["weights"].split()[2] == "declared"
+    assert rows["weights"].split()[2] == "analytical"
     assert "graph pool against pool(reserved)" in rows["out"]
     assert rows["reserves()"].split()[-2] == f"{saved['reserved']:,}"
 

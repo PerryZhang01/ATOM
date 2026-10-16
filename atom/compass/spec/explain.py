@@ -174,7 +174,7 @@ def _rows(
     derate = spec.values.get(f"{field.block}.derate") if field.peak else None
     if field.kind is Kind.WIDTH_TABLE:
         name = path.rsplit(".", 1)[-1]
-        widths = (tp_width,) if tp_width is not None else tuple(sorted(value))
+        widths = (tp_width,) if tp_width is not None else tuple(sorted(value, key=str))
         return [
             _row(
                 f"{path}[{width}]",

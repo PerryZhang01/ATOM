@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Any
 
 logger = logging.getLogger("atom")
@@ -32,6 +33,12 @@ def is_plugin_mode() -> bool:
 def _set_framework_backbone(framework: str) -> None:
     if framework.lower() not in _SUPPORTED_FRAMEWORKS:
         raise ValueError(f"Unsupported framework {framework} for ATOM to plug in")
+    if framework.lower() != "atom" and os.environ.get("ATOM_COMPASS_RUN"):
+        raise ValueError(
+            f"ATOM_COMPASS_RUN is set, and the {framework} plugin builds its model "
+            "on the GPU under its own scheduler, which no simulated run drives; "
+            "serve a simulated run with ATOM's API server and --compass-run"
+        )
     global _CURRENT_FRAMEWORK
     _CURRENT_FRAMEWORK = framework
 

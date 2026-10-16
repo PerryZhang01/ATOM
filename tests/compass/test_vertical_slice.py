@@ -5,8 +5,8 @@ A run is ATOM's API server started with ``--compass-run``: its engine core and
 TP1 worker processes, the Compass runner priced by `StepStubBackend`, and
 the Clock Authority co-hosted in the API server. The traffic LP is `Traffic`
 below, in this process. The run is made twice, in two process trees with
-different `PYTHONHASHSEED`, and the two step tables the authority writes are
-compared byte for byte.
+different `PYTHONHASHSEED`, under a constant stub with the step record on, and
+`atom.compass.detect.scenario.check_run` holds the two to the scenario checks.
 
 The engine core and the worker import aiter, and the worker's construction
 still touches the device, so those tests skip where there is no driver. They
@@ -29,14 +29,15 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from test_memory_readings import DOCUMENT, TOKENIZER
+from test_memory_readings import DOCUMENT, META_8B, TOKENIZER
 
 from atom.compass import run as compass_run
 from atom.compass.backends.step_stub import Coefficients
 from atom.compass.carriers import sse_stamp, tracestate_with
 from atom.compass.clock import LpId
 from atom.compass.clock_transport import connect
-from atom.compass.detect.determinism import CONFIGURATION_PREFIX, compare_step_tables
+from atom.compass.detect.determinism import CONFIGURATION_PREFIX
+from atom.compass.detect.scenario import check_run
 from atom.utils import clock
 from atom.utils.clock import LPRuntime
 
@@ -53,6 +54,9 @@ HTTP, STREAM = "traffic->frontend:http", "frontend->traffic:stream"
 SCRAPE_S = 16.0
 WALL_S = 600.0
 MAX_TOKENS = 4
+#: The step stub the slices run under: constant, so `check_run` can compute
+#: each engine step's end by hand.
+CONSTANT = dataclasses.asdict(Coefficients.constant(2.0**-9, 2.0**-11))
 
 
 class UnansweredRequests(AssertionError):
@@ -217,10 +221,14 @@ def _run_file(out: Path, **overrides) -> Path:
 def run_slice(out: Path, seed: str) -> dict:
     """One run in its own process tree; its step table, summary and request times."""
     out.mkdir()
-    run_file = _run_file(out)
+    run_file = _run_file(out, step_stub=CONSTANT)
     port = _free_port()
     env = dict(
-        os.environ, PYTHONHASHSEED=seed, PYTHONPATH=str(TREE), AITER_LOG_LEVEL="WARNING"
+        os.environ,
+        PYTHONHASHSEED=seed,
+        PYTHONPATH=str(TREE),
+        AITER_LOG_LEVEL="WARNING",
+        ATOM_COMPASS_PARITY_RECORD=str(out / "parity"),
     )
     with open(out / "server.log", "w") as log:
         server = subprocess.Popen(
@@ -259,6 +267,7 @@ def run_slice(out: Path, seed: str) -> dict:
     tail = (out / "server.log").read_text()[-4000:]
     assert code == 0, f"the server exited {code} after the finish:\n{tail}"
     return {
+        "out": out,
         "table": (out / compass_run.STEP_TABLE_FILE).read_text(),
         "summary": json.loads((out / compass_run.SUMMARY_FILE).read_text()),
         "request": (traffic.sent, traffic.events[0][0], traffic.events[-1][0]),
@@ -274,32 +283,21 @@ def runs(tmp_path_factory):
 
 
 @NEEDS_A_RUN
-def test_one_request_completes_and_the_run_ends_by_the_finish(runs):
+def test_one_request_meets_every_scenario_check(runs):
     run = runs[0]
     arrive, first_token, leave = run["request"]
     print(f"\nrequest 0: arrive {arrive!r} first token {first_token!r} leave {leave!r}")
     print(run["table"])
-    assert run["events"][-1][1] == "data: [DONE]"
-    assert len(run["events"]) > 1
+    failed = check_run(
+        [r["out"] for r in runs],
+        [MAX_TOKENS],
+        [line for _, line in run["events"]],
+        {"engine": run["out"] / "parity"},
+    )
+    assert not failed, "\n".join(failed)
     assert 0 < arrive < first_token <= leave
-    finish = [r for r in run["table"].splitlines()[1:] if " inf " in r]
-    assert sorted(r.split()[0] for r in finish) == ["engine", "frontend", "traffic"]
-    assert run["table"].splitlines()[-3:] == finish
-    summary = run["summary"]
-    assert summary["schedule"]["grants_total"] > 0
-    assert summary["schedule"]["refusals"]["count"] == 0
-    assert summary["coverage_report"] is False
-    assert 0 < summary["cost"]["wall_seconds"]
+    assert 0 < run["summary"]["cost"]["wall_seconds"]
     assert run["bound"] == (600.0, "run file bound_s")
-
-
-@NEEDS_A_RUN
-def test_two_hash_seeds_give_byte_identical_step_tables(runs):
-    left, right = (r["table"] for r in runs)
-    code, report = compare_step_tables(left, right, "seed 1", "seed 2")
-    print(f"\n{report}")
-    assert code == 0, report
-    assert left == right
 
 
 def _release(table: str, lp: str, channel: str, seq: int) -> float:
@@ -343,7 +341,7 @@ def test_with_no_run_file_nothing_is_installed(monkeypatch):
     monkeypatch.delenv(compass_run.ENV, raising=False)
     config, model_runner = _config(), SimpleNamespace()
     with compass_run.frontend(config), compass_run.engine(config):
-        compass_run.runner(model_runner)
+        compass_run.runner(model_runner, META_8B)
     assert clock.installed() is None
     assert config.runner_qualname == compass_run.ATOM_RUNNER
     assert vars(model_runner) == {}

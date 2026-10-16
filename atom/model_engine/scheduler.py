@@ -467,6 +467,7 @@ class ScheduledBatchOutput:
         is_deferred_out: Whether output was deferred from a previous step.
         predicted_s: The step's duration in seconds, as a runner that predicts
             the step rather than running it prices it; None from a real forward.
+        group_targets: Each DP rank's predicted step duration, by rank, or None.
     """
 
     def __init__(
@@ -481,6 +482,7 @@ class ScheduledBatchOutput:
         logprobs=None,
         dspark_ell: np.ndarray | None = None,
         predicted_s: float | None = None,
+        group_targets: tuple[float, ...] | None = None,
     ):
         self.req_ids = req_ids
         self.token_ids = token_ids
@@ -496,6 +498,7 @@ class ScheduledBatchOutput:
         # verification to ell_r+1. None when DSpark scheduling is off.
         self.dspark_ell = dspark_ell
         self.predicted_s = predicted_s
+        self.group_targets = group_targets
         # O(1) lookup: req_id -> index (lazy-built on first access)
         self._req_id_to_idx: dict[int, int] | None = None
 

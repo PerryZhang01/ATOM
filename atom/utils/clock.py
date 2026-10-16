@@ -9,6 +9,11 @@ log, t_daemon))`` then ``conn.recv() -> (G, released)``, and every request
 carries the sends registered since the previous one, so the authority knows each
 message an LP produced before it moves that LP's clock.
 
+An LP starts from the clock and next sequence numbers its connection's bind
+was answered with (``conn.joined``), 0 for each without one. A grant marked as
+the end of client run ``k`` moves nothing and calls `client_run_ended(k)`,
+where the LP hands in its part of that client run's summary.
+
 A grant to ``+inf`` closes the simulation window (`end_run`) before the process
 begins to shut down: the run is finished, and the owner's loop must exit rather
 than run its timers at ``+inf``. A clock call after it raises; the wrappers send
@@ -124,9 +129,10 @@ class LPRuntime:
         self.lock = threading.Lock()
         self.cv = threading.Condition(self.lock)
         self.in_run = False
-        self.now = 0.0
+        self.now, seqs = getattr(conn, "joined", None) or (0.0, {})
         self.send_log: list[tuple[str, int, float]] = []
-        self.next_seq = {c.name: 0 for c in table.channels_from(me)}
+        self.next_seq = {c.name: seqs.get(c.name, 0) for c in table.channels_from(me)}
+        self.client_run_ended = None  # called with k at the end of client run k
         into = [c.name for c in table.channels_into(me)]
         self.arrived: dict[str, set[int]] = {ch: set() for ch in into}
         self.released: dict[str, set[int]] = {ch: set() for ch in into}
@@ -140,6 +146,7 @@ class LPRuntime:
         self.calls = 0  # clock calls made, TAR and NER
         self.asked = False  # a next-event request is out, its grant not taken
         self.idle_calls = 0  # `calls` when the step loop last passed its idle point
+        self.owed: list[float] = []  # DP group rounds left before (`advance_group`)
         # The frontend's event loop, once built: a frame a thread takes is a job on it.
         self.loop = None
         # Clock calls refused, as run-summary reasons ``clock:<call> ...``: a
@@ -184,9 +191,27 @@ class LPRuntime:
     def advance_to(self, T: float) -> None:
         """Price an event: block until granted `T`, releasing what arrives up to it."""
         self._require_open("advance_to")
+        if self.owed and T < self.owed[-1]:
+            self._refuse(f"advance_to({T}) before the owed group round {self.owed[-1]}")
+        self.settle()
         if T < self.now:
             raise ValueError(f"{self.me} cannot advance to {T}, it is at {self.now}")
         self._step_through(*self._ca_call("TAR", T))
+
+    def advance_group(self, targets, mine: float) -> None:
+        """A DP group step: one TAR per distinct target, ascending, as every
+        member asks; this one returns at `mine` and owes the later rounds."""
+        rounds = sorted(set(targets))
+        for t in rounds:
+            if t <= mine:
+                self.advance_to(t)
+        self.owed = [t for t in rounds if t > mine]
+
+    def settle(self) -> None:
+        """Join the owed rounds; they end the owing step, so `idle` counts none."""
+        while self.owed:
+            self._step_through(*self._ca_call("TAR", self.owed.pop(0)))
+            self.calls -= 1
 
     def next_event(self, t: float, t_daemon: float = float("inf")) -> float:
         """Idle until `t`, the daemon deadline `t_daemon` or the earliest arrival,
@@ -202,14 +227,18 @@ class LPRuntime:
         """Send `next_event`'s request; `take_grant` waits for its grant. The LP
         clock stands still between the two."""
         self._require_open("next_event")
+        if self.owed:
+            self._refuse(f"next_event while owing group rounds {self.owed}")
         self._ca_send("NER", t, t_daemon)
         self.asked = True
 
     def take_grant(self) -> float:
         """Wait for the grant of the request `ask_next_event` sent; returns it."""
-        G, released = self.conn.recv()
+        G, released, *ended = self.conn.recv()
         self.asked = False
         self._step_through(G, released)
+        if ended and self.client_run_ended is not None:
+            self.client_run_ended(*ended)
         if G == float("inf"):
             self.end_run()
         return G
@@ -230,6 +259,10 @@ class LPRuntime:
                 f"{what} from thread {me.name!r}: only the clock "
                 f"owner {self.owner.name!r} of {self.me} moves its clock or sends"
             )
+
+    def _refuse(self, why: str) -> None:
+        self.refusals.append(f"clock:{why}")
+        raise RuntimeError(f"{self.me}: {why}")
 
     def _require_open(self, what: str) -> None:
         self._require_owner(what)
@@ -627,8 +660,52 @@ def charge(reply):
     """
     rt = _installed
     if rt is not None and getattr(reply, "predicted_s", None) is not None:
-        rt.advance_to(rt.now + reply.predicted_s)
+        targets = getattr(reply, "group_targets", None) or (reply.predicted_s,)
+        rt.advance_group([rt.now + t for t in targets], rt.now + reply.predicted_s)
     return reply
+
+
+#: The `torch.distributed` collectives `settle_before_collectives` wraps.
+COLLECTIVES = (  # noqa: SIM905
+    "all_gather all_gather_into_tensor all_gather_object all_reduce all_to_all "
+    "all_to_all_single barrier broadcast broadcast_object_list gather reduce "
+    "reduce_scatter reduce_scatter_tensor scatter"
+).split()
+
+
+def _on_host(args, kwargs) -> bool:
+    """No tensor among a call's arguments, or in a list of them, is off the CPU."""
+    import torch
+
+    for a in (*args, *kwargs.values()):
+        for x in a if isinstance(a, (list, tuple)) else (a,):
+            if isinstance(x, torch.Tensor) and x.device.type != "cpu":
+                return False
+    return True
+
+
+def settle_before_collectives() -> None:
+    """The clock owner pays its owed group rounds before a host collective, a
+    `torch.distributed` collective whose tensors are all on the CPU, or that
+    has none: it returns at the latest arrival. A device collective returns
+    once enqueued, so it settles nothing."""
+    import torch.distributed as dist
+
+    def settled(fn):
+        def call(*args, **kwargs):
+            rt = _installed
+            if (
+                rt is not None
+                and threading.current_thread() is rt.owner
+                and _on_host(args, kwargs)
+            ):
+                rt.settle()
+            return fn(*args, **kwargs)
+
+        return call
+
+    for name in COLLECTIVES:
+        setattr(dist, name, settled(getattr(dist, name)))
 
 
 def idle(deadline, t_daemon: float = math.inf) -> bool:

@@ -21,7 +21,10 @@ entry, and none of them is written down.
 measured values at widths 1, 2, 4 and 8 fit no fixed-plus-per-peer form, so
 there is nothing to interpolate along and a width that was not probed cannot
 be produced from the widths that were. `WIDTH_TABLE` holds what was probed and
-the accessor refuses the rest by name.
+the accessor refuses the rest by name. Under DP-attention every rank runs at
+TP 1 inside DP-wide groups, so such an entry is keyed by its layout, the string
+`"<tp>x<dp>"` (`"1x8"`), or `"<tp>x<dp>x<ep>"` (`"1x8x8"`) when the experts
+shard over every rank; JSON keeps it as written, and a width stays an integer.
 
 **A checked value is the spec's own.** Every kind returns a copy rather than
 what the document handed over: `tuple` for a list of names, `dict` for a width
@@ -40,8 +43,8 @@ Everything in the table is required. A machine has an interconnect whether or
 not a particular run drives it, and the value of refusing a missing term is that
 the refusal happens while a person is authoring the document rather than in the
 middle of a simulated run. The exceptions are the provenance fields `merge`
-fills in later, and the activation entries, whose absence falls back to a
-declared form.
+fills in later, the activation entries, whose absence falls back to a
+declared form, and `fp4_flops`, which a device with no FP4 matrix core omits.
 
 **Every field says where it came from.** `provenance.origin` is one of
 `ORIGINS` or `transferred-from:<spec>`, and anything else is refused. A
@@ -56,6 +59,16 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from .rules import Rule, SpecRefusal
+
+
+def layout(key: object) -> bool:
+    """Whether `key` is a DP-attention layout in positive integers: `<tp>x<dp>`,
+    or `<tp>x<dp>x<ep>` with the EP group spanning every rank, as ATOM builds it."""
+    parts = key.split("x") if isinstance(key, str) else ()
+    digits = all(p.isascii() and p.isdigit() and p[0] != "0" for p in parts)
+    if len(parts) == 3 and digits:
+        return int(parts[2]) == int(parts[0]) * int(parts[1])
+    return len(parts) == 2 and digits
 
 
 class Kind(enum.Enum):
@@ -78,8 +91,14 @@ class Kind(enum.Enum):
 #: name; `mixed` describes a document, never one field.
 ORIGINS = ("datasheet", "probed", "assumed", "mixed")
 TRANSFERRED = "transferred-from:"
-#: What a probe ran on, any of which it may state.
-SUBJECT = {"model": Kind.TEXT, "width": Kind.COUNT, "source_root": Kind.TEXT}
+#: What a probe ran on, any of which it may state. `record` is the digest of
+#: the record of the run it read, `sha256:` over the server log.
+SUBJECT = {
+    "model": Kind.TEXT,
+    "width": Kind.COUNT,
+    "source_root": Kind.TEXT,
+    "record": Kind.TEXT,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +150,7 @@ FIELDS = (
     Field("device.memory.bandwidth_bytes_per_s", Kind.QUANTITY, peak=True),
     Field("device.compute.bf16_flops", Kind.QUANTITY, peak=True),
     Field("device.compute.fp8_flops", Kind.QUANTITY, peak=True),
+    Field("device.compute.fp4_flops", Kind.QUANTITY, peak=True, required=False),
     Field(
         "device.runtime_constants.driver_and_collective_reserve_bytes",
         Kind.WIDTH_TABLE,
@@ -150,7 +170,9 @@ FIELDS = (
     Field("device.software_pinned_to.rocm", Kind.TEXT),
     Field("device.software_pinned_to.aiter", Kind.TEXT),
     Field("device.software_pinned_to.rccl", Kind.TEXT),
+    Field("device.software_pinned_to.torch", Kind.TEXT),
     Field("interconnect.intra_node.topology", Kind.TEXT),
+    Field("interconnect.intra_node.domain_devices", Kind.COUNT),
     Field(
         "interconnect.intra_node.link_bandwidth_bytes_per_s", Kind.QUANTITY, peak=True
     ),
@@ -285,8 +307,14 @@ def check(field: Field, value: object, path: str) -> object:
         if not isinstance(value, Mapping) or not value:
             _refuse(path, "a non-empty table keyed by tensor-parallel width", value)
         for width, measured in value.items():
-            if isinstance(width, bool) or not isinstance(width, int) or width <= 0:
-                _refuse(f"{path}[{width!r}]", "a positive tensor-parallel width", width)
+            if not layout(width) and (
+                isinstance(width, bool) or not isinstance(width, int) or width <= 0
+            ):
+                _refuse(
+                    f"{path}[{width!r}]",
+                    "a positive tensor-parallel width or a `<tp>x<dp>[x<ep>]` layout",
+                    width,
+                )
             check(Field(f"{path}.{width}", Kind.QUANTITY), measured, f"{path}[{width}]")
         return dict(value)
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
