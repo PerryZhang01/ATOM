@@ -633,6 +633,7 @@ class _RecordingAuthority(ClockAuthority):
         self.done = threading.Event()
         self._joining = set(_hand_ins(run))
         self._clock_before = {}  # LP -> its clock before its latest grant
+        self._held_clock = {}  # (channel, seq) held for a parked member -> the same
         # A rerun into the same out_dir starts from none of the last run's files.
         out = Path(run["out_dir"])
         for name in (
@@ -658,6 +659,12 @@ class _RecordingAuthority(ClockAuthority):
     def record(self, lp, time_from, time_to, kind, recovered) -> None:
         self._clock_before[lp] = time_from
         self.steps.record(lp, time_from, time_to, kind, detail="recovered" * recovered)
+
+    def _hold(self, lp, member, released) -> None:
+        for ch, msgs in released.items():
+            for seq, _ in msgs:
+                self._held_clock[ch, seq] = self._clock_before[lp]
+        super()._hold(lp, member, released)
 
     def on_bind(self, lp):
         self.client_run_open |= lp == TRAFFIC
@@ -688,7 +695,7 @@ class _RecordingAuthority(ClockAuthority):
             for ch, msgs in released.items():
                 for seq, arrival in msgs:
                     # From the receiver's clock as the grant found it.
-                    clock = self._clock_before[lp]
+                    clock = self._held_clock.pop((ch, seq), self._clock_before[lp])
                     self.steps.record(lp, clock, arrival, "release", ch, seq)
         while len(self.ends) < len(self.ended):
             self.ends.append(time.monotonic())
@@ -956,7 +963,54 @@ def engine(config):
     name = lp.name if _member is None else f"{lp.name}.{_member}"
     os.environ[NOW_ENV] = str(Path(run["out_dir"]) / f"now-{name}.bin")
     clock.settle_before_collectives()
+    if _member is not None and _offloads_to_lmcache_mp(config.kv_transfer_config):
+        _park_before_dispatch()
     return _named(_start_on_leaving(_runtime(lp, run, _member, _PublishedClock)))
+
+
+def _offloads_to_lmcache_mp(kv) -> bool:
+    """Whether a KV transfer config offloads to the lmcache MP server, on its
+    own or as one connector of a ``multi``."""
+    if not kv:
+        return False
+    from atom.kv_transfer.disaggregation.factory import KVConnectorFactory
+
+    def name(c):
+        return KVConnectorFactory.canonical_name(c.get("kv_connector", "moriio"))
+
+    subs = kv.get("connectors", []) if name(kv) == "multi" else [kv]
+    return any(name(c) == "lmcache_mp" for c in subs)
+
+
+def _park_before_dispatch() -> None:
+    """A DP member parks as its last clock call before it dispatches a forward,
+    real or the DP dummy, and asks no TAR from its DP state sync to that park.
+
+    A member waiting on the lmcache MP server asks for time alone while its
+    peers, their forwards dispatched, wait on it in the predicted forward's
+    gather and make no clock call; a park stands in for each of them."""
+    from atom.model_engine.async_proc import AsyncIOProcManager
+    from atom.model_engine.engine_core import DPEngineCoreProc
+
+    call, sync = AsyncIOProcManager.call_func, DPEngineCoreProc._sync_dp_state
+
+    @functools.wraps(call)
+    def parking(self, func_name, *args, **kwargs):
+        rt = clock.installed()
+        if func_name in ("forward", "dummy_execution") and rt and rt.in_run:
+            rt.park()
+        return call(self, func_name, *args, **kwargs)
+
+    @functools.wraps(sync)
+    def synced(self, *args, **kwargs):
+        out = sync(self, *args, **kwargs)
+        rt = clock.installed()
+        if rt is not None and rt.in_run:
+            rt.parking = True
+        return out
+
+    AsyncIOProcManager.call_func = parking
+    DPEngineCoreProc._sync_dp_state = synced
 
 
 @contextlib.contextmanager

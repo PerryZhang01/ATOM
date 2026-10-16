@@ -8,7 +8,7 @@ A message is a tuple, one of these shapes:
   `member` when `lp` is declared with members;
 * ``("JOINED", now, seqs)`` -- the reply to a bind: the LP's clock and the next
   sequence number of each channel out of it, ``{channel: seq}``;
-* ``(kind, t, log, t_daemon)`` with `kind` ``TAR`` or ``NER`` -- a request,
+* ``(kind, t, log, t_daemon)`` with `kind` ``TAR``, ``NER`` or ``PARK`` -- a request,
   where `log` is ``[(channel, seq, arrival)]``, the requester's sends since its
   previous request, and `t_daemon` an NER's daemon deadline, ``+inf`` for none;
 * ``("GRANT", G, released)`` -- the reply, `released` being
@@ -30,6 +30,7 @@ import math
 
 from atom.compass.clock import (
     NER,
+    PARK,
     TAR,
     BackdatedEvent,
     ClockAbort,
@@ -38,7 +39,7 @@ from atom.compass.clock import (
 )
 
 BIND, JOINED, GRANT, REFUSED = "BIND", "JOINED", "GRANT", "REFUSED"
-REQUESTS = (TAR, NER)
+REQUESTS = (TAR, NER, PARK)
 UNBOUNDED = {math.inf: "+inf", -math.inf: "-inf"}
 BOUNDS = {name: value for value, name in UNBOUNDED.items()}
 #: What a refusal can raise at the requester, most specific first.
