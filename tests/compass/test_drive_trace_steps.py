@@ -33,14 +33,19 @@ from atom.compass import parity
 from atom.compass.artifacts import (
     ArtifactRefusal,
     ArtifactStore,
+    Axis,
+    Conditions,
+    GateState,
     Key,
     Kind,
+    Reading,
     Topology,
 )
 from atom.compass.backends.step_stub import Coefficients
 from atom.compass.bench import measure
 from atom.compass.drive import serve, trace_steps
 from atom.compass.parity.served import served
+from atom.compass.run.step_grid import keyed_of
 
 TREE = Path(__file__).resolve().parents[2]
 #: run.json's identity, as `serve` writes it once its server stops.
@@ -222,6 +227,32 @@ def test_measure_steps_reads_a_published_population_by_its_token(tmp_path, monke
     assert source == str(key)
     assert stated == json.loads((out / serve.STEPS / "dp0.engine.json").read_text())
     assert lines == served(out / serve.STEPS)[0]
+
+
+def test_a_population_loads_under_its_runs_readings_and_not_another_engine(
+    tmp_path, monkeypatch
+):
+    out, _ = stopped(tmp_path, monkeypatch, {0: [0, 1]})
+    run = build(tmp_path, "--step-stub", str(stub(tmp_path, 0)))
+    key = trace_steps.publish(out, run, "compass trace steps")
+
+    stated = json.loads((out / serve.STEPS / "dp0.engine.json").read_text())
+    source = IDENTITY["source"]
+    # The row reads the source, the model and the engine config; the rest is any.
+    readings = Conditions.of(
+        software_stack="any",
+        torch="any",
+        device="any",
+        host_cpu="any",
+        atom_src=Reading(source["revision_kind"], source["revision"]),
+        model=IDENTITY["host_key"]["model"],
+        engine_config=json.dumps(keyed_of(stated), sort_keys=True),
+    )
+    store, gates = ArtifactStore(run["store"]), GateState.of()
+    assert store.load(key, conditions=readings, gates=gates).key == key
+    other = readings.with_reading(Axis.ENGINE_CONFIG, "{}")
+    with pytest.raises(ArtifactRefusal, match="`shape_population` x `engine cfg`"):
+        store.load(key, conditions=other, gates=gates)
 
 
 def test_a_shape_population_key_without_its_backend_refuses_naming_four_fields():

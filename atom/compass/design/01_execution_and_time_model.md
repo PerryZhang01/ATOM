@@ -1393,6 +1393,15 @@ time.
   after R1. A device-bound output forward is therefore overcharged by both launches.
   #824's stamps separate the two parts of `W_post`, and #827's per-step residuals detect
   the error.
+- **Under MTP, part of `W_pre` runs after R1.** `prepare_input_ids` drains the MTP status
+  (`recv_mtp_status_async`) before it builds the input ids, and the rest of
+  `ModelRunner.prepare_model` (the input ids, `prepare_inputs` and the drafter's staging)
+  runs after that wait; the recurrence puts all of `W_pre` before R1. An output forward
+  whose launch R1 holds is undercharged by that tail, about 1.1 ms per decode on #829's
+  MTP1 record. #827's gate passes on that record only because a decode's measured
+  `d_gap_ns` carries the tail as device time; a backend that prices device time alone
+  does not. [#1272](https://github.com/jgong5/ATOM/issues/1272) splits `W_pre` at this
+  wait, as ruled on [#829](https://github.com/jgong5/ATOM/issues/829).
 - **With every host law at zero**, a forward exits at the latest of `now`, R4's release
   and, for an output forward, R1's: in a run of output forwards, forward `n` charges the
   previous output forward's device time and the first output forward charges 0, one
@@ -1402,7 +1411,7 @@ time.
 
 | rule | applies to | where | waits for | ATOM site |
 |---|---|---|---|---|
-| R1 | output forward, single stage | after launch; before launch with MTP | the previous output forward's `target_end` | `tokenIDProcessor.recv_async_output`, from `prepare_sampled_ids` |
+| R1 | output forward, single stage | after launch; before launch with MTP | the previous output forward's `target_end` | `tokenIDProcessor.recv_async_output`, from `prepare_sampled_ids`; with MTP, `tokenIDProcessor.recv_mtp_status_async`, from `prepare_input_ids` in `ModelRunner.prepare_model` |
 | R4 | every forward, single stage | forward entry | `end[n-2]` | `ModelRunner._gate_staging_reuse` |
 | R6 | every forward, PP | forward entry | this stage's `end[n-pp]` | `ModelRunner._advance_forward_vars`, the `forward_vars` ring |
 | R7 | non-first PP stage | device start, host launch | the upstream stage's `end`, and its host send | the `PPStageTransport` receives (`atom/distributed/pp_transport.py`) |
@@ -1416,17 +1425,17 @@ Stage 2 builds R1 and R4 ([#825](https://github.com/jgong5/ATOM/issues/825)). R6
 come with the stage sends ([#468](https://github.com/jgong5/ATOM/issues/468)), and so does R7
 as one wait: the stage loop receives `pp_data` before the forward, so host launch and
 device start both wait for the whole receive, where R7 holds only the device for the
-tensors. The MTP split and the PP=2 record that gates R6 to R8 are
-[#829](https://github.com/jgong5/ATOM/issues/829)'s; until the split lands, an MTP
-forward refuses.
+tensors. R7's host side and the PP=2 record that gates R6 to R8 are
+[#1200](https://github.com/jgong5/ATOM/issues/1200)'s; a simulated run refuses a
+speculative config until [#1090](https://github.com/jgong5/ATOM/issues/1090).
 
 **What-ifs.** The run-file key `host.skip` zeroes the named segments. Such a run is a
 what-if: never graded, and refused by the graders.
 
 **Measured, not hooked.** The parity recorder, `RecordingModelRunner`
 (`atom/compass/parity/runner.py`), stamps host time around the staging gate, the launch
-and the R1 wait, and records device events at `run_model` entry and at the forward's
-exit, drained with `query()`, never `synchronize()`
+and the R1 wait (with MTP also the draft copy wait), and records device events at
+`run_model` entry, with MTP at the target's end, and at the forward's exit, drained with `query()`, never `synchronize()`
 ([#824](https://github.com/jgong5/ATOM/issues/824)). It edits no ATOM file.
 
 **The recurrence's own check, provisional.** Fed each real record's measured device
@@ -2145,7 +2154,7 @@ get disabled — not virtualized.
 
    A single deployment (M1's stage 1 and M2's first gate, no router) uses the same carriers.
 
-**Under `--dp-aware` the router is an LP; xPyD is deferred.** With several
+**Under `--dp-aware`, or with several instances per role, the router is an LP.** With several
 instances per role, or `--dp-aware`, every policy this router ships
 (`atom/mesh/src/policies/`) reads state that changes over time:
 `power_of_two`, `cache_aware` and `prefix_hash` compare `load()`, which moves as
@@ -2153,8 +2162,8 @@ requests start and finish; `random` draws from an unseeded generator; `round_rob
 counts requests in the order they reach the router, which is wall-clock order under
 concurrency; `dp_sticky` reads `Instant::now()`. A component whose time-varying state
 decides its output is an LP, so the router would have to become one, instrumented in its
-own process with the policy code untouched. Under `--dp-aware` it is (owner ruling on
-#449, 2026-10-15); several instances per role stay deferred.
+own process with the policy code untouched. It is (owner ruling on
+#449, 2026-10-15; several instances per role, #1085).
 
 - **Channels.** A run file with `router_in_s` declares LP `router`
   (`channels.py::prefill_decode_table`): each path through the router is a hop in,
@@ -2180,6 +2189,14 @@ own process with the policy code untouched. Under `--dp-aware` it is (owner ruli
 - **Periodic tasks.** Under the LP, `PeriodicTask` (cache_aware's tree eviction) starts
   no thread: the task's next deadline is the daemon deadline of each NER, and it runs
   before any message arriving at or after that deadline (#1093).
+- **Several instances.** A run file's `prefill_instances` and `decode_instances`
+  declare LPs `frontend-P<k>` and `engine-P<k>` (`-D<k>` for decode) per deployment
+  (`channels.py::prefill_decode_table`), each with its own hops and write-request
+  channels; without `router_in_s` the table refuses them. Each server names its index as
+  `compass_instance` in its `kv_transfer_config`; `pd_sim.sh` starts them and names each
+  worker URL's frontend LP to the router (`ATOM_COMPASS_ROUTER_WORKERS`). A request goes
+  on, stamped, to the prefill it was placed on, and a relay to its decode; decode finds
+  the prefill deployment by the relayed `remote_engine_id`.
 
 ### An unused hook worth knowing about
 
@@ -2455,7 +2472,7 @@ Ordered by how much they could cost.
 | D5.1 | The simulated run uses stdlib asyncio, not uvloop: only a Python event loop can host virtual time | 2026-09-28 |
 | D6 | KV transfer is simulated through a connector registered in the existing factory, reproducing Mooncake (what ATOM's PD CI deploys) through scheduler-side hooks only; a rank pair's writes queue on its link | 2026-09-18; revised 2026-09-28; link sharing 2026-10-16 (#1157) |
 | D6.1 | The lmcache MP server is LP `lmcache`, a Compass stand-in on the real ZMQ channels with a content index and two stations; a store or load completes as a stamped reply that the step loop takes in timestamp order; a blocking lookup is a request and reply whose wait is an idle point; inside a DP group each member parks before its forward, amending member join rules 1, 2 and 5, and the last park releases every member at the group's time | 2026-10-16 (#1087, #1162) |
-| D7 | Atomesh gets no virtual clock: mesh-only mode; in 1P1D the router is one segment of a channel, not an LP, and its relay latency is that channel's lookahead; its bounds are configured (health check and circuit breaker off, `--worker-request-timeout-secs` set large); timestamps ride carriers it already relays; xPyD is deferred; under `--dp-aware` the router is LP `router`, handling requests, prefill responses and stream events in timestamp order (#449) | 2026-09-18; revised 2026-09-30, 2026-10-15 |
+| D7 | Atomesh gets no virtual clock: mesh-only mode; in 1P1D the router is one segment of a channel, not an LP, and its relay latency is that channel's lookahead; its bounds are configured (health check and circuit breaker off, `--worker-request-timeout-secs` set large); timestamps ride carriers it already relays; under `--dp-aware`, or with several instances per role, the router is LP `router`, handling requests, prefill responses and stream events in timestamp order (#449, #1085) | 2026-09-18; revised 2026-09-30, 2026-10-15, 2026-10-16 |
 | D8 | Arrivals are messages in transit, covered by the send and receive counts for closed and open workloads alike; the arrival timestamp rides the `tracestate` header | 2026-09-18; revised 2026-09-28 |
 | D9 | The ATOM diff is enumerated (~1,980 lines with tests) and completeness enforced by test rather than by review; ATOM's own suite is the gate (`08` D43.1) | 2026-09-18; revised 2026-09-28 |
 

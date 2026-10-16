@@ -22,7 +22,7 @@ import torch
 from atom.compass.artifacts.provenance import _run, git_tree_root, module_root
 from atom.compass.drive.gpu import GpuRefusal, smi
 from atom.compass.run import host_key_of
-from atom.compass.run.step_grid import BOUNDS
+from atom.compass.run.step_grid import keyed_of
 
 FORMAT_VERSION = 2
 #: rocm-smi's series is this brand and then the model a machine spec names.
@@ -40,10 +40,7 @@ def identity(
     GPU. `engine_file` is the `dp<r>.engine.json` the run's engine wrote, so a
     command calls this once its server stops."""
     engine = json.loads(Path(engine_file).read_text())
-    # The file adds the scheduler bounds and the block count to `keyed`.
-    keyed = {
-        k: v for k, v in engine.items() if k not in (*BOUNDS, "num_kvcache_blocks")
-    }
+    keyed = keyed_of(engine)
     rocm = Path(os.environ.get("ROCM_PATH", "/opt/rocm")) / ".info" / "version"
     return {
         "format_version": FORMAT_VERSION,

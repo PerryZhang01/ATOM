@@ -61,6 +61,7 @@ from atom.compass.artifacts import (
 )
 from atom.compass.backends import StepGridBackend
 from atom.compass.backends.resolver import CostRefused
+from atom.compass.backends.step_grid_fit import VALUE
 from atom.compass.backends.step_roofline import StepFallbackBackend
 from atom.compass.run import step_grid
 from atom.compass.spec import MachineSpec
@@ -77,7 +78,7 @@ KEY = {
 }
 BOUNDS = {"max_num_seqs": 48, "max_num_batched_tokens": 8192, "max_model_len": 2048}
 BUNDLE = {
-    "grid": bundle("replay", REPLAY),
+    "grid": {**bundle("replay", REPLAY), "value": VALUE},
     "residual": fitted({"unit": linear()}, {"unit": 1.0}),
     "bounds": BOUNDS,
 }
@@ -187,7 +188,8 @@ def test_a_run_file_bundle_prices_the_runs_steps_and_the_summary_names_it(
             "digest": entry.digest,
             "describe": (
                 f"step grid, bundle {entry.key}; replay decode grid, "
-                "timing scope forward; recipe step-grid-residual v1, members unit"
+                "timing scope forward; recipe step-grid-residual v2, members "
+                "decode: unit; prefill_output: unit; prefill_no_output: unit"
             ),
         }
     }
@@ -485,6 +487,25 @@ def test_a_timing_scope_narrower_than_the_forward_refuses(monkeypatch, tmp_path)
         compass_run.runner(r, META_8B)
 
 
+@pytest.mark.parametrize("value", [None, "busy window"])
+def test_a_bundle_stating_no_value_or_another_than_the_bench_window_refuses(
+    monkeypatch, tmp_path, value
+):
+    r = deployment(tmp_path)
+    other = copy.deepcopy(BUNDLE)
+    del other["grid"]["value"]
+    if value:
+        other["grid"]["value"] = value
+    publish(tmp_path, r, member=other)
+    run_file(tmp_path, monkeypatch)
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape(f"value {value!r} in the bundle and 'bench window' here"),
+    ):
+        compass_run.runner(r, META_8B)
+
+
 def test_a_data_parallel_run_refuses(monkeypatch, tmp_path):
     publish(tmp_path, deployment(tmp_path))
     run_file(tmp_path, monkeypatch)
@@ -500,7 +521,7 @@ def test_an_unmeasured_rung_between_measured_ones_refuses_listing_it(
     """Rung 32 has B nodes and no point; 16 and 48 were measured around it."""
     sparse = copy.deepcopy(BUNDLE)
     rung16 = [point(16, b, c, time=1000) for b in (9, 16) for c in C_NODES]
-    sparse["grid"] = bundle("replay", [p for p in REPLAY if p["at"][0] == 48] + rung16)
+    sparse["grid"] |= bundle("replay", [p for p in REPLAY if p["at"][0] == 48] + rung16)
     sparse["grid"]["decode"]["nodes"]["B"] = {"16": [9, 16], **REPLAY_B}
     sparse["grid"]["decode"]["nodes"]["c"]["16"] = C_NODES
     r = deployment(tmp_path)
@@ -537,8 +558,10 @@ def test_a_bound_past_the_one_the_grid_was_planned_for_refuses(
     [
         (lambda m: m.pop("bounds"), "KeyError: 'bounds'"),
         (
-            lambda m: m["residual"]["members"]["unit"].update(transform="log"),
-            "the residual's member unit does not load",
+            lambda m: m["residual"]["kinds"]["decode"]["members"]["unit"].update(
+                transform="log"
+            ),
+            "the residual's decode member unit does not load",
         ),
         # The layout before prefill was read on (B, T, c) and decode's c nodes
         # were kept per rung.

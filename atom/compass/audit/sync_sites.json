@@ -23,18 +23,18 @@
  },
  "lps": {
   "traffic": "the request source: Compass's traffic generator and its reader threads",
-  "frontend": "an API server process: its event loop owns the clock and its other threads are transport; one per deployment side",
-  "engine": "an engine process with its worker processes, one tensor-parallel group; one per deployment side, and a data-parallel group's members join it",
+  "frontend": "an API server process: its event loop owns the clock and its other threads are transport; one per deployment",
+  "engine": "an engine process with its worker processes, one tensor-parallel group; one per deployment, and a data-parallel group's members join it",
   "none": "no LP: the clock authority's own threads"
  },
  "history": "category and why are the first classification, kept as written; rows added since carry none. mechanism and mechanism_why are what a simulated run does at the site: mechanism_why is empty only where the mechanism is the one the row's category named (A K1, B K5, C1 K8, C2 K7, ignore K9) and why already says it.",
  "sites": [
   {
-   "id": "atom/compass/kv/connector.py::SimulatedKVConnectorScheduler.update_state_after_alloc::self._socks[rank].send(pickle.dumps((params[\"transfer_id\"], blocks, a, rank)))::p2p#0",
+   "id": "atom/compass/kv/connector.py::SimulatedKVConnectorScheduler.update_state_after_alloc::self._socks[key].send(pickle.dumps((params[\"transfer_id\"], blocks, a, key[1])))::p2p#0",
    "file": "atom/compass/kv/connector.py",
    "symbol": "SimulatedKVConnectorScheduler.update_state_after_alloc",
-   "call": "self._socks[rank].send",
-   "expr": "self._socks[rank].send(pickle.dumps((params[\"transfer_id\"], blocks, a, rank)))",
+   "call": "self._socks[key].send",
+   "expr": "self._socks[key].send(pickle.dumps((params[\"transfer_id\"], blocks, a, key[1])))",
    "shape": "p2p",
    "peer": "deployment",
    "why": "the decode engine's KV write request to the prefill engine of another deployment, sent on the decode step loop right after the request's blocks are allocated",

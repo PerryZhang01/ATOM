@@ -56,6 +56,7 @@ def transfer_params(
     pp_size: int,
     block_size: int,
     dcp_size: int,
+    engine_id: str = SIMULATED_ENGINE_ID,
 ) -> dict[str, Any]:
     """The blob the router relays for *seq*, as a simulated producer sees it.
 
@@ -67,6 +68,9 @@ def transfer_params(
     worker**, dropping it outright only when it has none either way. So a
     rank of the wrong type is not lost loudly; it is replaced by a plausible
     one, with no error anywhere.
+
+    A producer that is one of several deployments of its side passes an
+    `engine_id` of its own, a single label; `remote_host` reserves it.
     """
     drafts = getattr(seq, "spec_token_ids", None)
     draft_token_ids = (
@@ -78,8 +82,8 @@ def transfer_params(
         "do_remote_decode": False,
         "remote_block_ids": list(seq.block_table),
         "remote_swa_block_ids": [int(slot)] if slot is not None and slot >= 0 else [],
-        "remote_engine_id": SIMULATED_ENGINE_ID,
-        "remote_host": SIMULATED_HOST,
+        "remote_engine_id": engine_id,
+        "remote_host": f"{engine_id}.invalid",
         "remote_port": SIMULATED_PORT,
         "remote_handshake_port": SIMULATED_PORT,
         "tp_size": tp_size,

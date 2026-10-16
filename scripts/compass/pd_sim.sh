@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 #
-# A simulated 1P1D run, deployed as .github/scripts/atomesh/pd_server_atom.sh
-# deploys the real one: a prefill and a decode API server, each on the
-# simulated KV connector in Mooncake's place, and `atomesh launch
-# --pd-disaggregation` between them. The clock authority runs on its own,
-# started before the servers, and every LP reaches it at
+# A simulated prefill-decode run, deployed as
+# .github/scripts/atomesh/pd_server_atom.sh deploys the real one: RUN_FILE's
+# prefill_instances prefill and decode_instances decode API servers (1 each when
+# absent), each on the simulated KV connector in Mooncake's place, and
+# `atomesh launch --pd-disaggregation` between them. The clock authority runs
+# on its own, started before the servers, and every LP reaches it at
 # tcp://127.0.0.1:$CLOCK_PORT.
 #
 # Usage: pd_sim.sh RUN_FILE
 #   MODEL               model directory (required)
 #   CLOCK_PORT PREFILL_PORT DECODE_PORT ROUTER_PORT KV_WRITE_REQ_PORT
-#   PROMETHEUS_PORT     the ports it uses, all on 127.0.0.1; at DP width n the
-#                       write requests take n*n ports from KV_WRITE_REQ_PORT
+#   PROMETHEUS_PORT     the ports it uses, all on 127.0.0.1; prefill server k
+#                       serves on PREFILL_PORT+k, decode server k on
+#                       DECODE_PORT+k; with p prefill and d decode servers at DP
+#                       width n the write requests take p*d*n*n ports from
+#                       KV_WRITE_REQ_PORT
 #   PREFILL_DP_PORT DECODE_DP_PORT
-#                       each side's --data-parallel-master-port; above DP width
-#                       one its ranks derive their sockets from it
+#                       each side's --data-parallel-master-port, plus 16k for
+#                       server k; above DP width one its ranks derive their
+#                       sockets from it
 #   DECODE_EXEC         a command prefix that runs the decode server elsewhere
 #                       on this node, e.g. `docker exec <container>`; on a
 #                       failure, stopping it there is the caller's
@@ -24,7 +29,8 @@
 #   ATOMESH             the router binary (default: atomesh)
 #   ATOM_COMPASS_PARITY_RECORD
 #                       when set, each server records its steps
-#                       (atom/compass/parity) under it, in prefill/ and decode/
+#                       (atom/compass/parity) under it, in prefill/ and decode/,
+#                       or prefill<k>/ and decode<k>/ above one server of a side
 #   BENCHMARK_KIND ROUTER_POLICY ATOM_PD_RANK_MAPPING_POLICY
 #                       as `start_router` in .github/scripts/atomesh/pd_server_atom.sh
 #                       reads them (defaults random, random, none)
@@ -37,12 +43,13 @@
 # among DP ranks on load that responses move, which makes it LP `router` of the
 # run, and RUN_FILE gains `router_in_s` unless it has one already, and
 # `router`, the binary that runs it, refused unless built from this tree's
-# atom/mesh (`router_binary` in atom/compass/run). Otherwise
+# atom/mesh (`router_binary` in atom/compass/run). Several servers of a side
+# make it LP `router` too, as it chooses among them. Otherwise
 # the router has one worker per side, and ATOM's own DP dispatch picks the rank.
 #
 # It runs its own tree, as the gates do. Logs go beside RUN_FILE. It prints
 # `pd_sim: ready` once the router answers; start the traffic LP then. It exits
-# once both servers have, 0 when both exited 0.
+# once every server has, 0 when each exited 0.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/_lib.sh"
 
@@ -75,18 +82,25 @@ for name in PYTHONPATH PYTHONHASHSEED AITER_LOG_LEVEL HIP_VISIBLE_DEVICES; do
     [[ -n "${!name:-}" ]] && passed+=("$name=${!name}")
 done
 
-server() { # role port kv_role dp_port [exec]
+read -r PREFILLS DECODES < <(python3 -c 'import json, sys
+run = json.load(open(sys.argv[1]))
+print(run.get("prefill_instances", 1), run.get("decode_instances", 1))' "$RUN_FILE")
+
+server() { # role port kv_role dp_port instance count [exec]
+    # Above one server of a side each is named, and names itself, by its index.
+    local name=$1 kv="\"kv_role\":\"$3\",\"kv_connector\":\"compass\",\"compass_kv_write_req\":\"$KV_WRITE_REQ\""
+    (($6 > 1)) && name=$1$5 kv+=",\"compass_instance\":$5"
     # uvicorn's keep-alive timeout runs on the LP clock, the router drops idle
     # connections on the wall clock: which comes first, and with it whether the
     # timeout takes a grant, would differ between runs. Only the router closes.
     # shellcheck disable=SC2086 # DECODE_EXEC and SERVER_ARGS are word lists
-    ${5:-} env "${passed[@]}" ${ATOM_COMPASS_PARITY_RECORD:+"ATOM_COMPASS_PARITY_RECORD=$ATOM_COMPASS_PARITY_RECORD/$1"} python3 -m atom.entrypoints.openai_server \
+    ${7:-} env "${passed[@]}" ${ATOM_COMPASS_PARITY_RECORD:+"ATOM_COMPASS_PARITY_RECORD=$ATOM_COMPASS_PARITY_RECORD/$name"} python3 -m atom.entrypoints.openai_server \
         --model "$MODEL" --host 127.0.0.1 --server-port "$2" --timeout-keep-alive 1000000 \
         --data-parallel-master-port "$4" \
         $SERVER_ARGS \
         --compass-run "$RUN_FILE" --compass-clock-endpoint "$CLOCK" \
-        --kv-transfer-config "{\"kv_role\":\"$3\",\"kv_connector\":\"compass\",\"compass_kv_write_req\":\"$KV_WRITE_REQ\"}" \
-        >"$OUT/$1.log" 2>&1 &
+        --kv-transfer-config "{$kv}" \
+        >"$OUT/$name.log" 2>&1 &
 }
 
 # The real cell's router arguments, chosen as `start_router` chooses them. With
@@ -113,8 +127,19 @@ if [[ $policy == cache_aware ]]; then
     mapping_args=(--atom-pd-rank-mapping-policy "$mapping")
 fi
 router+=("${mapping_args[@]}" "${dp_aware[@]}")
+# Each server's role, port, kv_role, DP port, index and count, and, above one
+# server of a side, its URL's frontend LP for the router.
+specs=() workers=()
+for ((k = 0; k < PREFILLS; k++)); do
+    specs+=("prefill $((PREFILL_PORT + k)) kv_producer $((PREFILL_DP_PORT + 16 * k)) $k $PREFILLS")
+    ((PREFILLS == 1)) || workers+=("\"http://127.0.0.1:$((PREFILL_PORT + k))\":\"frontend-P$k\"")
+done
+for ((k = 0; k < DECODES; k++)); do
+    specs+=("decode $((DECODE_PORT + k)) kv_consumer $((DECODE_DP_PORT + 16 * k)) $k $DECODES")
+    ((DECODES == 1)) || workers+=("\"http://127.0.0.1:$((DECODE_PORT + k))\":\"frontend-D$k\"")
+done
 router_env=()
-if ((${#dp_aware[@]})); then
+if ((${#dp_aware[@]} || PREFILLS > 1 || DECODES > 1)); then
     # The hop into the router takes the run's ipc_s, its declared floor for one
     # hop between two local processes; the rest of each path's lookahead stays
     # on the hop out.
@@ -136,7 +161,8 @@ print(json.dumps({c.name: table.lookahead(c.name) for c in table.channels_from(R
 EOF
 )
     router_env=(ATOM_COMPASS_CLOCK_ENDPOINT="$CLOCK" ATOM_COMPASS_SEED="${SEED:-20260707}"
-        ATOM_COMPASS_ROUTER_LOOKAHEADS="$lookaheads")
+        ATOM_COMPASS_ROUTER_LOOKAHEADS="$lookaheads"
+        ATOM_COMPASS_ROUTER_WORKERS="{$(IFS=,; echo "${workers[*]}")}")
 fi
 
 python3 -m atom.compass.run --compass-run "$RUN_FILE" --compass-clock-endpoint "$CLOCK" \
@@ -147,15 +173,22 @@ until (exec 3<>"/dev/tcp/127.0.0.1/$CLOCK_PORT") 2>/dev/null; do
     sleep 0.2
 done
 
-server prefill "$PREFILL_PORT" kv_producer "$PREFILL_DP_PORT"
-prefill=$!
-server decode "$DECODE_PORT" kv_consumer "$DECODE_DP_PORT" "${DECODE_EXEC:-}"
-decode=$!
-compass_wait_up prefill $prefill "http://127.0.0.1:$PREFILL_PORT/health"
-compass_wait_up decode $decode "http://127.0.0.1:$DECODE_PORT/health"
+servers=() urls=()
+for spec in "${specs[@]}"; do
+    read -r role port kv_role dp_port k n <<<"$spec"
+    exec_prefix=()
+    [[ $role == decode && -n ${DECODE_EXEC:-} ]] && exec_prefix=("$DECODE_EXEC")
+    server "$role" "$port" "$kv_role" "$dp_port" "$k" "$n" "${exec_prefix[@]}"
+    servers+=($!)
+    urls+=("--$role" "http://127.0.0.1:$port")
+done
+for i in "${!specs[@]}"; do
+    read -r role port _ <<<"${specs[$i]}"
+    compass_wait_up "$role" "${servers[$i]}" "http://127.0.0.1:$port/health"
+done
 
 env "${router_env[@]}" "$ATOMESH" launch --host 127.0.0.1 --port "$ROUTER_PORT" --pd-disaggregation \
-    --prefill "http://127.0.0.1:$PREFILL_PORT" --decode "http://127.0.0.1:$DECODE_PORT" \
+    "${urls[@]}" \
     "${router[@]}" --backend atom --disable-health-check --disable-circuit-breaker \
     --disable-retries --prometheus-port "$PROMETHEUS_PORT" --log-level info \
     >"$OUT/router.log" 2>&1 &
@@ -163,8 +196,9 @@ compass_wait_up router $! "http://127.0.0.1:$ROUTER_PORT/v1/models"
 echo "pd_sim: ready"
 
 rc=0
-wait $prefill || rc=$?
-wait $decode || rc=$?
+for pid in "${servers[@]}"; do
+    wait "$pid" || rc=$?
+done
 # The authority leaves at the finish, once it has written the step table and
 # the run summary.
 ((rc != 0)) || wait $authority || rc=$?

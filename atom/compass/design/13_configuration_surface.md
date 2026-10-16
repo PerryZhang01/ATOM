@@ -174,13 +174,16 @@ with the `spec` package and per-machine scripts (`05` D26). A user passes one by
 compass record                                --out D -- <ATOM args>          [GPU]
 compass trace steps    <backend> --machine M  --out D --store S -- <ATOM args>
 compass trace ops                 (ops half)
-compass measure steps  [<batches>...] [--grid <population>...] <sample> \
-                       --sampling P --out D --store S -- <ATOM args>          [GPU]
+compass measure steps  [<batches>...] [--grid <population>... --grid-definition F] \
+                       <sample> --sampling P --out D --store S -- <ATOM args> [GPU]
 compass measure ops               (ops half)                                  [GPU]
 compass measure memory           --machine M  --out D --store S -- <ATOM args> [GPU]
-compass fit steps      --backend step-linear|step-grid [--form FORM] [--seed SEED] \
+compass fit steps      --backend step-linear [--form FORM] [--seed SEED] \
                        RECORD... --client-run RECORD EXPORT... --machine M \
                        --out D --store S
+compass fit steps      --backend step-grid --grid <population>... --grid-definition F \
+                       [--seed SEED] <targets>... --client-run RECORD EXPORT... \
+                       --machine M --out D --store S
 compass fit host       RECORD... --client-run RECORD EXPORT... --machine M \
                        --out D --store S
 compass fit ops                   (ops half)
@@ -189,7 +192,9 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
 <backend>   exactly one of --step-linear KEY, --step-stub FILE, --step-grid KEY
 <batches>   record directories and shape_population keys, whose batches it replays
 --grid      shape_population keys, and record directories, that the step grid's planner
-            places its points over
+            places its points over, with the nodes and margin --grid-definition states
+<targets>   record directories, and the keys of step_measurement entries of replayed
+            batches
 <sample>    --sample N --seed S, or --sample all
 ```
 
@@ -280,8 +285,11 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
   `memory_readings` entry, and exits (`07` D38, Phase 2).
 - **`fit`**: each backend owns its fit and states the label sources it takes. The step linear
   law and `fit host` take real records only (`09` D54); the step grid takes bench points for
-  its grid and real records, bench replays or both for its residual (`17` D98, D100);
-  the step stub's coefficients are stated, not fitted, and `--backend step-stub` refuses. A fit copies
+  its grid and real records, bench replays or both for its residual (`17` D98, D100).
+  `fit steps --backend step-grid` plans again over the `--grid` inputs and
+  `--grid-definition` that `measure steps` planned over, reads each planned point's
+  measurement by its batch view, and refuses naming each planned point not measured.
+  The step stub's coefficients are stated, not fitted, and `--backend step-stub` refuses. A fit copies
   its inputs' provenance into its output, the traces they came from included, and
   identical inputs and arguments give a bit-identical output. A grader refuses a backend
   fitted on the traces it grades (`08` D50).

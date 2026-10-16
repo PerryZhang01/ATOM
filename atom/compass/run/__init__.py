@@ -36,11 +36,12 @@ member, the frontend's included, connects to.
   (`atom.utils.compass_loop.CompassEventLoop.stopped`) is a stop: the
   frontend's runtime first ends every LP's run through the authority, so each
   engine leaves its loop at its ``+inf`` grant and hands in, and a client
-  still bound gets ``+inf`` with every event sent it; `frontend_done`
-  hands in the signal, which the summary counts as an ``ended:`` reason, and
-  the server leaves once the summary is written from every hand-in. A server
-  whose ``client_runs`` is ``null`` serves until it is stopped: a stop with no
-  client run open is its run's end, summarised as the finish would be.
+  still bound gets ``+inf`` too, each grant releasing every message sent its
+  LP; `frontend_done` hands in the signal, which the summary counts as an
+  ``ended:`` reason, and the server leaves once the summary is written from
+  every hand-in. A server whose ``client_runs`` is ``null`` serves until it is
+  stopped: a stop with no client run open is its run's end, summarised as the
+  finish would be.
 - `engine_loop(engine)` wraps the engine's loop: under ``step_grid`` it asks the
   workers for the bundle before it, `engine_done` after it, and if either
   raises, the engine hands in the exception as an ``ended:`` reason, with the
@@ -115,7 +116,11 @@ decode side: `engine(config)` makes it the ``engine-P`` or ``engine-D`` LP and
 binds the connector's transfer model. The write-request address comes with the
 deployment's own ``kv_transfer_config``. Above DP width one each DP rank is a
 member of its side's engine LP, and ATOM's DP dispatch on each side picks the
-rank a request runs on. `frontend(config)` refuses such a
+rank a request runs on. Optional ``prefill_instances`` and ``decode_instances``,
+1 when absent, run that many deployments of a side, each naming its index in
+its ``kv_transfer_config`` as ``compass_instance``; above one, its LPs carry
+the index (``engine-P1``), and the router is the ``router`` LP, which chooses
+among them. `frontend(config)` refuses such a
 deployment unless the authority is standalone: a prefill-decode run spans two
 API servers that must share one.
 
@@ -180,6 +185,10 @@ CLOCK_ENV = "ATOM_COMPASS_CLOCK_ENDPOINT"
 NOW_ENV = "ATOM_COMPASS_NOW"
 FRONTEND, ENGINE, TRAFFIC = LpId("frontend"), LpId("engine"), LpId("traffic")
 ROUTER = LpId("router")
+#: Run-file keys for how many deployments of each prefill-decode side run.
+INSTANCES = {"P": "prefill_instances", "D": "decode_instances"}
+#: The kv_transfer_config key a deployment names its index among them by.
+INSTANCE_KEY = "compass_instance"
 ATOM_RUNNER = "atom.model_engine.model_runner.ModelRunner"
 #: Keys that differ between two runs of one configuration, kept out of its name.
 #: The store is a place: the memory readings a run reads from it are keyed by
@@ -303,6 +312,8 @@ def channel_table(run: dict):
             kv_write_req_s=run["kv_write_req_s"],
             dp=_dp(run),
             router_in_s=run.get("router_in_s"),
+            prefill=run.get(INSTANCES["P"], 1),
+            decode=run.get(INSTANCES["D"], 1),
         )
     links = ()
     if _pp(run) > 1:
@@ -353,6 +364,24 @@ def _pd_side(config) -> str | None:
     if KVConnectorFactory.canonical_name(kv.get("kv_connector", "moriio")) != "compass":
         return None
     return "P" if kv.get("kv_role", "kv_producer") == "kv_producer" else "D"
+
+
+def _pd_name(config, run: dict) -> str | None:
+    """`_pd_side`, followed above one deployment of that side by the index
+    ``compass_instance`` in its ``kv_transfer_config`` names."""
+    side = _pd_side(config)
+    if side is None:
+        return None
+    n, k = run.get(INSTANCES[side], 1), config.kv_transfer_config.get(INSTANCE_KEY)
+    if n == 1 and k is None:
+        return side
+    if type(k) is not int or not 0 <= k < n:
+        raise ValueError(
+            f"kv_transfer_config's {INSTANCE_KEY} is {k!r} and the run file "
+            f"declares {n} as {INSTANCES[side]}; each deployment names its own "
+            "index, from 0"
+        )
+    return side if n == 1 else f"{side}{k}"
 
 
 def _bind_transfer(config, run: dict) -> None:
@@ -450,10 +479,10 @@ class _RecordingAuthority(ClockAuthority):
     before the finish is a stop: it registers that frontend's send log,
     finishes the run there and sets `stopped`. Every LP but the client is
     granted ``+inf``, and the client too while a client run is open, from its
-    bind to its end, its grant releasing every message registered for it;
-    outside one it holds no connection. A stop with none open, on a server
-    whose ``client_runs`` is ``null``, sets `stopped_whole`: the run ended as
-    its run file says, as at the finish."""
+    bind to its end; outside one it holds no connection. Each such grant
+    releases every message registered for its receiver. A stop with none open,
+    on a server whose ``client_runs`` is ``null``, sets `stopped_whole`: the
+    run ended as its run file says, as at the finish."""
 
     def __init__(self, run: dict) -> None:
         # The tree that runs, read before the run so an unidentifiable one is
@@ -512,7 +541,7 @@ class _RecordingAuthority(ClockAuthority):
                 self._client_runs == math.inf and not self.client_run_open
             )
             replies = [
-                (to, g, self._release_all(released) if to == TRAFFIC else released)
+                (to, g, self._release_all(released))
                 for to, g, released in self._address(self._finish())
                 if to != TRAFFIC or self.client_run_open
             ]
@@ -674,7 +703,8 @@ def frontend(config):
         # A worker node of a multi-node group: engines only, each a member.
         return contextlib.nullcontext()
     _refuse_sync_utility_commands()
-    lp = FRONTEND if side is None else LpId(f"{FRONTEND.name}-{side}")
+    name = _pd_name(config, run)
+    lp = FRONTEND if name is None else LpId(f"{FRONTEND.name}-{name}")
     authority = None
     if not standalone:
         _authority = authority = _RecordingAuthority(run)
@@ -779,7 +809,7 @@ def engine(config):
     if getattr(config, "pipeline_parallel_size", 1) > 1:
         lp = LpId(f"{ENGINE.name}-pp{pc.pipeline_parallel_rank}")
     if side is not None:
-        lp = LpId(f"{ENGINE.name}-{side}")
+        lp = LpId(f"{ENGINE.name}-{_pd_name(config, run)}")
         _bind_transfer(config, run)
     utils.LP_OF_RANK = dict.fromkeys(range(pc.data_parallel_size), lp)
     _member = f"dp{pc.data_parallel_rank}" if pc.data_parallel_size > 1 else None
@@ -838,6 +868,11 @@ def runner(model_runner, tree) -> None:
         from atom.compass.parity.replay import ReplayBackend
 
         dp_rank = config.parallel_config.data_parallel_rank
+        if max(run.get(k, 1) for k in INSTANCES.values()) > 1:
+            raise ValueError(
+                "replay reads one record per side, prefill/ and decode/, and this "
+                "run has several deployments of a side"
+            )
         side = {"P": "prefill", "D": "decode"}.get(_pd_side(config), "")
         backend = replay = ReplayBackend(Path(run["replay"]) / side, dp_rank)
     if STEP_LINEAR in run:
