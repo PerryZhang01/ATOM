@@ -69,6 +69,7 @@ from compass_harness.transport import (
 )
 
 from atom.compass.carriers import cancel_body, stamp_events, tracestate_stamp
+from atom.compass.clock import LpId, single_engine_table
 from compass_harness import fingerprint
 
 # Per request: its send stamp, then the arrival of each token event; [DONE]
@@ -85,7 +86,8 @@ def _chunk(text: str) -> str:
 class _Frontend:
     """Stand-in for the frontend LP's runtime: hands out the scripted stamps."""
 
-    me = "frontend"
+    me = LpId("frontend")
+    table = single_engine_table(admission_path="serving", ipc_s=0.0, stream_s=0.0)
 
     def __init__(self) -> None:
         self.arrival, self.seq = 0.0, 0

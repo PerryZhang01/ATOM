@@ -12,7 +12,7 @@ import re
 import pytest
 
 from atom.compass.carriers import sse_stamp, tracestate_stamp, tracestate_with
-from atom.compass.clock import LpId, single_engine_table
+from atom.compass.clock import LpId, prefill_decode_table, single_engine_table
 from atom.entrypoints.openai import api_server
 from atom.entrypoints.openai.serving_chat import stream_chat_response
 from atom.entrypoints.openai.streaming_dispatch import StreamOutputCollector
@@ -166,3 +166,25 @@ class TestTheStreamWriter:
         assert rt.send_log == [(STREAM, s, 2.0 + STREAM_S) for s in range(len(events))]
         assert len(events) > len(sent) and events[-1].endswith("data: [DONE]")
         assert re.sub(r"(?m)^: compass .*\n", "", text) == "".join(sent)
+
+    def test_behind_the_router_lp_frontend_d_stamps_its_stream_to_the_router(
+        self, installed
+    ):
+        table = prefill_decode_table(
+            admission_path="serving",
+            ipc_s=0.001,
+            stream_s=STREAM_S,
+            router_s=0.004,
+            kv_write_req_s=0.001,
+            router_in_s=0.001,
+        )
+        rt = LPRuntime(LpId("frontend-D"), table, conn=None)
+        rt.now = 2.0
+        rt.start_run()
+        installed(rt)
+        text = "".join(_client_text(_replay(FRAMES)))
+        stamps = [sse_stamp(e.split("\n", 1)[0]) for e in text.split("\n\n")[:-1]]
+        assert rt.send_log == [
+            ("frontend-D->router:stream", s, 2.001) for s in range(len(stamps))
+        ]
+        assert stamps == [(a, s) for _, s, a in rt.send_log]

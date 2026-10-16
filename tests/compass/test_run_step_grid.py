@@ -97,6 +97,7 @@ def deployment(tmp_path, **config):
         gpu_memory_utilization=0.9,
         torch_dtype=torch.bfloat16,
         enforce_eager=False,
+        enable_tbo=False,
         capture_sizes=list(LADDER),
         compilation_config=SimpleNamespace(cudagraph_capture_sizes=list(LADDER)),
         kv_cache_block_size=16,

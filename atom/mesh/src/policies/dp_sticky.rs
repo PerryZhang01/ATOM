@@ -116,7 +116,7 @@ impl DpStickyPolicy {
         let Some(session_id) = session_id else {
             return Self::select_low_load_worker(workers);
         };
-        let now = Instant::now();
+        let now = crate::determinism::now();
 
         if let Some(mut assignment) = self.assignments.get_mut(session_id) {
             let is_expired = now.saturating_duration_since(assignment.last_access)
