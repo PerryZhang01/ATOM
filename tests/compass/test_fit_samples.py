@@ -153,7 +153,7 @@ def test_each_sample_copies_its_input_s_provenance_and_the_traces_it_served(
     assert samples[0].provenance["run"] == digest(path)
     assert config == {
         "model": HOST["model"],
-        "device": "AMD Instinct MI308X M3080 gfx942",
+        "device": "MI355X gfx950",
         "parallel": "tp1-dp1",
         "engine_config": json.loads(a.joinpath("run.json").read_text())["host_key"][
             "engine"
