@@ -128,11 +128,9 @@ def test_each_reading_is_one_row_with_its_own_verdict(
         pool=600_000_000,
     )
     rows = _check(capsys, tmp_path, log)
-    # Within the gate, but it sums declared terms, so it is not discharged.
-    assert rows["peak_torch"].endswith("not discharged")
-    assert (
-        "* peak_torch: within the gate, and the gate is not discharged" in rows["out"]
-    )
+    # Within the gate, and none of its terms declared: the activations are
+    # the entry's.
+    assert rows["peak_torch"].endswith("pass")
     assert rows["non_torch"].endswith(verdict)
     # The predicted readings' own terms are printed under the table.
     assert rows["weights"].split()[2] == "analytical"

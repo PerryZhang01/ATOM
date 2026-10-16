@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 """`atom/compass/backends/step_grid_plan.py`: the step grid's points planned
-from batch shapes.
+from batch shapes, and steps checked for coverage against a loaded backend.
 
 Steps are ATOM's `Scheduler`'s, recorded through the parity step record by
 `test_parity_record._drive` at a 64-token budget, with the simulated runner
@@ -8,8 +8,7 @@ replaying decode on the ladder [1, 2, 4, 8], and planned for the engine file
 each record's rank wrote. A plan's lines are written as a step record, read
 back by `parity.read` and located by the plan's grid. Bundles are published to
 an `ArtifactStore` and loaded by `run.step_grid.load` under
-`test_run_step_grid`'s deployment, at the same scheduler's bounds and ladder,
-and price each step.
+`test_run_step_grid`'s deployment, at the same scheduler's bounds and ladder.
 """
 
 import copy
@@ -28,6 +27,7 @@ from test_run_step_grid import KEY, deployment, publish
 
 from atom.compass import parity
 from atom.compass.backends import BatchView, RequestShape, StepGrid, step_grid_plan
+from atom.compass.backends.resolver import CostRefused
 from atom.compass.run.step_grid import load
 from atom.compass.runner import overrides
 from atom.compass.spec import MachineSpec
@@ -124,8 +124,9 @@ def located(tmp_path, planned):
     return dict(out)
 
 
-def measured(planned, points):
-    """A bundle of the plan's grid, each located point timed."""
+def measured(planned, points, residual=None, drop=None):
+    """A bundle of the plan's grid, each located point but `drop` timed, `drop`
+    being a (grid, point) pair as `located` names them."""
     keys = ("graph_mode", "scope", "prefill", "decode")
     grid = copy.deepcopy({k: planned[k] for k in keys})
     lists = {
@@ -134,24 +135,42 @@ def measured(planned, points):
         "decode": grid["decode"]["points"],
     }
     for name, ats in points.items():
-        lists[name] += [point(*at, time=100 + sum(at)) for at in ats]
+        lists[name] += [
+            point(*at, time=100 + sum(at)) for at in ats if (name, at) != drop
+        ]
     return {
         "grid": {**grid, "unit": "us"},
-        "residual": fitted({"unit": linear()}, {"unit": 1.0}),
+        "residual": residual or fitted({"unit": linear()}, {"unit": 1.0}),
         "bounds": planned["bounds"],
     }
 
 
-def priced(tmp_path, member, *records):
-    """Each step of `records` priced by `member`, published under the
-    deployment at the scheduler's bounds and ladder and loaded as a run loads
-    it; a step whose cell has an unmeasured corner refuses."""
+def loaded(tmp_path, member, grid=KEY["grid"], **config):
+    """The backend of `member`, published under the deployment at the
+    scheduler's bounds and ladder, or `config`, named by grid `grid`, and
+    loaded as a run loads it."""
     bounds = {k: ENGINE[k] for k in ("max_num_seqs", "max_num_batched_tokens")}
-    r = deployment(tmp_path, **bounds, capture_sizes=LADDER)
-    publish(tmp_path, r, member=member)
-    spec = {"store": str(tmp_path / "store"), **KEY}
-    backend, _ = load(spec, r.config, MachineSpec.from_mapping(DOCUMENT))
-    return [backend.price(view(line)) for _, line in steps(*records)[0]]
+    r = deployment(tmp_path, **{**bounds, **config}, capture_sizes=LADDER)
+    publish(tmp_path, r, member=member, grid=grid)
+    spec = {"store": str(tmp_path / "store"), **KEY, "grid": grid}
+    return load(spec, r.config, MachineSpec.from_mapping(DOCUMENT))[0]
+
+
+def coverage(tmp_path, member, *records, grid=KEY["grid"], **config):
+    """`coverage` of `records` over the backend `loaded` makes of `member`."""
+    backend = loaded(tmp_path, member, grid, **config)
+    return step_grid_plan.coverage(backend, steps(*records)[0])
+
+
+def refusing(backend, named) -> list:
+    """The name of each step `backend` refuses to price."""
+    out = []
+    for name, line in named:
+        try:
+            backend.price(view(line))
+        except CostRefused:
+            out.append(name)
+    return out
 
 
 def test_every_planned_point_read_back_is_a_homogeneous_batch_on_its_own_node(
@@ -174,14 +193,63 @@ def test_every_planned_point_read_back_is_a_homogeneous_batch_on_its_own_node(
     } == {(0, False, "plan")}
 
 
-def test_planned_points_measured_and_published_price_every_step(tmp_path, monkeypatch):
+def test_planned_points_measured_and_published_cover_every_step_and_name_a_dropped_one(
+    tmp_path, monkeypatch
+):
     records = [record(tmp_path, monkeypatch, *n) for n in (MIXED, SHORT)]
     planned = plan(*records)
+    points = located(tmp_path, planned)
     assert planned["infeasible"] == planned["unplaced"] == []
 
-    member = measured(planned, located(tmp_path, planned))
+    out = coverage(tmp_path, measured(planned, points), *records)
 
-    assert len(priced(tmp_path, member, *records)) == 15
+    assert out == {
+        "steps": 15,
+        "covered": 15,
+        "share": 1.0,
+        "uncovered": [],
+        "missing": {},
+        "refused": [],
+        "prefill_above_top_c": 0,
+    }
+    named = steps(*records)[0]
+    for i, name in enumerate(["prefill output", "prefill no_output", "decode"]):
+        at = points[name][0]
+        member = measured(planned, points, drop=(name, at))
+        backend = loaded(tmp_path, member, grid=f"minus-{i}")
+        out = step_grid_plan.coverage(backend, named)
+        if name == "decode":
+            name, at = f"decode rung {at[0]}", at[1:]
+        assert out["missing"] == {name: [at]}
+        # Named, each step whose price the unmeasured corner refuses.
+        assert out["uncovered"] == refusing(backend, named) != []
+        assert out["refused"] == [] and out["covered"] == 15 - len(out["uncovered"])
+
+
+def test_a_step_outside_the_residuals_hull_is_refused_and_fails_coverage(
+    tmp_path, monkeypatch
+):
+    records = [record(tmp_path, monkeypatch, *MIXED)]
+    planned = plan(*records)
+    # The default box, its first facet tightened to tokens / 2^10 <= 32 / 2^10.
+    box = fitted({"unit": linear()}, {"unit": 1.0})["hull"]["facets"]
+    box[0][-1] = -32 / 2**10
+    hull = fitted({"unit": linear()}, {"unit": 1.0}, hull={"facets": box})
+    member = measured(planned, located(tmp_path, planned), residual=hull)
+
+    out = coverage(tmp_path, member, *records)
+
+    assert out["missing"] == {}
+    # Every step but the final 8 + 20 token chunk and the decode steps.
+    refused = {r["step"].rsplit(" ", 1)[1]: r["reasons"] for r in out["refused"]}
+    assert sorted(refused, key=int) == ["0", "1", "2", "4"]
+    assert all(
+        reasons[0].startswith("the step at tokens=")
+        and "outside the residual's hull" in reasons[0]
+        for reasons in refused.values()
+    )
+    assert out["covered"] == out["steps"] - 4
+    assert out["uncovered"] == [r["step"] for r in out["refused"]]
 
 
 def test_prefill_is_planned_by_whether_the_chunk_produces_output(tmp_path, monkeypatch):
@@ -249,7 +317,8 @@ def test_a_rung_between_planned_rungs_is_planned_so_the_bundle_loads(
     assert [p for p in decode if p[0] == 4] == [
         [4, b, c] for b in (3, 4) for c in c_nodes
     ]
-    priced(tmp_path, measured(planned, points), *records)
+    out = coverage(tmp_path, measured(planned, points), *records)
+    assert out["share"] == 1.0
 
 
 def test_a_rung_between_planned_rungs_is_planned_on_its_own_c_nodes(
@@ -265,7 +334,8 @@ def test_a_rung_between_planned_rungs_is_planned_on_its_own_c_nodes(
     rung4 = planned["decode"]["nodes"]["c"]["4"]
     assert {47, 239}.isdisjoint(rung4)
     assert {c for r, _, c in points["decode"] if r == 4} <= set(rung4)
-    priced(tmp_path, measured(planned, points), *records)
+    out = coverage(tmp_path, measured(planned, points), *records)
+    assert out["share"] == 1.0
 
 
 def test_the_margin_reads_a_neighbouring_rungs_own_c_nodes(tmp_path, monkeypatch):
@@ -387,10 +457,11 @@ def test_a_rung_gains_a_b_node_where_steps_reach_past_the_rungs_kv_limit(
     assert decode["nodes"]["c"]["8"] == [0, 64, 128, 191, 192, 255, 256, 319, 2047]
     assert points["decode"] == [[8, 6, 192], [8, 6, 255]]
     assert planned["infeasible"] == []
-    priced(tmp_path, measured(planned, points), directory)
+    out = coverage(tmp_path, measured(planned, points), directory)
+    assert out["share"] == 1.0
 
 
-def test_a_prefill_step_cached_past_the_top_c_node_is_listed_unplaced(
+def test_coverage_counts_apart_the_prefill_steps_cached_past_the_top_c_node(
     tmp_path, monkeypatch
 ):
     """At a 48-token budget prefill's top c node is 2048 - 48 = 2000; a
@@ -401,6 +472,17 @@ def test_a_prefill_step_cached_past_the_top_c_node_is_listed_unplaced(
     reason = "c=2016 is outside the prefill output grid's nodes 0..2000"
     assert planned["bounds"]["max_num_batched_tokens"] == 48
     assert planned["unplaced"] == [{"step": last, "reason": reason}]
+
+    out = coverage(
+        tmp_path,
+        measured(planned, located(tmp_path, planned)),
+        directory,
+        max_num_batched_tokens=48,
+    )
+
+    assert out["prefill_above_top_c"] == 1
+    assert out["refused"] == [{"step": last, "reasons": [reason]}]
+    assert out["covered"] == out["steps"] - 1
 
 
 def test_a_step_off_the_targets_ladder_is_listed_unplaced(tmp_path, monkeypatch):
@@ -540,3 +622,5 @@ def test_a_target_whose_model_length_is_below_the_token_budget_is_refused(
 def test_no_step_is_refused(tmp_path):
     with pytest.raises(ValueError, match="there is no step to read"):
         plan(tmp_path)
+    with pytest.raises(ValueError, match="there is no step to read"):
+        step_grid_plan.coverage(None, [])

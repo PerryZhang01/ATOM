@@ -70,14 +70,15 @@ the run there, which still writes the summary),
 LP after another, 1 when absent and ``null`` for no limit; each ends when no
 essential work is left, and the last one's end finishes the run),
 ``host`` (optional: ``laws``, per forward kind and host segment, coefficients
-on ``(1, tokens, seqs)``, zero where absent; ``key``, the `host_key` they were
+on ``(1, tokens, seqs)``, refused where absent; ``key``, the `host_key` they were
 fitted under and the ``machine_spec`` digest of the spec of the platform they
 were fitted on, which a run with laws must match; ``skip``, segments zeroed for
 a what-if run, which the graders refuse),
 ``machine`` (a machine spec mapping), ``parameter_count`` (read with
-``step_roofline``), ``store`` (the artifact store's root) and ``backend`` (the
-backend's ``digest`` and its fit ``provenance``, which nothing here reads),
-both written by `atom.compass.drive.runfile`, and ``out_dir``,
+``step_roofline``), ``store`` (the artifact store's root, where `memory` reads
+the configuration's memory readings) and ``backend`` (the backend's ``digest``
+and its fit ``provenance``, which nothing here reads), both written by
+`atom.compass.drive.runfile`, and ``out_dir``,
 where the step table, the run summary and each server LP's hand-in go, one
 file written as the LP leaves its loop. It holds the LP's refusals: an
 engine's are the worker's refused commands and the engine's refused clock
@@ -179,7 +180,9 @@ FRONTEND, ENGINE, TRAFFIC = LpId("frontend"), LpId("engine"), LpId("traffic")
 ROUTER = LpId("router")
 ATOM_RUNNER = "atom.model_engine.model_runner.ModelRunner"
 #: Keys that differ between two runs of one configuration, kept out of its name.
-PER_RUN = ("clock_endpoint", "out_dir", "client_runs", "router")
+#: The store is a place: the memory readings a run reads from it are keyed by
+#: the configuration and the machine spec, which the name holds.
+PER_RUN = ("clock_endpoint", "out_dir", "client_runs", "router", "store")
 LP_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
     "lp-{}.json",  # by LP name, or <lp>.<member> for a member
     "step_table.txt",
@@ -904,17 +907,18 @@ def runner(model_runner, tree) -> None:
         from atom.compass.run.step_grid import load
 
         backend, bundle = load(run[STEP_GRID], config, machine)
-    config_json = _config_json(config)
+    if "store" not in run:
+        raise ValueError(
+            "the run file names no store, and a run reads its configuration's "
+            "memory readings from one; compass measure memory takes them"
+        )
+    from atom.compass.run import memory
+
+    measured = memory.load(run["store"], config, machine, model_runner.rank)
     model = ModelTerms.from_config(
         config.hf_config,
-        tp_size=tp,
-        warmup_tokens=config.max_num_batched_tokens,
-        config_json=config_json,
-        activations_entry=machine.activations_for(
-            (config_json.get("architectures") or [None])[0],
-            _file_digest(config.model, "config.json"),
-            tp,
-        ),
+        activations=measured.activations(config.max_num_batched_tokens),
+        config_json=_config_json(config),
         tree=tree,
     )
     fallback = run.get("step_roofline", False)
@@ -958,15 +962,19 @@ def runner(model_runner, tree) -> None:
             replay.now = lambda: float(slot[0])
     model_runner.compass_abort = run.get("on_refusal") == "abort"
     reserved, captured = _graph_pool(model_runner, machine, model)
-    # Under DP-attention the reserve and the residue are keyed by the layout,
-    # and by the EP width when the experts shard; one rank of it is a TP1 engine.
+    # The readings' label: under DP-attention the layout, with the EP width
+    # when the experts shard; one rank of it is a TP1 engine.
     dp = config.parallel_config.data_parallel_size
     layout = tp
     if dp > 1 and config.enable_dp_attention:
         ep = f"x{tp * dp}" if config.enable_expert_parallel else ""
         layout = f"{tp}x{dp}{ep}"
     readings = device_readings(
-        machine, tp_width=layout, model=model, cudagraph_overhead=reserved
+        machine,
+        memory=measured,
+        tp_width=layout,
+        model=model,
+        cudagraph_overhead=reserved,
     )
     install_device_readings(model_runner, readings)
     pool = (
