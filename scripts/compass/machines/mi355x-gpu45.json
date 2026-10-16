@@ -93,6 +93,13 @@
         "source_root": "commit:409bedc98",
         "record": "sha256:02618dade3d07bcaac510da11cf8a279a1fe3ef2fce72d41e88a76f2df7c32c6"
       },
+      "device.software_pinned_to.torch": {
+        "origin": "probed",
+        "model": "/models/DeepSeek-V4-Pro",
+        "width": 8,
+        "source_root": "commit:409bedc98",
+        "record": "sha256:02618dade3d07bcaac510da11cf8a279a1fe3ef2fce72d41e88a76f2df7c32c6"
+      },
       "device.memory.bandwidth_bytes_per_s": {
         "origin": "datasheet"
       },
@@ -241,7 +248,8 @@
     "software_pinned_to": {
       "rocm": "7.2.4",
       "aiter": "9205e1059",
-      "rccl": "2.27.7"
+      "rccl": "2.27.7",
+      "torch": "2.10.0+rocm7.2.4.git3d3aa833"
     }
   },
   "interconnect": {

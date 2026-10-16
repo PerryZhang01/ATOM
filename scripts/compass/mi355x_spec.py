@@ -71,7 +71,12 @@ DEVICE = {
                 "bytes_per_token": {1: PER_TOKEN},
             }
         ],
-        "software_pinned_to": {"rocm": "7.2.4", "aiter": "9205e1059", "rccl": "2.27.7"},
+        "software_pinned_to": {
+            "rocm": "7.2.4",
+            "aiter": "9205e1059",
+            "rccl": "2.27.7",
+            "torch": "2.10.0+rocm7.2.4.git3d3aa833",
+        },
     },
 }
 
