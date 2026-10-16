@@ -242,7 +242,6 @@ def carry_response_ids() -> None:
 
     for cls in (CoreManager, DisaggCoreManager):
 
-        @functools.wraps(cls.add_request)
         def add_request(self, seqs, add=cls.add_request):
             if len(seqs) == 1 and seqs[0].external_request_id is None:
                 caller = sys._getframe(1).f_locals

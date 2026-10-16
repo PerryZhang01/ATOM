@@ -46,8 +46,7 @@ def served(directory, client_runs: Sequence = ()) -> dict[int, list[dict]]:
     for rank, steps in record.items():
         ids = {k: v for s in steps for k, v in s.get("response_ids", {}).items()}
         for step in steps:
-            names = [ids.get(r[0], r[0]) for r in step["batch"]]
-            names = [n for n in names if n in owner]
+            names = [n for r in step["batch"] if (n := ids.get(r[0], r[0])) in owner]
             ks = sorted({owner[n] for n in names})
             if len(ks) > 1:
                 raise ValueError(

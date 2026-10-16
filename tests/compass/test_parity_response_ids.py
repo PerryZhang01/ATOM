@@ -9,7 +9,6 @@ simulated runner from the sequences the engine core received.
 """
 
 import asyncio
-import inspect
 import json
 import pickle
 import queue
@@ -34,10 +33,8 @@ SAMPLING = {"temperature": 0.0, "top_p": 1.0}
 @pytest.fixture
 def engine(monkeypatch):
     """The planted engine; `sent` holds what each `add_request` sent, unpickled."""
-    # ATOM's own `add_request`, whatever an earlier test's frontend wrapped,
-    # and back as it was after the test.
-    for cls in (CoreManager, DisaggCoreManager):
-        monkeypatch.setattr(cls, "add_request", inspect.unwrap(cls.add_request))
+    for cls in (CoreManager, DisaggCoreManager):  # ATOM's back after the test
+        monkeypatch.setattr(cls, "add_request", cls.add_request)
 
     def preprocess(tokens, sampling_params, stream_callback=None, **_kwargs):
         seq = Sequence(list(tokens), BLOCK, sampling_params)
