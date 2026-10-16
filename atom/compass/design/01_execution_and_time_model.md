@@ -1393,6 +1393,15 @@ time.
   after R1. A device-bound output forward is therefore overcharged by both launches.
   #824's stamps separate the two parts of `W_post`, and #827's per-step residuals detect
   the error.
+- **Under MTP, part of `W_pre` runs after R1.** `prepare_input_ids` drains the MTP status
+  (`recv_mtp_status_async`) before it builds the input ids, and the rest of
+  `ModelRunner.prepare_model` (the input ids, `prepare_inputs` and the drafter's staging)
+  runs after that wait; the recurrence puts all of `W_pre` before R1. An output forward
+  whose launch R1 holds is undercharged by that tail, about 1.1 ms per decode on #829's
+  MTP1 record. #827's gate passes on that record only because a decode's measured
+  `d_gap_ns` carries the tail as device time; a backend that prices device time alone
+  does not. [#1272](https://github.com/jgong5/ATOM/issues/1272) splits `W_pre` at this
+  wait, as ruled on [#829](https://github.com/jgong5/ATOM/issues/829).
 - **With every host law at zero**, a forward exits at the latest of `now`, R4's release
   and, for an output forward, R1's: in a run of output forwards, forward `n` charges the
   previous output forward's device time and the first output forward charges 0, one
@@ -1402,7 +1411,7 @@ time.
 
 | rule | applies to | where | waits for | ATOM site |
 |---|---|---|---|---|
-| R1 | output forward, single stage | after launch; before launch with MTP | the previous output forward's `target_end` | `tokenIDProcessor.recv_async_output`, from `prepare_sampled_ids` |
+| R1 | output forward, single stage | after launch; before launch with MTP | the previous output forward's `target_end` | `tokenIDProcessor.recv_async_output`, from `prepare_sampled_ids`; with MTP, `tokenIDProcessor.recv_mtp_status_async`, from `prepare_input_ids` in `ModelRunner.prepare_model` |
 | R4 | every forward, single stage | forward entry | `end[n-2]` | `ModelRunner._gate_staging_reuse` |
 | R6 | every forward, PP | forward entry | this stage's `end[n-pp]` | `ModelRunner._advance_forward_vars`, the `forward_vars` ring |
 | R7 | non-first PP stage | device start, host launch | the upstream stage's `end`, and its host send | the `PPStageTransport` receives (`atom/distributed/pp_transport.py`) |
@@ -1416,17 +1425,17 @@ Stage 2 builds R1 and R4 ([#825](https://github.com/jgong5/ATOM/issues/825)). R6
 come with the stage sends ([#468](https://github.com/jgong5/ATOM/issues/468)), and so does R7
 as one wait: the stage loop receives `pp_data` before the forward, so host launch and
 device start both wait for the whole receive, where R7 holds only the device for the
-tensors. The MTP split and the PP=2 record that gates R6 to R8 are
-[#829](https://github.com/jgong5/ATOM/issues/829)'s; until the split lands, an MTP
-forward refuses.
+tensors. R7's host side and the PP=2 record that gates R6 to R8 are
+[#1200](https://github.com/jgong5/ATOM/issues/1200)'s; a simulated run refuses a
+speculative config until [#1090](https://github.com/jgong5/ATOM/issues/1090).
 
 **What-ifs.** The run-file key `host.skip` zeroes the named segments. Such a run is a
 what-if: never graded, and refused by the graders.
 
 **Measured, not hooked.** The parity recorder, `RecordingModelRunner`
 (`atom/compass/parity/runner.py`), stamps host time around the staging gate, the launch
-and the R1 wait, and records device events at `run_model` entry and at the forward's
-exit, drained with `query()`, never `synchronize()`
+and the R1 wait (with MTP also the draft copy wait), and records device events at
+`run_model` entry, with MTP at the target's end, and at the forward's exit, drained with `query()`, never `synchronize()`
 ([#824](https://github.com/jgong5/ATOM/issues/824)). It edits no ATOM file.
 
 **The recurrence's own check, provisional.** Fed each real record's measured device
