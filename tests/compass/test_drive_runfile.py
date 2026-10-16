@@ -244,3 +244,109 @@ def test_the_step_roofline_reads_the_models_parameter_count(monkeypatch, tmp_pat
 
     assert run["parameter_count"] == 27_000_000_000
     assert isinstance(r.compass_backend, StepFallbackBackend)
+
+
+#: #971's prefill and decode sides: the fields their engine configs differ in.
+SIDES = {
+    "P": {
+        "enable_tbo": True,
+        "capture_sizes": [1, 2, 3, 4, 5, 6, 7, 8, 16, 32, 48, 64, 128, 256, 512],
+        "env": {"GPU_MAX_HW_QUEUES": "5", "ATOM_NUMA_BIND": "1"},
+    },
+    "D": {"enable_tbo": False, "capture_sizes": [1, 2, *range(4, 257, 4)], "env": {}},
+}
+BOUNDS_971 = {"max_num_seqs": 512, "max_num_batched_tokens": 16384}
+
+
+def as_side(monkeypatch, env):
+    for name in SIDES["P"]["env"]:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+
+def planted_pair(tmp_path, monkeypatch):
+    """Per side: a runner under its engine config and environment, and the
+    tokens of a step linear law and host laws fitted under it, each naming the
+    side in its provenance or its prefill coefficient."""
+    pair = {}
+    for i, (name, side) in enumerate(SIDES.items()):
+        as_side(monkeypatch, side["env"])
+        config = {k: v for k, v in side.items() if k != "env"}
+        r = deployment(tmp_path, **BOUNDS_971, **config)
+        engine = json.dumps(keyed(r.config), sort_keys=True)
+        key = {**NEW_KINDS[Kind.STEP_LINEAR_LAW], "engine_config": engine}
+        params = {**law(), "provenance": name}
+        fitted = published(tmp_path, r, Kind.STEP_LINEAR_LAW, key, params)
+        host = {**compass_run.host_key(r.config), "machine_spec": SPEC_DIGEST}
+        laws = {**LAWS, "prefill": {"E": [i, 0, 0]}}
+        params = {"key": host, "laws": laws}
+        hosts = published(tmp_path, r, Kind.HOST_LAWS, host_laws_key(r), params)
+        pair[name] = (r, fitted.key.token(), hosts.key.token())
+    return pair
+
+
+def test_each_side_installs_the_law_and_host_laws_fitted_under_its_engine_config(
+    monkeypatch, tmp_path
+):
+    pair = planted_pair(tmp_path, monkeypatch)
+    flags = [
+        *("--step-linear", pair["P"][1], "--step-linear", pair["D"][1]),
+        *("--host-laws", pair["P"][2], "--host-laws", pair["D"][2]),
+    ]
+    run = build(tmp_path, *flags)
+
+    for i, (name, (r, _, _)) in enumerate(pair.items()):
+        as_side(monkeypatch, SIDES[name]["env"])
+        install(tmp_path, monkeypatch, run, r)
+        assert r.compass_backend.law.fitted_on == name
+        assert r.compass_host.laws["prefill"] == {"E": [i, 0, 0]}
+    backend = run["backend"]["provenance"]
+    assert [e["inputs"] for e in backend["entries"]] == [REPORT["provenance"]] * 2
+    assert backend["inputs"] == REPORT["provenance"] * 2
+
+
+@pytest.mark.parametrize("key", [compass_run.STEP_LINEAR, "host"])
+def test_a_process_no_entry_was_fitted_under_refuses_naming_each_entrys_fields(
+    monkeypatch, tmp_path, key
+):
+    pair = planted_pair(tmp_path, monkeypatch)
+    (tmp_path / "stub.json").write_text(json.dumps(dataclasses.asdict(Coefficients())))
+    index = 2 if key == "host" else 1
+    flag = "--host-laws" if key == "host" else "--step-linear"
+    flags = [flag, pair["P"][index], flag, pair["D"][index]]
+    stub = ["--step-stub", str(tmp_path / "stub.json")] if key == "host" else []
+    run = build(tmp_path, *stub, *flags)
+    # P's ladder and TBO under D's environment.
+    as_side(monkeypatch, SIDES["D"]["env"])
+
+    with pytest.raises(ValueError) as e:
+        install(tmp_path, monkeypatch, run, pair["P"][0])
+    assert str(e.value) == (
+        f"no {key} entry was fitted under this engine config: entry 0 in "
+        "['env.ATOM_NUMA_BIND', 'env.GPU_MAX_HW_QUEUES']; entry 1 in "
+        "['enable_tbo', 'ladder']"
+    )
+
+
+def test_two_laws_fitted_under_one_engine_config_refuse_naming_what_differs(
+    monkeypatch, tmp_path
+):
+    r = deployment(tmp_path)
+    engine = json.dumps(keyed(r.config), sort_keys=True)
+    tokens = []
+    for form in ("fixed+tokens+seqs", "history"):
+        key = {**NEW_KINDS[Kind.STEP_LINEAR_LAW], "engine_config": engine, "form": form}
+        params = {**law(), "provenance": form}
+        tokens += [
+            "--step-linear",
+            published(tmp_path, r, Kind.STEP_LINEAR_LAW, key, params).key.token(),
+        ]
+    run = build(tmp_path, *tokens)
+
+    with pytest.raises(
+        ValueError,
+        match=r"^2 step_linear entries were fitted under "
+        r"this engine config, and they differ in \['provenance'\]$",
+    ):
+        install(tmp_path, monkeypatch, run, r)

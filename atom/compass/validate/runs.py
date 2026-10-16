@@ -63,7 +63,7 @@ from pathlib import Path
 from scipy.stats import ks_2samp
 
 from atom.compass.parity.served import served
-from atom.compass.run import STEP_GRID
+from atom.compass.run import STEP_GRID, entries
 
 EXPORT = "artifacts/profile_export_aiperf.json"
 #: The export of the client run a `record` or `run` directory grades.
@@ -211,7 +211,7 @@ def _read(cell) -> dict:
     run = json.loads(path.read_text()) if path.exists() else {}
     if "format_version" in run:
         steps, traces = _client_run(cell, run)
-    elif run.get("host", {}).get("skip"):
+    elif any(h.get("skip") for h in entries(run, "host")):
         raise ValueError(f"{cell} skips host segments; a what-if run is not graded")
     else:
         steps, traces = _steps(cell), None
