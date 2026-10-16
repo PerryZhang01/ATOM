@@ -16,9 +16,10 @@ refused, naming every reason, when steps of requests it did not send precede
 its own: it is then not its server's first client run, and meets the prefix
 cache an earlier one left. A simulated run, whose run.json holds `run_file`,
 is also refused when it skips host segments, or its run file has no host laws
-and so prices no host time; when the step roofline was on; when the run
-refused anything; when it ran the step grid without a passed coverage check;
-and when its backend's fit inputs were profiled or served a trace it served.
+and so prices no host time; when the step roofline was on; when its first
+client run refused anything, or has no summary to say; when it ran the step
+grid without a passed coverage check; and when its backend's fit inputs were
+profiled or served a trace it served.
 
 The tolerance of a metric is the real runs' own spread: its distance between
 every ordered pair of real runs, at most. A metric's result is its distance
@@ -184,14 +185,16 @@ def _client_run(cell, run) -> tuple[list[dict], list[str]]:
 def _not_graded(run, traces) -> list[str]:
     """Why a simulated run, `run` its run.json, whose client run served
     `traces`, is not graded."""
-    why, refused, coverage = [], run["refusals"], run["coverage"]
+    why, refused, coverage = [], run.get("refusals"), run["coverage"]
     if run["skip"]:
         why.append(f"it skips host segments {run['skip']}, a what-if run")
     if "host" not in run["run_file"]:
         why.append("its run file has no host laws, so it prices no host time")
     if run["step_roofline"]:
         why.append("the step roofline was on")
-    if refused["count"]:
+    if refused is None:
+        why.append("its first client run has no summary, so its refusals are unknown")
+    elif refused["count"]:
         why.append(f"it refused {refused['count']}: {refused['reasons']}")
     if STEP_GRID in run["run_file"] and not (coverage and not coverage["uncovered"]):
         why.append("it ran the step grid without a passed coverage check")
