@@ -10,7 +10,7 @@ import json
 from types import SimpleNamespace
 
 import torch
-from test_memory_readings import CONFIG_JSON, MAX_NUM_BATCHED_TOKENS
+from test_memory_readings import CONFIG_JSON, MAX_NUM_BATCHED_TOKENS, with_readings
 from test_vertical_slice import _run_file
 from transformers import PretrainedConfig
 
@@ -57,6 +57,7 @@ def _built(monkeypatch, tmp_path):
             kv_transfer_config={},
         ),
     )
+    with_readings(runner, tmp_path / "store")
     NonAllocatingRunner._build_and_load_model(runner, TiedPacked)
     return runner
 

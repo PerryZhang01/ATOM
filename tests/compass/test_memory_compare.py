@@ -422,29 +422,26 @@ def test_an_absent_term_is_not_a_term_of_zero_bytes(spec, qwen):
     )
 
 
-def test_the_term_that_cannot_discharge_its_gate_while_agreeing_exactly(spec, qwen):
-    """Every recorded term equals its prediction, and one gate still does not close.
+def test_every_term_agreeing_exactly_discharges_its_gate(spec, qwen):
+    """Every recorded term equals its prediction, and every gate closes.
 
-    `activations` is a declared formula over one live layer, and even a traced
-    graph without the invisible-scratch table would not be enough to discharge
-    the 10% gate on it. `weights`, read off a meta build, discharges its gate.
+    `weights` is read off a meta build and the rest off the entry, so no term
+    is declared; the entry's record is not the recording's.
     """
     prediction = live_prediction(spec, qwen)
     comparison = compare(prediction, agreeing_recording(prediction))
 
-    by_name = {t.name: t for t in comparison.compared}
     assert all(t.delta_bytes == 0 for t in comparison.compared)
-    assert {t.name for t in comparison.not_discharged()} == {"activations"}
+    assert not comparison.not_discharged()
     assert not comparison.failures()
     assert {t.name for t in comparison.compared if t.verdict is Verdict.PASS} == {
         "weights",
+        "buffers",
         "load residue",
         "persistent",
+        "activations",
         "driver and collective reserve",
     }
-
-    activations = by_name["activations"].why
-    assert "liveness walk" in activations and "invisible-scratch" in activations
 
 
 def test_a_declared_term_can_fail_its_gate_even_though_it_cannot_pass_one():
@@ -975,7 +972,7 @@ def test_a_term_compared_with_its_own_source_run_is_not_passed(tmp_path, qwen, f
     hand_in, readings = _hand_in(tmp_path, qwen, record)
     # The activations come off the entry, and the entry names its run.
     by_name = {t.name: t for t in readings.peak_torch.terms}
-    assert by_name["activations"].method is Method.ESTIMATED
+    assert by_name["activations"].method is Method.MEASURED
     assert by_name["activations"].records == (record,)
 
     comparison = check.parts(hand_in, source)[0]

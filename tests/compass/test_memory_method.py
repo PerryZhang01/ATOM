@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Each memory term's method, site by site, from the origin of what it reads."""
 
+import copy
 import json
 import pathlib
 
@@ -27,7 +28,9 @@ from atom.compass.spec import MachineSpec
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 HJBOG39 = ROOT / "scripts" / "compass" / "machines" / "mi308x-hjbog39.json"
-SPEC_TERMS = ("capacity", "driver and collective reserve", "load residue", "persistent")
+SPEC_TERMS = ("capacity",)
+#: The terms the run's `memory_readings` entry gives, measured on any spec.
+ENTRY_TERMS = ("driver and collective reserve", "load residue", "persistent")
 
 
 @pytest.fixture(scope="module")
@@ -55,8 +58,11 @@ def test_a_spec_field_used_as_the_term_takes_its_method_from_its_origin(
     qwen, origin, method
 ):
     for tp_width in (1, 2):
-        terms = _spec_terms(readings_at(spec_of(origin), qwen, tp_width))
+        readings = readings_at(spec_of(origin), qwen, tp_width)
+        terms = _spec_terms(readings)
         assert {t.method for t in terms.values()} == {method}, tp_width
+        every = {t.name: t for r in readings.as_dict().values() for t in r.terms}
+        assert {every[name].method for name in ENTRY_TERMS} == {Method.MEASURED}
         if method is Method.DECLARED:
             for term in terms.values():
                 assert f"is {origin} in the machine spec" in term.note
@@ -118,9 +124,12 @@ def test_only_an_estimated_term_can_be_validated():
 
 def test_a_reading_as_one_term_combines_its_terms_methods(qwen):
     peak = readings_at(spec_of("probed"), qwen, 1).peak_torch
-    term = peak.as_term()
+    assert peak.as_term().method is Method.ESTIMATED
+    full = copy.deepcopy(qwen)
+    del full.partial_rotary_factor
+    term = readings_at(spec_of("probed"), full, 1).peak_torch.as_term()
     assert term.method is Method.DECLARED
-    assert "It sums activations, which are declared" in term.note
+    assert "It sums buffers, which are declared" in term.note
     measured = readings_at(spec_of("probed"), qwen, 1).non_torch.as_term()
     assert measured.method is Method.MEASURED and not measured.note
 

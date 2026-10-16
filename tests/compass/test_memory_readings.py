@@ -69,7 +69,7 @@ from atom.compass.memory import (
     predicts,
     reserves,
 )
-from atom.compass.run import _config_json
+from atom.compass.run import _config_json, _width_keys
 from atom.compass.run import memory as entry
 from atom.compass.spec import MachineSpec, SpecRefusal
 from atom.config import get_hf_config
@@ -215,7 +215,7 @@ def publish_readings(store, config, document=DOCUMENT, readings=READINGS[1]):
     """`config`'s entry in the store at `store`, one member a rank, keyed and
     conditioned as `compass measure memory` publishes it on the platform
     `document` states; the one already there, if there is one."""
-    machine = MachineSpec.from_mapping(copy.deepcopy(document))
+    machine = MachineSpec.from_mapping(_width_keys(copy.deepcopy(document)))
     fields = entry.key_fields(config)
     key = Key.of(
         Kind.MEMORY_READINGS, machine_spec=machine_spec_digest(machine), **fields
@@ -261,7 +261,8 @@ WORKER = {
 
 def with_readings(runner, store, readings=READINGS[1], document=DOCUMENT):
     """`runner`, a test's worker, given what its memory key reads and it does
-    not state, with its configuration's entry published in `store`."""
+    not state, with its configuration's entry, holding `readings` unless they
+    are None, published in `store`."""
     config = runner.config
     for name, value in WORKER.items():
         if not hasattr(config, name):
@@ -272,7 +273,8 @@ def with_readings(runner, store, readings=READINGS[1], document=DOCUMENT):
         config.parallel_config.pipeline_parallel_rank = 0
     if not hasattr(runner, "rank"):
         runner.rank = 0
-    publish_readings(store, config, document, readings)
+    if readings is not None:
+        publish_readings(store, config, document, readings)
     return runner
 
 

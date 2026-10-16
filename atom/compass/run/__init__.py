@@ -167,7 +167,9 @@ FRONTEND, ENGINE, TRAFFIC = LpId("frontend"), LpId("engine"), LpId("traffic")
 ROUTER = LpId("router")
 ATOM_RUNNER = "atom.model_engine.model_runner.ModelRunner"
 #: Keys that differ between two runs of one configuration, kept out of its name.
-PER_RUN = ("clock_endpoint", "out_dir", "client_runs", "router")
+#: A memory readings store is a place: the entry a run reads is keyed by the
+#: configuration and the machine spec, which the name holds.
+PER_RUN = ("clock_endpoint", "out_dir", "client_runs", "router", "memory_readings")
 LP_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
     "lp-{}.json",  # by LP name, or <lp>.<member> for a member
     "step_table.txt",

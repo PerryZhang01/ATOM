@@ -5,8 +5,8 @@
 The run file's ``memory_readings`` is the store's root. The key is the
 machine spec's digest and `key_fields`, read off the resolved ATOM config: the
 served config.json's digest, the parallel layout, and as sorted JSON the
-engine config the readings move with, `step_grid.keyed`'s fields, the
-scheduler bounds and the memory utilization. `compass measure memory`
+engine config the readings move with, `step_grid.keyed`'s fields and the
+scheduler bounds. `compass measure memory`
 publishes one member per rank, ``readings.<rank>.json``, holding
 `ENTRY_FIELDS`; each rank reads its own. A configuration with no entry
 refuses, naming its key and the fields the nearest entry differs in, and so
@@ -63,7 +63,6 @@ def key_fields(config) -> dict:
     from atom.compass.run.step_grid import BOUNDS, keyed
 
     engine = keyed(config) | {name: getattr(config, name) for name in BOUNDS}
-    engine["gpu_memory_utilization"] = config.gpu_memory_utilization
     return {
         "model": _file_digest(config.model, "config.json"),
         **topology(config).widths,
