@@ -11,14 +11,16 @@ A directory `cctraces_sim.sh` wrote is graded whole, and refused when its
 run.json skips host segments. In one `record` or `run` wrote, whose run.json
 states a `format_version`, the graded client run is the one whose export is
 `artifacts/client_run.json`, split from the record by `parity.served`: only
-its steps are graded, and every run must have served the same traces. It is
-refused, naming every reason, when steps of requests it did not send precede
-its own: it is then not its server's first client run, and meets the prefix
-cache an earlier one left. A simulated run, whose run.json holds `run_file`,
-is also refused when it skips host segments, or its run file has no host laws
-and so prices no host time; when the step roofline was on; when the run
-refused anything; when it ran the step grid without a passed coverage check;
-and when its backend's fit inputs were profiled or served a trace it served.
+its steps are graded, and every run must have served the same traces. A step
+holding only requests its export names as its warmup's (`warmup`) is its
+warmup, and not graded. It is refused, naming every reason, when steps of any
+other request precede its own: it is then not its server's first client run,
+and meets the prefix cache an earlier one left. A simulated run, whose
+run.json holds `run_file`, is also refused when it skips host segments, or its
+run file has no host laws and so prices no host time; when the step roofline
+was on; when the run refused anything; when it ran the step grid without a
+passed coverage check; and when its backend's fit inputs were profiled or
+served a trace it served.
 
 The tolerance of a metric is the real runs' own spread: its distance between
 every ordered pair of real runs, at most. A metric's result is its distance
@@ -166,19 +168,29 @@ def _end_to_end(export) -> dict:
     return {name: export[k][stat] for name, (k, stat) in END_TO_END.items()}
 
 
-def _client_run(cell, run) -> tuple[list[dict], list[str]]:
-    """The steps of the client run `cell` grades and the traces they served;
-    refuses, naming every reason, a run grading does not take."""
+def _client_run(cell, run) -> tuple[list[dict], list[str], dict]:
+    """The steps of the client run `cell` grades, the traces they served, and
+    its warmup: how many requests its export names as the warmup's, and how
+    many steps hold only those; refuses, naming every reason, a run grading
+    does not take."""
     steps = _steps(cell)
-    (split,) = served(Path(cell) / "steps", [Path(cell) / CLIENT_RUN]).values()
-    mine = [s["client_run"] == 0 for s in split if not s["is_dummy_run"]]
-    traces = sorted({t for s in split if s["client_run"] == 0 for t in s["traces"]})
-    why = [] if mine[0] else ["steps of requests it did not send precede its own"]
+    export = json.loads((Path(cell) / CLIENT_RUN).read_text())
+    warmup = set(export.get("warmup") or ())
+    (split,) = served(Path(cell) / "steps", [export["requests"]]).values()
+    split = [s for s in split if not s["is_dummy_run"]]
+    ids = {k: v for s in split for k, v in s.get("response_ids", {}).items()}
+    held = [{ids.get(r[0], r[0]) for r in s["batch"]} for s in split]
+    warm = [bool(names) and names <= warmup for names in held]
+    mine = [s["client_run"] == 0 for s in split]
+    traces = sorted({t for s, m in zip(split, mine) if m for t in s["traces"]})
+    before = warm[: mine.index(True)]
+    why = [] if all(before) else ["steps of requests it did not send precede its own"]
     if "run_file" in run:
         why += _not_graded(run, traces)
     if why:
         raise ValueError(f"{cell} is not graded: " + "; ".join(why))
-    return [s for s, m in zip(steps, mine) if m], traces
+    graded = [s for s, m in zip(steps, mine) if m]
+    return graded, traces, {"requests": len(warmup), "steps": sum(warm)}
 
 
 def _not_graded(run, traces) -> list[str]:
@@ -203,15 +215,21 @@ def _not_graded(run, traces) -> list[str]:
     return why
 
 
-def _read(cell) -> dict:
+def graded(cell) -> tuple[list[dict], list[str] | None, dict | None]:
+    """The steps `cell` grades; the traces they served, None for a directory
+    `cctraces_sim.sh` wrote; and its warmup as `_client_run` gives it, None
+    where it is graded whole."""
     path = Path(cell) / "run.json"
     run = json.loads(path.read_text()) if path.exists() else {}
     if "format_version" in run:
-        steps, traces = _client_run(cell, run)
-    elif run.get("host", {}).get("skip"):
+        return _client_run(cell, run)
+    if run.get("host", {}).get("skip"):
         raise ValueError(f"{cell} skips host segments; a what-if run is not graded")
-    else:
-        steps, traces = _steps(cell), None
+    return _steps(cell), None, None
+
+
+def _read(cell) -> dict:
+    steps, traces, _warmup = graded(cell)
     export = json.loads((Path(cell) / EXPORT).read_text())
     return {
         "counts": _counts(steps, export),

@@ -248,10 +248,11 @@ def test_a_cell_of_renamed_names_is_refused_naming_their_names_now(capsys, tmp_p
         main([str(cell)])
 
 
-def _as_recorded(cell):
+def _as_recorded(cell, warmup=()):
     """Lay `cell`'s runs out as `record` and `run` write them: each request
     named at its last prefill row, by key `k<id>` and response id `id-<id>`;
-    an export naming them all, from trace `t<id>`; and run.json's identity,
+    an export naming them all, from trace `t<id>`, those in `warmup` as its
+    warmup's; and run.json's identity,
     with `run`'s grading entries for `step_linear/`, its law and host laws in
     its run file and its refusals its summary's."""
     for d in sorted(cell.iterdir()):
@@ -264,8 +265,11 @@ def _as_recorded(cell):
         for r, i in last.items():
             lines[i]["named"].append([r, f"k{r}", f"id-{r}"])
         path.write_text("".join(json.dumps(x) + "\n" for x in lines))
-        sent = {f"id-{r}": {"trace": f"t{r}", "sampling": {}} for r in last}
-        (d / CLIENT_RUN).write_text(json.dumps({"requests": sent}))
+        export = {"requests": {}, "warmup": {}}
+        for r in last:
+            part = "warmup" if r in warmup else "requests"
+            export[part][f"id-{r}"] = {"trace": f"t{r}", "sampling": {}}
+        (d / CLIENT_RUN).write_text(json.dumps(export))
         run = {"format_version": 2}
         if d.name == "step_linear":
             summary = json.loads((d / "summary.json").read_text())
@@ -292,7 +296,11 @@ def test_a_cell_record_and_run_wrote_grades_as_the_one_cctraces_sim_wrote(
     rows = _rows(capsys, tmp_path)
     _as_recorded(tmp_path / "c4")
 
-    assert _graded(capsys, tmp_path / "c4") == rows
+    graded = _graded(capsys, tmp_path / "c4")
+    stated = [graded.pop(k) for k in list(graded) if k[0].startswith("warmup ")]
+    assert graded == rows
+    # Each run says its export names no warmup; a `cctraces_sim.sh` run reads none.
+    assert stated == [["its export states no warmup", "-"]] * 4
 
 
 def test_a_refusal_in_the_client_run_record_and_run_wrote_refuses_the_cell(
@@ -317,3 +325,35 @@ def test_runs_record_and_run_wrote_that_served_other_traces_are_not_one_cell(
 
     with pytest.raises(ValueError, match=r"sent different traces; .*real1': \['t9'\]"):
         main([str(tmp_path / "c4")])
+
+
+def _warmed(capsys, cell, slow):
+    """A cell `record` and `run` wrote, request 0 every run's warmup: two steps
+    of its own before request 1's, `slow` times their price in every real run."""
+    steps = [([(200, 200, False)], None), ([(1, 200, True)], 1), *_steps()]
+    for i, ms in enumerate((100, 110, 105)):
+        _run(
+            cell / f"real{i}",
+            [(100, 1000, ms), (600, 0, 1.0)],
+            refusals=None,
+            steps=steps,
+            idle_after={1},
+            stretch={0: slow, 1: slow},
+        )
+    _run(cell / "step_linear", [(100, 1000, 120.0)], steps=steps, idle_after={1})
+    _as_recorded(cell, warmup={0})
+    return _graded(capsys, cell)
+
+
+def test_a_warmed_run_is_graded_on_its_profiling_steps_and_slow_warmup_moves_nothing(
+    capsys, tmp_path
+):
+    rows = _warmed(capsys, tmp_path / "at price", 1.0)
+
+    assert _warmed(capsys, tmp_path / "slow", 1000.0) == rows
+    for run in ("real0", "real1", "real2", "step_linear"):
+        assert rows[f"warmup {run}", "warmup"] == ["requests 1, steps 2", "not graded"]
+    # Cost prices the profiling steps alone: ten prefill chunks, ten decode steps.
+    assert rows["cost real0", "prefill validated"][0].startswith("10 steps")
+    assert rows["cost real0", "decode validated"][0].startswith("10 steps")
+    assert rows["cost real0", "left out"][0].endswith("warm steps, real s {}")
