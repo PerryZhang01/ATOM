@@ -6,14 +6,21 @@ Each cell is a step record in `steps/dp0.jsonl`, the JSON lines a runner
 writes, read by `runs._steps`, and aiperf's export in
 `artifacts/profile_export_aiperf.json`. `_recorded` adds what a `record` or
 `run` directory holds beside them: run.json's identity and grading entries,
-and the client run's export.
+and the client run's export. `_ran` has `compass run` write a simulated cell's
+grading entries, over the summaries a server that served its client runs
+wrote (`test_client_run_summary._serve`).
 """
 
 import collections
 import json
 
 import pytest
+from test_client_run_summary import CLIENT_RUNS, _serve
+from test_stop_between_client_runs import CLIENT_RUN as UNREFUSED
 
+from atom.compass import run as compass_run
+from atom.compass.drive import run as drive_run
+from atom.compass.drive import serve
 from atom.compass.validate.runs import CLIENT_RUN, _requests, grade, main
 
 EXPORT = {
@@ -375,3 +382,33 @@ def test_runs_that_served_different_traces_are_not_one_cell(tmp_path):
     with pytest.raises(ValueError, match="sent different traces") as refused:
         grade(real, simulated)
     assert str(refused.value).endswith(beyond)
+
+
+def _ran(monkeypatch, tmp_path, served):
+    """Three real cells, and a simulated one whose run.json `compass run`
+    wrote once its server, serving until stopped, served one client run per
+    entry of `served` and was stopped during the last."""
+    sim = _serve(monkeypatch, tmp_path / "sim", None, served, stop="bound")
+    run = json.loads((sim / "run.json").read_text()) | GRADED["run_file"]
+    run |= {"step_roofline": False, "backend": GRADED["provenance"]}
+    (sim / serve.RUN_FILE).write_text(json.dumps(run))
+    *real, simulated = (_recorded(c) for c in _four(tmp_path))
+    drive_run.write_grading(simulated, None)
+    return real, simulated
+
+
+def test_a_later_client_runs_refusal_does_not_refuse_the_first(monkeypatch, tmp_path):
+    real, simulated = _ran(monkeypatch, tmp_path, [UNREFUSED, CLIENT_RUNS[1]])
+
+    server = json.loads((simulated / compass_run.SUMMARY_FILE).read_text())
+    reasons = dict(server["schedule"]["refusals"]["reasons"])
+    assert "ended:frontend stopped by SIGTERM" in reasons and len(reasons) == 4
+    grade(real, simulated)
+
+
+def test_a_stop_during_the_first_client_run_refuses_it(monkeypatch, tmp_path):
+    real, simulated = _ran(monkeypatch, tmp_path, [UNREFUSED])
+
+    unknown = "its first client run has no summary, so its refusals are unknown"
+    with pytest.raises(ValueError, match=f"sim is not graded: {unknown}$"):
+        grade(real, simulated)

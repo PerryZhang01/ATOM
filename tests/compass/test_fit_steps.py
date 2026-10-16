@@ -250,6 +250,25 @@ def test_a_record_no_client_run_names_refuses_naming_it(tmp_path):
     assert not (tmp_path / "store").exists()
 
 
+@pytest.mark.parametrize(
+    "backend, named",
+    [
+        ("step-linear", "--sessions is read by step-grid, not step-linear"),
+        ("step-grid", "{b} is named by no --client-run, and --sessions keeps"),
+    ],
+)
+def test_sessions_refuse_off_step_grid_and_for_a_grid_input_no_client_run_names(
+    tmp_path, backend, named
+):
+    a, b = record(tmp_path / "a", 19), tmp_path / "b"
+    grid = ["--grid", b, "--grid-definition", "g"] if backend == "step-grid" else []
+    sessions = ["--sessions", "0:4", *clients(a)]
+
+    with pytest.raises(SystemExit, match=re.escape(named.format(b=b))):
+        fit(tmp_path, "fit steps", "--backend", backend, a, *grid, *sessions)
+    assert not (tmp_path / "store").exists()
+
+
 def test_a_dp_record_a_rank_of_which_gave_no_sample_refuses_at_its_width(tmp_path):
     a = record(tmp_path / "a", 19)
     idle_rank(a / "steps")

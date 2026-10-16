@@ -45,8 +45,23 @@ class _Processor:
         self.calls += 1
         return handle
 
+    def recv_mtp_status_async(self):
+        return None, None
 
-def _recorded(warmup):
+    def prepare_sampled_ids(self, batch):
+        return self.recv_async_output([])
+
+    def recv_async_output_draft(self):
+        return []
+
+
+TARGET, DRAFT = 60_000, 9_000  # ns
+
+
+def _recorded(warmup, drafter=False):
+    """With `drafter`, an output forward also waits for the MTP status before
+    its launch, then calls `prepare_sampled_ids` right after
+    `forward_done_event` and waits for the draft copy, as ATOM does."""
     device = _Device()
     clock = iter(range(1, 10**9))
 
@@ -58,6 +73,8 @@ def _recorded(warmup):
             self.capture_sizes_np, self.enforce_eager = np.array(LADDER), False
             self.attn_metadata_builder = GRAPHABLE
             self.tokenID_processor = _Processor()
+            if drafter:
+                self.drafter = "mtp"
             self.exited = False
             self.forward(warmup)
 
@@ -68,10 +85,19 @@ def _recorded(warmup):
             return "logits"
 
         def forward(self, batch):
+            p, output = self.tokenID_processor, batch.produces_output()
             self._gate_staging_reuse()
+            if drafter and output:
+                p.recv_mtp_status_async()
+            self.next = "launch"
             assert self.run_model([], batch) == "logits"
-            if batch.produces_output():
-                assert self.tokenID_processor.recv_async_output([]) == []
+            self.next = "target"
+            if drafter and output:
+                p.prepare_sampled_ids(batch)
+                p.recv_async_output_draft()
+            elif output:
+                assert p.prepare_sampled_ids(batch) == []
+            self.next = "exit" if drafter and output else "busy"
             # The previous forward's exit event has completed, this one's has not.
             device.now = device.times[-2] if len(device.times) > 1 else -1
             return "ran"
@@ -84,12 +110,11 @@ def _recorded(warmup):
         def step_clock_ns():
             return next(clock)
 
-        @staticmethod
-        def device_event():
+        def device_event(self):
             # Launch after the previous exit, exit after the launch.
             last = device.times[-1] if device.times else 0
-            gap = BUSY + len(device.times) if len(device.times) % 2 else GAP
-            device.times.append(last + gap)
+            step = {"launch": GAP, "target": TARGET, "exit": DRAFT}
+            device.times.append(last + step.get(self.next, BUSY + len(device.times)))
             return _Event(device, device.times[-1])
 
     return _Recorded, device
@@ -121,10 +146,35 @@ def test_each_line_carries_its_host_stamps_and_device_window(tmp_path, monkeypat
         stamps = [step["t_enter_ns"], *step["t_gate_ns"], *step["t_launch_ns"]]
         stamps += step["t_recv_ns"] if output else []
         assert stamps == sorted(stamps) and stamps[-1] < step["t_exit_ns"]
-        assert ("t_recv_ns" in step) == output
+        assert ("t_recv_ns" in step) == output and "d_target_ns" not in step
         assert step["d_busy_ns"] == BUSY + 2 * n + 1
         assert step.get("d_gap_ns") == (GAP if n else None)
     assert runner.tokenID_processor.calls == 1 + sum(outputs)
     assert compare(tmp_path / "real", tmp_path / "simulated")["first_divergence"] == {
         0: None
     }
+
+
+def test_with_a_drafter_an_output_line_splits_its_device_window_at_the_target(
+    tmp_path, monkeypatch
+):
+    batches = _drive(tmp_path / "simulated", monkeypatch, {0: [0, 1]})[0][0]
+    recorded, device = _recorded(batches[-1], drafter=True)
+    device.tick = 10**12
+    monkeypatch.setenv(ENV, str(tmp_path / "real"))
+    runner = recorded(0, _config())
+    for b in batches:
+        runner.forward(b)
+    runner.exit()
+
+    outputs = [b.produces_output() for b in batches]
+    assert any(outputs) and not all(outputs)
+    for step, output in zip(read(tmp_path / "real")[0], outputs):
+        keys = {"t_mtp_ns", "t_recv_ns", "t_draft_recv_ns", "d_target_ns"}
+        assert keys <= step.keys() if output else not keys & step.keys()
+        if output:
+            assert (step["d_target_ns"], step["d_busy_ns"]) == (TARGET, TARGET + DRAFT)
+            stamps = [step["t_enter_ns"], *step["t_gate_ns"], *step["t_mtp_ns"]]
+            stamps += [*step["t_launch_ns"], *step["t_recv_ns"]]
+            stamps += [*step["t_draft_recv_ns"], step["t_exit_ns"]]
+            assert stamps == sorted(stamps)
