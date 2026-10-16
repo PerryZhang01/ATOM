@@ -48,7 +48,7 @@ IDENTITY = {
     "host_key": {"model": "sha256:c0f1", "host_cpu": "a host CPU"},
     "source": {"revision_kind": "tree", "revision": "5ca1ab1e"},
 }
-#: Two step stubs, so two backends.
+#: The default step stub and a constant one, each its own backend.
 STUBS = (Coefficients(), Coefficients.constant(2.0**-9, 2.0**-11))
 #: A planted server: it writes the record `PLANTED_RECORD` names where the
 #: driver's step record goes, answers ``/health`` once and exits.
