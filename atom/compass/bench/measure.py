@@ -367,7 +367,9 @@ def _read(name: str, store, client_runs, sessions, engine: dict, sampling: dict)
         )
     if sessions:
         chosen = set()
-        for trace in {r["trace"] for c in client_runs for r in requests(c).values()}:
+        for trace in sorted(
+            {r["trace"] for c in client_runs for r in requests(c).values()}
+        ):
             if len(number := re.findall(r"\d+", trace)) != 1:
                 raise ValueError(
                     f"--sessions selects traces by the number in their names, and "
