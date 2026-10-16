@@ -5,16 +5,14 @@ It answers the request types ATOM's lmcache adapters send, in lmcache's own MQ
 frames, with the reply payload the real server returns, and keeps the state
 that decides later hits: which chunks are resident, their LRU order, their read
 locks and the lock TTL, the byte budget and its eviction, and the per-request
-sessions. `LMCacheServer` holds no bytes, clock or socket: `LMCacheLP` owns the
-loop, the clock and the socket, and passes the time of each event in.
+sessions. It holds no bytes and binds no socket; the caller owns the loop, the
+clock and the socket, and passes the time of each event in.
 
 `handle` takes the frames a ROUTER socket receives (identity, request id,
 operation, payloads) at a job's start and returns the reply frames plus a
 callable to run at the job's end: a store's chunks become visible, and a
 retrieve's read locks are released, when its copy completes. `evict` is one
 tick of the server's eviction loop, which wakes every `EVICTION_INTERVAL_S`.
-`LMCacheLP` is the LP: its stations price each job, and its replies leave
-stamped at each job's end.
 
 What it does not reproduce. Every object group of a chunk is one entry, so
 `--separate-object-groups` and sliding-window groups price and hit as full
@@ -126,9 +124,6 @@ class LMCacheServer:
         self._hasher = TokenHasher(self.chunk_size, self.args.hash_algorithm)
         self.objects: OrderedDict[tuple, _Obj] = OrderedDict()  # LRU first
         self._staged: set[tuple] = set()
-        # Chunks the last request served hashed (a lookup) or copies (a store
-        # or retrieve), which its job is priced by.
-        self.chunks = 0
         self._prefetch: dict[str, int] = {}
         self._sessions: dict[str, _Session] = {}
         self._handlers: dict[str, Callable[..., tuple[Any, Callable]]] = {
@@ -149,23 +144,18 @@ class LMCacheServer:
     def request_types(self) -> tuple[str, ...]:
         return tuple(self._handlers)
 
-    def operation(self, frames: list[bytes]) -> str:
-        """The request type of the frames a ROUTER socket receives."""
-        return self._wire.decode_operation(frames[2])
-
     def handle(
         self, frames: list[bytes], now: float
     ) -> tuple[list[bytes], Callable[[float], None]]:
         """Serve one request at its job's start; return its reply frames and
         the effect to apply at its job's end."""
         identity, b_uid, b_op, *payloads = frames
-        op = self.operation(frames)
+        op = self._wire.decode_operation(b_op)
         handler = self._handlers.get(op)
         if handler is None:
             raise LMCacheRefusal(f"lmcache stand-in does not model request type {op!r}")
         spec = self._spec(op)
         args = self._mq.unwrap_request_payloads(payloads, list(spec.payload_types))
-        self.chunks = 0
         response, at_end = handler(*args, now=now)
         reply = [identity, b_uid, b_op]
         if response is not None:
@@ -246,7 +236,6 @@ class LMCacheServer:
         ):
             hit += 1
         held = [self._okey(key, r, h) for r in ranks for h in hashes[:hit]]
-        self.chunks = len(hashes)
         self._lock(held, readers, now)
         self._touch(held)
         s = self._session(key)
@@ -312,7 +301,6 @@ class LMCacheServer:
         if used > self.capacity:
             wanted = []  # one allocation for the whole store: all or nothing
         self._staged.update(wanted)
-        self.chunks = len(wanted)
 
         def admit(now: float) -> None:
             self._staged.difference_update(wanted)
@@ -341,7 +329,6 @@ class LMCacheServer:
         if len(readable) < len(keys):
             self._unlock(readable, 1)
             return (b"", False), _noop
-        self.chunks = len(keys)
         return (b"", True), lambda now: self._unlock(readable, 1)
 
 
@@ -361,22 +348,32 @@ class LMCacheLP:
 
     Each request released to it joins a station's queue in ``(arrival,
     channel, seq)`` order: the copy engine, `copy_width` servers pricing a
-    STORE or RETRIEVE as `copy` over the chunks it moves, or the request loop,
-    one server pricing a LOOKUP at ``lookup_s[0] + lookup_s[1]`` per prompt
-    chunk and any other request at `request_s`. A job is served at its start
-    and, at its end, applies its effect and sends its reply. The loop asks only
-    NER: `t` its next job end, its daemon deadline the eviction loop's next
-    tick. While it waits it answers at once the frames sent outside the run,
-    which carry no stamp: lmcache's startup and teardown requests.
+    STORE or RETRIEVE as `copy` over the chunks of its range, or the request
+    loop, one server pricing a LOOKUP at ``lookup_s[0] + lookup_s[1]`` per
+    prompt chunk and any other request at `request_s`. A job is served
+    (`LMCacheServer.handle`) at its start and, at its end, applies its effect
+    and sends its reply. The loop asks only NER: `t` its next job end, its
+    daemon deadline the eviction loop's next tick (`LMCacheServer.evict`).
+    While it waits it answers at once the frames sent outside the run, which
+    carry no stamp: lmcache's startup and teardown requests.
 
     A frame is ``[identity, header, request id, operation, payloads...]``, the
     header ``(channel, arrival, seq)`` as every wrapped socket sends it.
     """
 
     def __init__(self, rt, sock, server, *, lookup_s, request_s, copy, copy_width=1):
+        import msgspec
         import zmq
+        from lmcache.v1.multiprocess.rpc import get_rpc_spec
+        from lmcache.v1.multiprocess.transport.zmq_impl import mq, wire
 
         self.zmq, self.rt, self.sock, self.server = zmq, rt, sock, server
+        self._decode, self._spec, self._mq, self._wire = (
+            msgspec.msgpack.decode,
+            get_rpc_spec,
+            mq,
+            wire,
+        )
         self.lookup_s, self.request_s, self.copy = lookup_s, request_s, copy
         # ponytail: each copy server moves at the link's whole rate; share it
         # between them if a measured copy engine says they contend.
@@ -415,8 +412,8 @@ class LMCacheLP:
         )
         for _, ch, seq in released:
             frames = self.inbox.pop((ch, seq))[1]
-            station = "copy" if self.server.operation(frames) in COPIES else "request"
-            self.queued[station].append((ch, frames))
+            op = self._wire.decode_operation(frames[2])
+            self.queued["copy" if op in COPIES else "request"].append((ch, op, frames))
         while True:
             while self.jobs and self.jobs[0][0] <= now:
                 _, _, station, ch, reply, effect = heapq.heappop(self.jobs)
@@ -429,9 +426,9 @@ class LMCacheLP:
                 self.next_tick += EVICTION_INTERVAL_S
             for station, queue in self.queued.items():
                 while queue and self.busy[station] < self.width[station]:
-                    ch, frames = queue.popleft()
+                    ch, op, frames = queue.popleft()
                     reply, effect = self.server.handle(frames, now)
-                    end = now + self._price(self.server.operation(frames))
+                    end = now + self._price(op, frames, reply)
                     job = (end, self.started, station, ch, reply, effect)
                     heapq.heappush(self.jobs, job)
                     self.started += 1
@@ -439,15 +436,17 @@ class LMCacheLP:
             if not (self.jobs and self.jobs[0][0] <= now):
                 return
 
-    def _price(self, op: str) -> float:
-        n = self.server.chunks
-        if op in COPIES:
-            return self.copy.duration_s(n)
-        return (
-            self.lookup_s[0] + self.lookup_s[1] * n
-            if op == "lookup"
-            else self.request_s
-        )
+    def _price(self, op: str, frames: list[bytes], reply: list[bytes]) -> float:
+        if op not in ("lookup", *COPIES):
+            return self.request_s
+        types = list(self._spec(op).payload_types)
+        key = self._mq.unwrap_request_payloads(frames[3:], types)[0]
+        # ponytail: whole chunks of the range, resident ones too; count what
+        # the server copies if a parity sample shows the difference.
+        n = (key.end - key.start) // self.server.chunk_size
+        if op == "lookup":
+            return self.lookup_s[0] + self.lookup_s[1] * n
+        return self.copy.duration_s(n if self._decode(reply[3])[1] else 0)
 
     def _pull(self) -> None:
         """Read every frame already here without blocking: answer one sent
