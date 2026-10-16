@@ -770,10 +770,14 @@ def runner(model_runner, tree) -> None:
             pp_rank = config.parallel_config.pipeline_parallel_rank
             start, end = get_pp_indices(depth, pp_rank, pp)
             text = getattr(hf, "text_config", hf)
-            share = (
-                (end - start) / depth,
-                paged_layers(text, start, end) / paged_layers(text, 0, depth),
-            )
+            paged = paged_layers(text, 0, depth)
+            if not paged:
+                raise ValueError(
+                    "a pipeline stage prices its history terms on its share of the "
+                    "paged layers, and this stack has no layer that holds a cache "
+                    "of every past token"
+                )
+            share = ((end - start) / depth, paged_layers(text, start, end) / paged)
         backend = StepStubBackend(
             Coefficients(**run["step_stub"]),
             Parallelism(tp_size=tp, pp_size=pp),

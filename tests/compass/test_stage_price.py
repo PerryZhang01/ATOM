@@ -11,9 +11,9 @@ import json
 from types import SimpleNamespace
 
 import pytest
-import torch
 from test_dp_step_max import prefill, runner
 from test_memory_readings import CONFIG_JSON, META_8B
+from test_run_step_grid import deployment
 from test_vertical_slice import _run_file
 from transformers import PretrainedConfig
 
@@ -27,38 +27,29 @@ STEP = BatchView(
         RequestShape(512, 2048, False),
         RequestShape(1, 4000, True),
         RequestShape(1, 9000, True),
-    )
+    ),
+    capture_rung=4,
 )
 
+# Terms that grow with each request's history, charged on the paged layers.
+HISTORY = {
+    "prefill.query_square",
+    "prefill.query_cached",
+    "decode.context",
+    "decode.graph_padding",
+}
 
-def stage_backend(monkeypatch, tmp_path, pp, pp_rank):
+
+def stage_backend(monkeypatch, tmp_path, pp, pp_rank, **config):
     """The backend `run.runner` installs on stage `pp_rank` of `pp`."""
     monkeypatch.setenv(compass_run.ENV, str(_run_file(tmp_path)))
-    (tmp_path / "config.json").write_text(CONFIG_JSON.read_text())
-    hf = PretrainedConfig.from_dict(json.loads(CONFIG_JSON.read_text())["text_config"])
-    r = SimpleNamespace(
-        config=SimpleNamespace(
-            model=str(tmp_path),
-            hf_config=hf,
-            tensor_parallel_size=1,
-            pipeline_parallel_size=pp,
-            enable_dp_attention=False,
-            enable_expert_parallel=False,
-            parallel_config=SimpleNamespace(
-                data_parallel_size=1,
-                data_parallel_rank=0,
-                pipeline_parallel_rank=pp_rank,
-            ),
-            max_num_batched_tokens=8192,
-            max_num_seqs=256,
-            gpu_memory_utilization=0.9,
-            torch_dtype=torch.bfloat16,
-            enforce_eager=True,
-            compilation_config=SimpleNamespace(cudagraph_capture_sizes=[1]),
-            capture_sizes=[1],
-            kv_transfer_config={},
+    r = deployment(
+        tmp_path,
+        pipeline_parallel_size=pp,
+        parallel_config=SimpleNamespace(
+            data_parallel_size=1, data_parallel_rank=0, pipeline_parallel_rank=pp_rank
         ),
-        _piecewise_cg_active=lambda: False,
+        **config,
     )
     compass_run.runner(r, META_8B)
     return r.compass_backend
@@ -82,13 +73,24 @@ def test_three_stages_sum_to_the_whole_model_and_context_follows_paged_layers(
         (22 / 64, 5 / 16),
         (21 / 64, 6 / 16),
     ]
+    assert whole["decode.graph_padding"] > 0
     priced = [terms(b) for b in stages]
     for name, seconds in whole.items():
         assert sum(p[name] for p in priced) == pytest.approx(seconds), name
-    last = priced[2]
-    assert last["decode.context"] == pytest.approx(whole["decode.context"] * 6 / 16)
-    assert last["prefill.tokens"] == pytest.approx(whole["prefill.tokens"] * 21 / 64)
+    for b, p in zip(stages, priced):
+        layer, paged = b.stage_share
+        for name, seconds in p.items():
+            share = paged if name in HISTORY else layer
+            assert seconds == pytest.approx(whole[name] * share), name
     assert "stage share" in stages[2].describe()
+
+
+def test_a_stack_with_no_paged_layer_is_refused_naming_it(monkeypatch, tmp_path):
+    text = json.loads(CONFIG_JSON.read_text())["text_config"]
+    text["layer_types"] = ["linear_attention"] * text["num_hidden_layers"]
+    hf = PretrainedConfig.from_dict(text)
+    with pytest.raises(ValueError, match="no layer that holds a cache"):
+        stage_backend(monkeypatch, tmp_path, 3, 0, hf_config=hf)
 
 
 def test_a_stage_backend_prices_its_forward_at_pipeline_width_two():
