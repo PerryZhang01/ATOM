@@ -487,7 +487,9 @@ def _launch_lmcache(config, run: dict, side: str | None) -> None:
         return
     if side == "D":
         raise ValueError("LP lmcache serves the prefill side; this is the decode side")
-    writers = lm.tensor_parallel_size // _tp_replication_factor(lm)
+    # Under DP-attention each DP rank runs at TP 1.
+    tp = 1 if config.enable_dp_attention else config.tensor_parallel_size
+    writers = tp // min(tp, _tp_replication_factor(lm))
     if run["lmcache"].get("writers", 1) != writers:
         raise ValueError(
             f"the run file's lmcache writers is {run['lmcache'].get('writers', 1)}; "
@@ -497,7 +499,6 @@ def _launch_lmcache(config, run: dict, side: str | None) -> None:
     from atom.compass.backends import KvGeometry, Parallelism
     from atom.compass.kv.lmcache_server import parse_server_flags
 
-    tp = 1 if config.enable_dp_attention else config.tensor_parallel_size
     chunk_bytes = KvGeometry.from_hf_config(
         config.hf_config,
         block_size=parse_server_flags(run["lmcache"]["server"]).chunk_size,

@@ -16,6 +16,7 @@ The runs need a driver and `ATOM_COMPASS_SLICE_MODEL`, as in
 `test_vertical_slice`, and as many GPUs in ``HIP_VISIBLE_DEVICES`` as DP ranks.
 """
 
+import functools
 import json
 import math
 import os
@@ -27,6 +28,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import pytest
+from test_lmcache_lp import _config, _run
 from test_lmcache_mp_engine import _machine
 from test_vertical_slice import (
     CONSTANT,
@@ -174,8 +176,28 @@ def runs(request, tmp_path_factory):
     return dp, [run_scenario(root, seed, dp, lmcache_port) for seed in ("1", "2")]
 
 
-def _rows(table: str):
-    return [line.split() for line in table.splitlines()[1:]]
+def _releases(table: str, lp=None) -> list[tuple[float, str, int]]:
+    """``(arrival, channel, seq)`` of each message released, to `lp` alone if named."""
+    return sorted(
+        (float(f[2]), f[4], int(f[5]))
+        for f in map(str.split, table.splitlines()[1:])
+        if f[3] == "release" and lp in (None, f[0])
+    )
+
+
+def station_timeline(table: str, ipc: float) -> dict[str, list[float]]:
+    """Each reply channel's arrivals, worked out from the requests LP lmcache
+    was released alone: each station starts a job at the request's arrival or
+    once its previous job ends, whichever is later, in ``(arrival, channel,
+    seq)`` order; a request-loop job takes `STATION_S` and a copy `COPY_S`;
+    the reply arrives `ipc` after the job ends."""
+    free, want = {}, defaultdict(list)
+    for arrival, ch, _ in _releases(table, "lmcache"):
+        station = ":transfer#" in ch
+        free[station] = max(arrival, free.get(station, 0.0))
+        free[station] += COPY_S if station else STATION_S
+        want[reply_channel(ch)].append(free[station] + ipc)
+    return want
 
 
 # --- (a) ----------------------------------------------------------------------
@@ -200,3 +222,37 @@ def test_each_run_meets_every_scenario_check_and_loads_the_prefix_back(runs):
     assert loaded, "no request loaded the stored prefix back"
     if dp > 1:
         assert loaded - {stored[0]}, "no rank loaded a prefix another rank stored"
+
+
+@pytest.mark.parametrize("writers", [1, 2])
+def test_a_dp_attention_deployment_stores_from_one_rank_per_dp_rank(
+    tmp_path, monkeypatch, writers
+):
+    started = []
+    monkeypatch.setattr(compass_run.subprocess, "Popen", lambda *a, **k: started.append(a))
+    config = _config(tensor_parallel_size=2, enable_dp_attention=True)
+    launch = functools.partial(
+        compass_run._launch_lmcache, config, _run(tmp_path, writers=writers), None
+    )
+    if writers == 1:
+        launch()
+        assert len(started) == 1
+    else:
+        with pytest.raises(ValueError, match="writers is 2; .* from 1 rank"):
+            launch()
+
+
+# --- (b) ----------------------------------------------------------------------
+
+
+@NEEDS_A_RUN
+def test_each_server_job_and_reply_follows_the_constant_station_laws(runs):
+    _, (run, _) = runs
+    got = defaultdict(list)
+    for arrival, ch, _ in sorted(_releases(run["table"]), key=lambda r: r[1:]):
+        if ch.startswith("lmcache->"):
+            got[ch].append(arrival)
+    want = station_timeline(run["table"], run["run"]["ipc_s"])
+    assert sorted(got) == sorted(want)
+    for ch in want:
+        assert got[ch] == pytest.approx(want[ch], rel=0, abs=1e-12), ch
