@@ -97,15 +97,18 @@ def member(read, stem, rank, extension):
 def test_the_rung_histogram_is_the_decode_steps_per_rung_and_two_backends_two_entries(
     tmp_path, monkeypatch
 ):
-    # Two prompts' blocks fit at once, so the third decodes alone.
-    out, built = stopped(tmp_path, monkeypatch, {0: [0, 1, 2]}, blocks=30)
+    # Three prompts' blocks fit at once, so three decode on rung 4, then the
+    # fourth alone on rung 1.
+    out, built = stopped(tmp_path, monkeypatch, {0: [0, 1, 2, 3]}, blocks=45)
     runs = [build(tmp_path, "--step-stub", str(stub(tmp_path, k))) for k in (0, 1)]
     keys = [trace_steps.publish(out, run, "compass trace steps") for run in runs]
 
     # A decode step replays the narrowest rung that holds its batch.
-    decode = [b for b in built[0][0] if (b.num_scheduled_tokens == 1).all()]
-    rungs = Counter(min(w for w in LADDER if w >= len(b.req_ids)) for b in decode)
-    assert len(rungs) > 1
+    widths = [
+        len(b.req_ids) for b in built[0][0] if (b.num_scheduled_tokens == 1).all()
+    ]
+    rungs = Counter(min(rung for rung in LADDER if rung >= w) for w in widths)
+    assert len(rungs) > 1 and rungs != Counter(widths)
     rank = Topology().ranks()[0]
     for key in keys:
         summary = member(entry(runs[0]["store"], key), "summary", rank, "json")
