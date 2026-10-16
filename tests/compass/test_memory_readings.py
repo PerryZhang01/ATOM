@@ -229,6 +229,8 @@ WORKER = {
     "decode_context_parallel_size": 1,
     "enable_expert_parallel": False,
     "enable_dp_attention": False,
+    "enable_tbo": False,
+    "enable_tbo_decode": False,
     "max_num_seqs": 256,
     "max_model_len": 2048,
     "gpu_memory_utilization": GPU_MEMORY_UTILIZATION,

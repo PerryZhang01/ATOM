@@ -521,6 +521,11 @@ def test_the_host_key_reads_atom_outside_compass_and_the_real_runner_writes_it(
         kv_cache_dtype="bf16",
         quant_config=SimpleNamespace(compute_hash=lambda: "q"),
         tensor_parallel_size=1,
+        parallel_config=SimpleNamespace(data_parallel_size=1),
+        enable_dp_attention=False,
+        enable_expert_parallel=False,
+        enable_tbo=False,
+        enable_tbo_decode=False,
     )
     key = host_key(config)
     assert key["host_cpu"] and key["model"].startswith("sha256:")
@@ -561,6 +566,11 @@ def test_the_host_key_leaves_out_what_only_a_simulated_run_reaches(
         kv_cache_dtype="bf16",
         quant_config=SimpleNamespace(compute_hash=lambda: "q"),
         tensor_parallel_size=1,
+        parallel_config=SimpleNamespace(data_parallel_size=1),
+        enable_dp_attention=False,
+        enable_expert_parallel=False,
+        enable_tbo=False,
+        enable_tbo_decode=False,
     )
     key = host_key(config)["atom"]
 
@@ -606,6 +616,11 @@ def test_the_host_key_hashes_clock_code_by_whether_a_real_run_reaches_it(
         kv_cache_dtype="bf16",
         quant_config=SimpleNamespace(compute_hash=lambda: "q"),
         tensor_parallel_size=1,
+        parallel_config=SimpleNamespace(data_parallel_size=1),
+        enable_dp_attention=False,
+        enable_expert_parallel=False,
+        enable_tbo=False,
+        enable_tbo_decode=False,
     )
     text = (src / "utils/clock.py").read_text()
 
@@ -638,6 +653,11 @@ def test_the_host_key_leaves_out_a_listed_files_module_docstring(tmp_path, monke
         kv_cache_dtype="bf16",
         quant_config=SimpleNamespace(compute_hash=lambda: "q"),
         tensor_parallel_size=1,
+        parallel_config=SimpleNamespace(data_parallel_size=1),
+        enable_dp_attention=False,
+        enable_expert_parallel=False,
+        enable_tbo=False,
+        enable_tbo_decode=False,
     )
 
     def key(name, doc, now=0):

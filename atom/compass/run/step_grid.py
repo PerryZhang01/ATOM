@@ -21,8 +21,9 @@ definition and the residual's sources, which loading does not read.
 
 Its publisher states the readings `conditions` takes. The engine-config reading
 is `keyed`, as JSON: the ladder the runner replays (none under
-``enforce_eager``), the KV block size and dtype, the quantization and the TP
-width. Loading refuses, naming what differs:
+``enforce_eager``), the KV block size and dtype, the quantization, the TP and
+DP widths, DP attention, expert parallelism, TBO and the performance
+environment. Loading refuses, naming what differs:
 
 - a run at data-parallel width above one, since every bundle is measured at one;
 - a keyed condition, the grid's graph mode, a timing scope other than the
@@ -40,6 +41,7 @@ check here. The residual's recipe reads no chunk size, so none is keyed.
 import json
 from collections.abc import Mapping
 
+from atom.benchmarks.results.metadata import performance_env
 from atom.compass.artifacts import (
     ArtifactStore,
     Axis,
@@ -71,13 +73,25 @@ def keyed_of(engine: dict) -> dict:
 
 
 def keyed(config) -> dict:
-    """The conditions a bundle is measured under, as the resolved config holds them."""
+    """The conditions a bundle is measured under, as the resolved config holds them,
+    and the performance environment of this process less the client's and the
+    device selection."""
     return {
         "ladder": [] if config.enforce_eager else schedulable_ladder(config),
         "kv_cache_block_size": config.kv_cache_block_size,
         "kv_cache_dtype": config.kv_cache_dtype,
         "quantization": config.quant_config.compute_hash(),
         "tensor_parallel_size": config.tensor_parallel_size,
+        "data_parallel_size": config.parallel_config.data_parallel_size,
+        "enable_dp_attention": config.enable_dp_attention,
+        "enable_expert_parallel": config.enable_expert_parallel,
+        "enable_tbo": config.enable_tbo,
+        "enable_tbo_decode": config.enable_tbo_decode,
+        "env": {
+            k: v
+            for k, v in sorted(performance_env().items())
+            if not (k.startswith("AIPERF_") or k.endswith("_VISIBLE_DEVICES"))
+        },
     }
 
 

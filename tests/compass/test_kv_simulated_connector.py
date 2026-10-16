@@ -10,6 +10,7 @@ peak-and-derate rule the way a real one would.
 """
 
 import copy
+import dataclasses
 import json
 import pathlib
 
@@ -226,3 +227,23 @@ def test_a_write_arriving_before_an_earlier_one_is_refused():
     link.start(1.0, 1)
     with pytest.raises(ValueError, match="arrives at 0.5, before one that arrived"):
         link.start(0.5, 1)
+
+
+def test_a_link_pays_its_setup_on_its_first_write_only():
+    """x arrives at 0 and starts after the 4 s setup, holding the link to 5; y,
+    at 0.5, moves its bytes from 5 to 6; z, alone at 9, pays no setup."""
+    link = Link(dataclasses.replace(EXACT, setup_s=4.0))
+    assert link.start(0.0, 2) == 5.5
+    assert link.start(0.5, 2) == 6.5
+    assert link.start(9.0, 2) == 9.0 + EXACT.duration_s(2)
+
+
+@pytest.mark.parametrize("scope", list(Scope))
+def test_the_setup_is_the_named_links_and_zero_when_absent(geometry, scope):
+    document = copy.deepcopy(DOCUMENT)
+    assert TransferModel.from_spec(spec_with(PEAKS[0]), geometry, scope).setup_s == 0
+    document["interconnect"][scope.value]["link_setup_s"] = 0.01
+    spec = MachineSpec.from_mapping(document)
+    assert TransferModel.from_spec(spec, geometry, scope).setup_s == 0.01
+    other = next(s for s in Scope if s is not scope)
+    assert TransferModel.from_spec(spec, geometry, other).setup_s == 0

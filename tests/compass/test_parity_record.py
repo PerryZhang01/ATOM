@@ -21,6 +21,7 @@ import pytest
 from conftest import MockConfig
 from test_dp_step_max import dp2  # noqa: F401  the dp2 fixture
 
+from atom.benchmarks.results.metadata import PERFORMANCE_KEYS
 from atom.compass import run
 from atom.compass.backends.step_stub import StepStubBackend
 from atom.compass.parity import (
@@ -444,6 +445,12 @@ def _engine(blocks):
         "kv_cache_dtype": "bf16",
         "quantization": "q",
         "tensor_parallel_size": 1,
+        "data_parallel_size": 1,
+        "enable_dp_attention": False,
+        "enable_expert_parallel": False,
+        "enable_tbo": False,
+        "enable_tbo_decode": False,
+        "env": {},
         "max_num_seqs": 4,
         "max_num_batched_tokens": BUDGET,
         "max_model_len": 2048,
@@ -455,6 +462,8 @@ def test_a_simulated_record_states_the_engine_its_runner_resolved(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv(ENV, str(tmp_path))
+    for name in PERFORMANCE_KEYS:
+        monkeypatch.delenv(name, raising=False)
     path = tmp_path / "dp1.engine.json"
     path.write_text("an earlier run's")
     config = _config(dp_rank=1)
@@ -505,6 +514,8 @@ def test_a_real_record_states_the_engine_its_runner_resolved(tmp_path, monkeypat
         step_clock_ns = staticmethod(time.monotonic_ns)
 
     monkeypatch.setenv(ENV, str(tmp_path / "real"))
+    for name in PERFORMANCE_KEYS:
+        monkeypatch.delenv(name, raising=False)
     config = _config()
     config.max_num_seqs = 4
     runner = _Recorded(0, config)
