@@ -56,7 +56,7 @@ def main(argv: list[str]) -> None:
     fields, params, report = fit(samples, config, args)
     key = Key.of(
         kind,
-        **{f: config[f] for f in ("model", "device", "parallel", "source_root")},
+        **{f: config[f] for f in ("model", "parallel", "source_root")},
         engine_config=json.dumps(config["engine_config"], sort_keys=True),
         **fields,
     )

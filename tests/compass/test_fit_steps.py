@@ -105,7 +105,6 @@ def law_key(form="base") -> Key:
     return Key.of(
         Kind.STEP_LINEAR_LAW,
         model=HOST["model"],
-        device="AMD Instinct MI308X M3080 gfx942",
         parallel="tp1-dp1",
         engine_config=json.dumps(ENGINE, sort_keys=True),
         source_root="tree-67c176f0",
