@@ -252,7 +252,8 @@ def _as_recorded(cell, warmup=()):
     """Lay `cell`'s runs out as `record` and `run` write them: each request
     named at its last prefill row, by key `k<id>` and response id `id-<id>`;
     an export naming them all, from trace `t<id>`, those in `warmup` as its
-    warmup's, else request `w`, which no step holds; and run.json's identity,
+    warmup's, else request `w`, which no step holds, and the same traces given
+    to every run's client; and run.json's identity,
     with `run`'s grading entries for `step_linear/`, its law and host laws in
     its run file and its refusals its summary's."""
     for d in sorted(cell.iterdir()):
@@ -265,7 +266,7 @@ def _as_recorded(cell, warmup=()):
         for r, i in last.items():
             lines[i]["named"].append([r, f"k{r}", f"id-{r}"])
         path.write_text("".join(json.dumps(x) + "\n" for x in lines))
-        export = {"requests": {}, "warmup": {}}
+        export = {"requests": {}, "warmup": {}, "traces": ["t0", "t1", "tw"]}
         for r in last:
             part = "warmup" if r in warmup else "requests"
             export[part][f"id-{r}"] = {"trace": f"t{r}", "sampling": {}}
@@ -315,16 +316,16 @@ def test_a_refusal_in_the_client_run_record_and_run_wrote_refuses_the_cell(
         main([str(tmp_path / "c4")])
 
 
-def test_runs_record_and_run_wrote_that_served_other_traces_are_not_one_cell(
+def test_runs_record_and_run_wrote_that_were_given_other_traces_are_not_one_cell(
     capsys, tmp_path
 ):
     _rows(capsys, tmp_path)
     _as_recorded(tmp_path / "c4")
     export = tmp_path / "c4" / "real1" / CLIENT_RUN
-    t9 = {"requests": {"id-0": {"trace": "t9", "sampling": {}}}}
-    export.write_text(json.dumps(json.loads(export.read_text()) | t9))
+    other = {"traces": ["tx"]}
+    export.write_text(json.dumps(json.loads(export.read_text()) | other))
 
-    with pytest.raises(ValueError, match=r"sent different traces; .*real1': \['t9'\]"):
+    with pytest.raises(ValueError, match=r"given different traces; .*real1': \['tx'\]"):
         main([str(tmp_path / "c4")])
 
 
