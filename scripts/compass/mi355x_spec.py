@@ -55,14 +55,14 @@ SUBJECT["record"] = f"sha256:{RECORD}"
 EP_LAYOUT = "1x8x8"
 EP_FLAGS = f"{FLAGS} --enable-expert-parallel --moe-backend standard"
 EP_ENV = "MORI_SHMEM_HEAP_SIZE=16G"
-EP_DATE, EP_COMMIT = "2026-10-16", "0000000"
+EP_DATE, EP_COMMIT = "2026-10-16", "906ea9e20"
 EP_READ = {
-    "non_torch": 0,
-    "loaded": 0,
-    "parameters": 0,
-    "buffers": 0,
+    "non_torch": 30001856512,
+    "loaded": 136286382592,
+    "parameters": 131441450956,
+    "buffers": 2040159720,
 }
-EP_RECORD = "0" * 64
+EP_RECORD = "554e32da64fd044fd623eefa468dbcd586ec6e9cdc5ed094493c00dcd5dcc567"
 #: The sha256 of the model's config.json, which the run fingerprints.
 CONFIG_JSON = "sha256:5fe4568daee51c208cb8a79538eaeda090ae011ade1dee2c386aa95f569c810e"
 
