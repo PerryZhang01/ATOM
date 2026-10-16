@@ -9,6 +9,7 @@ times written in, and the replay is the same run priced by `ReplayBackend`.
 import http.server
 import json
 import queue
+import re
 import threading
 import time
 
@@ -23,7 +24,7 @@ from atom.compass import run as compass_run
 from atom.compass.clock import LpId
 from atom.compass.parity import ARRIVALS, ENV, compare, traffic
 from atom.compass.parity.replay import ReplayBackend
-from atom.compass.runner.overrides import install_cost_backend
+from atom.compass.runner.overrides import RunnerRefusal, install_cost_backend
 from atom.model_engine.scheduler import Scheduler
 from atom.model_engine.sequence import Sequence
 from atom.sampling_params import SamplingParams
@@ -117,19 +118,15 @@ def test_a_request_released_one_step_late_is_named_at_its_first_step(
     assert report["steps"][0]["identical"] < report["steps"][0]["compared"]
 
 
-def test_a_step_past_the_end_of_the_real_record_is_refused_by_name(
+def test_a_step_past_the_end_of_the_real_record_ends_the_run_by_name(
     real, tmp_path, monkeypatch
 ):
-    directory, members = real
-    n = len(members)
+    directory, _ = real
     path = directory / "dp0.jsonl"
     path.write_text("".join(path.read_text().splitlines(keepends=True)[:3]))
-    _, runner, _ = _run(
-        tmp_path / "sim", monkeypatch, replay=ReplayBackend(directory, 0)
-    )
-    refused = runner._refused_commands
-    assert len(refused) == n - 2
-    assert refused[0] == f"cost:replay: {path} has 2 steps, and this is step 2"
+    why = f"replay: {path} has 2 steps, and this is step 2"
+    with pytest.raises(RunnerRefusal, match=f"^{re.escape(why)}$"):
+        _run(tmp_path / "sim", monkeypatch, replay=ReplayBackend(directory, 0))
 
 
 def test_a_run_file_naming_a_record_replays_it_on_the_engine_clock(
