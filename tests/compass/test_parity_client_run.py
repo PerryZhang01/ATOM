@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 """A client run's export, written from aiperf's raw records, splits the record
-the server wrote.
+the server wrote, its warmup apart.
 
 Requests go through ATOM's API server handlers over
 `test_parity_response_ids.py`'s planted engine, and the record is written by
@@ -28,7 +28,7 @@ from atom.model_engine.scheduler import Scheduler
 PARAMETERS = {"ignore_eos": True, **SAMPLING}
 
 
-def raw(responses, conversation="trace-0", payload=None) -> dict:
+def raw(responses, conversation="trace-0", payload=None, phase="profiling") -> dict:
     """One raw record as aiperf's `RawRecordInfo` dumps it, its payload spliced."""
     return {
         "metadata": {
@@ -40,7 +40,7 @@ def raw(responses, conversation="trace-0", payload=None) -> dict:
             "request_end_ns": 2,
             "worker_id": "w",
             "record_processor_id": "p",
-            "benchmark_phase": "profiling",
+            "benchmark_phase": phase,
         },
         "start_perf_ns": 1,
         "payload": payload
@@ -63,8 +63,11 @@ def test_a_record_splits_by_the_exports_aiperf_s_raw_records_give(
     engine, monkeypatch, tmp_path  # noqa: F811
 ):
     _frontend(monkeypatch, tmp_path / "steps")
-    groups, bodies = [[0, 1], [2, 3]], {}
-    for i in (0, 1, 2, 3):
+    # Client run 0 warms up on request 4 alone, then sends 0 and 1; client run
+    # 1 warms up on request 5 while it sends 2 and 3.
+    served_in, runs = [[4], [0, 1], [5, 2, 3]], [(4, 0, 1), (5, 2, 3)]
+    bodies = {}
+    for i in range(6):
         request = CompletionRequest(
             model="m",
             prompt_token_ids=_prompt(i),
@@ -73,11 +76,11 @@ def test_a_record_splits_by_the_exports_aiperf_s_raw_records_give(
             **SAMPLING,
         )
         bodies[i] = asyncio.run(api_server.completions(request, None)).body.decode()
-    received = iter(seq for seqs in engine.sent for seq in seqs)
+    sent = [seq for seqs in engine.sent for seq in seqs]  # request i's is sent[i]
     scheduler, runner = Scheduler(_config()), _Runner(_config())
-    for group in groups:  # each client run served to its end before the next
-        for _ in group:
-            scheduler.add(next(received))
+    for group in served_in:  # each group served to its end before the next
+        for i in group:
+            scheduler.add(sent[i])
         while scheduler.has_unfinished_requests():
             scheduled = scheduler.schedule()
             if scheduled is None or scheduled[0] is None or not scheduled[0].req_ids:
@@ -90,28 +93,36 @@ def test_a_record_splits_by_the_exports_aiperf_s_raw_records_give(
                 batch=batch,
             )
     exports = []
-    for k, group in enumerate(groups):
+    for k, (warm, whole, chunked) in enumerate(runs):
         cell = tmp_path / f"cell{k}"
         _write_raw(
             cell / "artifacts",
-            # A whole body for one request, an SSE data chunk after a comment
-            # line for the other, and a request that failed before any chunk.
+            # A warmup request; a whole body for one request, an SSE data
+            # chunk after a comment line for the other; and a request that
+            # failed before any chunk.
             [
-                raw([{"perf_ns": 1, "text": bodies[group[0]]}], f"trace-{group[0]}"),
-                raw([sse(("comment", "compass"), ("data", bodies[group[1]]))]),
+                raw([sse(("data", bodies[warm]))], phase="warmup"),
+                raw([{"perf_ns": 1, "text": bodies[whole]}], f"trace-{whole}"),
+                raw([sse(("comment", "compass"), ("data", bodies[chunked]))]),
                 raw([]),
             ],
         )
-        path, unnamed = write(cell / "artifacts")
-        assert (path, unnamed) == (cell / CLIENT_RUN, 1)
-        exports.append(path)
+        assert write(cell / "artifacts") == (cell / CLIENT_RUN, 1, 1)
+        assert json.loads((cell / CLIENT_RUN).read_text())["warmup"] == 1
+        exports.append(cell / CLIENT_RUN)
     split = served(tmp_path / "steps", exports)[0]
 
-    keys = {_key(_prompt(i)): k for k, group in enumerate(groups) for i in group}
-    assert [s["client_run"] for s in split] == sorted(s["client_run"] for s in split)
-    for step in split:  # every request a step holds is named by its client run
-        assert {keys[row[0]] for row in step["batch"]} == {step["client_run"]}
-        assert step["sampling"] == [json.dumps(PARAMETERS, sort_keys=True)]
+    run_of = {_key(_prompt(i)): k for k, (_, *named) in enumerate(runs) for i in named}
+    held = [{run_of.get(row[0]) for row in step["batch"]} for step in split]
+    assert {None} in held and {None, 1} in held  # warmup alone, and beside run 1
+    for step, runs_held in zip(split, held):
+        # A step belongs to the client run of the profiling requests it holds.
+        assert step["client_run"] == max(runs_held - {None}, default=None)
+        assert step["sampling"] == (
+            []
+            if step["client_run"] is None
+            else [json.dumps(PARAMETERS, sort_keys=True)]
+        )
     assert {t for s in split for t in s["traces"]} == {"trace-0", "trace-2"}
 
 
@@ -152,14 +163,15 @@ def test_the_trace_is_the_conversation_and_the_parameters_are_what_shape_no_prom
             raw([sse(("data", '{"id": "b"}'))], "t1", {"prompt": "x", "max_tokens": 3}),
         ],
     )
-    path, _ = write(tmp_path)
+    path, _, _ = write(tmp_path)
 
     assert path == tmp_path / NAME
     assert json.loads(path.read_text()) == {
         "requests": {
             "a": {"trace": "t1", "sampling": PARAMETERS},
             "b": {"trace": "t1", "sampling": {}},
-        }
+        },
+        "warmup": 0,
     }
 
 
@@ -171,6 +183,7 @@ def test_the_trace_is_the_conversation_and_the_parameters_are_what_shape_no_prom
             "two requests got response id a",
         ),
         ([raw([sse(("data", '{"id": "a"}'))], None)], "has no conversation_id"),
+        ([raw([], phase="cooldown")], "neither warmup nor profiling"),
     ],
 )
 def test_an_export_that_cannot_name_its_requests_refuses(tmp_path, records, match):
