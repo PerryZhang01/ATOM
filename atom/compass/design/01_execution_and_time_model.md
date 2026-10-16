@@ -1403,9 +1403,13 @@ The DP barriers are not wait rules: the step-seconds `all_gather` carries each
 member's charge, and the CA's member join grants each member's step end in turn (D3, `15` D90). PD's
 KV transfer keeps its own model (D6).
 
-Stage 2 builds R1 and R4 ([#825](https://github.com/jgong5/ATOM/issues/825)). The MTP
-split and R6 to R8 are stage 3's ([#829](https://github.com/jgong5/ATOM/issues/829));
-until they land, a forward that needs one refuses.
+Stage 2 builds R1 and R4 ([#825](https://github.com/jgong5/ATOM/issues/825)). R6 and R8
+come with the stage sends ([#468](https://github.com/jgong5/ATOM/issues/468)), and so does R7
+as one wait: the stage loop receives `pp_data` before the forward, so host launch and
+device start both wait for the whole receive, where R7 holds only the device for the
+tensors. The MTP split and the PP=2 record that gates R6 to R8 are
+[#829](https://github.com/jgong5/ATOM/issues/829)'s; until the split lands, an MTP
+forward refuses.
 
 **What-ifs.** The run-file key `host.skip` zeroes the named segments. Such a run is a
 what-if: never graded, and refused by the graders.

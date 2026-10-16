@@ -608,8 +608,9 @@ vector. A first-turn cell runs with `AIPERF_EXTRA_ARGS="--trajectory-start-min-r
 turn. The law carries the host key the records carry with its `atom`
 digest replaced by the one `host_key` gives a tree that
 adds `ScheduledBatchOutput.group_targets`, changes `clock.charge`, makes the
-plugin and diffusion bootstraps refuse a simulated run and names a pipeline
-stage's channels by its stage; none of these changes a
+plugin and diffusion bootstraps refuse a simulated run, names a pipeline
+stage's channels by its stage and has a downstream stage's loop leave on
+the `+inf` grant; none of these changes a
 real run's host time. The law and its host key state
 `machine_spec`, the digest `machine_spec_digest` gives
 `scripts/compass/machines/mi308x-hjbog39.json`, so it refuses under any other

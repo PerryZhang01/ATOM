@@ -198,6 +198,18 @@
    "mechanism_why": "a wait inside the data-parallel group's LP: every rank is a member of that one LP, the exchange is never reported to the clock authority and carries no cost; the gathered prices only set each rank's step target, the group's max for a rank with output"
   },
   {
+   "id": "atom/compass/runner/pp_send.py::StageSends.__call__::self.send(t0 + ready_s, parts)::p2p#0",
+   "file": "atom/compass/runner/pp_send.py",
+   "symbol": "StageSends.__call__",
+   "call": "self.send",
+   "expr": "self.send(t0 + ready_s, parts)",
+   "shape": "p2p",
+   "peer": "process",
+   "why": "a non-last pipeline stage's send of its forward's output to the next stage, made by the stage loop after the forward",
+   "mechanism": "K4",
+   "mechanism_why": "the stage-to-stage pp_data channel: the stage loop, its LP's clock owner, stamps the send at the later of the forward's device end and its previous send's completion; the TP-rank-0 worker posts the frame on the PP CPU group and never waits on it"
+  },
+  {
    "id": "atom/distributed/indexer_cp.py::warmup_exchange::torch.cuda.synchronize()::device_sync#0",
    "file": "atom/distributed/indexer_cp.py",
    "symbol": "warmup_exchange",

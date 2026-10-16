@@ -153,6 +153,9 @@ class LPRuntime:
         # caller such as an output thread or an HTTP handler may log and drop
         # the exception.
         self.refusals: list[str] = []
+        # Whether the owner holds work a bounded poll must not idle past: then
+        # the poll's bound is an essential deadline, else a daemon one.
+        self.holds_work = lambda: False
 
     def start_run(self) -> None:
         self.in_run = True
@@ -167,8 +170,9 @@ class LPRuntime:
         t = current_job_time()
         return self.now if t is None else t
 
-    def stamp_send(self, ch: str) -> tuple[float, int]:
-        """Register one message on `ch` as produced now; returns its ``(arrival, seq)``.
+    def stamp_send(self, ch: str, at: float | None = None) -> tuple[float, int]:
+        """Register one message on `ch` as produced now, arriving `at` or, by
+        default, after the channel's lookahead; returns its ``(arrival, seq)``.
 
         Refused while a next-event request is out, as a run-summary reason
         ``clock:stamp_send on <channel> while a next-event request is out``: the
@@ -184,7 +188,7 @@ class LPRuntime:
         with self.lock:
             seq = self.next_seq[ch]
             self.next_seq[ch] = seq + 1
-            arrival = self.now + self.table.lookahead(ch)
+            arrival = self.now + self.table.lookahead(ch) if at is None else at
             self.send_log.append((ch, seq, arrival))
         return arrival, seq
 
@@ -313,6 +317,15 @@ class LPRuntime:
             f"{ch} seq {seq} arrives at {arrival} but {self.me} has released up to "
             f"{self.now} without it (lookahead {self.table.lookahead(ch)})"
         )
+
+    def receive(self, ch: str, seq: int) -> None:
+        """The owner's inline receive of a message no socket carries: idle
+        until (`ch`, `seq`) is released, then count it taken."""
+        while seq not in self.released[ch]:
+            self.next_event(math.inf)
+        with self.lock:
+            self.arrived[ch].add(seq)
+            self.count_done_locked(ch, seq)
 
     def inline_pending(self) -> bool:
         """Is there a released inline message not yet taken?"""
@@ -471,9 +484,9 @@ class WrappedSocket:
         return payload
 
     def poll(self, timeout_ms: int | None = None) -> bool:
-        """A bounded poll is an idle point whose bound is a daemon deadline: it
-        waits for an arrival, and its bound paces the loop without keeping the
-        run alive. Zero never idles.
+        """A bounded poll is an idle point until an arrival or its bound. The
+        bound is an essential deadline while the owner holds work, else a daemon
+        one, which paces the loop without keeping the run alive. Zero never idles.
 
         Outside the run there is no clock to ask: it waits on the socket itself.
         """
@@ -484,7 +497,8 @@ class WrappedSocket:
             elif timeout_ms is None:
                 self.rt.next_event(math.inf)
             else:
-                self.rt.next_event(math.inf, self.rt.now + timeout_ms / 1000.0)
+                bound = self.rt.now + timeout_ms / 1000.0
+                self.rt.next_event(bound if self.rt.holds_work() else math.inf, bound)
             self.settle()
         return self.ready()
 

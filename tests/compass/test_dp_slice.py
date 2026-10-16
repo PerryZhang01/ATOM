@@ -57,6 +57,17 @@ for _name in (
 ):
     _width = DP_MACHINE["device"]["runtime_constants"][_name]
     _width["1x2"] = _width["1x2x2"] = _width[1]
+#: Declared test values for a pipeline stage's send: every part is rendezvous.
+DP_MACHINE["interconnect"]["intra_node"]["pp"] = {
+    carrier: {
+        "eager_threshold_bytes": 1,
+        "latency_s": 2.0**-20,
+        "overhead_s": 2.0**-22,
+        "per_byte_s": 2.0**-36,
+        "rendezvous_fixed_s": 2.0**-17,
+    }
+    for carrier in ("rccl", "gloo")
+}
 DONE = "data: [DONE]"
 #: The slice's parallelism: two DP ranks at TP 1, with expert parallelism.
 DP_WIDTH = ["-tp", "2", "--enable-dp-attention", "--enable-expert-parallel"]
