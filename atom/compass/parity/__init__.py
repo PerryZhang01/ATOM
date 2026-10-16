@@ -15,7 +15,8 @@ gate (`t_gate_ns`), the launch (`t_launch_ns`) and the wait for the previous
 output's token copy (`t_recv_ns`, only on a forward that reaches it), and with
 a drafter its MTP status (`t_mtp_ns`) and draft copy (`t_draft_recv_ns`). Its device
 window is `d_busy_ns`, from an event recorded at the launch's entry to one
-recorded at the forward's exit (`d_target_ns` to `forward_done_event`), and `d_gap_ns`, from the previous forward's
+recorded at the forward's exit (`d_target_ns` to one recorded just after
+`postprocess` records `forward_done_event`), and `d_gap_ns`, from the previous forward's
 exit event to this launch's entry event, absent on the first line; summed in
 order they lay every forward on one device timeline. The events are polled,
 never waited on, so a line is written once its exit event has completed, and

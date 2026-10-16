@@ -284,7 +284,7 @@ class HostDeviceRecurrence:
         now = self.now()
         host = max(now + e, self.ends[0]) + pre
         output = batch.produces_output()
-        if self.mtp and output and self.last is None:
+        if self.mtp and output:  # output_end stays -inf on a PP stage
             host = max(host, self.output_end)
         launch_end = host + launch
         target_end = max(self.ends[-1], host) + device_s

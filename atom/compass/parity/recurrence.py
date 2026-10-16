@@ -62,7 +62,8 @@ def check(steps: list[dict]) -> dict:
         rec.laws = {k: law for k in FORWARD_KINDS}
         entry = max(now + e * 1e-9, rec.ends[0])
         queued = rec.ends[1] - entry - pre * 1e-9
-        # Under MTP, R1 waits inside W_pre: where its wait starts, or its release.
+        # Under MTP, the wait for the previous output's MTP status sits inside
+        # W_pre: released where it starts or where that output's target ends.
         head = (m0 - s["t_enter_ns"] - (g1 - g0)) * 1e-9
         due = max(entry + head, rec.output_end)
         batch = SimpleNamespace(total_tokens_num=0, total_seqs_num=0)

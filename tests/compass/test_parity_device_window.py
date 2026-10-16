@@ -45,8 +45,23 @@ class _Processor:
         self.calls += 1
         return handle
 
+    def recv_mtp_status_async(self):
+        return None, None
 
-def _recorded(warmup):
+    def prepare_sampled_ids(self, batch):
+        return self.recv_async_output([])
+
+    def recv_async_output_draft(self):
+        return []
+
+
+TARGET, DRAFT = 60_000, 9_000  # ns
+
+
+def _recorded(warmup, drafter=False):
+    """With `drafter`, an output forward also waits for the MTP status before
+    its launch, then calls `prepare_sampled_ids` right after
+    `forward_done_event` and waits for the draft copy, as ATOM does."""
     device = _Device()
     clock = iter(range(1, 10**9))
 
@@ -58,6 +73,8 @@ def _recorded(warmup):
             self.capture_sizes_np, self.enforce_eager = np.array(LADDER), False
             self.attn_metadata_builder = GRAPHABLE
             self.tokenID_processor = _Processor()
+            if drafter:
+                self.drafter = "mtp"
             self.exited = False
             self.forward(warmup)
 
@@ -68,10 +85,19 @@ def _recorded(warmup):
             return "logits"
 
         def forward(self, batch):
+            p, output = self.tokenID_processor, batch.produces_output()
             self._gate_staging_reuse()
+            if drafter and output:
+                p.recv_mtp_status_async()
+            self.next = "launch"
             assert self.run_model([], batch) == "logits"
-            if batch.produces_output():
-                assert self.tokenID_processor.recv_async_output([]) == []
+            self.next = "target"
+            if drafter and output:
+                p.prepare_sampled_ids(batch)
+                p.recv_async_output_draft()
+            elif output:
+                assert p.recv_async_output([]) == []
+            self.next = "exit" if drafter and output else "busy"
             # The previous forward's exit event has completed, this one's has not.
             device.now = device.times[-2] if len(device.times) > 1 else -1
             return "ran"
@@ -84,12 +110,11 @@ def _recorded(warmup):
         def step_clock_ns():
             return next(clock)
 
-        @staticmethod
-        def device_event():
+        def device_event(self):
             # Launch after the previous exit, exit after the launch.
             last = device.times[-1] if device.times else 0
-            gap = BUSY + len(device.times) if len(device.times) % 2 else GAP
-            device.times.append(last + gap)
+            step = {"launch": GAP, "target": TARGET, "exit": DRAFT}
+            device.times.append(last + step.get(self.next, BUSY + len(device.times)))
             return _Event(device, device.times[-1])
 
     return _Recorded, device
@@ -130,75 +155,14 @@ def test_each_line_carries_its_host_stamps_and_device_window(tmp_path, monkeypat
     }
 
 
-TARGET, DRAFT = 60_000, 9_000  # ns
-
-
 def test_with_a_drafter_an_output_line_splits_its_device_window_at_the_target(
     tmp_path, monkeypatch
 ):
-    """ATOM's order under MTP: the gate, the MTP status wait (output only), the
-    launch, then `prepare_sampled_ids` right after `forward_done_event` and the
-    draft copy's wait. Device events land GAP after the last, TARGET after the
-    launch, and at the exit DRAFT after the target or BUSY after the launch."""
     batches = _drive(tmp_path / "simulated", monkeypatch, {0: [0, 1]})[0][0]
-    device = _Device()
+    recorded, device = _recorded(batches[-1], drafter=True)
     device.tick = 10**12
-    clock = iter(range(1, 10**9))
-
-    class _MtpProcessor(_Processor):
-        def recv_mtp_status_async(self):
-            return None, None
-
-        def prepare_sampled_ids(self, batch):
-            return self.recv_async_output([])
-
-        def recv_async_output_draft(self):
-            return []
-
-    class _Base:
-        def __init__(self, rank, config):
-            self.rank, self.config = rank, config
-            self.capture_sizes_np, self.enforce_eager = np.array(LADDER), False
-            self.attn_metadata_builder = GRAPHABLE
-            self.tokenID_processor, self.drafter = _MtpProcessor(), "mtp"
-            self.next = None
-
-        def _gate_staging_reuse(self):
-            pass
-
-        def run_model(self, input_ids, batch):
-            return "logits"
-
-        def forward(self, batch):
-            p, output = self.tokenID_processor, batch.produces_output()
-            self._gate_staging_reuse()
-            if output:
-                p.recv_mtp_status_async()
-            self.next = "launch"
-            self.run_model([], batch)
-            if output:
-                self.next = "target"
-                p.prepare_sampled_ids(batch)
-                p.recv_async_output_draft()
-            self.next = "exit" if output else "busy"
-            return "ran"
-
-        def exit(self):
-            pass
-
-    class _Recorded(StepRecording, _Base):
-        @staticmethod
-        def step_clock_ns():
-            return next(clock)
-
-        def device_event(self):
-            last = device.times[-1] if device.times else 0
-            step = {"launch": GAP, "target": TARGET, "exit": DRAFT, "busy": BUSY}
-            device.times.append(last + step[self.next])
-            return _Event(device, device.times[-1])
-
     monkeypatch.setenv(ENV, str(tmp_path / "real"))
-    runner = _Recorded(0, _config())
+    runner = recorded(0, _config())
     for b in batches:
         runner.forward(b)
     runner.exit()
@@ -208,9 +172,8 @@ def test_with_a_drafter_an_output_line_splits_its_device_window_at_the_target(
     for step, output in zip(read(tmp_path / "real")[0], outputs):
         keys = {"t_mtp_ns", "t_recv_ns", "t_draft_recv_ns", "d_target_ns"}
         assert keys <= step.keys() if output else not keys & step.keys()
-        assert step["d_busy_ns"] == (TARGET + DRAFT if output else BUSY)
-        assert step.get("d_target_ns") == (TARGET if output else None)
         if output:
+            assert (step["d_target_ns"], step["d_busy_ns"]) == (TARGET, TARGET + DRAFT)
             stamps = [step["t_enter_ns"], *step["t_gate_ns"], *step["t_mtp_ns"]]
             stamps += [*step["t_launch_ns"], *step["t_recv_ns"]]
             stamps += [*step["t_draft_recv_ns"], step["t_exit_ns"]]

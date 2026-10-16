@@ -150,7 +150,16 @@ def test_an_mtp_record_the_wait_rules_wrote_passes_and_charged_without_mtp_fails
     steps = mtp_record()
     steps[0]["t_mtp_ns"] = [MS / 2] * 2
     assert recurrence.check(steps)["kinds"]["idle"][4] == pytest.approx(0, abs=1e-6)
-    # Without the split, R1 waits after the launch for the whole device end:
+    # A staging gate wait no rule predicts releases it earlier by that width.
+    steps[0]["t_gate_ns"] = [0, MS / 4]
+    assert recurrence.check(steps)["kinds"]["idle"][4] == pytest.approx(-0.25)
+    # The draft copy wait follows no rule, so the charge misses its width.
+    steps = mtp_record()
+    steps[3]["t_draft_recv_ns"][1] += MS / 2
+    steps[3]["t_exit_ns"] += MS / 2
+    assert recurrence.check(steps)["total"] == pytest.approx(100 * (34 / 34.5 - 1))
+    # Without the split, the token-copy wait sits after the launch and waits
+    # for the whole device end:
     # step 1 exits at 12.5, not 13.
     steps = mtp_record()
     for s in steps:
