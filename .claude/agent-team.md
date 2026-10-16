@@ -103,7 +103,9 @@ own `gh` login. Ownership is the assignee:
   Each block carries `hold landing` until every PR in the stack is
   approved; one pass then removes the labels and lands the stack
   bottom-first through `batch.py` (`land.md`, Land a batch), and a batch
-  that stops puts them back.
+  that stops puts them back. A block held only by `hold landing` and
+  approved at its head does not count toward `max_tasks`. A task whose open
+  dependencies all have open PRs is claimable, stacked on them.
   A reviewer traces each added or changed non-test symbol at the head, and
   a wiring PR's reviewer its blocks' too, to a caller outside `tests/` and
   on up to an entry point; a violation is a required finding and blocks
