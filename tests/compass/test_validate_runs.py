@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: MIT
-"""Run grades: cells laid out as `cctraces_sim.sh` writes them.
+"""Run grades: cells laid out as `cctraces_sim.sh` writes them, and as `record`
+and `run` do.
 
 Each cell is a step record in `steps/dp0.jsonl`, the JSON lines a runner
 writes, read by `runs._steps`, and aiperf's export in
-`artifacts/profile_export_aiperf.json`.
+`artifacts/profile_export_aiperf.json`. `_recorded` adds what a `record` or
+`run` directory holds beside them: run.json's identity and grading entries,
+and the client run's export.
 """
 
 import collections
@@ -11,7 +14,7 @@ import json
 
 import pytest
 
-from atom.compass.validate.runs import _requests, grade, main
+from atom.compass.validate.runs import CLIENT_RUN, _requests, grade, main
 
 EXPORT = {
     "request_count": {"unit": "requests", "avg": 3.0},
@@ -185,3 +188,154 @@ def test_requests_keys_by_the_final_chunks_context_not_a_later_decode_row():
         {"named": [], "batch": [[1, 1, 101]], "rows": [[1, 101, True]]},
     ]
     assert _requests(steps) == collections.Counter({(100, 0): 100})
+
+
+#: A simulated run's run.json entries that grading reads, as `run` writes
+#: them, for a run it grades: host laws on, no roofline, no refusal, and a
+#: backend fitted on a trace no cell here sends.
+GRADED = {
+    "run_file": {"step_linear": {}, "host": {"laws": {}}},
+    "step_roofline": False,
+    "skip": [],
+    "refusals": {"count": 0, "reasons": []},
+    "coverage": None,
+    "provenance": {
+        "digest": "sha256:0",
+        "provenance": {"inputs": [{"run": "fit.jsonl", "traces": ["trace-kz"]}]},
+    },
+}
+
+
+def _recorded(cell, sent=None, **run):
+    """`cell` as `record` lays it out, or with `run`'s entries as `run` does:
+    each named request also named by its response id `id-<key>`, and the
+    export naming those whose keys are in `sent` (all by default), each from
+    trace `trace-<key>`."""
+    path = cell / "steps" / "dp0.jsonl"
+    lines = [json.loads(x) for x in path.read_text().splitlines()]
+    for line in lines:
+        line["named"] = [[r, k, f"id-{k}"] for r, k, *_ in line["named"]]
+    path.write_text("".join(json.dumps(x) + "\n" for x in lines))
+    keys = sorted({k for line in lines for _, k, *_ in line["named"]})
+    requests = {
+        f"id-{k}": {"trace": f"trace-{k}", "sampling": {}}
+        for k in keys
+        if sent is None or k in sent
+    }
+    (cell / CLIENT_RUN).write_text(json.dumps({"requests": requests}))
+    (cell / "run.json").write_text(json.dumps({"format_version": 2, **run}))
+    return cell
+
+
+def _four(tmp_path, schedule=None, keys=None):
+    """Three real cells and a simulated one, as `cctraces_sim.sh` lays them out."""
+    keys = keys or {7: "ka", 8: "kb"}
+    names = ("r0", "r1", "r2", "sim")
+    return [_cell(tmp_path / n, schedule or _schedule(), keys) for n in names]
+
+
+def test_a_cell_record_and_run_wrote_grades_as_the_one_cctraces_sim_wrote(tmp_path):
+    *real, simulated = _four(tmp_path)
+    report = grade(real, simulated)
+    for cell in real:
+        _recorded(cell)
+    _recorded(simulated, **GRADED)
+
+    assert grade(real, simulated) == report
+
+
+@pytest.mark.parametrize(
+    "entries, reason",
+    [
+        ({"skip": ["E"]}, r"it skips host segments \['E'\], a what-if run"),
+        (
+            {"run_file": {"step_linear": {}}},
+            "its run file has no host laws, so it prices no host time",
+        ),
+        ({"step_roofline": True}, "the step roofline was on"),
+        (
+            {"refusals": {"count": 1, "reasons": [["clock:late", 1]]}},
+            r"it refused 1: \[\['clock:late', 1\]\]",
+        ),
+        (
+            {"run_file": {"step_grid": {}, "host": {}}},
+            "it ran the step grid without a passed coverage check",
+        ),
+        (
+            {
+                "run_file": {"step_grid": {}, "host": {}},
+                "coverage": {"uncovered": ["s"]},
+            },
+            "it ran the step grid without a passed coverage check",
+        ),
+        (
+            {
+                "provenance": {
+                    "provenance": {
+                        "inputs": [{"run": "p", "traces": [], "profiled": True}]
+                    }
+                }
+            },
+            r"its backend was fitted on profiled inputs: \['p'\]",
+        ),
+        (
+            {"run_file": {"step_grid": {}, "host": {}}, "coverage": {"uncovered": []}},
+            None,
+        ),
+        ({"provenance": {"digest": "sha256:stub", "provenance": None}}, None),
+    ],
+)
+def test_a_simulated_run_grading_does_not_take_is_refused_naming_why(
+    tmp_path, entries, reason
+):
+    *real, simulated = (_recorded(c) for c in _four(tmp_path))
+    _recorded(simulated, **(GRADED | entries))
+    if reason is None:
+        grade(real, simulated)
+        return
+    with pytest.raises(ValueError, match=f"sim is not graded: {reason}$"):
+        grade(real, simulated)
+
+
+def test_a_simulated_run_fitted_on_a_trace_the_cell_served_is_refused_naming_it(
+    tmp_path,
+):
+    *real, simulated = (_recorded(c) for c in _four(tmp_path))
+    inputs = [{"run": "fit.jsonl", "traces": ["trace-kb", "trace-kz"]}]
+    leaked = {"digest": "sha256:0", "provenance": {"inputs": inputs}}
+    _recorded(simulated, **(GRADED | {"provenance": leaked, "step_roofline": True}))
+
+    fitted = r"its backend was fitted on traces it served: \['trace-kb'\]"
+    with pytest.raises(ValueError, match=f"the step roofline was on; {fitted}$"):
+        main([str(simulated), *map(str, real)])
+
+
+def test_a_client_run_its_server_served_after_another_is_refused(tmp_path):
+    *real, simulated = (_recorded(c) for c in _four(tmp_path))
+    # Request `ka` prefills alone first, and this client run sent only `kb`.
+    _recorded(real[1], sent={"kb"})
+
+    with pytest.raises(ValueError, match="r1 is not graded: steps of requests it did"):
+        grade(real, simulated)
+
+
+def test_the_steps_of_a_later_client_run_are_not_graded(tmp_path):
+    *real, simulated = (_recorded(c) for c in _four(tmp_path))
+    report = grade(real, simulated)
+    later = _schedule() + [[(9, 30, 30, False)], [(9, 1, 31, True)]]
+    _cell(tmp_path / "later", later, {7: "ka", 8: "kb", 9: "kc"})
+    real[0] = _recorded(tmp_path / "later", sent={"ka", "kb"})
+
+    assert grade(real, simulated) == report
+
+
+def test_runs_that_served_different_traces_are_not_one_cell(tmp_path):
+    *real, simulated = (_recorded(c) for c in _four(tmp_path))
+    export = json.loads((real[2] / CLIENT_RUN).read_text())
+    export["requests"]["id-kb"]["trace"] = "trace-other"
+    (real[2] / CLIENT_RUN).write_text(json.dumps(export))
+
+    beyond = f"'{real[2]}': ['trace-other'], '{simulated}': ['trace-kb']}}"
+    with pytest.raises(ValueError, match="sent different traces") as refused:
+        grade(real, simulated)
+    assert str(refused.value).endswith(beyond)
