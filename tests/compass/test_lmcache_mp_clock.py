@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
 """The lmcache_mp scheduler half's timers and its admission defer read the LP clock.
 
-Under an installed LP runtime, the lookup defer, the lookup timeout and the
-transfer deadlines expire by the runtime's clock, which the tests move by hand
-while the wall clock barely moves. No driver and no lmcache install.
+Under an installed LP runtime, the lookup defer, the lookup timeout, the
+transfer deadlines and a dispatched save's deferred-free stamp follow the
+runtime's clock, which the tests move by hand while the wall clock barely
+moves. No driver and no lmcache install.
 """
 
 from __future__ import annotations
@@ -85,6 +86,15 @@ def test_the_scheduler_dates_a_live_transfer_on_the_lp_clock(lp):
     lp.t = 1e9 + 10.0
     with pytest.raises(transfer.LMCacheTransferUnprovable):
         sched._enforce_transfer_deadlines()
+
+
+def test_a_dispatched_save_restamps_its_deferred_free_on_the_lp_clock(lp):
+    sched = object.__new__(mp_scheduler.LMCacheMPConnectorScheduler)
+    seq = SimpleNamespace(_deferred_save_at=0.0)
+
+    lp.t = 100.0
+    sched._refresh_save_reclaim_clock(seq)
+    assert seq._deferred_save_at == 100.0
 
 
 class _Silent:
