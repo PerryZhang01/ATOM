@@ -104,6 +104,10 @@ DEFAULT_ALLOW_LIST: dict[str, str] = {
         "a command's phase boundaries in run.json, which are wall and monotonic "
         "time by definition; the tool process reads them, and no simulated time"
     ),
+    "atom/compass/bench/measure.py": (
+        "when measure steps published an entry, for the entry's provenance; the "
+        "bench runs on a GPU and never inside a simulated run"
+    ),
 }
 
 #: Packages under `atom/` a simulated run never executes, or that keep their
