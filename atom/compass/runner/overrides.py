@@ -78,10 +78,11 @@ of which a single-process test can show:
 The worker control commands are refused the third way: by a reply. A raise
 would end the engine for a command a client sent while serving, and a None
 would park it, so `RefusedControlCommands` answers each with its reason,
-`command:<method>`. `busy_loop` forwards it, `EngineUtilityHandler` logs it
-and, for all but `update_weights`, sends it back to the client as the
-`UTILITY_RESPONSE` result; the runner also keeps every reason it answered for
-the run summary's refusals.
+`command:<method>`, and logs it. `busy_loop` forwards the reason, and
+`EngineUtilityHandler` sends it back to the client as the `UTILITY_RESPONSE`
+result for every command but `discard_failed_weight_sync`, whose handler
+answers `True` once no rank failed; the runner also keeps every reason it
+answered for the run summary's refusals.
 
 `RPC_SURFACE` records, for each dispatched name, whether its caller waits for
 the reply. The names themselves are not a list anyone typed: they are the ones
