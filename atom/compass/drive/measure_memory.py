@@ -48,7 +48,7 @@ from atom.compass.artifacts import (
 from atom.compass.drive import serve
 from atom.compass.drive.gpu import add_gpu_flag, quiet
 from atom.compass.drive.identity import _device, identity
-from atom.compass.run import CLOCK_ENV, ENV, _width_keys, _write_whole, memory
+from atom.compass.run import CLOCK_ENV, ENV, _write_whole, memory
 from atom.compass.spec import MachineSpec, across_ranks
 from atom.compass.spec.fields import PINNED
 
@@ -88,9 +88,7 @@ def main(argv: list[str]) -> None:
                 "shown to read as a real load's do"
             )
     model = serve._model(atom_args)
-    machine = MachineSpec.from_mapping(
-        _width_keys(json.loads(Path(args.machine).read_text()))
-    )
+    machine = MachineSpec.from_mapping(json.loads(Path(args.machine).read_text()))
     stated = machine_spec_key(machine).values["device"]
     other = [
         f"GPU {gpu['index']} is {gpu['name']} {gpu['arch']}"

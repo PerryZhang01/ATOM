@@ -69,9 +69,9 @@ from atom.compass.memory import (
     predicts,
     reserves,
 )
-from atom.compass.run import _config_json, _width_keys
+from atom.compass.run import _config_json
 from atom.compass.run import memory as entry
-from atom.compass.spec import MachineSpec, SpecRefusal
+from atom.compass.spec import MachineSpec
 from atom.config import get_hf_config
 
 # The package as the suite actually imported it, never as a walk up from this
@@ -144,26 +144,6 @@ DOCUMENT = {
             "derate": 0.85,
         },
         "compute": {"bf16_flops": 2.5e15, "fp8_flops": 5.0e15, "derate": 0.70},
-        "runtime_constants": {
-            "driver_and_collective_reserve_bytes": {
-                1: 970.0e6,
-                2: 7.2e9,
-                4: 7.6e9,
-                8: 11.2e9,
-            },
-            "allocator_retained_after_load_bytes": {
-                1: 1.1e6,
-                2: 2.17e9,
-                4: 2.17e9,
-                8: 2.17e9,
-            },
-            "persistent_forward_buffer_bytes": 124.0e6,
-            "cudagraph_pool": {
-                "w1_base_bytes": 95.5e6,
-                "w1_bytes_per_captured_token": 0.318e6,
-                "w_gt1_flat_bytes": 109.0e6,
-            },
-        },
         "software_pinned_to": dict(STACK),
     },
     "interconnect": {
@@ -215,8 +195,8 @@ def publish_readings(store, config, document=DOCUMENT, readings=READINGS[1]):
     """`config`'s entry in the store at `store`, one member a rank, keyed and
     conditioned as `compass measure memory` publishes it on the platform
     `document` states; the one already there, if there is one."""
-    # As a run file carries it: JSON, its width keys read back.
-    machine = MachineSpec.from_mapping(_width_keys(json.loads(json.dumps(document))))
+    # As a run file carries it: JSON.
+    machine = MachineSpec.from_mapping(json.loads(json.dumps(document)))
     fields = entry.key_fields(config)
     key = Key.of(
         Kind.MEMORY_READINGS, machine_spec=machine_spec_digest(machine), **fields
@@ -249,6 +229,8 @@ WORKER = {
     "decode_context_parallel_size": 1,
     "enable_expert_parallel": False,
     "enable_dp_attention": False,
+    "enable_tbo": False,
+    "enable_tbo_decode": False,
     "max_num_seqs": 256,
     "max_model_len": 2048,
     "gpu_memory_utilization": GPU_MEMORY_UTILIZATION,
@@ -512,33 +494,20 @@ def test_the_predicting_function_cannot_be_spent_as_the_reserving_one(spec, qwen
             memory=measured(1),
             tp_width=1,
             model=model_terms(qwen),
-            cudagraph_overhead=predicts(
-                spec, tp_width=1, captured_tokens=sum(ladder())
-            ),
+            cudagraph_overhead=predicts(measured(1, cudagraph_pool_bytes=420_000_000)),
         )
     assert "4-19x" in str(refusal.value)
 
 
-@pytest.mark.parametrize("tp_width,low,high", [(1, 4.0, 5.0), (2, 17.0, 18.0)])
-def test_the_two_graph_pool_numbers_disagree_by_the_recorded_factor(
-    spec, qwen, tp_width, low, high
-):
-    # The two disagree by 4-19x across the recorded ladders. On this ladder
-    # and this spec the measured pool is 4.46x smaller than ATOM's reservation
-    # at width 1 and 17.2x at width 2, which is inside that band and is why
-    # substituting one for the other is refused.
-    reserving = reserved(qwen, 288.0e9).total
-    predicted = predicts(spec, tp_width=tp_width, captured_tokens=sum(ladder())).total
-    assert low < reserving / predicted < high
-
-
-def test_the_predicted_pool_is_flat_above_width_one(spec):
-    flat = {
-        predicts(spec, tp_width=width, captured_tokens=tokens).total
-        for width in (2, 4, 8)
-        for tokens in (512, 1023, 4096)
-    }
-    assert flat == {109_000_000}
+def test_the_predicted_pool_is_the_one_the_entrys_start_reserved():
+    # What the pool really costs is read, not projected: the reserved bytes
+    # the entry's start added across its own capture, at its own ladder.
+    (term,) = predicts(measured(2, cudagraph_pool_bytes=420_000_000)).terms
+    assert (term.nbytes, term.method) == (420_000_000, Method.MEASURED)
+    assert term.source == f"{SOURCE} cudagraph_pool_bytes"
+    assert term.records == (READINGS[2]["record"],)
+    # A start that captured nothing has no pool to predict.
+    assert predicts(measured(2)) is None
 
 
 def test_a_ladder_drops_what_the_token_budget_cannot_schedule():
@@ -661,21 +630,42 @@ def test_a_member_that_is_not_one_ranks_readings_is_refused(readings):
         measured(1, **readings)
 
 
-#: A `device.activations` entry: one real run's `peak - current` after warmup
-#: over its warmup tokens, for this model at TP1.
-ACTIVATIONS = {
-    "id": "qwen3.8-27b",
-    "fingerprint": "sha256:" + "b" * 64,
-    "applies_to": ["Qwen3_5ForConditionalGeneration"],
-    "bytes_per_token": {1: 180_480},
-}
+#: What a member published outside `compass measure memory` states for a
+#: platform no engine has started on.
+ASSUMED = "copied from MI355X's memory_readings entry of this configuration"
 
 
-def test_two_activation_entries_for_one_model_are_refused_where_the_spec_is_read():
-    document = copy.deepcopy(DOCUMENT)
-    document["device"]["activations"] = [ACTIVATIONS, dict(ACTIVATIONS, id="again")]
-    with pytest.raises(SpecRefusal, match="resolves to two entries"):
-        MachineSpec.from_mapping(document)
+def test_an_assumed_member_declares_every_term_built_on_it(qwen):
+    # On a probed spec, so what is declared is the entry's and nothing else.
+    readings = device_readings(
+        spec_of("probed"),
+        memory=measured(1, assumed=ASSUMED),
+        tp_width=1,
+        model=ModelTerms.from_config(
+            qwen,
+            activations=measured(1, assumed=ASSUMED).activations(WARMUP_TOKENS),
+            tree=META_8B,
+        ),
+        cudagraph_overhead=reserved(qwen, 288.0e9),
+    )
+    assert readings.declared == (
+        "peak_torch.load residue",
+        "peak_torch.persistent",
+        "peak_torch.activations",
+        "non_torch.driver and collective reserve",
+        "free.less peak_torch",
+        "free.less non_torch",
+    )
+    for term in (*readings.peak_torch.terms[2:], *readings.non_torch.terms):
+        assert term.note.startswith(f"{ASSUMED}; a compass measure memory start")
+    pool = predicts(measured(1, assumed=ASSUMED, cudagraph_pool_bytes=420_000_000))
+    assert pool.declared == ("pool",)
+
+
+@pytest.mark.parametrize("assumed", ["", "  ", None, 7])
+def test_an_assumption_that_names_nothing_is_refused(assumed):
+    with pytest.raises(MemoryRefusal, match="which names no assumption"):
+        measured(1, assumed=assumed)
 
 
 def test_a_config_with_no_dtype_refuses_rather_than_assuming_one(qwen):

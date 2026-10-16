@@ -31,11 +31,9 @@ and the only half this package can see, so it is checked for naming real fields
 and nothing more. A consumer that reaches for a term this table does not list
 for it is the thing to fix, in the table.
 
-A width-keyed constant explains at the width asked for, or at every width that
-was probed when no width is given; asking at a width nobody probed is
-refused by name, here as everywhere else. Tokenizer rates explain per entry and
-per rate, because a spec holding two tokenizers has two different answers and a
-reader tracing a tokenization cost needs to see which of them was used.
+Tokenizer rates explain per entry and per rate, because a spec holding two
+tokenizers has two different answers and a reader tracing a tokenization cost
+needs to see which of them was used.
 
 A term with nothing to explain is refused one of two ways, because the two want
 different actions. A term the schema does not know is asked for again by a real
@@ -67,16 +65,8 @@ from .tokenizers import ENTRY_FIELDS
 
 #: Predicted quantities, and the spec fields each one is built out of.
 QUANTITIES: Mapping[str, tuple[str, ...]] = {
-    "kv_blocks": (
-        "device.memory.capacity_bytes",
-        "device.runtime_constants.driver_and_collective_reserve_bytes",
-        "device.runtime_constants.allocator_retained_after_load_bytes",
-        "device.runtime_constants.persistent_forward_buffer_bytes",
-        "device.runtime_constants.cudagraph_pool.w1_base_bytes",
-        "device.runtime_constants.cudagraph_pool.w1_bytes_per_captured_token",
-        "device.runtime_constants.cudagraph_pool.w_gt1_flat_bytes",
-        "device.activations",
-    ),
+    # The rest of the KV budget is the run's `memory_readings` entry's.
+    "kv_blocks": ("device.memory.capacity_bytes",),
     "admission": (
         "host.admission_fixed_s",
         "host.http_intake.fixed_s",
@@ -96,6 +86,7 @@ QUANTITIES: Mapping[str, tuple[str, ...]] = {
     "kv_transfer": (
         "interconnect.inter_node.link_bandwidth_bytes_per_s",
         "interconnect.inter_node.link_latency_s",
+        "interconnect.inter_node.link_setup_s",
         "interconnect.router_relay_s",
     ),
 }
@@ -168,25 +159,10 @@ def _row(
     return Contribution(path, value, derate, effective, supplied, origin)
 
 
-def _rows(
-    spec: MachineSpec, path: str, tp_width: int | None, origin: Merge | None
-) -> list[Contribution]:
+def _rows(spec: MachineSpec, path: str, origin: Merge | None) -> list[Contribution]:
     field = BY_PATH[path]
     value = spec.values[path]
     derate = spec.values.get(f"{field.block}.derate") if field.peak else None
-    if field.kind is Kind.WIDTH_TABLE:
-        name = path.rsplit(".", 1)[-1]
-        widths = (tp_width,) if tp_width is not None else tuple(sorted(value, key=str))
-        return [
-            _row(
-                f"{path}[{width}]",
-                spec.runtime_constant(name, width),
-                None,
-                _supplied(origin, f"{path}[{width}]", path),
-                spec.origin(path, width),
-            )
-            for width in widths
-        ]
     if field.kind is Kind.TOKENIZERS:
         rows = []
         for entry in spec.tokenizers.entries:
@@ -210,11 +186,7 @@ def _rows(
 
 
 def explain(
-    spec: MachineSpec,
-    term: str,
-    *,
-    tp_width: int | None = None,
-    origin: Merge | None = None,
+    spec: MachineSpec, term: str, *, origin: Merge | None = None
 ) -> Explanation:
     """The spec fields a quantity is built from, each with its value and source."""
     paths = QUANTITIES.get(term)
@@ -242,7 +214,7 @@ def explain(
     empty: list[Contribution] = []
     for path in paths:
         if path in spec.values:
-            rows = _rows(spec, path, tp_width, origin)
+            rows = _rows(spec, path, origin)
             contributions += rows
             if not rows:
                 held = spec.values[path]
