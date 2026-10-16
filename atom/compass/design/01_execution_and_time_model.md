@@ -1692,6 +1692,10 @@ model_runner.py::ModelRunner.async_proc_aggregation
 ```
 
 That single funnel covers any backend, which is why a simulated connector is cheap.
+It is pipelined: `async_proc.py::AsyncIOProcManager.call_func_with_aggregation` keeps one
+aggregation in flight, so each poll returns the workers' `get_finished` snapshot taken at
+the previous poll, which started that aggregation. A transfer that ends between two polls
+is reported at the second poll after it ends, not the first (#1155).
 
 ### Design
 
@@ -1706,9 +1710,9 @@ and receives both run on the engine's step loop, and no worker takes part.
 - **Decode** posts the write request in `update_state_after_alloc` (called from
   `Scheduler._notify_connector_after_prefill_alloc`): channel
   `engine-D->engine-P:kv_write_req`, sent at `t`, arriving at `a = t + request latency`.
-  It computes its own ready time `a + T + notify latency` and, once the clock reaches
-  it, reports the request in `finished_recving` from `process_completions`. A local
-  event of engine-D.
+  It computes its own ready time `a + T + notify latency` and reports the request in
+  `finished_recving` from `process_completions` as the pipelined funnel would: at the
+  call after the first one whose clock reached it. A local event of engine-D.
 - **Prefill** records the data-ready time `r` in `request_finished` and takes the write
   request in `process_completions`, which the step loop receives inline.
   `Scheduler._mark_finished` calls `request_finished` once per finished request. There
@@ -1719,7 +1723,7 @@ and receives both run on the engine's step loop, and no worker takes part.
   request it sends to prefill (`atom/mesh/src/core/placement/backend/atom.rs`).
   `Scheduler.postprocess` parks a finished request in `deferred_free_blocks` only while
   `should_defer_free` finds the claim; any other finished request frees at once. At
-  `max(a, r) + T` prefill reports `finished_sending`, and
+  `max(a, r) + T`, reported the same way, prefill reports `finished_sending`, and
   `Scheduler._update_from_kv_xfer_finished` retires the claim through `send_finished`
   and frees the parked blocks. `source_blocks_released` does nothing. A local event of
   engine-P. Scheduler code is unchanged.
