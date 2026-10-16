@@ -1012,10 +1012,11 @@ def tokenizer(tok, config) -> None:
 
 def http_intake() -> tuple[float, float] | None:
     """``(fixed_s, per_byte_s)``, the frontend loop's time to take in one HTTP
-    request, from the run's machine spec; None on a real run or a spec that
-    states neither. A spec that states one of them is refused naming the other."""
+    request, from the run's machine spec; None on a real run, a run file with no
+    machine spec, or a spec that states neither. A spec that states one of them
+    is refused naming the other."""
     run = spec()
-    if run is None:
+    if run is None or "machine" not in run:
         return None
     machine = _machine(run)
     paths = ("host.http_intake.fixed_s", "host.http_intake.per_byte_s")
