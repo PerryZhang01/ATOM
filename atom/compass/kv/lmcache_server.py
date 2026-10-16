@@ -19,11 +19,12 @@ What it does not reproduce. Every object group of a chunk is one entry, so
 attention, and all-null chunks are stored. The byte budget is
 `--l1-size-gb` taken whole, so a lazy pool's growth and allocator alignment
 are not modelled. Stores and retrieves need no prior REGISTER_KV_CACHE,
-because a simulated worker registers no device memory. A lookup's prefetch is
-complete at its own job's end, so QUERY_PREFETCH_STATUS never answers
-pending. Sessions do not expire.
+because a simulated worker registers no device memory.
 
-A flag or a request type outside these is refused by name.
+A flag or a request type outside these is refused by name, and so is a request
+that reaches a session more than `SESSION_TTL_S` after its creation: lmcache
+drops such a session on a cleanup timer whose phase a simulated run cannot
+know.
 """
 
 from __future__ import annotations
@@ -35,10 +36,11 @@ from dataclasses import dataclass
 from typing import Any
 
 EVICTION_INTERVAL_S = 1.0
+SESSION_TTL_S = 600.0  # lmcache's SessionManager.DEFAULT_SESSION_TTL
 
 
 class LMCacheRefusal(Exception):
-    """A server flag or a request type the stand-in does not model."""
+    """A server flag, a request type or a session age the stand-in does not model."""
 
 
 class _Flags(argparse.ArgumentParser):
@@ -94,6 +96,7 @@ class _Obj:
 
 @dataclass
 class _Session:
+    created: float
     tokens: tuple[int, ...] = ()
     key: Any = None
     hit: int = -1
@@ -137,10 +140,6 @@ class LMCacheServer:
     def url(self) -> str:
         return f"tcp://{self.args.host}:{self.args.port}"
 
-    @property
-    def request_types(self) -> tuple[str, ...]:
-        return tuple(self._handlers)
-
     def handle(
         self, frames: list[bytes], now: float
     ) -> tuple[list[bytes], Callable[[float], None]]:
@@ -161,17 +160,17 @@ class LMCacheServer:
 
     def evict(self, now: float) -> list[tuple]:
         """One eviction-loop tick: above the watermark, drop the configured
-        share of resident objects, least recently used first, skipping
-        read-locked ones."""
-        used = (len(self.objects) + len(self._staged)) * self.chunk_bytes
+        share of tracked objects, resident and staged, least recently used
+        first, skipping read-locked and staged ones."""
+        tracked = len(self.objects) + len(self._staged)
         if (
             not self.capacity
-            or used / self.capacity < self.args.eviction_trigger_watermark
+            or tracked * self.chunk_bytes / self.capacity
+            < self.args.eviction_trigger_watermark
         ):
             return []
-        target = int(len(self.objects) * self.args.eviction_ratio) or min(
-            1, len(self.objects)
-        )
+        ratio = min(1.0, max(0.0, self.args.eviction_ratio))
+        target = int(tracked * ratio) or int(ratio > 0)
         victims = [k for k, o in self.objects.items() if not o.locked(now)][:target]
         for k in victims:
             del self.objects[k]
@@ -212,9 +211,14 @@ class LMCacheServer:
                 o = self.objects[k]
                 o.readers = max(0, o.readers - n)
 
-    def _session(self, key: Any) -> _Session:
-        s = self._sessions.setdefault(key.request_id, _Session())
-        s.tokens = key.token_ids
+    def _session(self, request_id: str, now: float) -> _Session:
+        s = self._sessions.setdefault(request_id, _Session(now))
+        if now - s.created > SESSION_TTL_S:
+            raise LMCacheRefusal(
+                f"lmcache stand-in does not model session expiry: request "
+                f"{request_id!r} reached its session {now - s.created:.0f} s "
+                f"after creation, past lmcache's {SESSION_TTL_S:.0f} s TTL"
+            )
         return s
 
     # Request types, as lmcache's LookupModule, ManagementModule and
@@ -235,8 +239,8 @@ class LMCacheServer:
         held = [self._okey(key, r, h) for r in ranks for h in hashes[:hit]]
         self._lock(held, readers, now)
         self._touch(held)
-        s = self._session(key)
-        s.key, s.hit = key, -1
+        s = self._session(key.request_id, now)
+        s.tokens, s.key, s.hit = key.token_ids, key, -1
         self._prefetch[key.request_id] = hit
         return None, _noop
 
@@ -246,7 +250,7 @@ class LMCacheServer:
         hit = self._prefetch.pop(request_id, None)
         if hit is None:
             return 0, _noop
-        self._sessions.setdefault(request_id, _Session()).hit = hit
+        self._session(request_id, now).hit = hit
         return hit, _noop
 
     def _free_lookup_locks(
@@ -254,7 +258,7 @@ class LMCacheServer:
     ) -> tuple[Any, Callable]:
         if key.start >= key.end:
             return None, _noop
-        hit = self._sessions.setdefault(key.request_id, _Session()).hit
+        hit = self._session(key.request_id, now).hit
         first = key.start // self.chunk_size
         hashes = self._hashes(key, key.start, key.end)
         if hit >= 0:
@@ -264,15 +268,17 @@ class LMCacheServer:
         return None, _noop
 
     def _end_session(self, request_id: str, *, now: float) -> tuple[Any, Callable]:
-        s = self._sessions.pop(request_id, None)
-        if s is not None and s.key is not None:
+        s = self._session(request_id, now)
+        del self._sessions[request_id]
+        if s.key is not None:
             hashes = self._hasher.compute_chunk_hashes(list(s.tokens))
             ranks = range(s.key.world_size)
             self._touch([self._okey(s.key, r, h) for h in hashes for r in ranks])
         return None, _noop
 
-    def _worker_keys(self, key: Any) -> list[tuple]:
-        s = self._session(key)
+    def _worker_keys(self, key: Any, now: float) -> list[tuple]:
+        s = self._session(key.request_id, now)
+        s.tokens = key.token_ids
         if s.key is None:
             s.key = key
         return [
@@ -291,7 +297,7 @@ class LMCacheServer:
     ) -> tuple[Any, Callable]:
         wanted = [
             k
-            for k in self._worker_keys(key)
+            for k in self._worker_keys(key, now)
             if k not in self.objects and k not in self._staged
         ]
         used = (len(self.objects) + len(self._staged) + len(wanted)) * self.chunk_bytes
@@ -319,7 +325,7 @@ class LMCacheServer:
         *,
         now: float,
     ) -> tuple[Any, Callable]:
-        keys = self._worker_keys(key)
+        keys = self._worker_keys(key, now)
         readable = [
             k for k in keys if k in self.objects and self.objects[k].locked(now)
         ]
