@@ -320,3 +320,14 @@ def test_a_stage_gap_after_an_idle_device_does_not_delay_its_device():
     report = recurrence.check(head, (0, 2))
     assert report["pass"] and report["total"] == pytest.approx(0, abs=1e-9)
     assert [end for _, end in report["sends"]] == [t * MS for t in (2, 105, 109, 113)]
+
+
+def test_a_middle_chunk_launches_once_the_head_has_sent():
+    """The head sends at 2 ms; the last stage reaches its launch at 1 ms and
+    receives until 2, so its middle chunk exits at 4, not 3."""
+    head = recurrence.check([_line(0, 0, (0, 0), (1, 2), 3, 10)], (0, 2))
+    last = [_line(0, 0, (0, 0), (1, 3), 4, 18, t_pp_recv_ns=(1, 2), d_recv_ns=10)]
+    last[0]["produces_output"] = False
+    report = recurrence.check(last, (1, 2), head["sends"])
+    assert report["total"] == pytest.approx(0, abs=1e-9)
+    assert recurrence.check(last, (1, 2))["total"] == pytest.approx(-25)
