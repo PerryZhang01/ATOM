@@ -32,6 +32,9 @@ It charges the same duration to both ends of the same wire. A push and a pull
 of the same blocks cost the same here, which is a claim about the fabric being
 symmetric that this model cannot check.
 
+Writes on one `Link` move one at a time, in arrival order. Writes on
+different links do not contend, even where real ones would share a NIC.
+
 Nothing in this module imports the engine or a tensor library. Reaching it
 through the package around it is not the same import: `atom.compass.kv` loads
 the connector beside it, and that brings the engine's connector interface, its
@@ -44,6 +47,7 @@ having, and it is not a bare import of this file.
 from __future__ import annotations
 
 import enum
+import math
 from dataclasses import dataclass
 
 
@@ -123,3 +127,34 @@ class TransferModel:
     def release_at(self, issue_time_s: float, blocks: int) -> float:
         """The time this transfer may be reported finished, and not before."""
         return issue_time_s + self.duration_s(blocks)
+
+
+class Link:
+    """The writes on one link, moved one at a time in arrival order.
+
+    A write arriving at `a` starts once the writes before it have moved their
+    bytes, holds the link for `bytes / bandwidth`, and completes the latency
+    after its last byte. Its completion is fixed when it arrives, so two
+    holders fed the same arrivals in the same order compute the same times. A
+    write alone on the link completes at `a + duration_s(blocks)`.
+    """
+
+    def __init__(self, model: TransferModel) -> None:
+        self._model = model
+        self._last = -math.inf  # the latest arrival
+        self._free = -math.inf  # when the link has moved every byte so far
+
+    def start(self, a: float, blocks: int) -> float:
+        """A write of `blocks` arrives at `a`; when it completes."""
+        if a < self._last:
+            raise ValueError(
+                f"a write arrives at {a}, before one that arrived at "
+                f"{self._last}; a link takes its writes in time order"
+            )
+        self._last = a
+        start = max(a, self._free)
+        done = start + self._model.duration_s(blocks)
+        self._free = start + blocks * self._model.bytes_per_block / (
+            self._model.bandwidth_bytes_per_s
+        )
+        return done
