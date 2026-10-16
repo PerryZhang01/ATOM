@@ -116,6 +116,17 @@ rank a request runs on. `frontend(config)` refuses such a
 deployment unless the authority is standalone: a prefill-decode run spans two
 API servers that must share one.
 
+A deployment that offloads KV to an lmcache server (``lmcache_mp``), the
+prefill side of a prefill-decode run, needs an ``lmcache`` entry, and a run
+file with one needs such a deployment. `frontend(config)` then starts LP
+``lmcache`` (`lmcache`, `atom.compass.kv.lmcache_server.LMCacheLP`) in a
+process of its own. The entry holds ``server``, the ``lmcache server`` flags;
+the request loop's laws, ``lookup_s`` (``[fixed, per prompt chunk]``) and
+``request_s``; optional ``copy_width``, 1 when absent; and optional
+``writers``, the writer ranks per DP rank, 1 when absent. The copy engine
+prices on the machine's ``interconnect.host_link``. Its channels' lookahead is
+``lmcache_ipc_s``, the run's ``ipc_s`` when absent (`add_lmcache`).
+
 The API server's ``--compass-clock-endpoint`` sets `CLOCK_ENV`: the authority
 is not co-hosted but served by `authority`, its own process started before the
 engines (``python -m atom.compass.run``), and every LP connects to that
@@ -166,6 +177,7 @@ from atom.compass.clock import (
     prefill_decode_table,
     single_engine_table,
 )
+from atom.compass.clock.channels import add_lmcache
 from atom.compass.clock_transport import connect, serve
 from atom.compass.detect.determinism import StepTable
 from atom.compass.runner import COMPASS_RUNNER_QUALNAME
@@ -176,7 +188,7 @@ CLOCK_ENV = "ATOM_COMPASS_CLOCK_ENDPOINT"
 #: The file an engine LP's clock is mapped from, for its model runner workers.
 NOW_ENV = "ATOM_COMPASS_NOW"
 FRONTEND, ENGINE, TRAFFIC = LpId("frontend"), LpId("engine"), LpId("traffic")
-ROUTER = LpId("router")
+ROUTER, LMCACHE = LpId("router"), LpId("lmcache")
 ATOM_RUNNER = "atom.model_engine.model_runner.ModelRunner"
 #: Keys that differ between two runs of one configuration, kept out of its name.
 PER_RUN = ("clock_endpoint", "out_dir", "client_runs", "router")
@@ -290,6 +302,19 @@ def _pp(run: dict) -> int:
 
 
 def channel_table(run: dict):
+    table = _engines_table(run)
+    if "lmcache" in run:
+        add_lmcache(
+            table,
+            "engine-P" if "kv_write_req_s" in run else ENGINE.name,
+            run.get("lmcache_ipc_s", run["ipc_s"]),
+            _dp(run),
+            run["lmcache"].get("writers", 1),
+        )
+    return table
+
+
+def _engines_table(run: dict):
     common = {k: run[k] for k in ("admission_path", "ipc_s", "stream_s")}
     if "kv_write_req_s" in run:
         return prefill_decode_table(
@@ -316,12 +341,13 @@ def _machine(run: dict):
 def _members(table, dp: int) -> dict | None:
     """At DP width above one, each engine LP's members: rank ``dp<r>`` owns the
     channels whose ``#`` tag names it at that LP's end, ``#dp<r>`` or, on a
-    channel between two engine LPs, ``#dp<sender rank>.dp<receiver rank>``."""
+    channel between two engine LPs, ``#dp<sender rank>.dp<receiver rank>``. A
+    tag's other parts, as the ``tp<k>`` of ``#dp<r>.tp<k>``, name no member."""
     if dp == 1:
         return None
 
     def rank(c, lp):
-        tags = c.name.rpartition("#")[2].split(".")
+        tags = [t for t in c.name.rpartition("#")[2].split(".") if t.startswith("dp")]
         return tags[0] if c.source == lp else tags[-1]
 
     return {
@@ -367,6 +393,99 @@ def _bind_transfer(config, run: dict) -> None:
         ),
         Scope(run["kv_link"]),
     )
+
+
+def _lmcache_stations(run: dict, chunk_bytes: int) -> dict:
+    """LP `lmcache`'s station laws, from the run file's ``lmcache`` entry and
+    the machine spec's host link, a chunk of `chunk_bytes` the copy's unit."""
+    from atom.compass.kv import TransferModel
+
+    entry = run["lmcache"]
+    if missing := {"server", "lookup_s", "request_s"} - set(entry):
+        raise ValueError(
+            f"the run file's lmcache entry states no {', '.join(sorted(missing))}: "
+            "the lmcache server flags, and its request loop's laws"
+        )
+    machine = _machine(run)
+    return {
+        "lookup_s": tuple(entry["lookup_s"]),
+        "request_s": entry["request_s"],
+        "copy": TransferModel(
+            machine.value("interconnect.host_link.latency_s"),
+            machine.value("interconnect.host_link.bandwidth_bytes_per_s"),
+            chunk_bytes,
+        ),
+        "copy_width": entry.get("copy_width", 1),
+    }
+
+
+def _launch_lmcache(config, run: dict, side: str | None) -> None:
+    """Start LP `lmcache`, the stand-in lmcache server, in a process of its own
+    when this deployment offloads KV to one; refuse a deployment and a run file
+    that disagree on whether one runs, or a decode side that would start it."""
+    from atom.kv_transfer.disaggregation.factory import KVConnectorFactory
+
+    kv = config.kv_transfer_config or {}
+    offloads = any(
+        KVConnectorFactory.canonical_name(c.get("kv_connector", "moriio"))
+        == "lmcache_mp"
+        for c in (kv.get("connectors", [kv]) if kv else [])
+    )
+    if offloads != ("lmcache" in run) and (offloads or side != "D"):
+        raise ValueError(
+            f"this deployment {'offloads' if offloads else 'offloads no'} KV to an "
+            f"lmcache server and the run file {'has no' if offloads else 'has an'} "
+            "lmcache entry; LP lmcache runs exactly when the prefill or only "
+            "deployment offloads"
+        )
+    if not offloads:
+        return
+    if side == "D":
+        raise ValueError("LP lmcache serves the prefill side; this is the decode side")
+    from atom.compass.backends import KvGeometry, Parallelism
+    from atom.compass.kv.lmcache_server import parse_server_flags
+
+    tp = 1 if config.enable_dp_attention else config.tensor_parallel_size
+    chunk_bytes = KvGeometry.from_hf_config(
+        config.hf_config,
+        block_size=parse_server_flags(run["lmcache"]["server"]).chunk_size,
+        parallelism=Parallelism(tp_size=tp),
+        kv_dtype=config.kv_cache_dtype,
+    ).bytes_per_block
+    _lmcache_stations(run, chunk_bytes)  # refused here, before the run starts
+    paths = [str(Path(atom.__file__).parents[1]), os.environ.get("PYTHONPATH")]
+    subprocess.Popen(
+        [sys.executable, "-c", LMCACHE_MAIN, str(chunk_bytes)],
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, paths))},
+    )
+
+
+#: LP `lmcache`'s process, given a chunk's bytes.
+LMCACHE_MAIN = "import sys; from atom.compass import run; run.lmcache(int(sys.argv[1]))"
+
+
+def lmcache(chunk_bytes: int) -> None:
+    """LP `lmcache`: the stand-in server at its flags' URL, on the run's clock
+    until its ``+inf`` grant, then its hand-in."""
+    import zmq
+
+    from atom.compass.kv.lmcache_server import LMCacheLP, LMCacheServer
+
+    run = spec()
+    rt = _runtime(LMCACHE, run)
+    rt.client_run_ended = lambda k: _hand_in(run, LMCACHE.name, rt.refusals, k)
+    server = LMCacheServer(run["lmcache"]["server"], chunk_bytes=chunk_bytes)
+    sock = zmq.Context.instance().socket(zmq.ROUTER)
+    sock.bind(server.url)
+    ended = []
+    try:
+        LMCacheLP(rt, sock, server, **_lmcache_stations(run, chunk_bytes)).serve()
+    except BaseException as e:
+        ended = [f"ended:{LMCACHE.name} raised {e!r}"]
+        raise
+    finally:
+        _hand_in(run, LMCACHE.name, rt.refusals + ended)
+        sock.close(linger=0)
 
 
 def configuration(run: dict) -> dict:
@@ -681,6 +800,7 @@ def frontend(config):
             target=_write_on_early_end, args=(run, authority), name="compass early end"
         )
         _early_end.start()
+    _launch_lmcache(config, run, side)
     rt = _runtime(lp, run, cls=_StoppingClock)
     rt.client_run_ended = lambda k: _frontend_hand_in(run, rt, k)
     return _start_on_leaving(rt, authority)
