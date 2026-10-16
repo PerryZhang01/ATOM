@@ -175,12 +175,12 @@ def _client_run(cell, run) -> tuple[list[dict], list[str], dict]:
     does not take."""
     steps = _steps(cell)
     export = json.loads((Path(cell) / CLIENT_RUN).read_text())
-    warmup = set(export.get("warmup") or ())
+    warmup_names = set(export.get("warmup") or ())
     (split,) = served(Path(cell) / "steps", [export["requests"]]).values()
     split = [s for s in split if not s["is_dummy_run"]]
     ids = {k: v for s in split for k, v in s.get("response_ids", {}).items()}
     held = [{ids.get(r[0], r[0]) for r in s["batch"]} for s in split]
-    warm = [bool(names) and names <= warmup for names in held]
+    warm = [bool(names) and names <= warmup_names for names in held]
     mine = [s["client_run"] == 0 for s in split]
     traces = sorted({t for s, m in zip(split, mine) if m for t in s["traces"]})
     before = warm[: mine.index(True)]
@@ -189,8 +189,8 @@ def _client_run(cell, run) -> tuple[list[dict], list[str], dict]:
         why += _not_graded(run, traces)
     if why:
         raise ValueError(f"{cell} is not graded: " + "; ".join(why))
-    graded = [s for s, m in zip(steps, mine) if m]
-    return graded, traces, {"requests": len(warmup), "steps": sum(warm)}
+    warmup = {"requests": len(warmup_names), "steps": sum(warm)}
+    return [s for s, m in zip(steps, mine) if m], traces, warmup
 
 
 def _not_graded(run, traces) -> list[str]:
