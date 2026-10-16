@@ -4,7 +4,8 @@ workers' transfers on the step loop's LP clock.
 
 `substitute` makes the connector factory build, for `lmcache_mp`, the scheduler
 half `LMCacheMPShell` and the worker half of `compass`, which registers, sends
-and reports nothing; a `multi` that lists `lmcache_mp` builds them too.
+and reports nothing; a `multi` that lists `lmcache_mp` builds them too, and
+its scheduler half is `MultiShell`.
 
 `LMCacheMPShell` is ATOM's own scheduler half (`mp.connector`, PAGE-only or
 native-state as its `bind_block_manager` picks) with the workers' transfers
@@ -38,6 +39,11 @@ import pickle
 import threading
 from types import SimpleNamespace
 
+from atom.compass.kv.connector import SimulatedKVConnectorScheduler
+from atom.kv_transfer.disaggregation.multi.multi_connector import (
+    MultiConnectorScheduler,
+)
+
 logger = logging.getLogger(__name__)
 
 #: The URL schemes lmcache's request client carries over gRPC.
@@ -55,6 +61,31 @@ def substitute() -> None:
         "scheduler_module": __name__,
         "scheduler_class": LMCacheMPShell.__name__,
     }
+    registry["multi"] = registry["multi"] | {
+        "scheduler_module": __name__,
+        "scheduler_class": MultiShell.__name__,
+    }
+
+
+class MultiShell(MultiConnectorScheduler):
+    """ATOM's `multi` scheduler half, the simulated P/D connector's completions
+    added before its one offload sub-connector reads them.
+
+    A real P/D connector's completions reach the scheduler from its workers'
+    `get_finished`; the simulated one adds them in its scheduler half's
+    `process_completions`, which ATOM's composite calls on one sub-connector
+    only. The two write disjoint fields of the output."""
+
+    def process_completions(self, output):
+        subs = self._connectors
+        pd = [c for c in subs if isinstance(c, SimulatedKVConnectorScheduler)]
+        for c in pd:
+            output = c.process_completions(output)
+        self._connectors = [c for c in subs if c not in pd]
+        try:
+            return super().process_completions(output)
+        finally:
+            self._connectors = subs
 
 
 #: A native-state rank's checkpoint layout: the units it is given, as named.
@@ -247,15 +278,24 @@ class _Rank:
         return dataclasses.replace(key, num_kv_readers=1)
 
     def submit_store_request(self, request_id, spec, event):
-        key = self._key(request_id, spec)
         return self.shell._send(
-            self.kind, "store", key, self.worker_id, spec.block_ids, b""
+            self.kind,
+            "store",
+            self._key(request_id, spec),
+            self.worker_id,
+            spec.block_ids,
+            b"",
         )
 
     def submit_retrieve_request(self, request_id, spec, event):
-        key = self._key(request_id, spec)
         return self.shell._send(
-            self.kind, "retrieve", key, self.worker_id, spec.block_ids, b"", 0
+            self.kind,
+            "retrieve",
+            self._key(request_id, spec),
+            self.worker_id,
+            spec.block_ids,
+            b"",
+            0,
         )
 
 
@@ -329,7 +369,6 @@ def clocked_adapter(cls, config, **kwargs):
         # Membership only: the step loop adds to `released` and nothing removes.
         ready = [f for f in sock.held if f[0] is None or f[2] in rt.released[f[1]]]
         sock.held = [f for f in sock.held if f not in ready]
-        ready.sort(key=lambda f: (f[0] is not None, f[0] or 0.0, f[2] or 0))
         for arrival, back, seq, frames in ready:
             sock.staged = frames
             if arrival is None:

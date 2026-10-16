@@ -51,7 +51,7 @@ from atom.compass import run as compass_run
 from atom.compass.backends import KvGeometry, Parallelism
 from atom.compass.clock import ClockAuthority, LpId
 from atom.compass.clock_transport import connect, serve
-from atom.compass.kv import SimulatedKVConnector
+from atom.compass.kv import WRITE_REQ_KEY, SimulatedKVConnector
 from atom.compass.kv.lmcache_mp import LMCacheMPShell
 from atom.compass.runner.overrides import NonAllocatingRunner, RunnerRefusal
 from atom.kv_transfer.disaggregation.factory import KVConnectorFactory
@@ -72,13 +72,16 @@ from atom.utils.distributed import utils as dist_utils
 
 STEP = 0.01  # the step loop's clock calls, one per step
 CHUNKS = len(TOKENS) // CHUNK
+COMPASS = {"kv_connector": "compass", "kv_role": "kv_producer"}
 
 
 @pytest.fixture
 def factory(monkeypatch):
-    """The connector factory's `lmcache_mp` entry, as it was, after the test."""
+    """The connector factory's `lmcache_mp` and `multi` entries, as they were,
+    after the test."""
     registry = KVConnectorFactory._registry
-    monkeypatch.setitem(registry, "lmcache_mp", registry["lmcache_mp"])
+    for name in ("lmcache_mp", "multi"):
+        monkeypatch.setitem(registry, name, registry[name])
 
 
 def _kv(port) -> dict:
@@ -88,12 +91,17 @@ def _kv(port) -> dict:
 
 class Engine:
     """An engine process's scheduler half on the step loop, against LP lmcache
-    and an authority served here; the traffic and frontend LPs idle."""
+    and an authority served here; every other LP idles. With `pd`, the engine
+    is the prefill side of a prefill-decode run, its connector a `multi` of
+    `compass` and `lmcache_mp`."""
 
-    def __init__(self, tmp_path, monkeypatch, tp=1, **entry) -> None:
+    def __init__(self, tmp_path, monkeypatch, tp=1, pd=False, **entry) -> None:
         monkeypatch.setattr(clock, "_installed", None)
         monkeypatch.setattr(dist_utils, "LP_OF_RANK", None)
         self.run = run = _run(tmp_path, writers=tp, **entry)
+        if pd:
+            run |= {"router_s": 2.0**-12, "kv_write_req_s": 2.0**-10}
+            run["kv_link"] = "inter_node"
         table = compass_run.channel_table(run)
         self.served = serve(
             ClockAuthority(table, bound_s=run["bound_s"]), "tcp://127.0.0.1:0"
@@ -108,14 +116,19 @@ class Engine:
             lambda *a, **k: started.append((a, real(*a, **k))) or started[-1][1],
         )
         port = run["lmcache"]["server"][-1]
-        self.config = _config(
-            _kv(port), tensor_parallel_size=tp, kv_cache_block_size=CHUNK
-        )
-        compass_run._launch_lmcache(self.config, run, None)
+        kv = _kv(port)
+        if pd:
+            write = {WRITE_REQ_KEY: f"inproc://kv-write-req-{os.getpid()}"}
+            kv = {"kv_connector": "multi", "connectors": [COMPASS | write, kv]}
+        self.config = _config(kv, tensor_parallel_size=tp, kv_cache_block_size=CHUNK)
+        compass_run._launch_lmcache(self.config, run, compass_run._pd_side(self.config))
         (argv, *_), self.proc = started[0]
         self.chunk_bytes = int(argv[-1])
+        me = "engine-P" if pd else "engine"
         self.idle = [
-            connect(LpId(lp), self.served.endpoint) for lp in ("traffic", "frontend")
+            connect(lp, self.served.endpoint)
+            for lp in table.registry.ids()
+            if lp.name not in (me, "lmcache")
         ]
         for conn in self.idle:
             conn.send(("NER", math.inf, [], math.inf))
@@ -123,9 +136,11 @@ class Engine:
             self.shell = KVConnectorFactory.create_connector(self.config, "scheduler")
             self.shell.bind_block_manager(SimpleNamespace(paged_state_checkpoints=None))
         self.rt = clock.installed()
+        subs = getattr(self.shell, "_connectors", [self.shell])
+        [self.lm] = [s for s in subs if isinstance(s, LMCacheMPShell)]
         # What the shell hands ATOM's scheduler half at each step, when anything.
         self.reported = []
-        impl = self.shell._inner._impl
+        impl = self.lm._inner._impl
         real = impl.process_completions
 
         def spy(output):
@@ -140,12 +155,12 @@ class Engine:
         meta = LMCacheOffloadMetadata()
         for request in requests:
             meta.add_request(request)
-        self.shell._inner._impl.build_connector_meta = lambda: meta
-        self.shell.build_connector_meta()
+        self.lm._inner._impl.build_connector_meta = lambda: meta
+        self.lm.build_connector_meta()
 
-    def step(self) -> None:
+    def step(self) -> KVConnectorOutput:
         self.rt.advance_to(self.rt.now + STEP)
-        self.shell.process_completions(KVConnectorOutput())
+        return self.shell.process_completions(KVConnectorOutput())
 
     def finish(self) -> list:
         """Idle to the run's end; LP lmcache's refusals."""
@@ -187,8 +202,14 @@ def test_each_reply_is_reported_one_step_after_the_step_that_takes_it(
 
     engine.build(_save("r0"))  # at 0
     stored = IPC + copy + IPC
+    busy = []
     while rt.now < stored + 3 * STEP:
         engine.step()
+        busy.append((rt.now, shell.has_pending_work()))
+    # The engine keeps stepping from the send to the step that reports the
+    # reply, though ATOM's scheduler half was handed no save to wait for.
+    reported = _at_step(stored) + STEP
+    assert [t for t, b in busy if b] == [t for t, _ in busy if t < reported - 1e-9]
     # A blocking lookup: LOOKUP, then QUERY_PREFETCH_STATUS, each a round trip
     # the step loop idles through.
     asked = rt.now
@@ -257,6 +278,69 @@ def test_two_writer_ranks_report_a_save_once_both_copies_end(
     ]
 
 
+def test_a_multi_beside_the_prefill_connector_reports_its_writes_and_saves(
+    tmp_path, monkeypatch, factory
+):
+    engine = Engine(tmp_path, monkeypatch, pd=True)
+    rt = engine.rt
+    assert rt.me == LpId("engine-P")
+    [pd, _] = engine.shell._connectors
+    copy = LATENCY_S + CHUNKS * engine.chunk_bytes / BANDWIDTH
+    pd._due["w0"] = 0.0  # a write to decode, done at 0
+    engine.build(_save("r0"))
+    stored = IPC + copy + IPC
+    sent = []
+    while rt.now < stored + 3 * STEP:
+        if (out := engine.step()).finished_sending:
+            sent.append((rt.now, out.finished_sending))
+    try:
+        assert engine.finish() == {"refusals": []}
+    finally:
+        for sock in pd._socks.values():
+            sock.raw.close(linger=0)
+    # Both one call late: the write's end seen at the first step, the store's
+    # reply taken at the first step at or after its arrival.
+    assert sent == [(pytest.approx(2 * STEP), {"w0"})]
+    assert engine.reported == [
+        (pytest.approx(_at_step(stored) + STEP), [SaveOperationId("r0", 0)], [])
+    ]
+
+
+def test_a_released_reply_still_on_the_wire_is_waited_for(
+    tmp_path, monkeypatch, factory
+):
+    import zmq
+
+    engine = Engine(tmp_path, monkeypatch)
+    rt = engine.rt
+    copy = LATENCY_S + CHUNKS * engine.chunk_bytes / BANDWIDTH
+    engine.build(_save("r0"))
+    [(back, sock)] = engine.lm._socks.items()
+
+    class OnTheWire:
+        """The writer's socket, its released reply unread until it is polled."""
+
+        polled = False
+
+        def recv_multipart(self, flags=0):
+            if not self.polled and rt.released[back] - rt.arrived[back]:
+                raise zmq.Again
+            return sock.recv_multipart(flags)
+
+        def poll(self, *args):
+            self.polled = True
+            return sock.poll(*args)
+
+    engine.lm._socks[back] = OnTheWire()
+    stored = IPC + copy + IPC
+    while rt.now < stored + 3 * STEP:
+        engine.step()
+    assert engine.finish() == {"refusals": []}
+    assert engine.reported == [
+        (pytest.approx(_at_step(stored) + STEP), [SaveOperationId("r0", 0)], [])
+    ]
+
+
 def test_a_rank_dates_its_transfer_on_the_lp_clock(monkeypatch):
     monkeypatch.setattr(clock, "_installed", SimpleNamespace(read_clock=lambda: 7.0))
     assert transfer._PendingSave(None, None, 0, CHUNK).started_at == 7.0
@@ -269,9 +353,6 @@ def test_a_server_url_lmcache_reaches_over_grpc_is_refused_by_its_scheme(url):
     kv = {**OFFLOAD, "kv_connector_extra_config": {"lmcache.mp.server_urls": url}}
     with pytest.raises(ValueError, match=f"{re.escape(url)}.* over gRPC"):
         LMCacheMPShell(_config(kv))
-
-
-COMPASS = {"kv_connector": "compass", "kv_role": "kv_producer"}
 
 
 @pytest.mark.parametrize(
@@ -374,6 +455,8 @@ def test_a_one_deployment_run_loads_a_stored_prefix_back(tmp_path, monkeypatch):
     from atom.compass import cli
 
     monkeypatch.setattr(test_vertical_slice, "SCRAPE_S", math.inf)
+    # The readings are keyed by the performance environment the server runs in.
+    monkeypatch.setenv("AITER_LOG_LEVEL", "WARNING")
     machine = _machine(tmp_path)
     gpu = os.environ.get("HIP_VISIBLE_DEVICES", "0")
     cli.main(
