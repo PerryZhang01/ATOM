@@ -232,10 +232,10 @@ def test_a_step_outside_the_residuals_hull_is_refused_and_fails_coverage(
 ):
     records = [record(tmp_path, monkeypatch, *MIXED)]
     planned = plan(*records)
-    # The default box, its first facet tightened to tokens / 2^10 <= 32 / 2^10.
-    box = fitted({"unit": linear()}, {"unit": 1.0})["hull"]["facets"]
-    box[0][-1] = -32 / 2**10
-    hull = fitted({"unit": linear()}, {"unit": 1.0}, hull={"facets": box})
+    # Each kind's default box, its first facet tightened to tokens / 2^10 <= 32 / 2^10.
+    hull = fitted({"unit": linear()}, {"unit": 1.0})
+    for fitted_kind in hull["kinds"].values():
+        fitted_kind["hull"]["facets"][0][-1] = -32 / 2**10
     member = measured(planned, located(tmp_path, planned), residual=hull)
 
     out = coverage(tmp_path, member, *records)
