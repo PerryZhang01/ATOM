@@ -188,18 +188,23 @@ def test_a_population_on_another_ladder_and_tp_width_refuses_naming_both(
         trace_steps, "roots_for", lambda modules: (ATOM_ROOT, AITER_ROOT)
     )
     served = recorded(tmp_path, monkeypatch, SHORT, ladder=[1, 2, 4])
+    # A TP-2 rank's engine file, which this suite's runner does not write.
+    engine = served / serve.STEPS / "dp0.engine.json"
+    stated = json.loads(engine.read_text())
+    engine.write_text(json.dumps(stated | {"tensor_parallel_size": 2}))
     run = build(tmp_path, "--step-stub", stub(tmp_path))
     population = trace_steps.publish(served, run, "compass trace steps").token()
+    # Planned from the population's steps, the bundle covers them.
     planned = plan(served / serve.STEPS)
     member = measured(planned, located(tmp_path, planned))
-    token, _ = bundle(tmp_path, monkeypatch, member, tensor_parallel_size=2)
+    token, _ = bundle(tmp_path, monkeypatch, member)
     monkeypatch.setattr(serve, "serve", unstarted)
 
     with pytest.raises(ValueError, match="arguments resolve: ladder") as refused:
         drive_run.main(flags(tmp_path, "--step-grid", token, "--coverage", population))
 
     assert str(refused.value).endswith(
-        f"ladder [1, 2, 4] there, {LADDER} here; tensor_parallel_size 1 there, 2 here"
+        f"ladder [1, 2, 4] there, {LADDER} here; tensor_parallel_size 2 there, 1 here"
     )
 
 
