@@ -187,10 +187,12 @@ def test_decode_sends_the_write_request_to_the_prefill_deployment_that_served_it
 
 # --- atomesh between scripted frontends ---------------------------------------
 
-#: Eight requests a sixteenth of U apart, two tokens each: all are in prefill
-#: at once, so each side's least-load choice walks its workers in the order
-#: the router sorts them, base URL then DP rank, and starts again.
-WORKLOAD = [(k * U / 16, 2) for k in range(8)]
+#: Eight requests at one arrival, two tokens each, placed one at a time: all
+#: are in prefill at once, so each side's least-load choice walks its workers
+#: in the order the router sorts them, base URL then DP rank, and starts again.
+#: Both deployments of a side then send the router messages of one seq at one
+#: arrival, which it holds at once.
+WORKLOAD = [(0.0, 2)] * 8
 #: Request k's (deployment, DP rank) on each side.
 PLACED = [((k % 4) // 2, k % 2) for k in range(8)]
 
