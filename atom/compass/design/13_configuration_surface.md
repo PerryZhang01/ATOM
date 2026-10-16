@@ -135,7 +135,7 @@ python -m atom.entrypoints.openai_server <ATOM arguments> \
 | `--store` | the artifact store keys resolve in, the configuration's `memory_readings` included (`07` D41) | **none — refuses** |
 | `--host-laws` | the host laws by store key (`09` D54), composed by `01` D4's recurrence | none: the run charges no host time and records that |
 | `--on-refusal` | `mark`: a refused step costs 0 s, its reason is recorded, and the run continues. `abort`: stop at the first refusal; the run summary is still written. Either way a refusal makes the run a coverage report (`08` D50.1) | `mark` (`08` D50.1) |
-| `--roofline-floor-s` | superseded by the owner's ruling on [#1047](https://github.com/jgong5/ATOM/issues/1047): the step roofline has no host bound, so this setting is a switch with no value, the run-file key `step_roofline`. On, it composes `StepFallbackBackend`: the step roofline (`10` D64) prices the device time of the steps the backend refuses, with the method its inputs give it | off; `run.json` records it when on |
+| `--step-roofline` | a switch, named by its run-file key `step_roofline`, with no value: the step roofline has no host bound (the owner's ruling on [#1047](https://github.com/jgong5/ATOM/issues/1047)). On, it composes `StepFallbackBackend`: the step roofline (`10` D64) prices the device time of the steps the backend refuses, with the method its inputs give it | off; `run.json` records it when on |
 | `--coverage` | `shape_population` keys and `record` directories the backend's coverage check reads before the run starts; a failed check refuses the run (`07` D37) | off; `run.json` records the check's result, or that none ran |
 
 `run` reads the `memory_readings` entry for its configuration (`07` D41) and refuses when
@@ -199,8 +199,8 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
 | `measure steps` | 1c, on the bench | GPU | its `<batches>`, and `--grid`'s inputs | `--store`: one `step_measurement` per distinct batch |
 | `measure ops` | 1b, collectives included | GPU, each width | the signatures `trace ops` captured; the stated collective entry points (`07` D40) | per-signature measurements |
 | `measure memory` | 2 | GPU | ATOM's arguments | `--store`: one `memory_readings` for the configuration; `--out`: `run.json`, logs |
-| `fit steps` | from 1c's measurements | none | `record` directories and `step_measurement` entries, as the backend accepts | `--store`: a `step_linear_law` or a step grid bundle, with its report; `--out`: a readable copy |
-| `fit host` | from real runs | none | `record` directories only | `--store`: `host_laws`, with its report |
+| `fit steps` | from 1c's measurements | none | the machine spec; `record` directories and `step_measurement` entries, as the backend accepts | `--store`: a `step_linear_law` or a step grid bundle, with its report; `--out`: a readable copy |
+| `fit host` | from real runs | none | the machine spec; `record` directories only | `--store`: `host_laws`, with its report |
 | `fit ops` | from 1b's and 1c's measurements | none | `measure ops`'s measurements, and 1c's for the region terms | `price_list`, `region_terms` |
 | `run` | a simulated serve | none | a backend, the machine spec, the configuration's `memory_readings`, ATOM's arguments; the requests clients send | `--out`: the step record with its cost lines, the step table, the run summary, `run.json` with the run file and what grading reads (below), logs |
 
