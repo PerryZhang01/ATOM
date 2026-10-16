@@ -117,7 +117,8 @@ def main(argv: list[str]) -> None:
         for v, key in keys.items()
         if not store.directory_for(key).exists()
     ]
-    print(f"{len(points)} distinct batches, {len(points) - len(todo)} in the store")
+    held = len(points) - len(todo)
+    print(f"{len(points)} distinct batches, {held} in the store", flush=True)
     refused = []
     try:
         if todo:
@@ -422,5 +423,8 @@ def _measure(bench, config, sampling, store, command, readings, todo) -> list[st
             gates=GateState.of(),
             members={member_name(*MEMBER): json.dumps(member).encode()},
         )
-        print(f"measured {key} as {key.token()}: {got['median_ns'] / 1e6:.3f} ms")
+        ms = got["median_ns"] / 1e6
+        print(
+            f"measured {key.values['step_kind']} {key.token()}: {ms:.3f} ms", flush=True
+        )
     return refused
