@@ -61,7 +61,11 @@ def check(steps: list[dict]) -> dict:
         law = {"E": e, "W_pre": pre, "W_launch": l1 - l0, "W_post": post}
         law = {g: (v * 1e-9, 0, 0) for g, v in law.items()}
         rec.laws = {k: law for k in FORWARD_KINDS}
-        queued = rec.ends[1] - max(now + e * 1e-9, rec.ends[0]) - pre * 1e-9
+        entry = max(now + e * 1e-9, rec.ends[0])
+        queued = rec.ends[1] - entry - pre * 1e-9
+        # Under MTP, R1 waits inside W_pre: where its wait starts, or its release.
+        head = (m0 - s["t_enter_ns"] - (g1 - g0)) * 1e-9
+        due = max(entry + head, rec.output_end)
         batch = SimpleNamespace(total_tokens_num=0, total_seqs_num=0)
         batch.total_seqs_num_prefill = sum(not d for *_, d in s["rows"])
         batch.produces_output = lambda out=s["produces_output"]: out
@@ -72,7 +76,7 @@ def check(steps: list[dict]) -> dict:
         period = (s["t_exit_ns"] - last) * 1e-9
         r1_ms = None
         if "t_mtp_ns" in s:  # released before the launch
-            r1_ms = (charge - (post + l1 - l0 + m1 - last) * 1e-9) * 1e3
+            r1_ms = (due - now - (m1 - last) * 1e-9) * 1e3
         elif "t_recv_ns" in s:
             r1_ms = (charge - (post + r1 - last) * 1e-9) * 1e3
         res, queued = (charge - period) * 1e3, max(queued, 0.0) * 1e3
