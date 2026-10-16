@@ -4,19 +4,17 @@
 `run.runner` installs the device readings on the worker; the runner's
 `_estimate_cudagraph_overhead` then refuses any reading built for another
 `enforce_eager` than its config's. Each case here installs through `run.runner`
-with a Qwen3.5-27B config at TP1 on the suite's machine document; the
-reservation cases read back through that method.
+with a Qwen3.5-27B config at TP1 on the suite's machine document, its memory
+readings the entry `with_readings` publishes; the reservation cases read back
+through that method.
 """
 
-import copy
-import hashlib
 import json
 from types import SimpleNamespace
 
 import pytest
 import torch
 from test_memory_readings import (
-    ACTIVATIONS,
     CAPTURE_SIZES,
     CONFIG_JSON,
     DOCUMENT,
@@ -24,16 +22,17 @@ from test_memory_readings import (
     GRAPH_POOL_BY_DTYPE,
     MAX_NUM_BATCHED_TOKENS,
     META_8B,
-    MODEL_TERMS_BY_DTYPE,
+    READINGS,
     WARMUP_TOKENS,
     overridden,
+    with_readings,
 )
 from test_vertical_slice import _run_file
 from transformers import PretrainedConfig
 
 from atom.compass import run as compass_run
+from atom.compass.artifacts import ArtifactRefusal
 from atom.compass.runner.overrides import NonAllocatingRunner
-from atom.compass.spec import SpecRefusal
 
 
 def _installed(
@@ -47,10 +46,12 @@ def _installed(
     ep=False,
     sizes=None,
     hf_overrides=None,
+    readings=READINGS[1],
     **run,
 ):
-    """A worker's runner after `run.runner` installed its readings. With
-    `hf_overrides`, the config.json leaves out each key they set."""
+    """A worker's runner after `run.runner` installed its readings, the entry
+    holding `readings`. With `hf_overrides`, the config.json leaves out each
+    key they set."""
     monkeypatch.setenv(compass_run.ENV, str(_run_file(tmp_path, **run)))
     raw = json.loads(CONFIG_JSON.read_text())
     if hf_overrides is None:
@@ -83,6 +84,8 @@ def _installed(
         ),
         _piecewise_cg_active=lambda: piecewise,
     )
+    machine = run.get("machine", DOCUMENT)
+    with_readings(runner, tmp_path / "store", readings, machine)
     compass_run.runner(runner, META_8B)
     return runner
 
@@ -102,7 +105,7 @@ def test_a_whole_graph_capture_reserves_a_fifth_of_the_activations(
     monkeypatch, tmp_path
 ):
     assert MAX_NUM_BATCHED_TOKENS == WARMUP_TOKENS
-    activations = MODEL_TERMS_BY_DTYPE["bfloat16"]["activations"]
+    activations = READINGS[1]["activation_bytes"]
     assert _reserved(monkeypatch, tmp_path, eager=False) == int(activations * 0.2)
 
 
@@ -120,13 +123,11 @@ def test_the_piecewise_estimate_takes_the_data_parallel_width(monkeypatch, tmp_p
     assert reserved == int(per_token * 3)
 
 
-def test_a_measured_entry_sizes_the_whole_graph_reservation(monkeypatch, tmp_path):
-    # The entry is keyed by the served config.json's digest and travels in the
-    # run file as JSON, which writes its width keys as strings.
-    digest = "sha256:" + hashlib.sha256(CONFIG_JSON.read_bytes()).hexdigest()
-    machine = copy.deepcopy(DOCUMENT)
-    machine["device"]["activations"] = [dict(ACTIVATIONS, fingerprint=digest)]
-    reserved = _reserved(monkeypatch, tmp_path, eager=False, machine=machine)
+def test_the_entry_s_activations_size_the_whole_graph_reservation(
+    monkeypatch, tmp_path
+):
+    measured = dict(READINGS[1], activation_bytes=MAX_NUM_BATCHED_TOKENS * 180_480)
+    reserved = _reserved(monkeypatch, tmp_path, eager=False, readings=measured)
     assert reserved == int(MAX_NUM_BATCHED_TOKENS * 180_480 * 0.2)
 
 
@@ -145,75 +146,27 @@ def test_a_field_only_hf_overrides_sets_reaches_the_installed_readings(
 
 
 @pytest.mark.parametrize(
-    ("dpa", "dp", "key"), [(True, 8, "1x8"), (False, 2, 1), (True, 1, 1)]
+    ("dpa", "dp", "ep", "label"),
+    [(True, 8, False, "1x8"), (True, 8, True, "1x8x8"), (False, 2, False, 1)],
 )
-def test_dp_attention_reads_its_layout_and_plain_dp_its_width(
-    monkeypatch, tmp_path, dpa, dp, key
+def test_each_layout_reads_its_own_entry_and_labels_its_readings_by_it(
+    monkeypatch, tmp_path, dpa, dp, ep, label
 ):
-    machine = copy.deepcopy(DOCUMENT)
-    constants = machine["device"]["runtime_constants"]
-    reserve = constants["driver_and_collective_reserve_bytes"]
-    residue = constants["allocator_retained_after_load_bytes"]
-    reserve["1x8"], residue["1x8"] = 8.19e9, 2.17e9
+    reserve = 8_190_000_000 + dp + ep
+    measured = dict(READINGS[1], driver_and_collective_reserve_bytes=reserve)
     runner = _installed(
-        monkeypatch, tmp_path, eager=True, dpa=dpa, dp=dp, machine=machine
+        monkeypatch, tmp_path, eager=True, dpa=dpa, dp=dp, ep=ep, readings=measured
     )
-    readings = runner.compass_memory["readings"]
-    (non_torch,) = readings["non_torch"]
-    (load,) = [row for row in readings["peak_torch"] if row["name"] == "load residue"]
-    assert non_torch["source"].endswith(f"[{key}]")
-    assert load["source"].endswith(f"[{key}]")
-    assert (non_torch["nbytes"], load["nbytes"]) == (
-        int(reserve[key]),
-        int(residue[key]),
-    )
+    (non_torch,) = runner.compass_memory["readings"]["non_torch"]
+    assert non_torch["nbytes"] == reserve
+    assert runner.compass_memory["label"].endswith(f" at TP{label}")
 
 
-def test_dp_attention_refuses_a_spec_without_its_layout(monkeypatch, tmp_path):
-    with pytest.raises(SpecRefusal, match="width 1x8; this spec has"):
-        _installed(monkeypatch, tmp_path, eager=True, dpa=True, dp=8)
-
-
-def _with_layouts(*keys):
-    """The suite's document with reserve and residue entries at each key."""
-    machine = copy.deepcopy(DOCUMENT)
-    constants = machine["device"]["runtime_constants"]
-    for n, key in enumerate(keys):
-        constants["driver_and_collective_reserve_bytes"][key] = 8.19e9 + n * 1e9
-        constants["allocator_retained_after_load_bytes"][key] = 2.17e9 + n * 1e8
-    return machine
-
-
-@pytest.mark.parametrize(("ep", "key"), [(True, "1x8x8"), (False, "1x8")])
-def test_expert_parallelism_under_dp_attention_reads_its_own_layout(
-    monkeypatch, tmp_path, ep, key
-):
-    machine = _with_layouts("1x8", "1x8x8")
-    constants = machine["device"]["runtime_constants"]
-    runner = _installed(
-        monkeypatch, tmp_path, eager=True, dpa=True, dp=8, ep=ep, machine=machine
-    )
-    readings = runner.compass_memory["readings"]
-    (non_torch,) = readings["non_torch"]
-    (load,) = [row for row in readings["peak_torch"] if row["name"] == "load residue"]
-    assert non_torch["source"].endswith(f"[{key}]")
-    assert load["source"].endswith(f"[{key}]")
-    assert (non_torch["nbytes"], load["nbytes"]) == (
-        int(constants["driver_and_collective_reserve_bytes"][key]),
-        int(constants["allocator_retained_after_load_bytes"][key]),
-    )
-
-
-def test_expert_parallelism_refuses_a_spec_with_only_the_ep_off_layout(
+def test_an_entry_at_the_expert_parallel_off_layout_does_not_answer_one_on(
     monkeypatch, tmp_path
 ):
-    with pytest.raises(SpecRefusal, match=r"width 1x8x8; this spec has \[1, '1x8'"):
+    _installed(monkeypatch, tmp_path, eager=True, dpa=True, dp=8)
+    with pytest.raises(ArtifactRefusal, match="nearest entry differs in enable_exp"):
         _installed(
-            monkeypatch,
-            tmp_path,
-            eager=True,
-            dpa=True,
-            dp=8,
-            ep=True,
-            machine=_with_layouts("1x8"),
+            monkeypatch, tmp_path, eager=True, dpa=True, dp=8, ep=True, readings=None
         )

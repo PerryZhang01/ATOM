@@ -96,9 +96,25 @@ DEFAULT_ALLOW_LIST: dict[str, str] = {
         "a real run's send times, on the clock its runner's step timestamps "
         "read; a simulated run's traffic LP sends on the run's clock"
     ),
+    "atom/compass/drive/trace_steps.py": (
+        "when trace steps published its population, for the entry's provenance; "
+        "the command reads it after its simulated server has stopped"
+    ),
     "atom/compass/fit/publish.py": (
         "when a fit published its entry, for the entry's provenance; a fit runs "
         "offline on recorded steps and never inside a simulated run"
+    ),
+    "atom/compass/drive/identity.py": (
+        "a command's phase boundaries in run.json, which are wall and monotonic "
+        "time by definition; the tool process reads them, and no simulated time"
+    ),
+    "atom/compass/bench/measure.py": (
+        "when measure steps published an entry, for the entry's provenance; the "
+        "bench runs on a GPU and never inside a simulated run"
+    ),
+    "atom/compass/drive/measure_memory.py": (
+        "when measure memory published its entry, for the entry's provenance; it "
+        "starts a real engine and never runs inside a simulated run"
     ),
 }
 

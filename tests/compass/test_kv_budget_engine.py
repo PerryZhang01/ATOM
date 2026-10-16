@@ -205,7 +205,8 @@ def test_the_pool_is_sized_by_atoms_arithmetic_with_the_card_unread(
 
     sizing = runner.kv_pool_sizing
     assert sizing.num_kvcache_blocks == reply["num_kvcache_blocks"]
-    assert sizing.declared_terms
+    # Every subtracted term is read off the meta build or the entry.
+    assert sizing.declared_terms == ()
     with capsys.disabled():
         print()
         print(sizing.table())

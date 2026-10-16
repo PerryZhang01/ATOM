@@ -177,7 +177,7 @@ compass trace ops                 (ops half)
 compass measure steps  [<batches>...] [--grid <population>...] <sample> \
                        --sampling P --out D --store S -- <ATOM args>          [GPU]
 compass measure ops               (ops half)                                  [GPU]
-compass measure memory                        --out D --store S -- <ATOM args> [GPU]
+compass measure memory           --machine M  --out D --store S -- <ATOM args> [GPU]
 compass fit steps      --backend step-linear|step-grid [--form FORM] [--seed SEED] \
                        RECORD... --client-run RECORD EXPORT... --machine M \
                        --out D --store S
@@ -200,7 +200,7 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
 | `trace ops` | 1a | none | the structures Phase 0 found | `--store`: one `op_graph` per structure |
 | `measure steps` | 1c, on the bench | GPU | its `<batches>`, and `--grid`'s inputs | `--store`: one `step_measurement` per distinct batch |
 | `measure ops` | 1b, collectives included | GPU, each width | the signatures `trace ops` captured; the stated collective entry points (`07` D40) | per-signature measurements |
-| `measure memory` | 2 | GPU | ATOM's arguments | `--store`: one `memory_readings` for the configuration; `--out`: `run.json`, logs |
+| `measure memory` | 2 | GPU | ATOM's arguments; the machine spec | `--store`: one `memory_readings` for the configuration; `--out`: `run.json`, logs, a readable copy |
 | `fit steps` | from 1c's measurements | none | the machine spec; `record` directories, each with the exports of the client runs its server served, and `step_measurement` entries, as the backend accepts | `--store`: a `step_linear_law` or a step grid bundle, with its report; `--out`: a readable copy |
 | `fit host` | from real runs | none | the machine spec; `record` directories only, each with the exports of the client runs its server served | `--store`: `host_laws`, with its report |
 | `fit ops` | from 1b's and 1c's measurements | none | `measure ops`'s measurements, and 1c's for the region terms | `price_list`, `region_terms` |
@@ -225,9 +225,10 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
   Compass tree's source digest, the host key, and the device and stack.
 - **A GPU command refuses rather than warns** (`07` D42): it names its GPU, with no
   default device; it checks that GPU is quiet before and after, keeping both process
-  listings; it records whether it was profiled. `fit` refuses profiled inputs, and inputs
-  from two machines or two configurations: the configuration travels with the data, and
-  the user passes none.
+  listings; it records whether it was profiled. `fit` refuses profiled inputs, inputs
+  from two machines or two configurations, and inputs from another device, stack or torch
+  than its `--machine` spec states: the configuration travels with the data, and the user
+  passes none.
 
 **Instances and client runs:**
 

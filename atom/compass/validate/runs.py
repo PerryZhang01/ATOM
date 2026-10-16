@@ -3,10 +3,22 @@
 
     python -m atom.compass.validate.runs SIMULATED REAL...
 
-Each argument is a cell directory of `cctraces_sim.sh`: its step record in
-`steps/` and aiperf's export in `artifacts/profile_export_aiperf.json`.
-SIMULATED is the cell at the law, and REAL two or more real runs of it, spaced
-in time.
+Each argument is a run directory: its step record in `steps/` and aiperf's
+export in `artifacts/profile_export_aiperf.json`. SIMULATED is the cell at the
+law, and REAL two or more real runs of it, spaced in time.
+
+A directory `cctraces_sim.sh` wrote is graded whole, and refused when its
+run.json skips host segments. In one `record` or `run` wrote, whose run.json
+states a `format_version`, the graded client run is the one whose export is
+`artifacts/client_run.json`, split from the record by `parity.served`: only
+its steps are graded, and every run must have served the same traces. It is
+refused, naming every reason, when steps of requests it did not send precede
+its own: it is then not its server's first client run, and meets the prefix
+cache an earlier one left. A simulated run, whose run.json holds `run_file`,
+is also refused when it skips host segments, or its run file has no host laws
+and so prices no host time; when the step roofline was on; when the run
+refused anything; when it ran the step grid without a passed coverage check;
+and when its backend's fit inputs were profiled or served a trace it served.
 
 The tolerance of a metric is the real runs' own spread: its distance between
 every ordered pair of real runs, at most. A metric's result is its distance
@@ -49,7 +61,12 @@ from pathlib import Path
 
 from scipy.stats import ks_2samp
 
+from atom.compass.parity.served import served
+from atom.compass.run import STEP_GRID
+
 EXPORT = "artifacts/profile_export_aiperf.json"
+#: The export of the client run a `record` or `run` directory grades.
+CLIENT_RUN = "artifacts/client_run.json"
 TARGET = {"ttft": 0.15}
 DEFAULT_TARGET = 0.10
 END_TO_END = {
@@ -77,7 +94,7 @@ def _requests(steps) -> collections.Counter:
     """Prefill tokens per request, keyed by (prompt length, arrival place)."""
     tokens, length = collections.Counter(), {}
     for step in steps:
-        named = {request for request, _key in step["named"]}
+        named = {request for request, _key, *_response_id in step["named"]}
         for (request, _n, context), (q, _c, decode) in zip(step["batch"], step["rows"]):
             tokens[request] += 0 if decode else q
             if request in named:  # its final chunk: the context is the prompt
@@ -149,17 +166,59 @@ def _end_to_end(export) -> dict:
     return {name: export[k][stat] for name, (k, stat) in END_TO_END.items()}
 
 
-def _read(cell) -> dict:
-    run = Path(cell) / "run.json"
-    if run.exists() and json.loads(run.read_text()).get("host", {}).get("skip"):
-        raise ValueError(f"{cell} skips host segments; a what-if run is not graded")
+def _client_run(cell, run) -> tuple[list[dict], list[str]]:
+    """The steps of the client run `cell` grades and the traces they served;
+    refuses, naming every reason, a run grading does not take."""
     steps = _steps(cell)
+    (split,) = served(Path(cell) / "steps", [Path(cell) / CLIENT_RUN]).values()
+    mine = [s["client_run"] == 0 for s in split if not s["is_dummy_run"]]
+    traces = sorted({t for s in split if s["client_run"] == 0 for t in s["traces"]})
+    why = [] if mine[0] else ["steps of requests it did not send precede its own"]
+    if "run_file" in run:
+        why += _not_graded(run, traces)
+    if why:
+        raise ValueError(f"{cell} is not graded: " + "; ".join(why))
+    return [s for s, m in zip(steps, mine) if m], traces
+
+
+def _not_graded(run, traces) -> list[str]:
+    """Why a simulated run, `run` its run.json, whose client run served
+    `traces`, is not graded."""
+    why, refused, coverage = [], run["refusals"], run["coverage"]
+    if run["skip"]:
+        why.append(f"it skips host segments {run['skip']}, a what-if run")
+    if "host" not in run["run_file"]:
+        why.append("its run file has no host laws, so it prices no host time")
+    if run["step_roofline"]:
+        why.append("the step roofline was on")
+    if refused["count"]:
+        why.append(f"it refused {refused['count']}: {refused['reasons']}")
+    if STEP_GRID in run["run_file"] and not (coverage and not coverage["uncovered"]):
+        why.append("it ran the step grid without a passed coverage check")
+    inputs = (run["provenance"]["provenance"] or {}).get("inputs") or []
+    if fitted := sorted({t for i in inputs for t in i["traces"]} & set(traces)):
+        why.append(f"its backend was fitted on traces it served: {fitted}")
+    if profiled := [i["run"] for i in inputs if i.get("profiled")]:
+        why.append(f"its backend was fitted on profiled inputs: {profiled}")
+    return why
+
+
+def _read(cell) -> dict:
+    path = Path(cell) / "run.json"
+    run = json.loads(path.read_text()) if path.exists() else {}
+    if "format_version" in run:
+        steps, traces = _client_run(cell, run)
+    elif run.get("host", {}).get("skip"):
+        raise ValueError(f"{cell} skips host segments; a what-if run is not graded")
+    else:
+        steps, traces = _steps(cell), None
     export = json.loads((Path(cell) / EXPORT).read_text())
     return {
         "counts": _counts(steps, export),
         "distributions": _distributions(steps),
         "end to end": _end_to_end(export),
         "requests": _requests(steps),
+        "traces": traces,
     }
 
 
@@ -198,6 +257,14 @@ def grade(real_cells, simulated_cell) -> dict:
         raise ValueError("a real spread needs two or more real runs")
     real = [_read(c) for c in real_cells]
     simulated = _read(simulated_cell)
+    sent = {str(c): r["traces"] for c, r in zip(real_cells, real)}
+    sent[str(simulated_cell)] = simulated["traces"]
+    if len({json.dumps(t) for t in sent.values()}) > 1:
+        every = set.intersection(*(set(t or ()) for t in sent.values()))
+        odd = {c: sorted(set(t or ()) - every) for c, t in sent.items()}
+        raise ValueError(
+            f"the runs sent different traces; beyond those all sent: {odd}"
+        )
     report = {
         family: {
             name: _grade(

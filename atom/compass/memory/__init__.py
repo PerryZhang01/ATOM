@@ -68,7 +68,9 @@ from atom.compass.memory.graph_pool import (
     reserves,
 )
 from atom.compass.memory.readings import (
+    ENTRY_FIELDS,
     DeviceReadings,
+    MemoryReadings,
     MemoryRefusal,
     ModelTerms,
     device_readings,
@@ -78,6 +80,7 @@ from atom.compass.memory.terms import Reading, Term
 __all__ = [
     "DISCHARGES",
     "EAGER_SOURCE",
+    "ENTRY_FIELDS",
     "NON_KV_TERM_GATE",
     "PREDICTS",
     "RESERVES",
@@ -85,6 +88,7 @@ __all__ = [
     "Comparison",
     "DeviceReadings",
     "GraphPoolComparison",
+    "MemoryReadings",
     "MemoryRefusal",
     "ModelTerms",
     "PiecewiseCapture",
