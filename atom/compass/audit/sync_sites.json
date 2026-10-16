@@ -186,9 +186,9 @@
    "mechanism_why": "a wait inside the data-parallel group's LP: every rank is a member of that one LP, the exchange is never reported to the clock authority and carries no cost; the gathered targets set the group's rounds, and with no host time a rank with output takes the group's max"
   },
   {
-   "id": "atom/compass/runner/overrides.py::_group_step_seconds.join::torch.distributed.all_reduce(t, torch.distributed.ReduceOp.MAX, group)::collective#0",
+   "id": "atom/compass/runner/overrides.py::_group_step_seconds.charge::torch.distributed.all_reduce(t, torch.distributed.ReduceOp.MAX, group)::collective#0",
    "file": "atom/compass/runner/overrides.py",
-   "symbol": "_group_step_seconds.join",
+   "symbol": "_group_step_seconds.charge",
    "call": "torch.distributed.all_reduce",
    "expr": "torch.distributed.all_reduce(t, torch.distributed.ReduceOp.MAX, group)",
    "shape": "collective",
