@@ -48,15 +48,8 @@ from atom.utils.distributed import utils
 
 #: One request per entry, by its max_tokens; unequal, so one rank finishes first.
 MAX_TOKENS = (2, 4, 6, 8)
-#: The slice's machine with the device constants of the layouts it runs, one
-#: TP1 rank of two, with and without expert parallelism, read as TP1's.
+#: The slice's machine.
 DP_MACHINE = copy.deepcopy(DOCUMENT)
-for _name in (
-    "driver_and_collective_reserve_bytes",
-    "allocator_retained_after_load_bytes",
-):
-    _width = DP_MACHINE["device"]["runtime_constants"][_name]
-    _width["1x2"] = _width["1x2x2"] = _width[1]
 #: The tokenizers probed on the checked-in MI308X machine as well, so a slice
 #: model of theirs (Qwen3.8-27B) resolves its tokenizer.
 DP_MACHINE["host"]["tokenizers"] += json.loads(

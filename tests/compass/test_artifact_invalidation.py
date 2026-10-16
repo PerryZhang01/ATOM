@@ -124,12 +124,9 @@ KEY_OF: dict[Row, Key] = {
     Row.MEMORY_READINGS: Key.of(
         Kind.MEMORY_READINGS,
         model="Qwen/Qwen3-32B",
+        machine_spec="sha256:mi308x",
         **LAYOUT,
-        utilization=0.9,
-        max_num_seqs=256,
-        max_model_len=32768,
-        kv_dtype="bf16",
-        block_size=64,
+        engine_config="cudagraph=piecewise,level=3",
     ),
     Row.MACHINE_SPEC_CAPACITY: Key.of(
         Kind.MACHINE_SPEC, device="MI308X-80CU", software_stack="rocm7.2.4"
@@ -144,7 +141,6 @@ KEY_OF: dict[Row, Key] = {
         source_root=ATOM_ROOT.revision,
     ),
 }
-KEY_OF[Row.MACHINE_SPEC_RUNTIME_CONSTANTS] = KEY_OF[Row.MACHINE_SPEC_CAPACITY]
 KEY_OF[Row.MACHINE_SPEC_TOKENIZER_TERMS] = KEY_OF[Row.MACHINE_SPEC_CAPACITY]
 
 
@@ -186,7 +182,7 @@ def publish(
 
 
 def test_the_matrix_is_not_uniform():
-    """The four cells a tidying hand takes away, named one at a time.
+    """The cells a tidying hand takes away, named one at a time.
 
     Each is a sentence the document argues for, and a matrix that lost them
     would still pass a test that only checked the crosses.
@@ -196,7 +192,6 @@ def test_the_matrix_is_not_uniform():
     assert MATRIX[Row.REGION_TERMS][Axis.MODEL].depends
     assert not MATRIX[Row.MACHINE_SPEC_TOKENIZER_TERMS][Axis.DEVICE].depends
     assert not MATRIX[Row.MACHINE_SPEC_CAPACITY][Axis.SOFTWARE_STACK].depends
-    assert MATRIX[Row.MACHINE_SPEC_RUNTIME_CONSTANTS][Axis.SOFTWARE_STACK].depends
 
 
 @pytest.mark.parametrize("kind", [Kind.COVERAGE_HULL])
@@ -342,13 +337,12 @@ def test_a_price_list_survives_a_model_change_and_region_terms_refuses_one(tmp_p
     assert "deepseek-ai/DeepSeek-V3.1" in str(refused.value)
 
 
-def test_a_machine_spec_is_three_rows_and_a_device_change_moves_two(tmp_path):
-    """One artifact, three fingerprints, and they are invalidated by different things.
+def test_a_machine_spec_is_its_rows_and_a_device_change_moves_the_capacity(tmp_path):
+    """One artifact, a fingerprint per row, invalidated by different things.
 
     This is the row that would be destroyed by tidying `machine_spec` into one
-    entry-wide fingerprint: the capacity is the silicon's, the runtime
-    constants are the library build's as much as the silicon's, and the
-    tokenizer terms are host CPU work that no device change touches.
+    entry-wide fingerprint: the capacity is the silicon's, and the tokenizer
+    terms are host CPU work that no device change touches.
     """
     store = ArtifactStore(tmp_path)
     entry = publish(store, KEY_OF[Row.MACHINE_SPEC_CAPACITY])
@@ -357,7 +351,6 @@ def test_a_machine_spec_is_three_rows_and_a_device_change_moves_two(tmp_path):
     with pytest.raises(ArtifactRefusal) as device:
         store.load(entry.key, conditions=moved(BASE, Axis.DEVICE), gates=GATES)
     assert "`machine_spec: capacity` x `device`" in str(device.value)
-    assert "`machine_spec: runtime constants` x `device`" in str(device.value)
     assert "tokenizer terms" not in str(device.value)
 
     with pytest.raises(ArtifactRefusal) as tokenizer:
@@ -376,9 +369,9 @@ def test_a_machine_spec_is_three_rows_and_a_device_change_moves_two(tmp_path):
 def test_an_aiter_bump_refuses_while_its_meaning_is_open(tmp_path):
     """The default, because what an aiter bump means is left open (#168).
 
-    The rows that carry ROCm/AITER/RCCL refuse a bump; `machine_spec`'s
-    capacity does not, because the silicon did not move. If it is settled as
-    "warn", this is the test that changes, and one cell of `MATRIX` with it.
+    The rows that carry ROCm/AITER/RCCL refuse a bump; `machine_spec` does
+    not, because the silicon did not move. If it is settled as "warn", this is
+    the test that changes, and one cell of `MATRIX` with it.
     """
     store = ArtifactStore(tmp_path)
     bumped = BASE.with_reading(
@@ -393,10 +386,7 @@ def test_an_aiter_bump_refuses_while_its_meaning_is_open(tmp_path):
         assert f"`{row}` x `ROCm / AITER / RCCL`" in str(refused.value)
 
     spec = publish(store, KEY_OF[Row.MACHINE_SPEC_CAPACITY])
-    with pytest.raises(ArtifactRefusal) as spec_refused:
-        store.load(spec.key, conditions=bumped, gates=GATES)
-    assert "runtime constants` x `ROCm / AITER / RCCL`" in str(spec_refused.value)
-    assert "capacity` x `ROCm" not in str(spec_refused.value)
+    assert store.load(spec.key, conditions=bumped, gates=GATES).key == spec.key
 
 
 def test_a_refusal_names_every_cell_that_moved(tmp_path):
@@ -493,7 +483,6 @@ BEFORE_HOST_CPU = {
     "region_terms": BUT_HOST_CPU,
     "memory_readings": BUT_HOST_CPU,
     "machine_spec_capacity": ("device",),
-    "machine_spec_runtime_constants": ("software_stack", "device"),
     "machine_spec_tokenizer_terms": ("model",),
     "step_grid_bundle": BUT_HOST_CPU,
 }

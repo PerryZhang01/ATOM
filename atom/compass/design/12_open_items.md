@@ -145,7 +145,7 @@ M-f `14`; M-g `01` D3.5.
 
 | # | Item |
 |---|---|
-| T34 | Test whether the activation coefficient is derivable from geometry: the fallback for a model nobody has run, against the measured coefficient that is the source ([#705](https://github.com/jgong5/ATOM/issues/705)) |
+| ~~T34~~ | ~~Test whether the activation coefficient is derivable from geometry~~ — closed 2026-10-16 by [#965](https://github.com/jgong5/ATOM/issues/965): it is not, within 25% ([#705](https://github.com/jgong5/ATOM/issues/705)); a configuration's `memory_readings` entry is its source |
 | T35 | Derive FLOPs and bytes-moved expressions for the ~20 opaque leaves |
 | T36 | Name the collective algorithm per code path in the machine spec schema |
 | ~~T37~~ | ~~Decide whether the host floor is derivable or stays a per-model constant~~ — ruled 2026-10-11 on #815: measured host laws, keyed by host CPU, `atom` digest, model and engine config, with no transfer (`09` D54, `10` D64) |

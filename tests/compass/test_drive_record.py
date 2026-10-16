@@ -117,6 +117,36 @@ def test_dp_ranks_resolving_different_engines_refuse_the_entry(tmp_path, monkeyp
     assert "engine" not in json.loads((out / "run.json").read_text())
 
 
+def test_dp_ranks_resolving_different_engines_keep_their_cost_lines(
+    tmp_path, monkeypatch
+):
+    out = _two_ranks(tmp_path, monkeypatch, 4000)
+
+    with pytest.raises(ValueError, match="resolved different engines"):
+        record.write_engine_and_costs(out)
+    for r in (0, 1):
+        rows = label(out / f"steps/dp{r}.jsonl")[1]
+        assert rows
+        assert _lines(out / f"steps/dp{r}.cost.jsonl") == [
+            {"version": TABLE_VERSION},
+            *json.loads(json.dumps(rows)),
+        ]
+
+
+def test_a_dp_rank_whose_first_forward_is_a_dummy_gets_its_timed_steps_lines(
+    tmp_path, monkeypatch
+):
+    out = _two_ranks(tmp_path, monkeypatch, ENGINE["num_kvcache_blocks"])
+    steps = _lines(out / "steps/dp1.jsonl")
+    steps[0] = {**steps[0], "is_dummy_run": True, "batch": [], "named": []}
+    (out / "steps/dp1.jsonl").write_text("".join(json.dumps(s) + "\n" for s in steps))
+    record.write_engine_and_costs(out)
+
+    table = _lines(out / "steps/dp1.cost.jsonl")
+    assert [r["step"] for r in table[1:]] == [s["step"] for s in steps[1:]]
+    assert len(table) > 2
+
+
 @pytest.mark.parametrize(
     "ours, atoms, refusal",
     [

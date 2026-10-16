@@ -2,18 +2,26 @@
 # SPDX-License-Identifier: MIT
 #
 # The scheduling-parity test on one node: one workload (atom/compass/parity/
-# traffic.py) at `-tp 2 --enable-dp-attention` on the real engine, recording
+# traffic.py) at one DP-attention configuration on the real engine, recording
 # each step, then on the simulated runner replaying the real steps' times
 # (atom/compass/parity/replay.py), and the two records compared per DP rank.
 #
 # Usage: parity_one_node.sh OUT_DIR
+#   CONFIG           tp2: -tp 2 --enable-dp-attention (default). dsv4-dpa8:
+#                    DeepSeek-V4-Pro's nightly DP-attention prefill server of
+#                    recipes/mesh/DeepSeek-V4.md, aggregated, MTP and expert
+#                    parallelism off: -tp 8 --enable-dp-attention --enable-tbo with
+#                    the nightly's flags and environment; it needs MACHINE.
+#                    Under DP-attention the DP width is the -tp width.
 #   MODEL            model directory with its weights (required)
 #   REQUESTS         requests in the workload (default 64)
 #   GAP_S            seconds between sends, each also waiting for the server to
 #                    admit the one before; 0 sends them back to back (default 0.05)
-#   MACHINE          machine spec (default scripts/compass/machines/mi308x-hjbog18.json)
-#   SERVER_ARGS      more API server flags, on both runs (default --enforce-eager
-#                    --max-model-len 8192 --no-enable_prefix_caching)
+#   MACHINE          machine spec (tp2's default scripts/compass/machines/mi308x-hjbog18.json)
+#   STORE            artifact store holding the simulated configuration's memory
+#                    readings, taken by `compass measure memory` (required)
+#   SERVER_ARGS      more API server flags, on both runs (default CONFIG's; tp2's are
+#                    --enforce-eager --max-model-len 8192 --no-enable_prefix_caching)
 #   WAIT_S           seconds a server has to start, and to stop (default 1800)
 # The real run uses HIP_VISIBLE_DEVICES as set. OUT_DIR gets real/ and sim/,
 # each with its server log and step record (sim/ also has the run file, step
@@ -27,7 +35,21 @@ compass_env "$ROOT"
 compass_require_tree "$ROOT" || exit $?
 OUT=${1:?usage: parity_one_node.sh OUT_DIR}
 MODEL=${MODEL:?MODEL names the model directory}
-SERVER_ARGS=${SERVER_ARGS:---enforce-eager --max-model-len 8192 --no-enable_prefix_caching}
+STORE=${STORE:?STORE names the store holding the memory readings}
+case ${CONFIG:=tp2} in
+tp2)
+    TP=2 ARGS="--enforce-eager --max-model-len 8192 --no-enable_prefix_caching"
+    MACHINE=${MACHINE:-$ROOT/scripts/compass/machines/mi308x-hjbog18.json}
+    ;;
+dsv4-dpa8)
+    TP=8 ARGS="--trust-remote-code --no-enable_prefix_caching --kv_cache_dtype fp8
+        --block-size 16 --gpu-memory-utilization 0.85 --max-num-seqs 512 --enable-tbo"
+    MACHINE=${MACHINE:?CONFIG=dsv4-dpa8 needs MACHINE, the MI355X machine spec}
+    export AITER_BF16_FP8_MOE_BOUND=0 ATOM_MOE_GU_ITLV=1 GPU_MAX_HW_QUEUES=5 ATOM_NUMA_BIND=1
+    ;;
+*) echo "parity_one_node: CONFIG is tp2 or dsv4-dpa8, not $CONFIG" >&2; exit 2 ;;
+esac
+SERVER_ARGS=${SERVER_ARGS:-$ARGS}
 WAIT_S=${WAIT_S:-1800}
 mkdir -p "$OUT/real" "$OUT/sim"
 OUT=$(realpath "$OUT")
@@ -43,7 +65,8 @@ serve() {
     # shellcheck disable=SC2086 # SERVER_ARGS is a word list
     ATOM_DP_MASTER_PORT=$(compass_free_port) ATOM_COMPASS_PARITY_RECORD=$OUT/$side/record setsid \
         python3 -m atom.entrypoints.openai.api_server --model "$MODEL" --host 127.0.0.1 \
-        --server-port "$PORT" -tp 2 --enable-dp-attention $SERVER_ARGS "$@" \
+        --server-port "$PORT" --port "$(compass_free_port)" -tp "$TP" --enable-dp-attention \
+        $SERVER_ARGS "$@" \
         >"$OUT/$side/server.log" 2>&1 &
     server=$!
     until grep -qs "Uvicorn running" "$OUT/$side/server.log"; do
@@ -69,22 +92,23 @@ kill -TERM -- -$server
 leave real
 
 RUN=$OUT/sim/run.json
-python3 - "$RUN" "$OUT" "${MACHINE:-$ROOT/scripts/compass/machines/mi308x-hjbog18.json}" \
-    "$MODEL" "$(compass_free_port)" <<'EOF'
+python3 - "$RUN" "$OUT" "$MACHINE" "$MODEL" "$STORE" "$(compass_free_port)" "$TP" <<'EOF'
 import json, sys
 from pathlib import Path
 
-run, out, machine, model, port = sys.argv[1:]
+run, out, machine, model, store, port, width = sys.argv[1:]
 machine = json.loads(Path(machine).read_text())
-# ponytail: prices the model's tokenizer as the spec's first entry measured it;
-# only arrival latency reads it. Measure the model's own to drop this.
+# ponytail: a spec that measured no tokenizer for the model prices it as its
+# first entry; only arrival latency reads it. Measure the model's own to drop this.
 arch = json.loads((Path(model) / "config.json").read_text())["architectures"][0]
-machine["host"]["tokenizers"][0]["applies_to"].append(arch)
+tokenizers = machine["host"]["tokenizers"]
+if not any(arch in entry["applies_to"] for entry in tokenizers):
+    tokenizers[0]["applies_to"].append(arch)
 Path(run).write_text(json.dumps({
     "clock_endpoint": f"tcp://127.0.0.1:{port}", "bound_s": 1e7,
     "admission_path": "serving", "ipc_s": 2.0**-14, "stream_s": 2.0**-12,
-    "replay": f"{out}/real/record", "machine": machine,
-    "data_parallel_size": 2, "out_dir": f"{out}/sim",
+    "replay": f"{out}/real/record", "machine": machine, "store": store,
+    "data_parallel_size": int(width), "out_dir": f"{out}/sim",
 }))
 EOF
 serve sim --compass-run "$RUN"

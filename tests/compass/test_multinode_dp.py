@@ -44,14 +44,8 @@ from atom.model_engine.engine_core_mgr import CoreManager
 from atom.utils import clock
 
 DP = 4
-#: The slice's machine with the device constants of one TP1 rank of four.
+#: The slice's machine.
 MACHINE = copy.deepcopy(DP_MACHINE)
-for _name in (
-    "driver_and_collective_reserve_bytes",
-    "allocator_retained_after_load_bytes",
-):
-    _width = MACHINE["device"]["runtime_constants"][_name]
-    _width["1x4"] = _width[1]
 
 
 def _bound(port: int) -> bool:

@@ -86,7 +86,11 @@ class _Server:
             state, why = "not a participant", ""
             if lp in self._lps:
                 state = "already bound"
-                why = "a second instance of one role, as xPyD starts, has no LP; "
+                why = (
+                    "two servers claim one deployment's LP; under xPyD each names "
+                    "its own compass_instance, below the run file's "
+                    "prefill_instances or decode_instances; "
+                )
             raise KeyError(
                 f"{' member '.join(map(str, rest))} is {state} at {self.endpoint}; "
                 f"{why}participants: " + ", ".join(map(str, self._lps))

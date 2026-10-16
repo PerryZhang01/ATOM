@@ -216,7 +216,14 @@ def test_records_under_two_stacks_refuse_naming_the_component_and_both_values(
     "args, named",
     [
         (["--backend", "step-stub"], "stated, not fitted"),
-        (["--backend", "step-grid"], "no backend step-grid is fitted; step-linear is"),
+        (
+            ["--backend", "step-op"],
+            "no backend step-op is fitted; step-linear and step-grid are",
+        ),
+        (
+            ["--backend", "step-linear", "--grid-definition", "g.json"],
+            "--grid-definition is read by step-grid, not step-linear",
+        ),
         (
             ["--backend", "step-linear", "0f1e2d3c4b5a"],
             "0f1e2d3c4b5a is not a record directory",
@@ -240,6 +247,25 @@ def test_a_record_no_client_run_names_refuses_naming_it(tmp_path):
 
     with pytest.raises(SystemExit, match=re.escape(f"{a} is named by no --client-run")):
         fit(tmp_path, "fit steps", *LINEAR, a)
+    assert not (tmp_path / "store").exists()
+
+
+@pytest.mark.parametrize(
+    "backend, named",
+    [
+        ("step-linear", "--sessions is read by step-grid, not step-linear"),
+        ("step-grid", "{b} is named by no --client-run, and --sessions keeps"),
+    ],
+)
+def test_sessions_refuse_off_step_grid_and_for_a_grid_input_no_client_run_names(
+    tmp_path, backend, named
+):
+    a, b = record(tmp_path / "a", 19), tmp_path / "b"
+    grid = ["--grid", b, "--grid-definition", "g"] if backend == "step-grid" else []
+    sessions = ["--sessions", "0:4", *clients(a)]
+
+    with pytest.raises(SystemExit, match=re.escape(named.format(b=b))):
+        fit(tmp_path, "fit steps", "--backend", backend, a, *grid, *sessions)
     assert not (tmp_path / "store").exists()
 
 

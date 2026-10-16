@@ -44,10 +44,10 @@ read back through `naming.read_back`; a neighbour that does not parse, is not
 listed, or whose digest has moved is refused by name rather than returned.
 
 **The entry also states two things about its own validity.** A published entry carries the **fingerprint of every row
-the invalidation matrix gives its kind** -- three for a `machine_spec`, whose
-capacity, runtime constants and tokenizer terms are invalidated by different
-things -- and the **state of every gate that shaped it**. Both are required at
-publish rather than checked at load: a campaign that runs for hours and
+the invalidation matrix gives its kind** -- a `machine_spec`'s capacity and
+tokenizer terms are invalidated by different things -- and the **state of
+every gate that shaped it**. Both are required at publish rather than checked
+at load: a campaign that runs for hours and
 produces an entry nobody can certify has spent the hours, and the flag that
 decided the gate is not around to be asked afterwards. `read` states an entry;
 `load` states it *and certifies it*, and they are two calls because the first
@@ -72,7 +72,7 @@ from .fingerprints import Conditions, Fingerprint, OnMismatch, fingerprint, veri
 from .gates import GateState
 from .keys import Key, Kind, refuse_not_a_key
 from .matrix import Row, rows_for
-from .naming import RankCoords, Topology, member_name, read_back
+from .naming import AXES, RankCoords, Topology, member_name, read_back
 from .provenance import Provenance
 from .resolution import Resolution
 from .rules import ArtifactRefusal, Rule
@@ -240,6 +240,21 @@ class ArtifactStore:
                 "json.dumps happened to render it",
             )
         prints = self._fingerprints(key, conditions, gates)
+        stated = key.values
+        differ = [
+            a
+            for a in AXES
+            if stated.get(a, getattr(topology, a)) != getattr(topology, a)
+        ]
+        if differ:
+            raise ArtifactRefusal(
+                Rule.ONE_NAMING_FUNCTION,
+                f"{key} states {', '.join(f'{a}={stated[a]}' for a in differ)} "
+                f"and its members are written at {topology.text}",
+                "publish at the topology the key states; an entry whose ranks "
+                "are not the layout it is keyed by answers for ranks it does "
+                "not hold",
+            )
         self._check_members(key, topology, members)
         if self.directory_for(key).exists():
             self._refuse_overwrite(key, members)

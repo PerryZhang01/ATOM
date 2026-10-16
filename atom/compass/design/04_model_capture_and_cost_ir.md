@@ -1028,8 +1028,7 @@ lands, the term is one coefficient per model and width measured on a real run
 (`03` D16, [#704](https://github.com/jgong5/ATOM/issues/704)), and the scratch is inside
 that reading, so neither this walk nor the per-leaf constants gate stages 2 and 3. The
 walk replaces the coefficient when it lands, and the per-leaf constants are needed from
-then (T4). A model with no measured coefficient takes a geometry form, which
-[#705](https://github.com/jgong5/ATOM/issues/705) tests (`10` T34).
+then (T4). A configuration with no measured coefficient refuses (`10` T34).
 
 ### Open issues
 

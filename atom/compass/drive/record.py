@@ -64,12 +64,17 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def write_engine_and_costs(out) -> None:
-    """Write run.json's ``engine`` entry and each DP rank's cost lines into
+    """Write each DP rank's cost lines and run.json's ``engine`` entry into
     `out`, a stopped server's directory."""
     out = Path(out)
     records = sorted(
         (out / serve.STEPS).glob("dp*[0-9].jsonl"), key=lambda p: int(p.stem[2:])
     )
+    for record in records:
+        # A DP rank no request reached ran only the dummy forwards DP needs.
+        lines = [json.loads(line) for line in record.read_text().splitlines()]
+        idle = all(line["is_dummy_run"] for line in lines)
+        write_table(record, [] if idle else label(record)[1])
     engines = {}
     for record in records:
         engine = json.loads(record.with_suffix(".engine.json").read_text())
@@ -87,8 +92,3 @@ def write_engine_and_costs(out) -> None:
     run = json.loads((out / serve.RUN_JSON).read_text())
     run["engine"] = engines[records[0].stem]
     _write_whole(out / serve.RUN_JSON, json.dumps(run))
-    for record in records:
-        # A DP rank no request reached ran only the dummy forwards DP needs.
-        lines = [json.loads(line) for line in record.read_text().splitlines()]
-        idle = all(line["is_dummy_run"] for line in lines)
-        write_table(record, [] if idle else label(record)[1])

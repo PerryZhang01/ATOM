@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-"""Grading a cell: `python -m atom.compass.validate` on runs laid out as `cctraces_sim.sh` writes them.
+"""Grading a cell: `python -m atom.compass.validate` on runs laid out as `cctraces_sim.sh` writes them,
+and as `record` and `run` do (`_as_recorded`).
 
 Every run's step record is `test_validate_cost`'s, periods at its planted law's
 price; the export and the server log are as `test_validate_runs` and
@@ -17,6 +18,7 @@ from test_validate_runs import EXPORT
 from atom.compass.backends.cost import GROUPS
 from atom.compass.run import LP_FILE
 from atom.compass.validate.__main__ import main
+from atom.compass.validate.runs import CLIENT_RUN
 
 TERM = {"method": "measured", "source": "planted"}
 SHARE = {"steps": 3, "fraction_of_predicted_seconds": 0.4}
@@ -244,3 +246,115 @@ def test_a_cell_of_renamed_names_is_refused_naming_their_names_now(capsys, tmp_p
     (cell / "step_linear").rename(cell / "law")
     with pytest.raises(ValueError, match="now named step_linear/"):
         main([str(cell)])
+
+
+def _as_recorded(cell, warmup=()):
+    """Lay `cell`'s runs out as `record` and `run` write them: each request
+    named at its last prefill row, by key `k<id>` and response id `id-<id>`;
+    an export naming them all, from trace `t<id>`, those in `warmup` as its
+    warmup's, else request `w`, which no step holds; and run.json's identity,
+    with `run`'s grading entries for `step_linear/`, its law and host laws in
+    its run file and its refusals its summary's."""
+    for d in sorted(cell.iterdir()):
+        path = d / "steps" / "dp0.jsonl"
+        lines = [json.loads(x) for x in path.read_text().splitlines()]
+        last = {}
+        for i, line in enumerate(lines):
+            for (r, *_), (_q, _c, decode) in zip(line["batch"], line["rows"]):
+                last[r] = i if not decode else last.get(r, i)
+        for r, i in last.items():
+            lines[i]["named"].append([r, f"k{r}", f"id-{r}"])
+        path.write_text("".join(json.dumps(x) + "\n" for x in lines))
+        export = {"requests": {}, "warmup": {}}
+        for r in last:
+            part = "warmup" if r in warmup else "requests"
+            export[part][f"id-{r}"] = {"trace": f"t{r}", "sampling": {}}
+        if not export["warmup"]:
+            export["warmup"]["id-w"] = {"trace": "tw", "sampling": {}}
+        (d / CLIENT_RUN).write_text(json.dumps(export))
+        run = {"format_version": 2}
+        if d.name == "step_linear":
+            summary = json.loads((d / "summary.json").read_text())
+            run |= {
+                "run_file": {"step_linear": LAW, "host": {"laws": {}}},
+                "step_roofline": False,
+                "skip": [],
+                "refusals": summary["schedule"]["refusals"] | {"reasons": []},
+                "coverage": None,
+                "provenance": {"digest": "sha256:0", "provenance": None},
+            }
+        (d / "run.json").write_text(json.dumps(run))
+
+
+def _graded(capsys, cell):
+    main([str(cell)])
+    out = capsys.readouterr().out.splitlines()
+    return {tuple(r.split(" | ")[1:3]): r.split(" | ")[3:] for r in out[1:]}
+
+
+def test_a_cell_record_and_run_wrote_grades_as_the_one_cctraces_sim_wrote(
+    capsys, tmp_path
+):
+    rows = _rows(capsys, tmp_path)
+    _as_recorded(tmp_path / "c4")
+
+    graded = _graded(capsys, tmp_path / "c4")
+    stated = [graded.pop(k) for k in list(graded) if k[0].startswith("warmup ")]
+    assert graded == rows
+    # Each export names a warmup no step holds; a `cctraces_sim.sh` run reads none.
+    assert stated == [["requests 1, steps 0", "not graded"]] * 4
+
+
+def test_a_refusal_in_the_client_run_record_and_run_wrote_refuses_the_cell(
+    capsys, tmp_path
+):
+    _rows(capsys, tmp_path, law=[("clock", 1)])
+    _as_recorded(tmp_path / "c4")
+
+    with pytest.raises(ValueError, match="step_linear is not graded: it refused 1"):
+        main([str(tmp_path / "c4")])
+
+
+def test_runs_record_and_run_wrote_that_served_other_traces_are_not_one_cell(
+    capsys, tmp_path
+):
+    _rows(capsys, tmp_path)
+    _as_recorded(tmp_path / "c4")
+    export = tmp_path / "c4" / "real1" / CLIENT_RUN
+    t9 = {"requests": {"id-0": {"trace": "t9", "sampling": {}}}}
+    export.write_text(json.dumps(json.loads(export.read_text()) | t9))
+
+    with pytest.raises(ValueError, match=r"sent different traces; .*real1': \['t9'\]"):
+        main([str(tmp_path / "c4")])
+
+
+def _warmed(capsys, cell, slow):
+    """A cell `record` and `run` wrote, request 0 every run's warmup: two steps
+    of its own before request 1's, `slow` times their price in every real run."""
+    steps = [([(200, 200, False)], None), ([(1, 200, True)], 1), *_steps()]
+    for i, ms in enumerate((100, 110, 105)):
+        _run(
+            cell / f"real{i}",
+            [(100, 1000, ms), (600, 0, 1.0)],
+            refusals=None,
+            steps=steps,
+            idle_after={1},
+            stretch={0: slow, 1: slow},
+        )
+    _run(cell / "step_linear", [(100, 1000, 120.0)], steps=steps, idle_after={1})
+    _as_recorded(cell, warmup={0})
+    return _graded(capsys, cell)
+
+
+def test_a_warmed_run_is_graded_on_its_profiling_steps_and_slow_warmup_moves_nothing(
+    capsys, tmp_path
+):
+    rows = _warmed(capsys, tmp_path / "at price", 1.0)
+
+    assert _warmed(capsys, tmp_path / "slow", 1000.0) == rows
+    for run in ("real0", "real1", "real2", "step_linear"):
+        assert rows[f"warmup {run}", "warmup"] == ["requests 1, steps 2", "not graded"]
+    # Cost prices the profiling steps alone: ten prefill chunks, ten decode steps.
+    assert rows["cost real0", "prefill validated"][0].startswith("10 steps")
+    assert rows["cost real0", "decode validated"][0].startswith("10 steps")
+    assert rows["cost real0", "left out"][0].endswith("warm steps, real s {}")

@@ -14,7 +14,7 @@ import math
 from types import SimpleNamespace
 
 import pytest
-from test_memory_readings import CAPTURE_SIZES, DOCUMENT, MAX_NUM_BATCHED_TOKENS
+from test_memory_readings import DOCUMENT, MAX_NUM_BATCHED_TOKENS, READINGS
 from test_run_graph_pool import _installed
 from test_vertical_slice import _run_file
 
@@ -28,8 +28,9 @@ from atom.utils.clock import LPRuntime
 GIB = 1 << 30
 #: The suite's machine document as probed, so its spec terms are measured.
 PROBED = DOCUMENT | {"provenance": DOCUMENT["provenance"] | {"origin": "probed"}}
-#: The spec's graph-pool line at width 1, in the suite's machine document.
-POOL_BASE, POOL_PER_TOKEN = 95_500_000, 318_000
+#: The entry's readings of a start that captured graphs, and the pool it read.
+POOL = 420_000_000
+CAPTURED = dict(READINGS[1], cudagraph_pool_bytes=POOL)
 
 
 def _memory(monkeypatch, tmp_path, **kwargs) -> dict:
@@ -94,33 +95,30 @@ def _check(capsys, tmp_path, log) -> dict[str, str]:
 
 
 @pytest.mark.parametrize(
-    "eager,piecewise,captured",
-    [
-        (True, False, None),
-        (False, False, sum(s for s in CAPTURE_SIZES if s <= 256)),
-        (False, True, sum(s for s in CAPTURE_SIZES if s <= 256)),
-    ],
+    "eager,piecewise,readings",
+    [(True, False, READINGS[1]), (False, False, CAPTURED), (False, True, CAPTURED)],
     ids=["eager", "whole-graph", "piecewise"],
 )
 def test_a_simulated_run_writes_the_readings_it_sized_the_pool_from(
-    monkeypatch, tmp_path, eager, piecewise, captured
+    monkeypatch, tmp_path, eager, piecewise, readings
 ):
-    saved = _memory(monkeypatch, tmp_path, eager=eager, piecewise=piecewise)
+    saved = _memory(
+        monkeypatch, tmp_path, eager=eager, piecewise=piecewise, readings=readings
+    )
     assert saved["tokens"] == MAX_NUM_BATCHED_TOKENS
     assert _total(saved, "cudagraph_overhead") == saved["reserved"]
     assert set(saved["readings"]) == {"peak_torch", "non_torch", "cudagraph_overhead"}
-    if captured is None:
+    if eager:
         assert saved["predicts"] is None
     else:
-        pool = sum(row["nbytes"] for row in saved["predicts"])
-        assert pool == POOL_BASE + POOL_PER_TOKEN * captured
+        assert sum(row["nbytes"] for row in saved["predicts"]) == POOL
 
 
 @pytest.mark.parametrize("factor,verdict", [(1.0, "pass"), (2.0, "fail")])
 def test_each_reading_is_one_row_with_its_own_verdict(
     monkeypatch, tmp_path, capsys, factor, verdict
 ):
-    saved = _memory(monkeypatch, tmp_path, eager=False)
+    saved = _memory(monkeypatch, tmp_path, eager=False, readings=CAPTURED)
     log = _log(
         tmp_path / "real.log",
         peak=_total(saved, "peak_torch"),
@@ -128,11 +126,9 @@ def test_each_reading_is_one_row_with_its_own_verdict(
         pool=600_000_000,
     )
     rows = _check(capsys, tmp_path, log)
-    # Within the gate, but it sums declared terms, so it is not discharged.
-    assert rows["peak_torch"].endswith("not discharged")
-    assert (
-        "* peak_torch: within the gate, and the gate is not discharged" in rows["out"]
-    )
+    # Within the gate, and none of its terms declared: the activations are
+    # the entry's.
+    assert rows["peak_torch"].endswith("pass")
     assert rows["non_torch"].endswith(verdict)
     # The predicted readings' own terms are printed under the table.
     assert rows["weights"].split()[2] == "analytical"

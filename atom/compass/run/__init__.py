@@ -29,6 +29,8 @@ member, the frontend's included, connects to.
   `CompassModelRunner` where it would build its model, in the worker process.
 - `tokenizer(tokenizer, config)` charges the served tokenizer's ``encode`` and
   ``decode`` to the frontend's clock, at the rates the machine spec measured.
+- `http_intake()` is what `atom.utils.compass_loop.HttpChannel` charges the
+  frontend's event loop for each request it takes in.
 - `engine_done(engine)` and `frontend_done(engine)` close each side after the
   finish, each handing in its LP's refusals; the frontend's, when it co-hosts
   the authority, then writes the step table and the run summary. A SIGINT or
@@ -36,11 +38,12 @@ member, the frontend's included, connects to.
   (`atom.utils.compass_loop.CompassEventLoop.stopped`) is a stop: the
   frontend's runtime first ends every LP's run through the authority, so each
   engine leaves its loop at its ``+inf`` grant and hands in, and a client
-  still bound gets ``+inf`` with every event sent it; `frontend_done`
-  hands in the signal, which the summary counts as an ``ended:`` reason, and
-  the server leaves once the summary is written from every hand-in. A server
-  whose ``client_runs`` is ``null`` serves until it is stopped: a stop with no
-  client run open is its run's end, summarised as the finish would be.
+  still bound gets ``+inf`` too, each grant releasing every message sent its
+  LP; `frontend_done` hands in the signal, which the summary counts as an
+  ``ended:`` reason, and the server leaves once the summary is written from
+  every hand-in. A server whose ``client_runs`` is ``null`` serves until it is
+  stopped: a stop with no client run open is its run's end, summarised as the
+  finish would be.
 - `engine_loop(engine)` wraps the engine's loop: under ``step_grid`` it asks the
   workers for the bundle before it, `engine_done` after it, and if either
   raises, the engine hands in the exception as an ``ended:`` reason, with the
@@ -70,14 +73,15 @@ the run there, which still writes the summary),
 LP after another, 1 when absent and ``null`` for no limit; each ends when no
 essential work is left, and the last one's end finishes the run),
 ``host`` (optional: ``laws``, per forward kind and host segment, coefficients
-on ``(1, tokens, seqs)``, zero where absent; ``key``, the `host_key` they were
+on ``(1, tokens, seqs)``, refused where absent; ``key``, the `host_key` they were
 fitted under and the ``machine_spec`` digest of the spec of the platform they
 were fitted on, which a run with laws must match; ``skip``, segments zeroed for
 a what-if run, which the graders refuse),
 ``machine`` (a machine spec mapping), ``parameter_count`` (read with
-``step_roofline``), ``store`` (the artifact store's root) and ``backend`` (the
-backend's ``digest`` and its fit ``provenance``, which nothing here reads),
-both written by `atom.compass.drive.runfile`, and ``out_dir``,
+``step_roofline``), ``store`` (the artifact store's root, where `memory` reads
+the configuration's memory readings) and ``backend`` (the backend's ``digest``
+and its fit ``provenance``, which nothing here reads), both written by
+`atom.compass.drive.runfile`, and ``out_dir``,
 where the step table, the run summary and each server LP's hand-in go, one
 file written as the LP leaves its loop. It holds the LP's refusals: an
 engine's are the worker's refused commands and the engine's refused clock
@@ -85,8 +89,10 @@ calls, a frontend's its executor's refused jobs and its refused clock calls.
 An engine's also holds what its worker's steps cost, for the summary's
 predicted seconds and their shares by method (`backends.cost.GROUPS`).
 It holds the memory the worker predicts too, for
-``python -m atom.compass.memory.check``, and under ``step_grid`` the bundle's
-key, digest and ``describe()`` line, which the summary carries. The authority
+``python -m atom.compass.memory.check``, with the assumption a
+`memory_readings` member it read states, which `compass run` records, and
+under ``step_grid`` the bundle's key, digest and ``describe()`` line, which the
+summary carries. The authority
 removes an earlier run's files there as it starts. At the end of client run
 ``k`` every server LP hands in to ``client-<k>/`` there, and the authority's
 host writes the step table and that client run's summary, its steps taken as
@@ -112,7 +118,11 @@ decode side: `engine(config)` makes it the ``engine-P`` or ``engine-D`` LP and
 binds the connector's transfer model. The write-request address comes with the
 deployment's own ``kv_transfer_config``. Above DP width one each DP rank is a
 member of its side's engine LP, and ATOM's DP dispatch on each side picks the
-rank a request runs on. `frontend(config)` refuses such a
+rank a request runs on. Optional ``prefill_instances`` and ``decode_instances``,
+1 when absent, run that many deployments of a side, each naming its index in
+its ``kv_transfer_config`` as ``compass_instance``; above one, its LPs carry
+the index (``engine-P1``), and the router is the ``router`` LP, which chooses
+among them. `frontend(config)` refuses such a
 deployment unless the authority is standalone: a prefill-decode run spans two
 API servers that must share one.
 
@@ -189,9 +199,15 @@ CLOCK_ENV = "ATOM_COMPASS_CLOCK_ENDPOINT"
 NOW_ENV = "ATOM_COMPASS_NOW"
 FRONTEND, ENGINE, TRAFFIC = LpId("frontend"), LpId("engine"), LpId("traffic")
 ROUTER, LMCACHE = LpId("router"), LpId("lmcache")
+#: Run-file keys for how many deployments of each prefill-decode side run.
+INSTANCES = {"P": "prefill_instances", "D": "decode_instances"}
+#: The kv_transfer_config key a deployment names its index among them by.
+INSTANCE_KEY = "compass_instance"
 ATOM_RUNNER = "atom.model_engine.model_runner.ModelRunner"
 #: Keys that differ between two runs of one configuration, kept out of its name.
-PER_RUN = ("clock_endpoint", "out_dir", "client_runs", "router")
+#: The store is a place: the memory readings a run reads from it are keyed by
+#: the configuration and the machine spec, which the name holds.
+PER_RUN = ("clock_endpoint", "out_dir", "client_runs", "router", "store")
 LP_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
     "lp-{}.json",  # by LP name, or <lp>.<member> for a member
     "step_table.txt",
@@ -323,6 +339,8 @@ def _engines_table(run: dict):
             kv_write_req_s=run["kv_write_req_s"],
             dp=_dp(run),
             router_in_s=run.get("router_in_s"),
+            prefill=run.get(INSTANCES["P"], 1),
+            decode=run.get(INSTANCES["D"], 1),
         )
     links = ()
     if _pp(run) > 1:
@@ -335,7 +353,7 @@ def _engines_table(run: dict):
 def _machine(run: dict):
     from atom.compass.spec import MachineSpec
 
-    return MachineSpec.from_mapping(_width_keys(run["machine"]))
+    return MachineSpec.from_mapping(run["machine"])
 
 
 def _members(table, dp: int) -> dict | None:
@@ -376,15 +394,32 @@ def _pd_side(config) -> str | None:
     return "P" if kv.get("kv_role", "kv_producer") == "kv_producer" else "D"
 
 
+def _pd_name(config, run: dict) -> str | None:
+    """`_pd_side`, followed above one deployment of that side by the index
+    ``compass_instance`` in its ``kv_transfer_config`` names."""
+    side = _pd_side(config)
+    if side is None:
+        return None
+    n, k = run.get(INSTANCES[side], 1), config.kv_transfer_config.get(INSTANCE_KEY)
+    if n == 1 and k is None:
+        return side
+    if type(k) is not int or not 0 <= k < n:
+        raise ValueError(
+            f"kv_transfer_config's {INSTANCE_KEY} is {k!r} and the run file "
+            f"declares {n} as {INSTANCES[side]}; each deployment names its own "
+            "index, from 0"
+        )
+    return side if n == 1 else f"{side}{k}"
+
+
 def _bind_transfer(config, run: dict) -> None:
     """Price the simulated connector's transfers from the machine spec and the
     KV block this deployment's workers hold."""
     from atom.compass.backends import KvGeometry, Parallelism
     from atom.compass.kv import TRANSFER_KEY, Scope, TransferModel
-    from atom.compass.spec import MachineSpec
 
     config.kv_transfer_config[TRANSFER_KEY] = TransferModel.from_spec(
-        MachineSpec.from_mapping(_width_keys(run["machine"])),
+        _machine(run),
         KvGeometry.from_hf_config(
             config.hf_config,
             block_size=config.kv_cache_block_size,
@@ -571,10 +606,10 @@ class _RecordingAuthority(ClockAuthority):
     before the finish is a stop: it registers that frontend's send log,
     finishes the run there and sets `stopped`. Every LP but the client is
     granted ``+inf``, and the client too while a client run is open, from its
-    bind to its end, its grant releasing every message registered for it;
-    outside one it holds no connection. A stop with none open, on a server
-    whose ``client_runs`` is ``null``, sets `stopped_whole`: the run ended as
-    its run file says, as at the finish."""
+    bind to its end; outside one it holds no connection. Each such grant
+    releases every message registered for its receiver. A stop with none open,
+    on a server whose ``client_runs`` is ``null``, sets `stopped_whole`: the
+    run ended as its run file says, as at the finish."""
 
     def __init__(self, run: dict) -> None:
         # The tree that runs, read before the run so an unidentifiable one is
@@ -633,7 +668,7 @@ class _RecordingAuthority(ClockAuthority):
                 self._client_runs == math.inf and not self.client_run_open
             )
             replies = [
-                (to, g, self._release_all(released) if to == TRAFFIC else released)
+                (to, g, self._release_all(released))
                 for to, g, released in self._address(self._finish())
                 if to != TRAFFIC or self.client_run_open
             ]
@@ -795,7 +830,8 @@ def frontend(config):
         # A worker node of a multi-node group: engines only, each a member.
         return contextlib.nullcontext()
     _refuse_sync_utility_commands()
-    lp = FRONTEND if side is None else LpId(f"{FRONTEND.name}-{side}")
+    name = _pd_name(config, run)
+    lp = FRONTEND if name is None else LpId(f"{FRONTEND.name}-{name}")
     authority = None
     if not standalone:
         _authority = authority = _RecordingAuthority(run)
@@ -901,7 +937,7 @@ def engine(config):
     if getattr(config, "pipeline_parallel_size", 1) > 1:
         lp = LpId(f"{ENGINE.name}-pp{pc.pipeline_parallel_rank}")
     if side is not None:
-        lp = LpId(f"{ENGINE.name}-{side}")
+        lp = LpId(f"{ENGINE.name}-{_pd_name(config, run)}")
         _bind_transfer(config, run)
     utils.LP_OF_RANK = dict.fromkeys(range(pc.data_parallel_size), lp)
     _member = f"dp{pc.data_parallel_rank}" if pc.data_parallel_size > 1 else None
@@ -944,7 +980,6 @@ def runner(model_runner, tree) -> None:
         install_cost_backend,
         install_device_readings,
     )
-    from atom.compass.spec import MachineSpec
 
     config = model_runner.config
     tp = config.tensor_parallel_size
@@ -961,6 +996,11 @@ def runner(model_runner, tree) -> None:
         from atom.compass.parity.replay import ReplayBackend
 
         dp_rank = config.parallel_config.data_parallel_rank
+        if max(run.get(k, 1) for k in INSTANCES.values()) > 1:
+            raise ValueError(
+                "replay reads one record per side, prefill/ and decode/, and this "
+                "run has several deployments of a side"
+            )
         side = {"P": "prefill", "D": "decode"}.get(_pd_side(config), "")
         backend = replay = ReplayBackend(Path(run["replay"]) / side, dp_rank)
     if STEP_LINEAR in run:
@@ -1016,7 +1056,7 @@ def runner(model_runner, tree) -> None:
             stack_layers=end - start,
             stage_share=share,
         )
-    machine = MachineSpec.from_mapping(_width_keys(run["machine"]))
+    machine = _machine(run)
     platform = machine_spec_digest(machine)
     fitted_on = run.get(STEP_LINEAR, {}).get("machine_spec")
     if STEP_LINEAR in run and fitted_on != platform:
@@ -1030,17 +1070,18 @@ def runner(model_runner, tree) -> None:
         from atom.compass.run.step_grid import load
 
         backend, bundle = load(run[STEP_GRID], config, machine)
-    config_json = _config_json(config)
+    if "store" not in run:
+        raise ValueError(
+            "the run file names no store, and a run reads its configuration's "
+            "memory readings from one; compass measure memory takes them"
+        )
+    from atom.compass.run import memory
+
+    measured = memory.load(run["store"], config, machine, model_runner.rank)
     model = ModelTerms.from_config(
         config.hf_config,
-        tp_size=tp,
-        warmup_tokens=config.max_num_batched_tokens,
-        config_json=config_json,
-        activations_entry=machine.activations_for(
-            (config_json.get("architectures") or [None])[0],
-            _file_digest(config.model, "config.json"),
-            tp,
-        ),
+        activations=measured.activations(config.max_num_batched_tokens),
+        config_json=_config_json(config),
         tree=tree,
     )
     fallback = run.get("step_roofline", False)
@@ -1071,6 +1112,13 @@ def runner(model_runner, tree) -> None:
         theirs = host.get("key") or {}
         if ours and theirs != ours:
             differ = [k for k in ours if theirs.get(k) != ours[k]]
+            if isinstance(engine := theirs.get("engine"), dict):
+                mine = ours["engine"]
+                differ = [k for k in differ if k != "engine"] + [
+                    f"engine.{n}"
+                    for n in sorted(mine.keys() | engine.keys())
+                    if engine.get(n) != mine.get(n)
+                ]
             raise ValueError(
                 f"the run file's host laws were fitted under another {differ}; "
                 f"this run's key is {ours}, and theirs is {theirs}"
@@ -1083,25 +1131,27 @@ def runner(model_runner, tree) -> None:
         if replay is not None:
             replay.now = lambda: float(slot[0])
     model_runner.compass_abort = run.get("on_refusal") == "abort"
-    reserved, captured = _graph_pool(model_runner, machine, model)
-    # Under DP-attention the reserve and the residue are keyed by the layout,
-    # and by the EP width when the experts shard; one rank of it is a TP1 engine.
+    reserved = _graph_pool(model_runner, machine, model)
+    # The readings' label: under DP-attention the layout, with the EP width
+    # when the experts shard; one rank of it is a TP1 engine.
     dp = config.parallel_config.data_parallel_size
     layout = tp
     if dp > 1 and config.enable_dp_attention:
         ep = f"x{tp * dp}" if config.enable_expert_parallel else ""
         layout = f"{tp}x{dp}{ep}"
     readings = device_readings(
-        machine, tp_width=layout, model=model, cudagraph_overhead=reserved
+        machine,
+        memory=measured,
+        tp_width=layout,
+        model=model,
+        cudagraph_overhead=reserved,
     )
     install_device_readings(model_runner, readings)
-    pool = (
-        None
-        if captured is None
-        else predicts(machine, tp_width=tp, captured_tokens=captured)
-    )
     model_runner.compass_memory = record(
-        readings, tokens=config.max_num_batched_tokens, pool=pool
+        readings,
+        tokens=config.max_num_batched_tokens,
+        pool=predicts(measured),
+        assumed=measured.assumed,
     )
     if bundle is not None:
         model_runner.compass_step_grid = {**bundle, "describe": backend.describe()}
@@ -1110,10 +1160,7 @@ def runner(model_runner, tree) -> None:
 def _graph_pool(model_runner, machine, model):
     """What ATOM's `_estimate_cudagraph_overhead` reserves for this deployment:
     nothing under ``enforce_eager``, else the branch the runner's own
-    `_piecewise_cg_active` picks, over the same config fields it reads. With it,
-    the tokens `capture_cudagraph` captures, None under ``enforce_eager``. The
-    piecewise reservation caps only what it reserves; the capture takes the
-    same bounded ladder in both modes."""
+    `_piecewise_cg_active` picks, over the same config fields it reads."""
     from atom.compass.memory import (
         PiecewiseCapture,
         capture_token_shapes,
@@ -1123,15 +1170,9 @@ def _graph_pool(model_runner, machine, model):
 
     config = model_runner.config
     if config.enforce_eager:
-        return reserves(enforce_eager=True), None
-    # At one token per sequence a batch size is its token count, so the
-    # capture loop's schedulable bound applies to both.
-    bound = min(config.max_num_seqs, config.max_num_batched_tokens)
-    captured = sum(
-        capture_token_shapes(config.capture_sizes, max_num_batched_tokens=bound)
-    )
+        return reserves(enforce_eager=True)
     if not model_runner._piecewise_cg_active():
-        return reserves(activations=model.activations), captured
+        return reserves(activations=model.activations)
     hf = config.hf_config
     sizes = config.compilation_config.cudagraph_capture_sizes or [config.max_num_seqs]
     capacity = machine.value("device.memory.capacity_bytes")
@@ -1147,7 +1188,7 @@ def _graph_pool(model_runner, machine, model):
         ),
         budget_bytes=int(config.gpu_memory_utilization * capacity),
     )
-    return reserves(piecewise=capture), captured
+    return reserves(piecewise=capture)
 
 
 def tokenizer(tok, config) -> None:
@@ -1157,16 +1198,31 @@ def tokenizer(tok, config) -> None:
     run = spec()
     if run is None:
         return
-    from atom.compass.spec import Backend, MachineSpec
+    from atom.compass.spec import Backend
     from atom.utils.compass_loop import wrap_decode, wrap_encode
 
-    entry = MachineSpec.from_mapping(_width_keys(run["machine"])).tokenizer_for(
+    entry = _machine(run).tokenizer_for(
         config.hf_config.architectures[0],
         Backend.FAST if tok.is_fast else Backend.SLOW,
         _fingerprint(tok),
     )
     tok.encode = wrap_encode(tok.encode, entry)
     tok.decode = wrap_decode(tok.decode, entry)
+
+
+def http_intake() -> tuple[float, float] | None:
+    """``(fixed_s, per_byte_s)``, the frontend loop's time to take in one HTTP
+    request, from the run's machine spec; None on a real run, a run file with no
+    machine spec, or a spec that states neither. A spec that states one of them
+    is refused naming the other."""
+    run = spec()
+    if run is None or "machine" not in run:
+        return None
+    machine = _machine(run)
+    paths = ("host.http_intake.fixed_s", "host.http_intake.per_byte_s")
+    if not any(p in machine.values for p in paths):
+        return None
+    return tuple(machine.value(p) for p in paths)
 
 
 def _fingerprint(tok) -> str | None:
@@ -1247,15 +1303,6 @@ def _file_digest(name: str, filename: str) -> str | None:
     except OSError:
         return None
     return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-
-def _width_keys(node):
-    """JSON writes a width table's integer keys as strings; read them back."""
-    if isinstance(node, list):
-        return [_width_keys(v) for v in node]
-    if not isinstance(node, dict):
-        return node
-    return {int(k) if k.isdigit() else k: _width_keys(v) for k, v in node.items()}
 
 
 def _write_whole(path: Path, text: str) -> None:

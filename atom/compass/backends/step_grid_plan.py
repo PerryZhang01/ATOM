@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2024-2025, Advanced Micro Devices, Inc. All rights reserved.
 
-"""The step grid's points planned from batch shapes.
+"""The step grid's points planned from batch shapes, and steps checked for
+coverage against a loaded step grid backend.
 
-`plan` takes steps as step-record lines (`atom/compass/parity/`), each in a
-`(name, line)` pair whose name a report gives the step, and reads each step
+Both take steps as step-record lines (`atom/compass/parity/`), each in a
+`(name, line)` pair whose name a report gives the step, and read each step
 where the step grid backend reads it (`StepGrid.locate` and the cell's
 corners), so the plan and the backend never disagree on a cell. Only shapes
 are read, never timestamps. Reading records stays with the caller.
@@ -325,3 +326,53 @@ def plan(definition: dict, steps, engines: dict) -> dict:
             out["lines"].append(_line(len(out["lines"]), phase, key, at))
             out["counts"][name] = out["counts"].get(name, 0) + 1
     return out
+
+
+def coverage(backend, steps) -> dict:
+    """Per step, whether every corner of its cell was measured and the
+    residual answers it, inside its hull, over the grid and residual of
+    `backend`, a `StepGridBackend`.
+
+    It returns `steps`, `covered` and `share`; `uncovered`, the name of each
+    step not covered; `missing`, each grid's unmeasured corners, keyed
+    `prefill output`, `prefill no_output` or `decode rung <R>`; `refused`, each
+    step the grid cannot place or the residual does not answer, with the
+    reasons; and, apart, `prefill_above_top_c`, how many prefill steps are
+    cached past prefill's top c node, which refuse: a prefix hit near
+    `max_model_len`, or a long prompt's last chunk when `max_model_len` is not
+    a multiple of the token budget.
+    """
+    steps = _views(steps)
+    uncovered, missing, refused, above = [], defaultdict(set), [], 0
+    for where, view in steps:
+        gaps, reasons = (), []
+        try:
+            cells, at = backend.grid.locate(view)
+            above += bool(view.prefill) and at[-1] > cells.nodes[-1][-1]
+            corners = cells.corners(view, at)
+            gaps = {c for c, _ in corners if c not in cells.points}
+            missing[cells.name] |= gaps
+        except CostRefused as r:
+            reasons.append(_reason(r))
+        try:
+            backend.residual.factor(view)
+        except CostRefused as r:
+            reasons.append(_reason(r))
+        if reasons:
+            refused.append({"step": where, "reasons": reasons})
+        if gaps or reasons:
+            uncovered.append(where)
+    covered = len(steps) - len(uncovered)
+    return {
+        "steps": len(steps),
+        "covered": covered,
+        "share": covered / len(steps),
+        "uncovered": uncovered,
+        "missing": {
+            name: sorted([int(x) for x in corner] for corner in corners)
+            for name, corners in sorted(missing.items())
+            if corners
+        },
+        "refused": refused,
+        "prefill_above_top_c": above,
+    }

@@ -66,7 +66,6 @@ from atom.compass.memory import (
 )
 from atom.compass.spec import MachineSpec
 from tests.compass.test_memory_readings import (
-    ACTIVATIONS,
     CAPTURE_SIZES,
     CONFIG_JSON,
     DOCUMENT,
@@ -74,6 +73,7 @@ from tests.compass.test_memory_readings import (
     MAX_NUM_BATCHED_TOKENS,
     PARAMETERS,
     WARMUP_TOKENS,
+    measured,
     meta_tree,
     spec_of,
 )
@@ -343,12 +343,12 @@ def live_readings(spec, qwen, tp_width=1):
     total_bytes = int(spec.value("device.memory.capacity_bytes"))
     return device_readings(
         spec,
+        memory=measured(tp_width),
         tp_width=tp_width,
         model=ModelTerms.from_config(
             qwen,
+            activations=measured(tp_width).activations(WARMUP_TOKENS),
             tree=meta_tree(PARAMETERS * element_bytes(qwen.dtype) // tp_width),
-            tp_size=tp_width,
-            warmup_tokens=WARMUP_TOKENS,
         ),
         cudagraph_overhead=reserved(qwen, total_bytes),
     )
@@ -422,29 +422,25 @@ def test_an_absent_term_is_not_a_term_of_zero_bytes(spec, qwen):
     )
 
 
-def test_the_term_that_cannot_discharge_its_gate_while_agreeing_exactly(spec, qwen):
-    """Every recorded term equals its prediction, and one gate still does not close.
+def test_every_term_agreeing_exactly_discharges_its_gate(spec, qwen):
+    """Every recorded term equals its prediction, and every gate closes.
 
-    `activations` is a declared formula over one live layer, and even a traced
-    graph without the invisible-scratch table would not be enough to discharge
-    the 10% gate on it. `weights`, read off a meta build, discharges its gate.
+    `weights` is read off a meta build and the rest off the entry, so no term
+    is declared; the entry's record is not the recording's.
     """
     prediction = live_prediction(spec, qwen)
     comparison = compare(prediction, agreeing_recording(prediction))
 
-    by_name = {t.name: t for t in comparison.compared}
     assert all(t.delta_bytes == 0 for t in comparison.compared)
-    assert {t.name for t in comparison.not_discharged()} == {"activations"}
+    assert not comparison.not_discharged()
     assert not comparison.failures()
     assert {t.name for t in comparison.compared if t.verdict is Verdict.PASS} == {
         "weights",
         "load residue",
         "persistent",
+        "activations",
         "driver and collective reserve",
     }
-
-    activations = by_name["activations"].why
-    assert "liveness walk" in activations and "invisible-scratch" in activations
 
 
 def test_a_declared_term_can_fail_its_gate_even_though_it_cannot_pass_one():
@@ -769,15 +765,22 @@ def test_only_declared_is_left_out_of_the_set_that_discharges():
 
 #: The measured pool at this ladder: 91.1 MiB + 0.3033 MiB per
 #: captured token at width 1, and flat 104 MiB above it. This is the recording
-#: the two functions are compared against; the spec's own fields are the
-#: authored, rounded form of the same line, which is why `predicts()` lands on
-#: top of it and `reserves()` does not.
+#: the two functions are compared against; `ENTRY_POOL` is the pool an entry's
+#: start read at each width, the authored, rounded form of the same line, which
+#: is why `predicts()` lands on top of it and `reserves()` does not.
 RECORDED_POOL_W1 = int(91.1 * MIB + 0.3033 * MIB * 1023)
 RECORDED_POOL_W_GT1 = 104 * MIB
+ENTRY_POOL = {1: 420_814_000, 2: 109_000_000}
 
 
 def recorded_pool(nbytes, where):
     return Term("recorded pool", int(nbytes), Method.MEASURED, where)
+
+
+def entry_pool(tp_width, **member):
+    """What `predicts()` reads off the entry member at `tp_width`."""
+    pool = ENTRY_POOL[tp_width]
+    return predicts(measured(tp_width, cudagraph_pool_bytes=pool, **member))
 
 
 @pytest.mark.parametrize(
@@ -800,7 +803,7 @@ def test_both_graph_pool_numbers_are_reported_against_the_recorded_pool(
     comparison = compare_graph_pool(
         recorded_pool(pool, where),
         reserves=reserved(qwen, total_bytes),
-        predicts=predicts(spec, tp_width=tp_width, captured_tokens=sum(ladder())),
+        predicts=entry_pool(tp_width),
     )
     with capsys.disabled():
         print()
@@ -819,12 +822,12 @@ def test_both_graph_pool_numbers_are_reported_against_the_recorded_pool(
 
 
 def test_each_graph_pool_row_prints_its_method(spec, qwen):
-    # An assumed pool line makes predicts() declared, which must not read like
-    # a measured row.
+    # An assumed entry member makes predicts() declared, which must not read
+    # like a measured row.
     comparison = compare_graph_pool(
         recorded_pool(RECORDED_POOL_W1, "a printout"),
         reserves=reserved(qwen, int(spec.value("device.memory.capacity_bytes"))),
-        predicts=predicts(spec_of("assumed"), tp_width=1, captured_tokens=1023),
+        predicts=entry_pool(1, assumed="copied from another platform's entry"),
     )
     rows = {line.split()[0]: line for line in comparison.table().splitlines()[2:5]}
     assert "declared" in rows["predicts()"]
@@ -834,7 +837,6 @@ def test_each_graph_pool_row_prints_its_method(spec, qwen):
 
 def test_the_disagreement_is_inside_the_recorded_four_to_nineteen_times(spec, qwen):
     total_bytes = int(spec.value("device.memory.capacity_bytes"))
-    captured = sum(ladder())
     ratios = {}
     for tp_width in (1, 2):
         comparison = compare_graph_pool(
@@ -843,7 +845,7 @@ def test_the_disagreement_is_inside_the_recorded_four_to_nineteen_times(spec, qw
                 "the measured line",
             ),
             reserves=reserved(qwen, total_bytes),
-            predicts=predicts(spec, tp_width=tp_width, captured_tokens=captured),
+            predicts=entry_pool(tp_width),
         )
         ratios[tp_width] = comparison.disagreement
     assert ratios[1] == pytest.approx(4.4609, abs=5e-5)
@@ -855,7 +857,7 @@ def test_the_two_graph_pool_readings_cannot_be_handed_in_the_wrong_way_round(
 ):
     total_bytes = int(spec.value("device.memory.capacity_bytes"))
     reserving = reserved(qwen, total_bytes)
-    predicting = predicts(spec, tp_width=1, captured_tokens=sum(ladder()))
+    predicting = entry_pool(1)
     with pytest.raises(MemoryRefusal) as refusal:
         compare_graph_pool(
             recorded_pool(RECORDED_POOL_W1, "the measured line"),
@@ -935,23 +937,20 @@ def _server_log(path, *, peak, non_torch, start="08:31:41"):
 
 def _hand_in(tmp_path, qwen, record):
     """A hand-in sized off the suite's document, probed on the run `record`
-    names, with this model's activations measured on that run."""
+    names, with its entry's readings, the activations included, measured on
+    that run."""
     document = copy.deepcopy(DOCUMENT)
     document["provenance"] |= {"origin": "probed", "subject": {"record": record}}
-    document["device"]["activations"] = [ACTIVATIONS]
     spec = MachineSpec.from_mapping(document)
-    entry = spec.activations_for(
-        ACTIVATIONS["applies_to"][0], ACTIVATIONS["fingerprint"], 1
-    )
+    entry = measured(1, record=record, activation_bytes=WARMUP_TOKENS * 180_480)
     model = ModelTerms.from_config(
         qwen,
+        activations=entry.activations(WARMUP_TOKENS),
         tree=meta_tree(PARAMETERS * 2),
-        tp_size=1,
-        warmup_tokens=WARMUP_TOKENS,
-        activations_entry=entry,
     )
     readings = device_readings(
         spec,
+        memory=entry,
         tp_width=1,
         model=model,
         cudagraph_overhead=reserved(qwen, int(spec.value(CAPACITY))),
@@ -978,7 +977,7 @@ def test_a_term_compared_with_its_own_source_run_is_not_passed(tmp_path, qwen, f
     hand_in, readings = _hand_in(tmp_path, qwen, record)
     # The activations come off the entry, and the entry names its run.
     by_name = {t.name: t for t in readings.peak_torch.terms}
-    assert by_name["activations"].method is Method.ESTIMATED
+    assert by_name["activations"].method is Method.MEASURED
     assert by_name["activations"].records == (record,)
 
     comparison = check.parts(hand_in, source)[0]

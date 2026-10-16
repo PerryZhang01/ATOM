@@ -40,11 +40,13 @@
 #
 # It runs its own tree, as the gates do, compass-harness included. OUT_DIR gets
 # run.json (RUN_FILE plus a `workload` entry hashing the traces, the dataset
-# and the aiperf arguments), the server and aiperf logs, aiperf's artifacts,
-# and the step table and run summary. The last line is the cell's result, with
-# the KV transfer count and mean simulated seconds for a 1P1D cell. It exits
-# non-zero when aiperf or the deployment did, when aiperf's benchmark id is
-# not the one recorded, or when aiperf outlives the deployment by WAIT_S.
+# and the aiperf arguments), the server and aiperf logs, aiperf's artifacts at
+# --export-level raw, the client run's export in artifacts/client_run.json
+# (atom/compass/parity/client_run.py), and the step table and run summary.
+# The last line is the cell's result, with the KV transfer count and mean
+# simulated seconds for a 1P1D cell. It exits non-zero when aiperf or the
+# deployment did, when aiperf's benchmark id is not the one recorded, when the
+# export refuses, or when aiperf outlives the deployment by WAIT_S.
 #
 # A TP1 cell also writes its step record to steps/. A real cell writes no step
 # table or summary; it saves rocm-smi's process listing before and after it in
@@ -90,7 +92,8 @@ awk -v d="$OUT/traces" -v first="${FIRST_SESSION:-0}" -v n="$SESSIONS" '
     NR > first {f = sprintf("%s/%05d.json", d, NR - first - 1); print > f; close(f)}
     NR >= first + n {exit}' "$TRACES"
 
-# Everything but paths and the URL, so it can be hashed into the run record.
+# Everything but paths, the URL and the export level, which changes what aiperf
+# writes and not what it sends, so it can be hashed into the run record.
 args=(--endpoint-type chat --custom-dataset-type weka_trace
     --concurrency "${CONCURRENCY:-1}" --benchmark-duration "${DURATION_S:-1800}"
     --random-seed "${SEED:-20260707}" --scenario inferencex-agentx-mvp --unsafe-override
@@ -198,7 +201,7 @@ app()')
 (cd "$OUT" && ATOM_COMPASS_RUN=$OUT/run.json AIPERF_DATASET_MMAP_BASE_PATH=$OUT \
     exec setsid "$HARNESS_PYTHON" "${aiperf[@]}" profile --url "127.0.0.1:$PORT" --model "$MODEL" \
     --tokenizer "$MODEL" --input-file "$OUT/traces" --artifact-dir "$OUT/artifacts" \
-    "${args[@]}") >"$OUT/aiperf.log" 2>&1 &
+    --export-level raw "${args[@]}") >"$OUT/aiperf.log" 2>&1 &
 client=$!
 # Once the deployment has left, aiperf gets WAIT_S to finish; the trap stops it.
 left=
@@ -217,6 +220,11 @@ while kill -0 $server 2>/dev/null && ((SECONDS < deadline)); do sleep 1; done
 kill -0 $server 2>/dev/null && { echo "cctraces_sim: the deployment is still up $WAIT_S s after aiperf" >&2; exit 1; }
 wait $server || rc=$((rc || REAL ? rc : $?))
 ((REAL)) && { kill -KILL -- -$server 2>/dev/null || true; gpu_processes after; }
+# The raw records keep each response's chunks, so the export names each request
+# by its response id. A run that failed before aiperf wrote any has none.
+if [[ -e $OUT/artifacts/profile_export_raw.jsonl ]]; then
+    python3 -m atom.compass.parity.client_run "$OUT/artifacts" || rc=$((rc ? rc : 1))
+fi
 
 python3 - "$OUT" "$BENCHMARK_ID" "$rc" "$REAL" "$gpu" <<'EOF'
 import json, re, sys

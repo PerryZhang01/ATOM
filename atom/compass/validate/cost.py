@@ -6,7 +6,9 @@
 RECORD is a real run's step record directory (`ATOM_COMPASS_PARITY_RECORD`,
 `OUT_DIR/steps` of a `REAL=1 cctraces_sim.sh` cell); LAW is a law file as
 `step_linear_fit` writes it. Pricing the real run's own steps separates cost error
-from schedule error: both sides run the same batches.
+from schedule error: both sides run the same batches. The command prices every
+step; `python -m atom.compass.validate` prices only those of the client run it
+grades, its warmup left out.
 
 Each step is labelled as the fit labels it, by its device time
 (`step_labels.label`, which also says which steps carry no label and refuses a
@@ -102,14 +104,18 @@ def _summary(steps: list[tuple]) -> dict:
     }
 
 
-def cost_accuracy(record, law) -> dict:
-    """The report for `law`, a mapping `StepLinearLaw` reads, on the record directory `record`."""
+def cost_accuracy(record, law, steps=None) -> dict:
+    """The report for `law`, a mapping `StepLinearLaw` reads, on the record
+    directory `record`: on its steps whose numbers are in `steps`, every step
+    when None."""
     ranks = sorted(Path(record).glob("dp*[0-9].jsonl"))
     if len(ranks) != 1:
         raise ValueError(
             f"{record} holds {len(ranks)} DP ranks' records; this prices one rank's"
         )
-    got = step_labels.label(ranks[0])[0]
+    got = [
+        s for s in step_labels.label(ranks[0])[0] if steps is None or s.step in steps
+    ]
     labelled, cut = _features(got, "base", 1)
     views = {s.step: s.view for s in got}
     backend = StepLinearBackend(StepLinearLaw(law))

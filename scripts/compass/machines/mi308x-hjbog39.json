@@ -3,7 +3,7 @@
   "name": "mi308x-hjbog39",
   "provenance": {
     "authored_by": "compass agent for jgong5",
-    "date": "2026-10-14",
+    "date": "2026-10-16",
     "origin": "mixed",
     "origins": {
       "host.cpu.cores_physical": {
@@ -34,34 +34,6 @@
         "source_root": "commit:ce625ddd9"
       },
       "device.memory.capacity_bytes": {
-        "origin": "probed",
-        "model": "Qwen/Qwen3.8-27B",
-        "width": 1,
-        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
-        "source_root": "commit:ce625ddd9"
-      },
-      "device.runtime_constants.driver_and_collective_reserve_bytes[1]": {
-        "origin": "probed",
-        "model": "Qwen/Qwen3.8-27B",
-        "width": 1,
-        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
-        "source_root": "commit:ce625ddd9"
-      },
-      "device.runtime_constants.allocator_retained_after_load_bytes[1]": {
-        "origin": "probed",
-        "model": "Qwen/Qwen3.8-27B",
-        "width": 1,
-        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
-        "source_root": "commit:ce625ddd9"
-      },
-      "device.runtime_constants.persistent_forward_buffer_bytes": {
-        "origin": "probed",
-        "model": "Qwen/Qwen3.8-27B",
-        "width": 1,
-        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
-        "source_root": "commit:ce625ddd9"
-      },
-      "device.activations": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "width": 1,
@@ -114,15 +86,6 @@
       "device.compute.fp8_flops": {
         "origin": "assumed"
       },
-      "device.runtime_constants.cudagraph_pool.w1_base_bytes": {
-        "origin": "assumed"
-      },
-      "device.runtime_constants.cudagraph_pool.w1_bytes_per_captured_token": {
-        "origin": "assumed"
-      },
-      "device.runtime_constants.cudagraph_pool.w_gt1_flat_bytes": {
-        "origin": "assumed"
-      },
       "interconnect.intra_node.topology": {
         "origin": "assumed"
       },
@@ -156,6 +119,18 @@
       "interconnect.inter_node.derate": {
         "origin": "assumed"
       },
+      "host.http_intake.fixed_s": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "source_root": "commit:2d1d223be",
+        "record": "sha256:40da90fe439e06efa8aeb8d8b3d5a17a955c507afb6f9aa18401cbbc957739de"
+      },
+      "host.http_intake.per_byte_s": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "source_root": "commit:2d1d223be",
+        "record": "sha256:40da90fe439e06efa8aeb8d8b3d5a17a955c507afb6f9aa18401cbbc957739de"
+      },
       "host.tokenizers[qwen3.8-27b fast]": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
@@ -165,9 +140,10 @@
     "fragments": [
       "tokenizer",
       "device",
-      "assumed"
+      "assumed",
+      "intake"
     ],
-    "notes": "one Qwen3.8-27B TP1 start at ce625ddd9 | no probe fills these"
+    "notes": "one Qwen3.8-27B TP1 start at ce625ddd9 | no probe fills these | one real c=256 first-turn cc-traces burst at 2d1d223be"
   },
   "host": {
     "cpu": {
@@ -194,7 +170,11 @@
       "zmq_roundtrip_s": 5e-05,
       "shm_broadcast_s": 2e-05
     },
-    "admission_fixed_s": 0.009
+    "admission_fixed_s": 0.009,
+    "http_intake": {
+      "fixed_s": 0.0021464994614327293,
+      "per_byte_s": 1.869416019632594e-08
+    }
   },
   "device": {
     "name": "MI308X",
@@ -210,32 +190,6 @@
       "fp8_flops": 688000000000000.0,
       "derate": 0.7
     },
-    "runtime_constants": {
-      "driver_and_collective_reserve_bytes": {
-        "1": 1277165568
-      },
-      "allocator_retained_after_load_bytes": {
-        "1": 14850080
-      },
-      "persistent_forward_buffer_bytes": 383345152,
-      "cudagraph_pool": {
-        "w1_base_bytes": 95500000.0,
-        "w1_bytes_per_captured_token": 318000.0,
-        "w_gt1_flat_bytes": 109000000.0
-      }
-    },
-    "activations": [
-      {
-        "id": "qwen3.8-27b",
-        "applies_to": [
-          "Qwen3_5ForConditionalGeneration"
-        ],
-        "fingerprint": "sha256:191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
-        "bytes_per_token": {
-          "1": 180479.96875
-        }
-      }
-    ],
     "software_pinned_to": {
       "rocm": "7.2.4",
       "aiter": "9205e1059",

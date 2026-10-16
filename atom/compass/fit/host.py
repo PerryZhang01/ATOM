@@ -51,4 +51,5 @@ def main(argv: list[str]) -> None:
         engine_config=json.dumps(k["engine"], sort_keys=True),
         machine_spec=k["machine_spec"],
     )
-    publish.publish(args, " ".join([PROG, *argv]), key, config, host, report)
+    command = " ".join([PROG, *argv])
+    publish.publish(args, command, key, publish.conditions(config), host, report)

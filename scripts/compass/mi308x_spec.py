@@ -1,20 +1,21 @@
 # SPDX-License-Identifier: MIT
 """An MI308X machine spec, from a tokenizer swept here and one real start.
 
-    python3 scripts/compass/mi308x_spec.py [--model M] [--out PATH]
+    python3 scripts/compass/mi308x_spec.py [--model M] [--sweep-from DOC] [--out PATH]
 
 Run on hjbog-srdc-18, or on hjbog-srdc-39 with COMPASS_MACHINE=mi308x-hjbog39,
 in a container that has the model's files: the tokenizer
 fragment carries this host's core counts, and the merge refuses it if they are
-not the ones the device fragment recorded there. The device fragment is the
-readings ATOM's own `ModelRunner` took at one engine start (Qwen3.8-27B, TP1,
-CUDA graphs and prefix caching on, `--max-model-len 262144`); every field no
-probe fills is assumed, on either host. On hjbog-srdc-18 two Qwen3-30B-A3B
-starts add the width-keyed terms at width 8 and at the DP-attention layout 1x8.
-One fragment per start or origin. Writes the merged document to `--out` when
-`validate` passes at every width and layout it holds, then prints
-`explain`'s rows for the host, device and interconnect blocks, grouped by
-origin, and the basis of `kv_blocks`.
+not the ones the device fragment recorded there. The device fragment is what
+ATOM's own `ModelRunner` read at one engine start (Qwen3.8-27B, TP1, CUDA
+graphs and prefix caching on, `--max-model-len 262144`): the device, its
+capacity and the stack; every field no probe fills is assumed, on either host.
+On hjbog-srdc-39 one real burst adds the HTTP intake terms (`INTAKE`). An
+engine start's memory readings are `compass measure memory`'s, not the spec's.
+One fragment per probe or origin. Writes the merged document to `--out` when
+`validate` passes, then prints `explain`'s rows for the host, device and
+interconnect blocks, grouped by origin, and the basis of `kv_blocks`.
+`--sweep-from` takes the tokenizer sweep from a document this script wrote.
 """
 
 import argparse
@@ -48,28 +49,9 @@ LENGTHS = tuple(4**k for k in range(10))
 #: bound leaves room for that and still refuses a sweep of the wrong shape.
 BOUND = 0.25
 
-#: What ATOM's `ModelRunner` read at one engine start on card 3 of node 18, at
-#: commit 983e42973 (the stage-2 arguments, max_num_batched_tokens 16384):
-#: `allocated` and the unique parameter and buffer bytes right after the model
-#: loaded, then the four figures `_read_device_memory` takes after warmup.
-NODE18 = {
-    "total": 206141652992,
-    "non_torch": 1249902592,
-    "loaded": 54761936384,
-    "parameters": 54713457120,
-    "buffers": 33554432,
-    "current": 55077287424,
-    "peak": 58034271744,
-    "warmup_tokens": 16384,
-}
-#: The same readings on card 5 of hjbog-srdc-39 at commit ce625ddd9.
-HJBOG39 = dict(
-    NODE18,
-    non_torch=1277165568,
-    loaded=54761861632,
-    current=55145206784,
-    peak=58102190592,
-)
+#: The total ATOM's `ModelRunner` read at one engine start on card 3 of node 18,
+#: at commit 983e42973, and on card 5 of hjbog-srdc-39 at commit ce625ddd9.
+TOTAL = 206141652992
 #: The software stack each host's readings were taken under, torch included.
 STACK = {
     "rocm": "7.2.4",
@@ -77,14 +59,9 @@ STACK = {
     "rccl": "2.27.7",
     "torch": "2.10.0+rocm7.2.4.git3d3aa833",
 }
-DATE, COMMIT, READ, PIN = {
-    "mi308x-hjbog18": ("2026-10-11", "983e42973", NODE18, STACK),
-    "mi308x-hjbog39": (
-        "2026-10-14",
-        "ce625ddd9",
-        HJBOG39,
-        dict(STACK, aiter="9205e1059"),
-    ),
+DATE, COMMIT, PIN = {
+    "mi308x-hjbog18": ("2026-10-11", "983e42973", STACK),
+    "mi308x-hjbog39": ("2026-10-14", "ce625ddd9", dict(STACK, aiter="9205e1059")),
 }[NAME]
 #: Each start's record: the sha256 of its server log, as
 #: `python -m atom.compass.memory.check` digests it.
@@ -95,26 +72,20 @@ RECORD = {
 #: What the start ran: the model, the width, the tree and the run's record.
 SUBJECT = {"model": "Qwen/Qwen3.8-27B", "width": 1, "source_root": f"commit:{COMMIT}"}
 SUBJECT["record"] = f"sha256:{RECORD}"
-CONFIG_JSON = "sha256:191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab"
 
-#: Two Qwen3-30B-A3B starts on node 18 at commit 7370fbe47 (image
-#: nightly-20261013), by the key the run reads them at: the flags, `non_torch`
-#: (minimum over the 8 ranks) and the log's sha256. Both read the same load
-#: residue, `allocated` after load less unique parameter and buffer bytes.
-STARTS = {
-    "1x8": (
-        "-tp 8 --enable-dp-attention",
-        8189378560,
-        "72a76cc8907cf77ae9c22583583b5d6ac5a6e2acb94d396e1df08b4ddd001d55",
+#: The API server's event loop taking in one HTTP request, probed on
+#: hjbog-srdc-39 at commit 2d1d223be in one real c=256 first-turn cc-traces
+#: burst on Qwen3.8-27B TP1: the least-squares fit of the i-th request's chat
+#: template start on the loop to i and the body bytes of the requests before it.
+#: The record is the probe's stamp file, the run's server log beside it.
+INTAKE = {
+    "mi308x-hjbog39": (
+        "2026-10-16",
+        "2d1d223be",
+        {"fixed_s": 0.0021464994614327293, "per_byte_s": 1.869416019632594e-08},
+        "40da90fe439e06efa8aeb8d8b3d5a17a955c507afb6f9aa18401cbbc957739de",
     ),
-    8: (
-        "-tp 8",
-        9485418496,
-        "21991eab509e154ac6da9a2c3d769603da9a9ed492e52a0a9ec18d2f4e18caa2",
-    ),
-}
-STARTS = STARTS if NAME == "mi308x-hjbog18" else {}
-RESIDUE = 2165604480
+}.get(NAME)
 
 DEVICE = {
     "host": {"cpu": {"cores_physical": 112, "cores_logical": 224}},
@@ -122,24 +93,7 @@ DEVICE = {
         "name": "MI308X",
         "arch": "gfx942",
         "count_per_node": 8,
-        "memory": {"capacity_bytes": READ["total"]},
-        "runtime_constants": {
-            "driver_and_collective_reserve_bytes": {1: READ["non_torch"]},
-            "allocator_retained_after_load_bytes": {
-                1: READ["loaded"] - READ["parameters"] - READ["buffers"]
-            },
-            "persistent_forward_buffer_bytes": READ["current"] - READ["loaded"],
-        },
-        "activations": [
-            {
-                "id": "qwen3.8-27b",
-                "applies_to": ["Qwen3_5ForConditionalGeneration"],
-                "fingerprint": CONFIG_JSON,
-                "bytes_per_token": {
-                    1: (READ["peak"] - READ["current"]) / READ["warmup_tokens"]
-                },
-            }
-        ],
+        "memory": {"capacity_bytes": TOTAL},
         "software_pinned_to": PIN,
     },
 }
@@ -155,13 +109,6 @@ DECLARED = {
     "device": {
         "memory": {"bandwidth_bytes_per_s": 5.3e12, "derate": 0.85},
         "compute": {"bf16_flops": 3.44e14, "fp8_flops": 6.88e14, "derate": 0.70},
-        "runtime_constants": {
-            "cudagraph_pool": {
-                "w1_base_bytes": 95.5e6,
-                "w1_bytes_per_captured_token": 0.318e6,
-                "w_gt1_flat_bytes": 109.0e6,
-            }
-        },
     },
     "interconnect": {
         "intra_node": {
@@ -192,28 +139,21 @@ def fragment(
 
 
 def device_fragments() -> list[Fragment]:
-    """The fragments each engine start probed, and the assumed rest."""
+    """The fragments the engine start and any other probe filled, and the
+    assumed rest."""
     notes = f"one Qwen3.8-27B TP1 start at {COMMIT}"
-    starts = []
-    for key, (flags, reserve, record) in STARTS.items():
-        constants = {
-            "driver_and_collective_reserve_bytes": {key: reserve},
-            "allocator_retained_after_load_bytes": {key: RESIDUE},
-        }
-        model, root = "Qwen/Qwen3-30B-A3B", "commit:7370fbe47"
-        subject = {"model": model, "width": 8, "source_root": root}
+    probes = []
+    if INTAKE:
+        date, root, terms, record = INTAKE
+        subject = {"model": "Qwen/Qwen3.8-27B", "source_root": f"commit:{root}"}
         subject["record"] = f"sha256:{record}"
-        # aiter on gfx942 has no MoE kernel for this model's 8-wide expert shard.
-        how = f"one {model} {flags} --enable-expert-parallel --all2all-backend none"
-        body = {"device": {"runtime_constants": constants}}
-        notes_of = f"{how} start at {root}"
-        starts.append(
-            fragment(f"start {key}", body, "probed", notes_of, subject, "2026-10-14")
-        )
+        how = f"one real c=256 first-turn cc-traces burst at {root}"
+        body = {"host": {"http_intake": terms}}
+        probes.append(fragment("intake", body, "probed", how, subject, date))
     return [
         fragment("device", DEVICE, "probed", notes, SUBJECT),
         fragment("assumed", DECLARED, "assumed", "no probe fills these"),
-        *starts,
+        *probes,
     ]
 
 
@@ -252,17 +192,32 @@ def swept(model: str) -> Fragment:
     )
 
 
-def report(merged, tp_width=1) -> str:
+def saved(path: Path) -> Fragment:
+    """The tokenizer fragment a written document carries, in place of a new
+    sweep: its core counts and tokenizers, each with the origin it records."""
+    document = json.loads(path.read_text())
+    stanza = document["provenance"]
+    origins = {
+        label: found
+        for label, found in stanza["origins"].items()
+        if label.startswith(("host.cpu.", "host.tokenizers["))
+    }
+    stanza = {"authored_by": stanza["authored_by"], "date": stanza["date"]}
+    stanza |= {"origin": "mixed", "origins": origins}
+    host = {key: document["host"][key] for key in ("cpu", "tokenizers")}
+    body = {"schema_version": 1, "name": NAME, "provenance": stanza, "host": host}
+    return Fragment.from_mapping(body, "tokenizer")
+
+
+def report(merged) -> str:
     """`explain`'s rows grouped by origin, and the basis of `kv_blocks`."""
     spec = MachineSpec.from_mapping(merged.document)
     groups: dict[str, list[str]] = {}
     for block in ("host", "device", "interconnect"):
-        for row in explain(spec, block, tp_width=tp_width, origin=merged).contributions:
+        for row in explain(spec, block, origin=merged).contributions:
             groups.setdefault(row.origin["origin"], []).append(f"  {row}")
     lines = [line for origin, rows in groups.items() for line in (f"{origin}:", *rows)]
-    return "\n".join(
-        lines + [str(explain(spec, "kv_blocks", tp_width=tp_width, origin=merged))]
-    )
+    return "\n".join(lines + [str(explain(spec, "kv_blocks", origin=merged))])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -271,9 +226,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--out", type=Path, default=ROOT / "scripts/compass/machines" / f"{NAME}.json"
     )
+    parser.add_argument("--sweep-from", type=Path, help="a document to reuse")
     args = parser.parse_args(argv)
-    merged = merge([swept(args.model), *device_fragments()])
-    verdict = validate(merged, tp_widths=(1, *STARTS))
+    sweep = saved(args.sweep_from) if args.sweep_from else swept(args.model)
+    merged = merge([sweep, *device_fragments()])
+    verdict = validate(merged.document)
     print(verdict)
     if not verdict.ok:
         return 1
