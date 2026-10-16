@@ -698,7 +698,7 @@ def engine(config):
 
     lp, side = ENGINE, _pd_side(config)
     pc = config.parallel_config
-    if config.pipeline_parallel_size > 1:
+    if getattr(config, "pipeline_parallel_size", 1) > 1:
         lp = LpId(f"{ENGINE.name}-pp{pc.pipeline_parallel_rank}")
     if side is not None:
         lp = LpId(f"{ENGINE.name}-{side}")
