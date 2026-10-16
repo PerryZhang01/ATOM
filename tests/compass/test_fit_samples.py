@@ -201,3 +201,13 @@ def test_a_dp_rank_no_request_reached_adds_no_sample(tmp_path, monkeypatch):
         dataclasses.replace(s, provenance={**s.provenance, "run": run}) for s in alone
     ]
     assert both == {**config, "parallel": "tp1-dp2"}
+
+
+def test_an_empty_rank_file_refuses_as_a_rank_whose_lines_never_reached_disk(
+    tmp_path, monkeypatch
+):
+    a = record(tmp_path, monkeypatch)
+    (a / "steps/dp1.jsonl").write_text("")
+
+    with pytest.raises(ValueError, match="dp1.jsonl has no timed steps"):
+        load({a: RUNS})
