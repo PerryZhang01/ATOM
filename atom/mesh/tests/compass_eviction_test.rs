@@ -1,8 +1,8 @@
 //! cache_aware's tree eviction under the router LP, against a scripted clock
 //! authority: the router reports the eviction deadline as its daemon deadline
-//! and evicts when granted it, between the requests before and after, so one
-//! seed picks the same ranks whatever the wall timing, and the eviction moves
-//! picks.
+//! and evicts when granted it, or before a request arriving at or after it, so
+//! one seed picks the same ranks whatever the wall timing and whichever grants
+//! it gets, and the eviction moves picks.
 
 use std::{
     sync::{Arc, Mutex},
@@ -18,37 +18,31 @@ use mesh::{
 };
 use rand::{seq::SliceRandom, Rng};
 use serde_json::{json, Value};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
-    sync::oneshot,
-};
+use tokio::{net::TcpListener, sync::oneshot};
 use tower::ServiceExt;
+
+mod compass_frames;
+use compass_frames::{read_frame, write_frame};
 
 const HTTP: &str = "traffic->router:http";
 
-async fn read_frame(sock: &mut TcpStream) -> Value {
-    let mut body = vec![0; sock.read_u32().await.unwrap() as usize];
-    sock.read_exact(&mut body).await.unwrap();
-    serde_json::from_slice(&body).unwrap()
-}
-
-async fn write_frame(sock: &mut TcpStream, message: Value) {
-    let body = message.to_string();
-    sock.write_u32(body.len() as u32).await.unwrap();
-    sock.write_all(body.as_bytes()).await.unwrap();
-}
-
 /// Eight distinct 16-character prompts, each sent twice: seqs 0-7 before the
-/// first deadline at 1 s, seqs 8-15 after it.
+/// first deadline at 1 s, seqs 8-15 at or after it.
 fn prompt(seq: u64) -> String {
     let c = char::from_u32(0x4E00 + (seq % 8) as u32).unwrap();
     std::iter::repeat_n(c, 16).collect()
 }
 
 /// One run: the ranks picked in handling order, and the daemon deadline of
-/// each request the router made.
-async fn run(seed: u64, eviction_interval_secs: u64) -> (Vec<usize>, Vec<Value>) {
+/// each request the router made. With `deadline_granted`, the authority grants
+/// 1 s on its own and releases seqs 8-15 from 1.0625 s; without it, seqs 8-15
+/// come from exactly 1 s in the next grant, as when the router's first request
+/// went out before its policies registered the deadline.
+async fn run(
+    seed: u64,
+    eviction_interval_secs: u64,
+    deadline_granted: bool,
+) -> (Vec<usize>, Vec<Value>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     std::env::set_var(
         ENDPOINT_ENV,
@@ -62,12 +56,15 @@ async fn run(seed: u64, eviction_interval_secs: u64) -> (Vec<usize>, Vec<Value>)
             .collect();
         json!({ HTTP: pairs })
     };
-    let grants = [
+    let mut grants = vec![
         json!({"kind": "GRANT", "G": 0.5, "released": released(0..8, 0.0)}),
-        json!({"kind": "GRANT", "G": 1.0, "released": {}}),
-        json!({"kind": "GRANT", "G": 1.5, "released": released(8..16, 1.0)}),
+        json!({"kind": "GRANT", "G": 1.5, "released": released(8..16, 0.9375)}),
         json!({"kind": "GRANT", "G": "+inf", "released": {}}),
     ];
+    if deadline_granted {
+        grants[1] = json!({"kind": "GRANT", "G": 1.5, "released": released(8..16, 1.0)});
+        grants.insert(1, json!({"kind": "GRANT", "G": 1.0, "released": {}}));
+    }
     let (ready, built) = oneshot::channel::<()>();
     let served = tokio::spawn(async move {
         let (mut sock, _) = listener.accept().await.unwrap();
@@ -139,23 +136,30 @@ async fn run(seed: u64, eviction_interval_secs: u64) -> (Vec<usize>, Vec<Value>)
     for request in requests {
         request.await.unwrap();
     }
-    drop(app);
+    // The policy, and so its task, lives until the last request is read.
     let daemons = served.await.unwrap();
+    drop(app);
     let picks = picks.lock().unwrap().clone();
     (picks, daemons)
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn eviction_fires_on_the_lp_clock_and_one_seed_picks_the_same_ranks() {
-    let (picks, daemons) = run(20261016, 1).await;
+    let (picks, daemons) = run(20261016, 1, true).await;
     assert_eq!(daemons, [1.0, 1.0, 2.0, 2.0].map(|t| json!(t)));
-    assert_eq!(run(20261016, 1).await, (picks.clone(), daemons));
+    assert_eq!(run(20261016, 1, true).await, (picks.clone(), daemons));
 
     // A deadline past the run: no eviction, and every resent prompt keeps its
     // rank. The first run's task, dropped with its policy, reports nothing.
-    let (kept, daemons) = run(20261016, 100).await;
+    let (kept, daemons) = run(20261016, 100, true).await;
     assert_eq!(daemons, [100.0; 4].map(|t| json!(t)));
     assert_eq!(kept[..8], kept[8..]);
     assert_eq!(picks[..8], kept[..8]);
     assert_ne!(picks[8..], kept[8..], "the eviction must move a pick");
+
+    // No grant at the deadline, and seq 8 arrives exactly on it: the eviction
+    // runs before seq 8, so the picks are the first run's.
+    let (late, daemons) = run(20261016, 1, false).await;
+    assert_eq!(late, picks, "the eviction must run before seq 8");
+    assert_eq!(daemons, [1.0, 1.0, 2.0].map(|t| json!(t)));
 }
