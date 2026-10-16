@@ -87,8 +87,9 @@ An engine's also holds what its worker's steps cost, for the summary's
 predicted seconds and their shares by method (`backends.cost.GROUPS`).
 It holds the memory the worker predicts too, for
 ``python -m atom.compass.memory.check``, with the assumption a
-`memory_readings` member it read states, which `compass run` records, and under ``step_grid`` the bundle's
-key, digest and ``describe()`` line, which the summary carries. The authority
+`memory_readings` member it read states, which `compass run` records, and
+under ``step_grid`` the bundle's key, digest and ``describe()`` line, which the
+summary carries. The authority
 removes an earlier run's files there as it starts. At the end of client run
 ``k`` every server LP hands in to ``client-<k>/`` there, and the authority's
 host writes the step table and that client run's summary, its steps taken as
