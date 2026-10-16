@@ -20,7 +20,7 @@ config ATOM's arguments resolve. A step it does not cover refuses the run,
 naming the step; another backend has no check, and refuses `--coverage`.
 
 Once the server stops, run.json gains, beside `serve`'s identity: `run_file`,
-the run file the server was handed; `floor`, whether `--step-roofline` was on;
+the run file the server was handed; `step_roofline`, whether `--step-roofline` was on;
 `skip`, the host segments the run file's host entry skips; `refusals`, the run
 summary's; `coverage`, the check's report with the inputs it read, or None
 when no check ran; and `provenance`, the backend's digest and fit provenance
@@ -151,7 +151,7 @@ def write_grading(out, report) -> None:
     written = json.loads((out / serve.RUN_JSON).read_text())
     written |= {
         "run_file": run,
-        "floor": run["step_roofline"],
+        "step_roofline": run["step_roofline"],
         "skip": run.get("host", {}).get("skip", []),
         "refusals": summary["schedule"]["refusals"],
         "coverage": report,

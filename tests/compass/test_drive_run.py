@@ -199,7 +199,7 @@ def test_run_json_records_the_summarys_refusals_the_roofline_and_the_backend(
     assert written["refusals"] == refusals
     assert [reason for reason, _ in refusals["reasons"]] == [REFUSED]
     assert written["run_file"] == handed and handed["out_dir"] == str(out)
-    assert written["floor"] is handed["step_roofline"] is True
+    assert written["step_roofline"] is handed["step_roofline"] is True
     assert written["skip"] == [] and written["coverage"] is None
     assert written["provenance"] == handed["backend"]
     assert written["host_key"] == IDENTITY["host_key"]
@@ -232,7 +232,7 @@ def test_a_covered_run_starts_and_records_its_check_over_a_record_and_a_populati
     coverage = written["coverage"]
     assert coverage["inputs"] == inputs
     assert coverage["covered"] == coverage["steps"] == 15
-    assert coverage["uncovered"] == [] and written["floor"] is False
+    assert coverage["uncovered"] == [] and written["step_roofline"] is False
     handed = json.loads((out / serve.RUN_FILE).read_text())
     assert written["provenance"] == handed["backend"]
     assert handed["step_grid"]["grid"] == KEY["grid"]
