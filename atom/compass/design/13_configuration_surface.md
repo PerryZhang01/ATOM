@@ -182,8 +182,8 @@ compass fit steps      --backend step-linear [--form FORM] [--seed SEED] \
                        RECORD... --client-run RECORD EXPORT... --machine M \
                        --out D --store S
 compass fit steps      --backend step-grid --grid <population>... --grid-definition F \
-                       [--seed SEED] <targets>... --client-run RECORD EXPORT... \
-                       --machine M --out D --store S
+                       [--sessions A:B] [--seed SEED] <targets>... \
+                       --client-run INPUT EXPORT... --machine M --out D --store S
 compass fit host       RECORD... --client-run RECORD EXPORT... --machine M \
                        --out D --store S
 compass fit ops                   (ops half)
@@ -289,6 +289,7 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
   `fit steps --backend step-grid` plans again over the `--grid` inputs and
   `--grid-definition` that `measure steps` planned over, reads each planned point's
   measurement by its batch view, and refuses naming each planned point not measured.
+  Its `--sessions A:B` keeps the `--grid` lines `measure steps --sessions A:B` keeps.
   The step stub's coefficients are stated, not fitted, and `--backend step-stub` refuses. A fit copies
   its inputs' provenance into its output, the traces they came from included, and
   identical inputs and arguments give a bit-identical output. A grader refuses a backend

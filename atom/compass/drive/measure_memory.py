@@ -11,9 +11,9 @@ cache sized and its graphs captured. `gpu.quiet` checks those GPUs before the
 start and after it. Each rank writes its readings and the key it read off its
 resolved config, and the ranks must agree on the key. The entry's key is that
 one with the digest of the machine spec `--machine` names; its conditions are
-that spec's device and the stack the start ran, ROCm, AITER, RCCL and torch
-as run.json's identity states them, so a run whose spec pins another stack
-refuses it. A `--gpu` whose device is not the spec's refuses before the
+that spec's device and stack, torch included. A start under a stack the
+spec does not pin, as run.json's identity states it, refuses before it
+publishes. A `--gpu` whose device is not the spec's refuses before the
 start, so no entry measured on another card is keyed by that spec. `non_torch`
 refuses a spread across the ranks above `SPREAD_LIMIT`. One member per rank
 holds `memory.ENTRY_FIELDS`, its `record` the digest of the engine's log.
@@ -138,8 +138,19 @@ def main(argv: list[str]) -> None:
 
 def publish(out: Path, machine, store: str, command: str, stack: dict) -> None:
     """Publish the readings the ranks wrote in `out` at their key on `machine`,
-    under `stack`, the stack the start ran, as run.json's identity states it;
-    and write the entry's readable copy."""
+    and write the entry's readable copy; `stack`, the stack the start ran,
+    refuses unless `machine` pins it, naming each component that differs."""
+    pinned = {c: machine.value(f"device.software_pinned_to.{c}") for c in PINNED}
+    differ = [
+        f"{c} {stack[c]!r} in the start and {pinned[c]!r} in the spec"
+        for c in PINNED
+        if stack[c] != pinned[c]
+    ]
+    if differ:
+        raise ValueError(
+            "the start ran another stack than the machine spec "
+            f"{machine.value('name')} pins: " + "; ".join(differ)
+        )
     ranks = {p.name: json.loads(p.read_text()) for p in (out / READINGS).iterdir()}
     record = "sha256:" + hashlib.sha256((out / LOG).read_bytes()).hexdigest()
     for held in ranks.values():
@@ -168,12 +179,7 @@ def publish(out: Path, machine, store: str, command: str, stack: dict) -> None:
         ),
         topology=read_back(min(ranks))[1].topology,
         conditions=memory.conditions(
-            fields,
-            device=machine_spec_key(machine).values["device"],
-            software_stack=" / ".join(
-                f"{c} {stack[c]}" for c in PINNED if c != "torch"
-            ),
-            torch=stack["torch"],
+            fields, **machine_spec_key(machine).values, torch=pinned["torch"]
         ),
         gates=GateState.of(),
         members=members,
