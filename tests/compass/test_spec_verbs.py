@@ -2387,7 +2387,9 @@ def test_the_checked_in_mi355x_spec_holds_its_start_and_prices_its_activations(
     for fragment in script.device_fragments():
         for key, value in fragment.values.items():
             if not key.startswith("provenance."):
-                assert spec.values[key] == value, key
+                held = spec.values[key]
+                # A layout table merges one entry per start.
+                assert (held | value if isinstance(held, dict) else value) == held, key
     read = script.READ
     assert spec.activations_for("DeepseekV4ForCausalLM", script.CONFIG_JSON, 1) == (
         "deepseek-v4-pro",
@@ -2436,3 +2438,23 @@ def test_the_mi355x_spec_rebuilds_byte_for_byte_from_its_own_sweep(
     out = tmp_path / "rebuilt.json"
     assert script.main(["--sweep-from", str(document), "--out", str(out)]) == 0
     assert out.read_bytes() == document.read_bytes()
+
+
+def test_the_mi355x_spec_explains_its_ep8_start_at_the_ep8_layout(monkeypatch):
+    from atom.compass.run import _width_keys
+
+    script, _ = _mi355x_spec(monkeypatch)
+    document = SPEC_ROOT / "scripts" / "compass" / "machines" / f"{script.NAME}.json"
+    mapping = _width_keys(json.loads(document.read_text()))
+    spec = validate(mapping, tp_widths=("1x8x8",)).raise_first()
+    rows = explain(spec, "kv_blocks", tp_width="1x8x8").contributions
+    held = {row.path.rsplit(".", 1)[-1]: row for row in rows if "[1x8x8]" in row.path}
+    read = script.EP_READ
+    residue = read["loaded"] - read["parameters"] - read["buffers"]
+    assert {key: row.value for key, row in held.items()} == {
+        "driver_and_collective_reserve_bytes[1x8x8]": read["non_torch"],
+        "allocator_retained_after_load_bytes[1x8x8]": residue,
+    }
+    for row in held.values():
+        assert row.origin["origin"] == "probed"
+        assert row.origin["record"] == f"sha256:{script.EP_RECORD}"

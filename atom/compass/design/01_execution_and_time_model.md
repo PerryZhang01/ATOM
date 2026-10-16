@@ -1950,7 +1950,10 @@ own process with the policy code untouched. Under `--dp-aware` it is (owner ruli
   run's seed (`ATOM_COMPASS_SEED`, the cell's `SEED`): the policies read the LP clock, a
   seeded RNG and a fixed hasher. Without the endpoint nothing changes.
 - **Unchanged.** Cancels stay off behind the router; a clock error ends the router
-  process. The radix tree's eviction timer still runs on the wall clock (#1093).
+  process.
+- **Periodic tasks.** Under the LP, `PeriodicTask` (cache_aware's tree eviction) starts
+  no thread: the task's next deadline is the daemon deadline of each NER, and it runs
+  before any message arriving at or after that deadline (#1093).
 
 ### An unused hook worth knowing about
 
