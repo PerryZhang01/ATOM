@@ -271,12 +271,15 @@ predicted; if not, that is the finding and the recipe grows.
 ### Phase 2 — memory readings
 
 **One engine start per configuration, no workload at all.**
-`compass measure memory -- <ATOM args>` starts the real engine, reads the readings below
-once the KV cache is allocated and the graphs are captured, publishes one
-`memory_readings` entry (D41), and exits (`13` D80); `record` takes none. A run reads the
-entry for its configuration and refuses when it is absent, so the readings leave the
-machine spec (doc `05` D25). This phase exists because five memory quantities cannot be
-derived from geometry and have no law behind them. It is the cheapest phase in the
+`compass measure memory --gpu G --machine M --store S --out D -- <ATOM args>` starts the
+real engine, reads the readings below on every rank once the KV cache is allocated and
+the graphs are captured, publishes one `memory_readings` entry (D41), and exits (`13`
+D80); `record` takes none. The entry is keyed by the model, the digest of `--machine`,
+the parallel layout and the engine config (`atom/compass/run/memory.py::key_fields`), and
+records the stack the start ran on, which a run's spec must pin. A run reads its rank's
+member and refuses when there is no entry, so the readings leave the machine spec (doc
+`05` D25). This phase exists because these memory quantities cannot be derived from
+geometry and have no law behind them. It is the cheapest phase in the
 campaign and the one with the tightest acceptance gate behind it — KV block count at
 **≤5%**.
 
@@ -293,9 +296,10 @@ campaign and the one with the tightest acceptance gate behind it — KV block co
 |---|---|
 | `capacity_bytes` | the device, once; the capacity a run sizes against stays the machine spec's configured one (`13` D78) |
 | `driver_and_collective_reserve_bytes` | ATOM's own `get_num_blocks` `non_torch` term |
-| `allocator_retained_after_load_bytes` | torch allocator, after weight load completes and before the first forward |
-| `persistent_forward_buffer_bytes` | allocator delta across `allocate_forward_vars` + attention metadata setup |
-| `cudagraph_pool` | allocator delta across capture, at the configuration's own ladder |
+| `allocator_retained_after_load_bytes` | torch allocator, after weight load completes, less the model's parameter and buffer storages |
+| `persistent_forward_buffer_bytes` | allocated bytes where `get_num_blocks` reads the device, less those after load: `allocate_forward_vars`, attention metadata setup |
+| `activation_bytes` over `warmup_tokens` | the warmup forward's allocator peak above what stays allocated, on a second warmup: on a cold compile cache the first's peak sat in inductor's autotuning tensors, +15.8% (Qwen3-0.6B) and +65.2% (Qwen3-30B-A3B) ([#705](https://github.com/jgong5/ATOM/issues/705)) |
+| `cudagraph_pool_bytes` | reserved delta across capture, at the configuration's own ladder, as `capture_cudagraph` returns it |
 
 **Three rules that turn this from a reading into evidence:**
 
@@ -644,7 +648,7 @@ its own, and a population is keyed by the backend that priced it.
 | `op_graph` | Phase 1a, `trace ops` | **structure** — not shape |
 | `price_list` | Phase 1b, `fit ops` | **(model, parallel layout, machine-spec digest, source-root digest)** — a tuple, never a path |
 | `region_terms` | Phase 1c, `fit ops` | (model, parallel layout, machine-spec digest) |
-| `memory_readings` | Phase 2, `measure memory`; published with every reading assumed for a device never measured | (model, device, parallel, engine config) |
+| `memory_readings` | Phase 2, `measure memory`; published with every reading assumed for a device never measured | (model, machine-spec digest, parallel layout, engine config) |
 | `coverage_hull` | derived | the price list it was built from |
 | `step_measurement` | Phase 1c, `measure steps` | (model, device, parallel, engine config, source-root digest, sampling, step kind, the batch's digest) |
 | `step_linear_law` | `fit steps --backend step-linear` | (model, machine-spec digest, parallel, engine config, source-root digest, form) |
