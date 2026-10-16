@@ -223,9 +223,10 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
   Compass tree's source digest, the host key, and the device and stack.
 - **A GPU command refuses rather than warns** (`07` D42): it names its GPU, with no
   default device; it checks that GPU is quiet before and after, keeping both process
-  listings; it records whether it was profiled. `fit` refuses profiled inputs, and inputs
-  from two machines or two configurations: the configuration travels with the data, and
-  the user passes none.
+  listings; it records whether it was profiled. `fit` refuses profiled inputs, inputs
+  from two machines or two configurations, and inputs from another device, stack or torch
+  than its `--machine` spec states: the configuration travels with the data, and the user
+  passes none.
 
 **Instances and client runs:**
 
