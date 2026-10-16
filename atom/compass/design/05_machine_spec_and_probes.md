@@ -404,6 +404,9 @@ which cancelled — the largest being 25% of a single term.
 - Nothing yet decides what a developer does with no card of the target type. Today the
   answer is "assume it and accept the error", the memory readings in an entry marked
   assumed (`07` D38), which is honest but unguided.
+- The `http-intake` probe is not yet committed: hjbog-srdc-39's reading came from a scratch
+  stamp hook, and no other host has one, so `host.http_intake` stays optional
+  ([#1230](https://github.com/jgong5/ATOM/issues/1230)).
 
 ---
 
