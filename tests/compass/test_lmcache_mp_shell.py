@@ -22,6 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import test_vertical_slice
 from test_lmcache_lp import (
     BANDWIDTH,
     CHUNK,
@@ -309,16 +310,25 @@ def test_the_compass_runner_refuses_a_real_backend_beside_lmcache_mp(monkeypatch
 
 # --- a whole run --------------------------------------------------------------
 
-PROMPT = " ".join(f"word{k}" for k in range(600))  # several lmcache chunks
-#: Each client run's request: sent at its start, or that many simulated seconds
-#: after it. The second loads the first's prefix back from the server; the
-#: third comes after the eviction loop has emptied it and the session sweep
-#: has run past the session TTL.
+#: The machine the run is priced on and its memory readings measured on: the
+#: spec of the device `ATOM_COMPASS_SLICE_MACHINE` names, with a host link for
+#: the server's copies and the suite's tokenizer entry for Qwen3.
+MACHINE = Path(
+    os.environ.get(
+        "ATOM_COMPASS_SLICE_MACHINE",
+        TREE / "scripts/compass/machines/mi308x-hjbog39.json",
+    )
+)
+PROMPT = " ".join(f"word{k}" for k in range(200))  # a few lmcache chunks
+#: The third client run's request comes this long after its start: the
+#: eviction loop has emptied the server, and the session sweep has run.
 LATE_S = 700.0
+ATOM_ARGS = ["--model", MODEL, "--enforce-eager", "--max-model-len", "2048"]
 
 
 class Delayed(Traffic):
-    """The slice's traffic LP, sending `PROMPT` `after` seconds into its run."""
+    """The slice's traffic LP, sending `PROMPT` `after` seconds into its run,
+    and scraping nothing."""
 
     def __init__(self, after, *args) -> None:
         super().__init__(*args)
@@ -335,15 +345,43 @@ class Delayed(Traffic):
         body = body and {**body, "prompt": PROMPT}
         super()._carry(method, path, body, tracestate, port)
 
+    def _scrape(self) -> None:
+        pass
 
-@NEEDS_A_RUN
-def test_a_one_deployment_run_loads_a_stored_prefix_back(tmp_path):
-    port, server_port = _free_port(), _free_port()
-    machine = json.loads(json.dumps(DOCUMENT))
+
+def _machine(out: Path) -> Path:
+    machine = json.loads(MACHINE.read_text())
     machine["interconnect"]["host_link"] = {
         "bandwidth_bytes_per_s": BANDWIDTH,
         "latency_s": LATENCY_S,
     }
+    machine["host"]["tokenizers"].append(DOCUMENT["host"]["tokenizers"][0])
+    origins = machine["provenance"]["origins"]
+    for field in ("bandwidth_bytes_per_s", "latency_s"):
+        origins[f"interconnect.host_link.{field}"] = {"origin": "assumed"}
+    origins["host.tokenizers[qwen3-151k-bpe fast]"] = {"origin": "assumed"}
+    (out / "machine.json").write_text(json.dumps(machine))
+    return out / "machine.json"
+
+
+@NEEDS_A_RUN
+def test_a_one_deployment_run_loads_a_stored_prefix_back(tmp_path, monkeypatch):
+    """Three client runs of one prompt on a deployment that offloads to LP
+    lmcache, its memory readings measured first on the GPU
+    ``HIP_VISIBLE_DEVICES`` names: the first stores the prompt's chunks, the
+    second loads them back, prefix caching being off, and the third, past the
+    eviction loop and a session sweep, finds the server empty."""
+    from atom.compass import cli
+
+    monkeypatch.setattr(test_vertical_slice, "SCRAPE_S", math.inf)
+    machine = _machine(tmp_path)
+    gpu = os.environ.get("HIP_VISIBLE_DEVICES", "0")
+    cli.main(
+        ["measure", "memory", "--gpu", gpu, "--machine", str(machine)]
+        + ["--store", str(tmp_path / "store"), "--out", str(tmp_path / "measure")]
+        + ["--", *ATOM_ARGS]
+    )
+    port, server_port = _free_port(), _free_port()
     flags = ["--host", "127.0.0.1", "--port", str(server_port), "--chunk-size", "256"]
     flags += ["--l1-size-gb", "1", "--eviction-policy", "LRU"]
     flags += ["--eviction-trigger-watermark", "0"]  # every tick evicts
@@ -352,7 +390,7 @@ def test_a_one_deployment_run_loads_a_stored_prefix_back(tmp_path):
         step_stub=CONSTANT,
         client_runs=3,
         bound_s=LATE_S + 60.0,
-        machine=machine,
+        machine=json.loads(machine.read_text()),
         lmcache={"server": flags, "lookup_s": list(LOOKUP_S), "request_s": REQUEST_S},
     )
     extra = {"lmcache.mp.host": "tcp://127.0.0.1", "lmcache.mp.port": server_port}
@@ -367,9 +405,8 @@ def test_a_one_deployment_run_loads_a_stored_prefix_back(tmp_path):
     )
     with open(tmp_path / "server.log", "w") as log:
         server = subprocess.Popen(
-            [sys.executable, "-m", "atom.entrypoints.openai.api_server"]
-            + ["--model", MODEL, "--host", "127.0.0.1", "--server-port", str(port)]
-            + ["--enforce-eager", "--max-model-len", "2048"]
+            [sys.executable, "-m", "atom.entrypoints.openai.api_server", *ATOM_ARGS]
+            + ["--host", "127.0.0.1", "--server-port", str(port)]
             + ["--no-enable_prefix_caching", "--compass-run", str(run_file)],
             cwd=TREE,
             env=env,
@@ -396,14 +433,13 @@ def test_a_one_deployment_run_loads_a_stored_prefix_back(tmp_path):
     print("", *(" ".join(r) for r in replies), *reports, sep="\n")
     summary = json.loads((tmp_path / compass_run.SUMMARY_FILE).read_text())
     assert summary["coverage_report"] is False
-    stores = {r for op, r, ok, _ in replies if op == "store" and ok == "succeeded"}
+    stores = [r for op, r, ok, _ in replies if op == "store" and ok == "succeeded"]
     loads = [(r, ok) for op, r, ok, _ in replies if op == "retrieve"]
     # The second request loads the first's stored prefix; the third finds the
     # server emptied by its eviction loop and loads nothing.
-    assert len(stores) >= 2 and len(loads) == 1 and loads[0][1] == "succeeded"
-    assert any(f"loaded ['LoadOperationId(req_id={loads[0][0]!r}" in r for r in reports)
+    assert len(set(stores)) >= 2 and len(loads) == 1 and loads[0][1] == "succeeded"
+    [loaded] = [r for r in reports if "loaded []" not in r]
+    assert "LoadOperationId" in loaded and loads[0][0] in loaded
     table = (tmp_path / compass_run.STEP_TABLE_FILE).read_text()
-    ticks = [
-        float(r.split()[2]) for r in table.splitlines()[1:] if r.startswith("lmcache ")
-    ]
-    assert {1.0, 60.0, 660.0} <= set(ticks), "the eviction and session ticks ran"
+    ticks = {float(r.split()[2]) for r in table.splitlines()[1:] if r[:8] == "lmcache "}
+    assert {1.0, 60.0, 660.0} <= ticks, "the eviction and session ticks ran"
