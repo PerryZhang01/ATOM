@@ -337,13 +337,12 @@ def test_a_price_list_survives_a_model_change_and_region_terms_refuses_one(tmp_p
     assert "deepseek-ai/DeepSeek-V3.1" in str(refused.value)
 
 
-def test_a_machine_spec_is_three_rows_and_a_device_change_moves_two(tmp_path):
-    """One artifact, three fingerprints, and they are invalidated by different things.
+def test_a_machine_spec_is_its_rows_and_a_device_change_moves_the_capacity(tmp_path):
+    """One artifact, a fingerprint per row, invalidated by different things.
 
     This is the row that would be destroyed by tidying `machine_spec` into one
-    entry-wide fingerprint: the capacity is the silicon's, the runtime
-    constants are the library build's as much as the silicon's, and the
-    tokenizer terms are host CPU work that no device change touches.
+    entry-wide fingerprint: the capacity is the silicon's, and the tokenizer
+    terms are host CPU work that no device change touches.
     """
     store = ArtifactStore(tmp_path)
     entry = publish(store, KEY_OF[Row.MACHINE_SPEC_CAPACITY])
@@ -352,7 +351,6 @@ def test_a_machine_spec_is_three_rows_and_a_device_change_moves_two(tmp_path):
     with pytest.raises(ArtifactRefusal) as device:
         store.load(entry.key, conditions=moved(BASE, Axis.DEVICE), gates=GATES)
     assert "`machine_spec: capacity` x `device`" in str(device.value)
-    assert "`machine_spec: runtime constants` x `device`" in str(device.value)
     assert "tokenizer terms" not in str(device.value)
 
     with pytest.raises(ArtifactRefusal) as tokenizer:
@@ -371,9 +369,9 @@ def test_a_machine_spec_is_three_rows_and_a_device_change_moves_two(tmp_path):
 def test_an_aiter_bump_refuses_while_its_meaning_is_open(tmp_path):
     """The default, because what an aiter bump means is left open (#168).
 
-    The rows that carry ROCm/AITER/RCCL refuse a bump; `machine_spec`'s
-    capacity does not, because the silicon did not move. If it is settled as
-    "warn", this is the test that changes, and one cell of `MATRIX` with it.
+    The rows that carry ROCm/AITER/RCCL refuse a bump; `machine_spec` does
+    not, because the silicon did not move. If it is settled as "warn", this is
+    the test that changes, and one cell of `MATRIX` with it.
     """
     store = ArtifactStore(tmp_path)
     bumped = BASE.with_reading(
@@ -388,10 +386,7 @@ def test_an_aiter_bump_refuses_while_its_meaning_is_open(tmp_path):
         assert f"`{row}` x `ROCm / AITER / RCCL`" in str(refused.value)
 
     spec = publish(store, KEY_OF[Row.MACHINE_SPEC_CAPACITY])
-    with pytest.raises(ArtifactRefusal) as spec_refused:
-        store.load(spec.key, conditions=bumped, gates=GATES)
-    assert "runtime constants` x `ROCm / AITER / RCCL`" in str(spec_refused.value)
-    assert "capacity` x `ROCm" not in str(spec_refused.value)
+    assert store.load(spec.key, conditions=bumped, gates=GATES).key == spec.key
 
 
 def test_a_refusal_names_every_cell_that_moved(tmp_path):
