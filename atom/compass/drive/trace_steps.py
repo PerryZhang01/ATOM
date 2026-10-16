@@ -93,7 +93,7 @@ def publish(out, run: dict, command: str) -> Key:
     for rank in topology.ranks():
         record = steps / f"dp{rank.dp}.jsonl"
         lines = [json.loads(line) for line in record.read_text().splitlines()]
-        named = sorted(key for line in lines for _, key in line["named"])
+        named = sorted(key for line in lines for _, key, *_ in line["named"])
         requests += named
         engine = record.with_suffix(".engine.json")
         members |= {

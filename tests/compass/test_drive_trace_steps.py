@@ -84,6 +84,14 @@ def stopped(tmp_path, monkeypatch, ranks, **drive) -> tuple[Path, dict]:
     """A stopped server's `--out`: the record `ranks` drives, and run.json."""
     out = tmp_path / "out"
     built = _drive(out / serve.STEPS, monkeypatch, ranks, **drive)
+    # Each request is named with the response id its client saw, as the API
+    # server's requests are.
+    for path in (out / serve.STEPS).glob("dp*[0-9].jsonl"):
+        lines = [json.loads(line) for line in path.read_text().splitlines()]
+        for line in lines:
+            for named in line["named"]:
+                named.append(f"cmpl-{named[0]}")
+        path.write_text("".join(json.dumps(line) + "\n" for line in lines))
     (out / serve.RUN_JSON).write_text(json.dumps(IDENTITY))
     return out, built
 
