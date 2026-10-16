@@ -609,8 +609,9 @@ turn. The law carries the host key the records carry with its `atom`
 digest replaced by the one `host_key` gives a tree that
 adds `ScheduledBatchOutput.group_targets`, changes `clock.charge`, makes the
 plugin and diffusion bootstraps refuse a simulated run, names a pipeline
-stage's channels by its stage and has a downstream stage's loop leave on
-the `+inf` grant; none of these changes a
+stage's channels by its stage, has a downstream stage's loop leave on
+the `+inf` grant and moves the lmcache_mp lookup defer, lookup timeout and
+transfer deadlines to the LP clock; none of these changes a
 real run's host time. The law and its host key state
 `machine_spec`, the digest `machine_spec_digest` gives
 `scripts/compass/machines/mi308x-hjbog39.json`, so it refuses under any other

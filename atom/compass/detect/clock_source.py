@@ -135,6 +135,15 @@ CORE_ROOTS = tuple(
 _REPLACED_RUNNER = "the real model runner, which a simulated run replaces"
 _REPLACED_TRANSFER = "a transfer backend the simulator replaces with a priced one"
 _LOG_ONLY = "times real work for a log line; nothing in the simulated record reads it"
+_MP_WORKER = (
+    "stamps a transfer the lmcache_mp worker connector submitted; the simulated "
+    "runner's worker half submits none"
+)
+_SAVE_LEASE = (
+    "a save lease's age, which only the base reclaim_stale_leases reads; the "
+    "lmcache_mp scheduler overrides it to release nothing, and every other "
+    "offload backend is refused"
+)
 _COMPILE = "torch.compile at startup, before the simulated window"
 _LOAD = "loads or warms up the model at startup, before the simulated window"
 _WORKER_RPC = (
@@ -211,19 +220,17 @@ _KEPT_REAL = (
     ("atom/kv_transfer/offload/_offload_common.py", "_perf_maybe_log", "time.monotonic",
      "K9", _REPLACED_TRANSFER, 1),
     ("atom/kv_transfer/offload/chunked_scheduler.py", "get_num_new_matched_tokens",
-     "time.perf_counter", "K9", _REPLACED_TRANSFER, 2),
+     "time.perf_counter", "K9", _LOG_ONLY, 2),
     ("atom/kv_transfer/offload/chunked_scheduler.py", "prefetch_lookups", "time.perf_counter",
-     "K9", _REPLACED_TRANSFER, 2),
-    ("atom/kv_transfer/offload/chunked_scheduler.py", "lookup_pending", "time.monotonic",
-     "K9", _REPLACED_TRANSFER, 1),
+     "K9", _LOG_ONLY, 2),
     ("atom/kv_transfer/offload/chunked_scheduler.py", "_fresh_tier_lookup", "time.perf_counter",
-     "K9", _REPLACED_TRANSFER, 2),
+     "K9", _LOG_ONLY, 2),
     ("atom/kv_transfer/offload/chunked_scheduler.py", "build_connector_meta",
-     "time.perf_counter", "K9", _REPLACED_TRANSFER, 2),
+     "time.perf_counter", "K9", _LOG_ONLY, 2),
     ("atom/kv_transfer/offload/chunked_scheduler.py", "activate_block_leases", "time.monotonic",
-     "K9", _REPLACED_TRANSFER, 1),
+     "K9", _SAVE_LEASE, 1),
     ("atom/kv_transfer/offload/chunked_scheduler.py", "reclaim_stale_leases", "time.monotonic",
-     "K9", _REPLACED_TRANSFER, 1),
+     "K9", _SAVE_LEASE, 1),
     ("atom/kv_transfer/offload/dense/connector.py", "_do_load_req", "time.perf_counter",
      "K9", _REPLACED_TRANSFER, 4),
     ("atom/kv_transfer/offload/dense/connector.py", "_do_save_req", "time.perf_counter",
@@ -252,18 +259,12 @@ _KEPT_REAL = (
      "K9", _REPLACED_TRANSFER, 1),
     ("atom/kv_transfer/offload/hybrid/kimi_k3/state_tier.py", "reclaim_stale_parks",
      "time.monotonic", "K9", _REPLACED_TRANSFER, 1),
-    ("atom/kv_transfer/offload/mp/lookup.py", "lookup", "time.monotonic",
-     "K9", _REPLACED_TRANSFER, 4),
     ("atom/kv_transfer/offload/mp/native_state_worker.py", "_NativePending", "time.monotonic",
-     "K9", _REPLACED_TRANSFER, 1),
-    ("atom/kv_transfer/offload/mp/scheduler.py", "_enforce_transfer_deadlines",
-     "time.monotonic", "K9", _REPLACED_TRANSFER, 1),
+     "K9", _MP_WORKER, 1),
     ("atom/kv_transfer/offload/mp/transfer.py", "_PendingLoad", "time.monotonic",
-     "K9", _REPLACED_TRANSFER, 1),
+     "K9", _MP_WORKER, 1),
     ("atom/kv_transfer/offload/mp/transfer.py", "_PendingSave", "time.monotonic",
-     "K9", _REPLACED_TRANSFER, 1),
-    ("atom/kv_transfer/offload/mp/transfer.py", "_enforce_transfer_deadline", "time.monotonic",
-     "K9", _REPLACED_TRANSFER, 1),
+     "K9", _MP_WORKER, 1),
     *(
         (f"atom/kv_transfer/{path}", scope, f"time.{call}", "K9", _REPLACED_TRANSFER, n)
         for path, scopes in (
