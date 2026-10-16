@@ -94,7 +94,8 @@ class StepRecord:
         self.prompts: dict[int, tuple] = {}  # request id -> (digest, next position)
         # (line, its device window: a callable taking `wait`, or None once closed)
         self.pending: collections.deque[tuple] = collections.deque()
-        self.kv: list[list] = []  # offload decisions handed to the worker, not yet on a line
+        # Offload decisions handed to the worker, not yet on a line.
+        self.kv: list[list] = []
 
     def note_kv(self, meta) -> None:
         """Keep each lmcache offload load and save `meta` hands the worker:

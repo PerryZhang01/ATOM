@@ -97,7 +97,11 @@ def real(
 
     with ThreadPoolExecutor(len(requests)) as pool:
         list(pool.map(one, range(len(requests))))
-    arrivals = {"sent_ns": sent, "admitted_ns": admitted_ns, "prefix_words": prefix_words}
+    arrivals = {
+        "sent_ns": sent,
+        "admitted_ns": admitted_ns,
+        "prefix_words": prefix_words,
+    }
     (record / ARRIVALS).write_text(json.dumps(arrivals))
 
 

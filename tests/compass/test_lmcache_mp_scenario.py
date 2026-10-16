@@ -30,6 +30,9 @@ from pathlib import Path
 import pytest
 from test_lmcache_lp import _config, _run
 from test_lmcache_mp_engine import _machine
+from test_parity_record import _config as _parity_config
+from test_parity_record import _key
+from test_parity_record import _Runner as _SimRunner
 from test_vertical_slice import (
     CONSTANT,
     MODEL,
@@ -41,19 +44,29 @@ from test_vertical_slice import (
     _run_file,
 )
 
+from atom.compass import parity
 from atom.compass import run as compass_run
 from atom.compass.carriers import tracestate_with
 from atom.compass.detect.scenario import check_run
-from atom.compass.kv.lmcache_server import EVICTION_INTERVAL_S, reply_channel
-from atom.compass.parity import read
+from atom.compass.kv.lmcache_server import reply_channel
+from atom.compass.parity import ENV as RECORD
+from atom.compass.parity import StepRecording, read
 from atom.compass.parity.traffic import bodies
+from atom.compass.runner import overrides
+from atom.kv_transfer.offload.metadata import (
+    LMCacheOffloadMetadata,
+    LMCacheReqMeta,
+    LoadSpec,
+    SaveSpec,
+)
+from atom.model_engine.scheduler import Scheduler
+from atom.model_engine.sequence import Sequence
 
 PREFIX_WORDS = 600  # two whole 256-token chunks
 BURST_S, BURST = 0.5, 3  # the burst's time, and its requests per DP rank
 STATION_S = 2.0**-6  # every request-loop job: above a step under `CONSTANT`
 COPY_S = 2.0**-7  # every copy: the host link's latency, its rate adding nothing
-IPC = 2.0**-14
-ENV = {
+OFFLOAD_ENV = {
     "OFFLOAD_ASYNC_LOOKUP_DEPTH": "1",
     "OFFLOAD_LOOKUP_DEFER_S": "0",
     "OFFLOAD_MIN_LOAD_TOKENS": "256",
@@ -117,7 +130,7 @@ def run_scenario(root: Path, seed: str, dp: int, lmcache_port: int) -> dict:
     extra = {"lmcache.mp.host": "tcp://127.0.0.1", "lmcache.mp.port": lmcache_port}
     env = dict(
         os.environ,
-        **ENV,
+        **OFFLOAD_ENV,
         PYTHONHASHSEED=seed,
         PYTHONPATH=str(TREE),
         AITER_LOG_LEVEL="WARNING",
@@ -230,7 +243,9 @@ def test_a_dp_attention_deployment_stores_from_one_rank_per_dp_rank(
     tmp_path, monkeypatch, writers
 ):
     started = []
-    monkeypatch.setattr(compass_run.subprocess, "Popen", lambda *a, **k: started.append(a))
+    monkeypatch.setattr(
+        compass_run.subprocess, "Popen", lambda *a, **k: started.append(a)
+    )
     config = _config(tensor_parallel_size=2, enable_dp_attention=True)
     launch = functools.partial(
         compass_run._launch_lmcache, config, _run(tmp_path, writers=writers), None
@@ -270,3 +285,48 @@ def test_each_dp_member_parks_once_a_step_and_says_what_it_cost(runs):
         cpu_us = 1e6 * parks["cpu_s"] / parks["count"]
         print(f"\ndp{rank}: {parks['count']} parks, {cpu_us:.1f} us CPU each")
         assert parks["count"] == len(steps)
+
+
+# --- (c): the parity record's offload decisions, without a driver -------------
+
+
+class _Dispatched:
+    """The base the runners below dispatch offload metadata to."""
+
+    def process_kvconnector_output(self, meta):
+        self.dispatched = meta
+
+
+def test_a_step_line_carries_the_offload_decisions_dispatched_before_it(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv(RECORD, str(tmp_path))
+    monkeypatch.setattr(overrides, "_group_step_seconds", lambda *_: 0.0)
+    config = _parity_config()
+    scheduler = Scheduler(config)
+    runner = type("Sim", (_SimRunner, _Dispatched), {})(config)
+    seq = Sequence(list(range(5, 25)), 16)  # one 20-token prompt, one step
+    scheduler.add(seq)
+    batch, _ = scheduler.schedule()
+    meta = LMCacheOffloadMetadata()
+    meta.add_request(
+        LMCacheReqMeta(seq.id, list(range(20)), [0, 1], LoadSpec(0, 16), SaveSpec(16))
+    )
+    runner.process_kvconnector_output(meta)
+    assert runner.dispatched is meta
+    runner.forward(batch)
+    runner.forward(batch)  # nothing dispatched before it
+    key = _key(seq.prompt_token_ids)
+    steps = read(tmp_path)[0]
+    assert steps[0]["kv"] == [[key, "load", 0, 16], [key, "save", 16, 20]]
+    assert "kv" not in steps[1]
+
+
+def test_a_real_runner_keeps_what_it_dispatches_once_recording(monkeypatch):
+    kept = []
+    monkeypatch.setattr(parity, "record_kv", lambda runner, meta: kept.append(meta))
+    runner = object.__new__(type("Real", (StepRecording, _Dispatched), {}))
+    runner.process_kvconnector_output("warmup")
+    runner._recording = True
+    runner.process_kvconnector_output("meta")
+    assert kept == ["meta"] and runner.dispatched == "meta"
