@@ -291,19 +291,23 @@ def test_a_new_lookup_forgets_the_previous_hit():
 
 
 @pytest.mark.parametrize(
-    "sweeps, victims",
-    [((0.0, 600.0), {(0, 2), (0, 3)}), ((0.0, 600.0, 660.0), {(0, 0), (0, 1)})],
+    "sweeps, end, victims",
+    [
+        ((0.0, 600.0), 600.0, {(0, 2), (0, 3)}),  # exactly at its TTL
+        ((0.0, 600.0), 659.0, {(0, 2), (0, 3)}),  # past its TTL, before a sweep
+        ((0.0, 600.0, 660.0), 660.0, {(0, 0), (0, 1)}),
+    ],
 )
-def test_a_session_lives_until_the_first_sweep_past_its_ttl(sweeps, victims):
+def test_a_session_lives_until_the_first_sweep_past_its_ttl(sweeps, end, victims):
     flags = FLAGS + ["--eviction-ratio", "0.5"]
     server = LMCacheServer(flags, chunk_bytes=GIB // 4)  # four objects fit
     key = _key(0, end=2 * CHUNK, rid="a", world=1)
-    _do(server, "store", key, 1, [[0]], b"", now=0.5)
+    _do(server, "store", key, 1, [[0]], b"", now=0.0)
     _store(server, 0, start=2 * CHUNK, rid="z", world=1)  # LRU: 1, 0, 3, 2
     for t in sweeps:
         server.expire_sessions(t)
-    _do(server, "end_session", "a", now=sweeps[-1])  # touches only a live session
-    assert _chunks(server, server.evict(sweeps[-1])) == victims
+    _do(server, "end_session", "a", now=end)  # touches only a live session
+    assert _chunks(server, server.evict(end)) == victims
 
 
 def test_free_lookup_locks_of_a_dropped_session_releases_the_whole_range():
