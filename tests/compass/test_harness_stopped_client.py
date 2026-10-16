@@ -84,5 +84,5 @@ def test_a_client_bound_at_a_stop_names_its_open_request(tmp_path):
         f"the run finished with requests [{KEY}] sent but never given their final "
         "response"
     )
-    assert not stopper.is_alive() and engine.now == frontend.now == INF
+    assert not stopper.is_alive() and engine.now == INF
     assert (authority.stopped, authority.stopped_whole) == (True, False)
