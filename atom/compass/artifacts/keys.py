@@ -9,9 +9,9 @@ source-root digest)**, and a bare or merged price file states no layout, so it
 silently prices nothing while looking layered.
 
 The machine-spec digest (`machine_spec_digest`) is the digest of the spec's own
-key, its device and software stack, so a `price_list` or `region_terms` entry
-measured on one platform does not answer on another, and a spec edit outside
-those two (an interconnect field, a re-probed constant) moves no key.
+key, its device and software stack, so an entry keyed by it that was measured
+on one platform does not answer on another, and a spec edit outside those two
+(an interconnect field, a re-probed constant) moves no key.
 
 The parallel layout (`LAYOUT`) is the rank widths (`AXES`) plus the settings
 that change kernels and groups at a fixed rank count: the switches
@@ -63,6 +63,8 @@ class Kind(enum.Enum):
     REGION_TERMS = "region_terms"
     MEMORY_READINGS = "memory_readings"
     COVERAGE_HULL = "coverage_hull"
+    STEP_LINEAR_LAW = "step_linear_law"
+    HOST_LAWS = "host_laws"
     STEP_GRID_BUNDLE = "step_grid_bundle"
 
     def __str__(self) -> str:
@@ -92,6 +94,17 @@ KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
         "block_size",
     ),
     Kind.COVERAGE_HULL: ("price_list",),
+    Kind.STEP_LINEAR_LAW: (
+        "model",
+        "machine_spec",
+        "parallel",
+        "engine_config",
+        "source_root",
+        "form",
+    ),
+    # The values `run.host_key` reads, the engine config as its sorted JSON
+    # since a key holds only strings and numbers, and the machine-spec digest.
+    Kind.HOST_LAWS: ("host_cpu", "atom_src", "model", "engine_config", "machine_spec"),
     # `engine_config` names the one the grid was planned for; `grid` names
     # the grid definition with its margin.
     Kind.STEP_GRID_BUNDLE: (
@@ -245,10 +258,12 @@ class Key:
 
 
 def machine_spec_key(machine) -> Key:
-    """A `MachineSpec`'s own key: the device and the software stack it states."""
+    """A `MachineSpec`'s own key: the device and the software stack it states,
+    ROCm, AITER and RCCL; its torch pin is an axis of its own."""
     from atom.compass.spec.fields import PINNED
 
-    pins = (f"{c} {machine.value(f'device.software_pinned_to.{c}')}" for c in PINNED)
+    stack = (c for c in PINNED if c != "torch")
+    pins = (f"{c} {machine.value(f'device.software_pinned_to.{c}')}" for c in stack)
     return Key.of(
         Kind.MACHINE_SPEC,
         device=f"{machine.value('device.name')} {machine.value('device.arch')}",
