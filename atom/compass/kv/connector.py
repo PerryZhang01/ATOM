@@ -17,7 +17,9 @@ the `LPRuntime` installed in the engine's process:
   prefill has returned.
 
 Both report from `process_completions`, which the engine calls at every step
-and every idle drain tick, once the clock reaches their time. Write-done is
+and every idle drain tick, one call after the first whose clock reached their
+time: the engine's KV aggregation keeps one poll in flight, so a real poll
+returns what the workers had seen at the previous one. Write-done is
 not a message, because both ends already know its time. ``T`` is the
 `TransferModel` bound at ``kv_transfer_config[TRANSFER_KEY]``; the write
 request travels over the zmq address at ``kv_transfer_config[WRITE_REQ_KEY]``,
@@ -160,7 +162,8 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
         # The write request's latency, and the write-done notice's.
         self._latency_s = table.lookahead(pairs[0])
         self._ready: dict = {}  # prefill: request -> r
-        self._due: dict = {}  # request -> when it is reported finished
+        self._due: dict = {}  # request -> when its transfer is done
+        self._snapshot: list = []  # done at the last poll, reported at the next
         # Mooncake's send claim: a producer keeps a request's blocks from the
         # pool from `request_finished` until its write is reported done.
         self._awaiting_send: set[str] = set()
@@ -244,7 +247,8 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
                 yield pickle.loads(sock.recv())
 
     def process_completions(self, output):
-        """Take the write requests released so far; report what the clock reached."""
+        """Take the write requests released so far; report what the clock had
+        reached at the previous call."""
         for req_id, blocks, a, rank in self._write_requests():
             if rank != self._dp_rank:
                 raise ValueError(
@@ -263,9 +267,13 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
             logger.info(
                 "compass: KV transfer %s, %d blocks, %r simulated s", req_id, blocks, t
             )
+        # The engine's aggregation keeps one poll in flight, so a poll returns
+        # the snapshot the workers took at the previous poll: report that one.
         now = self._rt.read_clock()
-        done = [req_id for req_id, t in self._due.items() if t <= now]
-        for req_id in done:
+        done, self._snapshot = self._snapshot, [
+            req_id for req_id, t in self._due.items() if t <= now
+        ]
+        for req_id in self._snapshot:
             del self._due[req_id]
         if self.is_producer:
             output.finished_sending.update(done)
@@ -275,4 +283,4 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
 
     def has_pending_work(self) -> bool:
         """Keeps an idle decode engine polling until its parked requests are ready."""
-        return bool(self._due)
+        return bool(self._due or self._snapshot)
