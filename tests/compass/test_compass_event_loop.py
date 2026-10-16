@@ -31,7 +31,12 @@ from atom.compass.clock import NER, ClockAuthority, LpId, single_engine_table
 from atom.entrypoints.openai import api_server
 from atom.utils import clock
 from atom.utils.clock import LPRuntime
-from atom.utils.compass_loop import CompassEventLoop, CompassSelector, HttpChannel
+from atom.utils.compass_loop import (
+    CompassEventLoop,
+    CompassSelector,
+    HttpChannel,
+    wrap_encode,
+)
 
 TABLE = single_engine_table(admission_path="serving", ipc_s=0.001, stream_s=0.002)
 TRAFFIC, FRONTEND, ENGINE = LpId("traffic"), LpId("frontend"), LpId("engine")
@@ -753,10 +758,9 @@ def test_a_stamped_cancel_hangs_its_request_up_at_its_arrival_never_the_socket(r
     ]
 
 
-@pytest.mark.parametrize("intake", [(2e-3, 1e-6), None], ids=["probed", "unstated"])
-def test_a_burst_reaches_the_app_one_intake_charge_at_a_time(
-    run, monkeypatch, tmp_path, intake
-):
+def _intake_run_file(monkeypatch, tmp_path, intake) -> None:
+    """A run file whose machine spec states `intake` as host.http_intake, or
+    neither term for None."""
     from test_memory_readings import DOCUMENT
 
     from atom.compass import run as compass_run
@@ -767,28 +771,31 @@ def test_a_burst_reaches_the_app_one_intake_charge_at_a_time(
     path = tmp_path / "run.json"
     path.write_text(json.dumps({"bound_s": 600.0, "machine": machine}))
     monkeypatch.setenv(compass_run.ENV, str(path))
-    stamps, entered = queue.Queue(), []
-    traffic = _traffic(run, stamps, before_ner=lambda: None, n=2)
-    (arrival, _), (again, _) = stamps.get(timeout=10), stamps.get(timeout=10)
-    assert arrival == again
-    sizes = {0: 1000, 1: 3000}
 
-    async def app(scope, receive, send):
-        entered.append(asyncio.get_running_loop().time())
 
+def _burst(run, monkeypatch, n, app, sizes=None):
+    """`n` stamped requests at one arrival, through the served app; returns
+    the arrival once the loop has finished."""
+    stamps = queue.Queue()
+    traffic = _traffic(run, stamps, before_ner=lambda: None, n=n)
+    arrival = stamps.get(timeout=10)[0]
+    for _ in range(n - 1):
+        assert stamps.get(timeout=10)[0] == arrival
     monkeypatch.setattr(api_server, "app", app)
     served = api_server._served_app()
 
     def read(seq):
         async def receive():
-            return {"type": "http.request", "body": b"x" * sizes[seq]}
+            body = b"x" * (sizes[seq] if sizes else 0)
+            return {"type": "http.request", "body": body}
 
         tracestate = carriers.tracestate_with(None, arrival, seq).encode()
-        return served({"type": "http", "headers": [(b"tracestate", tracestate)]}, receive, None)
+        scope = {"type": "http", "headers": [(b"tracestate", tracestate)]}
+        return served(scope, receive, None)
 
     async def go():
         await asyncio.sleep(arrival)
-        await asyncio.gather(read(0), read(1))
+        await asyncio.gather(*(read(seq) for seq in range(n)))
 
     loop = CompassEventLoop()
     try:
@@ -797,7 +804,50 @@ def test_a_burst_reaches_the_app_one_intake_charge_at_a_time(
     finally:
         traffic.join(10)
     loop.close()
+    return arrival
+
+
+@pytest.mark.parametrize("intake", [(2e-3, 1e-6), None], ids=["probed", "unstated"])
+def test_a_burst_reaches_the_app_one_intake_charge_at_a_time(
+    run, monkeypatch, tmp_path, intake
+):
+    _intake_run_file(monkeypatch, tmp_path, intake)
+    sizes, entered = {0: 1000, 1: 3000}, []
+
+    async def app(scope, receive, send):
+        entered.append(asyncio.get_running_loop().time())
+
+    arrival = _burst(run, monkeypatch, 2, app, sizes)
     fixed, per_byte = intake or (0.0, 0.0)
     first = arrival + fixed + sizes[0] * per_byte
     print(f"\n  app entered at {entered}")
     assert entered == pytest.approx([first, first + fixed + sizes[1] * per_byte])
+
+
+def test_an_intake_waits_for_the_open_tokenizer_job_so_its_result_is_not_late(
+    run, monkeypatch, tmp_path
+):
+    # Each intake costs 2 ms; each request's tokenizer job is charged 1 ms, and
+    # the first one's real thread takes 0.3 wall seconds. Job 0 completes at
+    # 3 ms, inside request 1's intake, so its result runs when that intake
+    # ends, at 4 ms, not once the clock has run on through every intake.
+    _intake_run_file(monkeypatch, tmp_path, (2e-3, 0.0))
+    entry = SimpleNamespace(encode_fixed_s=1e-3, encode_tokens_per_s=1.0, derate=1.0)
+    encode, done = wrap_encode(list, entry), []
+
+    async def app(scope, receive, send):
+        seq = api_server._tracestate_stamp(scope)[1]
+
+        def do_preprocess():
+            time.sleep(0.3 if seq == 0 else 0)
+            encode()
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, do_preprocess)
+        done.append((seq, loop.time()))
+
+    arrival = _burst(run, monkeypatch, 3, app)
+    print(f"\n  tokenizer results at {done}")
+    expected = [(0, 4e-3), (1, 6e-3), (2, 7e-3)]
+    assert [s for s, _ in done] == [s for s, _ in expected]
+    assert [t for _, t in done] == pytest.approx([arrival + t for _, t in expected])

@@ -518,7 +518,10 @@ twice the real count (225 against 109; [#1103](https://github.com/jgong5/ATOM/is
 So `HttpChannel` (`atom/utils/compass_loop.py`) charges the frontend LP's clock
 `host.http_intake.fixed_s + body bytes x host.http_intake.per_byte_s` (doc 05 D25) for each
 stamped request it takes in, a cancel excepted, once the body is read and before the app
-runs: an event cost, as a tokenizer call on the loop is. A spec that states neither term
+runs: an event cost, as a tokenizer call on the loop is. The clock stands still until every
+open encode job is placed and the callbacks due by then have run, so an encode that
+completes inside an intake hands its result on when the intake ends, whatever wall time
+its real thread took. A spec that states neither term
 charges nothing. The client's own send spread is not modelled. The `http` channel's
 admission delay (`channels.py::ADMISSION_DELAY_S`) stays the channel's lookahead; it was
 measured at low load, so it overlaps one request's intake.
