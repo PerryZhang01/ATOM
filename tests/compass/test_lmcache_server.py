@@ -240,10 +240,12 @@ def test_staged_chunks_count_toward_the_watermark_and_the_victim_count():
     assert len(server.evict(0.0)) == 4  # half of the eight tracked
 
 
-def test_eviction_ratio_zero_evicts_nothing():
-    server = LMCacheServer(FLAGS + ["--eviction-ratio", "0"], chunk_bytes=GIB // 4)
+@pytest.mark.parametrize("ratio, evicted", [("0", 0), ("0.2", 1)])
+def test_a_ratio_above_zero_evicts_at_least_one_and_zero_evicts_none(ratio, evicted):
+    flags = FLAGS + ["--eviction-ratio", ratio]
+    server = LMCacheServer(flags, chunk_bytes=GIB // 4)  # four objects fit
     _store(server, 0, world=1)
-    assert server.evict(0.0) == []
+    assert len(server.evict(0.0)) == evicted
 
 
 def test_a_retrieve_holds_its_locks_until_its_copy_ends():
