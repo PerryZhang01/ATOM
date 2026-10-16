@@ -1,7 +1,10 @@
 pub mod app_context;
 pub mod cliargs;
+pub mod compass_clock;
+pub mod compass_router;
 pub mod config;
 pub mod core;
+pub mod determinism;
 #[cfg(feature = "ext-proc")]
 pub mod ext_proc;
 pub mod middleware;

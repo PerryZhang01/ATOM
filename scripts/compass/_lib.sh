@@ -300,3 +300,20 @@ compass_compass_pass_count() {
     fi
     printf '%s' "$n"
 }
+
+# A free TCP port on 127.0.0.1.
+compass_free_port() {
+    python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'
+}
+
+# compass_wait_up WHAT PID URL: return once URL answers; exit 1 if PID exits
+# first or WAIT_S seconds pass.
+compass_wait_up() {
+    local deadline=$((SECONDS + WAIT_S)) me
+    me=$(basename -- "$0" .sh)
+    until curl -sf --max-time 10 "$3" >/dev/null; do
+        kill -0 "$2" 2>/dev/null || { echo "$me: $1 exited before it answered" >&2; exit 1; }
+        ((SECONDS < deadline)) || { echo "$me: no $1 after $WAIT_S s" >&2; exit 1; }
+        sleep 1
+    done
+}
