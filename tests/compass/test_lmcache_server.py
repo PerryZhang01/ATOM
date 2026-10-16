@@ -92,7 +92,7 @@ def served():
 
 
 def test_every_request_type_round_trips_lmcache_frames(served):
-    server, ctx, url = served
+    _, ctx, url = served
     adapter = AtomMPSchedulerAdapter(
         server_url=url,
         context=ctx,
