@@ -13,6 +13,7 @@ import re
 
 import pytest
 from test_artifact_store import CONDITIONS, stanza
+from test_memory_readings import STACK
 from test_parity_served import SAMPLING, client_run, recorded
 
 from atom.compass.artifacts import (
@@ -30,7 +31,7 @@ from atom.compass.parity.served import served
 from atom.compass.run.step_grid import BOUNDS
 
 HOST = {"host_cpu": "planted cpu", "atom": "0" * 64, "model": "sha256:" + "1" * 64}
-DEVICE = {"index": 7, "series": "AMD Instinct MI308X", "sku": "M3080", "gfx": "gfx942"}
+DEVICE = {"index": 7, "name": "MI355X", "arch": "gfx950"}
 SOURCE = {
     "name": "atom",
     "root": "/workspace/ATOM/atom",
@@ -53,12 +54,12 @@ def record(tmp_path, monkeypatch, name="a", groups=((0, 1), (2, 3)), **run):
         k: v for k, v in engine.items() if k not in (*BOUNDS, "num_kvcache_blocks")
     }
     identity = {
-        "format_version": 1,
+        "format_version": 2,
         "argv": ["compass", "record", "--out", str(directory)],
         "source": SOURCE,
         "host_key": {**HOST, "engine": keyed},
         "device": [DEVICE],
-        "stack": {"rocm": "7.2.4", "torch": "2.10.0", "aiter": "v0.1.21"},
+        "stack": STACK,
         "profiled": False,
     }
     (directory / "run.json").write_text(json.dumps({**identity, **run}))
@@ -123,7 +124,7 @@ def test_two_records_differing_only_in_kv_cache_dtype_refuse_naming_both_values(
     "field, file, change",
     [
         ("model", "run.json", lambda r: r["host_key"].update(model="sha256:2")),
-        ("device", "run.json", lambda r: r["device"][0].update(sku="M3081")),
+        ("device", "run.json", lambda r: r["device"][0].update(name="MI300X")),
         (
             "parallel",
             "steps/dp0.engine.json",
@@ -156,8 +157,8 @@ def test_each_field_read_from_the_input_refuses_when_it_differs(
             lambda d: edit(d / "run.json", lambda r: r.update(profiled=True)),
         ),
         (
-            "is format 2",
-            lambda d: edit(d / "run.json", lambda r: r.update(format_version=2)),
+            "is format 1",
+            lambda d: edit(d / "run.json", lambda r: r.update(format_version=1)),
         ),
         (f"holds {ARRIVALS}", lambda d: (d / "steps" / ARRIVALS).write_text("{}")),
     ],
@@ -199,13 +200,13 @@ def test_each_sample_copies_its_input_s_provenance_and_the_traces_it_served(
     assert samples[0].provenance["run"] == digest(path)
     assert config == {
         "model": HOST["model"],
-        "device": "AMD Instinct MI308X M3080 gfx942",
+        "device": "MI355X gfx950",
         "parallel": "tp1-dp1",
         "engine_config": json.loads(a.joinpath("run.json").read_text())["host_key"][
             "engine"
         ],
         "source_root": "tree-67c176f0",
-        "stack": {"rocm": "7.2.4", "torch": "2.10.0", "aiter": "v0.1.21"},
+        "stack": STACK,
         "sampling": SAMPLING,
         "host_key": {"host_cpu": "planted cpu", "atom": "0" * 64},
     }

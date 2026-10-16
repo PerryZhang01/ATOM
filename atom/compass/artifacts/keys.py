@@ -269,17 +269,25 @@ class Key:
         return f"{self.kind}({stated})"
 
 
-def machine_spec_key(machine) -> Key:
-    """A `MachineSpec`'s own key: the device and the software stack it states,
-    ROCm, AITER and RCCL; its torch pin is an axis of its own."""
+def platform_key(device: str, stack: Mapping[str, str]) -> Key:
+    """The machine-spec key of `device`, `<name> <arch>`, running `stack`,
+    {component: version} as a spec pins it: its ROCm, AITER and RCCL, in that
+    order; its torch is an axis of its own. A spec's key and the readings of a
+    record taken on it are both this join."""
     from atom.compass.spec.fields import PINNED
 
-    stack = (c for c in PINNED if c != "torch")
-    pins = (f"{c} {machine.value(f'device.software_pinned_to.{c}')}" for c in stack)
-    return Key.of(
-        Kind.MACHINE_SPEC,
-        device=f"{machine.value('device.name')} {machine.value('device.arch')}",
-        software_stack=" / ".join(pins),
+    pins = (f"{c} {stack[c]}" for c in PINNED if c != "torch")
+    return Key.of(Kind.MACHINE_SPEC, device=device, software_stack=" / ".join(pins))
+
+
+def machine_spec_key(machine) -> Key:
+    """A `MachineSpec`'s own key: the `platform_key` of the device and the
+    software stack it states."""
+    from atom.compass.spec.fields import PINNED
+
+    return platform_key(
+        f"{machine.value('device.name')} {machine.value('device.arch')}",
+        {c: machine.value(f"device.software_pinned_to.{c}") for c in PINNED},
     )
 
 

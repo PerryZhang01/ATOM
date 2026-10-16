@@ -19,16 +19,16 @@ those `traces`.
 
 Every input states one configuration. A record reads it from its `run.json`,
 its `dp0.engine.json` and the requests it served: `model`, the served
-config.json's digest; `device`, each GPU's series, SKU and gfx version;
-`parallel`, `tp<T>-dp<D>`; `engine_config`, `keyed`'s fields; `source_root`,
-`<revision_kind>-<revision>`; `sampling`, the request parameters, null for a
-record serving no client run's request; its host key less its model and
-engine; and its `stack`, the software versions run.json names. A measurement
-reads the same fields but the host key and stack from its key, whose
-`engine_config` and `sampling` are JSON objects as text. A field that differs
-between inputs refuses, naming each value and the inputs holding it; so do a
-profiled record and a record whose requests carry two sets of request
-parameters.
+config.json's digest; `device`, each GPU's `<name> <arch>`, as a spec states
+it; `parallel`, `tp<T>-dp<D>`; `engine_config`, `keyed`'s fields;
+`source_root`, `<revision_kind>-<revision>`; `sampling`, the request
+parameters, null for a record serving no client run's request; its host key
+less its model and engine; and its `stack`, the software versions run.json
+names. A measurement reads the same fields but the host key and stack from its
+key, whose `engine_config` and `sampling` are JSON objects as text. A field
+that differs between inputs refuses, naming each value and the inputs holding
+it; so do a profiled record and a record whose requests carry two sets of
+request parameters.
 """
 
 import dataclasses
@@ -44,11 +44,11 @@ from atom.compass.parity.served import served
 from atom.compass.run.step_grid import BOUNDS
 
 #: The run.json format this reads.
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 #: A step measurement's one member: the bench replies for the whole TP group.
 MEMBER = ("measurement", Topology().ranks()[0], "json")
 #: What names a GPU's model in run.json's `device`.
-CARD = ("series", "sku", "gfx")
+CARD = ("name", "arch")
 
 
 def load(

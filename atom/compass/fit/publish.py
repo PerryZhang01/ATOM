@@ -7,10 +7,11 @@ fit taking replayed batches reads step measurements too, each named by the
 token `Key.token` prints; it loads their samples under one configuration
 (`samples.load`). A record no `--client-run` names refuses: its steps would
 name no trace they served. `--machine M` names the spec of the platform the
-inputs ran on; the configuration gains its `machine_spec_digest`, which a
-fit's key and params state, and `readings`, those a run on the spec takes with
-the inputs' source root, model and engine, under which each measurement is
-loaded.
+inputs ran on: records whose device, software stack or torch is not the one it
+states refuse, naming each and both values. The configuration gains its
+`machine_spec_digest`, which a fit's key and params state, and `readings`,
+those a run on the spec takes with the inputs' source root, model and engine,
+under which each measurement is loaded.
 
 `publish` hands off one store entry whose members are `params`, what a run
 file carries, and `report`, the fit's report, under the readings it is
@@ -33,9 +34,11 @@ from atom.compass.artifacts import (
     Reading,
     Topology,
     machine_spec_digest,
+    machine_spec_key,
     member_name,
     roots_for,
 )
+from atom.compass.artifacts.keys import platform_key
 from atom.compass.fit.samples import load
 from atom.compass.run import _width_keys
 from atom.compass.run.step_grid import readings as run_readings
@@ -95,6 +98,19 @@ def inputs(args, sources) -> tuple[list, dict]:
     spec = MachineSpec.from_mapping(
         _width_keys(json.loads(Path(args.machine).read_text()))
     )
+    torch = spec.value("device.software_pinned_to.torch")
+    stated = {**machine_spec_key(spec).values, "torch": torch}
+    ran = platform(config) if runs else stated
+    differ = [
+        f"{axis} {ran[axis]!r} in the records and {stated[axis]!r} in {args.machine}"
+        for axis in stated
+        if ran[axis] != stated[axis]
+    ]
+    if differ:
+        raise ValueError(
+            "the records ran on another platform than --machine states: "
+            + "; ".join(differ)
+        )
     here = spec_readings(spec, config)
     for key in measurements:
         store.load(key, conditions=here, gates=GateState.of())
@@ -116,16 +132,19 @@ def runs(samples) -> list[dict]:
     return [{**run, "traces": sorted(run["traces"])} for run in held.values()]
 
 
+def platform(config) -> dict:
+    """The device, software-stack and torch readings `config`, the inputs'
+    configuration, states, the first two joined as a machine spec's key."""
+    stack = config["stack"]
+    return {**platform_key(config["device"], stack).values, "torch": stack["torch"]}
+
+
 def conditions(config) -> Conditions:
     """The readings `config`, the inputs' configuration, states for every axis."""
-    stack = dict(config["stack"])
-    torch = stack.pop("torch")
     return Conditions.of(
-        software_stack=" / ".join(f"{c} {v}" for c, v in stack.items()),
-        torch=torch,
+        **platform(config),
         atom_src=Reading(*config["source_root"].split("-", 1)),
         model=config["model"],
-        device=config["device"],
         host_cpu=config["host_key"]["host_cpu"],
         engine_config=json.dumps(config["engine_config"], sort_keys=True),
     )
