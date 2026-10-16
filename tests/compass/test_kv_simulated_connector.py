@@ -29,6 +29,7 @@ from atom.compass.kv import (
     TransferModel,
     UnboundSeam,
 )
+from atom.compass.kv.transfer import Link
 from atom.compass.spec import MachineSpec, SpecRefusal
 from atom.kv_transfer.disaggregation.factory import KVConnectorFactory
 from atom.kv_transfer.disaggregation.types import ConnectorMetadata
@@ -197,3 +198,31 @@ def test_a_negative_block_count_is_refused(geometry):
     """A transfer that finished before it started is not a fast transfer."""
     with pytest.raises(ValueError, match="not a transfer"):
         model_for(geometry, PEAKS[0]).duration_s(-1)
+
+
+# -- Writes on one link ----------------------------------------------------
+
+#: Binary-exact numbers, so completion times compare with `==`.
+EXACT = TransferModel(latency_s=0.5, bandwidth_bytes_per_s=4.0, bytes_per_block=2)
+
+
+def test_a_write_alone_on_the_link_costs_its_duration():
+    link = Link(EXACT)
+    assert link.start(1.0, 3) == 1.0 + EXACT.duration_s(3)
+    assert link.start(9.0, 3) == 9.0 + EXACT.duration_s(3), "the link was free"
+
+
+def test_a_write_waits_for_the_bytes_of_the_writes_before_it():
+    """x holds the link from 0 to 1; y, arriving at 0.5, moves its bytes from 1
+    to 2; z, at 0.5 too, from 2 to 2.5. The latency does not hold the link."""
+    link = Link(EXACT)
+    assert link.start(0.0, 2) == 1.5
+    assert link.start(0.5, 2) == 2.5
+    assert link.start(0.5, 1) == 3.0
+
+
+def test_a_write_arriving_before_an_earlier_one_is_refused():
+    link = Link(EXACT)
+    link.start(1.0, 1)
+    with pytest.raises(ValueError, match="arrives at 0.5, before one that arrived"):
+        link.start(0.5, 1)
