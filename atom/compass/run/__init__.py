@@ -263,9 +263,6 @@ _authority: "_RecordingAuthority | None" = None
 _early_end: threading.Thread | None = None
 #: This engine process's member name in the engine LP, None at DP width one.
 _member: str | None = None
-#: This DP member's parks before a dispatch, and the CPU seconds its step loop
-#: spent in them.
-_parks = [0, 0.0]
 
 
 def spec() -> dict | None:
@@ -1004,8 +1001,8 @@ def _park_before_dispatch() -> None:
         if func_name in ("forward", "dummy_execution") and rt and rt.in_run:
             cpu = time.thread_time()
             rt.park()
-            _parks[0] += 1
-            _parks[1] += time.thread_time() - cpu
+            count, seconds = getattr(rt, "parks", (0, 0.0))
+            rt.parks = (count + 1, seconds + time.thread_time() - cpu)
         return call(self, func_name, *args, **kwargs)
 
     @functools.wraps(sync)
@@ -1426,8 +1423,8 @@ def _engine_hand_in(run: dict, engine_core, sections: dict, client_run=None) -> 
     rt = clock.installed()
     lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
     reasons = said.pop("refusals") + rt.refusals
-    if _parks[0]:
-        sections = sections | {"parks": {"count": _parks[0], "cpu_s": _parks[1]}}
+    if parks := getattr(rt, "parks", None):
+        sections = sections | {"parks": {"count": parks[0], "cpu_s": parks[1]}}
     _hand_in(run, lp, reasons, client_run, **said, **sections)
 
 
