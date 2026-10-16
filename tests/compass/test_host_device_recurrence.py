@@ -221,9 +221,9 @@ def test_no_cost_line_is_written_with_the_record_off_or_off_tp_rank_0(
 
 def test_grading_reads_a_simulated_cells_record_beside_its_cost_lines(tmp_path):
     cells = [_cell(tmp_path / f"c{i}", _schedule(), {}) for i in range(4)]
-    graded = runs.grade(cells[2:], cells[0], cells[1])
+    graded = runs.grade(cells[1:], cells[0])
     (cells[0] / "steps" / "dp0.cost.jsonl").write_text(json.dumps({"step": 0}) + "\n")
-    assert runs.grade(cells[2:], cells[0], cells[1]) == graded
+    assert runs.grade(cells[1:], cells[0]) == graded
 
 
 def test_grading_refuses_a_what_if_run(tmp_path):

@@ -372,7 +372,11 @@ class PPEngineCoreProc(EngineCore):
                 if now >= next_metrics_push:
                     next_metrics_push = now + metrics_interval
                     self.utility_handler.push_metrics(scheduler_metrics=False)
-                shutdown = shutdown or self.pull_and_process_input_queue()
+                shutdown = (
+                    clock.idle(lambda: self._idle_deadline(), next_metrics_push)
+                    or shutdown
+                    or self.pull_and_process_input_queue()
+                )
                 if shutdown:
                     break
                 if self._is_idle_rl_weights_offloaded():
