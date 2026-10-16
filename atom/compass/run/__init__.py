@@ -70,7 +70,7 @@ the run there, which still writes the summary),
 LP after another, 1 when absent and ``null`` for no limit; each ends when no
 essential work is left, and the last one's end finishes the run),
 ``host`` (optional: ``laws``, per forward kind and host segment, coefficients
-on ``(1, tokens, seqs)``, zero where absent; ``key``, the `host_key` they were
+on ``(1, tokens, seqs)``, refused where absent; ``key``, the `host_key` they were
 fitted under and the ``machine_spec`` digest of the spec of the platform they
 were fitted on, which a run with laws must match; ``skip``, segments zeroed for
 a what-if run, which the graders refuse),
