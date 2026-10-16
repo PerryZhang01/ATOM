@@ -4191,6 +4191,31 @@
    "why": "two-batch-overlap graph capture starts its capture threads, at startup",
    "mechanism": "K9",
    "mechanism_why": "at startup, inside graph capture the simulated runner does not perform"
+  },
+  {
+   "id": "atom/compass/drive/gpu.py::_check::subprocess.Popen( [\"bash\", str(PREFLIGHT)], stdout=f, stderr=subprocess.STDOUT )::thread_start#0",
+   "file": "atom/compass/drive/gpu.py",
+   "symbol": "_check",
+   "call": "subprocess.Popen",
+   "expr": "subprocess.Popen( [\"bash\", str(PREFLIGHT)], stdout=f, stderr=subprocess.STDOUT )",
+   "shape": "thread_start",
+   "peer": "none",
+   "lp": "none",
+   "why": "a GPU command's check runs scripts/compass/preflight.sh in a process of its own, before the command starts its server or engine and after they stop",
+   "mechanism": "K9",
+   "mechanism_why": "starting a process cannot park; the check runs in the measuring command, which is no LP, outside its run, and a GPU command serves no simulated run"
+  },
+  {
+   "id": "atom/compass/drive/gpu.py::_check::flight.wait(PREFLIGHT_TIMEOUT_S)::event_wait#0",
+   "file": "atom/compass/drive/gpu.py",
+   "symbol": "_check",
+   "call": "flight.wait",
+   "expr": "flight.wait(PREFLIGHT_TIMEOUT_S)",
+   "shape": "event_wait",
+   "peer": "process",
+   "why": "a GPU command's check waits for preflight.sh to exit, up to a wall bound past which it kills the script and refuses the run",
+   "mechanism": "K9",
+   "mechanism_why": "in the measuring command, which is no LP, before its run starts or after it stops; a GPU command serves no simulated run, so the bound stays real"
   }
  ],
  "anchors": [
