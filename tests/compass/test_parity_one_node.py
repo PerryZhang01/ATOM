@@ -52,6 +52,7 @@ def _parity(tmp_path, **env):
         REAL_PYTHON=sys.executable,
         STUB_LOG=str(tmp_path / "servers.log"),
         MODEL=str(model),
+        STORE=str(tmp_path / "store"),
         WAIT_S="30",
         **env,
     )
@@ -97,6 +98,7 @@ def test_dsv4_dpa8_runs_the_nightly_prefill_server_at_eight_ranks(tmp_path):
         assert line.endswith("GPU_MAX_HW_QUEUES=5 ATOM_NUMA_BIND=1")
     spec = json.loads(run.read_text())
     assert spec["data_parallel_size"] == 8
+    assert spec["store"] == str(tmp_path / "store")
     assert spec["machine"]["name"] == json.loads(machine.read_text())["name"]
 
 
