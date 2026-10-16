@@ -110,8 +110,6 @@ def deployment(tmp_path, **config):
         gpu_memory_utilization=0.9,
         torch_dtype=torch.bfloat16,
         enforce_eager=False,
-        enable_dp_attention=False,
-        enable_expert_parallel=False,
         enable_tbo=False,
         enable_tbo_decode=False,
         capture_sizes=list(LADDER),
@@ -629,7 +627,7 @@ def test_the_engine_key_states_the_layout_tbo_and_the_performance_environment(
         (
             {
                 "parallel_config": SimpleNamespace(
-                    data_parallel_size=2, data_parallel_rank=0
+                    data_parallel_size=2, data_parallel_rank=0, pipeline_parallel_rank=0
                 )
             },
             "data_parallel_size",
