@@ -5,7 +5,9 @@
 
 The device fragment is one DeepSeek-V4-Pro start at the nightly DPA-TP8 prefill
 side's arguments (`FLAGS`): the reserve and load residue sit at layout 1x8, the
-activations at width 1. The peaks are the datasheet's; the rest is assumed.
+activations at width 1. A second start with expert parallelism on MORI
+(`EP_FLAGS`) adds the reserve and residue at layout 1x8x8. The peaks are the
+datasheet's; the rest is assumed.
 `--sweep-from` takes the tokenizer sweep from a document this script wrote.
 """
 
@@ -48,6 +50,19 @@ RESIDUE = READ["loaded"] - READ["parameters"] - READ["buffers"]
 PER_TOKEN = (READ["peak"] - READ["current"]) / READ["warmup_tokens"]
 SUBJECT = {"model": MODEL, "width": 8, "source_root": f"commit:{COMMIT}"}
 SUBJECT["record"] = f"sha256:{RECORD}"
+#: The EP8 cell's start, read as `READ` was: `non_torch`, which holds MORI's
+#: symmetric heap, and that rank's bytes after the model loaded.
+EP_LAYOUT = "1x8x8"
+EP_FLAGS = f"{FLAGS} --enable-expert-parallel --moe-backend standard"
+EP_ENV = "MORI_SHMEM_HEAP_SIZE=16G"
+EP_DATE, EP_COMMIT = "2026-10-16", "0000000"
+EP_READ = {
+    "non_torch": 0,
+    "loaded": 0,
+    "parameters": 0,
+    "buffers": 0,
+}
+EP_RECORD = "0" * 64
 #: The sha256 of the model's config.json, which the run fingerprints.
 CONFIG_JSON = "sha256:5fe4568daee51c208cb8a79538eaeda090ae011ade1dee2c386aa95f569c810e"
 
@@ -121,10 +136,20 @@ def saved(path: Path) -> Fragment:
 def device_fragments() -> list[Fragment]:
     """The start's readings, the datasheet's peaks and the assumed rest."""
     notes = f"one DeepSeek-V4-Pro {FLAGS} start at {COMMIT}"
+    ep_notes = f"one DeepSeek-V4-Pro {EP_FLAGS} {EP_ENV} start at {EP_COMMIT}"
+    ep_subject = SUBJECT | {"source_root": f"commit:{EP_COMMIT}"}
+    ep_subject["record"] = f"sha256:{EP_RECORD}"
+    ep_residue = EP_READ["loaded"] - EP_READ["parameters"] - EP_READ["buffers"]
+    ep = {
+        "driver_and_collective_reserve_bytes": {EP_LAYOUT: EP_READ["non_torch"]},
+        "allocator_retained_after_load_bytes": {EP_LAYOUT: ep_residue},
+    }
+    ep_body = {"device": {"runtime_constants": ep}}
     return [
         fragment("device", DEVICE, "probed", notes, SUBJECT, DATE),
         fragment("datasheet", DATASHEET, "datasheet", "MI355X datasheet", date=DATE),
         fragment("assumed", DECLARED, "assumed", "no probe fills these", date=DATE),
+        fragment("start 1x8x8", ep_body, "probed", ep_notes, ep_subject, EP_DATE),
     ]
 
 
@@ -136,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     sweep = saved(args.sweep_from) if args.sweep_from else swept(MODEL)
     merged = merge([sweep, *device_fragments()])
-    verdict = validate(merged, tp_widths=(LAYOUT,))
+    verdict = validate(merged, tp_widths=(LAYOUT, EP_LAYOUT))
     print(verdict)
     if not verdict.ok:
         return 1
