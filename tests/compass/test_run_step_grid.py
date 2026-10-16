@@ -187,7 +187,8 @@ def test_a_run_file_bundle_prices_the_runs_steps_and_the_summary_names_it(
             "digest": entry.digest,
             "describe": (
                 f"step grid, bundle {entry.key}; replay decode grid, "
-                "timing scope forward; recipe step-grid-residual v1, members unit"
+                "timing scope forward; recipe step-grid-residual v2, members "
+                "decode: unit; prefill_output: unit; prefill_no_output: unit"
             ),
         }
     }
@@ -539,8 +540,10 @@ def test_a_bound_past_the_one_the_grid_was_planned_for_refuses(
     [
         (lambda m: m.pop("bounds"), "KeyError: 'bounds'"),
         (
-            lambda m: m["residual"]["members"]["unit"].update(transform="log"),
-            "the residual's member unit does not load",
+            lambda m: m["residual"]["kinds"]["decode"]["members"]["unit"].update(
+                transform="log"
+            ),
+            "the residual's decode member unit does not load",
         ),
         # The layout before prefill was read on (B, T, c) and decode's c nodes
         # were kept per rung.

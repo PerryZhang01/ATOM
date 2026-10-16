@@ -34,7 +34,7 @@ from atom.compass.backends import (
     StepGridBackend,
 )
 from atom.compass.backends.step_grid import equivalent_shape
-from atom.compass.backends.step_grid_residual import V1, Residual
+from atom.compass.backends.step_grid_residual import RECIPE, Residual
 from atom.compass.backends.step_roofline import StepFallbackBackend
 from atom.model_engine.scheduler import ScheduledBatchOutput, Scheduler
 from atom.model_engine.sequence import Sequence
@@ -86,27 +86,43 @@ def bundle(mode, points, output=(), no_output=(), unit="us"):
 
 
 def linear(intercept=1.0, transform="identity", **coefficients):
+    """A linear member over prefill's features, which `fitted` cuts to each kind's."""
     return {
         "form": "linear",
         "transform": transform,
         "intercept": intercept,
-        "coefficients": {**dict.fromkeys(V1.names, 0.0), **coefficients},
+        "coefficients": {
+            **dict.fromkeys(RECIPE.names["prefill_output"], 0.0),
+            **coefficients,
+        },
     }
 
 
-def fitted(members, selected, hull=None):
-    """A residual mapping under this code's recipe; by default its hull is a box."""
-    box = [
-        [s * (i == j) for j in range(len(V1.names))] + [-1e6 * (s > 0)]
-        for i in range(len(V1.names))
-        for s in (1, -1)
-    ]
-    return {
-        "recipe": {"name": V1.name, "version": V1.version, "digest": V1.digest},
-        "hull": hull or {"facets": box},
-        "members": members,
-        "selected": selected,
-    }
+def _cut(member, names):
+    if member.get("form") != "linear":
+        return member
+    cut = {f: z for f, z in member["coefficients"].items() if f in names}
+    return {**member, "coefficients": cut}
+
+
+def fitted(members, selected, hulls=None):
+    """A residual mapping under this code's recipe, every kind holding `members`,
+    a linear one's coefficients cut to the kind's features; a kind's hull is
+    `hulls`' or, by default, a box."""
+    kinds = {}
+    for kind, names in RECIPE.names.items():
+        box = [
+            [s * (i == j) for j in range(len(names))] + [-1e6 * (s > 0)]
+            for i in range(len(names))
+            for s in (1, -1)
+        ]
+        kinds[kind] = {
+            "hull": (hulls or {}).get(kind, {"facets": box}),
+            "members": {name: _cut(m, names) for name, m in members.items()},
+            "selected": dict(selected),
+        }
+    recipe = {"name": RECIPE.name, "version": RECIPE.version, "digest": RECIPE.digest}
+    return {"recipe": recipe, "kinds": kinds}
 
 
 UNIT = Residual(fitted({"unit": linear()}, {"unit": 1.0}))
@@ -378,7 +394,8 @@ def test_it_is_one_step_granularity_line():
     assert replay().granularity is Granularity.STEP
     assert replay().describe() == (
         "step grid, bundle replay; replay decode grid, timing scope forward; "
-        "recipe step-grid-residual v1, members unit"
+        "recipe step-grid-residual v2, members decode: unit; prefill_output: unit; "
+        "prefill_no_output: unit"
     )
 
 
