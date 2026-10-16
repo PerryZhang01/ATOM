@@ -21,7 +21,7 @@ the *same* harness must drive both sides.
 
 The obvious move is to write a bespoke client. The prior effort did (`scripts/compass/replay.py`,
 325 lines) and paid for it: a client that sent 5-8x the requested tokens superlinearly; a
-64-connection pool that **deadlocked** against a 300-request declared workload and was
+64-connection pool that **deadlocked** against a 300-request stated workload and was
 released only by a 120-second barrier timeout, after which the client still printed
 `0 failed` and a day's conclusions were drawn from the result.
 
@@ -117,7 +117,7 @@ Three consequences worth being explicit about:
 
 ### Problem
 
-Simulation needs one declared value in and two readings out. They can ride the production endpoint or a
+Simulation needs one stated value in and two readings out. They can ride the production endpoint or a
 dedicated one.
 
 ### Options
@@ -163,7 +163,7 @@ server or client that does not know them.
 
 | Need | Existing field | Note |
 |---|---|---|
-| declared output length | `max_tokens` / `max_completion_tokens` | the harness must always set it |
+| stated output length | `max_tokens` / `max_completion_tokens` | the harness must always set it |
 | never stop early | `ignore_eos` | always true under simulation; the output is garbage, so an EOS would be an artifact of the filler, not the model |
 | request identity | `id` on the response | the join key for the exclusion list and the step table |
 | streaming first-token timing | SSE first chunk | the harness's *wall* reading — kept, but not the graded one |
@@ -174,7 +174,7 @@ Adding a Compass field for any of these would duplicate state that can disagree.
 
 - `arrival_s` **(in)** — the only value with no existing home. The server cannot
   infer it: under simulation the harness sends requests as fast as the socket allows and
-  the *declared* arrival is the whole point. Without it there is no simulated timeline.
+  the *stated* arrival is the whole point. Without it there is no simulated timeline.
 - `first_token_s` **(out)** — TTFT is a graded acceptance metric
   ([target](README.md#acceptance-targets)). The harness's own stopwatch measures HTTP and wall time, which under simulation is
   unrelated to simulated time. There is no other source.
@@ -183,7 +183,7 @@ Adding a Compass field for any of these would duplicate state that can disagree.
   the other two.
 
 **Dropped by the revision: `arrival_s` (out).** It was the clamp detector: the engine
-might clamp a declared arrival, and returning what it *used* let the harness see that its
+might clamp a stated arrival, and returning what it *used* let the harness see that its
 timeline was not honoured. Under `01` D8 a request is held at the receive wrapper until
 its arrival is granted, so ATOM never sees it early, and a request whose arrival is
 already behind the frontend's clock when it is read is a straggler that fails the run
@@ -315,7 +315,7 @@ Consequences:
 
 ---
 
-## D31. Output semantics: declared length, forced continuation, and the filler token
+## D31. Output semantics: stated length, forced continuation, and the filler token
 
 ### Problem
 
@@ -472,7 +472,7 @@ service time, and nothing else on the loop runs until it ends. Outside the simul
 window it is charged nothing.
 
 Terms come from `host.tokenizers[]` in the machine spec (doc 05 D25), populated by the
-`spec` package's Tier-0 tokenizer probe (doc 05 D26).
+`spec` package's class-0 tokenizer probe (doc 05 D26).
 
 **The encode and decode stages are resource stations** (revised 2026-09-28, #443; PDES
 term: a multi-server FIFO queue). The simulated run installs its own default executor on
@@ -915,7 +915,7 @@ Stated against the evidence:
 | **Closed-loop arrivals** | **Reproduced.** There is no request-rate knob in this mode at all. |
 | **Batch shapes** | Follow from the above plus ATOM's real scheduler. |
 
-Other declared non-reproductions, from the harness's own docs:
+Other stated non-reproductions, from the harness's own docs:
 
 - Prompt **text** is synthetic; prompt **structure** is real. *"Don't read the generated
   text as meaningful."*
@@ -930,7 +930,7 @@ Other declared non-reproductions, from the harness's own docs:
 - The tutorial carries a status banner: *"Work-in-progress MVP ... may change as the spec
   stabilizes."*
 
-**This table belongs in the acceptance scope, declared up front.** The prior effort's
+**This table belongs in the acceptance scope, stated up front.** The prior effort's
 standing lesson is that each of these is easy to leave unstated and each one silently
 narrows what "validated on real traces" means.
 

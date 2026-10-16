@@ -7,14 +7,10 @@
     "origin": "mixed",
     "origins": {
       "host.cpu.cores_physical": {
-        "origin": "probed",
-        "model": "Qwen/Qwen3.8-27B",
-        "source_root": "commit:4f0f1281405dc531a533ff688dff779dd10c45f8"
+        "origin": "probed"
       },
       "host.cpu.cores_logical": {
-        "origin": "probed",
-        "model": "Qwen/Qwen3.8-27B",
-        "source_root": "commit:4f0f1281405dc531a533ff688dff779dd10c45f8"
+        "origin": "probed"
       },
       "device.name": {
         "origin": "probed",
@@ -93,6 +89,13 @@
         "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
         "source_root": "commit:ce625ddd9"
       },
+      "device.software_pinned_to.torch": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "width": 1,
+        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
+        "source_root": "commit:ce625ddd9"
+      },
       "host.ipc.zmq_roundtrip_s": {
         "origin": "assumed"
       },
@@ -121,6 +124,9 @@
         "origin": "assumed"
       },
       "interconnect.intra_node.topology": {
+        "origin": "assumed"
+      },
+      "interconnect.intra_node.domain_devices": {
         "origin": "assumed"
       },
       "interconnect.intra_node.link_bandwidth_bytes_per_s": {
@@ -233,12 +239,14 @@
     "software_pinned_to": {
       "rocm": "7.2.4",
       "aiter": "9205e1059",
-      "rccl": "2.27.7"
+      "rccl": "2.27.7",
+      "torch": "2.10.0+rocm7.2.4.git3d3aa833"
     }
   },
   "interconnect": {
     "intra_node": {
       "topology": "fully_connected",
+      "domain_devices": 8,
       "link_bandwidth_bytes_per_s": 64000000000.0,
       "link_latency_s": 2e-06,
       "derate": 0.8

@@ -374,9 +374,10 @@ def device_readings(
     fixed-plus-per-peer form fits 5980/6340/9138 at widths 2/4/8, so there is
     nothing to interpolate along. Nothing here catches that refusal.
 
-    Under DP-attention `tp_width` is the layout key, `"<tp>x<dp>"`: every rank
-    runs attention at TP 1 inside DP-wide groups, which reserve what neither
-    width alone does.
+    Under DP-attention `tp_width` is the layout key, `"<tp>x<dp>"`, or
+    `"<tp>x<dp>x<ep>"` with expert parallelism, where `ep` is `tp * dp`: every
+    rank runs attention at TP 1 inside DP-wide groups, which reserve what
+    neither width alone does.
     """
     if isinstance(tp_width, int) and tp_width < 1:
         raise ValueError(f"tensor-parallel width is at least 1: {tp_width}")

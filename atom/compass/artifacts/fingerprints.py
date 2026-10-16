@@ -2,11 +2,11 @@
 """What a row's fingerprint is, and what a mismatch in one is allowed to say.
 
 A fingerprint is not one digest, and there is no method here that makes one.
-It is **the readings of the axes the row depends on, kept apart**, because an artifact that refuses with a single moved
-hash says only that something changed, and nothing about which of six things
-did. Keeping the cells apart is what lets a refusal say
-`region_terms x model`, and what lets a `price_list` be shown surviving the
-same change.
+It is **the readings of the axes the row depends on, kept apart**, because an
+artifact that refuses with a single moved hash says only that something
+changed, and nothing about which axis did. Keeping the cells apart is what lets
+a refusal say `region_terms x model`, and what lets a `price_list` be shown
+surviving the same change.
 
 **A reading states what kind of thing it is, and two kinds are not compared.**
 `SourceRoot.revision` holds a git *tree* on the primary path and a git
@@ -18,8 +18,9 @@ different refusals: `NOT_COMPARABLE` says the comparison is unavailable,
 would report a change nobody observed.
 
 **The conditions are stated, never probed.** Nothing in this module reads a
-device, a driver or an environment variable; a caller hands in six readings and
-this module compares them, so a host with one ROCm can express a ROCm bump.
+device, a driver or an environment variable; a caller hands in one reading per
+axis and this module compares them, so a host with one ROCm can express a ROCm
+bump.
 That is also why the warning flag is narrow: `OnMismatch.WARN` downgrades *the conditions moved* to a
 warning, and does not touch *the comparison could not be made*, which has no
 answer to downgrade.
@@ -117,9 +118,9 @@ class Reading:
 
 @dataclass(frozen=True, slots=True)
 class Conditions:
-    """What the six axes read here and now. Every axis, or none of them.
+    """What every axis reads here and now. Every axis, or none of them.
 
-    All six are required even though no row depends on all six: an entry can
+    All are required even though no row depends on all of them: an entry can
     only be certified against conditions that were stated, and a caller that
     omitted an axis would silently certify against whatever the row happened
     not to ask for.
@@ -129,7 +130,7 @@ class Conditions:
 
     @classmethod
     def of(cls, **values: object) -> "Conditions":
-        """Conditions from the six axis names, or a refusal naming the six."""
+        """Conditions from every axis name, or a refusal naming them all."""
         wanted = {axis.field: axis for axis in Axis}
         unknown = sorted(set(values) - set(wanted))
         missing = sorted(set(wanted) - set(values))
@@ -140,7 +141,7 @@ class Conditions:
                 + (f"no {', '.join(missing)}" if missing else "")
                 + (" and " if missing and unknown else "")
                 + (f"an unknown {', '.join(unknown)}" if unknown else ""),
-                "state all six axes: " + ", ".join(sorted(wanted)),
+                "state every axis: " + ", ".join(sorted(wanted)),
             )
         readings = {
             wanted[name]: (

@@ -17,6 +17,10 @@ group's MoE gather carries (`BatchView.moe_rows`), which every rank's MoE runs o
 A law is keyed by the `(dp, ep)` it was fitted at, `(1, 1)` when it states
 none, and prices one rank's step; the runner takes the group's step as the max
 over its ranks. A backend built for another key is refused, naming both.
+Above `dp` 1 every step it prices names `UNIFORM_ROUTING` among its
+treatments: the MoE segment is priced as if routing spread tokens evenly over
+the experts, which no feature carries. A run refuses a law whose
+`machine_spec` is not its spec's `machine_spec_digest`, naming both.
 
 A decode vector may add `rowmod`, `rowmod(k)` over its rows in scheduled
 order: the largest summed N_KV over the rows `i = r (mod k)`, with `k` the
@@ -40,6 +44,7 @@ The law is a mapping, as a run file holds it, `key` and `prefill` optional:
 
     {"provenance": "<what it was fitted on>",
      "key": [dp, ep],
+     "machine_spec": "sha256:<hex>",
      "prefill": VECTOR,
      "decode": {"eager": VECTOR, "1": VECTOR, "2": VECTOR, ...}}
 
@@ -82,6 +87,7 @@ ROWMOD = DECODE + ("rowmod",)
 EAGER = "eager"
 SOURCE = "step-linear"
 EXTRAPOLATED = "step-linear-extrapolated"
+UNIFORM_ROUTING = "uniform routing"
 
 
 class _Vector:
@@ -152,6 +158,7 @@ class StepLinearBackend(CostBackend):
                 f"runs at {tuple(key)}; a law at one width is no evidence about another"
             )
         self.law = law
+        self.treatments = (UNIFORM_ROUTING,) if law.key[0] > 1 else ()
 
     @property
     def granularity(self) -> Granularity:
@@ -219,7 +226,8 @@ class StepLinearBackend(CostBackend):
                 for feature, count, coefficient in zip(
                     vector.features, counts, vector.coefficients
                 )
-            ]
+            ],
+            self.treatments,
         )
 
     def describe(self) -> str:

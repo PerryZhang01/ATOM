@@ -13,10 +13,8 @@ is machinery with no caller.
 
 Two things this file deliberately does not do.
 
-**It binds no `width`.** The matrix's six columns contain no width at all, so
-invalidation does not need #165 settled; where a key field happens to be
-called `width` the topology here is tensor-parallel only, so the two candidate
-readings coincide and no fixture settles the question by example.
+**It moves no layout.** No column of the matrix is a parallel axis: the
+layout is in the key, so another layout is another entry, never a stale one.
 
 **It settles nothing left open.** Whether an aiter bump invalidates or only
 warns is open (#168), and while it is open the default stands:
@@ -83,10 +81,18 @@ STANZA = Provenance(
 PRICE_KERNELS = Gate("PRICE_KERNELS", "off", "COMPASS_PRICE_KERNELS")
 GATES = GateState.of(PRICE_KERNELS)
 
-#: One rank per tensor-parallel rank, and no other axis: at this topology the
-#: tensor-parallel width and the rank count are both 2, so a key field named
-#: `width` states nothing #165 has to rule on.
+#: One rank per tensor-parallel rank, and no other axis.
 TP2 = Topology(tp=2)
+#: The layout the layout-keyed rows state, the one `TP2` publishes at.
+LAYOUT = {
+    "dp": 1,
+    "pp": 1,
+    "pcp": 1,
+    "tp": 2,
+    "enable_expert_parallel": False,
+    "enable_dp_attention": False,
+    "decode_context_parallel_size": 1,
+}
 
 BASE = Conditions.of(
     software_stack="rocm7.2.4 / aiter v0.1.21.dev0-49-gf4e7c7509 / rccl2.22.3",
@@ -94,6 +100,7 @@ BASE = Conditions.of(
     atom_src=Reading.of_source_root(ATOM_ROOT),
     model="Qwen/Qwen3-32B",
     device="MI308X-80CU",
+    host_cpu="Intel(R) Xeon(R) Platinum 8480C",
     engine_config="cudagraph=piecewise,level=3",
 )
 
@@ -102,13 +109,22 @@ BASE = Conditions.of(
 KEY_OF: dict[Row, Key] = {
     Row.OP_GRAPH: Key.of(Kind.OP_GRAPH, structure="qwen3-moe-48L"),
     Row.PRICE_LIST: Key.of(
-        Kind.PRICE_LIST, model="Qwen/Qwen3-32B", width=2, source_root=ATOM_ROOT.revision
+        Kind.PRICE_LIST,
+        model="Qwen/Qwen3-32B",
+        machine_spec="sha256:mi308x",
+        source_root=ATOM_ROOT.revision,
+        **LAYOUT,
     ),
-    Row.REGION_TERMS: Key.of(Kind.REGION_TERMS, model="Qwen/Qwen3-32B", width=2),
+    Row.REGION_TERMS: Key.of(
+        Kind.REGION_TERMS,
+        model="Qwen/Qwen3-32B",
+        machine_spec="sha256:mi308x",
+        **LAYOUT,
+    ),
     Row.MEMORY_READINGS: Key.of(
         Kind.MEMORY_READINGS,
         model="Qwen/Qwen3-32B",
-        width=2,
+        **LAYOUT,
         utilization=0.9,
         max_num_seqs=256,
         max_model_len=32768,
@@ -117,6 +133,15 @@ KEY_OF: dict[Row, Key] = {
     ),
     Row.MACHINE_SPEC_CAPACITY: Key.of(
         Kind.MACHINE_SPEC, device="MI308X-80CU", software_stack="rocm7.2.4"
+    ),
+    Row.STEP_GRID_BUNDLE: Key.of(
+        Kind.STEP_GRID_BUNDLE,
+        model="Qwen/Qwen3-32B",
+        device="MI308X-80CU",
+        parallel="tp2",
+        engine_config="replay-mns48",
+        grid="s2-sparse-margin0.25",
+        source_root=ATOM_ROOT.revision,
     ),
 }
 KEY_OF[Row.MACHINE_SPEC_RUNTIME_CONSTANTS] = KEY_OF[Row.MACHINE_SPEC_CAPACITY]
@@ -189,6 +214,47 @@ def test_a_kind_the_matrix_does_not_row_is_refused_by_name(kind):
     assert "do not hold the same artifacts" in str(refused.value)
 
 
+@pytest.mark.parametrize(
+    "kind,row",
+    [
+        (Kind.STEP_LINEAR_LAW, Row.STEP_LINEAR_LAW),
+        (Kind.HOST_LAWS, Row.HOST_LAWS),
+    ],
+)
+def test_each_new_kind_is_checked_against_its_own_row(kind, row):
+    assert rows_for(kind) == (row,)
+
+
+def test_only_host_laws_depend_on_the_host_cpu():
+    """Host laws time the host; a step linear law holds device time, so it
+    keeps the step grid bundle's axes, and the host CPU is not one."""
+    assert [row for row in Row if MATRIX[row][Axis.HOST_CPU].depends] == [Row.HOST_LAWS]
+    assert axes_of(Row.HOST_LAWS) == (
+        Axis.ATOM_SRC,
+        Axis.MODEL,
+        Axis.HOST_CPU,
+        Axis.ENGINE_CONFIG,
+    )
+    assert axes_of(Row.STEP_LINEAR_LAW) == axes_of(Row.STEP_GRID_BUNDLE)
+
+
+def test_host_laws_published_on_one_host_cpu_refuse_another_naming_it(tmp_path):
+    store = ArtifactStore(tmp_path)
+    key = Key.of(
+        Kind.HOST_LAWS,
+        host_cpu=BASE.reading(Axis.HOST_CPU).value,
+        atom_src="0f1e2d3c",
+        model="sha256:191e0af2",
+        engine_config="{}",
+        machine_spec="sha256:5ec0",
+    )
+    publish(store, key)
+    with pytest.raises(ArtifactRefusal) as refused:
+        store.load(key, conditions=moved(BASE, Axis.HOST_CPU), gates=GATES)
+    assert refused.value.rule is Rule.INVALIDATED
+    assert "`host_laws` x `host CPU`" in str(refused.value)
+
+
 # --- every cell, the zeroes as hard as the crosses -------------------------
 
 
@@ -218,9 +284,9 @@ def test_every_cell_of_the_matrix_decides_by_itself(row, axis):
 
 
 def test_a_fingerprint_carries_only_the_cells_its_row_depends_on():
-    """The recorded fingerprint is the row's, not the six axes narrowed later.
+    """The recorded fingerprint is the row's, not every axis narrowed later.
 
-    An entry that recorded all six and filtered on read would be checked
+    An entry that recorded every axis and filtered on read would be checked
     against whatever the reader believed the matrix said, which is a global
     fingerprint wearing a per-artifact name.
     """
@@ -231,19 +297,14 @@ def test_a_fingerprint_carries_only_the_cells_its_row_depends_on():
 
 
 def test_no_axis_of_the_matrix_is_a_width():
-    """No axis is a width, so the matrix does not depend on #165.
-
-    The columns are the software stack, torch, ATOM's source, the model, the
-    device and the engine config. None of them is a width, so no fingerprint
-    here has to decide whether an artifact key's scalar `width` is the
-    tensor-parallel width or the rank count.
-    """
+    """No axis is a width: the layout is in the key, not in a fingerprint."""
     assert {axis.field for axis in Axis} == {
         "software_stack",
         "torch",
         "atom_src",
         "model",
         "device",
+        "host_cpu",
         "engine_config",
     }
     assert TP2.rank_count == TP2.tp
@@ -303,7 +364,7 @@ def test_a_machine_spec_is_three_rows_and_a_device_change_moves_two(tmp_path):
 def test_an_aiter_bump_refuses_while_its_meaning_is_open(tmp_path):
     """The default, because what an aiter bump means is left open (#168).
 
-    The four rows that carry ROCm/AITER/RCCL refuse a bump; `machine_spec`'s
+    The rows that carry ROCm/AITER/RCCL refuse a bump; `machine_spec`'s
     capacity does not, because the silicon did not move. If it is settled as
     "warn", this is the test that changes, and one cell of `MATRIX` with it.
     """
@@ -379,12 +440,87 @@ def test_a_tree_and_a_commit_are_not_compared(tmp_path, policy):
     assert "recorded a tree and this run reads a commit" in str(refused.value)
 
 
-def test_conditions_that_state_fewer_than_six_axes_are_refused():
+def test_conditions_that_state_fewer_than_every_axis_are_refused():
     """An axis nobody stated is an axis nothing is certified against."""
     with pytest.raises(ArtifactRefusal) as refused:
         Conditions.of(torch="2.10.0", model="Qwen/Qwen3-32B")
     assert refused.value.rule is Rule.INVALIDATED
-    assert "no atom_src, device, engine_config, software_stack" in str(refused.value)
+    assert "no atom_src, device, engine_config, host_cpu, software_stack" in str(
+        refused.value
+    )
+
+
+def test_conditions_that_state_no_host_cpu_are_refused():
+    """Required like every other axis, though only host laws depend on it."""
+    with pytest.raises(ArtifactRefusal) as refused:
+        Conditions.of(
+            **{
+                axis.field: BASE.reading(axis)
+                for axis in Axis
+                if axis is not Axis.HOST_CPU
+            }
+        )
+    assert refused.value.rule is Rule.INVALIDATED
+    assert "these conditions state no host_cpu" in str(refused.value)
+
+
+#: Every axis but the host CPU, which no row depended on before it was one.
+BUT_HOST_CPU = (
+    "software_stack",
+    "torch",
+    "atom_src",
+    "model",
+    "device",
+    "engine_config",
+)
+#: The cells each row recorded before the host-CPU axis, as entries already on
+#: disk carry them.
+BEFORE_HOST_CPU = {
+    "op_graph": ("torch", "atom_src", "model", "engine_config"),
+    "price_list": ("software_stack", "torch", "atom_src", "device"),
+    "region_terms": BUT_HOST_CPU,
+    "memory_readings": BUT_HOST_CPU,
+    "machine_spec_capacity": ("device",),
+    "machine_spec_runtime_constants": ("software_stack", "device"),
+    "machine_spec_tokenizer_terms": ("model",),
+    "step_grid_bundle": BUT_HOST_CPU,
+}
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        Row.OP_GRAPH,
+        Row.PRICE_LIST,
+        Row.REGION_TERMS,
+        Row.MEMORY_READINGS,
+        Row.MACHINE_SPEC_CAPACITY,
+        Row.STEP_GRID_BUNDLE,
+    ],
+    ids=lambda row: row.name,
+)
+def test_an_entry_published_before_the_host_cpu_axis_still_loads(tmp_path, row):
+    """On any host CPU, since no row it records depends on one."""
+    store = ArtifactStore(tmp_path)
+    entry = publish(store, KEY_OF[row])
+    path = entry.directory / "entry.json"
+    document = json.loads(path.read_bytes())
+    document["fingerprints"] = {
+        field: {
+            "row": field,
+            "cells": {
+                name: BASE.reading(Axis[name.upper()]).as_json()
+                for name in BEFORE_HOST_CPU[field]
+            },
+        }
+        for field in document["fingerprints"]
+    }
+    path.chmod(0o644)
+    path.write_text(json.dumps(document))
+
+    loaded = store.load(entry.key, conditions=moved(BASE, Axis.HOST_CPU), gates=GATES)
+
+    assert set(loaded.fingerprints) == set(rows_for(entry.key.kind))
 
 
 # --- every gate's state goes into the artifact -----------------------------

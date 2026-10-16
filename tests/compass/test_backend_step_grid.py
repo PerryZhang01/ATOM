@@ -374,7 +374,7 @@ def test_a_negative_count_never_reaches_the_backend():
         view((-1, 3, False))
 
 
-def test_it_is_one_tier_a_line():
+def test_it_is_one_step_granularity_line():
     assert replay().granularity is Granularity.STEP
     assert replay().describe() == (
         "step grid, bundle replay; replay decode grid, timing scope forward; "

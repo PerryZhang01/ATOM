@@ -33,9 +33,9 @@ from atom.compass.backends import (
 )
 
 MEASURED = Provenance(Method.MEASURED, "step-level")
-ANALYTIC = Provenance(Method.ANALYTICAL, "roofline")
+ANALYTICAL = Provenance(Method.ANALYTICAL, "roofline")
 UNPRICED = Refusal("price_list", "unpriced leaf")
-STOOD_IN = ANALYTIC.resolved("analytic_law", [UNPRICED])
+STOOD_IN = ANALYTICAL.resolved("analytical_law", [UNPRICED])
 
 
 def term(name, seconds, provenance=MEASURED):
@@ -55,7 +55,7 @@ def test_grouping_re_associates_so_the_mixture_is_not_a_second_total():
     step = StepCost(
         [
             term("a", 0.1),
-            CostTerm("b", 0.2, ANALYTIC),
+            CostTerm("b", 0.2, ANALYTICAL),
             term("c", 0.15),
         ]
     )
@@ -193,8 +193,8 @@ def test_a_step_reports_its_mixture_and_its_refused_share():
 
 def test_a_step_reports_every_refusal_behind_it():
     """Two sources declined on one term; both are the record, and both count."""
-    chained = ANALYTIC.resolved(
-        "analytic_law", [UNPRICED, Refusal("nearest_key", "outside the range")]
+    chained = ANALYTICAL.resolved(
+        "analytical_law", [UNPRICED, Refusal("nearest_key", "outside the range")]
     )
     step = StepCost([CostTerm("attention", 0.004, chained)])
     assert [r.source for r in step.refusals] == ["price_list", "nearest_key"]

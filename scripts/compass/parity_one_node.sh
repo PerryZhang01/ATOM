@@ -31,7 +31,6 @@ SERVER_ARGS=${SERVER_ARGS:---enforce-eager --max-model-len 8192 --no-enable_pref
 WAIT_S=${WAIT_S:-1800}
 mkdir -p "$OUT/real" "$OUT/sim"
 OUT=$(realpath "$OUT")
-free_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
 
 server=
 trap 'kill -KILL -- ${server:+-$server} 2>/dev/null || true' EXIT
@@ -40,9 +39,9 @@ trap 'kill -KILL -- ${server:+-$server} 2>/dev/null || true' EXIT
 serve() {
     local side=$1 deadline=$((SECONDS + WAIT_S))
     shift
-    PORT=$(free_port)
+    PORT=$(compass_free_port)
     # shellcheck disable=SC2086 # SERVER_ARGS is a word list
-    ATOM_DP_MASTER_PORT=$(free_port) ATOM_COMPASS_PARITY_RECORD=$OUT/$side/record setsid \
+    ATOM_DP_MASTER_PORT=$(compass_free_port) ATOM_COMPASS_PARITY_RECORD=$OUT/$side/record setsid \
         python3 -m atom.entrypoints.openai.api_server --model "$MODEL" --host 127.0.0.1 \
         --server-port "$PORT" -tp 2 --enable-dp-attention $SERVER_ARGS "$@" \
         >"$OUT/$side/server.log" 2>&1 &
@@ -71,7 +70,7 @@ leave real
 
 RUN=$OUT/sim/run.json
 python3 - "$RUN" "$OUT" "${MACHINE:-$ROOT/scripts/compass/machines/mi308x-hjbog18.json}" \
-    "$MODEL" "$(free_port)" <<'EOF'
+    "$MODEL" "$(compass_free_port)" <<'EOF'
 import json, sys
 from pathlib import Path
 
