@@ -181,9 +181,21 @@
    "expr": "torch.distributed.all_gather(rows, mine, group=group)",
    "shape": "collective",
    "peer": "process",
-   "why": "every data-parallel rank's worker gathers each rank's priced step and whether it waits, on the group's CPU group, once per simulated step; it stands in for the cross-rank collectives a real forward makes",
+   "why": "every data-parallel rank's worker gathers each rank's step target, and with no host time whether it waits, on the group's CPU group, once per simulated step",
    "mechanism": "K6",
-   "mechanism_why": "a wait inside the data-parallel group's LP: every rank is a member of that one LP, the exchange is never reported to the clock authority and carries no cost; the gathered prices only set each rank's step target, the group's max for a rank with output"
+   "mechanism_why": "a wait inside the data-parallel group's LP: every rank is a member of that one LP, the exchange is never reported to the clock authority and carries no cost; the gathered targets set the group's rounds, and with no host time a rank with output takes the group's max"
+  },
+  {
+   "id": "atom/compass/runner/overrides.py::_group_step_seconds.join::torch.distributed.all_reduce(t, torch.distributed.ReduceOp.MAX, group)::collective#0",
+   "file": "atom/compass/runner/overrides.py",
+   "symbol": "_group_step_seconds.join",
+   "call": "torch.distributed.all_reduce",
+   "expr": "torch.distributed.all_reduce(t, torch.distributed.ReduceOp.MAX, group)",
+   "shape": "collective",
+   "peer": "process",
+   "why": "every data-parallel rank's worker takes the group's latest device end of its forward, on the group's CPU group, once per simulated step under host time; it stands in for the cross-rank collectives a real forward makes",
+   "mechanism": "K6",
+   "mechanism_why": "a wait inside the data-parallel group's LP: every rank is a member of that one LP, the exchange is never reported to the clock authority and carries no cost; the reduced device end only sets each rank's own release"
   },
   {
    "id": "atom/compass/runner/pp_send.py::StageSends.__call__::self.send(t0 + ready_s, parts)::p2p#0",
