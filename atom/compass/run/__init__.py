@@ -61,8 +61,9 @@ its ``engine_config``, `step_grid.keyed` as it was fitted, refuse a run under
 any other), ``step_grid`` (an artifact store's root and a
 bundle's key, priced by `StepGridBackend`; see `step_grid`) and ``replay`` (a
 real run's parity record directory, or for a prefill-decode run one holding
-each side's as ``prefill/`` and ``decode/``: each step ends when the real one
-did, by `atom.compass.parity.replay`),
+each deployment's as ``prefill/`` and ``decode/``, ``prefill<k>/`` and
+``decode<k>/`` above one of a side: each step ends when the real one did, by
+`atom.compass.parity.replay`),
 ``step_roofline`` (optional, ``true`` or ``false``: with ``true`` a
 `StepRooflineBackend` prices the steps the backend refuses, through
 `StepFallbackBackend`),
@@ -1062,12 +1063,9 @@ def runner(model_runner, tree) -> None:
         from atom.compass.parity.replay import ReplayBackend
 
         dp_rank = config.parallel_config.data_parallel_rank
-        if max(run.get(k, 1) for k in INSTANCES.values()) > 1:
-            raise ValueError(
-                "replay reads one record per side, prefill/ and decode/, and this "
-                "run has several deployments of a side"
-            )
-        side = {"P": "prefill", "D": "decode"}.get(_pd_side(config), "")
+        # This deployment's record: prefill/, or prefill1/ for engine-P1.
+        name = _pd_name(config, run) or ""
+        side = {"P": "prefill", "D": "decode"}.get(name[:1], "") + name[1:]
         backend = replay = ReplayBackend(Path(run["replay"]) / side, dp_rank)
     if STEP_LINEAR in run:
         if tp != 1:
