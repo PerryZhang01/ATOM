@@ -169,6 +169,35 @@ class ArtifactStore:
             refuse_not_a_key(key)
         return self.root / key.kind.value / key.dirname()
 
+    def key_from_token(self, kind: Kind, token: str) -> Key:
+        """The key of the `kind` entry whose directory ends in `token`, the
+        digest `Key.token` prints, so a command line can name an entry by it."""
+        folder = self.root / kind.value
+        found = sorted(
+            place
+            for place in (folder.iterdir() if folder.is_dir() else ())
+            if place.name.endswith(token) and (place / ENTRY_FILE).is_file()
+        )
+        if len(found) != 1:
+            raise ArtifactRefusal(
+                Rule.RESOLUTION,
+                f"{len(found)} {kind} entries in {self.root} end in {token!r}"
+                + "".join(f"; {place.name}" for place in found),
+                f"name one {kind} entry by the token `Key.token` prints for its key",
+            )
+        with _legible(found[0]):
+            document = json.loads((found[0] / ENTRY_FILE).read_bytes())
+            key = Key.of(Kind(document["kind"]), **document["key"])
+        if key.kind is not kind or key.token() != token:
+            raise ArtifactRefusal(
+                Rule.RESOLUTION,
+                f"{found[0]} ends in {token!r} and restates {key}, whose token "
+                f"is {key.token()!r}",
+                "an entry restates its key, so a directory moved or renamed by "
+                "hand is found out rather than believed",
+            )
+        return key
+
     def publish(
         self,
         key: object,

@@ -9,7 +9,9 @@ served is read from its step record.
 
 import json
 import os
+import time
 from collections.abc import Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 import torch
@@ -69,3 +71,16 @@ def _device(gpus: tuple[int, ...]) -> list[dict]:
         {"index": gpu, **{k: cards[f"card{gpu}"][f] for k, f in CARD_FIELDS.items()}}
         for gpu in gpus
     ]
+
+
+@contextmanager
+def phase(phases: dict, name: str):
+    """Record the start and, once it ends, the end of the phase `name` in
+    `phases`, each in wall and monotonic seconds."""
+    edges = phases[name] = {"start": _now()}
+    yield
+    edges["end"] = _now()
+
+
+def _now() -> dict:
+    return {"wall": time.time(), "monotonic": time.monotonic()}
