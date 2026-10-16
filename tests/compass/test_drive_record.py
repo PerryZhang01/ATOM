@@ -18,7 +18,7 @@ import sys
 
 import pytest
 from test_drive_gpu import FREE
-from test_drive_identity import CARD, GIT, _checkout
+from test_drive_identity import CARD, GIT, _checkout, _git
 from test_fit_samples import HOST, RUNS, edit
 from test_fit_samples import record as planted_out
 from test_parity_record import BLOCK, BUDGET, LADDER
@@ -117,6 +117,36 @@ def test_dp_ranks_resolving_different_engines_refuse_the_entry(tmp_path, monkeyp
     assert "engine" not in json.loads((out / "run.json").read_text())
 
 
+def test_dp_ranks_resolving_different_engines_keep_their_cost_lines(
+    tmp_path, monkeypatch
+):
+    out = _two_ranks(tmp_path, monkeypatch, 4000)
+
+    with pytest.raises(ValueError, match="resolved different engines"):
+        record.write_engine_and_costs(out)
+    for r in (0, 1):
+        rows = label(out / f"steps/dp{r}.jsonl")[1]
+        assert rows
+        assert _lines(out / f"steps/dp{r}.cost.jsonl") == [
+            {"version": TABLE_VERSION},
+            *json.loads(json.dumps(rows)),
+        ]
+
+
+def test_a_dp_rank_whose_first_forward_is_a_dummy_gets_its_timed_steps_lines(
+    tmp_path, monkeypatch
+):
+    out = _two_ranks(tmp_path, monkeypatch, ENGINE["num_kvcache_blocks"])
+    steps = _lines(out / "steps/dp1.jsonl")
+    steps[0] = {**steps[0], "is_dummy_run": True, "batch": [], "named": []}
+    (out / "steps/dp1.jsonl").write_text("".join(json.dumps(s) + "\n" for s in steps))
+    record.write_engine_and_costs(out)
+
+    table = _lines(out / "steps/dp1.cost.jsonl")
+    assert [r["step"] for r in table[1:]] == [s["step"] for s in steps[1:]]
+    assert len(table) > 2
+
+
 @pytest.mark.parametrize(
     "ours, atoms, refusal",
     [
@@ -195,8 +225,9 @@ def test_a_record_s_out_directory_loads_through_the_fit_s_loader(tmp_path, plant
     samples, config = load({out: RUNS})
     steps = _lines(out / "steps/dp0.jsonl")
     assert len(samples) == sum(not s["is_dummy_run"] for s in steps)
+    aiter = _git(tmp_path / "aiter", "rev-parse", "--short=9", "HEAD")
     assert (config["device"], config["parallel"], config["stack"]["aiter"]) == (
-        "AMD Instinct MI308X M3080202 gfx942",
+        "MI308X gfx942",
         "tp1-dp1",
-        "v0",
+        aiter,
     )

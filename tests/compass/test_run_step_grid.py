@@ -36,7 +36,7 @@ from test_backend_step_grid import (
     point,
 )
 from test_dp_slice import _deployment
-from test_memory_readings import CONFIG_JSON, DOCUMENT, META_8B
+from test_memory_readings import CONFIG_JSON, DOCUMENT, META_8B, publish_readings
 from test_refused_step_continues import drive
 from test_runner_control_refusals import Worker
 from test_vertical_slice import _run_file
@@ -61,6 +61,7 @@ from atom.compass.artifacts import (
 )
 from atom.compass.backends import StepGridBackend
 from atom.compass.backends.resolver import CostRefused
+from atom.compass.backends.step_grid_fit import VALUE
 from atom.compass.backends.step_roofline import StepFallbackBackend
 from atom.compass.run import step_grid
 from atom.compass.spec import MachineSpec
@@ -77,24 +78,33 @@ KEY = {
 }
 BOUNDS = {"max_num_seqs": 48, "max_num_batched_tokens": 8192, "max_model_len": 2048}
 BUNDLE = {
-    "grid": bundle("replay", REPLAY),
+    "grid": {**bundle("replay", REPLAY), "value": VALUE},
     "residual": fitted({"unit": linear()}, {"unit": 1.0}),
     "bounds": BOUNDS,
 }
 
 
 def deployment(tmp_path, **config):
-    """A graphed worker's runner, carrying the config fields `run.runner` reads."""
+    """A graphed worker's runner, carrying the config fields `run.runner` reads,
+    with its memory readings published in the store at ``tmp_path / "store"``."""
     (tmp_path / "config.json").write_text(CONFIG_JSON.read_text())
     hf = PretrainedConfig.from_dict(json.loads(CONFIG_JSON.read_text())["text_config"])
     r = graphed(None)
     r._piecewise_cg_active = lambda: False
+    r.rank = 0
     r.config = SimpleNamespace(
         model=str(tmp_path),
         hf_config=hf,
         tensor_parallel_size=1,
+        tp_world_size=1,
         pipeline_parallel_size=1,
-        parallel_config=SimpleNamespace(data_parallel_size=1, data_parallel_rank=0),
+        prefill_context_parallel_size=1,
+        decode_context_parallel_size=1,
+        enable_expert_parallel=False,
+        enable_dp_attention=False,
+        parallel_config=SimpleNamespace(
+            data_parallel_size=1, data_parallel_rank=0, pipeline_parallel_rank=0
+        ),
         **BOUNDS,
         gpu_memory_utilization=0.9,
         torch_dtype=torch.bfloat16,
@@ -109,6 +119,7 @@ def deployment(tmp_path, **config):
         kv_transfer_config={},
     )
     vars(r.config).update(config)
+    publish_readings(tmp_path / "store", r.config)
     return r
 
 
@@ -177,7 +188,8 @@ def test_a_run_file_bundle_prices_the_runs_steps_and_the_summary_names_it(
             "digest": entry.digest,
             "describe": (
                 f"step grid, bundle {entry.key}; replay decode grid, "
-                "timing scope forward; recipe step-grid-residual v1, members unit"
+                "timing scope forward; recipe step-grid-residual v2, members "
+                "decode: unit; prefill_output: unit; prefill_no_output: unit"
             ),
         }
     }
@@ -477,6 +489,25 @@ def test_a_timing_scope_narrower_than_the_forward_refuses(monkeypatch, tmp_path)
         compass_run.runner(r, META_8B)
 
 
+@pytest.mark.parametrize("value", [None, "busy window"])
+def test_a_bundle_stating_no_value_or_another_than_the_bench_window_refuses(
+    monkeypatch, tmp_path, value
+):
+    r = deployment(tmp_path)
+    other = copy.deepcopy(BUNDLE)
+    del other["grid"]["value"]
+    if value:
+        other["grid"]["value"] = value
+    publish(tmp_path, r, member=other)
+    run_file(tmp_path, monkeypatch)
+
+    with pytest.raises(
+        ValueError,
+        match=re.escape(f"value {value!r} in the bundle and 'bench window' here"),
+    ):
+        compass_run.runner(r, META_8B)
+
+
 def test_a_data_parallel_run_refuses(monkeypatch, tmp_path):
     publish(tmp_path, deployment(tmp_path))
     run_file(tmp_path, monkeypatch)
@@ -492,7 +523,7 @@ def test_an_unmeasured_rung_between_measured_ones_refuses_listing_it(
     """Rung 32 has B nodes and no point; 16 and 48 were measured around it."""
     sparse = copy.deepcopy(BUNDLE)
     rung16 = [point(16, b, c, time=1000) for b in (9, 16) for c in C_NODES]
-    sparse["grid"] = bundle("replay", [p for p in REPLAY if p["at"][0] == 48] + rung16)
+    sparse["grid"] |= bundle("replay", [p for p in REPLAY if p["at"][0] == 48] + rung16)
     sparse["grid"]["decode"]["nodes"]["B"] = {"16": [9, 16], **REPLAY_B}
     sparse["grid"]["decode"]["nodes"]["c"]["16"] = C_NODES
     r = deployment(tmp_path)
@@ -529,8 +560,10 @@ def test_a_bound_past_the_one_the_grid_was_planned_for_refuses(
     [
         (lambda m: m.pop("bounds"), "KeyError: 'bounds'"),
         (
-            lambda m: m["residual"]["members"]["unit"].update(transform="log"),
-            "the residual's member unit does not load",
+            lambda m: m["residual"]["kinds"]["decode"]["members"]["unit"].update(
+                transform="log"
+            ),
+            "the residual's decode member unit does not load",
         ),
         # The layout before prefill was read on (B, T, c) and decode's c nodes
         # were kept per rung.

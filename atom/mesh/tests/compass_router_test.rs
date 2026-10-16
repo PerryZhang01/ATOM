@@ -82,10 +82,11 @@ async fn releases_are_handled_one_at_a_time_in_order_and_restamped() {
             "/",
             post(move |headers: HeaderMap| async move {
                 let clock = (determinism::now() - origin).as_secs_f64();
-                compass_router::placed();
+                compass_router::placed("http://p", "http://d");
                 let wait = placed.lock().await.take().unwrap();
                 wait.await.unwrap();
-                format!("{} at {clock}", headers["tracestate"].to_str().unwrap())
+                let state = headers["tracestate"].to_str().unwrap();
+                format!("{} at {clock}", compass_router::header("tracestate", state))
             }),
         )
         .layer(axum::middleware::from_fn(compass_router::ingress));

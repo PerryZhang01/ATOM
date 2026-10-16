@@ -142,6 +142,47 @@ def test_a_server_runs_atom_arguments_verbatim_on_its_gpus_between_the_checks(
     }
 
 
+def test_a_simulated_server_gets_its_run_file_and_clock_and_no_gpu_check(
+    planted, monkeypatch
+):
+    monkeypatch.setenv("PLANTED_EXIT", "late:0")
+    monkeypatch.setenv(ENV, "a run file the environment names")
+    out = planted / "out"
+    serve.serve(ARGS, out, run={"bound_s": 1.0})
+    seen, run_file = _seen(planted), out / serve.RUN_FILE
+    argv = seen["argv"]
+    assigned = dict(zip(argv[2 + len(ARGS) :: 2], argv[3 + len(ARGS) :: 2]))
+    assert assigned.keys() == {"--host", "--server-port", "--port", "--compass-run"}
+    assert assigned["--compass-run"] == str(run_file)
+    run = json.loads(run_file.read_text())
+    clock_port = run["clock_endpoint"].rsplit(":", 1)[1]
+    assert len({assigned["--server-port"], assigned["--port"], clock_port}) == 3
+    assert run == {
+        "bound_s": 1.0,
+        "out_dir": str(out),
+        "clock_endpoint": f"tcp://127.0.0.1:{clock_port}",
+    }
+    assert seen["env"]["ATOM_COMPASS_RUN"] is None
+    assert seen["env"]["HIP_VISIBLE_DEVICES"] == os.environ.get("HIP_VISIBLE_DEVICES")
+    assert not (out / "gpu_before.txt").exists()
+    ready = json.loads((out / serve.READY_FILE).read_text())
+    assert ready.pop("pid") > 0
+    assert ready == {
+        "url": f"http://127.0.0.1:{assigned['--server-port']}",
+        "clock_endpoint": run["clock_endpoint"],
+        "run_file": str(run_file),
+    }
+    assert json.loads((out / serve.RUN_JSON).read_text())["args"][3] == "()"
+
+
+@pytest.mark.parametrize("kind", [{"gpus": (7,), "run": {}}, {}])
+def test_a_server_is_real_or_simulated_exactly_one(planted, monkeypatch, kind):
+    monkeypatch.setenv("PLANTED_EXIT", "early:0")
+    with pytest.raises(serve.ServeError, match="exactly one"):
+        serve.serve(ARGS, planted / "out", **kind)
+    assert not (planted / "argv.json").exists()
+
+
 def test_a_process_on_a_named_gpu_refuses_before_the_server_starts(
     planted, monkeypatch
 ):

@@ -124,12 +124,9 @@ KEY_OF: dict[Row, Key] = {
     Row.MEMORY_READINGS: Key.of(
         Kind.MEMORY_READINGS,
         model="Qwen/Qwen3-32B",
+        machine_spec="sha256:mi308x",
         **LAYOUT,
-        utilization=0.9,
-        max_num_seqs=256,
-        max_model_len=32768,
-        kv_dtype="bf16",
-        block_size=64,
+        engine_config="cudagraph=piecewise,level=3",
     ),
     Row.MACHINE_SPEC_CAPACITY: Key.of(
         Kind.MACHINE_SPEC, device="MI308X-80CU", software_stack="rocm7.2.4"
@@ -199,7 +196,7 @@ def test_the_matrix_is_not_uniform():
     assert MATRIX[Row.MACHINE_SPEC_RUNTIME_CONSTANTS][Axis.SOFTWARE_STACK].depends
 
 
-@pytest.mark.parametrize("kind", [Kind.SHAPE_POPULATION, Kind.COVERAGE_HULL])
+@pytest.mark.parametrize("kind", [Kind.COVERAGE_HULL])
 def test_a_kind_the_matrix_does_not_row_is_refused_by_name(kind):
     """The key table and the matrix do not hold the same artifacts.
 
@@ -212,6 +209,16 @@ def test_a_kind_the_matrix_does_not_row_is_refused_by_name(kind):
     assert refused.value.rule is Rule.INVALIDATED
     assert f"no dependency row for {kind}" in str(refused.value)
     assert "do not hold the same artifacts" in str(refused.value)
+
+
+def test_a_shape_population_is_rowed_on_source_model_and_engine_config():
+    """Its pricing backend is a key field, so no axis carries it."""
+    assert rows_for(Kind.SHAPE_POPULATION) == (Row.SHAPE_POPULATION,)
+    assert axes_of(Row.SHAPE_POPULATION) == (
+        Axis.ATOM_SRC,
+        Axis.MODEL,
+        Axis.ENGINE_CONFIG,
+    )
 
 
 @pytest.mark.parametrize(
