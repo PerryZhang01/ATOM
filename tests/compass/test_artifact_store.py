@@ -77,6 +77,7 @@ CONDITIONS = Conditions.of(
     atom_src=Reading.of_source_root(ATOM_ROOT),
     model="Qwen/Qwen3-32B",
     device="MI308X-80CU",
+    host_cpu="Intel(R) Xeon(R) Platinum 8480C",
     engine_config="cudagraph=piecewise,level=3",
 )
 GATES = GateState.of(Gate("PRICE_KERNELS", "off", "COMPASS_PRICE_KERNELS"))
@@ -170,6 +171,32 @@ def test_two_keys_never_share_a_directory(tmp_path):
     places = {store.directory_for(price_key(width)) for width in (1, 2, 4, 8)}
     assert len(places) == 4
     assert store.directory_for(price_key(2)).parent.name == "price_list"
+
+
+@pytest.mark.parametrize(
+    "kind,fields",
+    [
+        (
+            Kind.STEP_MEASUREMENT,
+            (
+                "(model, device, parallel, engine_config, source_root, sampling, "
+                "step_kind, view)"
+            ),
+        ),
+        (
+            Kind.STEP_LINEAR_LAW,
+            "(model, device, parallel, engine_config, source_root, form)",
+        ),
+        (Kind.HOST_LAWS, "(host_cpu, atom_src, model, engine_config)"),
+    ],
+)
+def test_a_key_short_of_its_last_field_refuses_naming_the_tuple(kind, fields):
+    *given, last = KEY_FIELDS[kind]
+    with pytest.raises(ArtifactRefusal) as refused:
+        Key.of(kind, **{name: "x" for name in given})
+    assert refused.value.rule is Rule.KEY_IS_A_TUPLE
+    assert f"this {kind} key states no {last}" in str(refused.value)
+    assert f"a {kind} is keyed by {fields}" in str(refused.value)
 
 
 # --- one naming function ----------------------------------------------------

@@ -34,8 +34,6 @@ check here. Recipe v1 reads no chunk size, so none is keyed.
 import json
 from collections.abc import Mapping
 
-import torch
-
 from atom.compass.artifacts import (
     ArtifactStore,
     Axis,
@@ -71,17 +69,20 @@ def keyed(config) -> dict:
 
 
 def conditions(config, machine) -> Conditions:
-    """This run's readings: the stack and device the machine spec states,
-    this process's torch and ATOM tree, the served config.json and `keyed`."""
-    from atom.compass.run import _file_digest
+    """This run's readings: the stack, torch included, and the device the
+    machine spec states, this process's ATOM tree, this host's CPU, the served
+    config.json and `keyed`."""
+    from atom.compass.run import _file_digest, host_cpu
 
-    pins = (f"{c} {machine.value(f'device.software_pinned_to.{c}')}" for c in PINNED)
+    pins = {c: machine.value(f"device.software_pinned_to.{c}") for c in PINNED}
+    torch_pin = pins.pop("torch")
     return Conditions.of(
-        software_stack=" / ".join(pins),
-        torch=torch.__version__,
+        software_stack=" / ".join(f"{c} {v}" for c, v in pins.items()),
+        torch=torch_pin,
         atom_src=Reading.of_source_root(git_tree_root("atom", module_root("atom"))),
         model=_file_digest(config.model, "config.json"),
         device=f"{machine.value('device.name')} {machine.value('device.arch')}",
+        host_cpu=host_cpu(),
         engine_config=json.dumps(keyed(config), sort_keys=True),
     )
 
