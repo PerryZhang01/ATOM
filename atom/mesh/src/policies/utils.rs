@@ -17,12 +17,23 @@ pub struct PeriodicTask {
 }
 
 impl PeriodicTask {
-    /// Spawn a background thread that periodically executes a task.
+    /// Spawn a background thread that periodically executes a task. Under the
+    /// router LP the task runs on its clock instead, and no thread starts.
     pub fn spawn<F>(interval_secs: u64, debug_name: &'static str, task: F) -> Self
     where
         F: Fn() + Send + 'static,
     {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let task = match crate::compass_router::periodic(interval_secs, &shutdown_flag, task) {
+            Ok(()) => {
+                return Self {
+                    debug_name,
+                    shutdown_flag,
+                    handle: None,
+                }
+            }
+            Err(task) => task,
+        };
         let shutdown_clone = Arc::clone(&shutdown_flag);
 
         let handle = thread::spawn(move || {

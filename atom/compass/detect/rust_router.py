@@ -64,7 +64,8 @@ ROUTER = "determinism.rs"
 #: Classes. `decision`: can change which worker serves a request under the
 #: router LP; a defect. `bound`: a wall-clock bound or failure detector that
 #: stays real on purpose and that the simulated launch (`pd_sim.sh`) leaves
-#: off. `off-lp`: code whose requests never pass the router LP's ingress.
+#: off. `off-lp`: code that does not run under the router LP, or whose requests
+#: never pass its ingress.
 #: `latency`: changes only when something happens, or what a log, metric, id
 #: or response field says, never which worker serves a request.
 DECISION, BOUND, OFF_LP, LATENCY = "decision", "bound", "off-lp", "latency"
@@ -139,9 +140,9 @@ _KEPT = (
     ("policies/registry.rs", "RandomState", LATENCY, _LOOKUP, 2),
     ("policies/tree.rs", "RandomState", LATENCY,
      "per-tenant sizes read by key, and a debug dump", 2),
-    ("policies/utils.rs", "thread::sleep", DECISION, (
-        "cache_aware's tree eviction sleeps wall seconds between passes, and when "
-        "it runs moves later prefix matches"), 1),
+    ("policies/utils.rs", "thread::sleep", OFF_LP, (
+        "a periodic task's wait, on a thread only without the router LP; under it "
+        "the task runs on the LP clock"), 1),
     ("routers/comm/conversations.rs", "Utc::now", LATENCY, _STAMP, 1),
     ("routers/comm/persistence_utils.rs", "Utc::now", LATENCY, _STAMP, 1),
     ("routers/grpc/completion_adapter.rs", "SystemTime::now", LATENCY, _STAMP, 2),
