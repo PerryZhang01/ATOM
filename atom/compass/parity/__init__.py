@@ -18,17 +18,23 @@ window is `d_busy_ns`, from an event recorded at the launch's entry to one
 recorded at the forward's exit (`d_target_ns` to one recorded just after
 `postprocess` records `forward_done_event`), and `d_gap_ns`, from the previous forward's
 exit event to this launch's entry event, absent on the first line; summed in
-order they lay every forward on one device timeline. The events are polled,
+order they lay every forward on one device timeline. On a pipeline stage
+after the first, the receive of the stage before's output is stamped
+(`t_pp_recv_ns`), and `d_recv_ns` runs from the launch's entry event to one
+recorded after that receive, where the received tensors are in. On the stage
+that does not defer output, the token read (`prepare_sampled_ids`) is the
+`t_recv_ns` wait. The events are polled,
 never waited on, so a line is written once its exit event has completed, and
 `exit` writes the rest. `compare` reads two records and names, per DP rank,
 the first step where they part; timestamps are not part of a step's decision.
 
 Setting `ATOM_COMPASS_PARITY_RECORD` to a directory turns recording on: TP rank 0
-of each DP rank writes `dp<rank>.jsonl` there, replacing any earlier file.
-Unset, nothing is recorded. On its first step it also writes the engine its
-runner resolved to `dp<rank>.engine.json` (`README.md` says what it holds), and
-a runner with a `host_key` writes that to `dp<rank>.key.json`. The simulated
-runner records from `NonAllocatingRunner.forward`; a real one records through
+of each DP rank writes `dp<rank>.jsonl` there, replacing any earlier file;
+under pipeline parallelism stage `k` above 0 writes `pp<k>.dp<rank>.jsonl`
+instead, and its other files take the same prefix. Unset, nothing is
+recorded. On its first step it also writes the engine its runner resolved to
+`dp<rank>.engine.json` (`README.md` says what it holds), and a runner with a
+`host_key` writes that to `dp<rank>.key.json`. The simulated runner records from `NonAllocatingRunner.forward`; a real one records through
 `StepRecording`, composed into `RUNNER`, which the frontend names on a real run
 with the variable set.
 
@@ -72,17 +78,20 @@ TIMESTAMPS = (
     "t_recv_ns",
     "t_mtp_ns",
     "t_draft_recv_ns",
+    "t_pp_recv_ns",
     "d_busy_ns",
     "d_gap_ns",
     "d_target_ns",
+    "d_recv_ns",
 )
 
 
 class StepRecord:
-    """One DP rank's record: a JSON line per forward call."""
+    """One DP rank's record, of pipeline stage `stage`: a JSON line per forward call."""
 
-    def __init__(self, directory, dp_rank: int) -> None:
-        self.path = pathlib.Path(directory) / f"dp{dp_rank}.jsonl"
+    def __init__(self, directory, dp_rank: int, stage: int = 0) -> None:
+        name = f"pp{stage}.dp{dp_rank}" if stage else f"dp{dp_rank}"
+        self.path = pathlib.Path(directory) / f"{name}.jsonl"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text("")
         self.dp_rank = dp_rank
@@ -214,16 +223,12 @@ def record_step(runner, batch, forward=None):
         directory = os.environ.get(ENV)
         record = None
         if directory and runner.rank == 0:
-            if runner.config.pipeline_parallel_size > 1:
-                # Every stage's TP rank 0 would write the same file.
-                raise ValueError(
-                    f"{ENV} records one file per DP rank, and under pipeline "
-                    "parallelism each stage would write it."
-                )
             from atom.compass.run.step_grid import BOUNDS, keyed
 
-            dp_rank = runner.config.parallel_config.data_parallel_rank
-            record = StepRecord(directory, dp_rank)
+            pc = runner.config.parallel_config
+            pp = runner.config.pipeline_parallel_size > 1
+            stage = pc.pipeline_parallel_rank if pp else 0
+            record = StepRecord(directory, pc.data_parallel_rank, stage)
             # By its first forward the runner has resolved its engine.
             engine = keyed(runner.config) | {
                 name: getattr(runner.config, name)
@@ -267,7 +272,10 @@ class StepRecording:
 
     A recorded forward is also stamped inside: around `_gate_staging_reuse`,
     `run_model` and the instance's `tokenID_processor.recv_async_output`, with
-    device events at `run_model` entry and at the forward's exit. At
+    device events at `run_model` entry and at the forward's exit; on a stage
+    that does not defer output, around `prepare_sampled_ids`; on a pipeline
+    stage after the first, around the PP group's `recv_tensor_dict`, with a
+    device event after it. At
     `run_model` entry it also keeps the `ForwardMode` the forward settled,
     which the line's view is built from.
     """
@@ -284,6 +292,19 @@ class StepRecording:
             processor.recv_async_output = functools.partial(
                 self._stamped, "t_recv_ns", recv
             )
+        if processor is not None and not getattr(processor, "is_deferred_out", True):
+            # It reads this forward's tokens off the device: the wait is the call.
+            sampled = processor.prepare_sampled_ids
+            processor.prepare_sampled_ids = functools.partial(
+                self._stamped, "t_recv_ns", sampled
+            )
+        if getattr(getattr(self, "config", None), "pipeline_parallel_size", 1) > 1:
+            from aiter.dist.parallel_state import get_pp_group
+
+            group = get_pp_group()
+            if not group.is_first_rank:
+                recv = group.recv_tensor_dict
+                group.recv_tensor_dict = functools.partial(self._pp_received, recv)
         if processor is not None and hasattr(self, "drafter"):
             for key, name in (
                 ("t_mtp_ns", "recv_mtp_status_async"),
@@ -302,13 +323,21 @@ class StepRecording:
             return record_step(self, batch, super().forward)
         return super().forward(batch)
 
-    def _stamped(self, key, call, *args):
-        """`call(*args)`, stamped under `key` when this forward is recorded."""
+    def _stamped(self, key, call, *args, **kwargs):
+        """`call(*args, **kwargs)`, stamped under `key` when this forward is recorded."""
         if getattr(self, "_parity_record", None) is None:
-            return call(*args)
+            return call(*args, **kwargs)
         enter = self.step_clock_ns()
-        reply = call(*args)
+        reply = call(*args, **kwargs)
         self._stamps[key] = [enter, self.step_clock_ns()]
+        return reply
+
+    def _pp_received(self, call, *args, **kwargs):
+        """The stage before's output, received under `t_pp_recv_ns`, then a
+        device event where the received tensors are in."""
+        reply = self._stamped("t_pp_recv_ns", call, *args, **kwargs)
+        if getattr(self, "_parity_record", None) is not None:
+            self._stamps["recv_event"] = self.device_event()
         return reply
 
     def _target_done(self, call, *args):
@@ -334,12 +363,19 @@ class StepRecording:
         """At a recorded forward's exit: its stamps, and its device window callable or None."""
         stamps, self._stamps = self._stamps, {}
         launch = stamps.pop("launch_event", None)
-        target = stamps.pop("target_event", None)
+        marks = {
+            key: stamps.pop(event)
+            for key, event in (
+                ("d_target_ns", "target_event"),
+                ("d_recv_ns", "recv_event"),
+            )
+            if event in stamps
+        }
         window = None
         if launch is not None:
             done, previous = self.device_event(), self._last_exit
             self._last_exit = done
-            window = functools.partial(_window, previous, launch, done, target)
+            window = functools.partial(_window, previous, launch, done, marks)
         return stamps, window
 
     def exit(self):
@@ -348,22 +384,23 @@ class StepRecording:
         return super().exit()
 
 
-def _window(previous, launch, done, target, wait: bool):
+def _window(previous, launch, done, marks, wait: bool):
     """The device window's fields once `done` has completed, polled, else None."""
     while not done.query():
         if not wait:
             return None
         time.sleep(1e-3)
     fields = {"d_busy_ns": round(launch.elapsed_time(done) * 1e6)}
-    if target is not None:
-        fields["d_target_ns"] = round(launch.elapsed_time(target) * 1e6)
+    for key, event in marks.items():
+        fields[key] = round(launch.elapsed_time(event) * 1e6)
     if previous is not None:
         fields["d_gap_ns"] = round(previous.elapsed_time(launch) * 1e6)
     return fields
 
 
-def read(directory) -> dict[int, list[dict]]:
-    """A record directory as {DP rank: steps}, each named request under its key.
+def read(directory, stage: int = 0) -> dict[int, list[dict]]:
+    """A record directory as {DP rank: steps} of pipeline stage `stage`, each
+    named request under its key.
 
     A request the record never named keeps its request id, so a record that
     ends inside a request's prefill parts from a full one at that request's
@@ -376,7 +413,8 @@ def read(directory) -> dict[int, list[dict]]:
     if (directory / ARRIVALS).exists():
         start = min(json.loads((directory / ARRIVALS).read_text())["sent_ns"])
     # Each rank's record, and not the cost lines a simulated run writes beside it.
-    for path in sorted(directory.glob("dp*[0-9].jsonl")):
+    prefix = f"pp{stage}." if stage else ""
+    for path in sorted(directory.glob(f"{prefix}dp*[0-9].jsonl")):
         steps = [json.loads(line) for line in path.read_text().splitlines()]
         keys = {}
         for step in steps:
@@ -391,7 +429,7 @@ def read(directory) -> dict[int, list[dict]]:
         for step in steps:
             for row in step["batch"]:
                 row[0] = keys.get(row[0], row[0])
-        record[int(path.stem[2:])] = steps
+        record[int(path.stem[len(prefix) + 2 :])] = steps
     return record
 
 

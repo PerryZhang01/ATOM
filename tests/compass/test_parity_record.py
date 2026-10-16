@@ -430,13 +430,6 @@ def test_only_tp_rank_0_records_and_only_when_asked(tmp_path, monkeypatch, env, 
     assert not (tmp_path / "out").exists()
 
 
-def test_pipeline_parallelism_is_refused(tmp_path, monkeypatch):
-    batches = _drive(tmp_path / "source", monkeypatch, {0: [0]})[0][0]
-    runner = _Runner(_config(pipeline_parallel_size=2))
-    with pytest.raises(ValueError, match="each stage would write it"):
-        runner.forward(batches[0])
-
-
 def _engine(blocks):
     """The engine `_config` resolves at `max_num_seqs` 4 with `blocks` KV blocks."""
     return {

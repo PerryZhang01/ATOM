@@ -274,7 +274,9 @@ class HostDeviceRecurrence:
         self, batch: Any, device_s: float, draft_s: float = 0.0, refuse: bool = True
     ) -> float:
         """The forward's exit less `now`, for `device_s` of target device time
-        and then `draft_s` of draft; advances the device state. With any
+        and then `draft_s` of draft; advances the device state. On a stage
+        after the first, the device starts no earlier than the batch's
+        `compass_pp_release`, when its input from the stage before arrives. With any
         laws and `refuse`, a forward whose kind lacks one for a segment it runs
         is refused, naming each ``<kind>.<segment>``, the state as it was;
         without `refuse` that segment is 0. A segment in `skip` needs none, and
@@ -301,7 +303,8 @@ class HostDeviceRecurrence:
         if self.mtp and output:  # output_end stays -inf on a PP stage
             host = max(host, self.output_end)
         launch_end = host + launch
-        target_end = max(self.ends[-1], host) + device_s
+        release = getattr(batch, "compass_pp_release", -math.inf)
+        target_end = max(self.ends[-1], host, release) + device_s
         self.ends.append(max(target_end + draft_s, launch_end))
         released = launch_end
         if output:
