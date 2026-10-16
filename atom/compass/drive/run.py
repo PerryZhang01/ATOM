@@ -20,11 +20,11 @@ config ATOM's arguments resolve. A step it does not cover refuses the run,
 naming the step; another backend has no check, and refuses `--coverage`.
 
 Once the server stops, run.json gains, beside `serve`'s identity: `run_file`,
-the run file the server was handed; `step_roofline`, whether `--step-roofline` was on;
-`skip`, the host segments the run file's host entry skips; `refusals`, the run
-summary's; `coverage`, the check's report with the inputs it read, or None
-when no check ran; and `provenance`, the backend's digest and fit provenance
-as the run file states them.
+the run file the server was handed; `step_roofline`, the run file's key,
+whether `--step-roofline` was on; `skip`, the host segments the run file's
+host entry skips; `refusals`, the run summary's; `coverage`, the check's
+report with the inputs it read, or None when no check ran; and `provenance`,
+the backend's digest and fit provenance as the run file states them.
 """
 
 import argparse
