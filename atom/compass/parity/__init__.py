@@ -12,9 +12,12 @@ line also carries `t_enter_ns` and `t_exit_ns`, the worker's
 monotonic clock around its forward, and is written once the forward returns.
 Inside the forward it carries `[enter, exit]` on that clock around the staging
 gate (`t_gate_ns`), the launch (`t_launch_ns`) and the wait for the previous
-output's token copy (`t_recv_ns`, only on a forward that reaches it). Its device
+output's token copy (`t_recv_ns`, only on a forward that reaches it); with a
+drafter, also around the waits for the previous output's MTP status
+(`t_mtp_ns`, before launch) and its draft copy (`t_draft_recv_ns`). Its device
 window is `d_busy_ns`, from an event recorded at the launch's entry to one
-recorded at the forward's exit, and `d_gap_ns`, from the previous forward's
+recorded at the forward's exit, with a drafter `d_target_ns`, from that entry
+event to one recorded where `forward_done_event` is, and `d_gap_ns`, from the previous forward's
 exit event to this launch's entry event, absent on the first line; summed in
 order they lay every forward on one device timeline. The events are polled,
 never waited on, so a line is written once its exit event has completed, and
@@ -66,8 +69,11 @@ TIMESTAMPS = (
     "t_gate_ns",
     "t_launch_ns",
     "t_recv_ns",
+    "t_mtp_ns",
+    "t_draft_recv_ns",
     "d_busy_ns",
     "d_gap_ns",
+    "d_target_ns",
 )
 
 
@@ -241,7 +247,10 @@ class StepRecording:
 
     A recorded forward is also stamped inside: around `_gate_staging_reuse`,
     `run_model` and the instance's `tokenID_processor.recv_async_output`, with
-    device events at `run_model` entry and at the forward's exit. At
+    device events at `run_model` entry and at the forward's exit. With a
+    drafter, also around the processor's `recv_mtp_status_async` and
+    `recv_async_output_draft`, with a device event at its
+    `prepare_sampled_ids` entry. At
     `run_model` entry it also keeps the `ForwardMode` the forward settled,
     which the line's view is built from.
     """
@@ -257,6 +266,17 @@ class StepRecording:
             recv = processor.recv_async_output
             processor.recv_async_output = functools.partial(
                 self._stamped, "t_recv_ns", recv
+            )
+        if processor is not None and hasattr(self, "drafter"):
+            for key, name in (
+                ("t_mtp_ns", "recv_mtp_status_async"),
+                ("t_draft_recv_ns", "recv_async_output_draft"),
+            ):
+                call = getattr(processor, name)
+                setattr(processor, name, functools.partial(self._stamped, key, call))
+            sampled = processor.prepare_sampled_ids
+            processor.prepare_sampled_ids = functools.partial(
+                self._target_done, sampled
             )
         self._recording = True
 
@@ -274,6 +294,13 @@ class StepRecording:
         self._stamps[key] = [enter, self.step_clock_ns()]
         return reply
 
+    def _target_done(self, call, *args):
+        """`call(*args)` after a device event where `postprocess` has just
+        recorded `forward_done_event`: the target's end, before the draft."""
+        if getattr(self, "_parity_record", None) is not None:
+            self._stamps["target_event"] = self.device_event()
+        return call(*args)
+
     def _gate_staging_reuse(self):
         return self._stamped("t_gate_ns", super()._gate_staging_reuse)
 
@@ -290,11 +317,12 @@ class StepRecording:
         """At a recorded forward's exit: its stamps, and its device window callable or None."""
         stamps, self._stamps = self._stamps, {}
         launch = stamps.pop("launch_event", None)
+        target = stamps.pop("target_event", None)
         window = None
         if launch is not None:
             done, previous = self.device_event(), self._last_exit
             self._last_exit = done
-            window = functools.partial(_window, previous, launch, done)
+            window = functools.partial(_window, previous, launch, done, target)
         return stamps, window
 
     def exit(self):
@@ -303,13 +331,15 @@ class StepRecording:
         return super().exit()
 
 
-def _window(previous, launch, done, wait: bool):
+def _window(previous, launch, done, target, wait: bool):
     """The device window's fields once `done` has completed, polled, else None."""
     while not done.query():
         if not wait:
             return None
         time.sleep(1e-3)
     fields = {"d_busy_ns": round(launch.elapsed_time(done) * 1e6)}
+    if target is not None:
+        fields["d_target_ns"] = round(launch.elapsed_time(target) * 1e6)
     if previous is not None:
         fields["d_gap_ns"] = round(previous.elapsed_time(launch) * 1e6)
     return fields

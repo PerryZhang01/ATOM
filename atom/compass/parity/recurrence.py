@@ -5,8 +5,10 @@
 
 `HostDeviceRecurrence` charges each forward with `d_busy_ns` as its device
 time, plus `d_gap_ns` on a decode, and its line's host segments: `E` from the previous exit to the entry,
-`W_pre` to the launch less the staging gate's wait, `W_launch`, and `W_post`
-from the launch to the exit less the recv wait. Each forward is called at the
+`W_pre` to the launch less the staging gate's and MTP status waits, `W_launch`, and `W_post`
+from the launch to the exit less the recv and draft-copy waits. A record with
+`d_target_ns` is charged under MTP, `d_target_ns` (and the gap) as target and
+the rest of `d_busy_ns` as draft. Each forward is called at the
 exit predicted for the one before, so only the waits and device times move it.
 
 Per kind (decode, output prefill, middle chunk, and idle: sharing no request
@@ -43,15 +45,19 @@ def _kind(step, prev) -> str:
 def check(steps: list[dict]) -> dict:
     """One DP rank's steps charged on their measured inputs: the gate's report."""
     now, prev, rows = 0.0, None, []
-    rec = HostDeviceRecurrence({}, (), lambda: now)
+    mtp = any("d_target_ns" in s for s in steps)
+    rec = HostDeviceRecurrence({}, (), lambda: now, mtp=mtp)
     for s in steps:
         if "d_busy_ns" not in s:
             raise ValueError(f"step {s['step']} has no device window to charge")
         (g0, g1), (l0, l1) = s["t_gate_ns"], s["t_launch_ns"]
         r0, r1 = s.get("t_recv_ns", (l1, l1))
+        m0, m1 = s.get("t_mtp_ns", (l0, l0))
+        d0, d1 = s.get("t_draft_recv_ns", (0, 0))
         last = prev["t_exit_ns"] if prev else s["t_enter_ns"]
-        e, pre = s["t_enter_ns"] - last, l0 - s["t_enter_ns"] - (g1 - g0)
-        post = s["t_exit_ns"] - l1 - (r1 - r0)
+        e = s["t_enter_ns"] - last
+        pre = l0 - s["t_enter_ns"] - (g1 - g0) - (m1 - m0)
+        post = s["t_exit_ns"] - l1 - (r1 - r0) - (d1 - d0)
         law = {"E": e, "W_pre": pre, "W_launch": l1 - l0, "W_post": post}
         law = {g: (v * 1e-9, 0, 0) for g, v in law.items()}
         rec.laws = {k: law for k in FORWARD_KINDS}
@@ -60,9 +66,15 @@ def check(steps: list[dict]) -> dict:
         batch.total_seqs_num_prefill = sum(not d for *_, d in s["rows"])
         batch.produces_output = lambda out=s["produces_output"]: out
         gap = 0 if batch.total_seqs_num_prefill else s.get("d_gap_ns", 0)
-        charge = rec.charge(batch, (gap + s["d_busy_ns"]) * 1e-9)
+        busy = s["d_busy_ns"]
+        target = s.get("d_target_ns", busy)
+        charge = rec.charge(batch, (gap + target) * 1e-9, (busy - target) * 1e-9)
         period = (s["t_exit_ns"] - last) * 1e-9
-        r1_ms = (charge - (post + r1 - last) * 1e-9) * 1e3 if "t_recv_ns" in s else None
+        r1_ms = None
+        if "t_mtp_ns" in s:  # released before the launch
+            r1_ms = (charge - (post + l1 - l0 + m1 - last) * 1e-9) * 1e3
+        elif "t_recv_ns" in s:
+            r1_ms = (charge - (post + r1 - last) * 1e-9) * 1e3
         res, queued = (charge - period) * 1e3, max(queued, 0.0) * 1e3
         rows.append(
             (s["step"], _kind(s, prev), 100 * (charge / period - 1), res, queued, r1_ms)

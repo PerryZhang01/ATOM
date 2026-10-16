@@ -119,3 +119,38 @@ def test_a_decode_charges_the_device_gap_before_it_and_a_prefill_does_not():
     report = recurrence.check(steps)
     assert report["total"] == pytest.approx(0, abs=1e-9)
     assert report["pass"] and not report["failures"]
+
+
+def mtp_record():
+    """Four MTP decodes of one request, written by the wait rules: 1 ms per
+    host segment, 10 ms of target and 0.5 of draft. Each launch waits for the
+    previous target's end; the draft copy is in by the time it is read."""
+    steps = []
+    for n, (enter, mtp_end) in enumerate([(0, 1), (4, 11), (14, 21.5), (24.5, 32)]):
+        launch = (mtp_end, mtp_end + 1)
+        s = line(n, [[2, 150 + n, True]], True, enter, (enter, enter), launch, None, 0)
+        s["t_mtp_ns"] = [(enter + 1) * MS, mtp_end * MS]
+        s["t_recv_ns"] = [launch[1] * MS] * 2
+        s["t_draft_recv_ns"] = [(launch[1] + 1) * MS] * 2
+        s["t_exit_ns"] = (launch[1] + 1) * MS
+        s["d_busy_ns"], s["d_target_ns"] = 10.5 * MS, 10 * MS
+        if n:
+            s["d_gap_ns"] = 0  # each target starts as the draft before it ends
+        steps.append(s)
+    return steps
+
+
+def test_an_mtp_record_the_wait_rules_wrote_passes_and_charged_without_mtp_fails():
+    report = recurrence.check(mtp_record())
+    assert report["kinds"]["decode"][1:4] == pytest.approx((0, 0, 0), abs=1e-9)
+    assert report["kinds"]["decode"][4] == pytest.approx(0, abs=1e-6)
+    assert report["pass"] and report["total"] == pytest.approx(0, abs=1e-9)
+    # Without the split, R1 waits after the launch for the whole device end:
+    # step 1 exits at 12.5, not 13.
+    steps = mtp_record()
+    for s in steps:
+        del s["d_target_ns"]
+    report = recurrence.check(steps)
+    assert not report["pass"]
+    [(step, _, err, *_)] = report["failures"]
+    assert (step, err) == (1, pytest.approx(-5))

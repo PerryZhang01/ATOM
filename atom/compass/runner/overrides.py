@@ -254,21 +254,25 @@ class HostDeviceRecurrence:
     device work two forwards back, or on a pipeline stage `stage = (rank, pp)`,
     `pp` forwards back; an output forward, after launch, waits for the previous
     output forward's, or on the last stage for its own, and on any other stage
-    for nothing. `ends[-1]` is the last forward's device end. `laws[kind][segment]` are coefficients on `(1,
+    for nothing. With `mtp`, a forward's device work is its target's and then
+    its draft's, and a single-stage output forward waits before launch, for
+    the previous output forward's target. `ends[-1]` is the last forward's device end. `laws[kind][segment]` are coefficients on `(1,
     tokens, seqs)`, zero where absent. `now` reads the engine LP's clock.
     `segments` holds the seconds the last `charge` charged each segment, 0 for
     one in `skip`.
     """
 
-    def __init__(self, laws: dict, skip, now, stage=None) -> None:
+    def __init__(self, laws: dict, skip, now, stage=None, mtp=False) -> None:
         self.laws, self.skip, self.now = laws, frozenset(skip), now
         ring = 2 if stage is None else stage[1]
         self.ends = collections.deque([-math.inf] * ring, maxlen=ring)  # n-ring..n-1
         self.last = None if stage is None else stage[0] == stage[1] - 1
-        self.output_end = -math.inf  # device end of the last output forward
+        self.output_end = -math.inf  # target end of the last output forward
+        self.mtp = mtp
 
-    def charge(self, batch: Any, device_s: float) -> float:
-        """The forward's exit less `now`; advances the device state."""
+    def charge(self, batch: Any, device_s: float, draft_s: float = 0.0) -> float:
+        """The forward's exit less `now`, for `device_s` of target device time
+        and then `draft_s` of draft; advances the device state."""
         kind = "decode" if batch.total_seqs_num_prefill == 0 else "prefill"
         law = self.laws.get(kind if batch.produces_output() else "middle", {})
         x = (1, batch.total_tokens_num, batch.total_seqs_num)
@@ -279,15 +283,18 @@ class HostDeviceRecurrence:
         e, pre, launch, post = self.segments.values()
         now = self.now()
         host = max(now + e, self.ends[0]) + pre
+        output = batch.produces_output()
+        if self.mtp and output and self.last is None:
+            host = max(host, self.output_end)
         launch_end = host + launch
-        device_end = max(self.ends[-1], host) + device_s
-        self.ends.append(max(device_end, launch_end))
+        target_end = max(self.ends[-1], host) + device_s
+        self.ends.append(max(target_end + draft_s, launch_end))
         released = launch_end
-        if batch.produces_output():
+        if output:
             if self.last is None:
-                released, self.output_end = max(launch_end, self.output_end), device_end
+                released, self.output_end = max(launch_end, self.output_end), target_end
             elif self.last:
-                released = max(launch_end, device_end)
+                released = max(launch_end, target_end)
         return released + post - now
 
 

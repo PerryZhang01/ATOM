@@ -1407,9 +1407,12 @@ Stage 2 builds R1 and R4 ([#825](https://github.com/jgong5/ATOM/issues/825)). R6
 come with the stage sends ([#468](https://github.com/jgong5/ATOM/issues/468)), and so does R7
 as one wait: the stage loop receives `pp_data` before the forward, so host launch and
 device start both wait for the whole receive, where R7 holds only the device for the
-tensors. The MTP split and the PP=2 record that gates R6 to R8 are
-[#829](https://github.com/jgong5/ATOM/issues/829)'s; until the split lands, an MTP
-forward refuses.
+tensors. [#829](https://github.com/jgong5/ATOM/issues/829) builds the MTP split
+in the record and the recurrence and gates it on a real MTP record; a simulated
+run refuses a speculative config until a backend prices the draft
+([#1090](https://github.com/jgong5/ATOM/issues/1090)). R7's host side and the
+PP=2 record that gates R6 to R8 are
+[#1200](https://github.com/jgong5/ATOM/issues/1200)'s.
 
 **What-ifs.** The run-file key `host.skip` zeroes the named segments. Such a run is a
 what-if: never graded, and refused by the graders.
