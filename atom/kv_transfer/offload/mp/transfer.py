@@ -26,6 +26,7 @@ from atom.kv_transfer.offload.chunked_scheduler import (
     DENSE_PAGE_SOURCE_SAFE_CHANNEL,
 )
 from atom.kv_transfer.offload.mp.deployment import _extra_config
+from atom.utils import clock
 
 logger = logging.getLogger("atom")
 
@@ -83,7 +84,7 @@ def _enforce_transfer_deadline(
 ) -> None:
     """Raise ``LMCacheTransferUnprovable`` once a transfer outlives the bound."""
 
-    elapsed = time.monotonic() - started_at
+    elapsed = clock.now(time.monotonic) - started_at
     if elapsed < deadline_s:
         return
     message = (

@@ -32,6 +32,7 @@ from atom.kv_transfer.offload.mp.transfer import (
     _enforce_transfer_deadline,
     _transfer_deadline_s,
 )
+from atom.utils import clock
 
 logger = logging.getLogger("atom")
 
@@ -208,7 +209,7 @@ class LMCacheMPConnectorScheduler(ChunkedOffloadSchedulerBase):
         seen = self._transfer_seen_at
         for operation in [op for op in seen if op not in live]:
             del seen[operation]
-        now = time.monotonic()
+        now = clock.now(time.monotonic)
         for operation in live:
             _enforce_transfer_deadline(
                 operation, seen.setdefault(operation, now), self._scheduler_deadline_s

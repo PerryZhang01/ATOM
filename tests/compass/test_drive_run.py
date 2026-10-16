@@ -48,12 +48,15 @@ from atom.compass.clock import RefusalTally
 from atom.compass.drive import run as drive_run
 from atom.compass.drive import runfile, serve, trace_steps
 
-#: `test_drive_trace_steps`'s planted server, which first copies the run summary
-#: `PLANTED_SUMMARY` names into the out_dir of the run file it is handed.
+#: `test_drive_trace_steps`'s planted server, which first copies the summary
+#: `PLANTED_SUMMARY` names as client run 0's into the out_dir of the run file it
+#: is handed.
 PLANTED = (
     "import json, os, shutil, sys\n"
     'run = json.load(open(sys.argv[sys.argv.index("--compass-run") + 1]))\n'
-    'shutil.copy(os.environ["PLANTED_SUMMARY"], run["out_dir"])\n'
+    'first = os.path.join(run["out_dir"], "client-0")\n'
+    "os.makedirs(first)\n"
+    'shutil.copy(os.environ["PLANTED_SUMMARY"], first)\n'
     + test_drive_trace_steps.PLANTED
 )
 
@@ -105,8 +108,8 @@ def refused_summary(directory, monkeypatch):
 
 
 def plant(tmp_path, monkeypatch, steps, summary) -> None:
-    """Serve from the planted server, which writes the record `steps` and the
-    run summary `summary`."""
+    """Serve from the planted server, which writes the record `steps` and
+    client run 0's summary `summary`."""
     (tmp_path / "planted.py").write_text(PLANTED)
     monkeypatch.setattr(serve, "SERVER", (sys.executable, str(tmp_path / "planted.py")))
     monkeypatch.setattr(serve, "identity", lambda *args: IDENTITY)
