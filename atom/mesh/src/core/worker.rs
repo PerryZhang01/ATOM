@@ -944,6 +944,11 @@ impl WorkerLoadGuard {
         worker.increment_load();
         Self { worker }
     }
+
+    /// The worker whose load this holds.
+    pub fn worker(&self) -> &dyn Worker {
+        self.worker.as_ref()
+    }
 }
 
 impl Drop for WorkerLoadGuard {

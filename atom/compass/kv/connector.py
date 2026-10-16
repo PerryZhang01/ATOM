@@ -27,10 +27,12 @@ same order, so write-done is not a message: both already know its time. The writ
 request travels over the zmq address at ``kv_transfer_config[WRITE_REQ_KEY]``,
 which prefill binds and decode connects to.
 
-Above DP width one each decode and prefill rank pair has its own channel and
-address, the configured port plus the pair's index among the channels. Decode
-sends to the prefill rank the relayed ``dp_rank`` names, and a prefill rank
-refuses a write request for another rank.
+Above DP width one, or above one deployment of a side, each decode and
+prefill rank pair has its own channel and address, the configured port plus
+the pair's index among the run's write-request channels. Decode sends to the
+prefill deployment the relayed ``remote_engine_id`` names (`engine_id`), at
+the rank its ``dp_rank`` names, and a prefill rank refuses a write request
+for another rank.
 
 The worker half reports nothing. The engine still builds and polls it.
 """
@@ -41,7 +43,7 @@ import collections
 import logging
 import pickle
 
-from atom.compass.kv.handoff import transfer_params, whole_number
+from atom.compass.kv.handoff import SIMULATED_ENGINE_ID, transfer_params, whole_number
 from atom.compass.kv.transfer import Link, TransferModel
 from atom.kv_transfer.disaggregation.base import (
     KVConnectorBase,
@@ -56,6 +58,13 @@ TRANSFER_KEY = "compass_transfer"
 
 #: The zmq address the write requests travel over.
 WRITE_REQ_KEY = "compass_kv_write_req"
+
+
+def engine_id(lp: str) -> str:
+    """The engine id a producer that is engine LP `lp` gives: one label, with
+    the deployment's index when it is one of several (``engine-P1``)."""
+    index = lp.removeprefix("engine-P") if lp.startswith("engine-P") else ""
+    return f"{SIMULATED_ENGINE_ID}-p{index}" if index else SIMULATED_ENGINE_ID
 
 
 class UnboundSeam(RuntimeError):
@@ -136,15 +145,19 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
                 "this connector needs the zmq address of its write requests"
             )
         table, me = self._rt.table, self._rt.me
-        pairs = [
+        pairs = sorted(
             c.name
-            for c in table.channels_from(me) + table.channels_into(me)
+            for lp in table.registry.ids()
+            for c in table.channels_from(lp)
             if c.name.partition(":")[2].startswith("kv_write_req")
-        ]
-        # This rank's end of each pair, by the rank at the other end; the k-th
-        # pair's address is the configured one's port plus k.
-        self._socks: dict[int, clock.WrappedSocket] = {}
+        )
+        # This rank's end of each pair, by the engine LP and the rank at the
+        # other end; the k-th pair's address is the configured one's port plus k.
+        self._socks: dict[tuple[str, int], clock.WrappedSocket] = {}
         for k, channel in enumerate(pairs):
+            ends = table.channel(channel).source, table.channel(channel).target
+            if me not in ends:
+                continue
             d, _, p = channel.partition("#")[2].replace("dp", "").partition(".")
             mine, other = (p, d) if self.is_producer else (d, p)
             if mine and int(mine) != self._dp_rank:
@@ -156,12 +169,17 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
             (raw.bind if self.is_producer else raw.connect)(
                 f"{head}:{int(port) + k}" if k else address
             )
-            self._socks[int(other or 0)] = clock.WrappedSocket(self._rt, raw, channel)
+            peer = ends[ends[0] == me].name
+            self._socks[peer, int(other or 0)] = clock.WrappedSocket(
+                self._rt, raw, channel
+            )
         if not self._socks:
             raise UnboundSeam(
                 f"{me} at DP rank {self._dp_rank} is no end of a kv_write_req "
                 f"channel; its table declares {pairs}"
             )
+        self._wide = "#" in pairs[0]
+        self._peers = {engine_id(peer): peer for peer, _ in self._socks}
         # The write request's latency, and the write-done notice's.
         self._latency_s = table.lookahead(pairs[0])
         self._ready: dict = {}  # prefill: request -> r
@@ -210,10 +228,16 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
         blocks = len(seq.block_table) - computed
         # The arrival `stamp_send` gives this send.
         a = self._rt.now + self._latency_s
-        # Above DP width one, to the prefill rank that served the request.
-        rank = params["dp_rank"] if len(self._socks) > 1 else 0
-        self._socks[rank].send(pickle.dumps((params["transfer_id"], blocks, a, rank)))
-        self._due[seq.id] = self._links[rank].start(a, blocks) + self._latency_s
+        # To the prefill deployment and rank that served the request.
+        peers = self._peers
+        peer = (
+            peers[params["remote_engine_id"]]
+            if len(peers) > 1
+            else next(iter(peers.values()))
+        )
+        key = peer, params["dp_rank"] if self._wide else 0
+        self._socks[key].send(pickle.dumps((params["transfer_id"], blocks, a, key[1])))
+        self._due[seq.id] = self._links[key].start(a, blocks) + self._latency_s
 
     def request_finished(self, seq) -> None:
         """Record prefill's data-ready time, once, and attach the relayed blob.
@@ -234,6 +258,7 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
             pp_size=self._pp_size,
             block_size=self._block_size,
             dcp_size=self._dcp_size,
+            engine_id=engine_id(self._rt.me.name),
         )
 
     def should_defer_free(self, seq) -> bool:
