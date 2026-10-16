@@ -4216,6 +4216,91 @@
    "why": "a GPU command's check waits for preflight.sh to exit, up to a wall bound past which it kills the script and refuses the run",
    "mechanism": "K9",
    "mechanism_why": "in the measuring command, which is no LP, before its run starts or after it stops; a GPU command serves no simulated run, so the bound stays real"
+  },
+  {
+   "id": "atom/compass/drive/serve.py::serve::subprocess.Popen( argv, stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True, )::thread_start#0",
+   "file": "atom/compass/drive/serve.py",
+   "symbol": "serve",
+   "call": "subprocess.Popen",
+   "expr": "subprocess.Popen( argv, stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True, )",
+   "shape": "thread_start",
+   "peer": "none",
+   "lp": "frontend",
+   "why": "the serve command starts one real ATOM API server in a process group of its own, on the GPUs the command names",
+   "mechanism": "K9",
+   "mechanism_why": "starting a process cannot park; serve refuses a run file and a clock, in ATOM's arguments and in the environment, so its server is a real one and the command is no LP"
+  },
+  {
+   "id": "atom/compass/drive/serve.py::serve::server.poll()::poll#0",
+   "file": "atom/compass/drive/serve.py",
+   "symbol": "serve",
+   "call": "server.poll",
+   "expr": "server.poll()",
+   "shape": "poll",
+   "peer": "process",
+   "why": "the serve command asks whether its server has exited, while it waits for /health to answer and then while the server serves",
+   "mechanism": "K9",
+   "mechanism_why": "a process poll returns at once and cannot park; serve refuses a run file and a clock, in ATOM's arguments and in the environment, so its server is a real one and the command is no LP"
+  },
+  {
+   "id": "atom/compass/drive/serve.py::serve::time.sleep(POLL_S)::sleep#0",
+   "file": "atom/compass/drive/serve.py",
+   "symbol": "serve",
+   "call": "time.sleep",
+   "expr": "time.sleep(POLL_S)",
+   "shape": "sleep",
+   "peer": "process",
+   "why": "the serve command's half-second cadence between its checks on its server: /health while it starts, its exit while it serves",
+   "mechanism": "K9",
+   "mechanism_why": "serve refuses a run file and a clock, in ATOM's arguments and in the environment, so its server is a real one and the command is no LP, whose cadence no simulated clock reads"
+  },
+  {
+   "id": "atom/compass/drive/serve.py::serve::server.poll()::poll#1",
+   "file": "atom/compass/drive/serve.py",
+   "symbol": "serve",
+   "call": "server.poll",
+   "expr": "server.poll()",
+   "shape": "poll",
+   "peer": "process",
+   "why": "the serve command asks whether its server has exited, while it waits for /health to answer and then while the server serves",
+   "mechanism": "K9",
+   "mechanism_why": "a process poll returns at once and cannot park; serve refuses a run file and a clock, in ATOM's arguments and in the environment, so its server is a real one and the command is no LP"
+  },
+  {
+   "id": "atom/compass/drive/serve.py::serve::time.sleep(POLL_S)::sleep#1",
+   "file": "atom/compass/drive/serve.py",
+   "symbol": "serve",
+   "call": "time.sleep",
+   "expr": "time.sleep(POLL_S)",
+   "shape": "sleep",
+   "peer": "process",
+   "why": "the serve command's half-second cadence between its checks on its server: /health while it starts, its exit while it serves",
+   "mechanism": "K9",
+   "mechanism_why": "serve refuses a run file and a clock, in ATOM's arguments and in the environment, so its server is a real one and the command is no LP, whose cadence no simulated clock reads"
+  },
+  {
+   "id": "atom/compass/drive/serve.py::serve::server.wait()::event_wait#0",
+   "file": "atom/compass/drive/serve.py",
+   "symbol": "serve",
+   "call": "server.wait",
+   "expr": "server.wait()",
+   "shape": "event_wait",
+   "peer": "process",
+   "why": "the serve command reaps its server once it has stopped the server's process group",
+   "mechanism": "K9",
+   "mechanism_why": "after the server has stopped; serve refuses a run file and a clock, in ATOM's arguments and in the environment, so its server is a real one and the command is no LP"
+  },
+  {
+   "id": "atom/compass/drive/serve.py::_stop::time.sleep(POLL_S)::sleep#0",
+   "file": "atom/compass/drive/serve.py",
+   "symbol": "_stop",
+   "call": "time.sleep",
+   "expr": "time.sleep(POLL_S)",
+   "shape": "sleep",
+   "peer": "process",
+   "why": "the serve command's stop waits in half seconds, up to a wall bound, for the server's process group to exit after SIGTERM and then after SIGKILL",
+   "mechanism": "K9",
+   "mechanism_why": "the server is stopping; serve refuses a run file and a clock, in ATOM's arguments and in the environment, so its server is a real one and the command is no LP, and the bound only decides when SIGTERM gives way to SIGKILL"
   }
  ],
  "anchors": [
