@@ -8,15 +8,11 @@ with no GPU and no model; the rest of the script runs as written.
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[2]
-BASH = shutil.which("bash")
 STUB = """#!/bin/bash
 case "$1 $2" in
 "-m atom.entrypoints.openai.api_server")
@@ -60,7 +56,7 @@ def _parity(tmp_path, **env):
         **env,
     )
     r = subprocess.run(
-        [BASH, "scripts/compass/parity_one_node.sh", str(tmp_path / "out")],
+        ["bash", "scripts/compass/parity_one_node.sh", str(tmp_path / "out")],
         cwd=ROOT,
         env=env,
         capture_output=True,
@@ -73,7 +69,6 @@ def _parity(tmp_path, **env):
     return r, servers, tmp_path / "out" / "sim" / "run.json"
 
 
-@pytest.mark.skipif(BASH is None, reason="no bash on PATH")
 def test_tp2_is_the_default(tmp_path):
     r, servers, run = _parity(tmp_path)
     assert r.returncode == 0, r.stderr
@@ -87,7 +82,6 @@ def test_tp2_is_the_default(tmp_path):
     )
 
 
-@pytest.mark.skipif(BASH is None, reason="no bash on PATH")
 def test_dsv4_dpa8_runs_the_nightly_prefill_server_at_eight_ranks(tmp_path):
     machine = ROOT / "scripts/compass/machines/mi308x-hjbog18.json"
     r, servers, run = _parity(tmp_path, CONFIG="dsv4-dpa8", MACHINE=str(machine))
@@ -106,7 +100,6 @@ def test_dsv4_dpa8_runs_the_nightly_prefill_server_at_eight_ranks(tmp_path):
     assert spec["machine"]["name"] == json.loads(machine.read_text())["name"]
 
 
-@pytest.mark.skipif(BASH is None, reason="no bash on PATH")
 def test_dsv4_dpa8_without_a_machine_starts_nothing(tmp_path):
     r, servers, _ = _parity(tmp_path, CONFIG="dsv4-dpa8")
     assert r.returncode != 0
@@ -114,7 +107,6 @@ def test_dsv4_dpa8_without_a_machine_starts_nothing(tmp_path):
     assert servers == []
 
 
-@pytest.mark.skipif(BASH is None, reason="no bash on PATH")
 def test_a_spec_that_measured_the_models_tokenizer_names_it_once(tmp_path):
     arch = "DeepseekV4ForCausalLM"
     machine = json.loads(
