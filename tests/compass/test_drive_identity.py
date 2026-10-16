@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: MIT
-"""run.json's identity. The source digest and aiter's version are read off
-planted git checkouts through `git_tree_root` and `git_described_root`, the host
-key off the engine file a parity record wrote, and the device off a planted
-`rocm-smi`."""
+"""run.json's identity. The source digest and aiter's commit are read off
+planted git checkouts, the host key off the engine file a parity record wrote,
+and the device off a planted `rocm-smi`."""
 
 import json
 import os
@@ -59,6 +58,7 @@ def planted(tmp_path, monkeypatch):
     (tmp_path / "rocm" / ".info").mkdir(parents=True)
     (tmp_path / "rocm" / ".info" / "version").write_text("7.2.4\n")
     monkeypatch.setenv("ROCM_PATH", str(tmp_path / "rocm"))
+    monkeypatch.setattr(torch.cuda.nccl, "version", lambda: (2, 27, 7))
     bindir = tmp_path / "bin"
     bindir.mkdir()
     (bindir / "cards.json").write_text(json.dumps({"card6": CARD, "card7": CARD}))
@@ -87,7 +87,7 @@ def test_the_host_key_is_the_one_the_config_that_wrote_the_engine_file_gives(
 
 
 def test_the_identity_holds_its_entries_and_no_workload(planted):
-    _, config, served = planted
+    trees, config, served = planted
     run = drive.identity(*served, ARGV)
     assert run == {
         "format_version": drive.FORMAT_VERSION,
@@ -95,7 +95,12 @@ def test_the_identity_holds_its_entries_and_no_workload(planted):
         "source": run["source"],
         "host_key": host_key(config),
         "device": [],
-        "stack": {"rocm": "7.2.4", "torch": torch.__version__, "aiter": "v0"},
+        "stack": {
+            "rocm": "7.2.4",
+            "aiter": _git(trees["aiter"], "rev-parse", "--short", "HEAD"),
+            "rccl": "2.27.7",
+            "torch": torch.__version__,
+        },
         "profiled": False,
     }
     json.dumps(run)
@@ -114,7 +119,8 @@ def test_the_source_digest_is_the_tree_git_archive_ships(planted):
         source["revision"],
         1,
     )
-    assert run["stack"]["aiter"] == "v0-dirty"
+    commit = _git(trees["aiter"], "rev-parse", "--short", "HEAD")
+    assert run["stack"]["aiter"] == f"{commit}-dirty"
 
     _git(trees["atom"], "commit", "-qam", "edit")
     assert drive.identity(*served, ARGV)["source"]["revision"] != source["revision"]
@@ -122,7 +128,7 @@ def test_the_source_digest_is_the_tree_git_archive_ships(planted):
 
 def test_each_named_gpu_is_recorded_with_its_model(planted):
     *_, served = planted
-    model = {"series": "AMD Instinct MI308X", "sku": "M3080202", "gfx": "gfx942"}
+    model = {"name": "MI308X", "arch": "gfx942"}
     assert drive.identity(*served, ARGV, (7, 6))["device"] == [
         {"index": 7, **model},
         {"index": 6, **model},

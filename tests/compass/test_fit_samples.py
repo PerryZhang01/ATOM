@@ -20,7 +20,7 @@ from atom.compass.parity.served import served
 from atom.compass.run.step_grid import BOUNDS
 
 HOST = {"host_cpu": "planted cpu", "atom": "0" * 64, "model": "sha256:" + "1" * 64}
-DEVICE = {"index": 7, "series": "AMD Instinct MI308X", "sku": "M3080", "gfx": "gfx942"}
+DEVICE = {"index": 7, "name": "MI355X", "arch": "gfx950"}
 SOURCE = {
     "name": "atom",
     "root": "/workspace/ATOM/atom",
@@ -41,7 +41,7 @@ def record(tmp_path, monkeypatch, name="a", groups=((0, 1), (2, 3)), **run):
         k: v for k, v in engine.items() if k not in (*BOUNDS, "num_kvcache_blocks")
     }
     identity = {
-        "format_version": 1,
+        "format_version": 2,
         "argv": ["compass", "record", "--out", str(directory)],
         "source": SOURCE,
         "host_key": {**HOST, "engine": keyed},
@@ -77,7 +77,7 @@ def test_two_records_differing_only_in_kv_cache_dtype_refuse_naming_both_values(
     "field, file, change",
     [
         ("model", "run.json", lambda r: r["host_key"].update(model="sha256:2")),
-        ("device", "run.json", lambda r: r["device"][0].update(sku="M3081")),
+        ("device", "run.json", lambda r: r["device"][0].update(name="MI300X")),
         (
             "parallel",
             "steps/dp0.engine.json",
@@ -110,8 +110,8 @@ def test_each_field_read_from_the_input_refuses_when_it_differs(
             lambda d: edit(d / "run.json", lambda r: r.update(profiled=True)),
         ),
         (
-            "is format 2",
-            lambda d: edit(d / "run.json", lambda r: r.update(format_version=2)),
+            "is format 1",
+            lambda d: edit(d / "run.json", lambda r: r.update(format_version=1)),
         ),
         (f"holds {ARRIVALS}", lambda d: (d / "steps" / ARRIVALS).write_text("{}")),
     ],
