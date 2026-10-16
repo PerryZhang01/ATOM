@@ -383,9 +383,8 @@ class LMCacheLP:
         self.width = {"copy": copy_width, "request": 1}
         self.queued = {"copy": deque(), "request": deque()}
         self.busy = dict.fromkeys(self.width, 0)
-        self.jobs: list = (
-            []
-        )  # heap of (end, start order, station, channel, reply, effect)
+        # A heap of (end, start order, station, channel, reply, effect).
+        self.jobs: list = []
         self.started = 0
         self.inbox: dict = {}  # (channel, seq) -> (arrival, frames), read, not taken
         self.next_tick = rt.now + EVICTION_INTERVAL_S
