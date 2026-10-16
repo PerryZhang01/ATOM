@@ -39,8 +39,9 @@
 # each with its server log and step record (sim/ also has the run file, step
 # table and summary), and compare.json; the last lines are the real run's
 # admission, send to response headers, and the compare per DP rank. Under
-# LMCACHE they also give the requests whose offload loads and saves differ,
-# and the real run's lookup times as its OFFLOAD_PROFILE counters give them.
+# LMCACHE they also give the requests whose offload loads and saves differ. A
+# simulated run that needs a step past the real record ends at the replay's
+# refusal, which the last lines name; the records are compared all the same.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/_lib.sh"
 
@@ -113,7 +114,7 @@ if [[ $LMCACHE == 1 ]]; then
     setsid lmcache server $LM_FLAGS >"$OUT/real/lmcache.log" 2>&1 &
     lmcache=$!
 fi
-OFFLOAD_PROFILE=$LMCACHE serve real
+serve real
 python3 -m atom.compass.parity.traffic "$PORT" "$MODEL" "$OUT/real/record" \
     "${REQUESTS:-64}" "${GAP_S:-0.05}" "$PREFIX" >"$OUT/real/traffic.log" 2>&1
 # The record's last lines are written as the workers exit.
@@ -153,13 +154,20 @@ Path(run).write_text(json.dumps(spec))
 EOF
 serve sim --compass-run "$RUN"
 ATOM_COMPASS_RUN=$RUN python3 -m atom.compass.parity.traffic "$PORT" "$MODEL" \
-    "$OUT/real/record" >"$OUT/sim/traffic.log" 2>&1
+    "$OUT/real/record" >"$OUT/sim/traffic.log" 2>&1 || sim_rc=$?
 leave sim
-wait $server
+wait $server || sim_rc=${sim_rc:-$?}
+refused=$(grep -ohm1 "replay: .* has [0-9]* steps, and this is step [0-9]*" "$OUT/sim/server.log" || true)
+if [[ -n $refused ]]; then
+    echo "parity_one_node: the simulated run ended at the $refused"
+elif [[ -n ${sim_rc:-} ]]; then
+    echo "parity_one_node: the simulated run failed ($sim_rc); see $OUT/sim" >&2
+    exit 1
+fi
 
 python3 -m atom.compass.parity "$OUT/real/record" "$OUT/sim/record" >"$OUT/compare.json"
 python3 - "$OUT" <<'EOF'
-import json, re, statistics, sys
+import json, statistics, sys
 from atom.compass.parity import read
 
 out = sys.argv[1]
@@ -187,10 +195,4 @@ if any(decisions):
     differ = sorted(k for k in real.keys() | sim.keys() if real.get(k) != sim.get(k))
     print(f"parity_one_node: offload decisions of {len(real)} requests real, "
           f"{len(sim)} simulated; {len(differ)} differ: {differ}")
-    perf = re.findall(r"\[OFFLOAD-PERF\] (\{.*?\}) \|", open(f"{out}/real/server.log").read())
-    if perf:
-        c = max(map(json.loads, perf), key=lambda c: c.get("lookup_n", 0))
-        print(f"parity_one_node: real blocking lookups n={c.get('lookup_n', 0)} "
-              f"mean_us={c.get('lookup_us', 0) / max(1, c.get('lookup_n', 0)):.0f} "
-              f"max_us={c.get('lookup_max_us')}")
 EOF

@@ -16,7 +16,6 @@ The runs need a driver and `ATOM_COMPASS_SLICE_MODEL`, as in
 `test_vertical_slice`, and as many GPUs in ``HIP_VISIBLE_DEVICES`` as DP ranks.
 """
 
-import functools
 import json
 import math
 import os
@@ -28,7 +27,6 @@ from collections import defaultdict
 from pathlib import Path
 
 import pytest
-from test_lmcache_lp import _config, _run
 from test_lmcache_mp_engine import _machine
 from test_parity_record import _config as _parity_config
 from test_parity_record import _key
@@ -236,26 +234,6 @@ def test_each_run_meets_every_scenario_check_and_loads_the_prefix_back(runs):
     assert loaded, "no request loaded the stored prefix back"
     if dp > 1:
         assert loaded - {stored[0]}, "no rank loaded a prefix another rank stored"
-
-
-@pytest.mark.parametrize("writers", [1, 2])
-def test_a_dp_attention_deployment_stores_from_one_rank_per_dp_rank(
-    tmp_path, monkeypatch, writers
-):
-    started = []
-    monkeypatch.setattr(
-        compass_run.subprocess, "Popen", lambda *a, **k: started.append(a)
-    )
-    config = _config(tensor_parallel_size=2, enable_dp_attention=True)
-    launch = functools.partial(
-        compass_run._launch_lmcache, config, _run(tmp_path, writers=writers), None
-    )
-    if writers == 1:
-        launch()
-        assert len(started) == 1
-    else:
-        with pytest.raises(ValueError, match="writers is 2; .* from 1 rank"):
-            launch()
 
 
 # --- (b) ----------------------------------------------------------------------

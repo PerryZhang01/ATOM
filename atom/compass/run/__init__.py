@@ -490,8 +490,8 @@ def _launch_lmcache(config, run: dict, side: str | None) -> None:
     if run["lmcache"].get("writers", 1) != writers:
         raise ValueError(
             f"the run file's lmcache writers is {run['lmcache'].get('writers', 1)}; "
-            f"this deployment stores from {writers} rank(s) per DP rank, its "
-            "tensor_parallel_size over its TP replication factor"
+            f"this deployment stores from {writers} rank(s) per DP rank, its TP "
+            "width per DP rank (1 under DP-attention) over its TP replication factor"
         )
     from atom.compass.backends import KvGeometry, Parallelism
     from atom.compass.kv.lmcache_server import parse_server_flags
