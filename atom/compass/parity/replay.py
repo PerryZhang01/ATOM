@@ -7,7 +7,8 @@ simulated run sends each request at its offset from the first send, and
 `ReplayBackend` ends its rank's step i at the time, on the same offset, that
 the real rank's step i returned from its forward, counting steps as `read`
 does: the engine loop takes in arrivals and schedules once the forward
-returns. A step the record has no line for is refused.
+returns. A step the record has no line for ends the run: every step after it
+would be refused too, so pricing it at 0 s and going on stops the clock.
 """
 
 import json
@@ -15,9 +16,9 @@ from pathlib import Path
 
 from atom.compass.backends.base import CostBackend, Granularity
 from atom.compass.backends.cost import CostTerm, StepCost
-from atom.compass.backends.provenance import Method, Provenance, Refusal
-from atom.compass.backends.resolver import CostRefused
+from atom.compass.backends.provenance import Method, Provenance
 from atom.compass.parity import ARRIVALS, read
+from atom.compass.runner.overrides import RunnerRefusal
 
 SOURCE = "replay"
 
@@ -43,7 +44,7 @@ class ReplayBackend(CostBackend):
         i, self.step = self.step, self.step + 1
         if i >= len(self.seconds):
             why = f"{self.path} has {len(self.seconds)} steps, and this is step {i}"
-            raise CostRefused(batch_view, [Refusal(SOURCE, why)])
+            raise RunnerRefusal(f"{SOURCE}: {why}")
         detail = f"real step {i}'s forward"
         measured = Provenance(Method.MEASURED, detail, SOURCE)
         return StepCost([CostTerm("forward", self.seconds[i], measured)])

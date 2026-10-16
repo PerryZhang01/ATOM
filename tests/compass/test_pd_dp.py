@@ -271,7 +271,7 @@ def test_decode_sends_the_write_request_to_the_prefill_rank_the_relayed_dp_rank_
 
 def test_a_write_request_reaching_another_prefill_rank_is_refused_by_name(ranks):
     _, d = ranks.d
-    d._socks[1] = d._socks[0]  # a decode rank wired to the wrong prefill rank
+    d._socks["engine-P", 1] = d._socks["engine-P", 0]  # wired to the wrong rank
     with pytest.raises(ValueError, match="is for prefill DP rank 1 and reached rank 0"):
         _transfer(ranks, 1, 0)
 

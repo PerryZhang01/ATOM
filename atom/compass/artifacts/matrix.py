@@ -21,13 +21,14 @@ hand would take away:
   invalidates two of them while a tokenizer change invalidates the third.
 
 The host CPU invalidates `host_laws`, which time the host, and nothing that
-holds device time.
+holds device time. A `shape_population`'s pricing backend is in its key rather
+than its row: another backend addresses another entry instead of invalidating
+this one.
 
-**Two artifacts this store holds have no row at all.** `shape_population` and
-`coverage_hull` appear in the artifact key table and nowhere in this one.
-Guessing a row for them is the failure this package exists to prevent -- an
-artifact answering under conditions nobody checked -- so `rows_for` refuses and
-names what is missing.
+**`coverage_hull` has no row at all.** It appears in the artifact key table
+and nowhere in this one. Guessing a row for it is the failure this package
+exists to prevent -- an artifact answering under conditions nobody checked --
+so `rows_for` refuses and names what is missing.
 """
 
 import enum
@@ -76,6 +77,7 @@ class Row(enum.Enum):
     STEP_LINEAR_LAW = "step_linear_law"
     HOST_LAWS = "host_laws"
     STEP_GRID_BUNDLE = "step grid bundle"
+    SHAPE_POPULATION = "shape_population"
 
     @property
     def field(self) -> str:
@@ -209,10 +211,19 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: DEPENDS,
     },
+    Row.SHAPE_POPULATION: {
+        Axis.SOFTWARE_STACK: INDEPENDENT,
+        Axis.TORCH: INDEPENDENT,
+        Axis.ATOM_SRC: DEPENDS,
+        Axis.MODEL: DEPENDS,
+        Axis.DEVICE: INDEPENDENT,
+        Axis.HOST_CPU: INDEPENDENT,
+        Axis.ENGINE_CONFIG: DEPENDS,
+    },
 }
 
-#: Which rows decide a kind's validity. `machine_spec` is three; two kinds are
-#: none, and that is a gap in the matrix rather than a default taken here.
+#: Which rows decide a kind's validity. `machine_spec` is three; `coverage_hull`
+#: is none, and that is a gap in the matrix rather than a default taken here.
 ROWS_OF: Mapping[Kind, tuple[Row, ...]] = {
     Kind.OP_GRAPH: (Row.OP_GRAPH,),
     Kind.PRICE_LIST: (Row.PRICE_LIST,),
@@ -227,6 +238,7 @@ ROWS_OF: Mapping[Kind, tuple[Row, ...]] = {
     Kind.STEP_LINEAR_LAW: (Row.STEP_LINEAR_LAW,),
     Kind.HOST_LAWS: (Row.HOST_LAWS,),
     Kind.STEP_GRID_BUNDLE: (Row.STEP_GRID_BUNDLE,),
+    Kind.SHAPE_POPULATION: (Row.SHAPE_POPULATION,),
 }
 
 

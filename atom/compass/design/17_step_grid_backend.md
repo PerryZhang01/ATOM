@@ -24,6 +24,12 @@ step-level backend whose one term is `estimated` and unvalidated, answering only
 its support domain, the complete cells (D96, D99, D103); a step it declines falls back
 only along method inside the step level (D102).
 
+**Revised 2026-10-16 by the owner's
+[ruling on #1035](https://github.com/jgong5/ATOM/issues/1035#issuecomment-6205714588):**
+the residual is one per grid kind, decode, prefill with output and prefill without,
+each with its own features, hull and family ranking; decode's features drop `Σ N_Q²`
+(D100).
+
 **Depends on:** `02` (the backend interface, the forward's interval, the method
 vocabulary), `07` (the two granularities, the bench, artifact identity and invalidation), `08` (stage 2's
 protocol and the refusal rule), `09` (the hull and law
@@ -321,8 +327,8 @@ is the residual's job (D100).
   from another axis, calibrated model or constant fallback (`09` D58; principle 6).
 - **A hole does not fail loading.** The bundle records which cells are complete; a hole
   refuses the step that needs it.
-- **A pre-run coverage check** covers the grid cells and the residual's hull (D100) for
-  every real step and every Phase 0 step of the registered case set:
+- **A pre-run coverage check** covers the grid cells and the hull of each step's kind's
+  residual (D100) for every real step and every Phase 0 step of the registered case set:
   `compass run --coverage` reads `record` directories and `shape_population` entries and
   calls it before the run starts, refuses a run that fails it, and records the result in
   `run.json` (`13` D80). Grading takes a step grid run only when its check passed (D102).
@@ -387,19 +393,29 @@ By the owner's ruling on
 - **Grid definitions are compared on traces 256 to 392 only**, and every definition tried
   is recorded with its errors, so the one a bundle carries was not chosen on the traces
   grading holds out (`08` D50).
-- **Features in `14` D85's form**: tokens, `Σ N_Q²` and `Σ N_Q·N_KV` over requests, the
-  aggregates `ScheduledBatch` carries; one form for prefill and decode, a decode step being
-  its `N_Q = 1` case. Plus row order and raggedness, `07` D39's two hazards, which the
+- **One residual per grid kind**, by the owner's
+  [ruling on #1035](https://github.com/jgong5/ATOM/issues/1035#issuecomment-6205714588),
+  2026-10-16: decode, prefill chunks that produce output, and prefill chunks that do not,
+  the grids a step is read in (D98). The grid refuses a mixed step (D97), so the kinds'
+  samples are disjoint populations, and decode outnumbers prefill by far in a stage-2
+  record (#1035): a pooled fit would be set by decode, while TTFT rests on prefill. Each
+  kind has its own features, hull and family ranking. A bundle may hold any of the kinds;
+  a step of a kind it does not hold refuses.
+- **Features in `14` D85's form**: on prefill, tokens, `Σ N_Q²` and `Σ N_Q·N_KV` over
+  requests, the aggregates `ScheduledBatch` carries. Decode drops `Σ N_Q²`, which on a
+  decode step (`N_Q = 1`) is its token count, so a decode fit's views would span no hull
+  with it. Plus row order and raggedness on every kind, `07` D39's two hazards, which the
   grid cannot see. Model, dtype and width select and check the bundle (D101); they never
   enter a feature. The lookup stays split by graph mode (D98): eager and replay are two
   measurements, not two forms.
-- **Hull refusal.** The residual answers only inside its fitted hull (`09` D58); outside,
-  the step refuses, where the step linear law would extrapolate (`08` D49 item 6; D102).
+- **Hull refusal.** Each kind's residual answers only inside its own fitted hull (`09`
+  D58); outside, the step refuses, where the step linear law would extrapolate (`08` D49
+  item 6; D102).
 
 ### Families and members
 
-- **Candidates per `09` D59**: at least three families ranked on data held out from the
-  fit, all reported, the winner tested on a second axis (D96).
+- **Candidates per `09` D59**: at least three families, ranked per kind on data held out
+  from that kind's fit, all reported, the winner tested on a second axis (D96).
 - **Members are data.** The bundle lists members, their weights and their output
   transforms. No plugins and no expression language. A member, with its dependencies,
   loads only if the bundle selects it. Nothing trains at run time.
@@ -621,8 +637,8 @@ After stage 2, the step grid gets one evaluation on DeepSeek-V4-Pro (`16` W4.13)
 | D96 | The step grid (`StepGridBackend`, `step_grid`) is a step-level `CostBackend`: grid lookup plus a residual. A candidate for #627's stage 2, graded by stage 2's protocol after `09` D59's validation, a use beyond `07` D36 by ruling; which backend passes stage 2 is #627's ruling, which chose `09` D54's law and keeps the step grid off the stage-2 path for now, so its evaluation runs off that critical path. Grading reads #743's registered real runs, or the step grid's own named apart; the residual, validation and grid comparisons use traces 256 to 392, grading traces 0 to 255. Not a stage-3 backend, not the source of the per-family MI308X tables; Kimi-K3 and DCP after v1. | 2026-10-10 (#696); #627's rulings applied 2026-10-11 (#626); named 2026-10-14 (#952) |
 | D97 | One term per step, the forward's device busy time over its whole interval, priced once per logical forward by the backend; the runner composes it with the host laws by `01` D4's recurrence and the engine charges the result. Rows in order; mixed phases and speculative decode refuse; a DP run refuses by key and a PP stage refuses. The backend imports nothing from ATOM. | 2026-10-10 (#696); revised 2026-10-11 (#815) |
 | D98 | A synthetic homogeneous grid, departing from `07` D39 for the baseline only. Its definition (a node list per axis and the planning margin) is a calibration input recorded in the bundle's identity; a cell is the box between adjacent nodes; warm-up, repeats and statistic are fixed in code; measurements are stored per point. Nodes are placed from shapes, and only the cells the planned shapes fall in, plus the margin, are measured; the planner adds boundary nodes from the bounds the bundle records, and a corner past a limit or at a non-integer `N_Q` is reported, never measured. Decode in replay on the target's own ladder, per rung at `B = R`, `B = previous rung + 1` and each `B` between them that shapes reach past `c_max(R)`, over c nodes per rung that add each B node's KV limit `c_max(B)` and `max_model_len - 1`; prefill eager on `(B, T, c)`, `T = B·N_Q`, by whether a chunk produces output, with the token budget a T node, `max_num_seqs` B's top node and `max_model_len - max_num_batched_tokens` c's. `02` D10's interval, `07` D42's timing, `07` D39's bench window, a point left with no counted repeat refusing its cell; a bundle states that value kind, and a narrower stated scope or another value kind refuses. The planner and coverage check are the step grid's own, beside the backend, and the planner runs inside `measure steps`. | 2026-10-10 (#696); grid definition 2026-10-11 (#626); device time 2026-10-11 (#815); boundary nodes and prefill on `(B, T, c)` 2026-10-13 (#830); bench window and planner 2026-10-13 and 2026-10-14 (#851) |
-| D99 | An answer only from a complete cell, by exact hit or interpolation; otherwise refuse, naming the missing corners. No extrapolation, clamp, recovery or fallback. A pre-run coverage check over cells and the residual hull, which `compass run --coverage` calls on `record` directories and `shape_population` entries; deterministic lookups. Its one term is `estimated`, unvalidated until the residual records its held-out region (#962); a discrete value the bundle lacks refuses. | 2026-10-10 (#696); prefill coordinates `(B, T, c)` 2026-10-13 (#830); `run --coverage` 2026-10-13 (#851); method 2026-10-14 (#952) |
-| D100 | The residual is in the first version, fitted on traces 256 to 392 in `14` D85's form plus order and raggedness, graded on traces 0 to 255, refusing outside its hull. Its targets are real-run step times labelled as the step linear law labels them, replayed bench measurements, or both, pooled with no source term; the grid stays bench points only; the fit report breaks counts, residual centre and spread, and held-out error down by source, and the bundle records its sources; grid definitions compared on traces 256 to 392 only, each one tried recorded. Members are bundle data; each output checked. Recipes are fixed functions with injected geometry and hardware constants, versioned only when a function changes; optional recipes, DCP's first. | 2026-10-10 (#696); grid comparison 2026-10-11 (#626); targets 2026-10-13 (#882) |
+| D99 | An answer only from a complete cell, by exact hit or interpolation; otherwise refuse, naming the missing corners. No extrapolation, clamp, recovery or fallback. A pre-run coverage check over cells and each kind's residual hull, which `compass run --coverage` calls on `record` directories and `shape_population` entries; deterministic lookups. Its one term is `estimated`, unvalidated until the residual records its held-out region (#962); a discrete value the bundle lacks refuses. | 2026-10-10 (#696); prefill coordinates `(B, T, c)` 2026-10-13 (#830); `run --coverage` 2026-10-13 (#851); method 2026-10-14 (#952) |
+| D100 | The residual is in the first version, one per grid kind (decode, prefill with output, prefill without), each with its own features, hull and family ranking, fitted on traces 256 to 392 in `14` D85's form plus order and raggedness, decode without `Σ N_Q²`, graded on traces 0 to 255, refusing outside its kind's hull. Its targets are real-run step times labelled as the step linear law labels them, replayed bench measurements, or both, pooled with no source term; the grid stays bench points only; the fit report breaks counts, residual centre and spread, and held-out error down by source, and the bundle records its sources; grid definitions compared on traces 256 to 392 only, each one tried recorded. Members are bundle data; each output checked. Recipes are fixed functions with injected geometry and hardware constants, versioned only when a function changes; optional recipes, DCP's first. | 2026-10-10 (#696); grid comparison 2026-10-11 (#626); targets 2026-10-13 (#882); per grid kind 2026-10-16 (#1035) |
 | D101 | A bundle is a `07` D41 key plus a digest, immutable, with a row in `07` D43 invalidated by every column. Keyed conditions refuse; derived values go to provenance; #626's asserted and record-only grades are dropped. Conditions come from the resolved ATOM config; the stack, torch included, is checked against the target's as the machine spec records it. At startup, unmeasured rungs and bounds beyond the planned grid refuse. | 2026-10-10 (#696); target stack 2026-10-13 (#851) |
 | D102 | Refusal follows `08` D50.1 as ruled on #765, with no departure: when the step grid cannot answer a step, the step falls back along method inside the step level, to the step roofline where the run file composes `StepFallbackBackend`, and is refused only when no source answers; a refused step costs 0 s and the run continues under `13` D80's default `mark`; any refusal makes the run a coverage report. Where the step linear law extrapolates under #627's ruling 3, the step grid declines; T95 records trying that rule later. | 2026-10-10 (#696); ruling 3 contrast 2026-10-11 (#626); revised 2026-10-11 (#765) and 2026-10-14 (#952) |
 | D103 | Selected by `compass run`'s `--step-grid KEY`, exclusive with `--step-linear` and `--step-stub`, which the tool writes as the run file's `step_grid` key, read as the code reads every backend; the run file is the tool's internal transport (T96 closed). The bundle is found by its key in the artifact store. | 2026-10-10 (#696); revised 2026-10-11 (#626); flags 2026-10-13 (#851); named 2026-10-14 (#952) |
