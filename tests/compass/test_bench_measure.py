@@ -20,7 +20,7 @@ from test_artifact_store import AITER_ROOT, ATOM_ROOT, CONDITIONS, stanza
 from test_filler_tokens import model_dir  # noqa: F401  the model_dir fixture
 from test_fit_samples import RUNS, record
 from test_parity_record import _config
-from test_parity_served import SAMPLING
+from test_parity_served import SAMPLING, client_run
 from test_step_grid_plan import DEFINITION
 
 from atom.compass import cli
@@ -131,6 +131,12 @@ def test_measuring_one_record_twice_publishes_each_view_once_and_then_nothing(ru
     assert Bench.started[-1] == "exit"
     for view, (key, member) in held.items():
         assert measure._digest({k: member[k] for k in measure.VIEW}) == view
+        decode, output = member["rows"][0][2], member["produces_output"]
+        assert key.values["step_kind"] == (
+            f"decode rung {member['rung']}"
+            if decode
+            else f"prefill {'with' if output else 'without'} output"
+        )
         assert member["seconds"] == 1e-6 * sum(q for q, *_ in member["rows"])
         assert member["repeats"] and member["statistic"] == "median"
         assert member["protocol"] == window.PROTOCOL
@@ -258,23 +264,38 @@ def test_grid_points_are_measured_with_origin_plan_and_new_shapes_add_only_their
         assert (member["plan"] == plan_digest) == (view not in views(first))
 
 
-def test_sessions_keep_the_lines_that_serve_only_those_traces_and_no_dummy_run(run):
-    steps = run.record / "steps/dp0.jsonl"
-    dummy = {**json.loads(steps.read_text().splitlines()[-1]), "is_dummy_run": True}
-    dummy |= {"rows": [[1, 7, True]], "rung": 1, "batch": []}
-    steps.write_text(steps.read_text() + json.dumps(dummy) + "\n")
+def test_sessions_keep_the_lines_that_serve_only_those_traces(run, monkeypatch):
+    """All four requests are served at once, so decode steps serve all four traces."""
+    mixed = record(run.tmp, monkeypatch, "mixed", groups=((0, 1, 2, 3),))
+    export = run.tmp / "all.json"
+    export.write_text(json.dumps({"requests": client_run([0, 1, 2, 3])}))
     store = run(
-        str(run.record), "--sample", "all", "--sessions", "0:1", *run.client_runs
+        str(mixed),
+        "--sample",
+        "all",
+        "--sessions",
+        "0:1",
+        "--client-run",
+        str(mixed),
+        str(export),
     )
 
+    split = served(mixed / "steps", [client_run([0, 1, 2, 3])])[0]
     kept = [
-        s for s in read(run.record / "steps")[0] if s["batch"] and not s["is_dummy_run"]
+        s for s in split if s["traces"] and set(s["traces"]) <= {"trace-0", "trace-1"}
     ]
-    first_run = {k for k in RUNS[0]}
-    kept = [s for s in kept if {r[0] for r in s["batch"]} <= first_run]
-    assert kept and set(by_view(store)) == views(kept)
+    assert kept and set(by_view(store)) == views(kept) < views(split)
     for _, member in entries(store):
         assert set(member["traces"]) <= {"trace-0", "trace-1"}
+
+
+def test_a_line_a_dummy_run_wrote_is_not_measured(run):
+    steps = run.record / "steps/dp0.jsonl"
+    dummy = {**json.loads(steps.read_text().splitlines()[-1]), "is_dummy_run": True}
+    dummy |= {"rows": [[1, 7, True]], "rung": 1, "batch": [], "named": []}
+    steps.write_text(steps.read_text() + json.dumps(dummy) + "\n")
+    store = run(str(run.record), "--sample", "all")
+    assert set(by_view(store)) == views(read(run.record / "steps")[0][:-1])
 
 
 def test_the_sampling_joins_the_key_and_reaches_the_rule(run):
