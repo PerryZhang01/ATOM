@@ -1247,8 +1247,14 @@ The rules that settle the boundaries #53's categories left in the wrong place:
   real step is tick 1, first simulated step is tick **89,336** — is this loop counted.
   Each becomes `next_event(t, t_daemon)`, `t` the LP's earliest essential local event and
   `t_daemon` its next daemon deadline (the metrics push). The PP bounded polls
-  (`PPStageTransport.recv_tokens` and `recv_metadata`) are `next_event(inf, now + bound)`:
-  the bound is a daemon deadline, so an idle stage keeps no run alive; and
+  (`PPStageTransport.recv_tokens` and `recv_metadata`) follow the owner's ruling (b) on
+  #468: a stage holding no pending send and no pending KV work polls on a daemon
+  deadline, `next_event(inf, now + bound)`, so an idle stage keeps no run alive; one
+  holding either polls on an essential one, `next_event(now + bound)`, so its idle flush
+  and KV status report still run on time. The stage loop decides which, since only it
+  knows what is pending; that choice is #468's. Until then the shim asks the daemon form
+  on every bounded poll, which is the same while the simulated runner holds no pending
+  send; and
   the offline driver's `CoreManager.get_output` (`atom/model_engine/engine_core_mgr.py`)
   is `next_event(inf)`.
 - **K2**, `Scheduler._passed_delay` / `--scheduler-delay-factor`,
