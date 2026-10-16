@@ -1,19 +1,21 @@
 # SPDX-License-Identifier: MIT
-"""Start one ATOM instance's real API server, and serve until the command is
-stopped or the server exits.
+"""Start one ATOM instance's API server, real or simulated, and serve until the
+command is stopped or the server exits.
 
-The server runs on the GPUs the command names, which `gpu.quiet` checks
-before it starts and after it stops. ATOM's arguments pass verbatim; the
-driver assigns the host and both ports, and refuses them, and the Compass
-flags that would make the server a simulation, among ATOM's arguments.
+A server handed a run file is simulated, and co-hosts its clock authority. One
+without a run file is real, on the GPUs the command names, which `gpu.quiet`
+checks before the server starts and after it stops. ATOM's arguments pass
+verbatim; the driver assigns the host, both ports and the run file, and
+refuses them, and the clock endpoint flag, among ATOM's arguments.
 
 The server runs this driver's tree in its own process group, so its engine
 processes stop with it, and writes ``<out>/server.log`` and its step record in
 ``<out>/steps``. Once its ``/health`` first answers, ``<out>/server.json``
-names its URL and process id. SIGINT or SIGTERM to the command, or the
-server's exit, stops the whole group: SIGTERM first, SIGKILL for what is left
-after `STOP_GRACE_S`. Then ``<out>/run.json`` gets the run's identity, read
-off the engine file its first step wrote. No command starts the client.
+names its URL and process id and, for a simulated server, its clock endpoint
+and run file. SIGINT or SIGTERM to the command, or the server's exit, stops the
+whole group: SIGTERM first, SIGKILL for what is left after `STOP_GRACE_S`.
+Then ``<out>/run.json`` gets the run's identity, read off the engine file its
+first step wrote. No command starts the client.
 """
 
 import argparse
@@ -25,7 +27,7 @@ import socket
 import subprocess
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 import atom
@@ -37,8 +39,8 @@ from atom.compass.run import CLOCK_ENV, ENV, _write_whole
 SERVER = (sys.executable, "-m", "atom.entrypoints.openai.api_server")
 HOST = "127.0.0.1"
 #: Flags ATOM's arguments may not carry, in either spelling ATOM's parser
-#: accepts or any abbreviation argparse expands: the driver assigns the host and
-#: both ports, and the server it starts is real, with no run file or clock.
+#: accepts or any abbreviation argparse expands: the driver assigns the host,
+#: both ports and the run file, and a simulated server co-hosts its clock.
 OWNED = (
     "--host",
     "--server-port",
@@ -52,6 +54,7 @@ PROFILER = "--torch-profiler-dir"
 #: closed under it; before ATOM's arguments, so one there wins.
 KEEP_ALIVE = ("--timeout-keep-alive", "1000000")
 READY_FILE, LOG_FILE, RUN_JSON, STEPS = "server.json", "server.log", "run.json", "steps"
+RUN_FILE = "run_file.json"
 POLL_S = 0.5
 #: Seconds the group has to leave after SIGTERM. ATOM's server waits
 #: ATOM_SHUTDOWN_TIMEOUT_S for its engines, and they as long for their workers.
@@ -63,23 +66,29 @@ class ServeError(Exception):
     """ATOM's arguments carry a flag the driver owns, or the server failed."""
 
 
-def serve(atom_args, out, gpus) -> None:
-    """Serve one instance from ATOM's arguments `atom_args` on the GPUs `gpus`,
-    writing to the directory `out`, until SIGINT or SIGTERM or the server's
-    exit.
+def serve(atom_args, out, gpus=(), run=None) -> None:
+    """Serve one instance from ATOM's arguments `atom_args`, writing to the
+    directory `out`, until SIGINT or SIGTERM or the server's exit.
 
-    Raises `ServeError` when the server exits before ``/health`` answers, or on
-    its own with a non-zero status, and `GpuRefusal` from the GPU checks. Once
-    the server has stopped, writes run.json from the engine file, and raises
-    `ServeError` when no step wrote one.
+    A real server names its GPUs in `gpus`; a simulated one is handed `run`,
+    the run file's mapping, whose ``out_dir`` and ``clock_endpoint`` are set
+    here. Raises `ServeError` when the server exits before ``/health``
+    answers, or on its own with a non-zero status, and `GpuRefusal` from the
+    GPU checks. Once the server has stopped, writes run.json from the engine
+    file, and raises `ServeError` when no step wrote one.
     """
     _refuse(atom_args)
     model = _model(atom_args)
+    if (run is None) == (not gpus):
+        raise ServeError(
+            "a server is real, on the GPUs it names, or simulated, from a run "
+            f"file, exactly one; got gpus={gpus} and a run file: {run is not None}"
+        )
     out = Path(out)
     if out.exists() and any(out.iterdir()):
         raise ServeError(f"{out} holds an earlier run's files; one run per directory")
     out.mkdir(parents=True, exist_ok=True)
-    server_port, engine_port = _free_ports(2)
+    server_port, engine_port, clock_port = _free_ports(3)
     argv = [*SERVER, *KEEP_ALIVE, *atom_args, "--host", HOST]
     argv += ["--server-port", str(server_port), "--port", str(engine_port)]
     ready = {"url": f"http://{HOST}:{server_port}"}
@@ -89,8 +98,15 @@ def serve(atom_args, out, gpus) -> None:
         filter(None, [str(TREE), env.get("PYTHONPATH")])
     )
     env[parity.ENV] = str(out / STEPS)
-    env["HIP_VISIBLE_DEVICES"] = ",".join(map(str, gpus))
-    with _stop_signals() as stopped, quiet(gpus, out):
+    if run is None:
+        env["HIP_VISIBLE_DEVICES"] = ",".join(map(str, gpus))
+    else:
+        endpoint, run_file = f"tcp://{HOST}:{clock_port}", out / RUN_FILE
+        run = {**run, "out_dir": str(out), "clock_endpoint": endpoint}
+        run_file.write_text(json.dumps(run))
+        argv += ["--compass-run", str(run_file)]
+        ready |= {"clock_endpoint": endpoint, "run_file": str(run_file)}
+    with _stop_signals() as stopped, quiet(gpus, out) if gpus else nullcontext():
         with (out / LOG_FILE).open("w") as log:
             server = subprocess.Popen(
                 argv,
