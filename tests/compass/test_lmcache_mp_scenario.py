@@ -45,6 +45,7 @@ from atom.compass import run as compass_run
 from atom.compass.carriers import tracestate_with
 from atom.compass.detect.scenario import check_run
 from atom.compass.kv.lmcache_server import EVICTION_INTERVAL_S, reply_channel
+from atom.compass.parity import read
 from atom.compass.parity.traffic import bodies
 
 PREFIX_WORDS = 600  # two whole 256-token chunks
@@ -256,3 +257,16 @@ def test_each_server_job_and_reply_follows_the_constant_station_laws(runs):
     assert sorted(got) == sorted(want)
     for ch in want:
         assert got[ch] == pytest.approx(want[ch], rel=0, abs=1e-12), ch
+
+
+@NEEDS_A_RUN
+def test_each_dp_member_parks_once_a_step_and_says_what_it_cost(runs):
+    dp, (run, _) = runs
+    if dp == 1:
+        pytest.skip("a member parks at DP width above one")
+    for rank, steps in read(run["out"] / "parity").items():
+        lp = compass_run.LP_FILE.format(f"engine.dp{rank}")
+        parks = json.loads((run["out"] / lp).read_text())["parks"]
+        cpu_us = 1e6 * parks["cpu_s"] / parks["count"]
+        print(f"\ndp{rank}: {parks['count']} parks, {cpu_us:.1f} us CPU each")
+        assert parks["count"] == len(steps)

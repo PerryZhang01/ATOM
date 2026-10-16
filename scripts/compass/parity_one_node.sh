@@ -121,7 +121,7 @@ kill -TERM -- -$server
 leave real
 if [[ -n $lmcache ]]; then
     kill -KILL -- -$lmcache
-    wait $lmcache || true  # LP lmcache binds its port next
+    { wait $lmcache; } 2>/dev/null || true  # LP lmcache binds its port next
 fi
 
 RUN=$OUT/sim/run.json
