@@ -569,13 +569,16 @@ def frontend(config):
 
     A real run with the parity record's variable set runs ATOM's runner
     through the recording one, and refuses any other runner, which would
-    record nothing.
+    record nothing. With it set, real or simulated, each request's sequence
+    carries its response id (`parity.carry_response_ids`).
     """
     global _authority, _early_end
+    from atom.compass import parity
+
+    if os.environ.get(parity.ENV):
+        parity.carry_response_ids()
     run = spec()
     if run is None:
-        from atom.compass import parity
-
         if os.environ.get(parity.ENV):
             if config.runner_qualname != ATOM_RUNNER:
                 raise ValueError(
