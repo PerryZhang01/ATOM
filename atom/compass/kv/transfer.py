@@ -32,7 +32,8 @@ It charges the same duration to both ends of the same wire. A push and a pull
 of the same blocks cost the same here, which is a claim about the fabric being
 symmetric that this model cannot check.
 
-Writes on one `Link` move one at a time, in arrival order. Writes on
+Writes on one `Link` move one at a time, in arrival order. A link's first
+write also pays the link's one-off setup, when the spec declares one. Writes on
 different links do not contend, even where real ones would share a NIC.
 
 Nothing in this module imports the engine or a tensor library. Reaching it
@@ -74,10 +75,13 @@ class TransferModel:
     latency_s: float
     bandwidth_bytes_per_s: float
     bytes_per_block: int
+    setup_s: float = 0.0
 
     def __post_init__(self) -> None:
         if self.latency_s < 0:
             raise ValueError(f"latency_s must not be negative, got {self.latency_s}")
+        if self.setup_s < 0:
+            raise ValueError(f"setup_s must not be negative, got {self.setup_s}")
         if self.bandwidth_bytes_per_s <= 0:
             raise ValueError(
                 "bandwidth_bytes_per_s must be positive, got "
@@ -103,6 +107,7 @@ class TransferModel:
             latency_s=spec.value(f"{link}.link_latency_s"),
             bandwidth_bytes_per_s=peak * derate,
             bytes_per_block=geometry.bytes_per_block,
+            setup_s=spec.values.get(f"{link}.link_setup_s", 0.0),
         )
 
     def duration_s(self, blocks: int) -> float:
@@ -136,7 +141,8 @@ class Link:
     bytes, holds the link for `bytes / bandwidth`, and completes the latency
     after its last byte. Its completion is fixed when it arrives, so two
     holders fed the same arrivals in the same order compute the same times. A
-    write alone on the link completes at `a + duration_s(blocks)`.
+    write alone on the link completes at `a + duration_s(blocks)`, and the
+    link's first write starts `setup_s` after it would otherwise.
     """
 
     def __init__(self, model: TransferModel) -> None:
@@ -153,6 +159,8 @@ class Link:
             )
         self._last = a
         start = max(a, self._free)
+        if self._free == -math.inf:
+            start += self._model.setup_s
         done = start + self._model.duration_s(blocks)
         self._free = start + blocks * self._model.bytes_per_block / (
             self._model.bandwidth_bytes_per_s
