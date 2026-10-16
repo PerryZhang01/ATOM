@@ -19,11 +19,11 @@ the `LPRuntime` installed in the engine's process:
 Both report from `process_completions`, which the engine calls at every step
 and every idle drain tick, one call after the first whose clock reached their
 time: the engine's KV aggregation keeps one poll in flight, so a real poll
-returns what the workers had seen at the previous one. ``c`` is the write's
-completion on its rank pair's `Link`, which shares the `TransferModel` bound
-at ``kv_transfer_config[TRANSFER_KEY]`` among the writes in flight on that
-pair. Both ends feed it the same writes in the same order, so write-done is
-not a message: both already know its time. The write
+returns what the workers had seen at the previous one. ``c`` is when the
+write completes on its rank pair's `Link`, which moves the pair's writes one
+at a time, each priced by the `TransferModel` bound at
+``kv_transfer_config[TRANSFER_KEY]``. Both ends feed it the same writes in the
+same order, so write-done is not a message: both already know its time. The write
 request travels over the zmq address at ``kv_transfer_config[WRITE_REQ_KEY]``,
 which prefill binds and decode connects to.
 
@@ -165,7 +165,8 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
         # The write request's latency, and the write-done notice's.
         self._latency_s = table.lookahead(pairs[0])
         self._ready: dict = {}  # prefill: request -> r
-        # The writes on each pair's link, by the rank at the other end.
+        self._due: dict = {}  # request -> when its transfer is done
+        # Each pair's link, by the rank at the other end.
         self._links = collections.defaultdict(lambda: Link(self._transfer))
         self._snapshot: list = []  # done at the last poll, reported at the next
         # Mooncake's send claim: a producer keeps a request's blocks from the
@@ -212,7 +213,7 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
         # Above DP width one, to the prefill rank that served the request.
         rank = params["dp_rank"] if len(self._socks) > 1 else 0
         self._socks[rank].send(pickle.dumps((params["transfer_id"], blocks, a, rank)))
-        self._links[rank].start(seq.id, a, blocks)
+        self._due[seq.id] = self._links[rank].start(a, blocks) + self._latency_s
 
     def request_finished(self, seq) -> None:
         """Record prefill's data-ready time, once, and attach the relayed blob.
@@ -266,15 +267,22 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
                     f"its prefill finished (at {r}); the router sends a request "
                     "to decode only after prefill has returned"
                 )
-            self._links[other].start(req_id, a, blocks)
-            logger.info("compass: KV transfer %s, %d blocks, at %r", req_id, blocks, a)
+            self._due[req_id] = self._links[other].start(a, blocks)
+            logger.info(
+                "compass: KV transfer %s, %d blocks, from %r to %r simulated s",
+                req_id,
+                blocks,
+                a,
+                self._due[req_id],
+            )
         # The engine's aggregation keeps one poll in flight, so a poll returns
         # the snapshot the workers took at the previous poll: report that one.
         now = self._rt.read_clock()
-        notify = 0.0 if self.is_producer else self._latency_s
         done, self._snapshot = self._snapshot, [
-            k for link in self._links.values() for k in link.finished(now, notify)
+            req_id for req_id, t in self._due.items() if t <= now
         ]
+        for req_id in self._snapshot:
+            del self._due[req_id]
         if self.is_producer:
             output.finished_sending.update(done)
         else:
@@ -283,4 +291,4 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
 
     def has_pending_work(self) -> bool:
         """Keeps an idle decode engine polling until its parked requests are ready."""
-        return bool(self._snapshot) or any(x.busy() for x in self._links.values())
+        return bool(self._due or self._snapshot)

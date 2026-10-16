@@ -302,11 +302,11 @@ def test_decode_learns_of_a_write_at_the_poll_the_engines_aggregation_reports_it
     assert [simulated(t) for t in polls] == [False, False, True, False]
 
 
-def test_writes_posted_together_share_the_link_on_both_ends(pd, seq_factory):
-    """Two writes posted at once move their bytes at half the bandwidth each:
-    the smaller is done once both have moved its size, the larger once both
-    are through, and each end reports them at those times."""
-    prompts = [PROMPT[:20], PROMPT]
+def test_writes_posted_together_queue_on_the_link_on_both_ends(pd, seq_factory):
+    """Two writes posted at once move one after the other: the second is done
+    only once the first has moved its bytes, and each end reports both at
+    those times."""
+    prompts = [PROMPT[:24], PROMPT]
     xs = [
         Sequence(
             p,
@@ -331,8 +331,8 @@ def test_writes_posted_together_share_the_link_on_both_ends(pd, seq_factory):
     a = SEND + L
     small, large = (len(y.block_table) * pd.model.bytes_per_block for y in ys)
     bw = pd.model.bandwidth_bytes_per_s
-    first = a + pd.model.latency_s + 2 * small / bw
-    last = a + pd.model.latency_s + (small + large) / bw
+    first = a + pd.model.latency_s + small / bw
+    last = first + large / bw
     d = (last - first) / 4
     engine_step(pd.p, pd.rt_p, a, (0, a), (1, a))
     # Each poll reports what the one before it saw.
@@ -450,8 +450,8 @@ def test_an_idle_producer_frees_every_finished_prefill(pd, seq_factory, follower
     a = SEND + L
     engine_step(pd.p, pd.rt_p, a, *[(k, a) for k in range(len(seqs))])
     T = pd.model.duration_s(sum(len(seq.block_table) for seq in seqs))
-    engine_step(pd.p, pd.rt_p, a + T)
     engine_step(pd.p, pd.rt_p, a + T + TICK)
+    engine_step(pd.p, pd.rt_p, a + T + 2 * TICK)
     assert pd.p.deferred_free_blocks == {}
     assert free_blocks(pd.p) == total
 
