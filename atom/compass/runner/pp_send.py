@@ -70,13 +70,6 @@ def is_rendezvous(models, parts) -> bool:
     return any(not models[c].eager(n) for c, n in parts)
 
 
-def local_done(models, t_send: float, parts) -> float:
-    """An eager send's completion on the sender's clock: its latest part."""
-    return max(
-        t_send + models[c].overhead_s + n * models[c].per_byte_s for c, n in parts
-    )
-
-
 def recv_done(models, t_send: float, t_recv_posted: float, parts):
     """``(done, end)``: the send's latest sender-side completion, and the
     receive's end, folding the parts in the receiver's order."""
@@ -165,7 +158,7 @@ class StageSends:
         if is_rendezvous(self.models, parts):
             self.pending = ("ack", seq)
         else:
-            self.pending = ("eager", local_done(self.models, t_send, parts))
+            self.pending = ("eager", recv_done(self.models, t_send, t_send, parts)[0])
 
     def settle(self) -> None:
         """Wait for the previous send: its ack if rendezvous, else its local end."""

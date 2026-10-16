@@ -283,10 +283,11 @@ class HostDeviceRecurrence:
         device_end = max(self.ends[-1], host) + device_s
         self.ends.append(max(device_end, launch_end))
         released = launch_end
-        if batch.produces_output() and self.last is None:
-            released, self.output_end = max(launch_end, self.output_end), device_end
-        elif batch.produces_output() and self.last:
-            released = max(launch_end, device_end)
+        if batch.produces_output():
+            if self.last is None:
+                released, self.output_end = max(launch_end, self.output_end), device_end
+            elif self.last:
+                released = max(launch_end, device_end)
         return released + post - now
 
 
