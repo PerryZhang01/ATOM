@@ -44,8 +44,10 @@ from test_vertical_slice import (
 
 from atom.compass import parity
 from atom.compass import run as compass_run
+from atom.compass.backends.step_stub import Coefficients
 from atom.compass.carriers import tracestate_with
-from atom.compass.detect.scenario import check_run
+from atom.compass.clock import TAR
+from atom.compass.detect.scenario import check_run, expected_timeline
 from atom.compass.kv.lmcache_server import reply_channel
 from atom.compass.parity import ENV as RECORD
 from atom.compass.parity import StepRecording, read
@@ -212,6 +214,36 @@ def station_timeline(table: str, ipc: float) -> dict[str, list[float]]:
     return want
 
 
+def _sends(run, rank) -> dict[str, list[float]]:
+    """Each of DP rank `rank`'s channels to LP lmcache: its sends' times, in seq
+    order, each its arrival less the channel's lookahead."""
+    ipc = run["run"].get("lmcache_ipc_s", run["run"]["ipc_s"])
+    sent = defaultdict(list)
+    for arrival, ch, _ in sorted(
+        _releases(run["table"], "lmcache"), key=lambda r: r[1:]
+    ):
+        if re.search(rf"#dp{rank}(\.|$)", ch):
+            sent[ch].append(arrival - ipc)
+    return sent
+
+
+def step_starts(table: str, record) -> list[float]:
+    """Each step's start, its first TAR row's clock, as `expected_timeline`
+    lays the record's steps over the engine's TAR rows."""
+    tars = [
+        (float(f[1]), float(f[2]))
+        for f in map(str.split, table.splitlines()[1:])
+        if f[0] == "engine" and f[3] == TAR
+    ]
+    stub = Coefficients(**CONSTANT)
+    rows = (stub.prefill_step, stub.decode_step, tars)
+    n = len(record[0])
+    return [
+        tars[len(expected_timeline({r: s[:k] for r, s in record.items()}, *rows))][0]
+        for k in range(n)
+    ]
+
+
 # --- (a) ----------------------------------------------------------------------
 
 
@@ -253,16 +285,44 @@ def test_each_server_job_and_reply_follows_the_constant_station_laws(runs):
 
 
 @NEEDS_A_RUN
-def test_each_dp_member_parks_once_a_step_and_says_what_it_cost(runs):
+def test_each_offload_decision_is_sent_once_from_each_writer_before_its_forward(runs):
+    """A step line's load or save goes out once on each writer rank's transfer
+    channel, after the previous step starts and by its own step's start."""
+    _, (run, _) = runs
+    record = read(run["out"] / "parity")
+    starts = step_starts(run["table"], record)
+    writers = run["run"]["lmcache"].get("writers", 1)
+    for rank, steps in record.items():
+        decided = [k for k, step in enumerate(steps) for _ in step.get("kv", ())]
+        sent = _sends(run, rank)
+        for ch in (f"engine->lmcache:transfer#dp{rank}.tp{w}" for w in range(writers)):
+            assert len(sent[ch]) == len(decided), ch
+            for k, at in zip(decided, sent[ch]):
+                assert (starts[k - 1] if k else 0.0) <= at <= starts[k], (ch, k, at)
+
+
+@NEEDS_A_RUN
+def test_each_dp_member_parks_once_a_step_and_leaves_at_the_latest_park(runs):
+    """Each member parks once before each forward and sends LP lmcache nothing
+    while parked; every member leaves when the last one parks, as the step
+    starts. Each member's park CPU is reported."""
     dp, (run, _) = runs
     if dp == 1:
         pytest.skip("a member parks at DP width above one")
-    for rank, steps in read(run["out"] / "parity").items():
+    record = read(run["out"] / "parity")
+    starts, parks = step_starts(run["table"], record), {}
+    for rank in record:
         lp = compass_run.LP_FILE.format(f"engine.dp{rank}")
-        parks = json.loads((run["out"] / lp).read_text())["parks"]
-        cpu_us = 1e6 * parks["cpu_s"] / parks["count"]
-        print(f"\ndp{rank}: {parks['count']} parks, {cpu_us:.1f} us CPU each")
-        assert parks["count"] == len(steps)
+        parks[rank] = json.loads((run["out"] / lp).read_text())["parks"]
+        cpu_us = 1e6 * parks[rank]["cpu_s"] / parks[rank]["count"]
+        print(f"\ndp{rank}: {parks[rank]['count']} parks, {cpu_us:.1f} us CPU each")
+        assert parks[rank]["count"] == len(parks[rank]["at"]) == len(starts)
+        sent = sorted(t for times in _sends(run, rank).values() for t in times)
+        for parked, left in parks[rank]["at"]:
+            assert not [t for t in sent if parked < t < left], (rank, parked, left)
+    for k, start in enumerate(starts):
+        at = [parks[rank]["at"][k] for rank in record]
+        assert {left for _, left in at} == {max(p for p, _ in at)} == {start}, k
 
 
 # --- (c): the parity record's offload decisions, without a driver -------------

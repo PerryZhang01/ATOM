@@ -999,10 +999,10 @@ def _park_before_dispatch() -> None:
     def parking(self, func_name, *args, **kwargs):
         rt = clock.installed()
         if func_name in ("forward", "dummy_execution") and rt and rt.in_run:
-            cpu = time.thread_time()
+            cpu, at = time.thread_time(), rt.now
             rt.park()
-            count, seconds = getattr(rt, "parks", (0, 0.0))
-            rt.parks = (count + 1, seconds + time.thread_time() - cpu)
+            parks = rt.__dict__.setdefault("parks", [])
+            parks.append((at, rt.now, time.thread_time() - cpu))
         return call(self, func_name, *args, **kwargs)
 
     @functools.wraps(sync)
@@ -1418,13 +1418,15 @@ def engine_done(engine_core, **sections) -> None:
 def _engine_hand_in(run: dict, engine_core, sections: dict, client_run=None) -> None:
     """Hand in what the worker's steps cost and the memory it predicts, with
     `sections`, its command refusals and the engine's refused clock calls; a
-    DP member that parked also hands in ``parks``, their count and CPU seconds."""
+    DP member that parked also hands in ``parks``: their count, CPU seconds, and
+    each park's clock and the clock it left at."""
     said = _workers_say(engine_core)
     rt = clock.installed()
     lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
     reasons = said.pop("refusals") + rt.refusals
     if parks := getattr(rt, "parks", None):
-        sections = sections | {"parks": {"count": parks[0], "cpu_s": parks[1]}}
+        cpu_s, at = sum(p[2] for p in parks), [p[:2] for p in parks]
+        sections = sections | {"parks": {"count": len(parks), "cpu_s": cpu_s, "at": at}}
     _hand_in(run, lp, reasons, client_run, **said, **sections)
 
 
