@@ -757,7 +757,7 @@ receives it itself, at its own receive point.
 | `engine->frontend:output#dpN` | step loop `put` on the `RelayQueue`; output thread sends (`engine_core.py::EngineCore.process_output_sockets`) | frontend output thread, `poller.poll()` in `engine_core_mgr.py::CoreManager._create_output_thread` (thread) | stated IPC delay |
 | `frontend-P->frontend-D:relay` | frontend-P's event loop writes prefill's JSON; the router moves `kv_transfer_params` into the decode request (D2) | frontend-D's event loop (inline) | the router's per-request forward cost (D7) |
 | `engine-D->engine-P:kv_write_req` | decode step loop, in the scheduler-side hook `update_state_after_alloc` (`scheduler.py::Scheduler._notify_connector_after_prefill_alloc`); Mooncake's write request, sent from the engine process rather than the worker | prefill step loop, drained in `process_completions` (`scheduler.py::Scheduler._update_from_kv_xfer_finished`) (inline) | stated request latency (D6) |
-| PP stage to stage: `meta`, `tokens`, `kv_status` | stage loop, `pp_transport.py::PPStageTransport.send_metadata` / `send_tokens` / `send_kv_status` | the stage loop's own poll and receive (inline) | modelled NCCL send/recv of intermediate tensors. Microsecond scale. The only tight one. |
+| PP stage to stage: `meta`, `tokens`, `kv_status` | stage loop, `pp_transport.py::PPStageTransport.send_metadata` / `send_tokens` / `send_kv_status` | the stage loop's own poll and receive (inline) | stated IPC delay: each is one ZMQ message, as on the frontend channels; the head's batch to stage `k` is `meta#pp<k>`. The hidden states between stages are `pp_data` (`15` D91). |
 | `engine-P->engine-D:prefill_done` (RapidServe only, in neither M1 nor M2) | prefill step loop, direct send in `engine_core.py::PrefillEngineCore._process_engine_step` | decode handler thread `DecodeEngineCore._recv_prefill_done`, `sock.recv()` (thread) | stated IPC delay |
 | `engine-D->engine-P:block_assignment` (RapidServe only, in neither M1 nor M2) | decode step loop, direct send in `engine_core.py::DecodeEngineCore._send_block_assignment` | prefill handler thread `PrefillEngineCore._recv_block_assignments`, `sock.recv()` (thread) | stated IPC delay |
 
@@ -1247,7 +1247,14 @@ The rules that settle the boundaries #53's categories left in the wrong place:
   real step is tick 1, first simulated step is tick **89,336** — is this loop counted.
   Each becomes `next_event(t, t_daemon)`, `t` the LP's earliest essential local event and
   `t_daemon` its next daemon deadline (the metrics push). The PP bounded polls
-  (`PPStageTransport.recv_tokens` and `recv_metadata`) are `next_event(now + bound)`, and
+  (`PPStageTransport.recv_tokens` and `recv_metadata`) follow the owner's ruling (b) on
+  #468: a stage holding no pending send and no pending KV work polls on a daemon
+  deadline, `next_event(inf, now + bound)`, so an idle stage keeps no run alive; one
+  holding either polls on an essential one, `next_event(now + bound)`, so its idle flush
+  and KV status report still run on time. The stage loop decides which, since only it
+  knows what is pending; that choice is #468's. Until then the shim asks the daemon form
+  on every bounded poll, which is the same while the simulated runner holds no pending
+  send; and
   the offline driver's `CoreManager.get_output` (`atom/model_engine/engine_core_mgr.py`)
   is `next_event(inf)`.
 - **K2**, `Scheduler._passed_delay` / `--scheduler-delay-factor`,
@@ -1396,9 +1403,13 @@ The DP barriers are not wait rules: the step-seconds `all_gather` carries each
 member's charge, and the CA's member join grants each member's step end in turn (D3, `15` D90). PD's
 KV transfer keeps its own model (D6).
 
-Stage 2 builds R1 and R4 ([#825](https://github.com/jgong5/ATOM/issues/825)). The MTP
-split and R6 to R8 are stage 3's ([#829](https://github.com/jgong5/ATOM/issues/829));
-until they land, a forward that needs one refuses.
+Stage 2 builds R1 and R4 ([#825](https://github.com/jgong5/ATOM/issues/825)). R6 and R8
+come with the stage sends ([#468](https://github.com/jgong5/ATOM/issues/468)), and so does R7
+as one wait: the stage loop receives `pp_data` before the forward, so host launch and
+device start both wait for the whole receive, where R7 holds only the device for the
+tensors. The MTP split and the PP=2 record that gates R6 to R8 are
+[#829](https://github.com/jgong5/ATOM/issues/829)'s; until the split lands, an MTP
+forward refuses.
 
 **What-ifs.** The run-file key `host.skip` zeroes the named segments. Such a run is a
 what-if: never graded, and refused by the graders.
@@ -1704,13 +1715,19 @@ A `SimulatedKVConnector` is registered through the existing factory. It reproduc
 `start_prefill` and `start_decode`), and implements **scheduler-side hooks only**: sends
 and receives both run on the engine's step loop, and no worker takes part.
 
-- `T = latency + bytes / bandwidth`. `bytes` is exactly computable from block count x
+- Each decode and prefill rank pair is one FIFO link: a write arriving at `a` starts
+  once the pair's earlier writes have moved their bytes, holds the link for
+  `bytes / bandwidth`, and completes `latency` after its last byte, at `c`. Alone on
+  the link, `c = a + latency + bytes / bandwidth`. FIFO, not processor sharing: on the
+  #1152 record, Mooncake TCP finished a wave posted at once smallest-first in posting
+  order, the smallest within one step, which processor sharing cannot do (#1157). `bytes` is exactly computable from block count x
   per-block bytes — no measurement needed. `latency` and `bandwidth` are
-  configuration, satisfying the "interconnect is configurable" requirement directly.
+  configuration (`05`, the `interconnect` link the run file's `kv_link` names),
+  satisfying the "interconnect is configurable" requirement directly.
 - **Decode** posts the write request in `update_state_after_alloc` (called from
   `Scheduler._notify_connector_after_prefill_alloc`): channel
   `engine-D->engine-P:kv_write_req`, sent at `t`, arriving at `a = t + request latency`.
-  It computes its own ready time `a + T + notify latency` and reports the request in
+  It computes its own ready time `c + notify latency` and reports the request in
   `finished_recving` from `process_completions` as the pipelined funnel would: at the
   call after the first one whose clock reached it. A local event of engine-D.
 - **Prefill** records the data-ready time `r` in `request_finished` and takes the write
@@ -1723,7 +1740,7 @@ and receives both run on the engine's step loop, and no worker takes part.
   request it sends to prefill (`atom/mesh/src/core/placement/backend/atom.rs`).
   `Scheduler.postprocess` parks a finished request in `deferred_free_blocks` only while
   `should_defer_free` finds the claim; any other finished request frees at once. At
-  `max(a, r) + T`, reported the same way, prefill reports `finished_sending`, and
+  `c`, reported the same way, prefill reports `finished_sending`, and
   `Scheduler._update_from_kv_xfer_finished` retires the claim through `send_finished`
   and frees the parked blocks. `source_blocks_released` does nothing. A local event of
   engine-P. Scheduler code is unchanged.
@@ -1731,9 +1748,11 @@ and receives both run on the engine's step loop, and no worker takes part.
   ends (`mooncake_connector.py::MooncakeConnector._send_write_done`). Both ends compute
   that time instead, for two reasons: the router forwards strictly in sequence (D2), so
   the decode request, and with it the write request, exists only after prefill has
-  returned, i.e. `r <= a`, which prefill asserts and refuses otherwise; and `T` depends
-  only on this request's bytes and the configuration, not on other writes in flight. No
-  channel is added; one message whose time both ends already know is not simulated.
+  returned, i.e. `r <= a`, which prefill asserts and refuses otherwise, so a write starts
+  at `a`; and `c` depends only on the writes on this rank pair, which both ends see:
+  decode sends them and prefill receives them, in the channel's order, and each `c` is
+  fixed at its write's arrival, so both compute the same `c` (owner ruling on #1157). No channel is added; one message whose time both
+  ends already know is not simulated.
 - **The write request keeps Mooncake's channel** (D3). The real `MSG_WRITE_REQUEST`
   leaves a decode worker (`MooncakeConnector.start_load_kv`) for a prefill worker's
   listener thread (`MooncakeConnector._write_listener`); the simulated one leaves and
@@ -1741,11 +1760,18 @@ and receives both run on the engine's step loop, and no worker takes part.
   and no worker ever sends or receives across LPs. A prefill-side local timer would not
   do: when decode posts depends on its own admission, which prefill cannot know, and
   assuming "at once" frees prefill's blocks early exactly when decode is congested.
-- **Ceiling.** Pricing bandwidth contention between concurrent writes would make `T`
-  depend on prefill's other writes, which decode cannot see. That model needs the
-  write-done message back, plus protocol support for a thread that handles a write
-  request sending a message; in this protocol only an LP's clock owner registers a
-  send (D3).
+- **Ceiling.** FIFO per rank pair is measured on Mooncake TCP only; for RDMA it is an
+  assumption. Under RDMA the real sharing unit is each prefill rank's NIC: its worker
+  writes through the HCA set `_select_ib_devices` resolves for its GPU, and
+  `MooncakeConnector._write_listener` hands every write request, from any decode rank,
+  to one `_send_executor` of `send_worker_count` (`num_worker_threads`) threads. Writes
+  on different rank pairs do not contend here. At decode DP width one a prefill rank's
+  NIC carries only the one decode rank's writes, so both ends still compute the same `c`
+  under any sharing discipline. Above that, `c` depends on other decode ranks' writes,
+  which this decode rank never sees, so a per-prefill-rank model cannot keep both ends
+  computing `c` without a message: decode would need Mooncake's own write-done notice
+  (`MooncakeConnector._send_write_done` to the consumer's `_notification_listener`) as a
+  prefill-to-decode channel (#1179).
 - It must still emit the `kv_transfer_params` blob that Atomesh relays, so
   `AtomAdapter` works unmodified. The router hard-errors if it is absent
   (`http_pd_router.rs::PDRouter::dispatch_atom_relay_internal`). The two backends emit
@@ -2198,7 +2224,7 @@ Ordered by how much they could cost.
 | D4 | Every synchronization site maps to one of the PDES mechanisms K1-K9, none undecided; the boundary is the LP, not the process; a DP step is one TAR costing the `max` over ranks, exchanged inside the forward by a K6 wait with no cost, and the lockstep `all_reduce` is K1 for its own cost; handler threads stay and TSO delivery runs them at their message's timestamp. A forward's K1 charge is one recurrence per runner over the backend's device busy time and four host segments (`E`, `W_pre`, `W_launch`, `W_post`), with wait rules R1, R4 and R6 to R8; `host.skip` makes a what-if; ATOM's sync stalls are fixed in ATOM and listed with their issues | 2026-09-18; revised 2026-09-28, 2026-10-01 and 2026-10-11 (#815) |
 | D5 | Every timer and clock read the CA can reach runs on the LP clock, except the out-of-band control-command reply deadline; only what it cannot reach is configured or left real; metric cadence is virtual time (revising `11` D72); the profiler and RL control commands are refused by the simulated runner with a reply, counted, and make the run a coverage report; a synchronous command from the frontend's clock owner is refused by the frontend | 2026-09-18; revised 2026-09-28, 2026-10-09, 2026-10-14, 2026-10-15 |
 | D5.1 | The simulated run uses stdlib asyncio, not uvloop: only a Python event loop can host virtual time | 2026-09-28 |
-| D6 | KV transfer is simulated through a connector registered in the existing factory, reproducing Mooncake (what ATOM's PD CI deploys) through scheduler-side hooks only | 2026-09-18; revised 2026-09-28 |
+| D6 | KV transfer is simulated through a connector registered in the existing factory, reproducing Mooncake (what ATOM's PD CI deploys) through scheduler-side hooks only; a rank pair's writes queue on its link | 2026-09-18; revised 2026-09-28; link sharing 2026-10-16 (#1157) |
 | D7 | Atomesh gets no virtual clock: mesh-only mode; in 1P1D the router is one segment of a channel, not an LP, and its relay latency is that channel's lookahead; its bounds are configured (health check and circuit breaker off, `--worker-request-timeout-secs` set large); timestamps ride carriers it already relays; xPyD is deferred; under `--dp-aware` the router is LP `router`, handling requests, prefill responses and stream events in timestamp order (#449) | 2026-09-18; revised 2026-09-30, 2026-10-15 |
 | D8 | Arrivals are messages in transit, covered by the send and receive counts for closed and open workloads alike; the arrival timestamp rides the `tracestate` header | 2026-09-18; revised 2026-09-28 |
 | D9 | The ATOM diff is enumerated (~1,980 lines with tests) and completeness enforced by test rather than by review; ATOM's own suite is the gate (`08` D43.1) | 2026-09-18; revised 2026-09-28 |

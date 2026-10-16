@@ -9,16 +9,19 @@ and ATOM runs as it always does.
 One engine LP at one stage, one frontend LP, and the traffic LP the harness
 drives, over `single_engine_table`. At data-parallel width above one, each DP
 rank's engine process is a member ``dp<rank>`` of the one engine LP and owns
-its rank's channels. The Clock Authority is co-hosted in the frontend's
+its rank's channels. Each pipeline stage's engine process is an engine LP of
+its own, ``engine-pp<stage>``, and each stage's forward waits for the stage
+before it on ``pp_data`` (`atom.compass.runner.pp_send`). The Clock Authority is co-hosted in the frontend's
 process and served at the run file's ``clock_endpoint``, which every LP and
 member, the frontend's included, connects to.
 
 - `frontend(config)` wraps the `CoreManager` construction in `LLMEngine`: it
   selects the simulated runner, serves the authority and installs the
   frontend LP's runtime; leaving it, after READY from every engine, starts
-  the run. It refuses an `LLMEngine` the API server is not building, the
-  Atomesh entrypoints and a multi-node DP group, and makes a sync utility
-  command on the frontend's clock owner refuse.
+  the run. It refuses an `LLMEngine` the API server is not building and the
+  Atomesh entrypoints, and makes a sync utility command on the frontend's
+  clock owner refuse. On a worker node of a multi-node DP group it only
+  selects the simulated runner.
 - `engine(config)` wraps the engine's construction in its own process the
   same way, and maps every DP rank to the engine LP for the process-group
   check.
@@ -86,7 +89,9 @@ host writes the step table and that client run's summary, its steps taken as
 each hand-in less the one at client run ``k - 1``'s end; the finish writes the
 last client run's beside the run summary. An optional
 ``data_parallel_size``, 1 when absent, is the deployment's DP width, which
-under DP-attention is its TP size times its DP size; the traffic LP reads the
+under DP-attention is its TP size times its DP size, and an optional
+``pipeline_parallel_size``, 1 when absent, its pipeline width, above which the
+machine states each stage send carrier under ``interconnect.intra_node.pp``; the traffic LP reads the
 channel table from the run file alone. Each DP rank's engine process hands in
 its own refusals, as ``<lp>.<member>``. A key `RENAMED_KEYS` lists refuses,
 naming its name now.
@@ -114,6 +119,14 @@ endpoint. Its frontend is ``frontend-P`` or ``frontend-D`` by ``kv_role``. The
 standalone authority writes the step table and the run summary once every
 server LP has handed in its refusals, which the out_dir both API servers share
 carries.
+
+A multi-node DP group runs on a standalone authority too, named on every node.
+The coordinator's API server, global DP rank 0's, is the one frontend LP; a
+worker node's runs no frontend LP and serves no authority, and each of its
+engine processes joins the engine LP over TCP as the member of its global rank.
+Hand-ins go to the out_dir, which every node must see at one path: the
+authority writes `AUTHORITY_FILE` there before it serves, and a node that does
+not find it naming its endpoint's port is refused.
 """
 
 import ast
@@ -170,6 +183,8 @@ LP_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
 )
 #: Each client run's hand-ins and summary, by its index.
 CLIENT_DIR = "client-{}"
+#: The endpoint a standalone authority serves at, written to its out_dir.
+AUTHORITY_FILE = "authority_endpoint.txt"
 #: Wall seconds the summary's writer waits for the server LPs' refusals.
 HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field is added, changes
@@ -184,7 +199,8 @@ COMPASS_ONLY = {
     "utils/clock.py": {
         *("DIAG_S", "job", "current_job_time", "install", "Straggler", "_Wakeup"),
         *("LPRuntime", "UnsentRelayItem", "WrappedSocket", "WrappedPoller"),
-        *("RelayQueue", "channel_of", "REPLY_WAIT_S", "_WaitingReplyQueue"),
+        *("RelayQueue", "channel_of", "_of_kind", "socket_channels"),
+        *("REPLY_WAIT_S", "_WaitingReplyQueue"),
         *("COLLECTIVES", "_on_host", "settle_before_collectives"),
     },
     "utils/zmq_shim.py": {"_Socket", "_ChannelSocket", "_Context"},
@@ -263,6 +279,10 @@ def _dp(run: dict) -> int:
     return run.get("data_parallel_size", 1)
 
 
+def _pp(run: dict) -> int:
+    return run.get("pipeline_parallel_size", 1)
+
+
 def channel_table(run: dict):
     common = {k: run[k] for k in ("admission_path", "ipc_s", "stream_s")}
     if "kv_write_req_s" in run:
@@ -273,7 +293,18 @@ def channel_table(run: dict):
             dp=_dp(run),
             router_in_s=run.get("router_in_s"),
         )
-    return single_engine_table(**common, dp=_dp(run))
+    links = ()
+    if _pp(run) > 1:
+        from atom.compass.runner.pp_send import carrier_models, lookaheads
+
+        links = lookaheads(carrier_models(_machine(run)))
+    return single_engine_table(**common, dp=_dp(run), pp=_pp(run), pp_links=links)
+
+
+def _machine(run: dict):
+    from atom.compass.spec import MachineSpec
+
+    return MachineSpec.from_mapping(_width_keys(run["machine"]))
 
 
 def _members(table, dp: int) -> dict | None:
@@ -549,13 +580,16 @@ def frontend(config):
 
     A real run with the parity record's variable set runs ATOM's runner
     through the recording one, and refuses any other runner, which would
-    record nothing.
+    record nothing. With it set, real or simulated, each request's sequence
+    carries its response id (`parity.carry_response_ids`).
     """
     global _authority, _early_end
+    from atom.compass import parity
+
+    if os.environ.get(parity.ENV):
+        parity.carry_response_ids()
     run = spec()
     if run is None:
-        from atom.compass import parity
-
         if os.environ.get(parity.ENV):
             if config.runner_qualname != ATOM_RUNNER:
                 raise ValueError(
@@ -566,12 +600,23 @@ def frontend(config):
         return contextlib.nullcontext()
     _refuse_unserved()
     pc = config.parallel_config
-    widths = (pc.data_parallel_size, config.pipeline_parallel_size)
-    if widths[1] != 1 or config.enable_rapidserve:
+    if config.enable_rapidserve:
+        raise ValueError("a simulated run here is an engine LP without RapidServe")
+    if config.pipeline_parallel_size != _pp(run):
         raise ValueError(
-            f"a simulated run here is one engine LP at pipeline width 1 without "
-            f"RapidServe, got (dp, pp)={widths}, rapidserve={config.enable_rapidserve}"
+            f"the deployment runs {config.pipeline_parallel_size} pipeline stages "
+            f"and the run file's pipeline_parallel_size is {_pp(run)}; the "
+            "channel table every LP reads would declare the wrong stages"
         )
+    if config.pipeline_parallel_size > 1 and config.tensor_parallel_size > 1:
+        from atom.utils import envs
+
+        if envs.ATOM_PP_SEND_ALLGATHER:
+            raise ValueError(
+                "a pipeline stage at TP above 1 sends its shard of each tensor and "
+                "the next stage all-gathers it, which nothing prices; set "
+                "ATOM_PP_SEND_ALLGATHER=0"
+            )
     if config.runner_qualname not in (ATOM_RUNNER, COMPASS_RUNNER_QUALNAME):
         raise ValueError(
             f"runner {config.runner_qualname!r} is named, and a simulated run "
@@ -595,18 +640,16 @@ def frontend(config):
             "reads would declare the wrong ranks"
         )
     if pc.data_parallel_size > 1 and pc.is_multinode_dp:
-        raise ValueError(
-            "this node runs part of a multi-node data-parallel group, and every "
-            "node's API server builds an engine and so a frontend and an "
-            "authority of its own, while one run has one authority and one "
-            "out_dir; run every DP rank on one node"
-        )
+        _refuse_unshared(run, standalone)
     if dp > 1 and config.fake_eplb:
         raise ValueError(
             "--fake-eplb may start fewer engines than the data-parallel ranks "
             "the channel table declares, and a rank that never joins holds the run"
         )
     config.runner_qualname = COMPASS_RUNNER_QUALNAME
+    if pc.data_parallel_rank > 0:
+        # A worker node of a multi-node group: engines only, each a member.
+        return contextlib.nullcontext()
     _refuse_sync_utility_commands()
     lp = FRONTEND if side is None else LpId(f"{FRONTEND.name}-{side}")
     authority = None
@@ -622,6 +665,27 @@ def frontend(config):
     rt = _runtime(lp, run, cls=_StoppingClock)
     rt.client_run_ended = lambda k: _frontend_hand_in(run, rt, k)
     return _start_on_leaving(rt, authority)
+
+
+def _refuse_unshared(run: dict, standalone: bool) -> None:
+    """Refuse a node of a multi-node data-parallel group that would not reach
+    the run's one authority, or whose hand-ins would miss the authority's
+    out_dir: that directory holds no `AUTHORITY_FILE` naming the port this
+    node's clock endpoint does."""
+    if not standalone:
+        raise ValueError(
+            "this node runs part of a multi-node data-parallel group, whose nodes "
+            "share one clock authority; start it on its own and name it with "
+            "--compass-clock-endpoint on every node"
+        )
+    mark = Path(run["out_dir"]) / AUTHORITY_FILE
+    port = run["clock_endpoint"].rpartition(":")[2]
+    if not mark.is_file() or mark.read_text().rpartition(":")[2] != port:
+        raise ValueError(
+            f"{mark} names no authority at {run['clock_endpoint']}: every node of "
+            "a multi-node data-parallel group hands in to the authority's out_dir, "
+            "so each must see it at the same path; start the authority first"
+        )
 
 
 def _refuse_unserved() -> None:
@@ -678,7 +742,8 @@ def engine(config):
     """Around the engine's construction in its process; a no-op context on a real run.
 
     At DP width above one, the process joins the engine LP as the member of its
-    DP rank, and its host collectives first join the group rounds it owes.
+    DP rank, and its host collectives first join the group rounds it owes. A
+    pipeline stage is the engine LP ``engine-pp<stage>``.
     """
     global _member
     run = spec()
@@ -687,10 +752,12 @@ def engine(config):
     from atom.utils.distributed import utils
 
     lp, side = ENGINE, _pd_side(config)
+    pc = config.parallel_config
+    if getattr(config, "pipeline_parallel_size", 1) > 1:
+        lp = LpId(f"{ENGINE.name}-pp{pc.pipeline_parallel_rank}")
     if side is not None:
         lp = LpId(f"{ENGINE.name}-{side}")
         _bind_transfer(config, run)
-    pc = config.parallel_config
     utils.LP_OF_RANK = dict.fromkeys(range(pc.data_parallel_size), lp)
     _member = f"dp{pc.data_parallel_rank}" if pc.data_parallel_size > 1 else None
     name = lp.name if _member is None else f"{lp.name}.{_member}"
@@ -762,10 +829,31 @@ def runner(model_runner, tree) -> None:
         ep = dp if config.enable_expert_parallel else 1
         backend = StepLinearBackend(StepLinearLaw(run["step_linear"]), (dp, ep))
     elif "step_stub" in run:
+        # A pipeline stage is priced for its own span of the stack, the span
+        # ATOM's `make_layers` builds it from.
+        hf, pp = config.hf_config, getattr(config, "pipeline_parallel_size", 1)
+        depth, share = hf.num_hidden_layers, None
+        start, end = 0, depth
+        if pp > 1:
+            from atom.compass.backends.geometry import paged_layers
+            from atom.models.utils import get_pp_indices
+
+            pp_rank = config.parallel_config.pipeline_parallel_rank
+            start, end = get_pp_indices(depth, pp_rank, pp)
+            text = getattr(hf, "text_config", hf)
+            paged = paged_layers(text, 0, depth)
+            if not paged:
+                raise ValueError(
+                    "a pipeline stage prices its history terms on its share of the "
+                    "paged layers, and this stack has no layer that holds a cache "
+                    "of every past token"
+                )
+            share = ((end - start) / depth, paged_layers(text, start, end) / paged)
         backend = StepStubBackend(
             Coefficients(**run["step_stub"]),
-            Parallelism(tp_size=tp),
-            stack_layers=config.hf_config.num_hidden_layers,
+            Parallelism(tp_size=tp, pp_size=pp),
+            stack_layers=end - start,
+            stage_share=share,
         )
     machine = MachineSpec.from_mapping(_width_keys(run["machine"]))
     platform = machine_spec_digest(machine)
@@ -826,8 +914,10 @@ def runner(model_runner, tree) -> None:
                 f"the run file's host laws were fitted under another {differ}; "
                 f"this run's key is {ours}, and theirs is {theirs}"
             )
+        pp = getattr(config, "pipeline_parallel_size", 1)
+        stage = (config.parallel_config.pipeline_parallel_rank, pp) if pp > 1 else None
         model_runner.compass_host = replay or HostDeviceRecurrence(
-            host.get("laws", {}), host.get("skip", ()), lambda: float(slot[0])
+            host.get("laws", {}), host.get("skip", ()), lambda: float(slot[0]), stage
         )
         if replay is not None:
             replay.now = lambda: float(slot[0])
@@ -942,6 +1032,12 @@ def host_key(config) -> dict:
     bundle is keyed by."""
     from atom.compass.run.step_grid import keyed
 
+    return host_key_of(config.model, keyed(config))
+
+
+def host_key_of(model: str, engine: dict) -> dict:
+    """`host_key` for the model `model` names and the engine config `engine`
+    that `keyed` gave, for a process that holds no resolved config."""
     root = Path(atom.__file__).parent
     digest = hashlib.sha256()
     for path in sorted(root.rglob("*.py")):
@@ -964,8 +1060,8 @@ def host_key(config) -> dict:
     return {
         "host_cpu": host_cpu(),
         "atom": digest.hexdigest(),
-        "model": _file_digest(config.model, "config.json"),
-        "engine": keyed(config),
+        "model": _file_digest(model, "config.json"),
+        "engine": engine,
     }
 
 
@@ -1061,8 +1157,14 @@ def engine_loop(engine_core):
 
     In a run the engine ignores SIGTERM until it has handed in: ATOM's handler
     would stop the workers inside a clock call, before they say what their
-    steps cost. A stop reaches the engine as the ``+inf`` grant instead."""
+    steps cost. A stop reaches the engine as the ``+inf`` grant instead.
+
+    A pipeline stage's runner calls go through `pp_send.install`'s sends."""
     run, sections = spec(), {}
+    if run is not None and getattr(engine_core, "pp_size", 1) > 1:
+        from atom.compass.runner import pp_send
+
+        pp_send.install(engine_core, _machine(run))
     if run is not None and "step_grid" in run:
         workers = engine_core.runner_mgr
         sections["step_grid"] = workers.call_func("step_grid_bundle", wait_out=True)
@@ -1248,10 +1350,12 @@ def _summary(run: dict, a, record, wall: float, hand_ins: dict, since: dict) -> 
 
 
 def authority(endpoint: str) -> None:
-    """Serve the run file's authority at `endpoint` until the finish or an early
+    """Name `endpoint` in the out_dir's `AUTHORITY_FILE`, then serve the run
+    file's authority there until the finish or an early
     end, then write its step table, and the run summary once the server LPs
     have handed in."""
     run = spec()
     a = _RecordingAuthority(run)
+    _write_whole(Path(run["out_dir"]) / AUTHORITY_FILE, endpoint)
     serve(a, endpoint)
     _write_summary(run, a, _until_end(run, a))
