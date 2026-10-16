@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from test_artifact_store import AITER_ROOT, ATOM_ROOT
 from test_backend_step_linear_fit import _steps, _timed_record
-from test_fit_samples import DEVICE, SOURCE
+from test_fit_samples import DEVICE, SOURCE, idle_rank
 from test_memory_readings import DOCUMENT
 from test_parity_served import SAMPLING
 
@@ -239,4 +239,13 @@ def test_a_record_no_client_run_names_refuses_naming_it(tmp_path):
 
     with pytest.raises(SystemExit, match=re.escape(f"{a} is named by no --client-run")):
         fit(tmp_path, "fit steps", *LINEAR, a)
+    assert not (tmp_path / "store").exists()
+
+
+def test_a_dp_record_a_rank_of_which_gave_no_sample_refuses_at_its_width(tmp_path):
+    a = record(tmp_path / "a", 19)
+    idle_rank(a / "steps")
+
+    with pytest.raises(SystemExit, match="are not runs of 2 ranks"):
+        fit(tmp_path, "fit steps", *LINEAR, a, *clients(a))
     assert not (tmp_path / "store").exists()
