@@ -1933,19 +1933,21 @@ loop's `time.sleep` around it, is an idle point: `next_event(now + bound)`, the 
 (`lmcache.mp.lookup_timeout`, `mq_timeout`) a K7 timer. The stand-in takes requests in
 timestamp order and replies at its job's end `t_c`; the grant that reaches
 `t_c + lmcache_ipc_s` releases the reply to the `ClientPollingLoop` thread, which sets
-the future before the owner returns. With positive lookahead both ways, the server's grant to `t_c`
-needs only the engine's NER target, so at DP width 1 nothing more is needed.
+the future before the owner returns. With positive lookahead both ways, the server's
+grant to `t_c` needs only the engine's NER target, so at DP width 1 nothing more is
+needed.
 
 **In a DP group this needs a ruling (#1162).** The waiting member asks NER alone. Its
 peers have scheduled and dispatched their forwards, whose DP collective waits on it
 (`chunked_scheduler.py::lookup_pending`: "every DP rank waits in lockstep"); they make
-no CA call. Rule 5 lets a lone call move no time, and rule 3 holds the grant for the
-peers' send logs, which carry their own lookups and stores to `lmcache`. While the peers
+no CA call. D3's member join rule 5 lets a lone call move no time, and rule 3 holds the
+grant for the peers' send logs, which carry their own lookups and stores to `lmcache`.
+While the peers
 count as running, the server's LBTS stays at the group's `now + lmcache_ipc_s`, below
 `t_c`, so the reply is never sent: a wall-clock deadlock. Proposed amendment of rules
 1, 2 and 5: each member, before dispatching a forward (real or dummy), calls the CA with
 a *park* request that ships its send log and stands in every round as NER `t = +inf`
-until every member is parked; that round returns all at its grant with no advance. A
+until every member is parked; that round grants each member its current time. A
 waiting member's NER rounds then complete with its peers parked, and a parked member
 walks the thread-channel messages a round releases to it inside its call, so I1 holds.
 The cost is one CA round per step per member, at DP above 1 with `lmcache_mp` only.
