@@ -12,7 +12,8 @@ seconds by method (`seconds_by_method`), each with its step count and share (D3.
 
 **Revised 2026-10-16 by the owner's ruling on
 [#1087](https://github.com/jgong5/ATOM/issues/1087):** D6.1 makes the lmcache MP server an
-LP of its own.
+LP of its own; inside a DP group a park request amends D3's member join rules 1, 2 and 5
+(ruling on [#1162](https://github.com/jgong5/ATOM/pull/1162)).
 
 **Scope of this document.** The execution architecture: what a simulated run *is*,
 which processes exist, how virtual time advances, and what contract the rest of the
@@ -453,6 +454,8 @@ frames. The CA completes the LP's request only when every member has called:
    time never rises on a partial request.
 4. One common grant `G`; each member is released only the messages on its own channels.
 5. A member never advances time alone; a lone call only ships its send log.
+
+With `lmcache_mp` above DP width 1, a park request amends rules 1, 2 and 5 (D6.1).
 
 Every member's step end is a round (owner ruling 2026-10-15, #988). A rank whose forward
 waits on its device, one with output other than the DP dummy, ends at the group's `max`;
@@ -1967,22 +1970,39 @@ the future before the owner returns. With positive lookahead both ways, the serv
 grant to `t_c` needs only the engine's NER target, so at DP width 1 nothing more is
 needed.
 
-**In a DP group this needs a ruling (#1162).** The waiting member asks NER alone. Its
-peers have scheduled and dispatched their forwards, whose DP collective waits on it
-(`chunked_scheduler.py::lookup_pending`: "every DP rank waits in lockstep"); they make
-no CA call. D3's member join rule 5 lets a lone call move no time, and rule 3 holds the
-grant for the peers' send logs, which carry their own lookups and stores to `lmcache`.
-While the peers
-count as running, the server's LBTS stays at the group's `now + lmcache_ipc_s`, below
-`t_c`, so the reply is never sent: a wall-clock deadlock. Proposed amendment of rules
-1, 2 and 5: each member, before dispatching a forward (real or dummy), calls the CA with
-a *park* request that ships its send log and stands in every round as NER `t = +inf`
-until every member is parked; that round grants each member its current time. A
-waiting member's NER rounds then complete with its peers parked, and a parked member
-walks the thread-channel messages a round releases to it inside its call, so I1 holds.
-The cost is one CA round per step per member, at DP above 1 with `lmcache_mp` only.
-The alternative is refusing a blocking lookup above DP width 1 by name, which refuses
-the recipe.
+**In a DP group the members park** (owner ruling on #1162, 2026-10-16). The waiting
+member asks NER alone. Its peers have scheduled and dispatched their forwards, and wait
+on it in the step-seconds `all_gather` (`overrides.py::_group_step_seconds`;
+`chunked_scheduler.py::lookup_pending`: "every DP rank waits in lockstep"), so they make
+no CA call. The member join rules alone deadlock here: rule 5 lets the lone NER move no
+time, and rule 3 holds the grant for the peers' send logs, which carry their own lookups
+and stores to `lmcache`. While the peers count as running, the server's LBTS stays at
+the group's `now + lmcache_ipc_s`, below `t_c`, so the reply is never sent.
+
+A *park* request amends rules 1, 2 and 5, at DP width above 1 with `lmcache_mp`:
+
+- **The park.** Each member's last CA call before it dispatches a forward (real or the
+  DP dummy) is a park, which ships its send log. A parked member stops regulating time
+  until the group's collective completes, since it sends nothing before then: until
+  every member is parked, its park stands in every round as NER with `t` and
+  `t_daemon` at `+inf`.
+- **Rule 1.** A park is one call however many rounds it stands in, so the NER calls a
+  waiting member makes while its peers are parked are not a count mismatch.
+- **Rule 2.** A round may mix NER and parks; a TAR meeting either is still refused.
+  That is why the park is the last call before the dispatch: a K1 TAR between
+  `_sync_dp_state` and the dispatch would meet the waiting member's NER in one round.
+- **Rule 5.** The waiting member's NER rounds complete with its peers parked and move
+  its time alone. A parked member moves no time, and walks the thread-channel messages
+  a round releases to it inside its call, so I1 holds.
+- **Release.** The round in which the last member parks releases every member at the
+  group's time, the latest member's `now`, not its own. A peer parked at `t0` leaves at
+  the waiting member's `now` after the reply, so its forward starts when the late
+  member dispatches, and #988's step-end rounds keep one base (rule 2's equal `T`).
+
+`settle_before_collectives` cannot host the park: the collective the peers wait in,
+the step-seconds `all_gather`, runs in the runner, not on the clock owner thread. The
+park is one call on the step loop before the forward dispatch, and costs one CA round
+per step per member.
 
 **Service time.** Two stations in the server LP: the request loop, one server, FIFO,
 pricing a LOOKUP by a declared law in prompt chunks and the bookkeeping requests at a
@@ -2031,11 +2051,13 @@ connector runs only when each sub-connector is simulated (`compass` and `lmcache
   reaches its finish with no refusal, a seed pair gives byte-identical step tables, every
   `(channel, seq)` on every channel is received once and none before its receiver's
   clock, every request gets its full output, and the runs carry at least one load hit,
-  the DP2 run one across ranks.
+  the DP2 run one across ranks. The DP2 run reports the CPU cost per step of the park's
+  CA round.
 - (b) Under the constant step stub and constant station laws, the same workload's
-  sends, server job starts and ends, reply arrivals and the parked request's release
-  match a hand-derived timeline event by event. (a) and (b) run in the gate that can
-  start a simulated run (`atom/compass/detect/scenario.py` checks the channels).
+  sends, server job starts and ends, reply arrivals, the parked request's release and,
+  at DP2, each member's park and release match a hand-derived timeline event by event.
+  (a) and (b) run in the gate that can start a simulated run
+  (`atom/compass/detect/scenario.py` checks the channels).
 - (c) One scheduling-parity sample on node 18 MI308X (`xiaobizh_n18_next13`), in the
   style of `scripts/compass/parity_one_node.sh`: a real run against a real
   `lmcache server`, then its replay; per-step batches and each request's load and save
@@ -2046,6 +2068,8 @@ connector runs only when each sub-connector is simulated (`compass` and `lmcache
 - *A station on each engine LP* (#1087 option (b)): it cannot express one server shared
   by several engines, which the recipe's eight prefill ranks are.
 - *The real server under Compass*: README principle 2.
+- *Refusing a blocking lookup above DP width 1* (#1162 option (b)): it refuses the
+  recipe, whose prefill runs at DP8.
 
 ---
 
@@ -2427,7 +2451,7 @@ Ordered by how much they could cost.
 | D5 | Every timer and clock read the CA can reach runs on the LP clock, except the out-of-band control-command reply deadline; only what it cannot reach is configured or left real; metric cadence is virtual time (revising `11` D72); the profiler and RL control commands are refused by the simulated runner with a reply, counted, and make the run a coverage report; a synchronous command from the frontend's clock owner is refused by the frontend | 2026-09-18; revised 2026-09-28, 2026-10-09, 2026-10-14, 2026-10-15 |
 | D5.1 | The simulated run uses stdlib asyncio, not uvloop: only a Python event loop can host virtual time | 2026-09-28 |
 | D6 | KV transfer is simulated through a connector registered in the existing factory, reproducing Mooncake (what ATOM's PD CI deploys) through scheduler-side hooks only; a rank pair's writes queue on its link | 2026-09-18; revised 2026-09-28; link sharing 2026-10-16 (#1157) |
-| D6.1 | The lmcache MP server is LP `lmcache`, a Compass stand-in on the real ZMQ channels with a content index and two stations; a store or load completes as a stamped reply that the step loop takes in timestamp order; a blocking lookup is a request and reply whose wait is an idle point; inside a DP group it awaits a ruling on a park request (#1162) | 2026-10-16 (#1087) |
+| D6.1 | The lmcache MP server is LP `lmcache`, a Compass stand-in on the real ZMQ channels with a content index and two stations; a store or load completes as a stamped reply that the step loop takes in timestamp order; a blocking lookup is a request and reply whose wait is an idle point; inside a DP group each member parks before its forward, amending member join rules 1, 2 and 5, and the last park releases every member at the group's time | 2026-10-16 (#1087, #1162) |
 | D7 | Atomesh gets no virtual clock: mesh-only mode; in 1P1D the router is one segment of a channel, not an LP, and its relay latency is that channel's lookahead; its bounds are configured (health check and circuit breaker off, `--worker-request-timeout-secs` set large); timestamps ride carriers it already relays; xPyD is deferred; under `--dp-aware` the router is LP `router`, handling requests, prefill responses and stream events in timestamp order (#449) | 2026-09-18; revised 2026-09-30, 2026-10-15 |
 | D8 | Arrivals are messages in transit, covered by the send and receive counts for closed and open workloads alike; the arrival timestamp rides the `tracestate` header | 2026-09-18; revised 2026-09-28 |
 | D9 | The ATOM diff is enumerated (~1,980 lines with tests) and completeness enforced by test rather than by review; ATOM's own suite is the gate (`08` D43.1) | 2026-09-18; revised 2026-09-28 |
