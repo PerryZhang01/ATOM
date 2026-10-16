@@ -568,10 +568,13 @@ def test_a_block_holding_a_scalar_does_not_take_the_rest_with_it_either():
     # under it are gone, and everything beside it is still checked.
     document = merged().document
     document["device"]["memory"] = 288.0e9
-    checked = validate(document)
+    with pytest.warns(StackMismatch):
+        checked = validate(
+            document, observed_stack=dict(STACK, rocm="7.3.0"), strict=True
+        )
     rules = [refusal.rule for refusal in checked.refusals]
     assert rules.count(Rule.DERATE) == 1
-    assert any("compute.derate" not in r.what for r in checked.refusals)
+    assert rules.count(Rule.PINNED_STACK) == 1
 
 
 def test_a_value_of_the_wrong_shape_is_reported():
