@@ -377,7 +377,8 @@ where
     let Some(lp) = LP.get() else {
         return (upstream.boxed(), Some(guard));
     };
-    let decode = lp.frontend(Some(guard.worker().base_url()), "relay");
+    let pair = REQUEST.try_with(|h| h.borrow().pair.clone()).ok().flatten();
+    let decode = pair.map_or_else(|| lp.frontend(None, "relay"), |(_, d)| d);
     let from = format!("{decode}->router:stream");
     let events = futures_util::stream::unfold(
         (upstream.boxed(), Vec::new(), Some(guard)),
