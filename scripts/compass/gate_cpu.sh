@@ -225,10 +225,11 @@ import compass_harness, aiperf; print(aiperf.__file__, compass_harness.__file__)
     printf 'harness: %s\n' "$WHY"
 fi
 
-# atomesh's Compass cargo tests run here, offline, since the gate has no
-# network: from the container's crate cache, under the lockfile that cache was
-# fetched for. test_mesh_clock_client.py skips on the same `cargo metadata`
-# probe, so a diff touching atom/mesh is refused when the probe fails.
+# atomesh's unit tests and every Compass cargo target (tests/compass_*.rs) run
+# here, offline, since the gate has no network: from the container's crate
+# cache, under the lockfile that cache was fetched for. test_mesh_clock_client.py
+# skips on the same `cargo metadata` probe, so a diff touching atom/mesh is
+# refused when the probe fails.
 MESH=$ROOT/atom/mesh
 MESH_RC=0
 if [ -r "$MESH/Cargo.toml" ]; then
@@ -236,8 +237,13 @@ if [ -r "$MESH/Cargo.toml" ]; then
     LOCK=${COMPASS_CARGO_LOCK:-/app/ATOM/atom/mesh/Cargo.lock}
     [ -e "$MESH/Cargo.lock" ] || [ ! -r "$LOCK" ] || cp "$LOCK" "$MESH/Cargo.lock"
     if WHY=$(cd "$MESH" && cargo metadata --format-version 1 2>&1 >/dev/null); then
-        (cd "$MESH" && cargo test --test compass_clock_test --test compass_router_test \
-            --test compass_pd_router_test --test policy_determinism_test) || MESH_RC=$?
+        TARGETS=(--lib)
+        for f in "$MESH"/tests/compass_*.rs; do
+            [ -e "$f" ] && f=${f##*/} && TARGETS+=(--test "${f%.rs}")
+        done
+        # A wall-clock throughput floor that fails on a loaded host (#515).
+        SKIP=core::worker::tests::test_load_counter_performance
+        (cd "$MESH" && cargo test "${TARGETS[@]}" -- --exact --skip "$SKIP") || MESH_RC=$?
     else
         WHY=${WHY%%$'\n'*}
         grep -q '^atom/mesh/' <<<"$CHANGED" &&

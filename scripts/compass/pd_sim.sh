@@ -35,7 +35,9 @@
 # --enable-dp-attention in SERVER_ARGS, under BENCHMARK_KIND=aiperf_agentic or a
 # rank mapping policy other than none, that is --dp-aware: the router chooses
 # among DP ranks on load that responses move, which makes it LP `router` of the
-# run, and RUN_FILE gains `router_in_s` unless it has one already. Otherwise
+# run, and RUN_FILE gains `router_in_s` unless it has one already, and
+# `router`, the binary that runs it, refused unless built from this tree's
+# atom/mesh (`router_binary` in atom/compass/run). Otherwise
 # the router has one worker per side, and ATOM's own DP dispatch picks the rank.
 #
 # It runs its own tree, as the gates do. Logs go beside RUN_FILE. It prints
@@ -87,15 +89,6 @@ server() { # role port kv_role dp_port [exec]
         >"$OUT/$1.log" 2>&1 &
 }
 
-wait_for() { # what pid url
-    local deadline=$((SECONDS + WAIT_S))
-    until curl -sf --max-time 10 "$3" >/dev/null; do
-        kill -0 "$2" 2>/dev/null || { echo "pd_sim: $1 exited before it answered" >&2; exit 1; }
-        ((SECONDS < deadline)) || { echo "pd_sim: no $1 after $WAIT_S s" >&2; exit 1; }
-        sleep 1
-    done
-}
-
 # The real cell's router arguments, chosen as `start_router` chooses them. With
 # the health check, circuit breaker and retries off, no wall-clock failure
 # detector can resend or drop a request.
@@ -125,13 +118,17 @@ if ((${#dp_aware[@]})); then
     # The hop into the router takes the run's ipc_s, its declared floor for one
     # hop between two local processes; the rest of each path's lookahead stays
     # on the hop out.
-    lookaheads=$(python3 - "$RUN_FILE" <<'EOF'
+    lookaheads=$(python3 - "$RUN_FILE" "$ATOMESH" <<'EOF'
 import json, sys
 from pathlib import Path
-from atom.compass.run import ROUTER, channel_table
+from atom.compass.run import ROUTER, channel_table, router_binary
 
 path = Path(sys.argv[1])
 run = json.loads(path.read_text())
+try:
+    run["router"] = router_binary(sys.argv[2])
+except Exception as e:
+    sys.exit(f"pd_sim: {e}")
 run.setdefault("router_in_s", run["ipc_s"])
 path.write_text(json.dumps(run))
 table = channel_table(run)
@@ -154,15 +151,15 @@ server prefill "$PREFILL_PORT" kv_producer "$PREFILL_DP_PORT"
 prefill=$!
 server decode "$DECODE_PORT" kv_consumer "$DECODE_DP_PORT" "${DECODE_EXEC:-}"
 decode=$!
-wait_for prefill $prefill "http://127.0.0.1:$PREFILL_PORT/health"
-wait_for decode $decode "http://127.0.0.1:$DECODE_PORT/health"
+compass_wait_up prefill $prefill "http://127.0.0.1:$PREFILL_PORT/health"
+compass_wait_up decode $decode "http://127.0.0.1:$DECODE_PORT/health"
 
 env "${router_env[@]}" "$ATOMESH" launch --host 127.0.0.1 --port "$ROUTER_PORT" --pd-disaggregation \
     --prefill "http://127.0.0.1:$PREFILL_PORT" --decode "http://127.0.0.1:$DECODE_PORT" \
     "${router[@]}" --backend atom --disable-health-check --disable-circuit-breaker \
     --disable-retries --prometheus-port "$PROMETHEUS_PORT" --log-level info \
     >"$OUT/router.log" 2>&1 &
-wait_for router $! "http://127.0.0.1:$ROUTER_PORT/v1/models"
+compass_wait_up router $! "http://127.0.0.1:$ROUTER_PORT/v1/models"
 echo "pd_sim: ready"
 
 rc=0

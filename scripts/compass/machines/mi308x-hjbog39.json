@@ -89,6 +89,13 @@
         "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
         "source_root": "commit:ce625ddd9"
       },
+      "device.software_pinned_to.torch": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "width": 1,
+        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
+        "source_root": "commit:ce625ddd9"
+      },
       "host.ipc.zmq_roundtrip_s": {
         "origin": "assumed"
       },
@@ -232,7 +239,8 @@
     "software_pinned_to": {
       "rocm": "7.2.4",
       "aiter": "9205e1059",
-      "rccl": "2.27.7"
+      "rccl": "2.27.7",
+      "torch": "2.10.0+rocm7.2.4.git3d3aa833"
     }
   },
   "interconnect": {

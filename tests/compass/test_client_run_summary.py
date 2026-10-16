@@ -9,7 +9,8 @@ authority's host writes that client run's summary; the finish writes the last
 one's beside the run summary. A client run's counts are its own: the engine's
 workers and the frontend's executor count from the server's start, and a
 summary takes each hand-in less the one at the previous client run's end, so
-it matches the summary a fresh server writes for the same client run.
+it matches the summary a fresh server writes for the same client run. A stop
+after a client run writes the run summary and leaves that client run's alone.
 """
 
 import json
@@ -57,10 +58,12 @@ CLIENT_RUNS = (
 )
 
 
-def _serve(monkeypatch, out: Path, client_runs, served) -> Path:
+def _serve(monkeypatch, out: Path, client_runs, served, stop=None) -> Path:
     """Serve one client run per entry of `served` on one server whose run file
-    declares `client_runs`; each client run sends one request, answered on
-    the stream. Returns the out_dir."""
+    declares `client_runs`, None for ``null``; each client run sends one
+    request, answered on the stream. With `stop`, a SIGTERM then stops the
+    server: ``resigned``, once the last client run has ended, or ``bound``,
+    with its client still bound after its answer. Returns the out_dir."""
     out.mkdir()
     run = {
         "admission_path": "serving",
@@ -69,9 +72,8 @@ def _serve(monkeypatch, out: Path, client_runs, served) -> Path:
         "bound_s": 100.0,
         "clock_endpoint": f"inproc:{out}",
         "out_dir": str(out),
+        "client_runs": client_runs,
     }
-    if client_runs is not None:
-        run["client_runs"] = client_runs
     (out / "run.json").write_text(json.dumps(run))
     monkeypatch.setenv(compass_run.ENV, str(out / "run.json"))
     for module, name in [
@@ -97,6 +99,7 @@ def _serve(monkeypatch, out: Path, client_runs, served) -> Path:
     core = SimpleNamespace(
         runner_mgr=SimpleNamespace(call_func=lambda name, wait_out: workers[name])
     )
+    ended = len(served) - (stop == "bound")
     with compass_run.engine_loop(core):
         frontend.ask_next_event(INF)
         engine.ask_next_event(INF, 50.0)
@@ -119,22 +122,28 @@ def _serve(monkeypatch, out: Path, client_runs, served) -> Path:
             frontend.stamp_send(STREAM)
             frontend.ask_next_event(INF)
             traffic.take_grant()
+            if k == ended:  # the client stays bound, its client run open
+                break
             traffic.ask_next_event(INF)
             # The end of the client run: the client resigns, and the engine
             # and the frontend hand in at their marked grants, or at the finish.
             assert traffic.take_grant() == INF
-            last = k + 1 == len(served)
+            last = k + 1 == len(served) and stop is None
             assert (
                 (engine.take_grant() == INF) is (frontend.take_grant() == INF) is last
             )
             if not last:
                 engine.ask_next_event(INF, 50.0)
                 frontend.ask_next_event(INF)
+        if stop is not None:  # the signal, as the frontend's event loop takes it
+            frontend.loop.stopped = "SIGTERM"
+            frontend.end_run()
+            assert engine.take_grant() == INF
     monkeypatch.setattr(clock, "_installed", frontend)
     assert compass_run.frontend_done(SimpleNamespace(close=lambda: None))
     # An earlier client run's summary is written on a thread of its own.
     deadline = time.monotonic() + 10
-    for k in range(len(served)):
+    for k in range(ended):
         while not (out / f"client-{k}" / compass_run.SUMMARY_FILE).exists():
             assert time.monotonic() < deadline, f"no client-{k} summary in 10 s"
             time.sleep(0.05)
@@ -179,7 +188,7 @@ def test_a_later_client_run_s_summary_is_a_fresh_server_s(
     monkeypatch, tmp_path, served
 ):
     later = _read(served / "client-1" / compass_run.SUMMARY_FILE)
-    fresh_out = _serve(monkeypatch, tmp_path / "fresh", None, CLIENT_RUNS[1:])
+    fresh_out = _serve(monkeypatch, tmp_path / "fresh", 1, CLIENT_RUNS[1:])
     fresh = _read(fresh_out / compass_run.SUMMARY_FILE)
     assert _read(fresh_out / "client-0" / compass_run.SUMMARY_FILE)["client_run"] == {
         "index": 0,
@@ -202,3 +211,39 @@ def test_client_runs_is_a_positive_count_or_null(monkeypatch, tmp_path):
         monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
         with pytest.raises(ValueError, match=f"client_runs is {count!r}"):
             compass_run.spec()
+
+
+def test_a_stop_after_a_client_run_leaves_that_client_runs_summary(
+    monkeypatch, tmp_path
+):
+    """A standalone authority stopped after client run 0 grants every server
+    LP ``+inf`` and the resigned client nothing, then writes the run summary
+    from every hand-in, with no client run open no stop reason, and client
+    run 0's summary not again."""
+    run = {"admission_path": "serving", "ipc_s": 2.0**-10, "stream_s": 2.0**-9}
+    run.update(bound_s=100.0, client_runs=None, out_dir=str(tmp_path))
+    monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
+    authority = compass_run._RecordingAuthority(run)
+    for lp in (compass_run.FRONTEND, compass_run.ENGINE, compass_run.TRAFFIC):
+        authority.on_request(lp, "NER", INF, [])
+
+    def hand_in(k, steps, **frontend):
+        priced = {"steps": steps, "seconds": steps / 4}
+        compass_run._hand_in(run, "engine", [], k, priced=priced)
+        compass_run._hand_in(run, "frontend", [], k, **frontend)
+
+    hand_in(0, 1)
+    client_run = tmp_path / "client-0" / compass_run.SUMMARY_FILE
+    deadline = time.monotonic() + 10
+    while not client_run.exists():
+        assert time.monotonic() < deadline, "no client-0 summary in 10 s"
+        time.sleep(0.05)
+    written = client_run.read_text()
+    stop = authority.on_request(compass_run.FRONTEND, "TAR", INF, [])
+    assert sorted(lp.name for lp, g, _ in stop if g == INF) == ["engine", "frontend"]
+    hand_in(None, 3, stopped="SIGTERM")
+    compass_run._write_summary(run, authority)
+    summary = _read(tmp_path / compass_run.SUMMARY_FILE)
+    assert summary["schedule"]["predicted_seconds"] == 0.75
+    assert summary["schedule"]["refusals"]["reasons"] == []
+    assert client_run.read_text() == written

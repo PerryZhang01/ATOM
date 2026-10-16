@@ -17,6 +17,7 @@ from test_backend_step_linear_fit import _steps, _timed_record
 from test_memory_readings import META_8B
 
 from atom.compass.artifacts import (
+    KEY_FIELDS,
     ArtifactRefusal,
     ArtifactStore,
     Key,
@@ -123,6 +124,21 @@ def test_a_price_list_from_another_spec_misses_naming_both_digests(tmp_path):
     assert store.read(price_list(N39)).key == price_list(N39)
     with pytest.raises(ArtifactRefusal) as refused:
         store.read(price_list(N18))
+    assert f"machine_spec='{digest(N18)}'" in str(refused.value)
+    assert f"differs in machine_spec ('{digest(N39)}' there)" in str(refused.value)
+
+
+@pytest.mark.parametrize("kind", [Kind.STEP_LINEAR_LAW, Kind.HOST_LAWS], ids=str)
+def test_laws_fitted_on_another_spec_miss_naming_both_digests(tmp_path, kind):
+    def law(document):
+        given = {name: "x" for name in KEY_FIELDS[kind]}
+        return Key.of(kind, **{**given, "machine_spec": digest(document)})
+
+    store = ArtifactStore(tmp_path)
+    publish(store, law(N39))
+    assert store.read(law(N39)).key == law(N39)
+    with pytest.raises(ArtifactRefusal) as refused:
+        store.read(law(N18))
     assert f"machine_spec='{digest(N18)}'" in str(refused.value)
     assert f"differs in machine_spec ('{digest(N39)}' there)" in str(refused.value)
 
