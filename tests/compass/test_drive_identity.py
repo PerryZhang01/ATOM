@@ -1,0 +1,131 @@
+# SPDX-License-Identifier: MIT
+"""run.json's identity. The source digest and aiter's version are read off
+planted git checkouts through `git_tree_root` and `git_described_root`, the host
+key off the engine file a parity record wrote, and the device off a planted
+`rocm-smi`."""
+
+import json
+import os
+import shutil
+import subprocess
+
+import pytest
+import torch
+from test_parity_record import _drive
+
+from atom.compass.drive import identity as drive
+from atom.compass.drive.gpu import GpuRefusal
+from atom.compass.run import host_key
+
+GIT = shutil.which("git")
+CARD = {
+    "Card Series": "AMD Instinct MI308X",
+    "Card Model": "0x74a2",
+    "Card SKU": "M3080202",
+    "Node ID": "9",
+    "GFX Version": "gfx942",
+}
+ARGV = ["compass", "record", "--gpu", "7", "--out", "d", "--", "--model", "m"]
+
+pytestmark = pytest.mark.skipif(GIT is None, reason="needs git")
+
+
+def _git(tree, *argv):
+    return subprocess.run(
+        [GIT, "-C", str(tree), "-c", "user.name=t", "-c", "user.email=t@t", *argv],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _checkout(tree, tag=None):
+    tree.mkdir()
+    (tree / "a.py").write_text("a = 1\n")
+    for argv in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "s"]):
+        _git(tree, *argv)
+    if tag:
+        _git(tree, "tag", tag)
+    return tree
+
+
+@pytest.fixture
+def planted(tmp_path, monkeypatch):
+    trees = {
+        "atom": _checkout(tmp_path / "atom"),
+        "aiter": _checkout(tmp_path / "aiter", "v0"),
+    }
+    monkeypatch.setattr(drive, "module_root", lambda module: str(trees[module]))
+    (tmp_path / "rocm" / ".info").mkdir(parents=True)
+    (tmp_path / "rocm" / ".info" / "version").write_text("7.2.4\n")
+    monkeypatch.setenv("ROCM_PATH", str(tmp_path / "rocm"))
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "cards.json").write_text(json.dumps({"card6": CARD, "card7": CARD}))
+    (bindir / "rocm-smi").write_text(f"#!/bin/sh\ncat {bindir / 'cards.json'}\n")
+    (bindir / "rocm-smi").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+    (tmp_path / "model").mkdir()
+    (tmp_path / "model" / "config.json").write_text('{"hidden_size": 8}')
+    config = _drive(tmp_path / "steps", monkeypatch, {0: [0]})[0][2].config
+    config.model = str(tmp_path / "model")
+    return trees, config, (tmp_path / "steps" / "dp0.engine.json", config.model)
+
+
+def test_the_host_key_is_the_one_the_config_that_wrote_the_engine_file_gives(
+    planted,
+):
+    _, config, served = planted
+    key = drive.identity(*served, ARGV)["host_key"]
+    assert key == host_key(config)
+    assert key["model"].startswith("sha256:") and key["engine"]["ladder"] == [
+        1,
+        2,
+        4,
+        8,
+    ]
+
+
+def test_the_identity_holds_its_entries_and_no_workload(planted):
+    _, config, served = planted
+    run = drive.identity(*served, ARGV)
+    assert run == {
+        "format_version": drive.FORMAT_VERSION,
+        "argv": ARGV,
+        "source": run["source"],
+        "host_key": host_key(config),
+        "device": [],
+        "stack": {"rocm": "7.2.4", "torch": torch.__version__, "aiter": "v0"},
+        "profiled": False,
+    }
+    json.dumps(run)
+
+
+def test_the_source_digest_is_the_tree_git_archive_ships(planted):
+    trees, _, served = planted
+    source = drive.identity(*served, ARGV)["source"]
+    assert source["revision"] == _git(trees["atom"], "rev-parse", "HEAD^{tree}")
+    assert (source["revision_kind"], source["dirty"]) == ("tree", 0)
+
+    (trees["atom"] / "a.py").write_text("a = 2\n")
+    (trees["aiter"] / "a.py").write_text("a = 2\n")
+    run = drive.identity(*served, ARGV)
+    assert (run["source"]["revision"], run["source"]["dirty"]) == (
+        source["revision"],
+        1,
+    )
+    assert run["stack"]["aiter"] == "v0-dirty"
+
+    _git(trees["atom"], "commit", "-qam", "edit")
+    assert drive.identity(*served, ARGV)["source"]["revision"] != source["revision"]
+
+
+def test_each_named_gpu_is_recorded_with_its_model(planted):
+    *_, served = planted
+    model = {"series": "AMD Instinct MI308X", "sku": "M3080202", "gfx": "gfx942"}
+    assert drive.identity(*served, ARGV, (7, 6))["device"] == [
+        {"index": 7, **model},
+        {"index": 6, **model},
+    ]
+    with pytest.raises(GpuRefusal, match=r"^rocm-smi lists no GPU \[8\]"):
+        drive.identity(*served, ARGV, (7, 8))
