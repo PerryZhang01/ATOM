@@ -70,7 +70,7 @@ def test_counts_match_across_runs_whose_request_ids_differ(tmp_path):
     keys = {7: "ka", 8: "kb", 1: "ka", 2: "kb"}
     real = [_cell(tmp_path / f"r{i}", _schedule(), keys) for i in range(3)]
     simulated = _cell(tmp_path / "sim", _schedule((1, 2)), keys)
-    report = grade(real, simulated, simulated)
+    report = grade(real, simulated)
 
     counts = report["counts"]
     assert {k: g["simulated"] for k, g in counts.items()} == {
@@ -83,12 +83,11 @@ def test_counts_match_across_runs_whose_request_ids_differ(tmp_path):
         "requests completed": 3.0,
     }
     assert {g["verdict"] for g in counts.values()} == {"exact"}
-    assert not any(g["admissible"] for g in counts.values())
     widths = report["distributions"]["batch width"]
     assert widths["spread"] == 0 and widths["result"] == [0, 0, 0]
 
 
-def test_a_metric_is_graded_against_the_real_spread_and_the_perturbed_cell(tmp_path):
+def test_a_metric_is_graded_against_the_real_spread(tmp_path):
     keys = {7: "ka", 8: "kb"}
     ttft = [1000.0, 1050.0, 1100.0]  # spread 10%, inside the 15% target
     tpot = [25.0, 25.5, 30.0]  # spread 20%, beyond 10%
@@ -112,32 +111,23 @@ def test_a_metric_is_graded_against_the_real_spread_and_the_perturbed_cell(tmp_p
             inter_token_latency=("avg", tpot),
         )
 
-    report = grade(real, simulated("at", 1040.0), simulated("p97", 1200.0))
+    report = grade(real, simulated("at", 1040.0))
     g = report["end to end"]["ttft mean"]
     assert g["result"] == pytest.approx([0.04, 1 - 1040 / 1050, 1 - 1040 / 1100])
     assert g["spread"] == pytest.approx(0.1)
-    assert g["moved"] == pytest.approx(1200 / 1040 - 1)
-    assert g["verdict"] == "inside the real spread" and g["admissible"]
+    assert g["verdict"] == "inside the real spread"
     assert report["end to end"]["tpot mean"]["verdict"] == "ungradeable"
     assert report["end to end"]["ttft p50"]["verdict"] == "inside the real spread"
-    assert not report["end to end"]["ttft p50"]["admissible"]
 
-    # Moving past its 20% spread does not make an ungradeable metric admissible.
-    report = grade(real, simulated("at2", 1040.0), simulated("p97t", 1040.0, tpot=31.0))
-    g = report["end to end"]["tpot mean"]
-    assert g["moved"] > g["spread"] == pytest.approx(0.2)
-    assert g["verdict"] == "ungradeable" and not g["admissible"]
-
-    report = grade(real, simulated("high", 1140.0), simulated("p97b", 1040.0))
+    report = grade(real, simulated("high", 1140.0))
     assert report["end to end"]["ttft mean"]["verdict"] == "within target"
-    report = grade(real, simulated("higher", 1300.0), simulated("p97c", 1040.0))
+    report = grade(real, simulated("higher", 1300.0))
     assert report["end to end"]["ttft mean"]["verdict"] == "outside"
 
     # One more decode step: a count off by one where the real runs agree.
     longer = _schedule() + [[(7, 1, 205, True)]]
-    report = grade(real, simulated("long", 1040.0, longer), simulated("p", 1040.0))
+    report = grade(real, simulated("long", 1040.0, longer))
     assert report["counts"]["decode steps"]["verdict"] == "outside"
-    assert report["counts"]["decode steps"]["admissible"]
     assert (
         report["distributions"]["batch width"]["result"] == [pytest.approx(1 / 14)] * 3
     )
@@ -145,13 +135,19 @@ def test_a_metric_is_graded_against_the_real_spread_and_the_perturbed_cell(tmp_p
 
 def test_the_command_prints_every_metric_and_needs_two_real_runs(tmp_path, capsys):
     keys = {7: "ka", 8: "kb"}
-    cells = [str(_cell(tmp_path / f"c{i}", _schedule(), keys)) for i in range(4)]
-    main(cells)
-    out = capsys.readouterr().out
-    assert "counts | preemptions | 0 | 0 0 | 0 | exact | no" in out
-    assert "end to end | output token throughput |" in out
+    ttft = [1000.0, 1000.0, 1000.0, 1200.0]  # the real spread, 20%, swamps 15%
+    cells = [
+        _cell(tmp_path / f"c{i}", _schedule(), keys, time_to_first_token=("avg", t))
+        for i, t in enumerate(ttft)
+    ]
+    main([str(c) for c in cells])
+    out = capsys.readouterr().out.splitlines()
+    assert out[0] == "family | metric | spread | result | verdict"
+    assert "counts | preemptions | 0 | 0 0 0 | exact" in out
+    assert "end to end | ttft mean | 0.2 | 0 0 0.1667 | ungradeable" in out
+    assert any(row.startswith("end to end | output token throughput |") for row in out)
     with pytest.raises(ValueError, match="two or more real runs"):
-        grade(cells[:1], cells[1], cells[2])
+        grade(cells[:1], cells[1])
 
 
 def test_prefill_tokens_grade_the_requests_both_runs_issued(tmp_path):
@@ -170,7 +166,7 @@ def test_prefill_tokens_grade_the_requests_both_runs_issued(tmp_path):
 
     real = [run("r0", (7, 8, 9)), run("r1", (7, 8, 9)), run("r2", (5, 6, 9), hit=10)]
     simulated = run("sim", (21, 22, 23), hit=10, extra=True)
-    report = grade(real, simulated, simulated)
+    report = grade(real, simulated)
 
     g = report["counts"]["prefill tokens"]
     assert g["simulated"] == 240 and g["real"] == [150, 150, 140]
@@ -178,7 +174,7 @@ def test_prefill_tokens_grade_the_requests_both_runs_issued(tmp_path):
     assert g["verdict"] == "inside the real spread"
     one = report["one run"]["prefill tokens"]
     assert one["result"] == [100, 100, 100] and one["spread"] == 0
-    assert one["verdict"] == "not gated" and not one["admissible"]
+    assert one["verdict"] == "not gated"
 
 
 def test_requests_keys_by_the_final_chunks_context_not_a_later_decode_row():
