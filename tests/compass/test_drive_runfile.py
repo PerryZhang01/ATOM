@@ -111,6 +111,7 @@ def test_a_step_grid_and_host_laws_by_token_install_both(monkeypatch, tmp_path):
     assert run["step_grid"] == {"store": store, **KEY} and run["store"] == store
     provenance = {**STANZA.as_json(), "inputs": None}
     assert run["backend"] == {"digest": grid.digest, "provenance": provenance}
+    assert run["on_refusal"] == "mark"
 
 
 def test_a_step_linear_law_carries_its_engine_config_and_fit_provenance(
@@ -230,11 +231,12 @@ def test_a_machine_file_that_is_no_spec_refuses_before_any_entry_is_read(tmp_pat
 def test_the_step_roofline_reads_the_models_parameter_count(monkeypatch, tmp_path):
     r = deployment(tmp_path)
     grid = publish(tmp_path, r).key.token()
-    with pytest.raises(
-        ValueError, match=f"its {runfile.INDEX} has no metadata.total_parameters"
-    ):
-        build(tmp_path, "--step-grid", grid, "--step-roofline")
-    index = {"metadata": {"total_parameters": 27_000_000_000, "total_size": 1}}
+    index = {"metadata": {"total_size": 1}}
+    for named in (f"and {tmp_path} has none", "states no metadata.total_parameters"):
+        with pytest.raises(ValueError, match=named):
+            build(tmp_path, "--step-grid", grid, "--step-roofline")
+        (tmp_path / runfile.INDEX).write_text(json.dumps(index))
+    index["metadata"]["total_parameters"] = 27_000_000_000
     (tmp_path / runfile.INDEX).write_text(json.dumps(index))
 
     run = build(tmp_path, "--step-grid", grid, "--step-roofline")
