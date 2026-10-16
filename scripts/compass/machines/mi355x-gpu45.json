@@ -209,7 +209,7 @@
     "compute": {
       "bf16_flops": 2516600000000000.0,
       "fp8_flops": 5033200000000000.0,
-      "fp4_flops": 1.00664e+16,
+      "fp4_flops": 1.00663e+16,
       "derate": 0.7
     },
     "runtime_constants": {
@@ -248,7 +248,7 @@
     "intra_node": {
       "topology": "fully_connected",
       "domain_devices": 8,
-      "link_bandwidth_bytes_per_s": 153600000000.0,
+      "link_bandwidth_bytes_per_s": 76800000000.0,
       "link_latency_s": 2e-06,
       "derate": 0.8
     },

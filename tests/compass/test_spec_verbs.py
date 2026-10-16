@@ -2426,3 +2426,13 @@ def test_the_mi355x_spec_explains_what_the_start_measured_apart_from_the_declare
         spec.origin(path)["record"] == f"sha256:{script.RECORD}"
         for path in ("device.memory.capacity_bytes", "device.activations")
     )
+
+
+def test_the_mi355x_spec_rebuilds_byte_for_byte_from_its_own_sweep(
+    monkeypatch, tmp_path
+):
+    script, _ = _mi355x_spec(monkeypatch)
+    document = SPEC_ROOT / "scripts" / "compass" / "machines" / f"{script.NAME}.json"
+    out = tmp_path / "rebuilt.json"
+    assert script.main(["--sweep-from", str(document), "--out", str(out)]) == 0
+    assert out.read_bytes() == document.read_bytes()

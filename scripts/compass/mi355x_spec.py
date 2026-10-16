@@ -1,14 +1,16 @@
 # SPDX-License-Identifier: MIT
 """The mi355-gpu-45 MI355X machine spec, from a tokenizer swept here and one real start.
 
-    python3 scripts/compass/mi355x_spec.py [--out PATH]
+    python3 scripts/compass/mi355x_spec.py [--sweep-from DOC] [--out PATH]
 
 The device fragment is one DeepSeek-V4-Pro start at the nightly DPA-TP8 prefill
 side's arguments (`FLAGS`): the reserve and load residue sit at layout 1x8, the
 activations at width 1. The peaks are the datasheet's; the rest is assumed.
+`--sweep-from` takes the tokenizer sweep from a document this script wrote.
 """
 
 import argparse
+import copy
 import json
 import sys
 from pathlib import Path
@@ -73,55 +75,42 @@ DEVICE = {
     },
 }
 
-#: AMD Instinct MI355X GPU and platform datasheets: dense peaks, one Infinity
-#: Fabric link, and the eight GPUs one fabric connects.
+#: AMD Instinct MI355X GPU and platform datasheets: dense peaks, the eight GPUs
+#: one fabric connects, and one Infinity Fabric link's one-way rate, half its
+#: 153.6 GB/s bidirectional, as a KV transfer streams one way.
 DATASHEET = {
     "device": {
         "memory": {"bandwidth_bytes_per_s": 8.0e12},
         "compute": {
             "bf16_flops": 2.5166e15,
             "fp8_flops": 5.0332e15,
-            "fp4_flops": 1.00664e16,
+            "fp4_flops": 1.00663e16,
         },
     },
     "interconnect": {
-        "intra_node": {"domain_devices": 8, "link_bandwidth_bytes_per_s": 1.536e11}
+        "intra_node": {"domain_devices": 8, "link_bandwidth_bytes_per_s": 7.68e10}
     },
 }
 
-#: No probe fills these: each derate is the haircut this spec's author chose,
-#: the inter-node link is one 400 Gb/s NIC's line rate until an RDMA pair is
-#: measured, and the rest are the schema's example values.
-DECLARED = {
-    "host": {
-        "ipc": {"zmq_roundtrip_s": 5.0e-5, "shm_broadcast_s": 2.0e-5},
-        "admission_fixed_s": 9.0e-3,
-    },
-    "device": {
-        "memory": {"derate": 0.85},
-        "compute": {"derate": 0.70},
-        "runtime_constants": {
-            "cudagraph_pool": {
-                "w1_base_bytes": 95.5e6,
-                "w1_bytes_per_captured_token": 0.318e6,
-                "w_gt1_flat_bytes": 109.0e6,
-            }
-        },
-    },
-    "interconnect": {
-        "intra_node": {
-            "topology": "fully_connected",
-            "link_latency_s": 2.0e-6,
-            "derate": 0.80,
-        },
-        "inter_node": {
-            "link_bandwidth_bytes_per_s": 5.0e10,
-            "link_latency_s": 5.0e-6,
-            "derate": 0.80,
-        },
-        "router_relay_s": 1.5e-3,
-    },
-}
+#: No probe fills these: mi308x_spec's assumed values less what the datasheet
+#: states. Its inter-node link is one 400 Gb/s NIC's line rate here too.
+DECLARED = copy.deepcopy(base.DECLARED)
+for block, groups in DATASHEET.items():
+    for group, values in groups.items():
+        for key in values:
+            DECLARED[block][group].pop(key, None)
+
+
+def saved(path: Path) -> Fragment:
+    """The tokenizer sweep a written document carries, in place of a new one."""
+    document = json.loads(path.read_text())
+    stanza = document["provenance"]
+    subject = dict(stanza["origins"]["host.tokenizers[deepseek-v4-pro fast]"])
+    stanza = {"authored_by": stanza["authored_by"], "date": stanza["date"]}
+    stanza |= {"origin": subject.pop("origin"), "subject": subject}
+    host = {key: document["host"][key] for key in ("cpu", "tokenizers")}
+    body = {"schema_version": 1, "name": NAME, "provenance": stanza, "host": host}
+    return Fragment.from_mapping(body, "tokenizer")
 
 
 def device_fragments() -> list[Fragment]:
@@ -138,8 +127,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     out = Path(__file__).resolve().parent / "machines" / f"{NAME}.json"
     parser.add_argument("--out", type=Path, default=out)
+    parser.add_argument("--sweep-from", type=Path, help="a document to reuse")
     args = parser.parse_args(argv)
-    merged = merge([swept(MODEL), *device_fragments()])
+    sweep = saved(args.sweep_from) if args.sweep_from else swept(MODEL)
+    merged = merge([sweep, *device_fragments()])
     verdict = validate(merged, tp_widths=(LAYOUT,))
     print(verdict)
     if not verdict.ok:
