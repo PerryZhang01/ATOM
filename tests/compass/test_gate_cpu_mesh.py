@@ -15,7 +15,7 @@ echo "$CARGO_NET_OFFLINE $*" >> "$0.log"
 case "$1" in metadata) exit {metadata};; test) exit {test};; esac
 """
 # Upstream's unit tests, and every Compass target by its file name alone, less
-# two tests that fail on a loaded host (#515, #514).
+# the tests that fail on a loaded host (#515, #514).
 TARGETS = (
     "--lib --test compass_a_test --test compass_b"
     " -- --exact --skip core::worker::tests::test_load_counter_performance"

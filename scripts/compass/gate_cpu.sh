@@ -241,7 +241,7 @@ if [ -r "$MESH/Cargo.toml" ]; then
         for f in "$MESH"/tests/compass_*.rs; do
             [ -e "$f" ] && f=${f##*/} && TARGETS+=(--test "${f%.rs}")
         done
-        # Two tests that fail on a loaded host: a wall-clock throughput floor
+        # Tests that fail on a loaded host: a wall-clock throughput floor
         # (#515) and a thread race that records a placeholder tenant (#514).
         SKIP=(--skip core::worker::tests::test_load_counter_performance
               --skip policies::tree::tests::test_tree_structure_integrity_after_stress)
