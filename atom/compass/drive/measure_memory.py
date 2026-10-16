@@ -13,9 +13,10 @@ resolved config, and the ranks must agree on the key. The entry's key is that
 one with the digest of the machine spec `--machine` names; its conditions are
 that spec's device and the stack the start ran, ROCm, AITER, RCCL and torch
 as run.json's identity states them, so a run whose spec pins another stack
-refuses it. `non_torch` refuses a
-spread across the ranks above `SPREAD_LIMIT`. One member per rank holds
-`memory.ENTRY_FIELDS`, its `record` the digest of the engine's log.
+refuses it. A `--gpu` whose device is not the spec's refuses before the
+start, so no entry measured on another card is keyed by that spec. `non_torch`
+refuses a spread across the ranks above `SPREAD_LIMIT`. One member per rank
+holds `memory.ENTRY_FIELDS`, its `record` the digest of the engine's log.
 
 ``--out`` gets the engine's log, run.json's identity from the rank-0 engine
 file, and ``memory_readings.json``, the entry's readable copy. ATOM's
@@ -46,7 +47,7 @@ from atom.compass.artifacts import (
 )
 from atom.compass.drive import serve
 from atom.compass.drive.gpu import add_gpu_flag, quiet
-from atom.compass.drive.identity import identity
+from atom.compass.drive.identity import _device, identity
 from atom.compass.run import CLOCK_ENV, ENV, _width_keys, _write_whole, memory
 from atom.compass.spec import MachineSpec, across_ranks
 from atom.compass.spec.fields import PINNED
@@ -90,6 +91,17 @@ def main(argv: list[str]) -> None:
     machine = MachineSpec.from_mapping(
         _width_keys(json.loads(Path(args.machine).read_text()))
     )
+    stated = machine_spec_key(machine).values["device"]
+    other = [
+        f"GPU {gpu['index']} is {gpu['name']} {gpu['arch']}"
+        for gpu in _device(args.gpu)
+        if f"{gpu['name']} {gpu['arch']}" != stated
+    ]
+    if other:
+        raise ValueError(
+            f"{', '.join(other)}, and {args.machine} states {stated}; "
+            "name the machine spec of the device the start runs on"
+        )
     out = Path(args.out)
     if out.exists() and any(out.iterdir()):
         raise ValueError(f"{out} holds an earlier run's files; one run per directory")

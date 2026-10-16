@@ -56,6 +56,8 @@ from atom.compass.spec import MachineSpec, SpecRefusal
 MACHINE = MachineSpec.from_mapping(copy.deepcopy(DOCUMENT))
 #: One TP2 rank's readings beside `READINGS[2]`: a rank need not read as another.
 RANK1 = dict(READINGS[2], persistent_forward_buffer_bytes=125_000_000)
+#: GPU 5 as rocm-smi names it on the suite's machine document's device.
+MI355X = {"index": 5, "name": "MI355X", "arch": "gfx950"}
 
 
 def tp2(tmp_path):
@@ -128,6 +130,7 @@ def test_the_command_publishes_under_the_stack_run_json_states(tmp_path, monkeyp
     )
     monkeypatch.setattr(measure_memory, "subprocess", started_by)
     monkeypatch.setattr(measure_memory.os, "killpg", gone)
+    monkeypatch.setattr(measure_memory, "_device", lambda gpus: [MI355X])
     monkeypatch.setattr(measure_memory, "identity", lambda *a: {"stack": stated})
     machine = tmp_path / "machine.json"
     machine.write_text(json.dumps(DOCUMENT))
@@ -146,6 +149,33 @@ def test_the_command_publishes_under_the_stack_run_json_states(tmp_path, monkeyp
         cells[Axis.SOFTWARE_STACK].value == "rocm 7.2.4 / aiter 0123abcde / rccl 2.22.3"
     )
     assert json.loads((out / "run.json").read_text()) == {"stack": stated}
+
+
+@pytest.mark.parametrize(
+    "gpus, cards",
+    [
+        ("5", [dict(MI355X, name="MI308X", arch="gfx942")]),
+        ("4,5", [dict(MI355X, index=4), dict(MI355X, name="MI308X", arch="gfx942")]),
+    ],
+)
+def test_a_start_on_another_device_than_the_spec_states_refuses_naming_both(
+    tmp_path, monkeypatch, gpus, cards
+):
+    monkeypatch.setattr(measure_memory, "_device", lambda gpus: cards)
+    machine = tmp_path / "machine.json"
+    machine.write_text(json.dumps(DOCUMENT))
+    flags = ["--gpu", gpus, "--machine", str(machine), "--store", str(tmp_path / "s")]
+
+    with pytest.raises(ValueError) as refused:
+        measure_memory.main(
+            [*flags, "--out", str(tmp_path / "out"), "--", "--model", "m"]
+        )
+
+    assert str(refused.value) == (
+        f"GPU 5 is MI308X gfx942, and {machine} states MI355X gfx950; "
+        "name the machine spec of the device the start runs on"
+    )
+    assert not (tmp_path / "out").exists() and not (tmp_path / "s").exists()
 
 
 def test_an_entry_measured_under_another_stack_does_not_load(tmp_path):
