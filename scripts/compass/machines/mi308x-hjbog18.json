@@ -40,34 +40,6 @@
         "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87",
         "source_root": "commit:983e42973"
       },
-      "device.runtime_constants.driver_and_collective_reserve_bytes[1]": {
-        "origin": "probed",
-        "model": "Qwen/Qwen3.8-27B",
-        "width": 1,
-        "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87",
-        "source_root": "commit:983e42973"
-      },
-      "device.runtime_constants.allocator_retained_after_load_bytes[1]": {
-        "origin": "probed",
-        "model": "Qwen/Qwen3.8-27B",
-        "width": 1,
-        "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87",
-        "source_root": "commit:983e42973"
-      },
-      "device.runtime_constants.persistent_forward_buffer_bytes": {
-        "origin": "probed",
-        "model": "Qwen/Qwen3.8-27B",
-        "width": 1,
-        "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87",
-        "source_root": "commit:983e42973"
-      },
-      "device.activations": {
-        "origin": "probed",
-        "model": "Qwen/Qwen3.8-27B",
-        "width": 1,
-        "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87",
-        "source_root": "commit:983e42973"
-      },
       "device.software_pinned_to.rocm": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
@@ -114,15 +86,6 @@
       "device.compute.fp8_flops": {
         "origin": "assumed"
       },
-      "device.runtime_constants.cudagraph_pool.w1_base_bytes": {
-        "origin": "assumed"
-      },
-      "device.runtime_constants.cudagraph_pool.w1_bytes_per_captured_token": {
-        "origin": "assumed"
-      },
-      "device.runtime_constants.cudagraph_pool.w_gt1_flat_bytes": {
-        "origin": "assumed"
-      },
       "interconnect.intra_node.topology": {
         "origin": "assumed"
       },
@@ -156,34 +119,6 @@
       "interconnect.inter_node.derate": {
         "origin": "assumed"
       },
-      "device.runtime_constants.driver_and_collective_reserve_bytes[1x8]": {
-        "origin": "probed",
-        "model": "Qwen/Qwen3-30B-A3B",
-        "width": 8,
-        "source_root": "commit:7370fbe47",
-        "record": "sha256:72a76cc8907cf77ae9c22583583b5d6ac5a6e2acb94d396e1df08b4ddd001d55"
-      },
-      "device.runtime_constants.allocator_retained_after_load_bytes[1x8]": {
-        "origin": "probed",
-        "model": "Qwen/Qwen3-30B-A3B",
-        "width": 8,
-        "source_root": "commit:7370fbe47",
-        "record": "sha256:72a76cc8907cf77ae9c22583583b5d6ac5a6e2acb94d396e1df08b4ddd001d55"
-      },
-      "device.runtime_constants.driver_and_collective_reserve_bytes[8]": {
-        "origin": "probed",
-        "model": "Qwen/Qwen3-30B-A3B",
-        "width": 8,
-        "source_root": "commit:7370fbe47",
-        "record": "sha256:21991eab509e154ac6da9a2c3d769603da9a9ed492e52a0a9ec18d2f4e18caa2"
-      },
-      "device.runtime_constants.allocator_retained_after_load_bytes[8]": {
-        "origin": "probed",
-        "model": "Qwen/Qwen3-30B-A3B",
-        "width": 8,
-        "source_root": "commit:7370fbe47",
-        "record": "sha256:21991eab509e154ac6da9a2c3d769603da9a9ed492e52a0a9ec18d2f4e18caa2"
-      },
       "host.tokenizers[qwen3.8-27b fast]": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B"
@@ -192,11 +127,9 @@
     "fragments": [
       "tokenizer",
       "device",
-      "assumed",
-      "start 1x8",
-      "start 8"
+      "assumed"
     ],
-    "notes": "one Qwen3.8-27B TP1 start at 983e42973 | no probe fills these | one Qwen/Qwen3-30B-A3B -tp 8 --enable-dp-attention --enable-expert-parallel --all2all-backend none start at commit:7370fbe47 | one Qwen/Qwen3-30B-A3B -tp 8 --enable-expert-parallel --all2all-backend none start at commit:7370fbe47"
+    "notes": "one Qwen3.8-27B TP1 start at 983e42973 | no probe fills these"
   },
   "host": {
     "cpu": {
@@ -239,36 +172,6 @@
       "fp8_flops": 688000000000000.0,
       "derate": 0.7
     },
-    "runtime_constants": {
-      "driver_and_collective_reserve_bytes": {
-        "1": 1249902592,
-        "1x8": 8189378560,
-        "8": 9485418496
-      },
-      "allocator_retained_after_load_bytes": {
-        "1": 14924832,
-        "1x8": 2165604480,
-        "8": 2165604480
-      },
-      "persistent_forward_buffer_bytes": 315351040,
-      "cudagraph_pool": {
-        "w1_base_bytes": 95500000.0,
-        "w1_bytes_per_captured_token": 318000.0,
-        "w_gt1_flat_bytes": 109000000.0
-      }
-    },
-    "activations": [
-      {
-        "id": "qwen3.8-27b",
-        "applies_to": [
-          "Qwen3_5ForConditionalGeneration"
-        ],
-        "fingerprint": "sha256:191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
-        "bytes_per_token": {
-          "1": 180480.0
-        }
-      }
-    ],
     "software_pinned_to": {
       "rocm": "7.2.4",
       "aiter": "f4e7c7509",

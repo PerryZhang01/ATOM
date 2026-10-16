@@ -296,7 +296,8 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
   fitted on the traces it grades (`08` D50).
 - **`run`** records in `run.json` what grading reads: whether the step roofline was on,
   whether host segments were skipped (`01` D4's what-if), the refusals, the coverage check's result, and the
-  backend's provenance, its fitted traces and profiled inputs included.
+  backend's provenance, its fitted traces and profiled inputs included, with the
+  assumption of each assumed `memory_readings` member an engine read.
   `python -m atom.compass.validate` decides from them whether a client run is gradeable:
   not when the run skipped host segments, priced with a backend
   fitted on the traces it grades or on profiled inputs, ran the step grid without a passed

@@ -19,11 +19,9 @@ from atom.compass.memory import (
     MemoryRefusal,
     Term,
     footprint_terms,
-    predicts,
     reserves,
 )
 from atom.compass.memory.check import parts
-from atom.compass.run import _width_keys
 from atom.compass.spec import MachineSpec
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -51,7 +49,6 @@ def _spec_terms(readings):
         ("datasheet", Method.ANALYTICAL),
         ("probed", Method.MEASURED),
         ("assumed", Method.DECLARED),
-        ("transferred-from:mi300x-8gpu", Method.DECLARED),
     ],
 )
 def test_a_spec_field_used_as_the_term_takes_its_method_from_its_origin(
@@ -69,26 +66,9 @@ def test_a_spec_field_used_as_the_term_takes_its_method_from_its_origin(
 
 
 def test_per_field_origins_of_a_real_machine_file_decide_each_term(qwen):
-    spec = MachineSpec.from_mapping(_width_keys(json.loads(HJBOG39.read_text())))
+    spec = MachineSpec.from_mapping(json.loads(HJBOG39.read_text()))
     terms = _spec_terms(readings_at(spec, qwen, 1))
     assert {t.method for t in terms.values()} == {Method.MEASURED}
-    # Its graph-pool line is assumed, so what it predicts is declared.
-    pool = predicts(spec, tp_width=1, captured_tokens=1023)
-    assert {t.method for t in pool.terms} == {Method.DECLARED}
-
-
-@pytest.mark.parametrize(
-    "origin, method",
-    [("probed", Method.ESTIMATED), ("assumed", Method.DECLARED)],
-)
-@pytest.mark.parametrize("tp_width", [1, 2])
-def test_the_pool_prediction_is_estimated_if_probed_and_declared_if_assumed(
-    origin, method, tp_width
-):
-    pool = predicts(spec_of(origin), tp_width=tp_width, captured_tokens=1023)
-    for term in pool.terms:
-        assert term.method is method
-        assert not term.validated
 
 
 def test_the_whole_graph_reservation_combines_with_the_activations_term():

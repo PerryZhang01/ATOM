@@ -11,8 +11,8 @@ This module keeps two graph-pool functions apart on purpose:
   because it is what `get_num_blocks` subtracts from the budget, so
   substituting anything else there would predict a block count ATOM would
   never produce.
-- **`predicts()` is what the pool really costs**, from the probed form in the
-  spec: `91.1 MiB + 0.3033 MiB per captured token` at width 1, and flat above it.
+- **`predicts()` is what the pool really costs**: the pool the start behind
+  the run's `memory_readings` entry reserved across its capture.
 
 **They disagree by 4-19x.** ATOM's is `0.2 x peak activations` of the *warmup*
 shape and is blind to the capture ladder, while the measured pool moves over 4x
@@ -29,12 +29,6 @@ reading `cudagraph_overhead` and `predicts()` names its own `cudagraph_pool`,
 and `readings.device_readings` refuses any reading but the first -- so "which
 one reserves" is answered at the call site by the code, not by a comment that
 can go stale.
-
-One thing the width scaling rests on, recorded where the number is used: flat
-above width 1 is well supported as a *shape* -- the allocated delta was
-byte-identical, 79,692,800, across three widths and three ladders -- but that
-the step happens at width 2 rather than the function merely looking flat over
-the widths measured rests on one point above width 1.
 """
 
 from __future__ import annotations
@@ -43,7 +37,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from atom.compass.backends.provenance import Method, combine
-from atom.compass.memory.terms import Reading, Term, spec_term
+from atom.compass.memory.terms import Reading, Term
 
 #: The name `device_readings` accepts. See the module docstring.
 RESERVES = "cudagraph_overhead"
@@ -215,56 +209,10 @@ def reserves(
     )
 
 
-def predicts(spec, *, tp_width: int, captured_tokens: int) -> Reading:
-    """What the pool really costs. This reserves nothing; `reserves()` does.
-
-    Below width 2 the probed form is a line in the captured tokens and both
-    of its coefficients are spec fields. At and above width 2 it is flat, and
-    the captured-token count does not enter -- which is the probed result and
-    not an omission, so the argument is still taken and the source says that it
-    did not enter rather than leaving a reader to infer it from an absence.
-    Either form projects probes onto this ladder, so a probed field gives an
-    estimated term.
-    """
-    if captured_tokens < 0:
-        raise ValueError(f"a ladder captures no negative tokens: {captured_tokens}")
-    if tp_width < 1:
-        raise ValueError(f"tensor-parallel width is at least 1: {tp_width}")
-    field = "device.runtime_constants.cudagraph_pool"
-    if tp_width > 1:
-        flat = f"{field}.w_gt1_flat_bytes"
-        return Reading(
-            PREDICTS,
-            (
-                spec_term(
-                    spec,
-                    "flat above width 1",
-                    flat,
-                    int(spec.value(flat)),
-                    probed=Method.ESTIMATED,
-                    source=f"{flat} (flat; {captured_tokens} captured tokens "
-                    "do not enter)",
-                    note="flat is well supported as a shape -- the allocated "
-                    "delta was byte-identical across three widths and three "
-                    "ladders -- but that the step is at width 2 rests on one "
-                    "point above width 1",
-                ),
-            ),
-        )
-    base, slope = f"{field}.w1_base_bytes", f"{field}.w1_bytes_per_captured_token"
-    return Reading(
-        PREDICTS,
-        (
-            spec_term(
-                spec, "base", base, int(spec.value(base)), probed=Method.ESTIMATED
-            ),
-            spec_term(
-                spec,
-                "per captured token",
-                slope,
-                int(spec.value(slope) * captured_tokens),
-                probed=Method.ESTIMATED,
-                source=f"{slope} x {captured_tokens} captured tokens",
-            ),
-        ),
-    )
+def predicts(memory) -> Reading | None:
+    """What the pool really costs: the pool the run's `memory_readings` member
+    `memory` read across its start's capture, None for a start that captured
+    nothing. This reserves nothing; `reserves()` does."""
+    if memory.values["cudagraph_pool_bytes"] is None:
+        return None
+    return Reading(PREDICTS, (memory.term("pool", "cudagraph_pool_bytes"),))

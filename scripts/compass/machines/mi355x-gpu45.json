@@ -44,34 +44,6 @@
         "source_root": "commit:409bedc98",
         "record": "sha256:02618dade3d07bcaac510da11cf8a279a1fe3ef2fce72d41e88a76f2df7c32c6"
       },
-      "device.runtime_constants.driver_and_collective_reserve_bytes[1x8]": {
-        "origin": "probed",
-        "model": "/models/DeepSeek-V4-Pro",
-        "width": 8,
-        "source_root": "commit:409bedc98",
-        "record": "sha256:02618dade3d07bcaac510da11cf8a279a1fe3ef2fce72d41e88a76f2df7c32c6"
-      },
-      "device.runtime_constants.allocator_retained_after_load_bytes[1x8]": {
-        "origin": "probed",
-        "model": "/models/DeepSeek-V4-Pro",
-        "width": 8,
-        "source_root": "commit:409bedc98",
-        "record": "sha256:02618dade3d07bcaac510da11cf8a279a1fe3ef2fce72d41e88a76f2df7c32c6"
-      },
-      "device.runtime_constants.persistent_forward_buffer_bytes": {
-        "origin": "probed",
-        "model": "/models/DeepSeek-V4-Pro",
-        "width": 8,
-        "source_root": "commit:409bedc98",
-        "record": "sha256:02618dade3d07bcaac510da11cf8a279a1fe3ef2fce72d41e88a76f2df7c32c6"
-      },
-      "device.activations": {
-        "origin": "probed",
-        "model": "/models/DeepSeek-V4-Pro",
-        "width": 8,
-        "source_root": "commit:409bedc98",
-        "record": "sha256:02618dade3d07bcaac510da11cf8a279a1fe3ef2fce72d41e88a76f2df7c32c6"
-      },
       "device.software_pinned_to.rocm": {
         "origin": "probed",
         "model": "/models/DeepSeek-V4-Pro",
@@ -127,15 +99,6 @@
       "host.admission_fixed_s": {
         "origin": "assumed"
       },
-      "device.runtime_constants.cudagraph_pool.w1_base_bytes": {
-        "origin": "assumed"
-      },
-      "device.runtime_constants.cudagraph_pool.w1_bytes_per_captured_token": {
-        "origin": "assumed"
-      },
-      "device.runtime_constants.cudagraph_pool.w_gt1_flat_bytes": {
-        "origin": "assumed"
-      },
       "interconnect.intra_node.topology": {
         "origin": "assumed"
       },
@@ -163,20 +126,6 @@
       "interconnect.inter_node.derate": {
         "origin": "assumed"
       },
-      "device.runtime_constants.driver_and_collective_reserve_bytes[1x8x8]": {
-        "origin": "probed",
-        "model": "/models/DeepSeek-V4-Pro",
-        "width": 8,
-        "source_root": "commit:906ea9e20",
-        "record": "sha256:554e32da64fd044fd623eefa468dbcd586ec6e9cdc5ed094493c00dcd5dcc567"
-      },
-      "device.runtime_constants.allocator_retained_after_load_bytes[1x8x8]": {
-        "origin": "probed",
-        "model": "/models/DeepSeek-V4-Pro",
-        "width": 8,
-        "source_root": "commit:906ea9e20",
-        "record": "sha256:554e32da64fd044fd623eefa468dbcd586ec6e9cdc5ed094493c00dcd5dcc567"
-      },
       "host.tokenizers[deepseek-v4-pro fast]": {
         "origin": "probed",
         "model": "/models/DeepSeek-V4-Pro",
@@ -187,10 +136,9 @@
       "tokenizer",
       "device",
       "datasheet",
-      "assumed",
-      "start 1x8x8"
+      "assumed"
     ],
-    "notes": "one DeepSeek-V4-Pro -tp 8 --enable-dp-attention --enable-tbo start at 409bedc98 | MI355X datasheet | no probe fills these | one DeepSeek-V4-Pro -tp 8 --enable-dp-attention --enable-tbo --enable-expert-parallel --moe-backend standard MORI_SHMEM_HEAP_SIZE=16G start at 906ea9e20"
+    "notes": "one DeepSeek-V4-Pro -tp 8 --enable-dp-attention --enable-tbo start at 409bedc98 | MI355X datasheet | no probe fills these"
   },
   "host": {
     "cpu": {
@@ -234,34 +182,6 @@
       "fp4_flops": 1.00663e+16,
       "derate": 0.7
     },
-    "runtime_constants": {
-      "driver_and_collective_reserve_bytes": {
-        "1x8": 13291749376,
-        "1x8x8": 30001856512
-      },
-      "allocator_retained_after_load_bytes": {
-        "1x8": 2773251124,
-        "1x8x8": 2804771916
-      },
-      "persistent_forward_buffer_bytes": 2320913408,
-      "cudagraph_pool": {
-        "w1_base_bytes": 95500000.0,
-        "w1_bytes_per_captured_token": 318000.0,
-        "w_gt1_flat_bytes": 109000000.0
-      }
-    },
-    "activations": [
-      {
-        "id": "deepseek-v4-pro",
-        "applies_to": [
-          "DeepseekV4ForCausalLM"
-        ],
-        "fingerprint": "sha256:5fe4568daee51c208cb8a79538eaeda090ae011ade1dee2c386aa95f569c810e",
-        "bytes_per_token": {
-          "1": 554941.625
-        }
-      }
-    ],
     "software_pinned_to": {
       "rocm": "7.2.4",
       "aiter": "9205e1059",

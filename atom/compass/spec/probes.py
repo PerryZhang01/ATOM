@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: MIT
-"""What a probe that needs no device emits, and which probe fills which constant.
+"""What a probe that needs no device emits.
 
-The first half of this module is probe class 0, which needs no device; the
-second is the table of which probe supplies each runtime constant, and the one
-entry that no probe supplies. The reading that makes two fragments comparable
-comes first.
+This module is probe class 0, which needs no device. The reading that makes two
+fragments comparable comes first.
 
 A probe measures part of a machine and emits a fragment: the fields it probed
 plus the stanza saying which machine they are for, by whom, when and how. What
@@ -56,9 +54,7 @@ origin stamped here would be this function asserting a measurement it did not
 take, over data it received. So the caller states it, with no default to fall
 through to, and it goes on each entry, with the subject. The core counts are
 `probed`, because this function did read them, so the fragment is `mixed` and
-says each field's origin in `provenance.origins`. That is also what keeps a
-tokenizer carried over from another spec from making the whole fragment a
-transfer, which a merge would then check against a device stack it never had.
+says each field's origin in `provenance.origins`.
 
 **What the entries are is checked here rather than several verbs later.** They
 are read against the closed table a tokenizer entry has, the same one a spec is
@@ -67,40 +63,6 @@ two rates oblige, is refused while the probe that produced it is still the thing
 in front of the author. Left to `validate`, the same entry is refused after a
 merge, in a document whose other fields came from elsewhere, and the fragment
 that carried it has to be worked back to.
-
-**Which probe fills which runtime constant, and the one entry that has none.**
-The runtime constants keyed by tensor-parallel width are the terms with no law
-behind them, so a width nobody probed is refused by name rather than
-interpolated, and the remedy such a refusal offers is to go and run a probe.
-`FILLED_BY` records which probe that is. Two of them fill these terms: one
-starts a single engine on one card and reads the device's own reserve off it,
-and one starts an engine per width above one and reads both width-keyed terms
-at each. Between them they do not cover the allocator's retained bytes at width
-one, and that hole is written here as a hole. The single-card probe is
-specified to fill the reserve term and not this one; the multi-rank probe is
-specified for the widths above one. Handing the entry to either would be
-writing a capability into the table that nothing states, and a table entry
-invented to close a gap travels onward as a measurement -- so asking for that
-entry's probe returns a refusal naming what has to be measured by hand instead.
-
-**And the hole is not a probe-class boundary somebody forgot to move.** The
-retained bytes measure 1.1e6 at width one and 2.17e9 flat at every width above it,
-because what is retained above one card is a collective staging pool that does
-not exist on a single card. Running the multi-rank probe at width one would
-therefore not be the same probe measuring a smaller number; it would be
-measuring a different quantity and writing it under the same name. Which of the
-two probes should own this entry, or whether it stays hand-measured, is a
-decision about what each probe is specified to fill, and it is not one this
-table can take on its own.
-
-**A width is a count of cards, so the domain starts at one.** `FILLED_BY` says
-which probe fills a constant at width one and above it, and there is nothing
-below that for either probe to describe: no engine starts on zero cards, and a
-negative width is not a deployment. So a non-positive width is refused by name
-rather than answered with the probe that happens to sit on the other side of
-the width-one test. That test is the only place a width reaches this module
-from a caller instead of from a document, where the schema has already refused
-it.
 
 **The sweep fits `fixed + tokens / rate` on relative error and refuses a fit
 it cannot stand behind.** A rate is charged on every call, short and long, so
@@ -121,56 +83,6 @@ from .tokenizers import table
 
 #: Where the kernel publishes one directory per processor.
 PROCESSORS = "/sys/devices/system/cpu"
-
-#: The probe that starts one engine on one card.
-SINGLE_CARD = "device-memory"
-#: The probe that starts one engine per tensor-parallel width above one.
-MULTI_RANK = "device-runtime-constants"
-
-#: Which probe fills each width-keyed runtime constant, at width one and above
-#: it. `None` is a hole in the tools, not a field with a default behind it.
-FILLED_BY = {
-    "driver_and_collective_reserve_bytes": (SINGLE_CARD, MULTI_RANK),
-    "allocator_retained_after_load_bytes": (None, MULTI_RANK),
-}
-
-
-def probe_for(constant: str, tp_width: int) -> str:
-    """The probe that fills one width-keyed constant at one width, or a refusal."""
-    if constant not in FILLED_BY:
-        raise SpecRefusal(
-            Rule.NO_DEFAULTS,
-            f"`{constant}` is not one of the constants probed per "
-            f"tensor-parallel width: {sorted(FILLED_BY)}",
-            "ask this of a width-keyed runtime constant; a term that is flat "
-            "in width has no width to ask about, and one that is not a "
-            "runtime constant is not a probe's to fill",
-        )
-    if isinstance(tp_width, int) and tp_width < 1:
-        raise SpecRefusal(
-            Rule.NO_DEFAULTS,
-            f"tensor-parallel width {tp_width} is not a number of cards an "
-            f"engine runs on, so no probe fills `{constant}` there",
-            "ask about a width of one or more; the probes here fill this term "
-            "at one card and above it, and a width below that is a wrong "
-            "question rather than a term nobody has probed yet",
-        )
-    at_one, above_one = FILLED_BY[constant]
-    probe = at_one if tp_width == 1 else above_one
-    if probe is None:
-        raise SpecRefusal(
-            Rule.NO_DEFAULTS,
-            f"no probe here fills `{constant}` at tensor-parallel width {tp_width}",
-            f"measure it on an engine at that width and write the entry down "
-            f"by hand: `{SINGLE_CARD}` reads the device's own reserve and not "
-            f"this term, `{MULTI_RANK}` starts one engine per width above "
-            "one, and neither is documented to produce this number. running "
-            "the second one here would not be the same measurement taken "
-            "smaller: what is retained above one card includes a collective "
-            "staging pool that a single card has none of, so it would put a "
-            "different quantity under this name",
-        )
-    return probe
 
 
 def _unreadable(what: str) -> NoReturn:

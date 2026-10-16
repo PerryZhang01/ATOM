@@ -86,38 +86,26 @@ class Term:
         return f"estimated, {'' if self.validated else 'un'}validated"
 
 
-def spec_term(
-    spec,
-    name: str,
-    path: str,
-    nbytes: int,
-    *,
-    width: int | None = None,
-    probed: Method = Method.MEASURED,
-    source: str = "",
-    note: str = "",
-) -> Term:
+def spec_term(spec, name: str, path: str, nbytes: int) -> Term:
     """A spec field used as a term, its method read off the field's origin.
 
-    A datasheet value is analytical, a probed one is `probed` -- measured when
-    the term is the probed value itself, estimated when it projects one -- and
-    an assumed or transferred one is declared, with a note naming the origin.
-    A probe subject's record goes on the term.
+    A datasheet value is analytical, a probed one measured, and an assumed one
+    declared, with a note naming the origin. A probe subject's record goes on
+    the term.
     """
-    found = spec.origin(path, width)
+    found = spec.origin(path)
     origin = found["origin"]
-    method = {"datasheet": Method.ANALYTICAL, "probed": probed}.get(
+    method = {"datasheet": Method.ANALYTICAL, "probed": Method.MEASURED}.get(
         origin, Method.DECLARED
     )
+    note = ""
     if method is Method.DECLARED:
-        stated = (
+        note = (
             f"{path} is {origin} in the machine spec {spec.value('name')}; a "
             "probe of this platform replaces it"
         )
-        note = f"{stated}. {note}" if note else stated
-    labelled = path if width is None else f"{path}[{width}]"
     records = (found["record"],) if "record" in found else ()
-    return Term(name, nbytes, method, source or labelled, note, records=records)
+    return Term(name, nbytes, method, path, note, records=records)
 
 
 @dataclass(frozen=True, slots=True)

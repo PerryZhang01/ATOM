@@ -318,8 +318,6 @@ rather than importing it.
   harmless, since block ids must be valid on every stage's KV tensor. Whether a simulated
   PP run has a live group is `01` D1's question about topology and is left there; the
   divergence without one is not a question, and is recorded here.
-- **Which width keys `non_torch` under DP-attention is open** (2026-10-10, D15): it waits
-  on [#702](https://github.com/jgong5/ATOM/issues/702).
 - `gpu_memory_utilization` here is a fraction of **total**, with the non-KV footprint
   subtracted afterwards — the vLLM convention, **not** TRT-LLM's. Comparing the resulting
   block count against a number produced under the other convention is wrong.
@@ -378,9 +376,11 @@ none read from a runtime:
 
 The runtime and library memory constants above are not in it (revised 2026-10-14):
 `compass measure memory` takes them on the target per configuration, and a run reads that
-`memory_readings` entry and refuses without it (`07` D38, Phase 2). For a card nobody has
-run, developer tooling outside the CLI states the entry, every reading marked assumed,
-and a run records that it is.
+`memory_readings` entry and refuses without it (`07` D38, Phase 2); the spec keeps the
+capacity alone (revised 2026-10-16, [#1226](https://github.com/jgong5/ATOM/issues/1226)).
+For a card nobody has run, developer tooling outside the CLI states the entry, each
+member stating `assumed` and where its readings were copied from; every term built on it
+is declared, and `run.json`'s provenance lists the assumption (`memory_readings_assumed`).
 
 ### The one honesty measure retained
 
@@ -394,7 +394,7 @@ KV gate, a spec that cannot be recovered from the artifact makes an error unattr
   is the accepted cost of option 4. The mitigation is the echo above plus, eventually, a
   per-term comparison against a real run on any card that is available — which costs no
   GPU time, because every hardware run already prints the real breakdown.
-- **The runtime constants are assumed to transfer across devices of one software
+- **The memory readings are assumed to transfer across devices of one software
   generation, and not across software upgrades.** The reading behind the assumption: they
   depend on the ROCm/RCCL/AITER build more than on the die — the +5980 MiB at width > 1 is
   collective buffer sizing, and the 926 MiB at TP1 is HIP context plus libraries. Adopted
@@ -402,23 +402,8 @@ KV gate, a spec that cannot be recovered from the artifact makes an error unattr
   for `memory_readings`, which a ROCm, AITER or RCCL change invalidates. Still untested
   across dies; recorded as **T50** and cheap to settle with one startup on a second card
   type.
-- **`non_torch` and the load residue under DP-attention: which width keys them is open**
-  (2026-10-10). Both tables are keyed by `tensor_parallel_size`, which `CoreManager`
-  rewrites to 1 under DP-attention, yet every rank there sits in DP-wide and EP-wide
-  groups whose device communicators aiter builds (`15` D90, Q4). At the nightly DeepSeek-V4-Pro
-  DPA cell the two candidate keys differ by 10 GB per rank:
-  `driver_and_collective_reserve_bytes` is 0.97 GB at width 1 and 11.2 GB at width 8
-  ([#545](https://github.com/jgong5/ATOM/issues/545)). The answer waits on the spike
-  [#702](https://github.com/jgong5/ATOM/issues/702).
 - Three topologies of one model is interpolation, not a law. The prior work said so
   explicitly and could not get a third model because the box was offline.
-- **The graph-pool width scaling rests on one point above W=1.** Context, since the line
-  alone does not carry it: the measured form is `91.1 MiB + 0.3033 MiB per captured token`
-  at W=1, and a **flat 104 MiB** at W=2, W=4 and W=8 — where the allocated delta was
-  byte-identical (79,692,800) across three widths *and* three capture ladders. So "flat
-  above W=1" is well supported as a *shape*; what rests on one point is the claim that the
-  transition happens at W=2 rather than being a function that merely looks flat over the
-  widths measured. A fourth width would not help; a second *model* would.
 - The spec-authoring tools are doc `05` D26's (probe classes emitting fragments,
   `merge`/`validate`/`explain`); the memory readings are doc `07`'s Phase 2,
   `measure memory`. The tools probe a real card where one is available and fall back to
@@ -460,7 +445,7 @@ source per term; the bullets below say why each is what it is.
 | activations | the run's `memory_readings` entry: one start's warmup `peak - current` over its warmup tokens, on a warm compile cache, times the deployment's warmup tokens, measured at the entry's own. The liveness walk replaces it once capture lands | [#704](https://github.com/jgong5/ATOM/issues/704), [#705](https://github.com/jgong5/ATOM/issues/705), [#965](https://github.com/jgong5/ATOM/issues/965) |
 | invisible scratch | inside the activations reading; a term of its own only under the liveness walk (`04` T4) | [#704](https://github.com/jgong5/ATOM/issues/704) |
 | persistent | `persistent_forward_buffer_bytes` in the run's `memory_readings` entry | — |
-| load residue, `non_torch` | the run's `memory_readings` entry; the width under DP-attention is open (D15) | [#702](https://github.com/jgong5/ATOM/issues/702) |
+| load residue, `non_torch` | the run's `memory_readings` entry, keyed by the parallel layout (`atom/compass/run/memory.py::key_fields`) | [#702](https://github.com/jgong5/ATOM/issues/702) |
 | graph pool | `graph_pool.reserves()` for the deployment's own `enforce_eager`; when it captures, the runner's `_piecewise_cg_active()` picks the branch, whole-graph from the activations term, piecewise from `piecewise_per_token_bytes` and `capture_token_shapes` over the deployment's ladder | [#700](https://github.com/jgong5/ATOM/issues/700) |
 
 **The per-term check** is `memory/compare.py` with `graph_pool.predicts`: each predicted
@@ -550,5 +535,5 @@ for the model — which is the per-term rule above, not the aggregate.
 |---|---|---|
 | D13 | Do not simulate the KV pool. Stub `allocate_kv_cache`; ATOM's real `BlockManager`, `BlockPool`, prefix index and `plan_pools` run unmodified. | 2026-09-18 |
 | D14 | Substitute the five device readings, reuse ATOM's budget arithmetic and `plan_pools`. Compass models a dedicated device; that is a stated scope boundary. | 2026-09-18 |
-| D15 | The device specification is an input artifact authored outside Compass, carrying capacity, compute, bandwidth, interconnect and derate factors. It is echoed into every run artifact. The runtime memory constants are `measure memory`'s `memory_readings` entries, per configuration, which a run refuses without. | 2026-09-18; revised 2026-10-14 (#851) |
+| D15 | The device specification is an input artifact authored outside Compass, carrying capacity, compute, bandwidth, interconnect and derate factors. It is echoed into every run artifact. The runtime memory constants, activations included, are `measure memory`'s `memory_readings` entries, per configuration, which a run refuses without; an assumed entry's terms are declared and `run.json` lists its assumption. | 2026-09-18; revised 2026-10-14 (#851); 2026-10-16 (#1226) |
 | D16 | Validate every non-KV memory term individually, never as a sum. Keep ATOM's graph-pool estimator and the measured one as two separate functions. Revised: one source per term. Weights come from a meta build in the simulated runner at the deployment's group widths. Activations come from a coefficient keyed by architecture, `config.json` sha256 and tensor-parallel width, with the scratch inside it and a geometry form as fallback, until the liveness walk lands. The graph pool reserves for the deployment's own capture mode, and the per-term check is wired. Activations from the `memory_readings` entry, with no geometry form. | 2026-09-18; revised 2026-10-10 and 2026-10-16 (#965) |

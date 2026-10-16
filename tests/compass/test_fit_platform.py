@@ -62,7 +62,7 @@ CARD = {
 
 def spec(name: str) -> tuple[Path, MachineSpec]:
     path = MACHINES / f"{name}.json"
-    document = compass_run._width_keys(json.loads(path.read_text()))
+    document = json.loads(path.read_text())
     return path, MachineSpec.from_mapping(document)
 
 

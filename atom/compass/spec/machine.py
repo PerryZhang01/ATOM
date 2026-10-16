@@ -8,7 +8,7 @@ chosen for what comes next: combining two documents, reporting on one, and
 explaining where a number came from are all per-field operations, and a nested
 mapping makes every one of them a recursive walk written again each time.
 
-Five properties are enforced here rather than described.
+Four properties are enforced here rather than described.
 
 **The schema is closed.** A key with no row in the field table is refused where
 it sits. That, and not a list of excluded knobs, is how the spec stays a
@@ -37,15 +37,9 @@ second cost on top: keeping one of the two would keep whichever the mapping
 yielded last, silently, and differently on a document whose keys were written
 in another order.
 
-**A runtime constant has no default.** The widths that were probed are the
-widths that can be asked for; a width that was not probed is refused by name,
-because these terms fit no law and there is nothing to interpolate along.
-
-**A stack pin is checked.** `check_stack` compares the versions the constants
-were probed against with the versions now loaded and warns, naming both, for
-every component that differs. The evidence says these constants track the
-compute stack at least as much as the die, so a spec transferred across a stack
-upgrade is a plausible-looking wrong answer.
+**A stack pin is checked.** `check_stack` compares the versions the spec's
+numbers were taken on with the versions now loaded and warns, naming both, for
+every component that differs.
 
 **The resolved spec is total, and it is echoed.** `echo` rebuilds the whole
 document from the checked values, and `digest` fingerprints it. A run artifact
@@ -79,17 +73,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, NoReturn
 
-from .fields import (
-    BLOCKS,
-    BY_PATH,
-    PINNED,
-    RUNTIME_CONSTANTS,
-    SCHEMA,
-    SCHEMA_VERSION,
-    Field,
-    Kind,
-    check,
-)
+from .fields import BLOCKS, BY_PATH, PINNED, SCHEMA, SCHEMA_VERSION, Field, Kind, check
 from .rules import (
     Rule,
     SpecRefusal,
@@ -100,7 +84,6 @@ from .rules import (
 )
 from .tokenizers import Backend, TokenizerEntry, TokenizerTable, table
 
-ACTIVATIONS = "device.activations"
 #: The tokenizer table, combined and given an origin per entry.
 TOKENIZERS = "host.tokenizers"
 
@@ -152,50 +135,7 @@ def _check_domain(values: Mapping[str, Any]) -> None:
         )
 
 
-#: An activation entry: the model it was measured on, keyed by its
-#: architectures and its config.json's sha256 (one architecture serves every
-#: size of a family), and per tensor-parallel width one real run's warmup
-#: `peak - current` allocated bytes over its warmup tokens, the reading ATOM's
-#: `ModelRunner._estimate_cudagraph_overhead` takes.
-ACTIVATION_FIELDS = {
-    "id": Kind.TEXT,
-    "fingerprint": Kind.TEXT,
-    "applies_to": Kind.NAMES,
-    "bytes_per_token": Kind.WIDTH_TABLE,
-}
-
-
-def _check_activations(entries) -> None:
-    """Refuse an entry that is not one, and a model two entries answer for."""
-    seen = set()
-    for index, entry in enumerate(entries):
-        where = f"{ACTIVATIONS}[{index}]"
-        if not isinstance(entry, Mapping) or set(entry) != set(ACTIVATION_FIELDS):
-            raise SpecRefusal(
-                Rule.SHAPE,
-                f"`{where}` holds {entry!r}, which is not an activation entry",
-                f"write a mapping of exactly {', '.join(ACTIVATION_FIELDS)} there",
-            )
-        for name, kind in ACTIVATION_FIELDS.items():
-            check(Field(name, kind), entry[name], f"{where}.{name}")
-        for claim in ((a, entry["fingerprint"]) for a in entry["applies_to"]):
-            if claim in seen:
-                raise SpecRefusal(
-                    Rule.SHAPE,
-                    f"{claim[0]!r} with config {claim[1]} resolves to two entries",
-                    "one model resolves to one entry; merge their widths into it",
-                )
-            seen.add(claim)
-
-
 def _missing(field: Field) -> None:
-    if field.path.startswith(RUNTIME_CONSTANTS):
-        raise SpecRefusal(
-            Rule.NO_DEFAULTS,
-            f"`{field.path}` is missing",
-            "measure it on the engine and write it down; there is no law "
-            "behind this term, so a default would be a guess wearing a number",
-        )
     if field.kind is Kind.DERATE:
         raise SpecRefusal(
             Rule.DERATE,
@@ -254,7 +194,7 @@ def _survey(node: Mapping, prefix: str, found: dict):
 
     The walk carries on past a key it refuses, because one unrecognised key
     says nothing about the rest of the document: the block beside it holds the
-    width tables and the stack pin, and stopping here would take those out of
+    capacity and the stack pin, and stopping here would take those out of
     reach of every question asked further on. A reader that has to produce a
     value wants the first refusal and `_walk` below raises it; a check wants
     them all.
@@ -331,7 +271,6 @@ class MachineSpec:
                     _missing(field)
                 continue
             values[field.path] = check(field, found[field.path], field.path)
-        _check_activations(values.get(ACTIVATIONS, ()))
         check_subject(values, "this spec")
         _check_domain(values)
         return cls(values, table(values[TOKENIZERS]))
@@ -345,10 +284,10 @@ class MachineSpec:
             refuse_absent_field(path, field.required)
         return self.values[path]
 
-    def origin(self, path: str, width: int | None = None) -> dict:
+    def origin(self, path: str) -> dict:
         """Where one field came from: its origin and, when probed, the subject
-        the probe ran on. A width-keyed constant is asked at one width, and a
-        tokenizer entry by its label, `host.tokenizers[<id> <backend>]`."""
+        the probe ran on. A tokenizer entry is asked by its label,
+        `host.tokenizers[<id> <backend>]`."""
         if path in ("name", "schema_version") or path.startswith("provenance."):
             raise SpecRefusal(
                 Rule.ADDRESSING,
@@ -358,7 +297,6 @@ class MachineSpec:
         labels = [
             entry_label(e.key.id, e.key.backend.value) for e in self.tokenizers.entries
         ]
-        label = path
         if (
             path == TOKENIZERS
             or path.startswith(f"{TOKENIZERS}[")
@@ -371,10 +309,7 @@ class MachineSpec:
             )
         if path not in labels:
             self.value(path)
-            if BY_PATH[path].kind is Kind.WIDTH_TABLE:
-                self.runtime_constant(path.rsplit(".", 1)[-1], width)
-                label = f"{path}[{width}]"
-        return field_origin(self.values, label, "this spec")
+        return field_origin(self.values, path, "this spec")
 
     def echo(self) -> dict:
         """The whole resolved spec, for a run artifact to carry verbatim."""
@@ -392,59 +327,14 @@ class MachineSpec:
 
     def digest(self) -> str:
         """A fingerprint of the echo, so an artifact can name the spec it used."""
-        # Keys sort as JSON writes them, so a layout key can sit beside a width.
-        written = json.loads(json.dumps(self.echo()))
-        canonical = json.dumps(written, sort_keys=True, separators=(",", ":"))
+        canonical = json.dumps(self.echo(), sort_keys=True, separators=(",", ":"))
         return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
-
-    def runtime_constant(self, name: str, tp_width: int | None = None) -> Any:
-        """A probed constant, refusing a width nobody probed."""
-        path = f"{RUNTIME_CONSTANTS}.{name}"
-        field = BY_PATH.get(path)
-        if field is None:
-            _unresolved(path)
-        if field.kind is not Kind.WIDTH_TABLE:
-            return self.value(path)
-        measured = self.value(path)
-        if tp_width is None:
-            raise SpecRefusal(
-                Rule.NO_DEFAULTS,
-                f"`{name}` is probed per tensor-parallel width and none was given",
-                f"ask for one of the probed widths {sorted(measured, key=str)}",
-            )
-        if tp_width not in measured:
-            raise SpecRefusal(
-                Rule.NO_DEFAULTS,
-                f"`{name}` was not probed at tensor-parallel width {tp_width}; "
-                f"this spec has {sorted(measured, key=str)}",
-                "measure the engine at that width and add the entry; the "
-                "probed widths fit no fixed-plus-per-peer form, so there is "
-                "nothing here to interpolate along",
-            )
-        return measured[tp_width]
 
     def tokenizer_for(
         self, architecture: str, backend: Backend, fingerprint: str | None = None
     ) -> TokenizerEntry:
         """The probed tokenizer for a model architecture, or a refusal."""
         return self.tokenizers.resolve(architecture, backend, fingerprint)
-
-    def activations_for(
-        self, architecture: str | None, fingerprint: str | None, tp_width: int
-    ) -> tuple[str, float, tuple[str, ...]] | None:
-        """The id of the entry measured for this model, its activation bytes
-        per token at this width and the records of the runs it was read off,
-        or None when nothing was measured for it."""
-        for entry in self.values.get(ACTIVATIONS, ()):
-            if (
-                architecture in entry["applies_to"]
-                and fingerprint == entry["fingerprint"]
-                and tp_width in entry["bytes_per_token"]
-            ):
-                record = self.origin(ACTIVATIONS).get("record")
-                records = (record,) if record else ()
-                return entry["id"], entry["bytes_per_token"][tp_width], records
-        return None
 
     def check_stack(
         self, observed: Mapping[str, str], *, carried_only: bool = False
