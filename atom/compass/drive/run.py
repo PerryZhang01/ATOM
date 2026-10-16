@@ -16,12 +16,11 @@ its peer, which one invocation does not start.
 `--coverage` names record directories and `shape_population` tokens whose steps
 the backend's coverage check reads before the server starts: the step grid's
 is `step_grid_plan.coverage`, over the bundle `step_grid.load` loads under the
-config ATOM's arguments resolve. Before the bundle loads, an input refuses
-when a DP rank's engine file states another scheduler bound, capture ladder or
-TP width (`SHAPING`) than that config, naming each field and both values: a
-record directory's `steps/dp<r>.engine.json`, a population's `engine` member.
-A step the check does not cover refuses the run, naming the step; another
-backend has no check, and refuses `--coverage`.
+config ATOM's arguments resolve. An input whose DP rank's engine file (a
+record's `steps/dp<r>.engine.json`, a population's `engine` member) states
+another `SHAPING` field than that config refuses first, naming each field and
+both values; a step the check does not cover refuses the run, naming the step.
+Another backend has no check, and refuses `--coverage`.
 
 Once the server stops, run.json gains, beside `serve`'s identity: `run_file`,
 the run file the server was handed; `step_roofline`, the run file's key,
@@ -44,8 +43,9 @@ from atom.compass.drive import runfile, serve
 from atom.compass.run import STEP_GRID, STEP_LINEAR, STEP_STUB, step_grid
 
 PROG = "compass run"
-#: The engine fields that shape a step's batch, which an input states as this
-#: run resolves them or refuses.
+#: The engine fields that shape a step's batches: the scheduler's bounds, the
+#: capture ladder and the TP width. An input states them as this run resolves
+#: them, or refuses.
 SHAPING = (*BOUNDS, "ladder", "tensor_parallel_size")
 
 
@@ -122,17 +122,16 @@ def _steps(name: str, store, here: dict) -> list:
     engine states other `SHAPING` fields than `here` refuses, naming each."""
     path = Path(name)
     if (path / serve.RUN_JSON).is_file():
-        files = (path / serve.STEPS).glob("dp*[0-9].jsonl")
         records = {
             int(p.stem[2:]): (p.read_text(), p.with_suffix(".engine.json").read_text())
-            for p in files
+            for p in (path / serve.STEPS).glob("dp*[0-9].jsonl")
         }
     else:
         entry = store.read(store.key_from_token(Kind.SHAPE_POPULATION, name))
         records = {
-            rank.dp: tuple(
-                entry.read_member(stem, rank, extension).decode()
-                for stem, extension in (("steps", "jsonl"), ("engine", "json"))
+            rank.dp: (
+                entry.read_member("steps", rank, "jsonl").decode(),
+                entry.read_member("engine", rank, "json").decode(),
             )
             for rank in entry.topology.ranks()
         }
