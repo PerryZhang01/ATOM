@@ -10,6 +10,11 @@ written against it yet; implementation follows the execution plan in `16`.
 [#952](https://github.com/jgong5/ATOM/issues/952):** the run summary reports predicted
 seconds by method (`seconds_by_method`), each with its step count and share (D3.5).
 
+**Revised 2026-10-16 by the owner's ruling on
+[#1087](https://github.com/jgong5/ATOM/issues/1087):** D6.1 makes the lmcache MP server an
+LP of its own; inside a DP group a park request amends D3's member join rules 1, 2 and 5
+(ruling on [#1162](https://github.com/jgong5/ATOM/pull/1162)).
+
 **Scope of this document.** The execution architecture: what a simulated run *is*,
 which processes exist, how virtual time advances, and what contract the rest of the
 system must honour. It does **not** cover the cost model, the memory model, model
@@ -389,6 +394,7 @@ one LP:
 | PD container (prefill or decode) | one full ATOM deployment | **2** | its frontend LP and its engine LP |
 | Traffic source | — | **1** | |
 | Atomesh router, 1P1D | 1 Rust process | **0**, or **1** under `--dp-aware` | Part of the channels that cross it: with one P and one D it has no choice to make, so it contributes only a fixed per-request forward cost, stated in those channels' lookahead (D7). Under `--dp-aware` (DP attention) it chooses among DP ranks on load that responses move, and is LP `router` (D7). Several P or D instances are deferred. |
+| lmcache MP server (`ATOM_KV_OFFLOAD=lmcache_mp`) | 1 process | **1** (`lmcache`) | Its cached chunks decide later hits for every engine that reaches it, so it is a Compass stand-in on the real channels (D6.1). |
 | PP stages | N EngineCores | **N** | The only group the collapse does not cover. |
 
 LP counts for the milestones (`16` D95):
@@ -448,6 +454,8 @@ frames. The CA completes the LP's request only when every member has called:
    time never rises on a partial request.
 4. One common grant `G`; each member is released only the messages on its own channels.
 5. A member never advances time alone; a lone call only ships its send log.
+
+With `lmcache_mp` above DP width 1, a park request amends rules 1, 2 and 5 (D6.1).
 
 Every member's step end is a round (owner ruling 2026-10-15, #988). A rank whose forward
 waits on its device, one with output other than the DP dummy, ends at the group's `max`;
@@ -760,6 +768,7 @@ receives it itself, at its own receive point.
 | PP stage to stage: `meta`, `tokens`, `kv_status` | stage loop, `pp_transport.py::PPStageTransport.send_metadata` / `send_tokens` / `send_kv_status` | the stage loop's own poll and receive (inline) | stated IPC delay: each is one ZMQ message, as on the frontend channels; the head's batch to stage `k` is `meta#pp<k>`. The hidden states between stages are `pp_data` (`15` D91). |
 | `engine-P->engine-D:prefill_done` (RapidServe only, in neither M1 nor M2) | prefill step loop, direct send in `engine_core.py::PrefillEngineCore._process_engine_step` | decode handler thread `DecodeEngineCore._recv_prefill_done`, `sock.recv()` (thread) | stated IPC delay |
 | `engine-D->engine-P:block_assignment` (RapidServe only, in neither M1 nor M2) | decode step loop, direct send in `engine_core.py::DecodeEngineCore._send_block_assignment` | prefill handler thread `PrefillEngineCore._recv_block_assignments`, `sock.recv()` (thread) | stated IPC delay |
+| `engine->lmcache:lookup#dpN`, `engine->lmcache:transfer#dpN.tpK` and their replies (`ATOM_KV_OFFLOAD=lmcache_mp` only) | D6.1 | D6.1 | stated `lmcache_ipc_s` |
 
 The RapidServe rows exist only under `--enable-rapidserve` (D2), whose prefill and decode
 `EngineCore`s are two engine LPs of one deployment; they are the only channels received
@@ -1152,7 +1161,7 @@ undecided**.
 |---|---|---|---|
 | K1 | Event cost | TAR: `advance_to(now + d)`, `d` from the cost model or a resource station; for a forward, from the runner's host and device recurrence (below) | the forward, the idle DP rank's dummy batch, KV-transfer completion, tokenization, the DP lockstep `all_reduce`, multimodal preprocessing (refused today) |
 | K2 | Clock read | returns the LP's logical time | the arrive / leave / first-token stamps, `_passed_delay`, the waiting-prefill age |
-| K3 | Idle point | NER: `next_event(t, t_daemon)` | the step loops' spin, the PP bounded polls, offline `get_output` |
+| K3 | Idle point | NER: `next_event(t, t_daemon)` | the step loops' spin, the PP bounded polls, offline `get_output`, a step-loop wait on an lmcache reply (D6.1) |
 | K4 | Channel send | timestamped send, logged on the clock owner | PD direct sends, PP sends, output sends through the relay queue |
 | K5 | Channel receive | counted at the wait point, then TSO delivery | the engine input thread, the frontend output thread, the PD handler threads, the PP receives and zero-bound drains, the PP `flush_pp_send` |
 | K6 | Wait inside one LP | LP aggregation: never reported to the CA | TP worker RPC and barriers, frontend coroutines awaiting their own process's data, control commands' calls to workers, the DP group's reductions (the `PrefillDelayer` all_reduce, and the step-seconds `all_gather` in the predicted forward) |
@@ -1847,6 +1856,223 @@ two differ the code is right.
 
 ---
 
+## D6.1. KV offload to the lmcache MP server: an LP of its own
+
+Owner ruling on [#1087](https://github.com/jgong5/ATOM/issues/1087), 2026-10-16.
+
+### Problem
+
+`ATOM_KV_OFFLOAD=lmcache_mp` (`arg_utils.py::kv_offload_connector_config`), which the
+V4 PD-Max recipe sets on prefill beside Mooncake (a `multi` connector), stores and loads
+KV through a separate `lmcache server` process. The scheduler half's adapter
+(`mp/deployment.py::_make_scheduler_adapter`) and each worker's
+(`_make_worker_adapter`) hold a client that lmcache 0.5.6.dev, the nightly image's,
+builds with `lmcache/v1/multiprocess/transport/factory.py::RequestClientFactory.create`:
+for a ZMQ URL a `transport/zmq_impl/mq.py::MessageQueueClient`, a DEALER to the server's
+ROUTER at `lmcache.mp.host:port`. One `ClientPollingLoop` thread per process sends every
+client's queued requests and resolves each reply's future. Stores and loads finish steps
+after they are submitted, and the
+server's cached chunks decide later hits for every engine that reaches it.
+`NonAllocatingRunner.allocate_kv_cache` refuses the connector today.
+
+### Decision
+
+**One LP, `lmcache`, per server process, played by a Compass stand-in.** The server's
+state (cached chunks, read locks, its queue) decides what every engine sharing it is
+told, which is D7's test for an LP. The real server cannot be instrumented as the router
+is: it maps each engine's KV pool over CUDA IPC and copies on the device (README
+principle 2). The stand-in reproduces its channel (D3, *Lookahead sources*): it binds
+the same URL, decodes and encodes lmcache's own MQ frames, answers the request types
+ATOM's adapters send with the reply payloads the real server returns, and takes the
+`lmcache server` flags the run names, refusing by name any it does not model. Its clock
+owner is its one loop: it receives inline at its own receive point, runs the work on the
+stations below, sends each reply when its job completes, and asks only NER, with `t` its
+next job completion. No other thread sends.
+
+**State.** A content index keyed as lmcache keys a chunk (model namespace and chunk
+token hashes), with the `--l1-size-gb` byte budget, the eviction policy and watermark,
+lookup read locks, sessions, and the read TTL. A store's chunks become visible at the
+store's completion on the server clock. A TTL expiry is a daemon deadline (`t_daemon`,
+#533): it changes later hits but keeps no run alive.
+
+**Channels.** Every one is a real ZMQ path between the real endpoints' identities; the
+stamp is its own header frame, as on every wrapped socket
+(`clock.py::WrappedSocket`). `N` is the DP rank, `K` the TP rank.
+
+| Channel | Sender (K-class) | Receiver (mode, K-class) | Lookahead |
+|---|---|---|---|
+| `engine->lmcache:lookup#dpN` | step loop, at `MessageQueueClient.submit_request` (LOOKUP, QUERY_PREFETCH_STATUS, FREE_LOOKUP_LOCKS, END_SESSION); the `ClientPollingLoop` thread sends it as a relay (K4, registered at the put, as the engine output queue is) | stand-in loop (inline, K5) | `lmcache_ipc_s` (below) |
+| `lmcache->engine:lookup#dpN` | stand-in loop, at the job's completion (K4) | the `ClientPollingLoop` thread, which sets the future (thread, K5); TSO delivery resolves it at the reply's arrival | `lmcache_ipc_s` |
+| `engine->lmcache:transfer#dpN.tpK` | STORE or RETRIEVE of TP rank `K`'s connector, one per writer rank (one per group under `lmcache.mp.tp_rank_collapse`) (K4) | stand-in loop (inline, K5) | `lmcache_ipc_s` |
+| `lmcache->engine:transfer#dpN.tpK` | stand-in loop, at the copy's completion (K4) | step loop, in `process_completions` (inline, K5) | `lmcache_ipc_s` |
+
+In a 1P+1D run the engine end is `engine-P`. Every cycle through the server crosses two
+channels, so its lookahead is `2 x lmcache_ipc_s`, positive. `lmcache_ipc_s` is a run-file
+key defaulting to the run's `ipc_s` (`2**-14` s in `scripts/compass/parity_one_node.sh`):
+the recipe runs the server on loopback TCP beside prefill, the same one-host ZMQ hop as
+the engine's IPC channels; sample (c) records the adapter's measured LOOKUP round trip
+beside it. Startup and teardown frames
+(GET_CHUNK_SIZE, REGISTER_KV_CACHE, UNREGISTER_KV_CACHE) fall outside the window and are
+not counted (D3).
+
+**The transfer channels end on the step loop, not in the worker**, as D6's write request
+does. The worker connector is replaced code (it registers device tensors and records
+CUDA IPC events), and its two contacts with the step loop are a fire-and-forget dispatch
+(`process_kvconnector_output`) and an aggregation that answers one poll behind
+(`AsyncIOProcManager.call_func_with_aggregation`). Neither lets the owner register the
+worker's send before its next clock call or release a reply at its arrival, so the
+PP pattern (`15` D91: the loop stamps, the worker moves bytes in a call the loop makes)
+would need new ATOM call sites. The shell keeps one DEALER per writer rank, so the
+server sees the clients it sees in a real run.
+
+**A completion is a stamped message.** On the step loop, the Compass shell around the
+scheduler half (below) sends, from `build_connector_meta`, the STORE or RETRIEVE each
+writer rank's worker would submit for that metadata (`mp/worker.py::LMCacheMPConnector`
+and `native_state_worker.py`, their range arithmetic reused rather than copied). The
+server starts the copy at `max(arrival, server free)` and replies at its end `t_c`,
+arriving at `t_c + lmcache_ipc_s`. The grant that reaches that arrival releases the
+reply in `(arrival, channel, seq)` order; the shell takes it inline in
+`process_completions` and reports what TP aggregation of the workers' `get_finished`
+would have: `finished_saving` with the store and source-safe completions, or
+`finished_loading` / `failed_loading`, once every writer rank's reply is in. It reports
+at each call what it held at its previous call, as D6's connector does, because the
+aggregation answers one poll behind (#1159). ATOM's scheduler half then runs unchanged.
+
+**Idle points.** The idle offload work (`EngineCore._dispatch_idle_offload_work`, from
+`_advance_idle_kv_transfer`) stays where D4 put it: the busy loop's idle point
+(`clock.idle` with `_idle_deadline`), the `KV_IDLE_DRAIN_INTERVAL_S` drain a K7 timer
+joining `t`. What changes is how a completion is found: a released message, not a
+future polled against the wall clock. The other sites in `kv_transfer/offload/mp/` and
+`chunked_scheduler.py`, scanned once #1080 drops their exclusion:
+
+- K3: a step-loop wait on a reply, the blocking lookup below.
+- K2: the defer clock in `chunked_scheduler.py::lookup_pending`
+  (`OFFLOAD_LOOKUP_DEFER_S`), which decides whether admission passes over a request.
+- K7: the transfer deadlines (`mp/transfer.py::_enforce_transfer_deadline`, the
+  scheduler's `_enforce_transfer_deadlines`); they fire only if the simulated tier is
+  that slow.
+- K9: the worker connector and its heartbeat, which the simulated runner replaces; the shutdown
+  drain (`_drain_kv_work_at_exit`); `perf_counter` reads that only feed counters. The
+  stand-in runs no worker reaper: process death is K8.
+
+**Blocking lookups are request and reply.** Admission reaches the blocking
+`mp/lookup.py::_MPLookupClient.lookup` under the recipe's normal load, by two triggers:
+a waiting request beyond the first `OFFLOAD_ASYNC_LOOKUP_DEPTH`, which
+`Scheduler.schedule` never prefetched, and a prefetched lookup deferred past
+`OFFLOAD_LOOKUP_DEFER_S`. Its `maybe_submit_lookup_request` (LOOKUP) and
+`check_lookup_result` (QUERY_PREFETCH_STATUS) each put a request on the client (K4,
+arriving at `now + lmcache_ipc_s`) and wait on its future (K5). The wait, and the poll
+loop's `time.sleep` around it, is an idle point: `next_event(now + bound)`, the bound
+(`lmcache.mp.lookup_timeout`, `mq_timeout`) a K7 timer. The stand-in takes requests in
+timestamp order and replies at its job's end `t_c`; the grant that reaches
+`t_c + lmcache_ipc_s` releases the reply to the `ClientPollingLoop` thread, which sets
+the future before the owner returns. With positive lookahead both ways, the server's
+grant to `t_c` needs only the engine's NER target, so at DP width 1 nothing more is
+needed.
+
+**In a DP group the members park** (owner ruling on #1162, 2026-10-16). The waiting
+member asks NER alone. Its peers have scheduled and dispatched their forwards, and wait
+on it in the step-seconds `all_gather` (`overrides.py::_group_step_seconds`;
+`chunked_scheduler.py::lookup_pending`: "every DP rank waits in lockstep"), so they make
+no CA call. The member join rules alone deadlock here: rule 5 lets the lone NER move no
+time, and rule 3 holds the grant for the peers' send logs, which carry their own lookups
+and stores to `lmcache`. While the peers count as running, the server's LBTS stays at
+the group's `now + lmcache_ipc_s`, below `t_c`, so the reply is never sent.
+
+A *park* request amends rules 1, 2 and 5, at DP width above 1 with `lmcache_mp`:
+
+- **The park.** Each member's last CA call before it dispatches a forward (real or the
+  DP dummy) is a park, which ships its send log. A parked member stops regulating time
+  until the group's collective completes, since it sends nothing before then: until
+  every member is parked, its park stands in every round as NER with `t` and
+  `t_daemon` at `+inf`.
+- **Rule 1.** A park is one call however many rounds it stands in, so the NER calls a
+  waiting member makes while its peers are parked are not a count mismatch.
+- **Rule 2.** A round may mix NER and parks; a TAR meeting either is still refused.
+  That is why the park is the last call before the dispatch: a K1 TAR between
+  `_sync_dp_state` and the dispatch would meet the waiting member's NER in one round.
+- **Rule 5.** The waiting member's NER rounds complete with its peers parked and move
+  its time alone. A parked member moves no time, and walks the thread-channel messages
+  a round releases to it inside its call, so I1 holds.
+- **Release.** The round in which the last member parks releases every member at the
+  group's time, the latest member's `now`, not its own. A peer parked at `t0` leaves at
+  the waiting member's `now` after the reply, so its forward starts when the late
+  member dispatches, and #988's step-end rounds keep one base (rule 2's equal `T`).
+
+`settle_before_collectives` cannot host the park: the collective the peers wait in,
+the step-seconds `all_gather`, runs in the runner, not on the clock owner thread. The
+park is one call on the step loop before the forward dispatch, and costs one CA round
+per step per member.
+
+**Service time.** Two stations in the server LP: the request loop, one server, FIFO,
+pricing a LOOKUP by a declared law in prompt chunks and the bookkeeping requests at a
+declared constant; and the copy engine, a stated width, pricing a STORE or RETRIEVE as a
+`TransferModel` (`kv/transfer.py`) over the machine spec's host link, `bytes` the
+chunks moved times the chunk's bytes from the KV geometry. Both are declared until
+measured; their accuracy is out of scope here.
+
+**Fake-model duties.**
+
+- The simulated runner's worker half is a null connector, as `compass`'s is: it
+  registers nothing, sends nothing and reports nothing; the forward's duration is the
+  backend's.
+- A Compass shell, built in place of the `lmcache_mp` connector through
+  `KVConnectorFactory`, wraps ATOM's real scheduler half (PAGE-only or native-state, as
+  `mp/connector.py::LMCacheMPConnectorScheduler.bind_block_manager` picks) and carries
+  the transfer channels above. The scheduler adapter is lmcache's own; its client's
+  queue and socket get the relay and wrapped-socket treatment at
+  `_make_scheduler_adapter`, its one construction site.
+- The stand-in server replies to every request with the real payload: a hit count from
+  its index, a success flag, a chunk size.
+
+**Accepted approximations**, each added back only if the parity sample shows it:
+
+- A STORE waits on a CUDA event recorded at dispatch; the stand-in takes it as ready at
+  the send, early by at most one forward's device time.
+- Source-safe chunk events are device events the worker polls, not messages; every
+  chunk is reported with the store's reply, so early block release comes no earlier
+  than real.
+- A native-state load's device restore after the copy is charged nothing.
+
+**Refusals that remain.** ATOM's own (`mp/deployment.py::_validate_mp_config`: PP, DCP,
+PCP, DP across hosts, `engine_driven`, more than one server) stand as they are. The
+stand-in refuses a server flag or request type it does not model, by name, and the shell
+refuses a server URL that `RequestClientFactory` hands to gRPC (`grpc://`,
+`grpc+unix://`), a carrier with no wrapped socket, by its scheme. A `multi`
+connector runs only when each sub-connector is simulated (`compass` and `lmcache_mp`);
+`ATOM_KV_OFFLOAD=lmcache` (in-process, no server) and `mooncake_store` stay refused.
+
+**Acceptance**, per #1076's ruling:
+
+- (a) A one-deployment run, and one at DP2 whose ranks share the server, on a workload
+  that stores a prefix, evicts it from HBM and loads it back, and holds more than
+  `OFFLOAD_ASYNC_LOOKUP_DEPTH` waiting requests on each rank with a lookup deferred past
+  `OFFLOAD_LOOKUP_DEFER_S`, so both blocking triggers fire on every rank: each run
+  reaches its finish with no refusal, a seed pair gives byte-identical step tables, every
+  `(channel, seq)` on every channel is received once and none before its receiver's
+  clock, every request gets its full output, and the runs carry at least one load hit,
+  the DP2 run one across ranks. The DP2 run reports the CPU cost per step of the park's
+  CA round.
+- (b) Under the constant step stub and constant station laws, the same workload's
+  sends, server job starts and ends, reply arrivals, the parked request's release and,
+  at DP2, each member's park and release match a hand-derived timeline event by event.
+  (a) and (b) run in the gate that can start a simulated run
+  (`atom/compass/detect/scenario.py` checks the channels).
+- (c) One scheduling-parity sample on node 18 MI308X (`xiaobizh_n18_next13`), in the
+  style of `scripts/compass/parity_one_node.sh`: a real run against a real
+  `lmcache server`, then its replay; per-step batches and each request's load and save
+  decisions compared.
+
+**Not chosen.**
+
+- *A station on each engine LP* (#1087 option (b)): it cannot express one server shared
+  by several engines, which the recipe's eight prefill ranks are.
+- *The real server under Compass*: README principle 2.
+- *Refusing a blocking lookup above DP width 1* (#1162 option (b)): it refuses the
+  recipe, whose prefill runs at DP8.
+
+---
+
 ## D7. Atomesh: no virtual clock, three flags and a constant
 
 ### Problem
@@ -2228,6 +2454,7 @@ Ordered by how much they could cost.
 | D5 | Every timer and clock read the CA can reach runs on the LP clock, except the out-of-band control-command reply deadline; only what it cannot reach is configured or left real; metric cadence is virtual time (revising `11` D72); the profiler and RL control commands are refused by the simulated runner with a reply, counted, and make the run a coverage report; a synchronous command from the frontend's clock owner is refused by the frontend | 2026-09-18; revised 2026-09-28, 2026-10-09, 2026-10-14, 2026-10-15 |
 | D5.1 | The simulated run uses stdlib asyncio, not uvloop: only a Python event loop can host virtual time | 2026-09-28 |
 | D6 | KV transfer is simulated through a connector registered in the existing factory, reproducing Mooncake (what ATOM's PD CI deploys) through scheduler-side hooks only; a rank pair's writes queue on its link | 2026-09-18; revised 2026-09-28; link sharing 2026-10-16 (#1157) |
+| D6.1 | The lmcache MP server is LP `lmcache`, a Compass stand-in on the real ZMQ channels with a content index and two stations; a store or load completes as a stamped reply that the step loop takes in timestamp order; a blocking lookup is a request and reply whose wait is an idle point; inside a DP group each member parks before its forward, amending member join rules 1, 2 and 5, and the last park releases every member at the group's time | 2026-10-16 (#1087, #1162) |
 | D7 | Atomesh gets no virtual clock: mesh-only mode; in 1P1D the router is one segment of a channel, not an LP, and its relay latency is that channel's lookahead; its bounds are configured (health check and circuit breaker off, `--worker-request-timeout-secs` set large); timestamps ride carriers it already relays; xPyD is deferred; under `--dp-aware` the router is LP `router`, handling requests, prefill responses and stream events in timestamp order (#449) | 2026-09-18; revised 2026-09-30, 2026-10-15 |
 | D8 | Arrivals are messages in transit, covered by the send and receive counts for closed and open workloads alike; the arrival timestamp rides the `tracestate` header | 2026-09-18; revised 2026-09-28 |
 | D9 | The ATOM diff is enumerated (~1,980 lines with tests) and completeness enforced by test rather than by review; ATOM's own suite is the gate (`08` D43.1) | 2026-09-18; revised 2026-09-28 |
