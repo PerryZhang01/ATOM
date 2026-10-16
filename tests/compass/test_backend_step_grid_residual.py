@@ -273,8 +273,9 @@ EDITED = {k: fs[:-1] + (raggedness,) for k, fs in RECIPE.features.items()}
 
 def test_the_digest_is_over_the_feature_functions_source_and_each_kinds_names():
     edited = Recipe(RECIPE.name, RECIPE.version, EDITED)
-    # Decode reading query_square: the same functions, another kind's names.
-    moved = {**RECIPE.features, "decode": RECIPE.features["prefill_output"]}
+    # Prefill with output reading decode's features: the same functions in the
+    # same order, and another kind's names.
+    moved = {**RECIPE.features, "prefill_output": RECIPE.features["decode"]}
 
     assert edited.names == RECIPE.names
     assert edited.digest != RECIPE.digest
