@@ -4,16 +4,30 @@
 The table below is the whole of artifact identity. An entry is addressed by the
 values that decide what it contains and by nothing else -- not by where someone
 put the file, and not by a name a script composed. `price_list` is the row that
-earns the rule: it is keyed by **(model, width, source-root digest)**, and a
-bare or merged price file states no width, so it silently prices nothing while
-looking layered.
+earns the rule: it is keyed by **(model, parallel layout, machine-spec digest,
+source-root digest)**, and a bare or merged price file states no layout, so it
+silently prices nothing while looking layered.
+
+The machine-spec digest (`machine_spec_digest`) is the digest of the spec's own
+key, its device and software stack, so an entry keyed by it that was measured
+on one platform does not answer on another, and a spec edit outside those two
+(an interconnect field, a re-probed constant) moves no key.
+
+The parallel layout (`LAYOUT`) is the rank widths (`AXES`) plus the settings
+that change kernels and groups at a fixed rank count: the switches
+(`SWITCHES`) and `decode_context_parallel_size`. A `price_list`,
+`region_terms` or `memory_readings` entry answers only at the layout it was
+keyed at: a TP2 price list does not answer for `-tp 2 -dp 2`. A width is a
+whole number of at least one and a switch is a `bool`. A `bool` is refused in
+every other field, because `True == 1` would make two keys equal whose
+canonical texts, and so directories, differ.
 
 Two refusals follow from that, and between them they are why this module
 exists rather than a dict of strings.
 
 **A field the kind does not have is refused with the kind's whole tuple.** The
 most likely mistake is reaching for `path=`, and the message that helps is not
-"unknown field" but "a price_list is keyed by (model, width, source_root)".
+"unknown field" but the whole tuple a `price_list` is keyed by.
 
 **A value that is a path is refused where it sits.** Deterministically, without
 asking the filesystem: an `os.PathLike`, an absolute path, anything with a
@@ -35,6 +49,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from .naming import AXES
 from .rules import ArtifactRefusal, Rule
 
 
@@ -48,7 +63,6 @@ class Kind(enum.Enum):
     REGION_TERMS = "region_terms"
     MEMORY_READINGS = "memory_readings"
     COVERAGE_HULL = "coverage_hull"
-    STEP_MEASUREMENT = "step_measurement"
     STEP_LINEAR_LAW = "step_linear_law"
     HOST_LAWS = "host_laws"
     STEP_GRID_BUNDLE = "step_grid_bundle"
@@ -57,16 +71,22 @@ class Kind(enum.Enum):
         return self.value
 
 
+#: The layout switches: a `bool` each, and no other field takes one.
+SWITCHES = ("enable_expert_parallel", "enable_dp_attention")
+#: The parallel layout a key states: the rank widths, then what changes kernels
+#: and groups at a fixed rank count.
+LAYOUT = (*AXES, *SWITCHES, "decode_context_parallel_size")
+
 #: What keys each artifact, in the order a key reads.
 KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
     Kind.MACHINE_SPEC: ("device", "software_stack"),
     Kind.SHAPE_POPULATION: ("model", "workload", "engine_config"),
     Kind.OP_GRAPH: ("structure",),
-    Kind.PRICE_LIST: ("model", "width", "source_root"),
-    Kind.REGION_TERMS: ("model", "width"),
+    Kind.PRICE_LIST: ("model", *LAYOUT, "machine_spec", "source_root"),
+    Kind.REGION_TERMS: ("model", *LAYOUT, "machine_spec"),
     Kind.MEMORY_READINGS: (
         "model",
-        "width",
+        *LAYOUT,
         "utilization",
         "max_num_seqs",
         "max_model_len",
@@ -74,28 +94,17 @@ KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
         "block_size",
     ),
     Kind.COVERAGE_HULL: ("price_list",),
-    # `view` is the digest of the batch view the step was measured as.
-    Kind.STEP_MEASUREMENT: (
-        "model",
-        "device",
-        "parallel",
-        "engine_config",
-        "source_root",
-        "sampling",
-        "step_kind",
-        "view",
-    ),
     Kind.STEP_LINEAR_LAW: (
         "model",
-        "device",
+        "machine_spec",
         "parallel",
         "engine_config",
         "source_root",
         "form",
     ),
-    # The values `run.host_key` reads, the engine config as its sorted JSON,
-    # since a key holds only strings and numbers.
-    Kind.HOST_LAWS: ("host_cpu", "atom_src", "model", "engine_config"),
+    # The values `run.host_key` reads, the engine config as its sorted JSON
+    # since a key holds only strings and numbers, and the machine-spec digest.
+    Kind.HOST_LAWS: ("host_cpu", "atom_src", "model", "engine_config", "machine_spec"),
     # `engine_config` names the one the grid was planned for; `grid` names
     # the grid definition with its margin.
     Kind.STEP_GRID_BUNDLE: (
@@ -192,14 +201,22 @@ class Key:
                     "key is written, and the key would then no longer say what "
                     "the entry holds",
                 )
-            simple = isinstance(value, (str, int, float)) and not isinstance(
-                value, bool
-            )
-            if not simple or (isinstance(value, str) and not value.strip()):
+            if name in SWITCHES:
+                ok, want = isinstance(value, bool), "write True or False there"
+            elif name in LAYOUT:
+                ok = type(value) is int and value >= 1
+                want = "write a width of at least one there"
+            else:
+                ok = isinstance(value, (str, int, float)) and not isinstance(
+                    value, bool
+                )
+                ok = ok and not (isinstance(value, str) and not value.strip())
+                want = "write a non-empty string or a number there"
+            if not ok:
                 raise ArtifactRefusal(
                     Rule.KEY_IS_A_TUPLE,
                     f"`{kind}.{name}` holds {value!r}, which a key cannot compare by",
-                    "write a non-empty string or a number there",
+                    want,
                 )
             fields.append((name, value))
         return cls(kind, tuple(fields))
@@ -238,6 +255,26 @@ class Key:
     def __str__(self) -> str:
         stated = ", ".join(f"{name}={value!r}" for name, value in self.fields)
         return f"{self.kind}({stated})"
+
+
+def machine_spec_key(machine) -> Key:
+    """A `MachineSpec`'s own key: the device and the software stack it states,
+    ROCm, AITER and RCCL; its torch pin is an axis of its own."""
+    from atom.compass.spec.fields import PINNED
+
+    stack = (c for c in PINNED if c != "torch")
+    pins = (f"{c} {machine.value(f'device.software_pinned_to.{c}')}" for c in stack)
+    return Key.of(
+        Kind.MACHINE_SPEC,
+        device=f"{machine.value('device.name')} {machine.value('device.arch')}",
+        software_stack=" / ".join(pins),
+    )
+
+
+def machine_spec_digest(machine) -> str:
+    """What an artifact measured on `machine` is keyed by: its key's digest."""
+    canonical = machine_spec_key(machine).canonical()
+    return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def refuse_not_a_key(given: object) -> None:

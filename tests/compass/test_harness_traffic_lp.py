@@ -563,6 +563,40 @@ def test_a_1p1d_run_file_sends_to_frontend_p_and_reads_from_frontend_d(
     assert unreleased == {("frontend-D->traffic:stream", 0): 1.0}
 
 
+def test_behind_the_router_lp_requests_and_the_stream_cross_it_and_cancels_stay_off(
+    tmp_path, monkeypatch
+):
+    """With a router LP the traffic LP sends to it and reads the stream from it,
+    and a cancel, which the router would refuse, is never stamped."""
+    pd = {"router_s": 2.0**-12, "kv_write_req_s": 2.0**-10, "router_in_s": 2.0**-14}
+    endpoint = f"inproc:test-traffic-lp-{uuid.uuid4().hex}"
+    server = clock_transport.serve(
+        ClockAuthority(prefill_decode_table(**RUN, **pd)), endpoint
+    )
+    run_file = tmp_path / "run.json"
+    run_file.write_text(
+        json.dumps({"clock_endpoint": endpoint, "bound_s": 1e6, **RUN, **pd})
+    )
+    monkeypatch.setenv(RUN_ENV, str(run_file))
+    monkeypatch.setenv(ADDRESS_ENV, str(tmp_path / "lp"))
+
+    async def main():
+        traffic = TrafficLP.from_env()
+        try:
+            return traffic.http, traffic.stream, traffic.cancels
+        finally:
+            for task in (*traffic._tasks, traffic.done):
+                task.cancel()
+            traffic._pub.close(linger=0)
+            traffic._pull.close(linger=0)
+
+    try:
+        got = _run(main())
+    finally:
+        server.close()
+    assert got == ("traffic->router:http", "router->traffic:stream", False)
+
+
 def test_a_1p1d_hold_settles_the_frontend_d_stream(tmp_path):
     """Behind a prefill-decode router the hold reads frontend-D's stream: the
     released final is reported, its return passed, and the run finishes."""

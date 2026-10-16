@@ -76,7 +76,7 @@ class Layered(CostSource):
 
 
 PRICED = Answers("price_list", 0.004, Method.MEASURED)
-LAW = Answers("analytic_law", 0.005, Method.ANALYTICAL)
+LAW = Answers("analytical_law", 0.005, Method.ANALYTICAL)
 ROOFLINE = Answers("roofline", 0.006, Method.ANALYTICAL)
 UNPRICED = Declines("price_list", "no entry for this leaf")
 OUTSIDE = Declines("nearest_key", "outside the measured range")
@@ -92,13 +92,13 @@ def test_the_top_source_answers_and_nothing_is_marked():
 
 def test_a_fall_through_is_stamped_on_the_answer():
     got = Resolver([UNPRICED, LAW]).resolve("attention")
-    assert got.source == "analytic_law"
+    assert got.source == "analytical_law"
     assert got.fell_through
     assert got.term.provenance.refusal == Refusal(
         "price_list", "no entry for this leaf"
     )
     assert str(got.term.provenance) == (
-        "refused(price_list: no entry for this leaf) -> analytical via analytic_law"
+        "refused(price_list: no entry for this leaf) -> analytical via analytical_law"
     )
 
 
@@ -106,7 +106,7 @@ def test_the_artifact_names_the_source_that_answered():
     """A row that names only a method cannot say which source to go and fix."""
     step = StepCost([Resolver([UNPRICED, OUTSIDE, LAW]).resolve("attention").term])
     ((_, _, rendered),) = step.rows()
-    assert "via analytic_law" in rendered
+    assert "via analytical_law" in rendered
 
 
 def test_every_source_passed_over_reaches_the_answer_and_the_count():
@@ -136,7 +136,7 @@ def test_a_resolver_backed_source_keeps_both_halves_of_the_chain():
         "inner_price_list",
     ]
     assert got.term.provenance.refusal.source == "price_list"
-    assert got.term.provenance.source == "layered/analytic_law"
+    assert got.term.provenance.source == "layered/analytical_law"
 
 
 def test_an_exhausted_inner_resolver_does_not_escape_the_outer_one():
@@ -221,7 +221,7 @@ def test_the_resolver_reports_the_order_it_will_consult():
     assert Resolver([UNPRICED, OUTSIDE, LAW]).names == (
         "price_list",
         "nearest_key",
-        "analytic_law",
+        "analytical_law",
     )
 
 

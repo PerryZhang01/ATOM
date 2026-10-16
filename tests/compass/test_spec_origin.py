@@ -237,6 +237,9 @@ def test_the_checked_in_specs_say_where_each_field_came_from(monkeypatch, name):
             assert answered[label]["record"] == f"sha256:{start[2]}", label
         elif "cudagraph_pool" not in label[0]:
             assert answered[label] == {"origin": "probed", **script.SUBJECT}, label
+    # A core count is the host's own, read with no model or width under it.
+    for count in ("cores_physical", "cores_logical"):
+        assert answered[(f"host.cpu.{count}", None)] == {"origin": "probed"}
     for label, found in answered.items():
         if found["origin"] != "probed" or label[0].endswith(".derate"):
             assert found == {"origin": "assumed"}, label

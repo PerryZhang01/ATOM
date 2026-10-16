@@ -470,7 +470,9 @@ the terms of [#952](https://github.com/jgong5/ATOM/issues/952)). Concretely:
    measured, estimated and unvalidated, each with its step count and share of predicted
    seconds (`seconds_by_method` in the run summary, grouped as
    `backends/cost.py::GROUPS`). Declared and analytical seconds are reported and not
-   gated. Refusals carry no seconds: a refused step has none.
+   gated. Refusals carry no seconds: a refused step has none. Each assumed treatment
+   the steps were priced under (`09` D61) is listed with its step count (`treatments`
+   in the run summary); it is a property of the query and changes no term's method.
 3. **Any refusal, of any source, makes the run a coverage report** (`coverage_report` in
    the run summary, `01` D3.5), not acceptance evidence. It names exactly what to
    measure next. There is no threshold. No answered step invalidates a run, whatever its
@@ -489,7 +491,7 @@ into as many iterations as there are gaps.
 threshold on refused seconds would gate on a number that is zero by construction.
 Steps answered by any method are priced, so their shares of seconds are real, and each
 method is reported apart so none reads as measured. At step level the roofline answers
-only in a run whose run file composes it (`roofline_floor_s`, `13` D80); at op level the
+only in a run whose run file composes it (`step_roofline`, `13` D80); at op level the
 analytical fallback is always on. Either way its share sits beside the verdict, so it
 cannot become a silent fallback — the exact failure the *refuse rather than guess*
 principle exists to prevent. No cap on that share: an analytical law is expected to differ

@@ -138,6 +138,20 @@ def check_subject(values: Mapping[str, Any], holder: str) -> None:
         )
 
 
+def _check_domain(values: Mapping[str, Any]) -> None:
+    """Refuse a scale-up fabric that joins fewer devices than one node holds."""
+    joined = values["interconnect.intra_node.domain_devices"]
+    per_node = values["device.count_per_node"]
+    if joined < per_node:
+        raise SpecRefusal(
+            Rule.SHAPE,
+            f"`interconnect.intra_node.domain_devices` is {joined}, fewer than "
+            f"`device.count_per_node` {per_node}",
+            "write the number of devices the intra-node fabric joins, every "
+            "device of the node and any it reaches beyond it",
+        )
+
+
 #: An activation entry: the model it was measured on, keyed by its
 #: architectures and its config.json's sha256 (one architecture serves every
 #: size of a family), and per tensor-parallel width one real run's warmup
@@ -319,6 +333,7 @@ class MachineSpec:
             values[field.path] = check(field, found[field.path], field.path)
         _check_activations(values.get(ACTIVATIONS, ()))
         check_subject(values, "this spec")
+        _check_domain(values)
         return cls(values, table(values[TOKENIZERS]))
 
     def value(self, path: str) -> Any:

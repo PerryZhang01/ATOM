@@ -10,6 +10,7 @@ own the GPU -- and admission *rejects* past the queue cap rather than queueing.
 """
 
 import logging
+import os
 import queue
 import threading
 import time
@@ -35,6 +36,12 @@ class DiffusionEngine:
         *,
         manager: DiffusionCoreManager | None = None,
     ) -> None:
+        if os.environ.get("ATOM_COMPASS_RUN"):
+            raise ValueError(
+                "ATOM_COMPASS_RUN is set, and the diffusion engine has no "
+                "simulated runner, so it would run on the GPU; serve a simulated "
+                "run with ATOM's API server and --compass-run"
+            )
         self.config = config
         self.scheduler = JobScheduler(config)
         self.manager = manager or DiffusionCoreManager(config)

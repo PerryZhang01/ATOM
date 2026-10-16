@@ -154,6 +154,71 @@ def test_the_prefill_decode_table_above_dp_width_one_has_each_ranks_channels_and
             assert table.distance(j, i) == one.distance(j, i), (j, i)
 
 
+# --- the router LP -----------------------------------------------------------
+
+R, R_IN = LpId("router"), 1.0e-4
+#: Each path through the router, by channel kind: its sender and receiver.
+PATHS = {"http": (T, FP), "stream": (FD, T), "relay": (FP, FD)}
+
+
+def _pd_at(dp=1, router_in_s=None):
+    return prefill_decode_table(
+        admission_path="serving",
+        ipc_s=IPC,
+        stream_s=STREAM,
+        router_s=ROUTER,
+        kv_write_req_s=KV,
+        dp=dp,
+        router_in_s=router_in_s,
+    )
+
+
+def test_with_router_in_s_each_path_is_a_hop_into_the_router_lp_and_one_out():
+    table = _pd_at(router_in_s=R_IN)
+    assert table.registry.ids() == (ED, EP, FD, FP, R, T)
+    whole = _whole(table)
+    hops = {
+        "traffic->router:http": (T, R, R_IN, "thread"),
+        "router->frontend-P:http": (R, FP, 1.6e-3 + ROUTER - R_IN, "inline"),
+        "frontend-D->router:stream": (FD, R, R_IN, "thread"),
+        "router->traffic:stream": (R, T, STREAM + ROUTER - R_IN, "inline"),
+        "frontend-P->router:relay": (FP, R, R_IN, "thread"),
+        "router->frontend-D:relay": (R, FD, ROUTER - R_IN, "inline"),
+    }
+    assert {n: whole.pop(n) for n in hops} == hops
+    # The rest is the table without the router, less the three paths it crossed.
+    assert whole == {
+        n: v for n, v in _whole(_pd()).items() if n.partition(":")[2] not in PATHS
+    }
+
+
+@pytest.mark.parametrize("dp", [1, 2])
+def test_the_router_lp_keeps_each_paths_total_lookahead(dp):
+    before, after = _pd_at(dp), _pd_at(dp, R_IN)
+    for kind, (src, dst) in PATHS.items():
+        one = before.lookahead(f"{src.name}->{dst.name}:{kind}")
+        hop_in = after.lookahead(f"{src.name}->router:{kind}")
+        hop_out = after.lookahead(f"router->{dst.name}:{kind}")
+        assert hop_in == R_IN and hop_out > 0.0
+        assert hop_in + hop_out == pytest.approx(one), kind
+
+
+def test_the_router_lp_distances_agree_with_every_enumerated_path():
+    table = _pd_at(router_in_s=R_IN)
+    for j in table.registry.ids():
+        for i in table.registry.ids():
+            if j != i:
+                assert table.distance(j, i) == pytest.approx(
+                    _enumerated(table, j, i)
+                ), (j, i)
+
+
+@pytest.mark.parametrize("bad", [0.0, -R_IN, ROUTER, 2 * ROUTER, math.nan])
+def test_a_router_in_s_leaving_a_hop_no_lookahead_is_refused(bad):
+    with pytest.raises(ValueError, match="0 < router_in_s < router_s"):
+        _pd_at(router_in_s=bad)
+
+
 # --- distance ----------------------------------------------------------------
 
 

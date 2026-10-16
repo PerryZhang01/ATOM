@@ -36,6 +36,7 @@ from .test_clock_transport import (
     SCRIPTS,
     STREAM_S,
     A,
+    B,
     _ask,
     _drive,
     _later,
@@ -304,6 +305,21 @@ def test_an_engine_closed_while_it_waits_in_ner_ends_the_run_for_every_lp(served
     # The busy LP's next request gets the same refusal.
     with pytest.raises(ClockAbort, match=named):
         _ask(conns["traffic"], (NER, INF, [], INF))
-    for name, conn in conns.items():
-        if name != "engine-P":
-            conn.close()
+    for conn in conns.values():
+        conn.close()
+
+
+def test_a_bind_whose_joined_reply_cannot_be_framed_is_refused(served, monkeypatch):
+    """The refusal answers the bind, and `a` stays bound: its connection
+    ending ends the run."""
+    ca = ClockAuthority(_table())
+    endpoint = served(ca, LOCAL)
+    b = _connect(B, endpoint)
+    _result(_later(b.send, (NER, INF, [], INF)))
+    parked = _later(b.recv)
+    monkeypatch.setattr(ca, "on_bind", lambda lp: (math.nan, {}))
+    with pytest.raises(ValueError, match=r"^\('JOINED', nan, \{\}\) is not a message"):
+        _connect(A, endpoint)
+    with pytest.raises(ClockAbort, match="^a closed its connection"):
+        _result(parked)
+    b.close()
