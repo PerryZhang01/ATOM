@@ -215,7 +215,7 @@ def test_inline_receive_idles_until_the_frame_is_released(ctx):
     assert call(rx.poll, 0) is False
     assert rt.conn.sent == []
     assert call(rx.poll, 100) is False
-    assert _requests(rt) == [("NER", 0.1, [])]
+    assert rt.conn.sent == [("NER", math.inf, [], 0.1)]
     assert call(rx.recv) == b"p0"
     assert _requests(rt)[1:] == [("NER", math.inf, [])] * 2
     assert call(rx.recv) == b"p1"
@@ -260,7 +260,8 @@ def test_inline_receive_takes_a_frame_released_while_still_in_flight(ctx):
     call(rt.advance_to, 0.7)
     send_later(b"p2")
     assert call(rx.recv) == b"p2"
-    assert _requests(rt) == [("NER", math.inf, []), ("NER", 0.6, []), ("TAR", 0.7, [])]
+    assert _requests(rt) == [("NER", math.inf, [])] * 2 + [("TAR", 0.7, [])]
+    assert rt.conn.sent[1][3] == 0.6
 
 
 def test_outside_the_run_an_inline_receive_waits_on_the_socket(ctx):

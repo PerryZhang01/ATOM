@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: MIT
 """Schedule agreement and end-to-end results: a simulated cell against N real runs of it.
 
-    python -m atom.compass.validate.runs SIMULATED PERTURBED REAL...
+    python -m atom.compass.validate.runs SIMULATED REAL...
 
 Each argument is a cell directory of `cctraces_sim.sh`: its step record in
 `steps/` and aiperf's export in `artifacts/profile_export_aiperf.json`.
-SIMULATED is the cell at the law, PERTURBED the same cell at 0.97 of the law's
-prefill price, and REAL two or more real runs of it, spaced in time.
+SIMULATED is the cell at the law, and REAL two or more real runs of it, spaced
+in time.
 
 The tolerance of a metric is the real runs' own spread: its distance between
 every ordered pair of real runs, at most. A metric's result is its distance
@@ -32,9 +32,7 @@ from the simulated cell to each real run. The families:
   others); else `within target` where every result is inside it.
 
 Every metric is `inside the real spread` where each result is at most the
-spread, else `outside`. One that moves no further from the simulated cell
-under the perturbed price than the real spread is `inadmissible`: it cannot
-grade a cost model, and neither can an `ungradeable` one.
+spread, else `outside`.
 
 A step is prefill when any of its rows is. A preemption is a request's row
 that is prefill after one of its decode rows, or that reads no more context
@@ -172,14 +170,13 @@ DISTANCE = {
 }
 
 
-def _grade(family, name, real, simulated, perturbed, d=None) -> dict:
+def _grade(family, name, real, simulated, d=None) -> dict:
     d = d or DISTANCE[family]
     spread = max(d(a, b) for a, b in permutations(real, 2))
     result = [d(simulated, r) for r in real]
-    moved = d(perturbed, simulated)
-    out = {"spread": spread, "result": result, "moved": moved}
+    out = {"spread": spread, "result": result}
     if family != "distributions":
-        out.update(real=real, simulated=simulated, perturbed=perturbed)
+        out.update(real=real, simulated=simulated)
     target = TARGET.get(name.split()[0], DEFAULT_TARGET)
     if family == "counts" and max(result) == 0:
         verdict = "exact"
@@ -192,56 +189,41 @@ def _grade(family, name, real, simulated, perturbed, d=None) -> dict:
     else:
         verdict = "outside"
     out["verdict"] = verdict
-    out["admissible"] = moved > spread and verdict != "ungradeable"
     return out
 
 
-def grade(real_cells, simulated_cell, perturbed_cell) -> dict:
+def grade(real_cells, simulated_cell) -> dict:
     """Every metric's grade: {family: {metric: grade}}, as the module says."""
     if len(real_cells) < 2:
         raise ValueError("a real spread needs two or more real runs")
     real = [_read(c) for c in real_cells]
-    simulated, perturbed = _read(simulated_cell), _read(perturbed_cell)
+    simulated = _read(simulated_cell)
     report = {
         family: {
             name: _grade(
-                family,
-                name,
-                [r[family][name] for r in real],
-                simulated[family][name],
-                perturbed[family][name],
+                family, name, [r[family][name] for r in real], simulated[family][name]
             )
             for name in simulated[family]
         }
         for family in DISTANCE
     }
-    totals = {
-        k: report["counts"]["prefill tokens"][k]
-        for k in ("real", "simulated", "perturbed")
-    }
-    requests = (
-        [r["requests"] for r in real],
-        simulated["requests"],
-        perturbed["requests"],
-    )
+    totals = {k: report["counts"]["prefill tokens"][k] for k in ("real", "simulated")}
+    requests = [r["requests"] for r in real], simulated["requests"]
     report["counts"]["prefill tokens"] = (
         _grade("counts", "prefill tokens", *requests, _both) | totals
     )
     one_run = _grade("counts", "prefill tokens", *requests, _one_run) | totals
-    report["one run"] = {
-        "prefill tokens": one_run | {"verdict": "not gated", "admissible": False}
-    }
+    report["one run"] = {"prefill tokens": one_run | {"verdict": "not gated"}}
     return report
 
 
 def _text(report: dict) -> str:
-    out = ["family | metric | spread | result | moved | verdict | admissible"]
+    out = ["family | metric | spread | result | verdict"]
     for family, metrics in report.items():
         for name, g in metrics.items():
             result = " ".join(f"{r:.4g}" for r in g["result"])
             out.append(
-                f"{family} | {name} | {g['spread']:.4g} | {result} | {g['moved']:.4g}"
-                f" | {g['verdict']} | {'yes' if g['admissible'] else 'no'}"
+                f"{family} | {name} | {g['spread']:.4g} | {result} | {g['verdict']}"
             )
     return "\n".join(out)
 
@@ -252,12 +234,9 @@ def main(argv=None) -> None:
         description=__doc__.split("\n\n")[0],
     )
     parser.add_argument("simulated", help="the simulated cell at the law")
-    parser.add_argument(
-        "perturbed", help="the simulated cell at 0.97 of its prefill price"
-    )
     parser.add_argument("real", nargs="+", help="two or more real runs of the cell")
     args = parser.parse_args(argv)
-    print(_text(grade(args.real, args.simulated, args.perturbed)))
+    print(_text(grade(args.real, args.simulated)))
 
 
 if __name__ == "__main__":

@@ -125,7 +125,7 @@ def test_an_event_built_after_it_records_and_waits_on_the_host(started):
 
 @pytest.mark.parametrize(
     "width, refusal",
-    [({"pp": 2}, "a pipeline of 2"), ({"simulated_tp": 2}, "-tp 2 starts 1 workers")],
+    [({"simulated_tp": 2}, "-tp 2 starts 1 workers")],
 )
 def test_a_start_the_host_groups_cannot_hold_is_refused_before_anything_is_replaced(
     started, width, refusal

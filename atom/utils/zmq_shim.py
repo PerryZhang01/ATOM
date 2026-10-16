@@ -39,7 +39,7 @@ class _Socket:
     """A socket of a Compass run: pyzmq's own until it names a channel address."""
 
     # The wrapper's own fields; every other attribute is read from and set on `raw`.
-    _OWN = ("raw", "rt", "ch", "relay", "buf", "__class__")
+    _OWN = ("raw", "rt", "ch", "into", "relay", "buf", "__class__")
 
     def __init__(self, raw: _zmq.Socket) -> None:
         self.raw = raw
@@ -74,7 +74,9 @@ class _Socket:
             return
         # The object ATOM already holds becomes the channel's socket in place.
         self.__class__ = _ChannelSocket
-        clock.WrappedSocket.__init__(self, rt, self.raw, clock.channel_of(rt, kind))
+        clock.WrappedSocket.__init__(
+            self, rt, self.raw, *clock.socket_channels(rt, kind)
+        )
         relay = rt.relays.get(self.ch)
         if relay is not None:
             relay.wsock, self.relay = self, relay
