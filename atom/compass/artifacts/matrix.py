@@ -72,7 +72,6 @@ class Row(enum.Enum):
     MACHINE_SPEC_CAPACITY = "machine_spec: capacity"
     MACHINE_SPEC_RUNTIME_CONSTANTS = "machine_spec: runtime constants"
     MACHINE_SPEC_TOKENIZER_TERMS = "machine_spec: tokenizer terms"
-    STEP_MEASUREMENT = "step_measurement"
     STEP_LINEAR_LAW = "step_linear_law"
     HOST_LAWS = "host_laws"
     STEP_GRID_BUNDLE = "step grid bundle"
@@ -173,15 +172,6 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.HOST_CPU: Cell(False, "untested: assumed to transfer by derate"),
         Axis.ENGINE_CONFIG: INDEPENDENT,
     },
-    Row.STEP_MEASUREMENT: {
-        Axis.SOFTWARE_STACK: DEPENDS,
-        Axis.TORCH: DEPENDS,
-        Axis.ATOM_SRC: DEPENDS,
-        Axis.MODEL: DEPENDS,
-        Axis.DEVICE: DEPENDS,
-        Axis.HOST_CPU: INDEPENDENT,
-        Axis.ENGINE_CONFIG: DEPENDS,
-    },
     Row.STEP_LINEAR_LAW: {
         Axis.SOFTWARE_STACK: DEPENDS,
         Axis.TORCH: DEPENDS,
@@ -223,7 +213,6 @@ ROWS_OF: Mapping[Kind, tuple[Row, ...]] = {
         Row.MACHINE_SPEC_RUNTIME_CONSTANTS,
         Row.MACHINE_SPEC_TOKENIZER_TERMS,
     ),
-    Kind.STEP_MEASUREMENT: (Row.STEP_MEASUREMENT,),
     Kind.STEP_LINEAR_LAW: (Row.STEP_LINEAR_LAW,),
     Kind.HOST_LAWS: (Row.HOST_LAWS,),
     Kind.STEP_GRID_BUNDLE: (Row.STEP_GRID_BUNDLE,),
