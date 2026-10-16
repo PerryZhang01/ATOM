@@ -22,9 +22,10 @@ naming the step; another backend has no check, and refuses `--coverage`.
 Once the server stops, run.json gains, beside `serve`'s identity: `run_file`,
 the run file the server was handed; `step_roofline`, the run file's key,
 whether `--step-roofline` was on; `skip`, the host segments the run file's
-host entry skips; `refusals`, the run summary's; `coverage`, the check's
-report with the inputs it read, or None when no check ran; and `provenance`,
-the backend's digest and fit provenance as the run file states them.
+host entry skips; `refusals`, client run 0's summary's, absent when it has
+none, as when a stop came before it ended; `coverage`, the check's report with
+the inputs it read, or None when no check ran; and `provenance`, the backend's
+digest and fit provenance as the run file states them.
 """
 
 import argparse
@@ -147,14 +148,16 @@ def write_grading(out, report) -> None:
     directory, the coverage check's `report` among it."""
     out = Path(out)
     run = json.loads((out / serve.RUN_FILE).read_text())
-    summary = json.loads((out / compass_run.SUMMARY_FILE).read_text())
+    first = out / compass_run.CLIENT_DIR.format(0) / compass_run.SUMMARY_FILE
     written = json.loads((out / serve.RUN_JSON).read_text())
     written |= {
         "run_file": run,
         "step_roofline": run["step_roofline"],
         "skip": run.get("host", {}).get("skip", []),
-        "refusals": summary["schedule"]["refusals"],
         "coverage": report,
         "provenance": run["backend"],
     }
+    if first.is_file():
+        summary = json.loads(first.read_text())
+        written["refusals"] = summary["schedule"]["refusals"]
     compass_run._write_whole(out / serve.RUN_JSON, json.dumps(written))

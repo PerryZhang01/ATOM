@@ -45,8 +45,9 @@ the refusal happens while a person is authoring the document rather than in the
 middle of a simulated run. The exceptions are the provenance fields `merge`
 fills in later, the activation entries, whose absence falls back to a
 declared form, `fp4_flops`, which a device with no FP4 matrix core omits, the
-pipeline send terms, which only a pipeline run reads, and a link's
-`link_setup_s`, a one-off cost that is zero when absent.
+pipeline send terms, which only a pipeline run reads, a link's
+`link_setup_s`, a one-off cost that is zero when absent, and the two
+`host.http_intake` terms, which a host not probed for them omits.
 
 **Every field says where it came from.** `provenance.origin` is one of
 `ORIGINS` or `transferred-from:<spec>`, and anything else is refused. A
@@ -145,6 +146,9 @@ FIELDS = (
     Field("host.ipc.zmq_roundtrip_s", Kind.QUANTITY),
     Field("host.ipc.shm_broadcast_s", Kind.QUANTITY),
     Field("host.admission_fixed_s", Kind.QUANTITY),
+    # The frontend event loop's time to take in one HTTP request.
+    Field("host.http_intake.fixed_s", Kind.QUANTITY, required=False),
+    Field("host.http_intake.per_byte_s", Kind.QUANTITY, required=False),
     Field("device.name", Kind.TEXT),
     Field("device.arch", Kind.TEXT),
     Field("device.count_per_node", Kind.COUNT),

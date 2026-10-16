@@ -104,11 +104,11 @@ def test_each_rank_reads_its_own_member_of_the_entry_measure_memory_publishes(tm
     assert len(copy_["members"]) == 2
 
 
-def test_the_command_publishes_under_the_stack_run_json_states(tmp_path, monkeypatch):
-    # A start on GPU 5, its engine and identity stood in for: the ranks write
-    # their files as the engine starts, and run.json names the stack.
+def a_start(tmp_path, monkeypatch, stack):
+    """The suite's TP2 worker and `main`'s arguments for a start on GPU 5 under
+    `stack`, its engine and identity stood in for: the ranks write their files
+    as the engine starts, and run.json names `stack`."""
     r, out = tp2(tmp_path), tmp_path / "out"
-    stated = dict(STACK, aiter="0123abcde")
 
     class Engine:
         pid = 0
@@ -131,11 +131,17 @@ def test_the_command_publishes_under_the_stack_run_json_states(tmp_path, monkeyp
     monkeypatch.setattr(measure_memory, "subprocess", started_by)
     monkeypatch.setattr(measure_memory.os, "killpg", gone)
     monkeypatch.setattr(measure_memory, "_device", lambda gpus: [MI355X])
-    monkeypatch.setattr(measure_memory, "identity", lambda *a: {"stack": stated})
+    monkeypatch.setattr(measure_memory, "identity", lambda *a: {"stack": stack})
     machine = tmp_path / "machine.json"
     machine.write_text(json.dumps(DOCUMENT))
     flags = ["--gpu", "5", "--machine", str(machine), "--store", str(tmp_path / "s")]
-    measure_memory.main([*flags, "--out", str(out), "--", "--model", r.config.model])
+    return r, [*flags, "--out", str(out), "--", "--model", r.config.model]
+
+
+def test_the_command_publishes_under_the_stack_the_spec_pins(tmp_path, monkeypatch):
+    r, argv = a_start(tmp_path, monkeypatch, STACK)
+
+    measure_memory.main(argv)
 
     key = Key.of(
         Kind.MEMORY_READINGS,
@@ -146,9 +152,9 @@ def test_the_command_publishes_under_the_stack_run_json_states(tmp_path, monkeyp
         ArtifactStore(tmp_path / "s").read(key).fingerprints[Row.MEMORY_READINGS].cells
     )
     assert (
-        cells[Axis.SOFTWARE_STACK].value == "rocm 7.2.4 / aiter 0123abcde / rccl 2.22.3"
+        cells[Axis.SOFTWARE_STACK].value == "rocm 7.2.4 / aiter f4e7c7509 / rccl 2.22.3"
     )
-    assert json.loads((out / "run.json").read_text()) == {"stack": stated}
+    assert json.loads((tmp_path / "out" / "run.json").read_text()) == {"stack": STACK}
 
 
 @pytest.mark.parametrize(
@@ -178,16 +184,21 @@ def test_a_start_on_another_device_than_the_spec_states_refuses_naming_both(
     assert not (tmp_path / "out").exists() and not (tmp_path / "s").exists()
 
 
-def test_an_entry_measured_under_another_stack_does_not_load(tmp_path):
-    r = tp2(tmp_path)
-    started(tmp_path / "out", r.config, [READINGS[2]] * 2)
-    other = dict(STACK, aiter="9205e1059")
+def test_a_start_under_another_stack_than_the_spec_pins_publishes_nothing(
+    tmp_path, monkeypatch
+):
+    other = dict(STACK, aiter="9205e1059", torch="2.9.1")
+    _, argv = a_start(tmp_path, monkeypatch, other)
 
-    measure_memory.publish(tmp_path / "out", MACHINE, tmp_path / "store", "c", other)
+    with pytest.raises(ValueError) as refused:
+        measure_memory.main(argv)
 
-    with pytest.raises(ArtifactRefusal) as refused:
-        memory.load(tmp_path / "store", r.config, MACHINE, 0)
-    assert "ROCm / AITER / RCCL" in str(refused.value)
+    assert str(refused.value) == (
+        "the start ran another stack than the machine spec mi355x-8gpu-2node "
+        "pins: aiter '9205e1059' in the start and 'f4e7c7509' in the spec; "
+        "torch '2.9.1' in the start and '2.10.0' in the spec"
+    )
+    assert not (tmp_path / "s").exists()
 
 
 def test_ranks_whose_reserves_spread_past_the_limit_publish_nothing(tmp_path):

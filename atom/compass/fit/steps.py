@@ -4,8 +4,8 @@
     compass fit steps --backend step-linear [--form FORM] [--seed S] RECORD...
         --client-run RECORD EXPORT... --machine M --store ROOT --out DIR
     compass fit steps --backend step-grid --grid INPUT... --grid-definition FILE
-        [--seed S] TARGET... --client-run RECORD EXPORT... --machine M
-        --store ROOT --out DIR
+        [--sessions A:B] [--seed S] TARGET... --client-run INPUT EXPORT...
+        --machine M --store ROOT --out DIR
 
 Each backend in `BACKENDS` states the kind it publishes, the label sources it
 takes and its fit, which returns the key fields the configuration does not
@@ -33,8 +33,13 @@ planned point named as one refuses. `step_grid_fit.bundle` fits the bundle,
 keyed by the grid definition's digest; `--seed` fixes its held-out split. The
 report's provenance names each target run with every trace it served, and the
 plan with the inputs its points came from and their traces.
+
+A `--grid` input is read with the client runs a `--client-run` names for it.
+`--sessions A:B` keeps the `--grid` lines `measure steps --sessions A:B` keeps,
+so under it every `--grid` input needs a `--client-run`.
 """
 
+import copy
 import json
 from pathlib import Path
 
@@ -70,7 +75,10 @@ def _step_grid(samples, config, args) -> tuple[dict, dict, dict]:
     store = ArtifactStore(args.store)
     definition = json.loads(Path(args.grid_definition).read_text())
     engine, sampling = config["engine_config"], config["sampling"]
-    read = {n: measure._read(n, store, [], None, engine, sampling) for n in args.grid}
+    read = {}
+    for n in args.grid:
+        runs = [e for r, e in args.client_run if Path(r) == Path(n)]
+        read[n] = measure._read(n, store, runs, args.sessions, engine, sampling)
     steps = [(f"{n} step {x['step']}", x) for n in args.grid for x in read[n][1]]
     planned = plan(definition, steps, {f"{n} dp0": read[n][2] for n in args.grid})
     fields = ("model", "device", "parallel", "source_root")
@@ -115,7 +123,12 @@ BACKENDS = {
     "step-grid": (Kind.STEP_GRID_BUNDLE, ("record", "replay"), _step_grid),
 }
 #: The flags only one backend reads, each to that backend.
-OWN = {"form": "step-linear", "grid": "step-grid", "grid_definition": "step-grid"}
+OWN = {
+    "form": "step-linear",
+    "grid": "step-grid",
+    "grid_definition": "step-grid",
+    "sessions": "step-grid",
+}
 
 
 def main(argv: list[str]) -> None:
@@ -129,6 +142,12 @@ def main(argv: list[str]) -> None:
         help="record directories and shape_population tokens the planner reads",
     )
     parser.add_argument("--grid-definition", metavar="FILE", help="the grid's nodes")
+    parser.add_argument(
+        "--sessions",
+        type=measure._span,
+        metavar="A:B",
+        help="the --grid lines measure steps --sessions A:B keeps",
+    )
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv)
     if args.backend == "step-stub":
@@ -147,8 +166,18 @@ def main(argv: list[str]) -> None:
             "step-grid plans over --grid INPUT... with the nodes and margin "
             "--grid-definition FILE states"
         )
+    named = {Path(r) for r, _ in args.client_run}
+    if args.sessions and (unnamed := [n for n in args.grid if Path(n) not in named]):
+        raise ValueError(
+            f"{', '.join(unnamed)} is named by no --client-run, and --sessions "
+            "keeps a --grid input's lines by the traces its client runs sent"
+        )
     kind, sources, fit = BACKENDS[args.backend]
-    samples, config = publish.inputs(args, sources)
+    # A --client-run naming a --grid input and no target is the planner's alone.
+    grid_only = {Path(n) for n in args.grid or ()} - {Path(i) for i in args.inputs}
+    target_args = copy.copy(args)
+    target_args.client_run = [c for c in args.client_run if Path(c[0]) not in grid_only]
+    samples, config = publish.inputs(target_args, sources)
     fields, params, report = fit(samples, config, args)
     key = Key.of(
         kind,
