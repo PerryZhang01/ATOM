@@ -78,12 +78,21 @@ UNSCANNED_ROOTS: tuple[tuple[str, str], ...] = (
             "it, not the serving path"
         ),
     ),
-    (
-        "atom/kv_transfer/offload/",
+    *(
         (
-            "CPU and NVMe offload backends, selected by their own transfer "
-            "config and not by the prefill/decode path the simulator substitutes"
-        ),
+            f"atom/kv_transfer/offload/{name}",
+            (
+                "an offload backend other than lmcache_mp, or its device "
+                "staging; a simulated run refuses each of them"
+            ),
+        )
+        for name in (
+            "_block_gpu_connector.py",
+            "atom_lmcache_staging.py",
+            "dense/",
+            "hybrid/",
+            "mooncake_store/",
+        )
     ),
     (
         "atom/mesh/",

@@ -134,8 +134,13 @@ def test_every_channel_row_maps_to_an_address_its_wiring_names(monkeypatch):
     acks = [r for r in rows if "flush_pp_send" in r["expr"]]
     # Compass's own KV connector wraps its socket in `clock.WrappedSocket` on
     # the channel it reads from the table, and a pipeline stage's `pp_data`
-    # rides the PP CPU group; no address names either channel.
-    own_files = ("atom/compass/kv/connector.py", "atom/compass/runner/pp_send.py")
+    # rides the PP CPU group; no address names either channel. An lmcache_mp
+    # LOOKUP leaves on lmcache's own client socket, which no ATOM address names.
+    own_files = (
+        "atom/compass/kv/connector.py",
+        "atom/compass/runner/pp_send.py",
+        "atom/kv_transfer/offload/chunked_scheduler.py",
+    )
     own = [r for r in rows if r["file"] in own_files]
     rows = [r for r in rows if r not in acks + own]
     root = sync_scan.repo_root_from_here()
