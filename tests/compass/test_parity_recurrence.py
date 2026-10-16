@@ -145,6 +145,11 @@ def test_an_mtp_record_the_wait_rules_wrote_passes_and_charged_without_mtp_fails
     assert report["kinds"]["decode"][1:4] == pytest.approx((0, 0, 0), abs=1e-9)
     assert report["kinds"]["decode"][4] == pytest.approx(0, abs=1e-6)
     assert report["pass"] and report["total"] == pytest.approx(0, abs=1e-9)
+    # A wait that holds nothing is released where the host reaches it, inside
+    # W_pre, not at the launch.
+    steps = mtp_record()
+    steps[0]["t_mtp_ns"] = [MS / 2] * 2
+    assert recurrence.check(steps)["kinds"]["idle"][4] == pytest.approx(0, abs=1e-6)
     # Without the split, R1 waits after the launch for the whole device end:
     # step 1 exits at 12.5, not 13.
     steps = mtp_record()
