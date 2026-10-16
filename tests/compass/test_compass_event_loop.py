@@ -8,8 +8,10 @@ and uvicorn's server tick and keep-alive timeout.
 """
 
 import asyncio
+import copy
 import http.client
 import importlib.util
+import json
 import logging
 import math
 import queue
@@ -749,3 +751,53 @@ def test_a_stamped_cancel_hangs_its_request_up_at_its_arrival_never_the_socket(r
         {"type": "http.response.start", "status": 204},
         {"type": "http.response.body", "body": b""},
     ]
+
+
+@pytest.mark.parametrize("intake", [(2e-3, 1e-6), None], ids=["probed", "unstated"])
+def test_a_burst_reaches_the_app_one_intake_charge_at_a_time(
+    run, monkeypatch, tmp_path, intake
+):
+    from test_memory_readings import DOCUMENT
+
+    from atom.compass import run as compass_run
+
+    machine = copy.deepcopy(DOCUMENT)
+    if intake is not None:
+        machine["host"]["http_intake"] = dict(zip(("fixed_s", "per_byte_s"), intake))
+    path = tmp_path / "run.json"
+    path.write_text(json.dumps({"bound_s": 600.0, "machine": machine}))
+    monkeypatch.setenv(compass_run.ENV, str(path))
+    stamps, entered = queue.Queue(), []
+    traffic = _traffic(run, stamps, before_ner=lambda: None, n=2)
+    (arrival, _), (again, _) = stamps.get(timeout=10), stamps.get(timeout=10)
+    assert arrival == again
+    sizes = {0: 1000, 1: 3000}
+
+    async def app(scope, receive, send):
+        entered.append(asyncio.get_running_loop().time())
+
+    monkeypatch.setattr(api_server, "app", app)
+    served = api_server._served_app()
+
+    def read(seq):
+        async def receive():
+            return {"type": "http.request", "body": b"x" * sizes[seq]}
+
+        tracestate = carriers.tracestate_with(None, arrival, seq).encode()
+        return served({"type": "http", "headers": [(b"tracestate", tracestate)]}, receive, None)
+
+    async def go():
+        await asyncio.sleep(arrival)
+        await asyncio.gather(read(0), read(1))
+
+    loop = CompassEventLoop()
+    try:
+        loop.run_until_complete(go())
+        loop.run_forever()
+    finally:
+        traffic.join(10)
+    loop.close()
+    fixed, per_byte = intake or (0.0, 0.0)
+    first = arrival + fixed + sizes[0] * per_byte
+    print(f"\n  app entered at {entered}")
+    assert entered == pytest.approx([first, first + fixed + sizes[1] * per_byte])

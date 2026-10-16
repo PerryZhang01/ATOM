@@ -527,10 +527,18 @@ class HttpChannel:
     from its body's ``kv_transfer_params`` instead. An LP that sends on one
     stamps a send on it for each JSON response whose ``kv_transfer_params`` is an
     object, and writes the stamp there.
+
+    Taking in a stamped request other than a cancel costs the event loop
+    ``fixed_s + body bytes x per_byte_s`` (`atom.compass.run.http_intake`),
+    charged on the loop once its body is read, so a burst reaches the app one
+    request at a time. A machine spec that states neither term charges nothing.
     """
 
     def __init__(self, app, stamp) -> None:
+        from atom.compass.run import http_intake
+
         self.app, self.stamp = app, stamp
+        self.intake = http_intake()
         # http seq -> its hang-up, for each stamped request the app is serving
         self.hangups: dict[int, asyncio.Event] = {}
 
@@ -582,6 +590,9 @@ class HttpChannel:
                     await send({"type": "http.response.body", "body": b""})
                     return
                 hangup = self.hangups[seq] = asyncio.Event()
+            if self.intake is not None:
+                fixed, per_byte = self.intake
+                _charge(fixed + per_byte * sum(len(m.get("body", b"")) for m in body))
             inner = receive
 
             async def receive():

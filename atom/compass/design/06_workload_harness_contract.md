@@ -510,6 +510,19 @@ reproducing rather than averaging away.
 `host.admission_fixed_s` covers what is left: everything between HTTP arrival and the
 request appearing in `scheduler.waiting`, **excluding** tokenize.
 
+**HTTP intake is a serial cost on the event loop** (revised 2026-10-16, #1103). The real
+loop takes a burst in one request at a time: at c=256 first turn, about 3 ms each, so the
+requests reach the tokenizer pool over 744 ms. Handed to the pool at one instant, the
+encode station passes the burst to the engine shortest-first, and step 1 admits about
+twice the real count (225 against 109; [#1103](https://github.com/jgong5/ATOM/issues/1103)).
+So `HttpChannel` (`atom/utils/compass_loop.py`) charges the frontend LP's clock
+`host.http_intake.fixed_s + body bytes x host.http_intake.per_byte_s` (doc 05 D25) for each
+stamped request it takes in, a cancel excepted, once the body is read and before the app
+runs: an event cost, as a tokenizer call on the loop is. A spec that states neither term
+charges nothing. The client's own send spread is not modelled. The `http` channel's
+admission delay (`channels.py::ADMISSION_DELAY_S`) stays the channel's lookahead; it was
+measured at low load, so it overlaps one request's intake.
+
 ### Open issues
 
 - take2's admission constant was measured six times at 8.25 / 11.52 / 13.71 / 13.91 /
@@ -958,7 +971,7 @@ requires genuine fan-out in every root is not constructible without reusing sess
 | D30 | Piggyback the simulated timeline on `kv_transfer_params`; Atomesh needs zero changes on that path. Revised: three carriers, `tracestate` on the request, a `kv_transfer_params` field on the forward and SSE comment lines on the stream; still zero Atomesh changes. | 2026-09-18; revised 2026-09-28 |
 | D31 | Filler token is non-EOS, decodes to complete standalone ASCII, and is derived from the request id. | 2026-09-18 |
 | D32 | The decode->prefill cache chain is already broken by the harness for real servers too; guard only against false hits. `theoretical_prefix_cache_hit` is the oracle. | 2026-09-18 |
-| D33 | Run the real tokenizer for its effect, charge a modelled duration for its time. Encode is a bounded-width queue; decode is a single-threaded per-step stage. Revised: both are resource stations; encode width excludes the wait jobs resident when the run starts, pool jobs are classified by a registry and unregistered ones refused, and a clock read inside a job is its start plus accumulated service time. A tokenizer call on the event loop thread (the final `decode` of a non-streaming completion, the calls in `anthropic_messages`) is no station job: it advances the frontend LP clock by its service time on the loop. | 2026-09-18; revised 2026-09-28 and 2026-10-03 |
+| D33 | Run the real tokenizer for its effect, charge a modelled duration for its time. Encode is a bounded-width queue; decode is a single-threaded per-step stage. Revised: both are resource stations; encode width excludes the wait jobs resident when the run starts, pool jobs are classified by a registry and unregistered ones refused, and a clock read inside a job is its start plus accumulated service time. A tokenizer call on the event loop thread (the final `decode` of a non-streaming completion, the calls in `anthropic_messages`) is no station job: it advances the frontend LP clock by its service time on the loop. Revised: taking in an HTTP request charges the loop `fixed + body bytes x per_byte` from `host.http_intake`, so a burst reaches the pool one request at a time. | 2026-09-18; revised 2026-09-28, 2026-10-03 and 2026-10-16 (#1103) |
 | D34 | The aiperf adapter is an out-of-tree plugin package, ~450-650 lines, with zero edits to agentx-harness. Revised: arrival rides the `compass` entry of `tracestate`, output times ride SSE comment lines, and the `/metrics` scrape is paced on simulated time. Revised 2026-10-02 (#533, #534): the scrape is a daemon deadline, and the run ends when no essential work is left. | 2026-09-18; revised 2026-09-28 and 2026-10-02 |
 | D34.1 | The pacing seam is the **scheduler**, not the strategy (option C): the adapter rebinds the runner's `LoopScheduler` to a `ClockPacedLoopScheduler` subclass **and** registers a strategy subclass whose only job is to refuse a scheduler that is not clock-paced. The bootstrap is the dotted plugin entry point, which `discover_plugins()` executes before any `PhaseRunner` exists; the rebind itself is deferred by a `sys.meta_path` hook, because the bootstrap runs while `aiperf.plugin.plugins` is still importing and cannot import `aiperf`; an inline attempt does not raise to the operator, it de-registers the whole plugin and logs one `WARNING` (T73). The seam covers **nine** pacing calls, not seven, and does not reach the two `loop.call_later` idle-cap timers (T75) or a second live runner under `seamless` (T76). The ~450-650 total is reopened pending those. | 2026-09-20 |
 | D35 | Declare what the harness reproduces and what it cannot; cancellation is not available from this corpus. | 2026-09-18 |

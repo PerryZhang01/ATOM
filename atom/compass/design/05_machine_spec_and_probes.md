@@ -30,6 +30,11 @@ readings of an engine start leave the spec for the `memory_readings` entries
 `provenance.origin`, not how they were produced, and each field's origin, with a probe's
 subject, is recorded and kept across a save (D25); probes are grouped by probe class (D26).
 
+**Revised 2026-10-16 by the owner's
+[ruling on #1103](https://github.com/jgong5/ATOM/issues/1103#issuecomment-6211106002):** an
+optional `host.http_intake` pair, the frontend event loop's charge per HTTP request taken in
+(D25), filled by a class-1 `http-intake` probe (D26).
+
 **Scope.** The single input artifact that tells Compass what machine it is simulating,
 its schema, and the tools that fill it in. A project requirement is that compute, memory
 size, bandwidth and interconnect are **configured and not read from a device runtime**, so
@@ -118,6 +123,9 @@ host:
     zmq_roundtrip_s:           5.0e-5
     shm_broadcast_s:           2.0e-5
   admission_fixed_s:           9.0e-3   # HTTP arrival -> `waiting`, EXCLUDING tokenize
+  http_intake:                 # optional: the event loop's time to take in one HTTP request
+    fixed_s:                   2.1e-3
+    per_byte_s:                1.9e-8   # per body byte
 
 device:
   name: MI355X
@@ -175,6 +183,7 @@ mapping so a reader can follow the term into ATOM's code without guessing. The
 | `memory_readings.cudagraph_pool` | `graph_pool.predicts`, the per-term check of the pool's real cost; not `cudagraph_overhead`, which mirrors ATOM's estimator (`03` D16) | measured `91.1 MiB + 0.3033 MiB per captured token` at W=1; flat **104 MiB** above W=1, where the allocated delta was byte-identical (79,692,800) across three widths and three ladders |
 | `activations[].bytes_per_token` | `peak_torch`, `cudagraph_overhead` | Qwen3.8-27B TP1 on MI308X: **180,480 B/token** fitted at 16384 warmup tokens predicts the held-out 8192 at **+0.000%**; the declared geometry form gives 98,304 (-45.5%). A model, config or width with no entry keeps the declared form |
 | `tokenizers[].*` | admission queue | cc-traces p50 input is **88,768 tokens**; at 2 M tok/s that is ~44 ms, **3x take2's entire admission constant**, and it scales with prompt length while a constant does not |
+| `http_intake.*` | the frontend event loop's charge per request taken in (`06` D33) | at c=256 first turn the real loop takes a burst in one request at a time over 744 ms; taken in at one instant, step 1 admits 225 against the real 109 ([#1103](https://github.com/jgong5/ATOM/issues/1103)). Optional: a host not probed for it states neither term, and its runs charge no intake |
 | `ipc.*`, `interconnect.*_latency_s` | **Clock Authority lookahead floors** (doc 01 D3) | a zero lookahead serializes the whole simulation |
 | `compute.fp4_flops` | the roofline (`10` D64) for an FP4 leaf | DeepSeek-V4-Pro's routed experts are FP4 (`16` D95), and MI455X's dense FP4 peak is twice its FP8 peak ([#504](https://github.com/jgong5/ATOM/issues/504#issuecomment-6080974531)); priced at the FP8 rate they would read twice as slow |
 | `intra_node.domain_devices` | the link a collective group rides (`10` D66) | MI455X's UALoE fabric joins 72 GPUs across compute trays of 4 (#504), so a TP8 or EP8 group spans two trays without touching the NICs; `count_per_node` alone would send it over `inter_node` |
@@ -324,6 +333,7 @@ configuration into a `memory_readings` entry (`07` D38, Phase 2).
 |---|---|---|
 | `device-memory`, at TP1 | `capacity_bytes` | the device's capacity; the readings of an engine start are `measure memory`'s |
 | `device-compute` | `bandwidth_bytes_per_s`, `*_flops`, their `derate`s | GEMM and bandwidth sweeps; derate is achieved/datasheet |
+| `http-intake` | `host.http_intake.*` | one real c=256 first-turn burst with the API server's loop stamped; fit `fixed + bytes x per_byte` to each request's chat-template start on the loop against its index and the body bytes taken in before it. Needs a real server, so it runs on a card of the target; one burst does not separate the two terms well (0.9 ms + 54 ns/B to 3.2 ms + 0 across bursts) |
 
 **Class 2 — N GPUs of the target type.**
 
@@ -402,6 +412,6 @@ which cancelled — the largest being 25% of a single term.
 | # | Decision | Date |
 |---|---|---|
 | D24 | The spec describes the machine; ATOM's config describes the deployment. Thread-pool width becomes an ATOM config option, not a Compass one. | 2026-09-18 |
-| D25 | Four-section schema: `provenance`, `host`, `device`, `interconnect`. Mandatory derates, no memory readings (`measure memory`'s entries, 2026-10-14), `software_pinned_to` checked, torch included, as the target's stack, whole spec echoed into every artifact. Revised for the MI455 projection: an optional dense `fp4_flops`, `intra_node.domain_devices` for a scale-up fabric wider than a node, and every field given an origin, `provenance.origin` and per field `provenance.origins` with a probe's subject, kept across a save. | 2026-09-18; revised 2026-10-10; torch 2026-10-13 (#851); origin 2026-10-14 (#952) |
+| D25 | Four-section schema: `provenance`, `host`, `device`, `interconnect`. Mandatory derates, no memory readings (`measure memory`'s entries, 2026-10-14), `software_pinned_to` checked, torch included, as the target's stack, whole spec echoed into every artifact. Revised for the MI455 projection: an optional dense `fp4_flops`, `intra_node.domain_devices` for a scale-up fabric wider than a node, and every field given an origin, `provenance.origin` and per field `provenance.origins` with a probe's subject, kept across a save. Revised: an optional `host.http_intake` pair, the event loop's charge per HTTP request taken in. | 2026-09-18; revised 2026-10-10; torch 2026-10-13 (#851); origin 2026-10-14 (#952); intake 2026-10-16 (#1103) |
 | D26 | Probes emit fragments; `merge` / `validate` / `explain` combine and check them. Four hardware probe classes plus a datasheet path; the transfer path dropped 2026-10-14 (#937). Every hardware probe implements the contamination refusals. All are the `spec` package's functions, run by per-machine scripts, with no `compass` command. Machine specs are developers', one per supported machine, passed by `--machine`; an engine start's memory readings are `measure memory`'s, not the spec's. | 2026-09-18; revised 2026-10-13 and 2026-10-14 (#851) |
 | D25.1 | Runtime-constant fields renamed to say what they are; ATOM's own term recorded as a mapping column. `host.tokenizer` becomes `host.tokenizers[]`, keyed by tokenizer identity (id + backend + fingerprint) with `applies_to` model architectures. | 2026-09-19 |

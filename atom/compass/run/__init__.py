@@ -29,6 +29,8 @@ member, the frontend's included, connects to.
   `CompassModelRunner` where it would build its model, in the worker process.
 - `tokenizer(tokenizer, config)` charges the served tokenizer's ``encode`` and
   ``decode`` to the frontend's clock, at the rates the machine spec measured.
+- `http_intake()` is what `atom.utils.compass_loop.HttpChannel` charges the
+  frontend's event loop for each request it takes in.
 - `engine_done(engine)` and `frontend_done(engine)` close each side after the
   finish, each handing in its LP's refusals; the frontend's, when it co-hosts
   the authority, then writes the step table and the run summary. A SIGINT or
@@ -1006,6 +1008,20 @@ def tokenizer(tok, config) -> None:
     )
     tok.encode = wrap_encode(tok.encode, entry)
     tok.decode = wrap_decode(tok.decode, entry)
+
+
+def http_intake() -> tuple[float, float] | None:
+    """``(fixed_s, per_byte_s)``, the frontend loop's time to take in one HTTP
+    request, from the run's machine spec; None on a real run or a spec that
+    states neither. A spec that states one of them is refused naming the other."""
+    run = spec()
+    if run is None:
+        return None
+    machine = _machine(run)
+    paths = ("host.http_intake.fixed_s", "host.http_intake.per_byte_s")
+    if not any(p in machine.values for p in paths):
+        return None
+    return tuple(machine.value(p) for p in paths)
 
 
 def _fingerprint(tok) -> str | None:
