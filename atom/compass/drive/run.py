@@ -16,8 +16,11 @@ its peer, which one invocation does not start.
 `--coverage` names record directories and `shape_population` tokens whose steps
 the backend's coverage check reads before the server starts: the step grid's
 is `step_grid_plan.coverage`, over the bundle `step_grid.load` loads under the
-config ATOM's arguments resolve. A step it does not cover refuses the run,
-naming the step; another backend has no check, and refuses `--coverage`.
+config ATOM's arguments resolve. An input whose DP rank's engine file (a
+record's `steps/dp<r>.engine.json`, a population's `engine` member) states
+another `SHAPING` field than that config refuses first, naming each field and
+both values; a step the check does not cover refuses the run, naming the step.
+Another backend has no check, and refuses `--coverage`.
 
 Once the server stops, run.json gains, beside `serve`'s identity: `run_file`,
 the run file the server was handed; `step_roofline`, the run file's key,
@@ -38,11 +41,15 @@ from types import SimpleNamespace
 
 from atom.compass import run as compass_run
 from atom.compass.artifacts import ArtifactStore, Kind
-from atom.compass.backends.step_grid_plan import coverage
+from atom.compass.backends.step_grid_plan import BOUNDS, coverage
 from atom.compass.drive import runfile, serve
 from atom.compass.run import STEP_GRID, STEP_LINEAR, STEP_STUB, step_grid
 
 PROG = "compass run"
+#: The engine fields that shape a step's batches: the scheduler's bounds, the
+#: capture ladder and the TP width. An input states them as this run resolves
+#: them, or refuses.
+SHAPING = (*BOUNDS, "ladder", "tensor_parallel_size")
 
 
 def main(argv: list[str]) -> None:
@@ -88,13 +95,14 @@ def _parser() -> argparse.ArgumentParser:
 
 def check(inputs, run: dict, atom_args) -> dict:
     """The step grid's coverage of the steps `inputs` hold, over the bundle the
-    run file `run` names, loaded under the config `atom_args` resolve; a step
-    it does not cover refuses."""
-    store = ArtifactStore(run["store"])
-    backend, _ = step_grid.load(
-        run[STEP_GRID], _config(atom_args), compass_run._machine(run)
-    )
-    report = coverage(backend, [s for name in inputs for s in _steps(name, store)])
+    run file `run` names, loaded under the config `atom_args` resolve; an
+    input that ran under other `SHAPING` fields, or a step the check does not
+    cover, refuses."""
+    store, config = ArtifactStore(run["store"]), _config(atom_args)
+    here = step_grid.keyed(config) | {name: getattr(config, name) for name in BOUNDS}
+    steps = [s for name in inputs for s in _steps(name, store, here)]
+    backend, _ = step_grid.load(run[STEP_GRID], config, compass_run._machine(run))
+    report = coverage(backend, steps)
     if report["uncovered"]:
         details = [
             f"unmeasured corners of {g}: {c}" for g, c in report["missing"].items()
@@ -111,24 +119,38 @@ def check(inputs, run: dict, atom_args) -> dict:
     return {"inputs": list(inputs), **report}
 
 
-def _steps(name: str, store) -> list:
+def _steps(name: str, store, here: dict) -> list:
     """The steps of the record directory or `shape_population` token `name`,
-    less DP's dummy runs, each named `<name> dp<r> step <n>`."""
+    less DP's dummy runs, each named `<name> dp<r> step <n>`; a rank whose
+    engine states other `SHAPING` fields than `here` refuses, naming each."""
     path = Path(name)
     if (path / serve.RUN_JSON).is_file():
         records = {
-            int(p.stem[2:]): p.read_text()
+            int(p.stem[2:]): (p.read_text(), p.with_suffix(".engine.json").read_text())
             for p in (path / serve.STEPS).glob("dp*[0-9].jsonl")
         }
     else:
         entry = store.read(store.key_from_token(Kind.SHAPE_POPULATION, name))
         records = {
-            rank.dp: entry.read_member("steps", rank, "jsonl").decode()
+            rank.dp: (
+                entry.read_member("steps", rank, "jsonl").decode(),
+                entry.read_member("engine", rank, "json").decode(),
+            )
             for rank in entry.topology.ranks()
         }
+    for rank, (_, engine) in sorted(records.items()):
+        ran = json.loads(engine)
+        if differ := [k for k in SHAPING if ran.get(k) != here[k]]:
+            raise ValueError(
+                f"--coverage: {name} dp{rank} ran under another engine than "
+                "ATOM's arguments resolve: "
+                + "; ".join(
+                    f"{k} {ran.get(k)!r} there, {here[k]!r} here" for k in differ
+                )
+            )
     return [
         (f"{name} dp{rank} step {line['step']}", line)
-        for rank, text in sorted(records.items())
+        for rank, (text, _) in sorted(records.items())
         for line in map(json.loads, text.splitlines())
         if not line["is_dummy_run"]
     ]
