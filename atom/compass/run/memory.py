@@ -2,7 +2,7 @@
 """The memory readings in a run: the rank's member of the configuration's
 `memory_readings` entry, loaded from the artifact store by key.
 
-The run file's ``memory_readings`` is the store's root. The key is the
+The run file's ``store`` is the artifact store's root. The key is the
 machine spec's digest and `key_fields`, read off the resolved ATOM config: the
 served config.json's digest, the parallel layout, and as sorted JSON the
 engine config the readings move with, `step_grid.keyed`'s fields and the

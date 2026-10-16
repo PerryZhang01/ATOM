@@ -183,11 +183,11 @@ def test_dummy_weights_are_refused(tmp_path, flag, capsys):
 def test_a_run_file_naming_no_store_refuses(tmp_path, monkeypatch):
     r = deployment(tmp_path)
     run = json.loads(_run_file(tmp_path).read_text())
-    del run["memory_readings"]
+    del run["store"]
     (tmp_path / "run.json").write_text(json.dumps(run))
     monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
 
-    with pytest.raises(ValueError, match="names no memory_readings store"):
+    with pytest.raises(ValueError, match="names no store"):
         compass_run.runner(r, META_8B)
 
 
