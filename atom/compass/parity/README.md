@@ -25,5 +25,6 @@ identical, and each request's DP rank in both.
 recurrence on a real record with device windows (`recurrence.py` says how).
 
 `scripts/compass/parity_one_node.sh` runs the whole test on one node: a real
-DP2 run of `traffic.py`'s workload, then a simulated one that replays the real
+DP-attention run of `traffic.py`'s workload (DP2, or DeepSeek-V4-Pro at DP8;
+its header says how to pick), then a simulated one that replays the real
 run's arrivals and step times (`replay.py`), then the compare.
