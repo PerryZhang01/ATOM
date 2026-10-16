@@ -73,7 +73,11 @@ waits that close a run (K9). Reading the whole tree brought in the rest of
 wait for its own reader thread (K6). The `/metrics` render the frontend hands
 to `asyncio.to_thread` is K1, a job on the frontend's executor station that a
 simulated run refuses at the hand-off, since no service time is modelled for
-it. The rows per mechanism,
+it. Narrowing the offload exclusion to the backends a simulated run refuses
+brought in `lmcache_mp` and the chunked offload scheduler it builds on: the
+LOOKUP sent ahead of admission (K4), a blocking lookup's poll loop (K3), the
+step loop's looks at a reply the client's own thread delivers (K6), and the
+worker connector's submits (K9). The rows per mechanism,
 crossed with the first classification's categories, are printed by
 `pytest tests/compass/test_sync_inventory.py -s -k crosstab`.
 

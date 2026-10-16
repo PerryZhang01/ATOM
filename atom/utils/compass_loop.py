@@ -169,6 +169,17 @@ class SimExecutor(ThreadPoolExecutor):
         self.refusals: list[str] = []  # run-summary reasons, ``executor:<name>``
         self.settle: dict[int, partial | None] = {}  # finished, not yet placed
         self.serial = ThreadPoolExecutor(1)  # service jobs, in submission order
+        self.placing: asyncio.Future | None = None  # `placed`'s wait
+
+    async def placed(self) -> None:
+        """On the loop: until every service job submitted so far is placed, and
+        then until the callbacks due by the LP clock now have run."""
+        while self.station is not None and self.station.unresolved():
+            self.placing = self.loop.create_future()
+            await self.placing
+        due = self.loop.create_future()
+        self.loop.call_at(self.loop.time(), due.set_result, None)
+        await due
 
     def shutdown(self, wait=True, *, cancel_futures=False):
         self.serial.shutdown(wait, cancel_futures=cancel_futures)
@@ -217,6 +228,10 @@ class SimExecutor(ThreadPoolExecutor):
             done = self.settle.pop(j)
             if done is not None:
                 self.loop.call_at(self.station.completion(j), done)
+        if self.placing is not None and not self.station.unresolved():
+            if not self.placing.done():
+                self.placing.set_result(None)
+            self.placing = None
 
 
 def _charge(d: float) -> None:
@@ -527,10 +542,20 @@ class HttpChannel:
     from its body's ``kv_transfer_params`` instead. An LP that sends on one
     stamps a send on it for each JSON response whose ``kv_transfer_params`` is an
     object, and writes the stamp there.
+
+    Taking in a stamped request other than a cancel costs the event loop
+    ``fixed_s + body bytes x per_byte_s`` (`atom.compass.run.http_intake`),
+    charged on the loop once its body is read, every open tokenizer station job
+    is placed and the callbacks due by then have run (`SimExecutor.placed`), so
+    a burst reaches the app one request at a time. A machine spec that states
+    neither term charges nothing.
     """
 
     def __init__(self, app, stamp) -> None:
+        from atom.compass.run import http_intake
+
         self.app, self.stamp = app, stamp
+        self.intake = http_intake()
         # http seq -> its hang-up, for each stamped request the app is serving
         self.hangups: dict[int, asyncio.Event] = {}
 
@@ -571,10 +596,18 @@ class HttpChannel:
                 body = [await receive()]
                 while body[-1].get("more_body"):
                     body.append(await receive())
+                cancelled = None if relay_in else cancel_seq(body[0].get("body", b""))
+                if self.intake is not None and cancelled is None:
+                    # The clock may not pass a station job's completion before
+                    # the job is placed; the intake is charged once every open
+                    # one is, and those due by now have run.
+                    await loop.executor.placed()
+                    fixed, per_byte = self.intake
+                    nbytes = sum(len(m.get("body", b"")) for m in body)
+                    _charge(fixed + per_byte * nbytes)
                 with rt.lock:
                     rt.count_done_locked(ch, seq)
             if relay_in is None:
-                cancelled = cancel_seq(body[0].get("body", b""))
                 if cancelled is not None:
                     if (hangup := self.hangups.get(cancelled)) is not None:
                         hangup.set()
