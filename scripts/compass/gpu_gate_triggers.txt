@@ -11,7 +11,7 @@
 #
 # THE RULE: an atom module named by an excluded test is a blind spot unless a
 # CPU-gate test that actually runs names it too. Imports are read at any
-# indentation on the excluded side -- 860 of this tree's `import atom.*`
+# indentation on the excluded side -- 867 of this tree's `import atom.*`
 # lines are indented -- but coverage is credited only for a module-level import
 # in a CPU-gate file that collects at least one test, because those are the only
 # imports that provably execute. At 236abfd9a the MODULE-LEVEL half carried both
@@ -37,18 +37,18 @@
 #
 # A trailing / matches the whole subtree.
 #
-# Measured at 9dbd78af098f3f9b8ba2a1801923ab39e56f4893 over this tree:
-#   tests/        578 files  = 55 in tests/plugin/ + 96 excluded + 427 CPU gate
-#   CPU gate      378 files collect >=1 test, 49 collect none
-#   imports       860 indented `import atom.*` lines in non-plugin test files
-#   collected  11316 tests by --collect-only. A run of the same set reports
-#              the same 11316 outcomes. Its "skipped" total is LARGER than any
+# Measured at 02dcdc34c9263fea80763e2dc9f1e5e7c95fe25b over this tree:
+#   tests/        603 files  = 55 in tests/plugin/ + 96 excluded + 452 CPU gate
+#   CPU gate      403 files collect >=1 test, 49 collect none
+#   imports       867 indented `import atom.*` lines in non-plugin test files
+#   collected  11609 tests by --collect-only. A run of the same set reports
+#              the same 11609 outcomes. Its "skipped" total is LARGER than any
 #              skip count here, because a module-level skip in one of the 49
 #              files that collect nothing is counted as skipped without ever
 #              becoming a collected test. This file states the set; gate_cpu.sh
 #              prints the run, and is the only source for its outcome counts.
 #   candidates    166 paths named by an excluded test, any indentation
-#   covered       278 paths named at module level by a live CPU-gate file
+#   covered       290 paths named at module level by a live CPU-gate file
 #   triggers      117 paths below
 atom/distributed/dcp_utils.py
 atom/distributed/indexer_cp.py
