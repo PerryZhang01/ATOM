@@ -1999,6 +1999,17 @@ A *park* request amends rules 1, 2 and 5, at DP width above 1 with `lmcache_mp`:
   the waiting member's `now` after the reply, so its forward starts when the late
   member dispatches, and #988's step-end rounds keep one base (rule 2's equal `T`).
 
+A parked member's call takes no reply until the release. The authority holds what a
+round releases on its channels; at the release the member walks those messages inside
+its park call, its clock at each one's arrival in turn, then leaves at the group's
+time. Its clock therefore moves only inside its own call, and the step table records
+each held release from the clock the releasing grant found. The check refuses any TAR
+from the return of `_sync_dp_state` to the park. On an idle DP step,
+`_advance_idle_kv_transfer` runs `_poll_kv_transfer_progress` inside that window,
+before `_execute_dummy_batch`. D4 lists the poll as K1, but it asks the authority
+nothing: a completion is a released message, taken inline. The check therefore passes
+an idle step.
+
 `settle_before_collectives` cannot host the park: the collective the peers wait in,
 the step-seconds `all_gather`, runs in the runner, not on the clock owner thread. The
 park is one call on the step loop before the forward dispatch, and costs one CA round
