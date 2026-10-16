@@ -100,6 +100,10 @@ DEFAULT_ALLOW_LIST: dict[str, str] = {
         "when a fit published its entry, for the entry's provenance; a fit runs "
         "offline on recorded steps and never inside a simulated run"
     ),
+    "atom/compass/drive/identity.py": (
+        "a command's phase boundaries in run.json, which are wall and monotonic "
+        "time by definition; the tool process reads them, and no simulated time"
+    ),
 }
 
 #: Packages under `atom/` a simulated run never executes, or that keep their
