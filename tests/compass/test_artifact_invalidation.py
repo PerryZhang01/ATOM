@@ -124,12 +124,9 @@ KEY_OF: dict[Row, Key] = {
     Row.MEMORY_READINGS: Key.of(
         Kind.MEMORY_READINGS,
         model="Qwen/Qwen3-32B",
+        machine_spec="sha256:mi308x",
         **LAYOUT,
-        utilization=0.9,
-        max_num_seqs=256,
-        max_model_len=32768,
-        kv_dtype="bf16",
-        block_size=64,
+        engine_config="cudagraph=piecewise,level=3",
     ),
     Row.MACHINE_SPEC_CAPACITY: Key.of(
         Kind.MACHINE_SPEC, device="MI308X-80CU", software_stack="rocm7.2.4"

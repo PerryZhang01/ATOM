@@ -291,10 +291,8 @@ def test_the_count_reports_the_footprint_by_method(qwen, capsys):
     def bytes_of(*names):
         return sum(expected[r][t] for r, t in (n.split(".") for n in names))
 
-    declared = ("peak_torch.activations",)
-    assert set(sizing.declared_terms) == set(declared)
+    assert sizing.declared_terms == ()
     assert sizing.bytes_by_method == {
-        Method.DECLARED: bytes_of(*declared),
         Method.ANALYTICAL: bytes_of(
             "peak_torch.weights",
             "peak_torch.buffers",
@@ -303,10 +301,11 @@ def test_the_count_reports_the_footprint_by_method(qwen, capsys):
         Method.MEASURED: bytes_of(
             "peak_torch.load residue",
             "peak_torch.persistent",
+            "peak_torch.activations",
             "non_torch.driver and collective reserve",
         ),
     }
-    assert sizing.declared_bytes == bytes_of(*declared)
+    assert sizing.declared_bytes == 0
     assert sizing.subtracted_bytes == sum(sizing.bytes_by_method.values())
     with capsys.disabled():
         print()

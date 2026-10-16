@@ -72,7 +72,7 @@ from .fingerprints import Conditions, Fingerprint, OnMismatch, fingerprint, veri
 from .gates import GateState
 from .keys import Key, Kind, refuse_not_a_key
 from .matrix import Row, rows_for
-from .naming import RankCoords, Topology, member_name, read_back
+from .naming import AXES, RankCoords, Topology, member_name, read_back
 from .provenance import Provenance
 from .resolution import Resolution
 from .rules import ArtifactRefusal, Rule
@@ -240,6 +240,21 @@ class ArtifactStore:
                 "json.dumps happened to render it",
             )
         prints = self._fingerprints(key, conditions, gates)
+        stated = key.values
+        differ = [
+            a
+            for a in AXES
+            if stated.get(a, getattr(topology, a)) != getattr(topology, a)
+        ]
+        if differ:
+            raise ArtifactRefusal(
+                Rule.ONE_NAMING_FUNCTION,
+                f"{key} states {', '.join(f'{a}={stated[a]}' for a in differ)} "
+                f"and its members are written at {topology.text}",
+                "publish at the topology the key states; an entry whose ranks "
+                "are not the layout it is keyed by answers for ranks it does "
+                "not hold",
+            )
         self._check_members(key, topology, members)
         if self.directory_for(key).exists():
             self._refuse_overwrite(key, members)
