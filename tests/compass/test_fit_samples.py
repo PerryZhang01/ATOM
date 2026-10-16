@@ -159,6 +159,7 @@ def test_each_sample_copies_its_input_s_provenance_and_the_traces_it_served(
             "engine"
         ],
         "source_root": "tree-67c176f0",
+        "stack": {"rocm": "7.2.4", "torch": "2.10.0", "aiter": "v0.1.21"},
         "sampling": SAMPLING,
         "host_key": {"host_cpu": "planted cpu", "atom": "0" * 64},
     }
