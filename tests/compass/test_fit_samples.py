@@ -53,6 +53,18 @@ def record(tmp_path, monkeypatch, name="a", groups=((0, 1), (2, 3)), **run):
     return directory
 
 
+def idle_rank(steps):
+    """`steps/dp1.jsonl`, written as a DP rank no request reached: at each of
+    rank 0's steps, the dummy forward it runs to keep step with its group."""
+    dummy = {"dp_rank": 1, "is_dummy_run": True, "batch": [], "named": []}
+    rank0 = (steps / "dp0.jsonl").read_text().splitlines()
+    path = steps / "dp1.jsonl"
+    path.write_text(
+        "".join(json.dumps({**json.loads(x), **dummy}) + "\n" for x in rank0)
+    )
+    return path
+
+
 def edit(path, change):
     document = json.loads(path.read_text())
     change(document)
@@ -176,3 +188,26 @@ def test_samples_come_in_one_order_whatever_order_the_inputs_came_in(
     assert forward == backward
     runs = [s.provenance["run"] for s in forward[0]]
     assert runs == sorted(runs) and len(set(runs)) == 2
+
+
+def test_a_dp_rank_no_request_reached_adds_no_sample(tmp_path, monkeypatch):
+    a = record(tmp_path, monkeypatch)
+    alone, config = load({a: RUNS})
+    rank1 = idle_rank(a / "steps")
+
+    samples, both = load({a: RUNS})
+    run = f"{digest(a / 'steps/dp0.jsonl')}, {digest(rank1)}"
+    assert samples == [
+        dataclasses.replace(s, provenance={**s.provenance, "run": run}) for s in alone
+    ]
+    assert both == {**config, "parallel": "tp1-dp2"}
+
+
+def test_an_empty_rank_file_refuses_as_a_rank_whose_lines_never_reached_disk(
+    tmp_path, monkeypatch
+):
+    a = record(tmp_path, monkeypatch)
+    (a / "steps/dp1.jsonl").write_text("")
+
+    with pytest.raises(ValueError, match="dp1.jsonl has no timed steps"):
+        load({a: RUNS})
