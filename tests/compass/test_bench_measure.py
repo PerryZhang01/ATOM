@@ -31,11 +31,9 @@ from atom.compass.artifacts import (
     GateState,
     Key,
     Kind,
-    Row,
     Topology,
     member_name,
 )
-from atom.compass.artifacts import store as store_module
 from atom.compass.backends.step_grid_plan import plan
 from atom.compass.bench import measure, window
 from atom.compass.fit.samples import load
@@ -267,21 +265,11 @@ def test_what_does_not_say_what_to_measure_refuses(run, args, refusal):
     assert Bench.started == []
 
 
-def published_population(run, monkeypatch) -> Key:
-    """The record's steps and engine, published as a shape_population.
-
-    The kind has no invalidation row until `trace steps` publishes one, so it
-    takes the step grid bundle's here.
-    """
-    rows = store_module.rows_for
-    monkeypatch.setattr(
-        store_module,
-        "rows_for",
-        lambda kind: (
-            (Row.STEP_GRID_BUNDLE,) if kind is Kind.SHAPE_POPULATION else rows(kind)
-        ),
+def published_population(run) -> Key:
+    """The record's steps and engine, published as a shape_population."""
+    key = Key.of(
+        Kind.SHAPE_POPULATION, model="m", workload="w", engine_config="e", backend="b"
     )
-    key = Key.of(Kind.SHAPE_POPULATION, model="m", workload="w", engine_config="e")
     rank = Topology().ranks()[0]
     files = {("steps", "jsonl"): "dp0.jsonl", ("engine", "json"): "dp0.engine.json"}
     ArtifactStore(run.tmp / "store").publish(
@@ -301,7 +289,7 @@ def published_population(run, monkeypatch) -> Key:
 def test_grid_points_are_measured_with_origin_plan_and_new_shapes_add_only_theirs(
     run, monkeypatch
 ):
-    population = published_population(run, monkeypatch)
+    population = published_population(run)
     token, rec = population.token(), str(run.record)
     definition = run.tmp / "definition.json"
     definition.write_text(json.dumps(DEFINITION))
