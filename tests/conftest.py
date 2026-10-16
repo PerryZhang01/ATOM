@@ -73,6 +73,10 @@ class MockConfig:
             "speculative_config": None,
             # A Compass step reads it as ModelRunner.prepare_model does.
             "enable_tbo": False,
+            # A Compass record reads them as `keyed` does.
+            "enable_dp_attention": False,
+            "enable_expert_parallel": False,
+            "enable_tbo_decode": False,
             # Scheduler.__init__ reads config.hf_config.architectures for V4
             # SWA-warmup detection; a non-V4 stub keeps that path inert.
             "hf_config": _MockHFConfig(),
