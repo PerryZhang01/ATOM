@@ -41,7 +41,7 @@ from atom.compass.backends.shape import BatchView, RequestShape
 from atom.compass.backends.step_labels import Sample, digest, label
 from atom.compass.parity import ARRIVALS
 from atom.compass.parity.served import served
-from atom.compass.run.step_grid import BOUNDS
+from atom.compass.run.step_grid import keyed_of
 
 #: The run.json format this reads.
 FORMAT_VERSION = 2
@@ -117,9 +117,7 @@ def _record(directory: Path, client_runs) -> tuple[list[Sample], dict]:
     return samples, {
         **run_fields(run),
         "parallel": f"tp{engine['tensor_parallel_size']}-dp{len(files)}",
-        "engine_config": {
-            k: v for k, v in engine.items() if k not in (*BOUNDS, "num_kvcache_blocks")
-        },
+        "engine_config": keyed_of(engine),
         "stack": run["stack"],
         "sampling": json.loads(sampling[0]) if sampling else None,
         "host_key": {k: v for k, v in host.items() if k not in ("model", "engine")},

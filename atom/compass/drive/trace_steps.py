@@ -12,7 +12,7 @@ traces may drive it. A prefill or a decode instance refuses: it shares a clock
 with its peer, which one invocation does not start.
 
 At the stop, the store gets one `shape_population` at `Topology(dp=D)`, D the
-run file's ``data_parallel_size``, with three members per DP rank: ``steps``
+run file's ``data_parallel_size``, with these members per DP rank: ``steps``
 (``.jsonl``), the rank's step-record lines; ``engine`` (``.json``), the engine
 file its runner wrote; and ``summary`` (``.json``), `summary` of those lines
 with ``requests``, the record keys of the requests they name. Its key is the
@@ -49,7 +49,7 @@ from atom.compass.artifacts import (
 from atom.compass.backends.shape import RequestShape
 from atom.compass.backends.step_grid_residual import raggedness
 from atom.compass.drive import runfile, serve
-from atom.compass.run.step_grid import BOUNDS
+from atom.compass.run.step_grid import keyed_of
 
 PROG = "compass trace steps"
 
@@ -105,10 +105,7 @@ def publish(out, run: dict, command: str) -> Key:
         }
     # Any rank's: every DP rank resolves one engine configuration.
     stated = json.loads((steps / "dp0.engine.json").read_text())
-    engine_config = json.dumps(
-        {k: v for k, v in stated.items() if k not in (*BOUNDS, "num_kvcache_blocks")},
-        sort_keys=True,
-    )
+    engine_config = json.dumps(keyed_of(stated), sort_keys=True)
     workload = hashlib.sha256(json.dumps(sorted(requests)).encode()).hexdigest()
     key = Key.of(
         Kind.SHAPE_POPULATION,
