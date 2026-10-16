@@ -30,6 +30,10 @@ readings of an engine start leave the spec for the `memory_readings` entries
 `provenance.origin`, not how they were produced, and each field's origin, with a probe's
 subject, is recorded and kept across a save (D25); probes are grouped by probe class (D26).
 
+**Revised 2026-10-16 by [#1226](https://github.com/jgong5/ATOM/issues/1226):** the schema
+drops `device.activations` and the `transferred-from:<spec>` origin with the runtime
+constants; the activation coefficient is a `memory_readings` reading (D25).
+
 **Scope.** The single input artifact that tells Compass what machine it is simulating,
 its schema, and the tools that fill it in. A project requirement is that compute, memory
 size, bandwidth and interconnect are **configured and not read from a device runtime**, so
@@ -93,7 +97,7 @@ name: mi355x-8gpu-2node
 provenance:                      # the document's origin, and each field's
   authored_by: <who>
   date: 2026-09-18
-  origin: datasheet | probed | assumed | transferred-from:<spec> | mixed
+  origin: datasheet | probed | assumed | mixed
   subject: {model, width, source_root, record}   # a probed document only, rule 5
   origins: {...}                 # each field's origin, written by `merge`, rule 5
   fragments: [...]               # filled by `merge`, see D26
@@ -132,13 +136,8 @@ device:
     fp8_flops:                 5.0e15
     fp4_flops:                 10.0e15  # optional: absent where there is no FP4 matrix core
     derate:                    0.70
-  # no memory readings: they are `compass measure memory`'s entries (07 D38, Phase 2)
-  activations:                 # optional: per model, keyed by architecture and config.json
-    - id: qwen3.8-27b
-      applies_to: [Qwen3_5ForConditionalGeneration]
-      fingerprint: sha256:<config.json>
-      # warmup `peak - current` over the warmup tokens, by TP width
-      bytes_per_token: {1: 180480}
+  # no memory readings, activations included: they are `compass measure memory`'s
+  # entries (07 D38, Phase 2)
   software_pinned_to:          # the stack this spec's numbers were taken on
     rocm:  "7.2.4"
     aiter: "<commit>"
@@ -172,8 +171,8 @@ mapping so a reader can follow the term into ATOM's code without guessing. The
 | `memory_readings.driver_and_collective_reserve_bytes` | `get_num_blocks` → `non_torch` | 926 / 6906 / 7266 / 10704 MiB at widths 1/2/4/8. **No fixed-plus-per-peer form fits** 5980 / 6340 / 9138. A table, not a law. Note ATOM's `non_torch` is a **device-wide** reading, so on a shared box it includes neighbours — see D14's dedicated-device scope boundary. |
 | `memory_readings.allocator_retained_after_load_bytes` | `peak_torch` | AITER `CustomAllreduce` 1 GiB pool plus the two-stage kernel's: 1.1 MiB at TP1, **2069 MiB flat** at TP2/4/8 |
 | `memory_readings.persistent_forward_buffer_bytes` | `peak_torch` | `allocate_forward_vars` + attention metadata; ~118 MiB, flat in width, differs only by model |
-| `memory_readings.cudagraph_pool` | `graph_pool.predicts`, the per-term check of the pool's real cost; not `cudagraph_overhead`, which mirrors ATOM's estimator (`03` D16) | measured `91.1 MiB + 0.3033 MiB per captured token` at W=1; flat **104 MiB** above W=1, where the allocated delta was byte-identical (79,692,800) across three widths and three ladders |
-| `activations[].bytes_per_token` | `peak_torch`, `cudagraph_overhead` | Qwen3.8-27B TP1 on MI308X: **180,480 B/token** fitted at 16384 warmup tokens predicts the held-out 8192 at **+0.000%**; the declared geometry form gives 98,304 (-45.5%). A model, config or width with no entry keeps the declared form |
+| `memory_readings.cudagraph_pool_bytes` | `graph_pool.predicts`, the per-term check of the pool's real cost; not `cudagraph_overhead`, which mirrors ATOM's estimator (`03` D16) | measured `91.1 MiB + 0.3033 MiB per captured token` at W=1; flat **104 MiB** above W=1, where the allocated delta was byte-identical (79,692,800) across three widths and three ladders; read at each configuration's own ladder |
+| `memory_readings.activation_bytes` over `warmup_tokens` | `peak_torch`, `cudagraph_overhead` | Qwen3.8-27B TP1 on MI308X: **180,480 B/token** fitted at 16384 warmup tokens predicts the held-out 8192 at **+0.000%**; the geometry form gave 98,304 (-45.5%) and is not derivable within 25% ([#705](https://github.com/jgong5/ATOM/issues/705)) |
 | `tokenizers[].*` | admission queue | cc-traces p50 input is **88,768 tokens**; at 2 M tok/s that is ~44 ms, **3x take2's entire admission constant**, and it scales with prompt length while a constant does not |
 | `ipc.*`, `interconnect.*_latency_s` | **Clock Authority lookahead floors** (doc 01 D3) | a zero lookahead serializes the whole simulation |
 | `compute.fp4_flops` | the roofline (`10` D64) for an FP4 leaf | DeepSeek-V4-Pro's routed experts are FP4 (`16` D95), and MI455X's dense FP4 peak is twice its FP8 peak ([#504](https://github.com/jgong5/ATOM/issues/504#issuecomment-6080974531)); priced at the FP8 rate they would read twice as slow |
@@ -213,14 +212,12 @@ Mooncake's KV transfer between the prefill and the decode node (`01` D6).
 4. **The whole resolved spec is echoed into every run artifact.** The KV gate is **≤5%**;
    a number whose spec cannot be recovered from the artifact is unattributable.
 5. **Every field has an origin, and the document records it** (`spec/fields.py::ORIGINS`,
-   `MachineSpec.origin`): `datasheet`, `probed`, `assumed` or `transferred-from:<spec>`.
+   `MachineSpec.origin`): `datasheet`, `probed` or `assumed`.
    A probed field also records its subject, what the probe ran on: model, width, source
    root, and the digest of the run record it read. A fragment states one
    `provenance.origin` for what it supplies, or `mixed` with each field's origin in
    `provenance.origins` (the tokenizer probe's: the caller's origin on its entries,
-   `probed` on the core counts it reads). A fragment is a transfer, and must state its
-   source's stack pin, only when a field it supplies outside `host.` is
-   `transferred-from:`; a fragment naming two source specs is refused (#141). An
+   `probed` on the core counts it reads). An
    `assumed` fragment's `notes` say why each
    value was chosen, and a `datasheet` fragment's cite the document and the date it was
    read. `merge` writes each field's origin into `provenance.origins`: a field two
@@ -230,8 +227,8 @@ Mooncake's KV transfer between the prefill and the decode node (`01` D6).
    origin; a `mixed` document without them is refused by name, and so is a document
    that states a method in place of an origin. The origin is not the method: the term that reads a field
    decides that (`02` D11, #952), so a datasheet value used as a parameter is analytical,
-   a probed one used as the answer is measured, and an assumed or transferred one makes
-   the term declared. A derate for a device never run is assumed (`10` D69): a vendor's
+   a probed one used as the answer is measured, and an assumed one makes the term
+   declared. A derate for a device never run is assumed (`10` D69): a vendor's
    measured fraction of peak informs the choice and does not source it. `08` D50.2 says
    how the projection reports its assumed fields.
 
@@ -267,16 +264,11 @@ probed on different CPUs must not be merged into one spec — that is what
 
 ### Open issues
 
-- **Runtime-constant transfer across dies is untested** (**T50**). The working assumption
-  — transfers within a software generation, not across one — is now recorded in doc `03`
-  and enforced by `07` D43's row for `memory_readings`, but it has not been measured on a
-  second card type. One engine startup settles it.
-- Three topologies of one model is interpolation, not a law. The cudagraph-pool width
-  scaling rests on **one** point above W=1: the shape "flat above W=1" is well supported
-  (byte-identical 79,692,800 deltas across three widths and three capture ladders), but
-  the claim that the transition happens *at* W=2 rather than being a slowly-varying
-  function that merely looks flat over 2/4/8 rests on the single W=1→W=2 step. A fourth
-  width would not help; a second **model** would.
+- **Memory readings carried across dies are untested** (**T50**). An entry assumed for a
+  device never run copies another device's of the same configuration, and every term
+  built on it is declared (`07` D38). The working assumption — the readings transfer
+  within a software generation, not across one — is recorded in doc `03` and has not
+  been measured on a second card type. One engine startup settles it.
 
 ---
 
@@ -402,6 +394,6 @@ which cancelled — the largest being 25% of a single term.
 | # | Decision | Date |
 |---|---|---|
 | D24 | The spec describes the machine; ATOM's config describes the deployment. Thread-pool width becomes an ATOM config option, not a Compass one. | 2026-09-18 |
-| D25 | Four-section schema: `provenance`, `host`, `device`, `interconnect`. Mandatory derates, no memory readings (`measure memory`'s entries, 2026-10-14), `software_pinned_to` checked, torch included, as the target's stack, whole spec echoed into every artifact. Revised for the MI455 projection: an optional dense `fp4_flops`, `intra_node.domain_devices` for a scale-up fabric wider than a node, and every field given an origin, `provenance.origin` and per field `provenance.origins` with a probe's subject, kept across a save. | 2026-09-18; revised 2026-10-10; torch 2026-10-13 (#851); origin 2026-10-14 (#952) |
+| D25 | Four-section schema: `provenance`, `host`, `device`, `interconnect`. Mandatory derates, no memory readings (`measure memory`'s entries, 2026-10-14), activations included (2026-10-16), `software_pinned_to` checked, torch included, as the target's stack, whole spec echoed into every artifact. Revised for the MI455 projection: an optional dense `fp4_flops`, `intra_node.domain_devices` for a scale-up fabric wider than a node, and every field given an origin, `datasheet`, `probed` or `assumed`, `provenance.origin` and per field `provenance.origins` with a probe's subject, kept across a save. | 2026-09-18; revised 2026-10-10; torch 2026-10-13 (#851); origin 2026-10-14 (#952); activations and the transfer origin dropped 2026-10-16 (#1226) |
 | D26 | Probes emit fragments; `merge` / `validate` / `explain` combine and check them. Four hardware probe classes plus a datasheet path; the transfer path dropped 2026-10-14 (#937). Every hardware probe implements the contamination refusals. All are the `spec` package's functions, run by per-machine scripts, with no `compass` command. Machine specs are developers', one per supported machine, passed by `--machine`; an engine start's memory readings are `measure memory`'s, not the spec's. | 2026-09-18; revised 2026-10-13 and 2026-10-14 (#851) |
 | D25.1 | Runtime-constant fields renamed to say what they are; ATOM's own term recorded as a mapping column. `host.tokenizer` becomes `host.tokenizers[]`, keyed by tokenizer identity (id + backend + fingerprint) with `applies_to` model architectures. | 2026-09-19 |
