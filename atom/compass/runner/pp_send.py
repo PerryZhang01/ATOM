@@ -12,12 +12,10 @@ parts leave at ``t_send``, the sender's host send; the ``rccl`` parts at
 ``t_ready``, when the sender's device work ends.
 
 `StageSends` is the stage loop's side. Before a downstream stage's forward it
-receives that forward's input on ``pp_data``, advances to the metadata's
-arrival, hands the tensors' arrival to the forward as its batch's
-``compass_pp_release``, where `HostDeviceRecurrence` holds the device start,
-and, for a rendezvous send, returns the completion on ``pp_ack`` stamped at
-it; after a non-last stage's forward it waits for its previous send's
-completion, then sends. An idle
+receives that forward's input on ``pp_data``, up to the metadata's arrival and
+the tensors' as the batch's ``compass_pp_release``, and, for a rendezvous send,
+returns the completion on ``pp_ack`` stamped at it; after a non-last stage's
+forward it waits for its previous send's completion, then sends. An idle
 flush waits for the previous send the same way. The frames move between the
 stages' TP-rank-0 workers over the PP CPU group.
 """

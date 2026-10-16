@@ -274,9 +274,8 @@ class HostDeviceRecurrence:
         self, batch: Any, device_s: float, draft_s: float = 0.0, refuse: bool = True
     ) -> float:
         """The forward's exit less `now`, for `device_s` of target device time
-        and then `draft_s` of draft; advances the device state. On a stage
-        after the first, the device starts no earlier than the batch's
-        `compass_pp_release`, when its input from the stage before arrives. With any
+        and then `draft_s` of draft, starting no earlier than the batch's
+        `compass_pp_release`; advances the device state. With any
         laws and `refuse`, a forward whose kind lacks one for a segment it runs
         is refused, naming each ``<kind>.<segment>``, the state as it was;
         without `refuse` that segment is 0. A segment in `skip` needs none, and

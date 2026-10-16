@@ -46,11 +46,9 @@ def _kind(step, prev) -> str:
 def check(steps: list[dict], stage=None, upstream=None) -> dict:
     """One DP rank's steps charged on their measured inputs: the gate's report.
 
-    On pipeline stage `stage = (rank, pp)`, a decode's `d_gap_ns` follows the
-    last forward's device end, not the launch, and `upstream` is the stage before's
-    `sends`, per step its predicted metadata send and device end on the
-    worker clock: the launch waits for the send, less the measured
-    `t_pp_recv_ns`, and the device for the end, less `d_recv_ns`.
+    On pipeline stage `stage = (rank, pp)`, the launch waits for the stage
+    before's predicted send in `upstream` and the device for its end, in
+    place of the measured `t_pp_recv_ns` and `d_recv_ns`.
     """
     if upstream is not None and len(upstream) != len(steps):
         raise ValueError(f"{len(steps)} steps, and {len(upstream)} upstream")
@@ -87,9 +85,8 @@ def check(steps: list[dict], stage=None, upstream=None) -> dict:
         batch.produces_output = lambda out=s["produces_output"]: out
         gap = 0 if batch.total_seqs_num_prefill else s.get("d_gap_ns", 0)
         if stage is not None:
-            # A stage's host often trails its device, so the gap may be idle:
-            # it follows the last forward's device end, not the launch. R7's
-            # device side holds the start as well.
+            # A stage's host may trail its device, so the gap may be idle: it
+            # follows the last forward's device end. R7 holds the start too.
             start = rec.ends[-1] + gap * 1e-9
             batch.compass_pp_release = max(ready, start) if upstream else start
             gap = 0
@@ -129,15 +126,13 @@ def check(steps: list[dict], stage=None, upstream=None) -> dict:
 
 
 def main(record: str) -> int:
-    """Print the gate per DP rank and pipeline stage of `record`, the stages
-    charged together; 1 if any fails."""
+    """Print the gate per DP rank and pipeline stage of `record`; 1 if any fails."""
     ok, stages, sends = True, [read(record)], {}
     while more := read(record, len(stages)):
         stages.append(more)
     pp = len(stages)
-    for i, rank, steps in (
-        (i, r, s) for i, d in enumerate(stages) for r, s in d.items()
-    ):
+    runs = [(i, r, s) for i, d in enumerate(stages) for r, s in d.items()]
+    for i, rank, steps in runs:
         stage = (i, pp) if pp > 1 else None
         report = check(steps, stage, sends.get((i - 1, rank)))
         sends[i, rank] = report["sends"]
