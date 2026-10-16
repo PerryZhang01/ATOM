@@ -36,7 +36,7 @@ member, the frontend's included, connects to.
   (`atom.utils.compass_loop.CompassEventLoop.stopped`) is a stop: the
   frontend's runtime first ends every LP's run through the authority, so each
   engine leaves its loop at its ``+inf`` grant and hands in, and a client
-  still bound is granted ``+inf`` too; `frontend_done`
+  still bound gets ``+inf`` with every event sent it; `frontend_done`
   hands in the signal, which the summary counts as an ``ended:`` reason, and
   the server leaves once the summary is written from every hand-in. A server
   whose ``client_runs`` is ``null`` serves until it is stopped: a stop with no
@@ -443,11 +443,13 @@ class _RecordingAuthority(ClockAuthority):
     starts once every server LP, and every member of one declared with members,
     has asked once. Each client run that ends before the last has its summary
     written once every server LP has handed in. A frontend's TAR to ``+inf``
-    before the finish is a stop: it finishes the run there and sets `stopped`.
-    Every server LP is granted ``+inf``, and the client too while a client run
-    is open, from its bind to its end; outside one it holds no connection. A
-    stop with none open, on a server whose ``client_runs`` is ``null``, sets
-    `stopped_whole`: the run ended as its run file says, as at the finish."""
+    before the finish is a stop: it registers that frontend's send log,
+    finishes the run there and sets `stopped`. Every LP but the client is
+    granted ``+inf``, and the client too while a client run is open, from its
+    bind to its end, its grant releasing every message registered for it;
+    outside one it holds no connection. A stop with none open, on a server
+    whose ``client_runs`` is ``null``, sets `stopped_whole`: the run ended as
+    its run file says, as at the finish."""
 
     def __init__(self, run: dict) -> None:
         # The tree that runs, read before the run so an unidentifiable one is
@@ -499,14 +501,16 @@ class _RecordingAuthority(ClockAuthority):
             self.started = time.monotonic()
         stop = kind == TAR and t == math.inf and lp.name.startswith(FRONTEND.name)
         if stop and self.final_clocks is None:
+            for ch, seq, arrival in log:
+                self._register(lp, ch, seq, arrival, member)
             self.stopped = True
             self.stopped_whole = (
                 self._client_runs == math.inf and not self.client_run_open
             )
             replies = [
-                r
-                for r in self._address(self._finish())
-                if r[0] != TRAFFIC or self.client_run_open
+                (to, g, self._release_all(released) if to == TRAFFIC else released)
+                for to, g, released in self._address(self._finish())
+                if to != TRAFFIC or self.client_run_open
             ]
         else:
             replies = super().on_request(lp, kind, t, log, t_daemon, member)
@@ -535,6 +539,14 @@ class _RecordingAuthority(ClockAuthority):
             self.done.set()
         return replies
 
+    def _release_all(self, into: dict) -> dict:
+        """Every message registered on the channels of `into` and not yet
+        released, now released: by channel, its ``(seq, arrival)`` pairs."""
+        released = {ch: [*self._undelivered[ch].items()] for ch in into}
+        for ch in into:
+            self._undelivered[ch].clear()
+        return released
+
 
 class _PublishedClock(clock.LPRuntime):
     """An LP runtime whose clock is also written to the file `NOW_ENV` names."""
@@ -555,13 +567,14 @@ class _PublishedClock(clock.LPRuntime):
 class _StoppingClock(clock.LPRuntime):
     """An LP runtime that, when its run ends before its ``+inf`` grant, at a
     stop, first ends every LP's run through the authority with a TAR to
-    ``+inf``, so each engine leaves its loop and hands in before the server
-    closes the engines. A run a refusal ended has nothing left to end."""
+    ``+inf``, carrying its send log, so each engine leaves its loop and hands
+    in before the server closes the engines. A run a refusal ended has nothing
+    left to end."""
 
     def end_run(self) -> None:
         if self.now != math.inf:
             with contextlib.suppress(ClockAbort):
-                self.conn.send((TAR, math.inf, [], math.inf))
+                self._ca_send(TAR, math.inf, math.inf)
                 while self.conn.recv()[0] != math.inf:  # up to its own +inf grant
                     pass
         super().end_run()
