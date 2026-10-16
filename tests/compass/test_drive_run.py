@@ -57,11 +57,12 @@ PLANTED = (
 )
 
 
-def recorded(tmp_path, monkeypatch, lengths):
-    """A record directory, as `record` lays one out, of prompts of `lengths`."""
+def recorded(tmp_path, monkeypatch, lengths, **drive):
+    """A record directory, as `record` lays one out, of prompts of `lengths`;
+    `drive` goes to `record`."""
     directory = tmp_path / ("record-" + "-".join(map(str, lengths)))
     directory.mkdir()
-    record(tmp_path, monkeypatch, *lengths).rename(directory / serve.STEPS)
+    record(tmp_path, monkeypatch, *lengths, **drive).rename(directory / serve.STEPS)
     (directory / serve.RUN_JSON).write_text(json.dumps(IDENTITY))
     return directory
 
@@ -71,7 +72,7 @@ def bundle(tmp_path, monkeypatch, member, **config):
     deployment it was published under, changed by `config`."""
     backend = loaded(tmp_path, member)
     bounds = {k: ENGINE[k] for k in ("max_num_seqs", "max_num_batched_tokens")}
-    r = deployment(tmp_path, **bounds, capture_sizes=LADDER, **config)
+    r = deployment(tmp_path, **{**bounds, **config}, capture_sizes=LADDER)
     monkeypatch.setattr(drive_run, "_config", lambda atom_args: r.config)
     return Key.of(Kind.STEP_GRID_BUNDLE, **KEY).token(), backend
 
@@ -156,6 +157,50 @@ def test_a_bundle_measured_under_another_engine_config_refuses_before_any_server
         drive_run.main(
             flags(tmp_path, "--step-grid", token, "--coverage", str(directory))
         )
+
+
+def test_an_input_recorded_at_another_token_budget_refuses_naming_that_field(
+    tmp_path, monkeypatch
+):
+    directory = recorded(tmp_path, monkeypatch, MIXED, budget=2048)
+    # Planned for this run's 8192 tokens, the bundle covers the input's steps.
+    target = {"max_num_batched_tokens": 8192, "max_model_len": 16384}
+    planned = plan(directory / serve.STEPS, engine=target)
+    member = measured(planned, located(tmp_path, planned))
+    token, _ = bundle(tmp_path, monkeypatch, member, max_num_batched_tokens=8192)
+    monkeypatch.setattr(serve, "serve", unstarted)
+
+    with pytest.raises(ValueError) as refused:
+        drive_run.main(
+            flags(tmp_path, "--step-grid", token, "--coverage", str(directory))
+        )
+
+    assert str(refused.value) == (
+        f"--coverage: {directory} dp0 ran under another engine than ATOM's "
+        "arguments resolve: max_num_batched_tokens 2048 there, 8192 here"
+    )
+
+
+def test_a_population_on_another_ladder_and_tp_width_refuses_naming_both(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        trace_steps, "roots_for", lambda modules: (ATOM_ROOT, AITER_ROOT)
+    )
+    served = recorded(tmp_path, monkeypatch, SHORT, ladder=[1, 2, 4])
+    run = build(tmp_path, "--step-stub", stub(tmp_path))
+    population = trace_steps.publish(served, run, "compass trace steps").token()
+    planned = plan(served / serve.STEPS)
+    member = measured(planned, located(tmp_path, planned))
+    token, _ = bundle(tmp_path, monkeypatch, member, tensor_parallel_size=2)
+    monkeypatch.setattr(serve, "serve", unstarted)
+
+    with pytest.raises(ValueError, match="arguments resolve: ladder") as refused:
+        drive_run.main(flags(tmp_path, "--step-grid", token, "--coverage", population))
+
+    assert str(refused.value).endswith(
+        f"ladder [1, 2, 4] there, {LADDER} here; tensor_parallel_size 1 there, 2 here"
+    )
 
 
 @pytest.mark.parametrize("backend", ["--step-stub", "--step-linear"])
