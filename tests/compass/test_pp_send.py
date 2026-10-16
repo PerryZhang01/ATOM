@@ -8,6 +8,7 @@ charges each forward `C` seconds, as the engine's `call_func` does.
 """
 
 import math
+from functools import partial
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +18,7 @@ from atom.compass.clock import LpId, single_engine_table
 from atom.compass.runner import pp_send
 from atom.compass.runner.overrides import HostDeviceRecurrence
 from atom.compass.runner.pp_send import CarrierModel, StageSends
+from atom.utils import clock
 from atom.utils.clock import LPRuntime, WrappedSocket
 from tests.compass.clock.test_lp_runtime import FakeConn, _owner
 
@@ -37,8 +39,12 @@ def test_a_rendezvous_part_is_posted_when_the_part_before_it_ends():
     assert done == end == first + 2.0**-8 + 2048 * 2.0**-20
     # Posted late, the receive starts the rendezvous part later.
     assert pp_send.recv_done(MODELS, 0.0, 1.0, RDV)[1] == 1.0 + 2.0**-8 + 2.0**-9
+    # Posted before the send, the rendezvous part starts at the send.
+    assert (
+        pp_send.recv_done(MODELS, 1.0, 0.0, [("rccl", 2048)])
+        == (1.0 + 2.0**-8 + 2.0**-9,) * 2
+    )
     assert pp_send.recv_done(MODELS, 0.0, 0.0, EAGER) == (sent, first)
-    assert pp_send.local_done(MODELS, 0.0, EAGER) == sent
     assert (L_DATA, L_ACK) == (2.0**-10, 2.0**-8)
 
 
@@ -74,7 +80,7 @@ def _stage(rank, *grants, frames=(), parts=RDV):
         return frames.pop(0) if name == "recv_pp_frame" else True
 
     sends = StageSends(rt, call, rank, 2, MODELS)
-    return rt, lambda *a: on_owner(sends, *a), sends, calls
+    return rt, partial(on_owner, sends), sends, calls
 
 
 def _sent(rt):
@@ -120,6 +126,32 @@ def test_an_idle_flush_ends_at_the_ack_or_the_local_completion_or_where_it_was()
     run("forward")
     run("flush_pp_send")
     assert _sent(rt)[1] == ("TAR", C + 2.0**-12 + 8 * 2.0**-20, [(DATA, 0, C + L_DATA)])
+
+
+def test_a_stage_holds_work_from_its_send_to_the_flush_and_while_kv_work_is_pending(
+    monkeypatch,
+):
+    kv = [False]
+    rt, run, stub, _ = _stage(
+        0, (C, {}), (C + 2.0**-12 + 8 * 2.0**-20, {}), parts=EAGER
+    )
+    engine = SimpleNamespace(
+        runner_mgr=SimpleNamespace(call_func=stub.call),
+        pp_rank=0,
+        pp_size=2,
+        has_pending_kv_work=lambda: kv[0],
+    )
+    monkeypatch.setattr(clock, "_installed", rt)
+    spec = SimpleNamespace(value=lambda key: getattr(CARRIER, key.rsplit(".", 1)[1]))
+    pp_send.install(engine, spec)
+    sends = partial(run.func, engine.runner_mgr.call_func)
+    held = [rt.holds_work()]
+    sends("forward")
+    held.append(rt.holds_work())
+    sends("flush_pp_send")
+    held.append(rt.holds_work())
+    kv[0] = True
+    assert held + [rt.holds_work()] == [False, True, False, True]
 
 
 def test_a_downstream_forward_computes_from_the_end_of_its_receive_and_acks_at_done():

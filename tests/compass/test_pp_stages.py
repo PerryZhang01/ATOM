@@ -152,6 +152,17 @@ def test_a_pipeline_whose_machine_states_no_send_carrier_is_refused_by_name(
     assert clock.installed() is None
 
 
+def test_a_pipeline_at_tp_two_that_sends_shards_is_refused(monkeypatch, tmp_path):
+    run = _run_file(tmp_path, pipeline_parallel_size=2)
+    monkeypatch.setenv(compass_run.ENV, str(run))
+    monkeypatch.setenv("ATOM_PP_SEND_ALLGATHER", "1")
+    deployment = _stage(0)
+    deployment.tensor_parallel_size = 2
+    with pytest.raises(ValueError, match="set ATOM_PP_SEND_ALLGATHER=0"):
+        compass_run.frontend(deployment)
+    assert clock.installed() is None
+
+
 def _two_stage_table(*rows) -> str:
     """A PP2 step table: the head's forward 0 starts at 1.0, and `rows`."""
     run = {
@@ -177,6 +188,10 @@ ACKED = ("engine-pp0", 1.0, 1.6, "release", ACK, 0)
 def test_the_pipeline_check_holds_a_stage_to_the_end_of_its_input():
     computes = ("engine-pp1", 1.6, 1.8, "TAR")
     assert pipeline_timeline(_two_stage_table(SENT, ACKED, computes)) == []
+    # An eager last part ends the receive after the ack, at 1.7.
+    waits = ("engine-pp1", 1.0 + IPC, 1.7, "TAR")
+    late = ("engine-pp1", 1.7, 1.9, "TAR")
+    assert pipeline_timeline(_two_stage_table(SENT, ACKED, waits, late)) == []
     # A stage that forwards as its batch arrives, as before the stage sends.
     early = ("engine-pp1", 1.0 + IPC, 1.2, "TAR")
     assert pipeline_timeline(_two_stage_table(SENT, ACKED, early)) == [

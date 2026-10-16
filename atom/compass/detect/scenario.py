@@ -18,9 +18,10 @@ Each OUT_DIR holds one run of one run file, each under its own
   usage chunk counting every token it asked for;
 - with `records`, an engine LP's name to the parity record its run wrote
   (`atom.compass.parity`): the LP's TAR rows are `expected_timeline`'s.
-- above pipeline width one, each stage starts its forward at the end of its
-  input's receive, and sends on no earlier than that forward starts and its
-  previous send is done (`pipeline_timeline`).
+- above pipeline width one, the order of the stages' forwards and sends: a
+  stage starts a forward no earlier than its input's receive completes, and
+  sends on no earlier than that forward starts and its previous send is done
+  (`pipeline_timeline`, which recomputes no time).
 
 The CLI checks the runs and the records it is given; the traffic's view is a
 harness's, so `sent` is for callers that hold one.
@@ -128,15 +129,17 @@ def _run_properties(table: str, summary: dict) -> list[str]:
 
 def pipeline_timeline(table: str) -> list[str]:
     """Each stage's forward n against the stage before's send n, one failure
-    a line; none at pipeline width one.
+    a line; none at pipeline width one. It checks order on the step table's
+    rows and recomputes no time: a receive or a forward of the wrong length
+    passes.
 
     The head's forward n starts when it sends ``meta#pp1`` seq n. A stage's
     send n leaves no earlier than its forward n starts and its send n-1
     completes, read from the ``pp_ack`` the stage after returned. When send n
-    is rendezvous, its ``pp_ack`` is stamped at its completion, which ends the
-    receive when the send's last part is rendezvous: the stage after starts
-    its forward n there. An eager send has no ``pp_ack``, so the forward it
-    feeds is not checked.
+    is rendezvous, its ``pp_ack`` is stamped at its completion, and the stage
+    after starts its forward n there or, when the send's last part is eager
+    and its receive ends later, at the end of the wait that spans the ack. An
+    eager send has no ``pp_ack``, so the forward it feeds is not checked.
     """
     lines = table.splitlines()
     run = json.loads(lines[0].removeprefix(CONFIGURATION_PREFIX))
@@ -156,6 +159,10 @@ def pipeline_timeline(table: str) -> list[str]:
         ack = arrived[f"engine-pp{k + 1}->engine-pp{k}:pp_ack#dp0"]
         after = {}
         for n, start in sorted(starts.items()):
+            span = (
+                b for a, b in tars[lp] if a < start < b and not math.isclose(a, start)
+            )
+            start = next(span, start)
             if not any(math.isclose(a, start) for a, _ in tars[lp]):
                 failed.append(f"{lp} starts no forward {n} at {start}")
             elif k < pp - 1 and n not in data:

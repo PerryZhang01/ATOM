@@ -401,8 +401,9 @@ protocol, so each carrier (`rccl`, `gloo`) gets these fields under
 `overhead_s` (`o`), `per_byte_s` (`G`) and `rendezvous_fixed_s`, the size-independent part
 of `T = rendezvous_fixed_s + bytes × G`. So `T_min` is `T` at the threshold. PP is
 single-node (every PP address is ZMQ IPC), hence the intra-node section. The fields are
-optional in the schema and required by a PP run. A two-GPU measurement on RCCL and gloo supplies them (README
-principle 8); a PP run whose machine does not state them is refused by name.
+optional in the schema and required by a PP run. No machine states them yet: #516 measures
+them on two GPUs over RCCL and gloo (README principle 8), and until a machine states them a
+PP run is refused by name.
 
 ### Q4: memory — layers split, and the split is ATOM's
 
