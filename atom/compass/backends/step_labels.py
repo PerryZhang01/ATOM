@@ -25,11 +25,12 @@ prefill and decode rows is cut.
 A step's host labels are its segments: `E` from the previous forward's exit,
 cut as idle when the two batches share no request; `W_pre` to the launch, less
 the staging gate's wait; `W_launch`; `W_post` from the launch to the exit, less
-the token copy wait, and a middle chunk has none.
+the token copy wait, and a middle chunk has none. With an MTP status wait,
+`W_pre` ends at it and `W_inputs` runs from it to the launch.
 
 `write_table` writes a record's labels beside it, `dp<r>.cost.jsonl`, for
 people: a first line `{"version": TABLE_VERSION}`, then per step `step`,
-`d_busy_s`, `d_gap_s`, `launch_exposed`, `idle`, the four segments, `label_s`
+`d_busy_s`, `d_gap_s`, `launch_exposed`, `idle`, the segments, `label_s`
 and `cut`, the reason its device label was cut; seconds throughout, null where
 the step has none.
 """
@@ -164,7 +165,10 @@ def label(record, run: str | None = None) -> tuple[list[Sample], list[dict]]:
         enter, (l0, l1) = s["t_enter_ns"], s["t_launch_ns"]
         g0, g1 = s.get("t_gate_ns", (l0, l0))
         r0, r1 = s.get("t_recv_ns", (0, 0))
-        host = {"W_pre": g0 - enter + l0 - g1, "W_launch": l1 - l0}
+        m0, m1 = s.get("t_mtp_ns", (l0, l0))
+        host = {"W_pre": g0 - enter + m0 - g1, "W_launch": l1 - l0}
+        if "t_mtp_ns" in s:
+            host["W_inputs"] = l0 - m1
         if host_kind(view) != "middle":
             host["W_post"] = s["t_exit_ns"] - l1 - (r1 - r0)
         idle = prev is not None and not _shared(s, prev)
@@ -188,7 +192,7 @@ def label(record, run: str | None = None) -> tuple[list[Sample], list[dict]]:
                 "d_gap_s": None if gap_ns is None else gap_ns * 1e-9,
                 "launch_exposed": s["step"] in exposed,
                 "idle": idle,
-                **{k: host.get(k) for k in HOST_SEGMENTS},
+                **{k: host.get(k) for k in (*HOST_SEGMENTS, "W_inputs")},
                 "label_s": device,
                 "cut": cut,
             }

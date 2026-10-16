@@ -242,6 +242,8 @@ def install_cost_backend(runner: Any, backend: CostBackend) -> None:
 
 
 HOST_SEGMENTS = ("E", "W_pre", "W_launch", "W_post")  # in the order the host runs them
+#: The part of prepare after the MTP status wait; a law without it charges 0.
+MTP_SEGMENT = "W_inputs"
 FORWARD_KINDS = ("decode", "prefill", "middle")
 #: The format of a simulated run's `dp<r>.cost.jsonl`, its first line.
 COST_TABLE_VERSION = 1
@@ -256,7 +258,8 @@ class HostDeviceRecurrence:
     output forward's, or on the last stage for its own, and on any other stage
     for nothing. With `mtp`, a forward's device work is its target's and then
     its draft's, and a single-stage output forward waits before launch, for
-    the previous output forward's target. `ends[-1]` is the last forward's device end. `laws[kind][segment]` are coefficients on `(1,
+    the previous output forward's target; `MTP_SEGMENT` runs after that wait,
+    before the launch. `ends[-1]` is the last forward's device end. `laws[kind][segment]` are coefficients on `(1,
     tokens, seqs)`; `charge` says what an absent one costs. `now` reads the engine LP's clock.
     `segments` holds the seconds the last `charge` charged each segment, 0 for
     one in `skip`.
@@ -292,14 +295,15 @@ class HostDeviceRecurrence:
         x = (1, batch.total_tokens_num, batch.total_seqs_num)
         self.segments = {
             s: float(np.dot(law.get(s, (0, 0, 0)), x)) * (s not in self.skip)
-            for s in HOST_SEGMENTS
+            for s in (*HOST_SEGMENTS, MTP_SEGMENT)
         }
-        e, pre, launch, post = self.segments.values()
+        e, pre, launch, post, inputs = self.segments.values()
         now = self.now()
         host = max(now + e, self.ends[0]) + pre
         output = batch.produces_output()
         if self.mtp and output:  # output_end stays -inf on a PP stage
             host = max(host, self.output_end)
+        host += inputs
         launch_end = host + launch
         target_end = max(self.ends[-1], host) + device_s
         self.ends.append(max(target_end + draft_s, launch_end))
@@ -1141,7 +1145,7 @@ def _group_step_seconds(
     step = record.step - 1  # the step `record_step` just recorded
     segments = {}
     if hasattr(host, "segments"):
-        skipped = [s for s in HOST_SEGMENTS if s in host.skip]
+        skipped = [s for s in host.segments if s in host.skip]
         segments = {**host.segments, "skipped": skipped}
     line = {
         "step": step,
