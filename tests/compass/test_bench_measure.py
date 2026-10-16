@@ -148,11 +148,13 @@ def test_measuring_one_record_twice_publishes_each_view_once_and_then_nothing(ru
         assert member["traces"] == sorted(
             {t for s in split if views([s]) == {view} for t in s["traces"]}
         )
-    # What `fit` reads a measurement as is the record's own configuration.
-    samples, config = load(
-        {run.record: RUNS}, [k for k, _ in held.values()], store.root
-    )
-    assert len(samples) > len(held) and config["sampling"] == SAMPLING
+    # Each key states the record's configuration as `fit` reads it.
+    config = load({run.record: RUNS})[1]
+    for key, _ in held.values():
+        stated = {f: json.loads(key.values[f]) for f in ("engine_config", "sampling")}
+        for f in ("model", "device", "parallel", "source_root"):
+            stated[f] = key.values[f]
+        assert stated == {f: config[f] for f in stated}
     phases = json.loads((run.tmp / "out/run.json").read_text())["phases"]
     assert list(phases) == ["warm-up", "measuring"]
     assert all("end" in edges for edges in phases.values())
