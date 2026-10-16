@@ -12,6 +12,8 @@
 #   GAP_S            seconds between sends, each also waiting for the server to
 #                    admit the one before; 0 sends them back to back (default 0.05)
 #   MACHINE          machine spec (default scripts/compass/machines/mi308x-hjbog18.json)
+#   STORE            artifact store holding the simulated configuration's memory
+#                    readings, taken by `compass measure memory` (required)
 #   SERVER_ARGS      more API server flags, on both runs (default --enforce-eager
 #                    --max-model-len 8192 --no-enable_prefix_caching)
 #   WAIT_S           seconds a server has to start, and to stop (default 1800)
@@ -27,6 +29,7 @@ compass_env "$ROOT"
 compass_require_tree "$ROOT" || exit $?
 OUT=${1:?usage: parity_one_node.sh OUT_DIR}
 MODEL=${MODEL:?MODEL names the model directory}
+STORE=${STORE:?STORE names the store holding the memory readings}
 SERVER_ARGS=${SERVER_ARGS:---enforce-eager --max-model-len 8192 --no-enable_prefix_caching}
 WAIT_S=${WAIT_S:-1800}
 mkdir -p "$OUT/real" "$OUT/sim"
@@ -70,11 +73,11 @@ leave real
 
 RUN=$OUT/sim/run.json
 python3 - "$RUN" "$OUT" "${MACHINE:-$ROOT/scripts/compass/machines/mi308x-hjbog18.json}" \
-    "$MODEL" "$(compass_free_port)" <<'EOF'
+    "$MODEL" "$STORE" "$(compass_free_port)" <<'EOF'
 import json, sys
 from pathlib import Path
 
-run, out, machine, model, port = sys.argv[1:]
+run, out, machine, model, store, port = sys.argv[1:]
 machine = json.loads(Path(machine).read_text())
 # ponytail: prices the model's tokenizer as the spec's first entry measured it;
 # only arrival latency reads it. Measure the model's own to drop this.
@@ -83,7 +86,7 @@ machine["host"]["tokenizers"][0]["applies_to"].append(arch)
 Path(run).write_text(json.dumps({
     "clock_endpoint": f"tcp://127.0.0.1:{port}", "bound_s": 1e7,
     "admission_path": "serving", "ipc_s": 2.0**-14, "stream_s": 2.0**-12,
-    "replay": f"{out}/real/record", "machine": machine,
+    "replay": f"{out}/real/record", "machine": machine, "store": store,
     "data_parallel_size": 2, "out_dir": f"{out}/sim",
 }))
 EOF

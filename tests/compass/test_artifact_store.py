@@ -220,8 +220,8 @@ def publish_price(store: ArtifactStore, width: int) -> Key:
         provenance=stanza(),
         conditions=CONDITIONS,
         gates=GATES,
-        topology=Topology(),
-        members=members_for(Topology(), "prices", "json"),
+        topology=Topology(tp=width),
+        members=members_for(Topology(tp=width), "prices", "json"),
     )
     return price_key(width)
 

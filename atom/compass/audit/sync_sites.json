@@ -4531,6 +4531,43 @@
    "why": "the worker connector submits a STORE to the lmcache server",
    "mechanism": "K9",
    "mechanism_why": "inside the lmcache_mp worker connector, which the simulated runner replaces with one that submits nothing"
+  },
+  {
+   "id": "atom/compass/drive/measure_memory.py::main::subprocess.Popen( [sys.executable, \"-c\", code, *atom_args], stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True, )::thread_start#0",
+   "file": "atom/compass/drive/measure_memory.py",
+   "symbol": "main",
+   "call": "subprocess.Popen",
+   "expr": "subprocess.Popen( [sys.executable, \"-c\", code, *atom_args], stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True, )",
+   "shape": "thread_start",
+   "peer": "none",
+   "lp": "none",
+   "why": "compass measure memory starts ATOM's engine in a process of its own session, to read its memory as it starts",
+   "mechanism": "K9",
+   "mechanism_why": "starting a process cannot park; in the measuring command, which is no LP, around a real engine start it makes; a GPU command serves no simulated run, so the bound stays real"
+  },
+  {
+   "id": "atom/compass/drive/measure_memory.py::main::engine.wait(START_TIMEOUT_S)::event_wait#0",
+   "file": "atom/compass/drive/measure_memory.py",
+   "symbol": "main",
+   "call": "engine.wait",
+   "expr": "engine.wait(START_TIMEOUT_S)",
+   "shape": "event_wait",
+   "peer": "process",
+   "why": "compass measure memory waits for the engine it started to start and stop, up to a wall bound past which it kills the engine's session and refuses",
+   "mechanism": "K9",
+   "mechanism_why": "in the measuring command, which is no LP, around a real engine start it makes; a GPU command serves no simulated run, so the bound stays real"
+  },
+  {
+   "id": "atom/compass/drive/measure_memory.py::main::engine.wait()::event_wait#0",
+   "file": "atom/compass/drive/measure_memory.py",
+   "symbol": "main",
+   "call": "engine.wait",
+   "expr": "engine.wait()",
+   "shape": "event_wait",
+   "peer": "process",
+   "why": "compass measure memory reaps the engine process once its session is killed",
+   "mechanism": "K9",
+   "mechanism_why": "in the measuring command, which is no LP, around a real engine start it makes; a GPU command serves no simulated run, so the bound stays real"
   }
  ],
  "anchors": [

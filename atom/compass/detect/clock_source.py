@@ -112,6 +112,10 @@ DEFAULT_ALLOW_LIST: dict[str, str] = {
         "when measure steps published an entry, for the entry's provenance; the "
         "bench runs on a GPU and never inside a simulated run"
     ),
+    "atom/compass/drive/measure_memory.py": (
+        "when measure memory published its entry, for the entry's provenance; it "
+        "starts a real engine and never runs inside a simulated run"
+    ),
 }
 
 #: Packages under `atom/` a simulated run never executes, or that keep their
