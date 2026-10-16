@@ -1,0 +1,241 @@
+# SPDX-License-Identifier: MIT
+"""`compass run`: one simulated instance's server, its coverage check before
+the server starts, and what run.json records for grading once it stops.
+
+Steps are ATOM's `Scheduler`'s, recorded as `test_step_grid_plan.record`
+records them and laid out as `record` writes a record directory; a population
+is published from one by `trace_steps.publish`. Bundles are planned and
+measured from those steps and published as `test_step_grid_plan.loaded`
+publishes them, and ATOM's arguments resolve that test's deployment. The
+server is `test_drive_trace_steps`'s planted one, which also copies a run
+summary into its out_dir; the summary after a refused step is the one
+`test_refused_step_continues.py` produces.
+"""
+
+import dataclasses
+import json
+import sys
+
+import pytest
+import test_drive_trace_steps
+import torch
+from test_artifact_store import AITER_ROOT, ATOM_ROOT
+from test_dp_step_max import runner
+from test_drive_runfile import build
+from test_drive_trace_steps import IDENTITY
+from test_memory_readings import DOCUMENT
+from test_refused_step_continues import REFUSED, drive, finish, no_eager_rung
+from test_refused_step_continues import run_file as refusing_run_file
+from test_run_step_grid import KEY, deployment
+from test_step_grid_plan import (
+    ENGINE,
+    LADDER,
+    MIXED,
+    SHORT,
+    loaded,
+    located,
+    measured,
+    plan,
+    record,
+    refusing,
+)
+
+from atom.compass import run as compass_run
+from atom.compass.artifacts import Key, Kind
+from atom.compass.backends.step_stub import Coefficients
+from atom.compass.clock import RefusalTally
+from atom.compass.drive import run as drive_run
+from atom.compass.drive import runfile, serve, trace_steps
+
+#: `test_drive_trace_steps`'s planted server, which first copies the summary
+#: `PLANTED_SUMMARY` names as client run 0's into the out_dir of the run file it
+#: is handed.
+PLANTED = (
+    "import json, os, shutil, sys\n"
+    'run = json.load(open(sys.argv[sys.argv.index("--compass-run") + 1]))\n'
+    'first = os.path.join(run["out_dir"], "client-0")\n'
+    "os.makedirs(first)\n"
+    'shutil.copy(os.environ["PLANTED_SUMMARY"], first)\n'
+    + test_drive_trace_steps.PLANTED
+)
+
+
+def recorded(tmp_path, monkeypatch, lengths):
+    """A record directory, as `record` lays one out, of prompts of `lengths`."""
+    directory = tmp_path / ("record-" + "-".join(map(str, lengths)))
+    directory.mkdir()
+    record(tmp_path, monkeypatch, *lengths).rename(directory / serve.STEPS)
+    (directory / serve.RUN_JSON).write_text(json.dumps(IDENTITY))
+    return directory
+
+
+def bundle(tmp_path, monkeypatch, member, **config):
+    """`member`'s token and loaded backend, with ATOM's arguments resolving the
+    deployment it was published under, changed by `config`."""
+    backend = loaded(tmp_path, member)
+    bounds = {k: ENGINE[k] for k in ("max_num_seqs", "max_num_batched_tokens")}
+    r = deployment(tmp_path, **bounds, capture_sizes=LADDER, **config)
+    monkeypatch.setattr(drive_run, "_config", lambda atom_args: r.config)
+    return Key.of(Kind.STEP_GRID_BUNDLE, **KEY).token(), backend
+
+
+def stub(tmp_path):
+    path = tmp_path / "stub.json"
+    path.write_text(json.dumps(dataclasses.asdict(Coefficients())))
+    return str(path)
+
+
+def flags(tmp_path, *backend, atom=()):
+    """`compass run`'s arguments, the suite's machine and the store with
+    `backend`'s flags, out to ``out``, serving the model in `tmp_path`."""
+    (tmp_path / "machine.json").write_text(json.dumps(DOCUMENT))
+    common = ["--machine", str(tmp_path / "machine.json")]
+    common += ["--store", str(tmp_path / "store"), "--out", str(tmp_path / "out")]
+    return [*backend, *common, "--", "--model", str(tmp_path), *atom]
+
+
+def refused_summary(directory, monkeypatch):
+    """The run summary written after a refused step, in `directory`."""
+    directory.mkdir()
+    with monkeypatch.context() as patch:
+        patch.setattr(torch.distributed, "all_reduce", None)
+        run = refusing_run_file(directory, patch)
+        r = runner(no_eager_rung())
+        drive(r)
+        finish(patch, directory, run, r)
+    return directory / compass_run.SUMMARY_FILE
+
+
+def plant(tmp_path, monkeypatch, steps, summary) -> None:
+    """Serve from the planted server, which writes the record `steps` and
+    client run 0's summary `summary`."""
+    (tmp_path / "planted.py").write_text(PLANTED)
+    monkeypatch.setattr(serve, "SERVER", (sys.executable, str(tmp_path / "planted.py")))
+    monkeypatch.setattr(serve, "identity", lambda *args: IDENTITY)
+    monkeypatch.setenv("PLANTED_RECORD", str(steps))
+    monkeypatch.setenv("PLANTED_SUMMARY", str(summary))
+
+
+def unstarted(*args, **kwargs):
+    raise AssertionError("a server started")
+
+
+def test_a_step_grid_run_whose_coverage_fails_refuses_naming_each_uncovered_step(
+    tmp_path, monkeypatch
+):
+    directory = recorded(tmp_path, monkeypatch, MIXED)
+    planned = plan(directory / serve.STEPS)
+    points = located(tmp_path, planned)
+    member = measured(planned, points, drop=("decode", points["decode"][0]))
+    token, backend = bundle(tmp_path, monkeypatch, member)
+    monkeypatch.setattr(serve, "serve", unstarted)
+
+    with pytest.raises(ValueError, match="so no server starts") as refused:
+        drive_run.main(
+            flags(tmp_path, "--step-grid", token, "--coverage", str(directory))
+        )
+
+    lines = [json.loads(x) for x in (directory / "steps/dp0.jsonl").open()]
+    named = [(f"{directory} dp0 step {line['step']}", line) for line in lines]
+    uncovered = refusing(backend, named)
+    assert 0 < len(uncovered) < len(named)
+    assert ", ".join(uncovered) in str(refused.value)
+    assert f"{len(uncovered)} of {len(named)} steps are not covered" in str(
+        refused.value
+    )
+    assert not (tmp_path / "out").exists()
+
+
+def test_a_bundle_measured_under_another_engine_config_refuses_before_any_server(
+    tmp_path, monkeypatch
+):
+    directory = recorded(tmp_path, monkeypatch, MIXED)
+    planned = plan(directory / serve.STEPS)
+    member = measured(planned, located(tmp_path, planned))
+    token, _ = bundle(tmp_path, monkeypatch, member, kv_cache_dtype="fp8")
+    monkeypatch.setattr(serve, "serve", unstarted)
+
+    with pytest.raises(ValueError, match="kv_cache_dtype 'bf16' in the bundle"):
+        drive_run.main(
+            flags(tmp_path, "--step-grid", token, "--coverage", str(directory))
+        )
+
+
+@pytest.mark.parametrize("backend", ["--step-stub", "--step-linear"])
+def test_coverage_with_a_backend_that_has_no_check_refuses_naming_it(tmp_path, backend):
+    argv = flags(tmp_path, backend, "k", "--coverage", str(tmp_path))
+
+    with pytest.raises(ValueError, match=f"^--coverage: {backend} has no coverage"):
+        drive_run.main(argv)
+    assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize(
+    "role, side", [("kv_producer", "prefill"), ("kv_consumer", "decode")]
+)
+def test_a_prefill_or_a_decode_instance_refuses_before_its_server_starts(
+    tmp_path, role, side
+):
+    kv = json.dumps({"kv_connector": "compass", "kv_role": role})
+    argv = flags(tmp_path, "--step-stub", stub(tmp_path))
+
+    with pytest.raises(ValueError, match=f"makes this a {side} instance"):
+        drive_run.main([*argv, "--kv-transfer-config", kv])
+    assert not (tmp_path / "out").exists()
+
+
+def test_run_json_records_the_summarys_refusals_the_roofline_and_the_backend(
+    tmp_path, monkeypatch
+):
+    summary = refused_summary(tmp_path / "authority", monkeypatch)
+    directory = recorded(tmp_path, monkeypatch, MIXED)
+    plant(tmp_path, monkeypatch, directory / serve.STEPS, summary)
+    index = {"metadata": {"total_parameters": 8_000_000_000}}
+    (tmp_path / runfile.INDEX).write_text(json.dumps(index))
+
+    drive_run.main(flags(tmp_path, "--step-stub", stub(tmp_path), "--step-roofline"))
+
+    out = tmp_path / "out"
+    written = json.loads((out / serve.RUN_JSON).read_text())
+    handed = json.loads((out / serve.RUN_FILE).read_text())
+    refusals = json.loads(summary.read_text())["schedule"]["refusals"]
+    assert written["refusals"] == refusals
+    assert [reason for reason, _ in refusals["reasons"]] == [REFUSED]
+    assert written["run_file"] == handed and handed["out_dir"] == str(out)
+    assert written["step_roofline"] is handed["step_roofline"] is True
+    assert written["skip"] == [] and written["coverage"] is None
+    assert written["provenance"] == handed["backend"]
+    assert written["host_key"] == IDENTITY["host_key"]
+
+
+def test_a_covered_run_starts_and_records_its_check_over_a_record_and_a_population(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        trace_steps, "roots_for", lambda modules: (ATOM_ROOT, AITER_ROOT)
+    )
+    directory = recorded(tmp_path, monkeypatch, MIXED)
+    served = recorded(tmp_path, monkeypatch, SHORT)
+    run = build(tmp_path, "--step-stub", stub(tmp_path))
+    population = trace_steps.publish(served, run, "compass trace steps").token()
+    planned = plan(directory / serve.STEPS, served / serve.STEPS)
+    token, _ = bundle(
+        tmp_path, monkeypatch, measured(planned, located(tmp_path, planned))
+    )
+    (tmp_path / "authority").mkdir()
+    summary = tmp_path / "authority" / compass_run.SUMMARY_FILE
+    summary.write_text(json.dumps({"schedule": {"refusals": RefusalTally().record()}}))
+    plant(tmp_path, monkeypatch, directory / serve.STEPS, summary)
+
+    inputs = [str(directory), population]
+    drive_run.main(flags(tmp_path, "--step-grid", token, "--coverage", *inputs))
+
+    out = tmp_path / "out"
+    written = json.loads((out / serve.RUN_JSON).read_text())
+    coverage = written["coverage"]
+    assert coverage["inputs"] == inputs
+    assert coverage["covered"] == coverage["steps"] == 15
+    assert coverage["uncovered"] == [] and written["step_roofline"] is False
+    handed = json.loads((out / serve.RUN_FILE).read_text())
+    assert written["provenance"] == handed["backend"]
+    assert handed["step_grid"]["grid"] == KEY["grid"]

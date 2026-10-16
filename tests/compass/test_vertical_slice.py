@@ -211,6 +211,7 @@ def _run_file(out: Path, **overrides) -> Path:
         "stream_s": 2.0**-12,
         "step_stub": dataclasses.asdict(Coefficients()),
         "machine": DOCUMENT,
+        "store": str(out / "store"),
         "parameter_count": 8_000_000_000,
         "out_dir": str(out),
     } | overrides
@@ -356,7 +357,7 @@ def test_a_run_with_no_finite_bound_is_refused(monkeypatch, tmp_path):
 @pytest.mark.parametrize(
     "config, refusal",
     [
-        (_config(pp=2), r"got \(dp, pp\)=\(1, 2\)"),
+        (_config(pp=2), "pipeline_parallel_size is 1"),
         (_config(runner="my.Runner"), "runner 'my.Runner' is named"),
     ],
 )

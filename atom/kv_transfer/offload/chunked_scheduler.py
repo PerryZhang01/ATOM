@@ -28,7 +28,7 @@ from atom.kv_transfer.offload.metadata import (
     SaveSpec,
 )
 from atom.model_engine.sequence import SequenceStatus, resumes_offload_prefill
-from atom.utils import envs
+from atom.utils import clock, envs
 
 logger = logging.getLogger("atom")
 
@@ -287,7 +287,7 @@ class ChunkedOffloadSchedulerBase(OffloadSchedulerMixin, KVConnectorSchedulerBas
         if not client.is_pending(sid) or client.poll(sid):
             self._lookup_defer_since.pop(sid, None)
             return False
-        now = time.monotonic()
+        now = clock.now(time.monotonic)
         first = self._lookup_defer_since.setdefault(sid, now)
         if now - first > envs.OFFLOAD_LOOKUP_DEFER_S:
             self._perf_bump("lookup_defer_expired")

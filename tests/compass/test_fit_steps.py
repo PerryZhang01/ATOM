@@ -15,8 +15,8 @@ from pathlib import Path
 import pytest
 from test_artifact_store import AITER_ROOT, ATOM_ROOT
 from test_backend_step_linear_fit import _steps, _timed_record
-from test_fit_samples import DEVICE, SOURCE
-from test_memory_readings import DOCUMENT
+from test_fit_samples import DEVICE, SOURCE, idle_rank
+from test_memory_readings import DOCUMENT, STACK
 from test_parity_served import SAMPLING
 
 from atom.compass import cli
@@ -51,7 +51,6 @@ HOST = {
 LINEAR = ("--backend", "step-linear")
 #: The digest of the run files' machine spec, the one every fit here names.
 DIGEST = machine_spec_digest(MachineSpec.from_mapping(DOCUMENT))
-STACK = {"rocm": "7.2.4", "torch": "2.10.0", "aiter": "v0.1.21"}
 
 
 @pytest.fixture(autouse=True)
@@ -80,7 +79,7 @@ def record(directory, seed, key=HOST, keyed=True, stack=STACK, trace="trace"):
     engine = {**key["engine"], **dict.fromkeys(BOUNDS, 4096), "num_kvcache_blocks": 900}
     (steps / "dp0.engine.json").write_text(json.dumps(engine))
     run = {
-        "format_version": 1,
+        "format_version": 2,
         "argv": ["compass", "record", "--out", str(directory)],
         "source": SOURCE,
         "host_key": key,
@@ -190,11 +189,13 @@ def test_the_entry_s_readings_are_the_ones_its_records_state(tmp_path):
 
     entry = ArtifactStore(tmp_path / "store").read(law_key())
     assert dict(entry.fingerprints[Row.STEP_LINEAR_LAW].cells) == {
-        Axis.SOFTWARE_STACK: Reading("stated", "rocm 7.2.4 / aiter v0.1.21"),
+        Axis.SOFTWARE_STACK: Reading(
+            "stated", "rocm 7.2.4 / aiter f4e7c7509 / rccl 2.22.3"
+        ),
         Axis.TORCH: Reading("stated", "2.10.0"),
         Axis.ATOM_SRC: Reading("tree", "67c176f0"),
         Axis.MODEL: Reading("stated", HOST["model"]),
-        Axis.DEVICE: Reading("stated", "AMD Instinct MI308X M3080 gfx942"),
+        Axis.DEVICE: Reading("stated", "MI355X gfx950"),
         Axis.ENGINE_CONFIG: Reading("stated", json.dumps(ENGINE, sort_keys=True)),
     }
     assert entry.provenance.source_roots == (ATOM_ROOT, AITER_ROOT)
@@ -215,7 +216,14 @@ def test_records_under_two_stacks_refuse_naming_the_component_and_both_values(
     "args, named",
     [
         (["--backend", "step-stub"], "stated, not fitted"),
-        (["--backend", "step-grid"], "no backend step-grid is fitted; step-linear is"),
+        (
+            ["--backend", "step-op"],
+            "no backend step-op is fitted; step-linear and step-grid are",
+        ),
+        (
+            ["--backend", "step-linear", "--grid-definition", "g.json"],
+            "--grid-definition is read by step-grid, not step-linear",
+        ),
         (
             ["--backend", "step-linear", "0f1e2d3c4b5a"],
             "0f1e2d3c4b5a is not a record directory",
@@ -239,4 +247,32 @@ def test_a_record_no_client_run_names_refuses_naming_it(tmp_path):
 
     with pytest.raises(SystemExit, match=re.escape(f"{a} is named by no --client-run")):
         fit(tmp_path, "fit steps", *LINEAR, a)
+    assert not (tmp_path / "store").exists()
+
+
+@pytest.mark.parametrize(
+    "backend, named",
+    [
+        ("step-linear", "--sessions is read by step-grid, not step-linear"),
+        ("step-grid", "{b} is named by no --client-run, and --sessions keeps"),
+    ],
+)
+def test_sessions_refuse_off_step_grid_and_for_a_grid_input_no_client_run_names(
+    tmp_path, backend, named
+):
+    a, b = record(tmp_path / "a", 19), tmp_path / "b"
+    grid = ["--grid", b, "--grid-definition", "g"] if backend == "step-grid" else []
+    sessions = ["--sessions", "0:4", *clients(a)]
+
+    with pytest.raises(SystemExit, match=re.escape(named.format(b=b))):
+        fit(tmp_path, "fit steps", "--backend", backend, a, *grid, *sessions)
+    assert not (tmp_path / "store").exists()
+
+
+def test_a_dp_record_a_rank_of_which_gave_no_sample_refuses_at_its_width(tmp_path):
+    a = record(tmp_path / "a", 19)
+    idle_rank(a / "steps")
+
+    with pytest.raises(SystemExit, match="are not runs of 2 ranks"):
+        fit(tmp_path, "fit steps", *LINEAR, a, *clients(a))
     assert not (tmp_path / "store").exists()

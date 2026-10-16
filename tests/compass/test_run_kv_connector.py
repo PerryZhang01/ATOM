@@ -92,7 +92,8 @@ def test_a_bootstrapped_engine_builds_its_connector_priced_from_the_run_file(
         link["link_latency_s"]
         + BLOCKS * block / (link["link_bandwidth_bytes_per_s"] * link["derate"])
     )
-    half._socks[0].raw.close(linger=0)
+    [sock] = half._socks.values()
+    sock.raw.close(linger=0)
 
 
 def test_the_co_hosting_frontend_refuses_a_prefill_decode_deployment(run_file, hf):

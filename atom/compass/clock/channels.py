@@ -171,18 +171,69 @@ def _frontend_engine(frontend: str, engine: str, ipc_s: float, dp: int = 1) -> l
     ]
 
 
+def _pipeline(pp: int, ipc_s: float, links=()) -> tuple[tuple[str, ...], list]:
+    """The engine LPs ``engine-pp<k>`` of a `pp`-stage pipeline and their channels.
+
+    Each stage is an engine of its own to the frontend, tagged with the index
+    ATOM's engine core manager gives it, ``#dp<k>``. The head sends each
+    downstream stage its batch on ``meta#pp<k>``, the last stage sends the
+    head its output on ``tokens``, and each downstream stage reports KV status
+    to the head on ``kv_status``. These are ZMQ IPC messages, so each takes
+    `ipc_s`, which must be positive: head to stage and back is a cycle.
+
+    With `links`, ``(L_data, L_ack)``, each stage sends the next its forward's
+    output on ``pp_data#dp0`` and the next returns a rendezvous send's
+    completion on ``pp_ack#dp0``, with those lookaheads.
+    """
+    if not ipc_s > 0.0:
+        raise ValueError(
+            f"ipc_s is {ipc_s!r}; the {pp} pipeline stages send to the head and "
+            "the head to them, a cycle that needs a positive lookahead"
+        )
+    stages = tuple(f"engine-pp{k}" for k in range(pp))
+    head, last = stages[0], stages[-1]
+    rows = [(last, head, "tokens", ipc_s, "inline")]
+    for k, stage in enumerate(stages):
+        rows += [
+            ("frontend", stage, f"request#dp{k}", ipc_s, "thread"),
+            ("frontend", stage, f"control#dp{k}", ipc_s, "thread"),
+            (stage, "frontend", f"output#dp{k}", ipc_s, "thread"),
+        ]
+        if k:
+            rows += [
+                (head, stage, f"meta#pp{k}", ipc_s, "inline"),
+                (stage, head, "kv_status", ipc_s, "inline"),
+            ]
+            if links:
+                rows += [
+                    (stages[k - 1], stage, "pp_data#dp0", links[0], "inline"),
+                    (stage, stages[k - 1], "pp_ack#dp0", links[1], "inline"),
+                ]
+    return stages, rows
+
+
 def single_engine_table(
-    *, admission_path: str, ipc_s: float, stream_s: float, dp: int = 1
+    *,
+    admission_path: str,
+    ipc_s: float,
+    stream_s: float,
+    dp: int = 1,
+    pp: int = 1,
+    pp_links=(),
 ) -> ChannelTable:
     """Traffic, one frontend, one engine, and the channels of each of its `dp`
-    data-parallel ranks, ``#dp<rank>``.
+    data-parallel ranks, ``#dp<rank>``; above pipeline width one, an engine
+    LP per stage instead (`_pipeline`).
 
     The request channel's lookahead is the measured admission delay of
     `admission_path` (``serving`` or ``offline_batch``). The other lookaheads
     have no measurement behind them, so the caller declares them.
     """
+    engines, rows = ("engine",), _frontend_engine("frontend", "engine", ipc_s, dp)
+    if pp > 1:
+        engines, rows = _pipeline(pp, ipc_s, pp_links)
     return _table(
-        ("traffic", "frontend", "engine"),
+        ("traffic", "frontend", *engines),
         [
             (
                 "traffic",
@@ -193,7 +244,7 @@ def single_engine_table(
             ),
             ("frontend", "traffic", "stream", stream_s, "inline"),
         ]
-        + _frontend_engine("frontend", "engine", ipc_s, dp),
+        + rows,
     )
 
 
@@ -206,9 +257,11 @@ def prefill_decode_table(
     kv_write_req_s: float,
     dp: int = 1,
     router_in_s: float | None = None,
+    prefill: int = 1,
+    decode: int = 1,
 ) -> ChannelTable:
-    """One prefill and one decode deployment behind the router, each with the
-    channels of its `dp` data-parallel ranks.
+    """`prefill` prefill and `decode` decode deployments behind the router,
+    each with the channels of its `dp` data-parallel ranks.
 
     Requests enter at frontend-P and the stream leaves from frontend-D. Three
     paths cross the router -- the request, the stream and the relay from
@@ -222,25 +275,47 @@ def prefill_decode_table(
     Decode posts the KV write request to prefill engine to engine, above width
     one on a channel per decode and prefill rank pair,
     ``kv_write_req#dp<decode rank>.dp<prefill rank>``.
+
+    Above one deployment of a role, deployment ``k`` of it is the LPs
+    ``frontend-P<k>`` and ``engine-P<k>`` (``-D<k>`` for decode), each with its
+    own hops through the router, which chooses among them and so must be an
+    LP, and each decode and prefill engine pair has its own write-request
+    channels.
     """
+    if max(prefill, decode) > 1 and router_in_s is None:
+        raise ValueError(
+            f"{prefill} prefill and {decode} decode deployments put a choice in "
+            "the router, which makes it an LP: set router_in_s"
+        )
+    ps = [f"P{k}" if prefill > 1 else "P" for k in range(prefill)]
+    ds = [f"D{k}" if decode > 1 else "D" for k in range(decode)]
     paths = [
-        ("traffic", "frontend-P", "http", ADMISSION_DELAY_S[admission_path] + router_s),
-        ("frontend-D", "traffic", "stream", stream_s + router_s),
-        ("frontend-P", "frontend-D", "relay", router_s),
+        (
+            "traffic",
+            f"frontend-{p}",
+            "http",
+            ADMISSION_DELAY_S[admission_path] + router_s,
+        )
+        for p in ps
     ]
-    lps = ("traffic", "frontend-P", "engine-P", "frontend-D", "engine-D")
+    paths += [(f"frontend-{d}", "traffic", "stream", stream_s + router_s) for d in ds]
+    paths += [
+        (f"frontend-{p}", f"frontend-{d}", "relay", router_s) for p in ps for d in ds
+    ]
+    lps = ("traffic", *(f"{lp}-{s}" for s in ps + ds for lp in ("frontend", "engine")))
     if router_in_s is None:
         hops = [(src, dst, kind, total, "inline") for src, dst, kind, total in paths]
     elif 0.0 < router_in_s < router_s:
         lps += ("router",)
-        hops = [
+        # Paths sharing an end share that end's hop.
+        hops = dict.fromkeys(
             hop
             for src, dst, kind, total in paths
             for hop in (
                 (src, "router", kind, router_in_s, "thread"),
                 ("router", dst, kind, total - router_in_s, "inline"),
             )
-        ]
+        )
     else:
         raise ValueError(
             f"router_in_s is {router_in_s!r} and router_s {router_s!r}; each hop "
@@ -250,11 +325,22 @@ def prefill_decode_table(
     pairs = [""] if dp == 1 else [f"#dp{d}.dp{p}" for d in range(dp) for p in range(dp)]
     return _table(
         lps,
-        hops
+        [*hops]
         + [
-            ("engine-D", "engine-P", "kv_write_req" + pair, kv_write_req_s, "inline")
+            (
+                f"engine-{d}",
+                f"engine-{p}",
+                "kv_write_req" + pair,
+                kv_write_req_s,
+                "inline",
+            )
+            for d in ds
+            for p in ps
             for pair in pairs
         ]
-        + _frontend_engine("frontend-P", "engine-P", ipc_s, dp)
-        + _frontend_engine("frontend-D", "engine-D", ipc_s, dp),
+        + [
+            row
+            for s in ps + ds
+            for row in _frontend_engine(f"frontend-{s}", f"engine-{s}", ipc_s, dp)
+        ],
     )

@@ -72,7 +72,7 @@ from .fingerprints import Conditions, Fingerprint, OnMismatch, fingerprint, veri
 from .gates import GateState
 from .keys import Key, Kind, refuse_not_a_key
 from .matrix import Row, rows_for
-from .naming import RankCoords, Topology, member_name, read_back
+from .naming import AXES, RankCoords, Topology, member_name, read_back
 from .provenance import Provenance
 from .resolution import Resolution
 from .rules import ArtifactRefusal, Rule
@@ -169,6 +169,35 @@ class ArtifactStore:
             refuse_not_a_key(key)
         return self.root / key.kind.value / key.dirname()
 
+    def key_from_token(self, kind: Kind, token: str) -> Key:
+        """The key of the `kind` entry whose directory ends in `token`, the
+        digest `Key.token` prints, so a command line can name an entry by it."""
+        folder = self.root / kind.value
+        found = sorted(
+            place
+            for place in (folder.iterdir() if folder.is_dir() else ())
+            if place.name.endswith(token) and (place / ENTRY_FILE).is_file()
+        )
+        if len(found) != 1:
+            raise ArtifactRefusal(
+                Rule.RESOLUTION,
+                f"{len(found)} {kind} entries in {self.root} end in {token!r}"
+                + "".join(f"; {place.name}" for place in found),
+                f"name one {kind} entry by the token `Key.token` prints for its key",
+            )
+        with _legible(found[0]):
+            document = json.loads((found[0] / ENTRY_FILE).read_bytes())
+            key = Key.of(Kind(document["kind"]), **document["key"])
+        if key.kind is not kind or key.token() != token:
+            raise ArtifactRefusal(
+                Rule.RESOLUTION,
+                f"{found[0]} ends in {token!r} and restates {key}, whose token "
+                f"is {key.token()!r}",
+                "an entry restates its key, so a directory moved or renamed by "
+                "hand is found out rather than believed",
+            )
+        return key
+
     def publish(
         self,
         key: object,
@@ -211,6 +240,21 @@ class ArtifactStore:
                 "json.dumps happened to render it",
             )
         prints = self._fingerprints(key, conditions, gates)
+        stated = key.values
+        differ = [
+            a
+            for a in AXES
+            if stated.get(a, getattr(topology, a)) != getattr(topology, a)
+        ]
+        if differ:
+            raise ArtifactRefusal(
+                Rule.ONE_NAMING_FUNCTION,
+                f"{key} states {', '.join(f'{a}={stated[a]}' for a in differ)} "
+                f"and its members are written at {topology.text}",
+                "publish at the topology the key states; an entry whose ranks "
+                "are not the layout it is keyed by answers for ranks it does "
+                "not hold",
+            )
         self._check_members(key, topology, members)
         if self.directory_for(key).exists():
             self._refuse_overwrite(key, members)

@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: MIT
 """Grade cells from every source, in one table: `python -m atom.compass.validate CELL...`
 
-A CELL holds `cctraces_sim.sh` runs of one workload: `step_linear/` (at its run file's
-step linear law), `p97/` (at 0.97 of its prefill price) and two or more `real*/`. Rows:
-`validate.runs`' grades, TTFT p50 per band of uncached prompt tokens graded alike,
-`validate.cost` (with the steps it leaves out) and `memory.check` per real run,
-and each simulated run's refusals by source, shares and speed. Any refusal makes
-the cell a coverage report; the shares grade nothing, and neither do the counts
-but preemptions and prefill tokens.
+A CELL holds runs of one workload: `step_linear/` (at its run file's step linear law)
+and two or more `real*/`. `cctraces_sim.sh` writes each run.json as the run file with
+the `workload` every run must share; `record` and `run` write their own, the run file
+as `run_file`, and `validate.runs` decides which client run of theirs is graded, and
+whether one is. Rows: `validate.runs`' grades, TTFT p50 per
+band of uncached prompt tokens graded alike, `validate.cost` (with the steps it leaves
+out) and `memory.check` per real run, and the simulated run's refusals by source,
+shares and speed. Any refusal makes a `cctraces_sim.sh` cell a coverage report; the
+shares grade nothing, and neither do the counts but preemptions and prefill tokens.
 """
 
 from __future__ import annotations
@@ -42,18 +44,17 @@ def _ttft(run: Path) -> dict[str, float]:
 
 def _graded(family: str, name: str, g: dict) -> tuple:
     result = " ".join(f"{r:.4g}" for r in g["result"])
-    value = f"spread {g['spread']:.4g}; result {result}; moved {g['moved']:.4g}"
-    verdict = f"{g['verdict']}, {'' if g['admissible'] else 'in'}admissible"
+    value, verdict = f"spread {g['spread']:.4g}; result {result}", g["verdict"]
     if family == "counts" and name not in GATED_COUNTS:
         verdict += ", not gated"
     return family, name, value, verdict
 
 
-def _runs(real: list[Path], law: Path, p97: Path):
-    for family, metrics in runs.grade(real, law, p97).items():
+def _runs(real: list[Path], law: Path):
+    for family, metrics in runs.grade(real, law).items():
         for name, g in metrics.items():
             yield _graded(family, name, g)
-    every = (*real, law, p97)
+    every = (*real, law)
     ttft = [_ttft(r) for r in every]
     for band in BANDS.values():
         v, name = [t.get(band) for t in ttft], f"ttft p50 {band} uncached"
@@ -61,7 +62,7 @@ def _runs(real: list[Path], law: Path, p97: Path):
             missing = [r.name for r, x in zip(every, v) if x is None]
             yield "end to end", name, f"no request in {missing}", "-"
         else:
-            g = runs._grade("end to end", "ttft", v[:-2], v[-2], v[-1])
+            g = runs._grade("end to end", "ttft", v[:-1], v[-1])
             yield _graded("end to end", name, g)
 
 
@@ -125,23 +126,22 @@ def rows(cell) -> list[tuple]:
     """The cell's rows, (result, metric, value, verdict), its verdict first."""
     cell = Path(cell)
     real = sorted(r for r in cell.glob("real*") if r.is_dir())
-    law, p97 = cell / "step_linear", cell / "p97"
+    law = cell / "step_linear"
     if (cell / "law").is_dir():
         raise ValueError(f"{cell} holds law/, a run directory now named step_linear/")
-    run = {r.name: json.loads((r / "run.json").read_text()) for r in (*real, law, p97)}
+    run = {r.name: json.loads((r / "run.json").read_text()) for r in (*real, law)}
     for name, f in run.items():
         refuse_renamed_keys(f, cell / name / "run.json")
-    if len({json.dumps(f["workload"], sort_keys=True) for f in run.values()}) != 1:
+    if len({json.dumps(f.get("workload"), sort_keys=True) for f in run.values()}) != 1:
         raise ValueError(f"{cell}'s runs {sorted(run)} ran different workloads")
-    summaries = {r: json.loads((r / "summary.json").read_text()) for r in (law, p97)}
-    refused = any(s["coverage_report"] for s in summaries.values())
-    verdict = "coverage report" if refused else "graded"
+    summary = json.loads((law / "summary.json").read_text())
+    verdict = "coverage report" if summary["coverage_report"] else "graded"
     out = [("cell", "verdict", f"{len(real)} real runs", verdict)]
-    out += _runs(real, law, p97)
+    out += _runs(real, law)
     for r in real:
-        out += [*_cost(r, run["step_linear"]["step_linear"]), *_memory(law, r)]
-    for r, s in summaries.items():
-        out += _summary(r, s)
+        law_file = run["step_linear"].get("run_file", run["step_linear"])
+        out += [*_cost(r, law_file["step_linear"]), *_memory(law, r)]
+    out += _summary(law, summary)
     return out
 
 

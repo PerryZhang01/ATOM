@@ -18,6 +18,10 @@ Each OUT_DIR holds one run of one run file, each under its own
   usage chunk counting every token it asked for;
 - with `records`, an engine LP's name to the parity record its run wrote
   (`atom.compass.parity`): the LP's TAR rows are `expected_timeline`'s.
+- above pipeline width one, the order of the stages' forwards and sends: a
+  stage starts a forward no earlier than its input's receive completes, and
+  sends on no earlier than that forward starts and its previous send is done
+  (`pipeline_timeline`, which recomputes no time).
 
 The CLI checks the runs and the records it is given; the traffic's view is a
 harness's, so `sent` is for callers that hold one.
@@ -123,6 +127,57 @@ def _run_properties(table: str, summary: dict) -> list[str]:
     return failed
 
 
+def pipeline_timeline(table: str) -> list[str]:
+    """Each stage's forward n against the stage before's send n, one failure
+    a line; none at pipeline width one. It checks order on the step table's
+    rows and recomputes no time: a receive or a forward of the wrong length
+    passes.
+
+    The head's forward n starts when it sends ``meta#pp1`` seq n. A stage's
+    send n leaves no earlier than its forward n starts and its send n-1
+    completes, read from the ``pp_ack`` the stage after returned. When send n
+    is rendezvous, its ``pp_ack`` is stamped at its completion, and the stage
+    after starts its forward n there or, when the send's last part is eager
+    and its receive ends later, at the end of the wait that spans the ack. An
+    eager send has no ``pp_ack``, so the forward it feeds is not checked.
+    """
+    lines = table.splitlines()
+    run = json.loads(lines[0].removeprefix(CONFIGURATION_PREFIX))
+    pp, channels = run.get("pipeline_parallel_size", 1), channel_table(run)
+    tars, arrived = defaultdict(list), defaultdict(dict)
+    for lp, t0, t1, event, ch, seq, _ in map(str.split, lines[1:]):
+        if event == TAR:
+            tars[lp].append((float(t0), float(t1)))
+        elif event == "release":
+            arrived[ch][int(seq)] = float(t1)
+    meta = "engine-pp0->engine-pp1:meta#pp1"
+    starts = {n: a - channels.lookahead(meta) for n, a in arrived[meta].items()}
+    failed = []
+    for k in range(pp):
+        lp, data_ch = f"engine-pp{k}", f"engine-pp{k}->engine-pp{k + 1}:pp_data#dp0"
+        data = arrived[data_ch]
+        ack = arrived[f"engine-pp{k + 1}->engine-pp{k}:pp_ack#dp0"]
+        after = {}
+        for n, start in sorted(starts.items()):
+            span = (
+                b for a, b in tars[lp] if a < start < b and not math.isclose(a, start)
+            )
+            start = next(span, start)
+            if not any(math.isclose(a, start) for a, _ in tars[lp]):
+                failed.append(f"{lp} starts no forward {n} at {start}")
+            elif k < pp - 1 and n not in data:
+                failed.append(f"{lp} never sent forward {n}'s output on {data_ch}")
+            elif k < pp - 1:
+                least = max(start, ack.get(n - 1, -math.inf))
+                sent = data[n] - channels.lookahead(data_ch)
+                if sent < least and not math.isclose(sent, least):
+                    failed.append(f"{lp} sent forward {n} at {sent}, before {least}")
+            if n in ack:
+                after[n] = ack[n]
+        starts = after
+    return failed
+
+
 def _outputs(sent, taken) -> list[str]:
     chunks = [json.loads(line[len("data: ") :]) for line in taken if line != DONE]
     tokens = sorted(c["usage"]["completion_tokens"] for c in chunks if "usage" in c)
@@ -164,6 +219,7 @@ def check_run(out_dirs, sent=None, taken=(), records=None) -> list[str]:
     for d, table in zip(out_dirs, tables):
         summary = json.loads((d / SUMMARY_FILE).read_text())
         failed += [f"{d}: {f}" for f in _run_properties(table, summary)]
+        failed += [f"{d}: {f}" for f in pipeline_timeline(table)]
     for d, table in zip(out_dirs[1:], tables[1:]):
         code, report = compare_step_tables(tables[0], table, str(out_dirs[0]), str(d))
         if code:

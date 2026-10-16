@@ -7,12 +7,17 @@ The run file's ``step_grid`` is the store's root and the bundle's key fields:
     {"store": <root directory>, "model": ..., "device": ..., "parallel": ...,
      "engine_config": ..., "grid": ..., "source_root": ...}
 
-A bundle prices a TP group's whole step, so it is one member at any width,
-``bundle.dp0of1.pp0of1.pcp0of1.tp0of1.json``:
+A bundle prices a TP group's whole step, so a run reads one member at any
+width, ``params.dp0of1.pp0of1.pcp0of1.tp0of1.json``, the one `compass fit
+steps` publishes beside its report:
 
     {"grid": <a StepGrid mapping>, "residual": <a Residual mapping>,
      "bounds": {"max_num_seqs": n, "max_num_batched_tokens": n,
                 "max_model_len": n}}
+
+The grid states its timing scope (`scope`) and what its points hold
+(`value`); `step_grid_fit.bundle`, which writes a bundle, also writes the grid
+definition and the residual's sources, which loading does not read.
 
 Its publisher states the readings `conditions` takes. The engine-config reading
 is `keyed`, as JSON: the ladder the runner replays (none under
@@ -20,15 +25,16 @@ is `keyed`, as JSON: the ladder the runner replays (none under
 width. Loading refuses, naming what differs:
 
 - a run at data-parallel width above one, since every bundle is measured at one;
-- a keyed condition, the grid's graph mode, or a timing scope other than the
-  whole ``ModelRunner.forward``;
+- a keyed condition, the grid's graph mode, a timing scope other than the
+  whole ``ModelRunner.forward``, or a value other than ``measure steps``'
+  bench window (`step_grid_fit.VALUE`), none included;
 - the gates, or any reading, through `ArtifactStore.load`;
 - a rung of the ladder between the grid's lowest and highest measured rungs
   that was not measured;
 - a configured bound above the one the grid was planned for.
 
 A cell past the KV capacity is incomplete, so it refuses at lookup and needs no
-check here. Recipe v1 reads no chunk size, so none is keyed.
+check here. The residual's recipe reads no chunk size, so none is keyed.
 """
 
 import json
@@ -49,14 +55,19 @@ from atom.compass.artifacts import (
     module_root,
 )
 from atom.compass.backends.step_grid import StepGrid, StepGridBackend
+from atom.compass.backends.step_grid_fit import VALUE
+from atom.compass.backends.step_grid_plan import BOUNDS, SCOPE
 from atom.compass.backends.step_grid_residual import Residual
 from atom.compass.runner.overrides import schedulable_ladder
 
-#: The bundle's one member: a group's step has a single writer.
-MEMBER = ("bundle", Topology().ranks()[0], "json")
-#: The one timing scope a bundle may declare, the whole `ModelRunner.forward`.
-SCOPE = "forward"
-BOUNDS = ("max_num_seqs", "max_num_batched_tokens", "max_model_len")
+#: The bundle's member a run reads: a group's step has a single writer.
+MEMBER = ("params", Topology().ranks()[0], "json")
+
+
+def keyed_of(engine: dict) -> dict:
+    """`keyed`'s fields of an engine file's mapping `engine`, which adds the
+    scheduler's bounds and the KV block count to them."""
+    return {k: v for k, v in engine.items() if k not in (*BOUNDS, "num_kvcache_blocks")}
 
 
 def keyed(config) -> dict:
@@ -71,18 +82,29 @@ def keyed(config) -> dict:
 
 
 def conditions(config, machine) -> Conditions:
-    """This run's readings: the stack, torch included, and the device the
-    machine spec states, this process's ATOM tree, this host's CPU, the served
+    """This run's readings: `readings` of this process's ATOM tree, the served
     config.json and `keyed`."""
-    from atom.compass.run import _file_digest, host_cpu
+    from atom.compass.run import _file_digest
+
+    return readings(
+        machine,
+        atom_src=Reading.of_source_root(git_tree_root("atom", module_root("atom"))),
+        model=_file_digest(config.model, "config.json"),
+        engine_config=json.dumps(keyed(config), sort_keys=True),
+    )
+
+
+def readings(machine, **inputs) -> Conditions:
+    """The readings a run on `machine` takes: the stack, torch included, and the
+    device the spec states, and this host's CPU; `inputs` state the ATOM tree,
+    the model and the engine config."""
+    from atom.compass.run import host_cpu
 
     return Conditions.of(
         **machine_spec_key(machine).values,
         torch=machine.value("device.software_pinned_to.torch"),
-        atom_src=Reading.of_source_root(git_tree_root("atom", module_root("atom"))),
-        model=_file_digest(config.model, "config.json"),
         host_cpu=host_cpu(),
-        engine_config=json.dumps(keyed(config), sort_keys=True),
+        **inputs,
     )
 
 
@@ -114,6 +136,7 @@ def load(spec: Mapping, config, machine) -> tuple[StepGridBackend, dict]:
     pairs = {
         "graph mode": (grid.graph_mode, "eager" if config.enforce_eager else "replay"),
         "timing scope": (grid.scope, SCOPE),
+        "value": (member["grid"].get("value"), VALUE),
         **{name: (recorded.get(name), value) for name, value in ours.items()},
     }
     differ = [

@@ -12,9 +12,11 @@ line also carries `t_enter_ns` and `t_exit_ns`, the worker's
 monotonic clock around its forward, and is written once the forward returns.
 Inside the forward it carries `[enter, exit]` on that clock around the staging
 gate (`t_gate_ns`), the launch (`t_launch_ns`) and the wait for the previous
-output's token copy (`t_recv_ns`, only on a forward that reaches it). Its device
+output's token copy (`t_recv_ns`, only on a forward that reaches it), and with
+a drafter its MTP status (`t_mtp_ns`) and draft copy (`t_draft_recv_ns`). Its device
 window is `d_busy_ns`, from an event recorded at the launch's entry to one
-recorded at the forward's exit, and `d_gap_ns`, from the previous forward's
+recorded at the forward's exit (`d_target_ns` to one recorded just after
+`postprocess` records `forward_done_event`), and `d_gap_ns`, from the previous forward's
 exit event to this launch's entry event, absent on the first line; summed in
 order they lay every forward on one device timeline. The events are polled,
 never waited on, so a line is written once its exit event has completed, and
@@ -34,6 +36,7 @@ A request is named by its key, because request ids are numbered per run: a
 digest of its whole prompt as its prefill windows carry it, taken when its final
 chunk is scheduled, so it does not move with chunking. A line records request
 ids and names each request whose final chunk it holds; `read` puts the keys in.
+A named request's response id follows its key if it has one (`carry_response_ids`).
 Prefix caching is not covered: the worker never sees a cached prefix, so parity
 runs need caching off or the same cache hits in both runs. Requests of one
 record with one prompt are named in the order their final chunks are scheduled:
@@ -49,6 +52,7 @@ import hashlib
 import json
 import os
 import pathlib
+import sys
 import time
 from itertools import zip_longest
 
@@ -66,8 +70,11 @@ TIMESTAMPS = (
     "t_gate_ns",
     "t_launch_ns",
     "t_recv_ns",
+    "t_mtp_ns",
+    "t_draft_recv_ns",
     "d_busy_ns",
     "d_gap_ns",
+    "d_target_ns",
 )
 
 
@@ -147,6 +154,8 @@ class StepRecord:
                     key = f"{key}.{n}"
                 self.keys[req_id] = key
                 named.append([req_id, key])
+                if batch.external_request_ids[i] is not None:
+                    named[-1].append(batch.external_request_ids[i])
         line = {
             "step": self.step,
             "dp_rank": self.dp_rank,
@@ -230,6 +239,23 @@ def record_step(runner, batch, forward=None):
     return None if forward is None else forward(batch)
 
 
+def carry_response_ids() -> None:
+    """Set a one-sequence request's `external_request_id` to its response id,
+    the `request_id` of the API server function calling `add_request`, read
+    off its frame. A sequence with an id keeps it; a fan-out's get none."""
+    from atom.model_engine.engine_core_mgr import CoreManager, DisaggCoreManager
+
+    for cls in (CoreManager, DisaggCoreManager):
+
+        def add_request(self, seqs, add=cls.add_request):
+            if len(seqs) == 1 and seqs[0].external_request_id is None:
+                caller = sys._getframe(1).f_locals
+                seqs[0].external_request_id = caller.get("request_id")
+            return add(self, seqs)
+
+        cls.add_request = add_request
+
+
 class StepRecording:
     """Records each forward call; put it before `ModelRunner` in the bases.
 
@@ -258,6 +284,17 @@ class StepRecording:
             processor.recv_async_output = functools.partial(
                 self._stamped, "t_recv_ns", recv
             )
+        if processor is not None and hasattr(self, "drafter"):
+            for key, name in (
+                ("t_mtp_ns", "recv_mtp_status_async"),
+                ("t_draft_recv_ns", "recv_async_output_draft"),
+            ):
+                call = getattr(processor, name)
+                setattr(processor, name, functools.partial(self._stamped, key, call))
+            sampled = processor.prepare_sampled_ids
+            processor.prepare_sampled_ids = functools.partial(
+                self._target_done, sampled
+            )
         self._recording = True
 
     def forward(self, batch):
@@ -273,6 +310,13 @@ class StepRecording:
         reply = call(*args)
         self._stamps[key] = [enter, self.step_clock_ns()]
         return reply
+
+    def _target_done(self, call, *args):
+        """`call(*args)` after a device event where `postprocess` has just
+        recorded `forward_done_event`: the target's end, before the draft."""
+        if getattr(self, "_parity_record", None) is not None:
+            self._stamps["target_event"] = self.device_event()
+        return call(*args)
 
     def _gate_staging_reuse(self):
         return self._stamped("t_gate_ns", super()._gate_staging_reuse)
@@ -290,11 +334,12 @@ class StepRecording:
         """At a recorded forward's exit: its stamps, and its device window callable or None."""
         stamps, self._stamps = self._stamps, {}
         launch = stamps.pop("launch_event", None)
+        target = stamps.pop("target_event", None)
         window = None
         if launch is not None:
             done, previous = self.device_event(), self._last_exit
             self._last_exit = done
-            window = functools.partial(_window, previous, launch, done)
+            window = functools.partial(_window, previous, launch, done, target)
         return stamps, window
 
     def exit(self):
@@ -303,13 +348,15 @@ class StepRecording:
         return super().exit()
 
 
-def _window(previous, launch, done, wait: bool):
+def _window(previous, launch, done, target, wait: bool):
     """The device window's fields once `done` has completed, polled, else None."""
     while not done.query():
         if not wait:
             return None
         time.sleep(1e-3)
     fields = {"d_busy_ns": round(launch.elapsed_time(done) * 1e6)}
+    if target is not None:
+        fields["d_target_ns"] = round(launch.elapsed_time(target) * 1e6)
     if previous is not None:
         fields["d_gap_ns"] = round(previous.elapsed_time(launch) * 1e6)
     return fields
@@ -322,7 +369,8 @@ def read(directory) -> dict[int, list[dict]]:
     ends inside a request's prefill parts from a full one at that request's
     first step. With `ARRIVALS`, the worker-clock times a workload was sent,
     the steps entered before the first send are the engine's start, not the
-    workload's: they are left out and the rest renumbered from 0.
+    workload's: they are left out and the rest renumbered from 0. A step
+    naming requests with response ids holds them by key in `response_ids`.
     """
     directory, record, start = pathlib.Path(directory), {}, None
     if (directory / ARRIVALS).exists():
@@ -330,7 +378,12 @@ def read(directory) -> dict[int, list[dict]]:
     # Each rank's record, and not the cost lines a simulated run writes beside it.
     for path in sorted(directory.glob("dp*[0-9].jsonl")):
         steps = [json.loads(line) for line in path.read_text().splitlines()]
-        keys = dict(pair for step in steps for pair in step.pop("named"))
+        keys = {}
+        for step in steps:
+            for req_id, key, *response_id in step.pop("named"):
+                keys[req_id] = key
+                if response_id:
+                    step.setdefault("response_ids", {})[key] = response_id[0]
         if start is not None:
             steps = [s for s in steps if s["t_enter_ns"] >= start]
             for i, step in enumerate(steps):
@@ -362,7 +415,7 @@ def compare(real, simulated) -> dict:
     A rank's entry is None where its steps all agree, else the step index and
     both steps, None for a record that has already ended. A record with no
     steps is refused: two runs that scheduled nothing agree, and that means
-    nothing. Steps are compared and reported without their timestamps. Under
+    nothing. Steps are compared and reported without timestamps or response ids. Under
     `steps`, each rank's count of step pairs compared and of identical ones.
     """
     records = {"real": read(real), "simulated": read(simulated)}
@@ -371,7 +424,7 @@ def compare(real, simulated) -> dict:
             raise ValueError(f"the {name} record has no steps to compare.")
         for steps in record.values():
             for step in steps:
-                for key in TIMESTAMPS:
+                for key in (*TIMESTAMPS, "response_ids"):
                     step.pop(key, None)
     first, counts = {}, {}
     for rank in sorted(records["real"].keys() | records["simulated"].keys()):

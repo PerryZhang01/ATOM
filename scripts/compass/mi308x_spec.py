@@ -10,7 +10,8 @@ not the ones the device fragment recorded there. The device fragment is the
 readings ATOM's own `ModelRunner` took at one engine start (Qwen3.8-27B, TP1,
 CUDA graphs and prefix caching on, `--max-model-len 262144`); every field no
 probe fills is assumed, on either host. On hjbog-srdc-18 two Qwen3-30B-A3B
-starts add the width-keyed terms at width 8 and at the DP-attention layout 1x8.
+starts add the width-keyed terms at width 8 and at the DP-attention layout 1x8;
+on hjbog-srdc-39 one real burst adds the HTTP intake terms (`INTAKE`).
 One fragment per start or origin. Writes the merged document to `--out` when
 `validate` passes at every width and layout it holds, then prints
 `explain`'s rows for the host, device and interconnect blocks, grouped by
@@ -116,6 +117,20 @@ STARTS = {
 STARTS = STARTS if NAME == "mi308x-hjbog18" else {}
 RESIDUE = 2165604480
 
+#: The API server's event loop taking in one HTTP request, probed on
+#: hjbog-srdc-39 at commit 2d1d223be in one real c=256 first-turn cc-traces
+#: burst on Qwen3.8-27B TP1: the least-squares fit of the i-th request's chat
+#: template start on the loop to i and the body bytes of the requests before it.
+#: The record is the probe's stamp file, the run's server log beside it.
+INTAKE = {
+    "mi308x-hjbog39": (
+        "2026-10-16",
+        "2d1d223be",
+        {"fixed_s": 0.0021464994614327293, "per_byte_s": 1.869416019632594e-08},
+        "40da90fe439e06efa8aeb8d8b3d5a17a955c507afb6f9aa18401cbbc957739de",
+    ),
+}.get(NAME)
+
 DEVICE = {
     "host": {"cpu": {"cores_physical": 112, "cores_logical": 224}},
     "device": {
@@ -210,6 +225,13 @@ def device_fragments() -> list[Fragment]:
         starts.append(
             fragment(f"start {key}", body, "probed", notes_of, subject, "2026-10-14")
         )
+    if INTAKE:
+        date, root, terms, record = INTAKE
+        subject = {"model": "Qwen/Qwen3.8-27B", "source_root": f"commit:{root}"}
+        subject["record"] = f"sha256:{record}"
+        how = f"one real c=256 first-turn cc-traces burst at {root}"
+        body = {"host": {"http_intake": terms}}
+        starts.append(fragment("intake", body, "probed", how, subject, date))
     return [
         fragment("device", DEVICE, "probed", notes, SUBJECT),
         fragment("assumed", DECLARED, "assumed", "no probe fills these"),
@@ -252,16 +274,16 @@ def swept(model: str) -> Fragment:
     )
 
 
-def report(merged) -> str:
+def report(merged, tp_width=1) -> str:
     """`explain`'s rows grouped by origin, and the basis of `kv_blocks`."""
     spec = MachineSpec.from_mapping(merged.document)
     groups: dict[str, list[str]] = {}
     for block in ("host", "device", "interconnect"):
-        for row in explain(spec, block, tp_width=1, origin=merged).contributions:
+        for row in explain(spec, block, tp_width=tp_width, origin=merged).contributions:
             groups.setdefault(row.origin["origin"], []).append(f"  {row}")
     lines = [line for origin, rows in groups.items() for line in (f"{origin}:", *rows)]
     return "\n".join(
-        lines + [str(explain(spec, "kv_blocks", tp_width=1, origin=merged))]
+        lines + [str(explain(spec, "kv_blocks", tp_width=tp_width, origin=merged))]
     )
 
 

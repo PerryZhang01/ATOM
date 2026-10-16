@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-"""Grading a cell: `python -m atom.compass.validate` on runs laid out as `cctraces_sim.sh` writes them.
+"""Grading a cell: `python -m atom.compass.validate` on runs laid out as `cctraces_sim.sh` writes them,
+and as `record` and `run` do (`_as_recorded`).
 
 Every run's step record is `test_validate_cost`'s, periods at its planted law's
 price; the export and the server log are as `test_validate_runs` and
@@ -17,6 +18,7 @@ from test_validate_runs import EXPORT
 from atom.compass.backends.cost import GROUPS
 from atom.compass.run import LP_FILE
 from atom.compass.validate.__main__ import main
+from atom.compass.validate.runs import CLIENT_RUN
 
 TERM = {"method": "measured", "source": "planted"}
 SHARE = {"steps": 3, "fraction_of_predicted_seconds": 0.4}
@@ -98,9 +100,9 @@ def _run(
     (d / "summary.json").write_text(json.dumps(summary))
 
 
-def _rows(capsys, tmp_path, law=(), law_run=None, **p97):
-    """The cell's rows; real0's step 5 ran ten times its price, `law` is that run's
-    refusals, `law_run` sets that run's other arguments and `p97` sets that run."""
+def _rows(capsys, tmp_path, law=(), **law_run):
+    """The cell's rows; real0's step 5 ran ten times its price, `law` is the
+    simulated run's refusals and `law_run` sets its other arguments."""
     for i, (ms, non_torch) in enumerate(((100, 1.0), (110, 1.5), (105, 1.0))):
         _run(
             tmp_path / "c4" / f"real{i}",
@@ -113,9 +115,8 @@ def _rows(capsys, tmp_path, law=(), law_run=None, **p97):
         tmp_path / "c4" / "step_linear",
         [(100, 1000, 120.0)],
         refusals=law,
-        **(law_run or {}),
+        **law_run,
     )
-    _run(tmp_path / "c4" / "p97", [(100, 1000, 118.0)], **p97)
     main([str(tmp_path / "c4")])
     out = capsys.readouterr().out.splitlines()
     return {tuple(r.split(" | ")[1:3]): r.split(" | ")[3:] for r in out[1:]}
@@ -128,15 +129,15 @@ def test_a_cell_is_graded_from_every_source_and_its_method_shares_grade_nothing(
     assert rows["cell", "verdict"] == ["3 real runs", "graded"]
     # Uncached tokens only, graded against the real spread of 10%.
     assert rows["end to end", "ttft p50 0-512 uncached"] == [
-        "spread 0.1; result 0.2 0.09091 0.1429; moved 0.01667",
-        "outside, inadmissible",
+        "spread 0.1; result 0.2 0.09091 0.1429",
+        "outside",
     ]
     assert rows["end to end", "ttft p50 512-2048 uncached"][0] == (
-        "no request in ['step_linear', 'p97']"
+        "no request in ['step_linear']"
     )
     # The warmup request is in no band.
     assert rows["end to end", "ttft p50 8192+ uncached"][0].startswith("no request")
-    assert rows["end to end", "ttft mean"][1] == "outside, inadmissible"
+    assert rows["end to end", "ttft mean"][1] == "outside"
     assert rows["cost real0", "decode rung 1 validated"][0].endswith(
         "within 10% 100.0%"
     )
@@ -150,27 +151,25 @@ def test_a_cell_is_graded_from_every_source_and_its_method_shares_grade_nothing(
     assert rows["memory real1", "non_torch"] == ["-33.33% (-536,870,912 B)", "fail"]
     for g in GROUPS:
         assert rows["summary step_linear", g] == [json.dumps(SHARE), "not gated"]
-    assert rows["summary p97", "speed"] == [
+    assert rows["summary step_linear", "speed"] == [
         "20.0x: 900 simulated s in 45 wall s",
         "meets 5x",
-    ]
-
-
-def test_a_refusal_in_either_simulated_run_makes_the_cell_a_coverage_report(
-    capsys, tmp_path
-):
-    # A clock refusal refuses no step; it is counted under its source, not as a step.
-    rows = _rows(capsys, tmp_path, refusals=[("clock", 1)], speed=False)
-    assert rows["cell", "verdict"] == ["3 real runs", "coverage report"]
-    assert rows["summary p97", "refusals"] == [
-        '1 {"clock": 1}; cost refused 0.0% of 20 steps',
-        "coverage report",
     ]
     assert rows["summary step_linear", "refusals"] == [
         "0 {}; cost refused 0.0% of 20 steps",
         "none",
     ]
-    assert rows["summary p97", "speed"] == [
+
+
+def test_a_clock_refusal_makes_the_cell_a_coverage_report(capsys, tmp_path):
+    # A clock refusal refuses no step; it is counted under its source, not as a step.
+    rows = _rows(capsys, tmp_path, law=[("clock", 1)], speed=False)
+    assert rows["cell", "verdict"] == ["3 real runs", "coverage report"]
+    assert rows["summary step_linear", "refusals"] == [
+        '1 {"clock": 1}; cost refused 0.0% of 20 steps',
+        "coverage report",
+    ]
+    assert rows["summary step_linear", "speed"] == [
         "no wall time was measured: 900 simulated s in 0 wall s",
         "no result for 5x",
     ]
@@ -181,9 +180,7 @@ def test_runs_of_different_workloads_are_not_one_cell(capsys, tmp_path):
         _rows(capsys, tmp_path, workload=2)
 
 
-def test_a_cost_refusal_in_the_law_run_alone_makes_the_cell_a_coverage_report(
-    capsys, tmp_path
-):
+def test_a_cost_refusal_makes_the_cell_a_coverage_report(capsys, tmp_path):
     rows = _rows(capsys, tmp_path, law=[("cost", 2)])
     assert rows["cell", "verdict"] == ["3 real runs", "coverage report"]
     assert rows["summary step_linear", "refusals"] == [
@@ -197,14 +194,14 @@ def test_counts_but_preemptions_and_prefill_tokens_are_not_gated(capsys, tmp_pat
     # prefill streak and one decode token more than every real run.
     steps = _steps()
     steps.insert(5, ([(1, 2000, True)], 1))
-    rows = _rows(capsys, tmp_path, law_run={"steps": steps, "idle_after": {4, 5}})
+    rows = _rows(capsys, tmp_path, steps=steps, idle_after={4, 5})
     assert rows["counts", "prefill streaks"] == [
-        "spread 0; result 1 1 1; moved 1",
-        "outside, admissible, not gated",
+        "spread 0; result 1 1 1",
+        "outside, not gated",
     ]
-    assert rows["counts", "decode tokens"][1] == "outside, admissible, not gated"
-    assert rows["counts", "prefill tokens"][1] == "exact, inadmissible"
-    assert rows["counts", "preemptions"][1] == "exact, inadmissible"
+    assert rows["counts", "decode tokens"][1] == "outside, not gated"
+    assert rows["counts", "prefill tokens"][1] == "exact"
+    assert rows["counts", "preemptions"][1] == "exact"
 
 
 def test_a_run_that_ended_without_its_memory_reads_refused_and_the_cell_goes_on(
@@ -236,16 +233,87 @@ def test_a_run_that_ended_without_its_memory_reads_refused_and_the_cell_goes_on(
         '1 {"ended": 1}; steps not counted',
         "coverage report",
     ]
-    assert rows["summary p97", "speed"][1] == "meets 5x"
+    assert rows["summary step_linear", "speed"][1] == "meets 5x"
 
 
 def test_a_cell_of_renamed_names_is_refused_naming_their_names_now(capsys, tmp_path):
     _rows(capsys, tmp_path)
     cell = tmp_path / "c4"
-    run = cell / "p97" / "run.json"
+    run = cell / "real0" / "run.json"
     run.write_text(json.dumps(json.loads(run.read_text()) | {"law": LAW}))
     with pytest.raises(ValueError, match=r"renamed: law \(now step_linear\)"):
         main([str(cell)])
     (cell / "step_linear").rename(cell / "law")
     with pytest.raises(ValueError, match="now named step_linear/"):
         main([str(cell)])
+
+
+def _as_recorded(cell):
+    """Lay `cell`'s runs out as `record` and `run` write them: each request
+    named at its last prefill row, by key `k<id>` and response id `id-<id>`;
+    an export naming them all, from trace `t<id>`; and run.json's identity,
+    with `run`'s grading entries for `step_linear/`, its law and host laws in
+    its run file and its refusals its summary's."""
+    for d in sorted(cell.iterdir()):
+        path = d / "steps" / "dp0.jsonl"
+        lines = [json.loads(x) for x in path.read_text().splitlines()]
+        last = {}
+        for i, line in enumerate(lines):
+            for (r, *_), (_q, _c, decode) in zip(line["batch"], line["rows"]):
+                last[r] = i if not decode else last.get(r, i)
+        for r, i in last.items():
+            lines[i]["named"].append([r, f"k{r}", f"id-{r}"])
+        path.write_text("".join(json.dumps(x) + "\n" for x in lines))
+        sent = {f"id-{r}": {"trace": f"t{r}", "sampling": {}} for r in last}
+        (d / CLIENT_RUN).write_text(json.dumps({"requests": sent}))
+        run = {"format_version": 2}
+        if d.name == "step_linear":
+            summary = json.loads((d / "summary.json").read_text())
+            run |= {
+                "run_file": {"step_linear": LAW, "host": {"laws": {}}},
+                "step_roofline": False,
+                "skip": [],
+                "refusals": summary["schedule"]["refusals"] | {"reasons": []},
+                "coverage": None,
+                "provenance": {"digest": "sha256:0", "provenance": None},
+            }
+        (d / "run.json").write_text(json.dumps(run))
+
+
+def _graded(capsys, cell):
+    main([str(cell)])
+    out = capsys.readouterr().out.splitlines()
+    return {tuple(r.split(" | ")[1:3]): r.split(" | ")[3:] for r in out[1:]}
+
+
+def test_a_cell_record_and_run_wrote_grades_as_the_one_cctraces_sim_wrote(
+    capsys, tmp_path
+):
+    rows = _rows(capsys, tmp_path)
+    _as_recorded(tmp_path / "c4")
+
+    assert _graded(capsys, tmp_path / "c4") == rows
+
+
+def test_a_refusal_in_the_client_run_record_and_run_wrote_refuses_the_cell(
+    capsys, tmp_path
+):
+    _rows(capsys, tmp_path, law=[("clock", 1)])
+    _as_recorded(tmp_path / "c4")
+
+    with pytest.raises(ValueError, match="step_linear is not graded: it refused 1"):
+        main([str(tmp_path / "c4")])
+
+
+def test_runs_record_and_run_wrote_that_served_other_traces_are_not_one_cell(
+    capsys, tmp_path
+):
+    _rows(capsys, tmp_path)
+    _as_recorded(tmp_path / "c4")
+    export = tmp_path / "c4" / "real1" / CLIENT_RUN
+    export.write_text(
+        json.dumps({"requests": {"id-0": {"trace": "t9", "sampling": {}}}})
+    )
+
+    with pytest.raises(ValueError, match=r"sent different traces; .*real1': \['t9'\]"):
+        main([str(tmp_path / "c4")])

@@ -20,25 +20,15 @@ use mesh::{
     core::{BasicWorkerBuilder, Worker, WorkerLoadGuard},
     determinism,
 };
-use serde_json::{json, Value};
+use serde_json::json;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    net::TcpListener,
     sync::{oneshot, Mutex},
 };
 use tower::ServiceExt;
 
-async fn read_frame(sock: &mut TcpStream) -> Value {
-    let mut body = vec![0; sock.read_u32().await.unwrap() as usize];
-    sock.read_exact(&mut body).await.unwrap();
-    serde_json::from_slice(&body).unwrap()
-}
-
-async fn write_frame(sock: &mut TcpStream, message: Value) {
-    let body = message.to_string();
-    sock.write_u32(body.len() as u32).await.unwrap();
-    sock.write_all(body.as_bytes()).await.unwrap();
-}
+mod compass_frames;
+use compass_frames::{read_frame, write_frame};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn releases_are_handled_one_at_a_time_in_order_and_restamped() {
@@ -92,10 +82,11 @@ async fn releases_are_handled_one_at_a_time_in_order_and_restamped() {
             "/",
             post(move |headers: HeaderMap| async move {
                 let clock = (determinism::now() - origin).as_secs_f64();
-                compass_router::placed();
+                compass_router::placed("http://p", "http://d");
                 let wait = placed.lock().await.take().unwrap();
                 wait.await.unwrap();
-                format!("{} at {clock}", headers["tracestate"].to_str().unwrap())
+                let state = headers["tracestate"].to_str().unwrap();
+                format!("{} at {clock}", compass_router::header("tracestate", state))
             }),
         )
         .layer(axum::middleware::from_fn(compass_router::ingress));

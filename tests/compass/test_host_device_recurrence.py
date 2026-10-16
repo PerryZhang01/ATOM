@@ -221,9 +221,9 @@ def test_no_cost_line_is_written_with_the_record_off_or_off_tp_rank_0(
 
 def test_grading_reads_a_simulated_cells_record_beside_its_cost_lines(tmp_path):
     cells = [_cell(tmp_path / f"c{i}", _schedule(), {}) for i in range(4)]
-    graded = runs.grade(cells[2:], cells[0], cells[1])
+    graded = runs.grade(cells[1:], cells[0])
     (cells[0] / "steps" / "dp0.cost.jsonl").write_text(json.dumps({"step": 0}) + "\n")
-    assert runs.grade(cells[2:], cells[0], cells[1]) == graded
+    assert runs.grade(cells[1:], cells[0]) == graded
 
 
 def test_grading_refuses_a_what_if_run(tmp_path):
@@ -273,3 +273,27 @@ def test_each_kind_takes_its_own_law_on_tokens_and_seqs():
         clock[0] += host.charge(b, device)
         exits.append(clock[0])
     assert exits == pytest.approx([5, 9, 16, 27])
+
+
+@pytest.mark.parametrize("mtp, exits", [(True, [4, 14, 28]), (False, [4, 13, 27])])
+def test_with_mtp_an_output_forward_waits_for_the_target_before_its_launch(mtp, exits):
+    """Three decodes, 1 s per host segment, 10 s of target and 4 of draft.
+
+    With MTP the second forward's launch waits for the first one's target end
+    (12), and its target for the first one's draft (16); its exit is 12 + 1 + 1.
+    """
+    seg = {s: [1, 0, 0] for s in HOST_SEGMENTS}
+    clock = [0.0]
+    host = HostDeviceRecurrence({"decode": seg}, (), lambda: clock[0], mtp=mtp)
+    b = SimpleNamespace(
+        total_seqs_num_prefill=0,
+        total_tokens_num=2,
+        total_seqs_num=1,
+        produces_output=lambda: True,
+    )
+    out = []
+    for _ in exits:
+        clock[0] += host.charge(b, 10, 4)
+        out.append(clock[0])
+    assert out == pytest.approx(exits)
+    assert list(host.ends) == [30, 44]

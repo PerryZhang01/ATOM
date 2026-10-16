@@ -2362,3 +2362,99 @@ def test_the_checked_in_hjbog39_spec_holds_that_hosts_start(monkeypatch):
         for key, value in fragment.values.items():
             if not key.startswith("provenance."):
                 assert values[key] == value, key
+
+
+def _mi355x_spec(monkeypatch):
+    """The MI355X script and its checked-in document, validated at its layout."""
+    from atom.compass.run import _width_keys
+
+    monkeypatch.delenv("COMPASS_MACHINE", raising=False)
+    path = SPEC_ROOT / "scripts" / "compass" / "mi355x_spec.py"
+    loaded = importlib.util.spec_from_file_location("mi355x_spec", path)
+    script = importlib.util.module_from_spec(loaded)
+    loaded.loader.exec_module(script)
+    document = SPEC_ROOT / "scripts" / "compass" / "machines" / f"{script.NAME}.json"
+    checked = validate(
+        _width_keys(json.loads(document.read_text())), tp_widths=("1x8",)
+    )
+    return script, checked.raise_first()
+
+
+def test_the_checked_in_mi355x_spec_holds_its_start_and_prices_its_activations(
+    monkeypatch,
+):
+    script, spec = _mi355x_spec(monkeypatch)
+    for fragment in script.device_fragments():
+        for key, value in fragment.values.items():
+            if not key.startswith("provenance."):
+                held = spec.values[key]
+                # A layout table merges one entry per start.
+                assert (held | value if isinstance(held, dict) else value) == held, key
+    read = script.READ
+    assert spec.activations_for("DeepseekV4ForCausalLM", script.CONFIG_JSON, 1) == (
+        "deepseek-v4-pro",
+        (read["peak"] - read["current"]) / read["warmup_tokens"],
+        (f"sha256:{script.RECORD}",),
+    )
+    reserve = spec.runtime_constant("driver_and_collective_reserve_bytes", "1x8")
+    assert reserve == read["non_torch"]
+    with pytest.raises(SpecRefusal):
+        spec.runtime_constant("driver_and_collective_reserve_bytes", 1)
+
+
+def test_the_mi355x_spec_explains_what_the_start_measured_apart_from_the_declared(
+    monkeypatch,
+):
+    script, spec = _mi355x_spec(monkeypatch)
+    origins = {}
+    for block in ("host", "device", "interconnect"):
+        for row in explain(spec, block).contributions:
+            origins.setdefault(row.origin["origin"], set()).add(row.path)
+    assert set(origins) == {"probed", "datasheet", "assumed"}
+    start = {row.path for row in explain(spec, "kv_blocks").contributions} - {
+        f"device.runtime_constants.cudagraph_pool.{name}"
+        for name in ("w1_base_bytes", "w1_bytes_per_captured_token", "w_gt1_flat_bytes")
+    }
+    assert start <= origins["probed"]
+    assert origins["datasheet"] == {
+        "device.memory.bandwidth_bytes_per_s",
+        "device.compute.bf16_flops",
+        "device.compute.fp8_flops",
+        "device.compute.fp4_flops",
+        "interconnect.intra_node.domain_devices",
+        "interconnect.intra_node.link_bandwidth_bytes_per_s",
+    }
+    assert all(
+        spec.origin(path)["record"] == f"sha256:{script.RECORD}"
+        for path in ("device.memory.capacity_bytes", "device.activations")
+    )
+
+
+def test_the_mi355x_spec_rebuilds_byte_for_byte_from_its_own_sweep(
+    monkeypatch, tmp_path
+):
+    script, _ = _mi355x_spec(monkeypatch)
+    document = SPEC_ROOT / "scripts" / "compass" / "machines" / f"{script.NAME}.json"
+    out = tmp_path / "rebuilt.json"
+    assert script.main(["--sweep-from", str(document), "--out", str(out)]) == 0
+    assert out.read_bytes() == document.read_bytes()
+
+
+def test_the_mi355x_spec_explains_its_ep8_start_at_the_ep8_layout(monkeypatch):
+    from atom.compass.run import _width_keys
+
+    script, _ = _mi355x_spec(monkeypatch)
+    document = SPEC_ROOT / "scripts" / "compass" / "machines" / f"{script.NAME}.json"
+    mapping = _width_keys(json.loads(document.read_text()))
+    spec = validate(mapping, tp_widths=("1x8x8",)).raise_first()
+    rows = explain(spec, "kv_blocks", tp_width="1x8x8").contributions
+    held = {row.path.rsplit(".", 1)[-1]: row for row in rows if "[1x8x8]" in row.path}
+    read = script.EP_READ
+    residue = read["loaded"] - read["parameters"] - read["buffers"]
+    assert {key: row.value for key, row in held.items()} == {
+        "driver_and_collective_reserve_bytes[1x8x8]": read["non_torch"],
+        "allocator_retained_after_load_bytes[1x8x8]": residue,
+    }
+    for row in held.values():
+        assert row.origin["origin"] == "probed"
+        assert row.origin["record"] == f"sha256:{script.EP_RECORD}"

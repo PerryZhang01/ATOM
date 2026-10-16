@@ -11,6 +11,11 @@ library memory constants leave the device specification. `compass measure memory
 them on the target for each configuration, and a run reads that `memory_readings` entry
 and refuses without it (D14, D15, D16; `07` D38, Phase 2).
 
+**Revised 2026-10-16 by [#965](https://github.com/jgong5/ATOM/issues/965):** the
+activations are that entry's reading too, and no geometry form stands in for one: the
+coefficient is not derivable from geometry within 25%
+([#705](https://github.com/jgong5/ATOM/issues/705)), so the reading is its source (D16).
+
 **Depends on:** `02_model_runner_and_cost_backend.md` (the runner that must answer
 `get_num_blocks` and `allocate_kv_cache`).
 
@@ -452,8 +457,8 @@ source per term; the bullets below say why each is what it is.
 |---|---|---|
 | weights | the meta build the simulated runner's `_build_and_load_model` already makes for the KV-pool walk: the model class under `torch.device("meta")` with ATOM's own quantisation config and groups at the deployment's widths, bytes summed over unique parameter storages, so a tied `lm_head`, which shares the embedding's storage, counts once | [#699](https://github.com/jgong5/ATOM/issues/699) |
 | buffers | the formula over fields the model's `config.json` states, analytical, or declared where it assumes `partial_rotary_factor`, until a recording exists | [#701](https://github.com/jgong5/ATOM/issues/701) |
-| activations | one coefficient per model and width, from a machine-spec entry keyed by architecture, `config.json` sha256 and tensor-parallel width: a real run's `peak - current` after warmup over the warmup tokens, times the deployment's warmup tokens. A model with no entry takes a geometry form, labelled declared. The liveness walk replaces both once capture lands | [#704](https://github.com/jgong5/ATOM/issues/704), [#705](https://github.com/jgong5/ATOM/issues/705) |
-| invisible scratch | inside the activation coefficient; a term of its own only under the liveness walk (`04` T4) | [#704](https://github.com/jgong5/ATOM/issues/704) |
+| activations | the run's `memory_readings` entry: one start's warmup `peak - current` over its warmup tokens, on a warm compile cache, times the deployment's warmup tokens, measured at the entry's own. The liveness walk replaces it once capture lands | [#704](https://github.com/jgong5/ATOM/issues/704), [#705](https://github.com/jgong5/ATOM/issues/705), [#965](https://github.com/jgong5/ATOM/issues/965) |
+| invisible scratch | inside the activations reading; a term of its own only under the liveness walk (`04` T4) | [#704](https://github.com/jgong5/ATOM/issues/704) |
 | persistent | `persistent_forward_buffer_bytes` in the run's `memory_readings` entry | — |
 | load residue, `non_torch` | the run's `memory_readings` entry; the width under DP-attention is open (D15) | [#702](https://github.com/jgong5/ATOM/issues/702) |
 | graph pool | `graph_pool.reserves()` for the deployment's own `enforce_eager`; when it captures, the runner's `_piecewise_cg_active()` picks the branch, whole-graph from the activations term, piecewise from `piecewise_per_token_bytes` and `capture_token_shapes` over the deployment's ladder | [#700](https://github.com/jgong5/ATOM/issues/700) |
@@ -480,10 +485,8 @@ term against the same term of a recorded real run, wired for stage 2's paired ru
   where it assumes `partial_rotary_factor`, until a recording exists (`ModelTerms.from_config`,
   [#701](https://github.com/jgong5/ATOM/issues/701)). The assumption is named because the
   first formula, which matched the 0.6B exactly, was 4x wrong on the 27B (partial rotary).
-- **Activations** — until capture lands, the coefficient measured on a real run (the
-  table above), keyed by architecture, `config.json` sha256 and tensor-parallel width,
-  since one architecture class serves every size of a model family: the scaling in
-  tokens is validated (`10` D67), and the reading is the one ATOM's
+- **Activations** — until capture lands, the entry's reading (the table above): the
+  scaling in tokens is validated (`10` D67), and the reading is the one ATOM's
   `_estimate_cudagraph_overhead` takes, so the scratch is inside it. After that, a
   def-use liveness walk over a traced op graph, **not** a footprint sum, which depends on
   topic `04` (model capture). Four faults had
@@ -522,8 +525,7 @@ for the model — which is the per-term rule above, not the aggregate.
 ### Open issues
 
 - Activations are not blocked on topic `04`: until an op graph exists they come from the
-  measured coefficient, and a model with no entry takes a labelled geometry form, whose
-  error against the coefficient is what #705 measures (`10` T34). **Cross-check against
+  entry, and a configuration with no entry refuses. **Cross-check against
   `04`, for when the walk lands:** the liveness walk is `04` D22, which resolves observationally
   under fake tensors and treats an opaque leaf's internal scratch as a *stated per-leaf
   constant* rather than a walked one. So this term is not simply "blocked on a graph" —
@@ -534,9 +536,8 @@ for the model — which is the per-term rule above, not the aggregate.
   scratch table does not discharge the ≤10% gate on this term.
 - The model generalises to a shape the trace was not taken at, but **not to a model that
   was never traced** — a hybrid needs a real graph. So "size a configuration nobody has
-  run" holds for shape and width, not for architecture. The measured coefficient narrows
-  that further: it holds for shape, not for a model or a width with no run, which take
-  the geometry form.
+  run" holds for shape and width, not for architecture. The entry narrows that further:
+  a configuration with no run has none, and refuses.
 - A tracing run must reset the allocator's high-water mark around the step it writes a
   graph for, or `peak_torch` belongs to the warmup prefill, whose shape is nobody's
   choice (−14.7% on one configuration).
@@ -550,4 +551,4 @@ for the model — which is the per-term rule above, not the aggregate.
 | D13 | Do not simulate the KV pool. Stub `allocate_kv_cache`; ATOM's real `BlockManager`, `BlockPool`, prefix index and `plan_pools` run unmodified. | 2026-09-18 |
 | D14 | Substitute the five device readings, reuse ATOM's budget arithmetic and `plan_pools`. Compass models a dedicated device; that is a stated scope boundary. | 2026-09-18 |
 | D15 | The device specification is an input artifact authored outside Compass, carrying capacity, compute, bandwidth, interconnect and derate factors. It is echoed into every run artifact. The runtime memory constants are `measure memory`'s `memory_readings` entries, per configuration, which a run refuses without. | 2026-09-18; revised 2026-10-14 (#851) |
-| D16 | Validate every non-KV memory term individually, never as a sum. Keep ATOM's graph-pool estimator and the measured one as two separate functions. Revised: one source per term. Weights come from a meta build in the simulated runner at the deployment's group widths. Activations come from a coefficient keyed by architecture, `config.json` sha256 and tensor-parallel width, with the scratch inside it and a geometry form as fallback, until the liveness walk lands. The graph pool reserves for the deployment's own capture mode, and the per-term check is wired. | 2026-09-18; revised 2026-10-10 |
+| D16 | Validate every non-KV memory term individually, never as a sum. Keep ATOM's graph-pool estimator and the measured one as two separate functions. Revised: one source per term. Weights come from a meta build in the simulated runner at the deployment's group widths. Activations come from a coefficient keyed by architecture, `config.json` sha256 and tensor-parallel width, with the scratch inside it and a geometry form as fallback, until the liveness walk lands. The graph pool reserves for the deployment's own capture mode, and the per-term check is wired. Activations from the `memory_readings` entry, with no geometry form. | 2026-09-18; revised 2026-10-10 and 2026-10-16 (#965) |

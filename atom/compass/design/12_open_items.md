@@ -127,6 +127,7 @@ M-f `14`; M-g `01` D3.5.
 | T25 | Measure the real-vs-real noise floor under closed-loop replay at high client count |
 | T26 | Assert simulator bit-reproducibility as a test — mechanism now `01` D3.4; this item is the CI wiring |
 | T27 | Decide the construction of the cells the corpus cannot fill without reusing sessions: 256 clients with fan-out in every root, and the recipe's largest DPA concurrency (`08` D50) |
+| T101 | Rebuild grading's sensitivity control when a need appears: a metric that does not move under a known perturbation cannot grade a cost model, and grading admits a metric on stability alone until then. Deferred 2026-10-16 by the owner's [ruling on #1025](https://github.com/jgong5/ATOM/issues/1025#issuecomment-6205795319); `08` D45 keeps what the ×0.97 control measured |
 | ~~T28~~ | ~~Establish whether ranking/regret becomes an explicit acceptance gate~~ - **DONE**: `08` D50, M2's ranking gate |
 | ~~T48~~ | ~~What a refusal does to a run~~ - **DONE**: `08` D50.1, a refused step (some term unanswered after method fallback) costs 0 s and the run continues as a coverage report |
 
@@ -144,7 +145,7 @@ M-f `14`; M-g `01` D3.5.
 
 | # | Item |
 |---|---|
-| T34 | Test whether the activation coefficient is derivable from geometry: the fallback for a model nobody has run, against the measured coefficient that is the source ([#705](https://github.com/jgong5/ATOM/issues/705)) |
+| ~~T34~~ | ~~Test whether the activation coefficient is derivable from geometry~~ — closed 2026-10-16 by [#965](https://github.com/jgong5/ATOM/issues/965): it is not, within 25% ([#705](https://github.com/jgong5/ATOM/issues/705)); a configuration's `memory_readings` entry is its source |
 | T35 | Derive FLOPs and bytes-moved expressions for the ~20 opaque leaves |
 | T36 | Name the collective algorithm per code path in the machine spec schema |
 | ~~T37~~ | ~~Decide whether the host floor is derivable or stays a per-model constant~~ — ruled 2026-10-11 on #815: measured host laws, keyed by host CPU, `atom` digest, model and engine config, with no transfer (`09` D54, `10` D64) |
