@@ -611,7 +611,10 @@ adds `ScheduledBatchOutput.group_targets`, changes `clock.charge`, makes the
 plugin and diffusion bootstraps refuse a simulated run, names a pipeline
 stage's channels by its stage and has a downstream stage's loop leave on
 the `+inf` grant; none of these changes a
-real run's host time. The law and its host key state
+real run's host time. Its engine key also states the fields the records
+predate, as their `server.log` engine arguments and the capture's environment
+give them: DP width 1, no DP attention, expert parallelism or TBO, and
+`AITER_LOG_LEVEL=WARNING`. The law and its host key state
 `machine_spec`, the digest `machine_spec_digest` gives
 `scripts/compass/machines/mi308x-hjbog39.json`, so it refuses under any other
 spec's device or software stack.
