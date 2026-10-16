@@ -59,8 +59,9 @@ STOP_GRACE_S = 60
 TREE = Path(atom.__file__).resolve().parents[1]
 
 
-class ServeError(Exception):
-    """ATOM's arguments carry a flag the driver owns, or the server failed."""
+class ServeError(ValueError):
+    """ATOM's arguments carry a flag the driver owns, or the server failed; a
+    `ValueError`, so the console script exits with its message."""
 
 
 def serve(atom_args, out, gpus) -> None:
