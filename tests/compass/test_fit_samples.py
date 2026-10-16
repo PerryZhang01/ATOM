@@ -53,6 +53,18 @@ def record(tmp_path, monkeypatch, name="a", groups=((0, 1), (2, 3)), **run):
     return directory
 
 
+def idle_rank(steps):
+    """`steps/dp1.jsonl`, written as a DP rank no request reached: at each of
+    rank 0's steps, the dummy forward it runs to keep step with its group."""
+    dummy = {"dp_rank": 1, "is_dummy_run": True, "batch": [], "named": []}
+    rank0 = (steps / "dp0.jsonl").read_text().splitlines()
+    path = steps / "dp1.jsonl"
+    path.write_text(
+        "".join(json.dumps({**json.loads(x), **dummy}) + "\n" for x in rank0)
+    )
+    return path
+
+
 def edit(path, change):
     document = json.loads(path.read_text())
     change(document)
@@ -181,14 +193,10 @@ def test_samples_come_in_one_order_whatever_order_the_inputs_came_in(
 def test_a_dp_rank_no_request_reached_adds_no_sample(tmp_path, monkeypatch):
     a = record(tmp_path, monkeypatch)
     alone, config = load({a: RUNS})
-    rank0, rank1 = a / "steps/dp0.jsonl", a / "steps/dp1.jsonl"
-    # The dummy forward a DP rank runs to keep step with its group, at each step.
-    dummy = {"dp_rank": 1, "is_dummy_run": True, "batch": [], "named": []}
-    lines = [{**json.loads(line), **dummy} for line in rank0.read_text().splitlines()]
-    rank1.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    rank1 = idle_rank(a / "steps")
 
     samples, both = load({a: RUNS})
-    run = f"{digest(rank0)}, {digest(rank1)}"
+    run = f"{digest(a / 'steps/dp0.jsonl')}, {digest(rank1)}"
     assert samples == [
         dataclasses.replace(s, provenance={**s.provenance, "run": run}) for s in alone
     ]
