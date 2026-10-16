@@ -164,6 +164,12 @@ FIELDS = (
     Field("interconnect.inter_node.link_latency_s", Kind.QUANTITY),
     Field("interconnect.inter_node.link_setup_s", Kind.QUANTITY, required=False),
     Field("interconnect.router_relay_s", Kind.QUANTITY),
+    # The device-to-host copy an lmcache server's stores and loads ride, as a
+    # copy reaches it (not a peak); a run with an lmcache server requires it.
+    Field(
+        "interconnect.host_link.bandwidth_bytes_per_s", Kind.QUANTITY, required=False
+    ),
+    Field("interconnect.host_link.latency_s", Kind.QUANTITY, required=False),
 )
 
 SCHEMA = closed(FIELDS)

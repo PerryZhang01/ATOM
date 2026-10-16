@@ -39,7 +39,7 @@ def _call(server, op, *payloads, now=0.0):
     decoded reply and the effect due at the job's end."""
     frames = [b"id", msgspec.msgpack.encode(7), encode_operation(op)]
     frames += [msgspec.msgpack.encode(p) for p in payloads]
-    reply, at_end = server.handle(frames, now)
+    reply, at_end, _ = server.handle(frames, now)
     assert reply[:3] == frames[:3]
     return (msgspec.msgpack.decode(reply[3]) if len(reply) > 3 else None), at_end
 
@@ -78,7 +78,7 @@ def served():
     def loop():
         while not stop.is_set():
             if router.poll(50):
-                reply, at_end = server.handle(router.recv_multipart(), 0.0)
+                reply, at_end, _ = server.handle(router.recv_multipart(), 0.0)
                 at_end(0.0)
                 router.send_multipart(reply)
 

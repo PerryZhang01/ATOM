@@ -4387,6 +4387,67 @@
    "mechanism_why": "the bench measures real forwards on a real runner for a measuring command, and no simulated run starts one"
   },
   {
+   "id": "atom/compass/kv/lmcache_server.py::LMCacheLP._pull::self.sock.recv_multipart(self.zmq.NOBLOCK)::socket_recv#0",
+   "file": "atom/compass/kv/lmcache_server.py",
+   "symbol": "LMCacheLP._pull",
+   "call": "self.sock.recv_multipart",
+   "expr": "self.sock.recv_multipart(self.zmq.NOBLOCK)",
+   "shape": "socket_recv",
+   "peer": "process",
+   "why": "the lmcache stand-in's loop reads every request frame already at its ROUTER without blocking; it holds a stamped one until released and answers an unstamped startup frame at once",
+   "mechanism": "K5",
+   "mechanism_why": "the lmcache end of the lookup and transfer channels, received inline by LP lmcache's clock owner, which serves each request in (arrival, channel, seq) order once its grant releases it"
+  },
+  {
+   "id": "atom/compass/kv/lmcache_server.py::LMCacheLP._send::self.sock.send_multipart([identity, pickle.dumps((ch, *stamp)), *rest])::p2p#0",
+   "file": "atom/compass/kv/lmcache_server.py",
+   "symbol": "LMCacheLP._send",
+   "call": "self.sock.send_multipart",
+   "expr": "self.sock.send_multipart([identity, pickle.dumps((ch, *stamp)), *rest])",
+   "shape": "p2p",
+   "peer": "process",
+   "why": "the lmcache stand-in's loop sends each reply to the engine that asked, at the end of the request's job",
+   "mechanism": "K4",
+   "mechanism_why": "the lmcache end of the lookup and transfer reply channels: the clock owner stamps each reply at its job's end; a reply to a frame sent outside the run goes unstamped"
+  },
+  {
+   "id": "atom/compass/kv/lmcache_server.py::LMCacheLP._settle::self.sock.poll()::poll#0",
+   "file": "atom/compass/kv/lmcache_server.py",
+   "symbol": "LMCacheLP._settle",
+   "call": "self.sock.poll",
+   "expr": "self.sock.poll()",
+   "shape": "poll",
+   "peer": "process",
+   "why": "after a grant the lmcache stand-in's loop waits until every request frame the grant released has physically arrived; the engine sent each before the clock call that logged it",
+   "mechanism": "K5",
+   "mechanism_why": "the settle of an inline receive, as on a wrapped socket: it waits only for frames the authority has already released, so it never waits past the LP's clock"
+  },
+  {
+   "id": "atom/compass/kv/lmcache_server.py::LMCacheLP.serve::poller.poll()::poll#0",
+   "file": "atom/compass/kv/lmcache_server.py",
+   "symbol": "LMCacheLP.serve",
+   "call": "poller.poll",
+   "expr": "poller.poll()",
+   "shape": "poll",
+   "peer": "process",
+   "why": "the lmcache stand-in's loop waits for the grant of its next-event request on the clock connection, reading request frames from its ROUTER as they come",
+   "mechanism": "K3",
+   "mechanism_why": "LP lmcache's idle point: it asks NER with t its next job end and the eviction loop's next tick as a daemon deadline, and the wait ends at the grant"
+  },
+  {
+   "id": "atom/compass/run/__init__.py::_launch_lmcache::subprocess.Popen( [sys.executable, \"-c\", LMCACHE_MAIN, str(chunk_bytes)], env={**os.environ, \"PYTHONPATH\": os.pathsep.join(filter(None, paths))}, )::thread_start#0",
+   "file": "atom/compass/run/__init__.py",
+   "symbol": "_launch_lmcache",
+   "call": "subprocess.Popen",
+   "expr": "subprocess.Popen( [sys.executable, \"-c\", LMCACHE_MAIN, str(chunk_bytes)], env={**os.environ, \"PYTHONPATH\": os.pathsep.join(filter(None, paths))}, )",
+   "shape": "thread_start",
+   "peer": "none",
+   "lp": "frontend",
+   "why": "the frontend of a deployment that offloads KV to an lmcache server starts LP lmcache's stand-in in a process of its own, before its own runtime joins the clock",
+   "mechanism": "K9",
+   "mechanism_why": "starting a process cannot park; the stand-in joins the clock authority itself and is LP lmcache's clock owner"
+  },
+  {
    "id": "atom/kv_transfer/offload/_offload_common.py::OffloadWorkerMixin._init_worker_common::ThreadPoolExecutor( max_workers=n_save, thread_name_prefix=f\"{thread_name_prefix}-save\" )::thread_start#0",
    "file": "atom/kv_transfer/offload/_offload_common.py",
    "symbol": "OffloadWorkerMixin._init_worker_common",
