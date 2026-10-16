@@ -34,6 +34,7 @@ from atom.compass.parity import (
 from atom.compass.runner import overrides, projection
 from atom.compass.runner.overrides import NonAllocatingRunner, install_cost_backend
 from atom.compass.runner.step_output import DeferredTokenStream
+from atom.model_engine.engine_core_mgr import CoreManager, DisaggCoreManager
 from atom.model_engine.prefill_delayer import PrefillDelayer
 from atom.model_engine.scheduler import ScheduledBatch, Scheduler
 from atom.model_engine.sequence import Sequence, SequenceType
@@ -685,6 +686,13 @@ def test_a_dp2_simulated_runner_records_and_prices_from_one_collective(
     assert replies[0] == replies[1]
 
 
+def _keep_add_request(monkeypatch):
+    """A recording frontend wraps both core managers' `add_request` for the
+    process; put ATOM's back after the test."""
+    for cls in (CoreManager, DisaggCoreManager):
+        monkeypatch.setattr(cls, "add_request", cls.add_request)
+
+
 @pytest.mark.parametrize(
     "record, named, runs",
     [
@@ -700,6 +708,7 @@ def test_a_real_run_records_through_the_recording_runner_only_when_asked(
     monkeypatch.delenv(ENV, raising=False)
     if record:
         monkeypatch.setenv(ENV, str(tmp_path / record))
+    _keep_add_request(monkeypatch)
     config = SimpleNamespace(runner_qualname=named)
     with run.frontend(config):
         pass
@@ -710,5 +719,6 @@ def test_a_real_run_records_through_the_recording_runner_only_when_asked(
 def test_a_real_run_asked_to_record_refuses_a_runner_that_cannot(tmp_path, monkeypatch):
     monkeypatch.delenv(run.ENV, raising=False)
     monkeypatch.setenv(ENV, str(tmp_path))
+    _keep_add_request(monkeypatch)
     with pytest.raises(ValueError, match="only .* has a recording runner"):
         run.frontend(SimpleNamespace(runner_qualname="x.RapidServeModelRunner"))

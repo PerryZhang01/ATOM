@@ -10,6 +10,11 @@ written against it yet; implementation follows the execution plan in `16`.
 **Revised 2026-10-09 for `16` D95:** the acceptance cells are M2's (D50), the TTFT target is
 15%, the ranking gate is explicit (D50), and the MI455 projection has its own gate (D50.2).
 
+**Revised 2026-10-16 by the owner's
+[ruling on #1025](https://github.com/jgong5/ATOM/issues/1025#issuecomment-6205795319):** a
+metric is admissible on stability alone; grading's ×0.97 sensitivity control is dropped
+until a need appears (D45, `12` T101).
+
 **Scope.** What counts as evidence: which results are reported, how each is measured, what
 tolerance applies and where that tolerance comes from, and what invalidates a run.
 Acceptance is paired simulated and real execution of cc-traces proper, so every rule here
@@ -188,7 +193,7 @@ aggregate have happened here at least six times.
 
 ---
 
-## D45. Noise-floor first, and a two-sided admissibility test
+## D45. Noise-floor first, and admissibility on stability
 
 ### Problem
 
@@ -234,13 +239,17 @@ across independent sessions. Mitigating: within-session inter-arrival p50 is **5
 `think_time` p50 is **1.17 s**, against ~1% latency jitter. But that is an argument, not a
 measurement, and this protocol replaces it with one.
 
-### A metric is admissible only if it is both stable and sensitive
+### A metric is admissible if it is stable
 
-- **Stable** — small real-vs-real spread. Otherwise it cannot discriminate.
-- **Sensitive** — it moves under a known perturbation. Otherwise it cannot grade a model.
+**Stable** — small real-vs-real spread. Otherwise it cannot discriminate, and the cell
+reports it **ungradeable** as above, not silently dropped.
 
-**The sensitivity control already exists and is measured.** Re-price prefill at **×0.97**
-and re-simulate:
+### Sensitivity is deferred
+
+A metric that does not move under a known perturbation cannot grade a cost model either.
+The control that tested it, a second simulated run per cell at **×0.97** of the prefill
+price, costs more than it returns at this stage, so grading does not run it; it is rebuilt
+when a need appears (`12` T101). What it measured, re-pricing prefill and re-simulating:
 
 | prefill price | TTFT median | prefill streaks | longest |
 |---|---|---|---|
@@ -250,11 +259,7 @@ and re-simulate:
 | ×1.03 | 54.33 s | 6 | 63 |
 
 At ×0.97 the 63-chunk streak splits back into the real run's exact **42 + 7 + 15**,
-breaking where the real run breaks (213.7 vs 213.1 s; 230.6 vs 231.2 s). **Any candidate
-metric is run against this counterfactual. One that does not respond to a 3% price change
-cannot grade a cost model.**
-
-A metric failing either test is reported **inadmissible**, not silently dropped.
+breaking where the real run breaks (213.7 vs 213.1 s; 230.6 vs 231.2 s).
 
 ---
 
@@ -262,7 +267,7 @@ A metric failing either test is reported **inadmissible**, not silently dropped.
 
 An extensible registry. Each metric states a **family**, an **extractor** (step table →
 value) and a **comparator** (value, value → distance). Admission is measured by D45's
-two-sided test, not asserted. New metrics are expected; the families and the admission
+stability test, not asserted. New metrics are expected; the families and the admission
 procedure are the stable part.
 
 ### Family 1 — counting invariants. Exact match expected, except total prefill tokens (below); a mismatch is a defect, not noise.
@@ -696,7 +701,7 @@ claims there are not.
 | # | Decision | Date |
 |---|---|---|
 | D44 | Three separable results — cost accuracy, schedule agreement, end-to-end — reported side by side. Aggregate latency is never the judgement. | 2026-09-18 |
-| D45 | Noise-floor first: the real-vs-real spread is the tolerance. A metric is admissible only if stable **and** sensitive, the latter tested against the ×0.97 counterfactual. | 2026-09-18 |
+| D45 | Noise-floor first: the real-vs-real spread is the tolerance. A metric is admissible if stable; sensitivity, tested against the ×0.97 counterfactual, is deferred until a need appears. | 2026-09-18; revised 2026-10-16 (#1025) |
 | D46 | Three metric families ordered by robustness, as an extensible registry: counting invariants (exact; prefill tokens over the requests both runs issued, within the real spread), distributional (weighted most), event timing (most diagnostic). Policy agreement is a regression guard, not a discriminator. | 2026-09-18; revised 2026-10-13 (#897) |
 | D47 | Cost accuracy on the real run's own step sequence; report totals, held-out-worst, and median per step together. | 2026-09-18 |
 | D48 | Memory per term, never as a sum. The gate is whether the top-1 configuration choice survives, not the byte error. | 2026-09-18 |

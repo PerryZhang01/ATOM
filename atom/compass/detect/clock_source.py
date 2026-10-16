@@ -96,6 +96,18 @@ DEFAULT_ALLOW_LIST: dict[str, str] = {
         "a real run's send times, on the clock its runner's step timestamps "
         "read; a simulated run's traffic LP sends on the run's clock"
     ),
+    "atom/compass/fit/publish.py": (
+        "when a fit published its entry, for the entry's provenance; a fit runs "
+        "offline on recorded steps and never inside a simulated run"
+    ),
+    "atom/compass/drive/identity.py": (
+        "a command's phase boundaries in run.json, which are wall and monotonic "
+        "time by definition; the tool process reads them, and no simulated time"
+    ),
+    "atom/compass/bench/measure.py": (
+        "when measure steps published an entry, for the entry's provenance; the "
+        "bench runs on a GPU and never inside a simulated run"
+    ),
 }
 
 #: Packages under `atom/` a simulated run never executes, or that keep their

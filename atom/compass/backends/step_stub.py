@@ -231,6 +231,13 @@ class StepStubBackend(CostBackend):
     nothing to cross and it does not run. And `describe()` has one count to
     write, so it says the paged one was not stated rather than printing a lone
     number that reads like the whole description of a worker.
+
+    `stage_share` prices one pipeline stage: the stage's share of the stack's
+    layers, then of its paged layers. The coefficients are the whole model's;
+    the history terms (query square, cached query, context, graph padding)
+    scale by the paged share, every other step term by the layer share, so
+    the stages of one partition sum to the whole-model price. `None` is the
+    whole model.
     """
 
     def __init__(
@@ -239,10 +246,17 @@ class StepStubBackend(CostBackend):
         parallelism: Parallelism | None = None,
         geometry: KvGeometry | None = None,
         stack_layers: int | None = None,
+        stage_share: tuple[float, float] | None = None,
     ) -> None:
         self.coefficients = Coefficients() if coefficients is None else coefficients
         self.parallelism = Parallelism() if parallelism is None else parallelism
         self.geometry = geometry
+        if stage_share is not None and not all(0 <= s <= 1 for s in stage_share):
+            raise ValueError(
+                f"stage_share={stage_share} is not a stage's (layer, paged layer) "
+                "share of the stack; each is between 0 and 1"
+            )
+        self.stage_share = stage_share
         # A whole number of layers, or nothing. `int()` on the argument would
         # take 64.7 for a precise 64 and "64" for a count that was never
         # stated as one, which is the guess the refusals below exist to
@@ -334,33 +348,34 @@ class StepStubBackend(CostBackend):
                 "the projection is built by whoever holds the scheduled batch"
             )
         c = self.coefficients
+        layer, paged = self.stage_share or (1.0, 1.0)
         counted: list[tuple[str, int, float] | tuple[str, int, float, str]] = []
         prefill = batch_view.prefill
         if prefill:
             counted += [
-                ("prefill.step", 1, c.prefill_step),
-                ("prefill.tokens", sum_tokens(prefill), c.prefill_token),
+                ("prefill.step", 1, c.prefill_step * layer),
+                ("prefill.tokens", sum_tokens(prefill), c.prefill_token * layer),
                 (
                     "prefill.query_square",
                     sum_query_square(prefill),
-                    c.prefill_query_square,
+                    c.prefill_query_square * paged,
                 ),
                 (
                     "prefill.query_cached",
                     sum_query_cached(prefill),
-                    c.prefill_query_cached,
+                    c.prefill_query_cached * paged,
                 ),
             ]
         decode = batch_view.decode
         if decode:
             counted += [
-                ("decode.step", 1, c.decode_step),
-                ("decode.requests", len(decode), c.decode_request),
-                ("decode.context", sum_context(decode), c.decode_context),
+                ("decode.step", 1, c.decode_step * layer),
+                ("decode.requests", len(decode), c.decode_request * layer),
+                ("decode.context", sum_context(decode), c.decode_context * paged),
                 (
                     "decode.graph_padding",
                     batch_view.graph_padding,
-                    c.decode_padding,
+                    c.decode_padding * paged,
                     "" if batch_view.capture_rung is None else UNCHECKED_RUNG,
                 ),
             ]
@@ -413,6 +428,10 @@ class StepStubBackend(CostBackend):
             named += f" on {self.stack_layers} layers{paged}"
         else:
             named = "no collectives"
+        if self.stage_share is not None:
+            named += ", stage share {:g} of layers, {:g} of paged".format(
+                *self.stage_share
+            )
         return (
             f"step-level stand-in, {pricing} coefficients, {widths}, {named}"
             f" -- {DECLARED_NOTE}"

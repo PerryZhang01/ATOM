@@ -34,8 +34,6 @@ check here. Recipe v1 reads no chunk size, so none is keyed.
 import json
 from collections.abc import Mapping
 
-import torch
-
 from atom.compass.artifacts import (
     ArtifactStore,
     Axis,
@@ -51,14 +49,12 @@ from atom.compass.artifacts import (
     module_root,
 )
 from atom.compass.backends.step_grid import StepGrid, StepGridBackend
+from atom.compass.backends.step_grid_plan import BOUNDS, SCOPE
 from atom.compass.backends.step_grid_residual import Residual
 from atom.compass.runner.overrides import schedulable_ladder
 
 #: The bundle's one member: a group's step has a single writer.
 MEMBER = ("bundle", Topology().ranks()[0], "json")
-#: The one timing scope a bundle may declare, the whole `ModelRunner.forward`.
-SCOPE = "forward"
-BOUNDS = ("max_num_seqs", "max_num_batched_tokens", "max_model_len")
 
 
 def keyed(config) -> dict:
@@ -73,15 +69,17 @@ def keyed(config) -> dict:
 
 
 def conditions(config, machine) -> Conditions:
-    """This run's readings: the stack and device the machine spec states,
-    this process's torch and ATOM tree, the served config.json and `keyed`."""
-    from atom.compass.run import _file_digest
+    """This run's readings: the stack, torch included, and the device the
+    machine spec states, this process's ATOM tree, this host's CPU, the served
+    config.json and `keyed`."""
+    from atom.compass.run import _file_digest, host_cpu
 
     return Conditions.of(
         **machine_spec_key(machine).values,
-        torch=torch.__version__,
+        torch=machine.value("device.software_pinned_to.torch"),
         atom_src=Reading.of_source_root(git_tree_root("atom", module_root("atom"))),
         model=_file_digest(config.model, "config.json"),
+        host_cpu=host_cpu(),
         engine_config=json.dumps(keyed(config), sort_keys=True),
     )
 

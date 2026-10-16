@@ -72,6 +72,7 @@ CONDITIONS = Conditions.of(
     atom_src=Reading.of_source_root(ATOM_ROOT),
     model="Qwen/Qwen3-32B",
     device="MI308X-80CU",
+    host_cpu="Intel(R) Xeon(R) Platinum 8480C",
     engine_config="cudagraph=piecewise,level=3",
 )
 GATES = GateState.of(Gate("PRICE_KERNELS", "off", "COMPASS_PRICE_KERNELS"))
@@ -179,6 +180,98 @@ def test_two_keys_never_share_a_directory(tmp_path):
     places = {store.directory_for(price_key(width)) for width in (1, 2, 4, 8)}
     assert len(places) == 4
     assert store.directory_for(price_key(2)).parent.name == "price_list"
+
+
+@pytest.mark.parametrize(
+    "kind,fields",
+    [
+        (
+            Kind.STEP_MEASUREMENT,
+            (
+                "(model, device, parallel, engine_config, source_root, sampling, "
+                "step_kind, view)"
+            ),
+        ),
+        (
+            Kind.STEP_LINEAR_LAW,
+            "(model, machine_spec, parallel, engine_config, source_root, form)",
+        ),
+        (
+            Kind.HOST_LAWS,
+            "(host_cpu, atom_src, model, engine_config, machine_spec)",
+        ),
+    ],
+)
+def test_a_key_short_of_its_last_field_refuses_naming_the_tuple(kind, fields):
+    *given, last = KEY_FIELDS[kind]
+    with pytest.raises(ArtifactRefusal) as refused:
+        Key.of(kind, **{name: "x" for name in given})
+    assert refused.value.rule is Rule.KEY_IS_A_TUPLE
+    assert f"this {kind} key states no {last}" in str(refused.value)
+    assert f"a {kind} is keyed by {fields}" in str(refused.value)
+
+
+# --- a key from the token a command line names -------------------------------
+
+
+def publish_price(store: ArtifactStore, width: int) -> Key:
+    store.publish(
+        price_key(width),
+        provenance=stanza(),
+        conditions=CONDITIONS,
+        gates=GATES,
+        topology=Topology(),
+        members=members_for(Topology(), "prices", "json"),
+    )
+    return price_key(width)
+
+
+def test_a_key_resolves_from_the_token_it_prints(tmp_path):
+    store = ArtifactStore(tmp_path)
+    keys = [publish_price(store, width) for width in (1, 2)]
+    for key in keys:
+        assert store.key_from_token(Kind.PRICE_LIST, key.token()) == key
+
+
+@pytest.mark.parametrize("asked", ["unknown", "other kind", "partial"])
+def test_a_token_no_entry_of_the_kind_ends_in_refuses_naming_the_kind(tmp_path, asked):
+    store = ArtifactStore(tmp_path)
+    token = publish_price(store, 1).token()
+    kind, given = {
+        "unknown": (Kind.PRICE_LIST, "0123456789ab"),
+        "other kind": (Kind.OP_GRAPH, token),
+        "partial": (Kind.PRICE_LIST, token[:6]),
+    }[asked]
+    with pytest.raises(ArtifactRefusal) as refused:
+        store.key_from_token(kind, given)
+    assert refused.value.rule is Rule.RESOLUTION
+    assert f"0 {kind} entries in {tmp_path} end in {given!r}" in str(refused.value)
+
+
+def test_an_ambiguous_token_refuses_naming_the_kind_and_the_entries(tmp_path):
+    store = ArtifactStore(tmp_path)
+    key = publish_price(store, 1)
+    place = store.directory_for(key)
+    copy = place.with_name(f"copied-{key.token()}")
+    copy.mkdir()
+    for item in place.iterdir():
+        (copy / item.name).write_bytes(item.read_bytes())
+    with pytest.raises(ArtifactRefusal) as refused:
+        store.key_from_token(Kind.PRICE_LIST, key.token())
+    assert f"2 price_list entries in {tmp_path} end in" in str(refused.value)
+    assert copy.name in str(refused.value) and place.name in str(refused.value)
+
+
+def test_a_directory_renamed_onto_another_token_refuses(tmp_path):
+    """The entry restates its key, and that key's token is not the one asked."""
+    store = ArtifactStore(tmp_path)
+    key = publish_price(store, 1)
+    other = price_key(2).token()
+    store.directory_for(key).rename(store.directory_for(key).with_name(other))
+    with pytest.raises(ArtifactRefusal) as refused:
+        store.key_from_token(Kind.PRICE_LIST, other)
+    assert refused.value.rule is Rule.RESOLUTION
+    assert f"restates {key}, whose token is {key.token()!r}" in str(refused.value)
 
 
 # --- one naming function ----------------------------------------------------

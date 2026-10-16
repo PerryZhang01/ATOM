@@ -170,12 +170,25 @@ FIELDS = (
     Field("device.software_pinned_to.rocm", Kind.TEXT),
     Field("device.software_pinned_to.aiter", Kind.TEXT),
     Field("device.software_pinned_to.rccl", Kind.TEXT),
+    Field("device.software_pinned_to.torch", Kind.TEXT),
     Field("interconnect.intra_node.topology", Kind.TEXT),
     Field("interconnect.intra_node.domain_devices", Kind.COUNT),
     Field(
         "interconnect.intra_node.link_bandwidth_bytes_per_s", Kind.QUANTITY, peak=True
     ),
     Field("interconnect.intra_node.link_latency_s", Kind.QUANTITY),
+    # A pipeline stage's send, per carrier; a pipeline run requires them.
+    *(
+        Field(f"interconnect.intra_node.pp.{carrier}.{name}", kind, required=False)
+        for carrier in ("rccl", "gloo")
+        for name, kind in (
+            ("eager_threshold_bytes", Kind.COUNT),
+            ("latency_s", Kind.QUANTITY),
+            ("overhead_s", Kind.QUANTITY),
+            ("per_byte_s", Kind.QUANTITY),
+            ("rendezvous_fixed_s", Kind.QUANTITY),
+        )
+    ),
     Field(
         "interconnect.inter_node.link_bandwidth_bytes_per_s", Kind.QUANTITY, peak=True
     ),

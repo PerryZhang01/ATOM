@@ -78,10 +78,11 @@ of which a single-process test can show:
 The worker control commands are refused the third way: by a reply. A raise
 would end the engine for a command a client sent while serving, and a None
 would park it, so `RefusedControlCommands` answers each with its reason,
-`command:<method>`. `busy_loop` forwards it, `EngineUtilityHandler` logs it
-and, for all but `update_weights`, sends it back to the client as the
-`UTILITY_RESPONSE` result; the runner also keeps every reason it answered for
-the run summary's refusals.
+`command:<method>`, and logs it. `busy_loop` forwards the reason, and
+`EngineUtilityHandler` sends it back to the client as the `UTILITY_RESPONSE`
+result for every command but `discard_failed_weight_sync`, whose handler
+answers `True` once no rank failed; the runner also keeps every reason it
+answered for the run summary's refusals.
 
 `RPC_SURFACE` records, for each dispatched name, whether its caller waits for
 the reply. The names themselves are not a list anyone typed: they are the ones
@@ -92,10 +93,12 @@ source and compare it with this table.
 
 from __future__ import annotations
 
+import collections
 import json
 import logging
 import math
 import os
+import pickle
 from typing import Any
 
 import numpy as np
@@ -153,7 +156,9 @@ RPC_SURFACE: dict[str, bool] = {
     "freeze_gc_heap": True,  # EngineCore._freeze_after_startup catches a raise, not a None
     "process_kvconnector_output": False,  # EngineCore does not wait
     "async_proc_aggregation": True,  # EngineCore polls it; a simulated run waits for it
-    "flush_pp_send": True,  # PPEngineCoreProc waits before the next send
+    # PPEngineCoreProc waits; ATOM's own answers at once, as a simulated runner
+    # holds no real send and the stage loop has already waited for its own.
+    "flush_pp_send": True,
     "poll_forward_metrics": False,  # EngineUtilityHandler does not wait
     "release_multimodal_requests": False,  # EngineCore does not wait
     # Refused by `RefusedControlCommands`: ATOM's own starts a real profiler.
@@ -246,16 +251,20 @@ class HostDeviceRecurrence:
     """One runner's host and device timelines, composed into each forward's charge.
 
     The host runs `HOST_SEGMENTS` from `now`. A forward's entry waits for the
-    device work two forwards back; an output forward, after launch, waits for the
-    previous output forward's. `laws[kind][segment]` are coefficients on `(1,
+    device work two forwards back, or on a pipeline stage `stage = (rank, pp)`,
+    `pp` forwards back; an output forward, after launch, waits for the previous
+    output forward's, or on the last stage for its own, and on any other stage
+    for nothing. `ends[-1]` is the last forward's device end. `laws[kind][segment]` are coefficients on `(1,
     tokens, seqs)`, zero where absent. `now` reads the engine LP's clock.
     `segments` holds the seconds the last `charge` charged each segment, 0 for
     one in `skip`.
     """
 
-    def __init__(self, laws: dict, skip, now) -> None:
+    def __init__(self, laws: dict, skip, now, stage=None) -> None:
         self.laws, self.skip, self.now = laws, frozenset(skip), now
-        self.ends = (-math.inf, -math.inf)  # device end of forwards n-2, n-1
+        ring = 2 if stage is None else stage[1]
+        self.ends = collections.deque([-math.inf] * ring, maxlen=ring)  # n-ring..n-1
+        self.last = None if stage is None else stage[0] == stage[1] - 1
         self.output_end = -math.inf  # device end of the last output forward
 
     def charge(self, batch: Any, device_s: float) -> float:
@@ -271,11 +280,14 @@ class HostDeviceRecurrence:
         now = self.now()
         host = max(now + e, self.ends[0]) + pre
         launch_end = host + launch
-        device_end = max(self.ends[1], host) + device_s
-        self.ends = (self.ends[1], max(device_end, launch_end))
+        device_end = max(self.ends[-1], host) + device_s
+        self.ends.append(max(device_end, launch_end))
         released = launch_end
         if batch.produces_output():
-            released, self.output_end = max(launch_end, self.output_end), device_end
+            if self.last is None:
+                released, self.output_end = max(launch_end, self.output_end), device_end
+            elif self.last:
+                released = max(launch_end, device_end)
         return released + post - now
 
 
@@ -338,20 +350,14 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
     half, a driver allocation. All are replaced for the life of the worker
     process, which hosts this runner and nothing else.
 
-    The groups are the ones ATOM's own call builds -- TP, DCP, PCP, DP and EP
-    over `rank` of the engine's TP x PCP workers -- on gloo and with an empty
-    custom group configuration, under which aiter builds no device
-    communicator for any group. A pipeline stage is refused, and so is a
-    simulated TP width, which starts fewer workers than the TP group
-    `apply_simulated_tp` then reports on a device group.
+    The groups are the ones ATOM's own call builds -- TP, DCP, PCP, PP, DP and
+    EP over `rank` of the engine's TP x PCP workers, each pipeline stage's
+    after the stages before it -- on gloo and with an empty custom group
+    configuration, under which aiter builds no device communicator for any
+    group. A simulated TP width is refused: it starts fewer workers than the
+    TP group `apply_simulated_tp` then reports on a device group.
     """
     pc = config.parallel_config
-    if config.pipeline_parallel_size != 1:
-        raise RunnerRefusal(
-            f"this runner is one stage of a pipeline of "
-            f"{config.pipeline_parallel_size}; a runner starts on the host only "
-            "at pipeline width 1."
-        )
     if config.tp_world_size != config.tensor_parallel_size:
         raise RunnerRefusal(
             f"-tp {config.tensor_parallel_size} starts {config.tp_world_size} "
@@ -381,6 +387,9 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
         pc.data_parallel_master_ip, pc.data_parallel_base_port
     )
     tp, pcp = config.tensor_parallel_size, config.prefill_context_parallel_size
+    pp = config.pipeline_parallel_size
+    # This worker's rank among its DP rank's stages, as ATOM numbers it.
+    rank += (pc.pipeline_parallel_rank if pp > 1 else 0) * tp * pcp
     if pc._managed_distributed_store and not torch.distributed.is_initialized():
         # The engine core manager already listens on the base port; join its
         # store as a client, as ModelRunner does, and aiter reuses the group.
@@ -390,11 +399,11 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
         torch.distributed.init_process_group(
             backend="gloo",
             store=store,
-            rank=pc.data_parallel_rank * tp * pcp + rank,
-            world_size=pc.data_parallel_size * tp * pcp,
+            rank=pc.data_parallel_rank * pp * tp * pcp + rank,
+            world_size=pc.data_parallel_size * pp * tp * pcp,
         )
     init_distributed_environment(
-        world_size=tp * pcp,
+        world_size=pp * tp * pcp,
         rank=rank,
         distributed_init_method=method,
         backend="gloo",
@@ -404,7 +413,7 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
     )
     initialize_model_parallel(
         tp,
-        1,
+        pp,
         decode_context_model_parallel_size=config.decode_context_parallel_size,
         data_parallel_size=pc.data_parallel_size,
         prefill_context_model_parallel_size=pcp,
@@ -553,8 +562,70 @@ class StepGridBundle:
         return vars(self).get("compass_step_grid", {})
 
 
+class PipelineFrames:
+    """A pipeline stage's send to the next, and the frames its stage loop
+    moves between the stages' TP-rank-0 workers."""
+
+    def _pp_send(self, batch: Any, seconds: float) -> tuple | None:
+        """What this stage's forward sends the next stage, None on the last:
+        when its device work ends, in seconds from the call, and its parts as
+        ``(carrier, bytes)`` in the order the next receives them, the size and
+        the pickled metadata on gloo, then each tensor on RCCL."""
+        pp = int(_config_field(self, "pipeline_parallel_size") or 1)
+        if pp == 1 or self.config.parallel_config.pipeline_parallel_rank == pp - 1:
+            return None
+        from aiter.dist.parallel_state import TensorMetadata
+
+        self._setup_pp_shared_indexer()
+        n, width = batch.total_tokens_num, self.hf_text_config.hidden_size
+        sizes = dict.fromkeys(
+            ("hidden_states", "residual"), ((n, width), self.config.torch_dtype)
+        )
+        if self._pp_send_needs_sparse:
+            sizes["sparse_kv_indices"] = ((n * self._pp_index_topk,), torch.int32)
+        meta = [
+            (k, TensorMetadata("cuda", d, torch.Size(s))) for k, (s, d) in sizes.items()
+        ]
+        tensors = [("rccl", math.prod(s) * d.itemsize) for s, d in sizes.values()]
+        host = getattr(self, "compass_host", None)
+        if isinstance(host, HostDeviceRecurrence):
+            seconds = host.ends[-1] - host.now()
+        return seconds, [("gloo", 8), ("gloo", len(pickle.dumps(meta))), *tensors]
+
+    def send_pp_frame(self, kind: str, frame: dict) -> bool:
+        """Post one stage-loop frame to the next stage (``pp_data``) or the one
+        before (``pp_ack``), from TP rank 0, without waiting for it."""
+        if self.rank == 0:
+            from aiter.dist.parallel_state import get_pp_group
+
+            from atom.distributed.pp_comm import _async_send_object
+
+            pp = get_pp_group()
+            dst = pp.ranks[pp.rank_in_group + (1 if kind == "pp_data" else -1)]
+            # Each in-flight send's work and payload stay alive until it completes.
+            live = [
+                w for w in getattr(self, "_pp_frames", []) if not w.work.is_completed()
+            ]
+            self._pp_frames = live + _async_send_object(frame, dst, pp.cpu_group)
+        return True
+
+    def recv_pp_frame(self, kind: str) -> Any:
+        """Read one released frame from the stage before (``pp_data``) or the
+        next (``pp_ack``), on TP rank 0."""
+        if self.rank != 0:
+            return True
+        from aiter.dist.parallel_state import get_pp_group
+
+        pp = get_pp_group()
+        return pp.recv_object(pp.rank_in_group + (-1 if kind == "pp_data" else 1))
+
+
 class NonAllocatingRunner(
-    RefusedControlCommands, PricedSteps, PredictedMemory, StepGridBundle
+    RefusedControlCommands,
+    PricedSteps,
+    PredictedMemory,
+    StepGridBundle,
+    PipelineFrames,
 ):
     """Overrides that construct a model runner without touching device memory."""
 
@@ -943,11 +1014,13 @@ class NonAllocatingRunner(
             self._token_stream = stream
         tokens = stream.step(batch)
         seconds = _group_step_seconds(self, batch, backend, mode)
-        return ScheduledBatchOutput(
+        out = ScheduledBatchOutput(
             **tokens,
             predicted_s=seconds,
             group_targets=getattr(self, "_group_targets", None),
         )
+        out.pp_send = self._pp_send(batch, seconds)
+        return out
 
 
 def _group_step_seconds(
@@ -966,8 +1039,9 @@ def _group_step_seconds(
     the group's max, any other at its own seconds; `_group_targets` holds all,
     by rank, or None with one rank.
 
-    A pipeline stage is refused: it runs only its own layers, and a backend
-    prices the whole step, so every stage would charge the whole model.
+    A pipeline stage runs only its own layers, so it is refused unless its
+    backend states the `stage_share` it prices; any other backend prices the
+    whole step, and every stage would charge the whole model.
 
     A step no cost source answers costs 0 s on this rank and still counts as
     a priced step; its reason, ``cost:`` and what each source said, joins the
@@ -991,11 +1065,12 @@ def _group_step_seconds(
         # The engine reads TP rank 0's reply only, and the other ranks'
         # collectives are inside the step that rank prices.
         return 0.0
-    if int(_config_field(runner, "pipeline_parallel_size") or 1) > 1:
+    pp = int(_config_field(runner, "pipeline_parallel_size") or 1)
+    if pp > 1 and getattr(backend, "stage_share", None) is None:
         raise RunnerRefusal(
             "this runner is one stage of a pipeline and runs only its own "
-            "layers, but a cost backend prices a whole step; charging each "
-            "stage the whole model would count it once per stage"
+            f"layers, but {type(backend).__name__} prices a whole step; charging "
+            "each stage the whole model would count it once per stage"
         )
     from atom.compass.backends.cost import ProvenanceMix
     from atom.compass.backends.resolver import CostRefused

@@ -20,6 +20,9 @@ hand would take away:
   `machine_spec` is three rows here rather than one, and a device change
   invalidates two of them while a tokenizer change invalidates the third.
 
+The host CPU invalidates `host_laws`, which time the host, and nothing that
+holds device time.
+
 **Two artifacts this store holds have no row at all.** `shape_population` and
 `coverage_hull` appear in the artifact key table and nowhere in this one.
 Guessing a row for them is the failure this package exists to prevent -- an
@@ -36,7 +39,7 @@ from .rules import ArtifactRefusal, Rule
 
 
 class Axis(enum.Enum):
-    """The six things a change to which can invalidate an artifact.
+    """The things a change to which can invalidate an artifact.
 
     The value is the document's column header verbatim so a refusal quotes it;
     `field` is the stable name the same axis is recorded and asked for under.
@@ -47,6 +50,7 @@ class Axis(enum.Enum):
     ATOM_SRC = "ATOM src"
     MODEL = "model"
     DEVICE = "device"
+    HOST_CPU = "host CPU"
     ENGINE_CONFIG = "engine cfg"
 
     @property
@@ -68,6 +72,9 @@ class Row(enum.Enum):
     MACHINE_SPEC_CAPACITY = "machine_spec: capacity"
     MACHINE_SPEC_RUNTIME_CONSTANTS = "machine_spec: runtime constants"
     MACHINE_SPEC_TOKENIZER_TERMS = "machine_spec: tokenizer terms"
+    STEP_MEASUREMENT = "step_measurement"
+    STEP_LINEAR_LAW = "step_linear_law"
+    HOST_LAWS = "host_laws"
     STEP_GRID_BUNDLE = "step grid bundle"
 
     @property
@@ -109,6 +116,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: DEPENDS,
         Axis.DEVICE: INDEPENDENT,
+        Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: Cell(True, "level, cudagraph mode"),
     },
     Row.PRICE_LIST: {
@@ -117,6 +125,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: Cell(False, "shape-parametric"),
         Axis.DEVICE: DEPENDS,
+        Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: INDEPENDENT,
     },
     Row.REGION_TERMS: {
@@ -125,6 +134,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: DEPENDS,
         Axis.DEVICE: DEPENDS,
+        Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: DEPENDS,
     },
     Row.MEMORY_READINGS: {
@@ -133,6 +143,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: DEPENDS,
         Axis.DEVICE: DEPENDS,
+        Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: DEPENDS,
     },
     Row.MACHINE_SPEC_CAPACITY: {
@@ -141,6 +152,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: INDEPENDENT,
         Axis.MODEL: INDEPENDENT,
         Axis.DEVICE: DEPENDS,
+        Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: INDEPENDENT,
     },
     Row.MACHINE_SPEC_RUNTIME_CONSTANTS: {
@@ -149,6 +161,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: INDEPENDENT,
         Axis.MODEL: INDEPENDENT,
         Axis.DEVICE: DEPENDS,
+        Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: INDEPENDENT,
     },
     Row.MACHINE_SPEC_TOKENIZER_TERMS: {
@@ -157,7 +170,35 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: INDEPENDENT,
         Axis.MODEL: Cell(True, "tokenizer"),
         Axis.DEVICE: Cell(False, "host CPU"),
+        Axis.HOST_CPU: Cell(False, "untested: assumed to transfer by derate"),
         Axis.ENGINE_CONFIG: INDEPENDENT,
+    },
+    Row.STEP_MEASUREMENT: {
+        Axis.SOFTWARE_STACK: DEPENDS,
+        Axis.TORCH: DEPENDS,
+        Axis.ATOM_SRC: DEPENDS,
+        Axis.MODEL: DEPENDS,
+        Axis.DEVICE: DEPENDS,
+        Axis.HOST_CPU: INDEPENDENT,
+        Axis.ENGINE_CONFIG: DEPENDS,
+    },
+    Row.STEP_LINEAR_LAW: {
+        Axis.SOFTWARE_STACK: DEPENDS,
+        Axis.TORCH: DEPENDS,
+        Axis.ATOM_SRC: DEPENDS,
+        Axis.MODEL: DEPENDS,
+        Axis.DEVICE: DEPENDS,
+        Axis.HOST_CPU: INDEPENDENT,
+        Axis.ENGINE_CONFIG: DEPENDS,
+    },
+    Row.HOST_LAWS: {
+        Axis.SOFTWARE_STACK: INDEPENDENT,
+        Axis.TORCH: INDEPENDENT,
+        Axis.ATOM_SRC: DEPENDS,
+        Axis.MODEL: DEPENDS,
+        Axis.DEVICE: INDEPENDENT,
+        Axis.HOST_CPU: DEPENDS,
+        Axis.ENGINE_CONFIG: DEPENDS,
     },
     Row.STEP_GRID_BUNDLE: {
         Axis.SOFTWARE_STACK: DEPENDS,
@@ -165,6 +206,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: DEPENDS,
         Axis.DEVICE: DEPENDS,
+        Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: DEPENDS,
     },
 }
@@ -181,6 +223,9 @@ ROWS_OF: Mapping[Kind, tuple[Row, ...]] = {
         Row.MACHINE_SPEC_RUNTIME_CONSTANTS,
         Row.MACHINE_SPEC_TOKENIZER_TERMS,
     ),
+    Kind.STEP_MEASUREMENT: (Row.STEP_MEASUREMENT,),
+    Kind.STEP_LINEAR_LAW: (Row.STEP_LINEAR_LAW,),
+    Kind.HOST_LAWS: (Row.HOST_LAWS,),
     Kind.STEP_GRID_BUNDLE: (Row.STEP_GRID_BUNDLE,),
 }
 
