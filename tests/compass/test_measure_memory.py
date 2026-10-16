@@ -5,15 +5,19 @@ An engine start needs a GPU, so the ranks' files stand in for one here: each
 is what `MemoryReadingModelRunner` writes as its rank starts, named by
 `run.memory`'s naming, holding the key its rank read off the resolved config,
 its engine and its readings. `measure_memory.publish` takes them from there,
-under the stack `measure_memory.stack` reads, which these tests state.
+under the stack run.json's identity states, which these tests state as
+the suite's machine document pins it.
 
 The deployment is `test_run_step_grid`'s TP1 Qwen3.8-27B worker on the suite's
 machine document.
 """
 
+import contextlib
 import copy
 import hashlib
 import json
+import subprocess
+from types import SimpleNamespace
 
 import pytest
 from test_artifact_invalidation import BASE, STANZA
@@ -34,9 +38,11 @@ from atom.compass import run as compass_run
 from atom.compass.artifacts import (
     ArtifactRefusal,
     ArtifactStore,
+    Axis,
     GateState,
     Key,
     Kind,
+    Row,
     Topology,
     machine_spec_digest,
     member_name,
@@ -63,30 +69,25 @@ def started(out, config, readings):
     readings directory; the log's digest, which the entry records."""
     (out / measure_memory.READINGS).mkdir(parents=True)
     (out / measure_memory.LOG).write_text("Memory budget: ...\n")
+    ranks_wrote(out, config, readings)
+    return "sha256:" + hashlib.sha256(b"Memory budget: ...\n").hexdigest()
+
+
+def ranks_wrote(out, config, readings):
+    """Each rank's file in `out`'s readings directory, as the runner writes it."""
     for rank, held in enumerate(readings):
         coords = memory.coords(config, rank)
         name = member_name(memory.STEM, coords, memory.EXTENSION)
         held = {k: v for k, v in held.items() if k != "record"}
         written = {"key": memory.key_fields(config), "engine": {}, "readings": held}
         (out / measure_memory.READINGS / name).write_text(json.dumps(written))
-    return "sha256:" + hashlib.sha256(b"Memory budget: ...\n").hexdigest()
 
 
-@pytest.fixture
-def stack(monkeypatch):
-    """The stack the suite's machine document pins, as the one this process runs."""
-    held = dict(STACK)
-    monkeypatch.setattr(measure_memory, "stack", lambda: held)
-    return held
-
-
-def test_each_rank_reads_its_own_member_of_the_entry_measure_memory_publishes(
-    tmp_path, stack
-):
+def test_each_rank_reads_its_own_member_of_the_entry_measure_memory_publishes(tmp_path):
     r = tp2(tmp_path)
     record = started(tmp_path / "out", r.config, [READINGS[2], RANK1])
 
-    measure_memory.publish(tmp_path / "out", MACHINE, tmp_path / "store", "c")
+    measure_memory.publish(tmp_path / "out", MACHINE, tmp_path / "store", "c", STACK)
 
     for rank, held in enumerate([READINGS[2], RANK1]):
         read = memory.load(tmp_path / "store", r.config, MACHINE, rank)
@@ -101,29 +102,77 @@ def test_each_rank_reads_its_own_member_of_the_entry_measure_memory_publishes(
     assert len(copy_["members"]) == 2
 
 
-def test_an_entry_measured_under_another_stack_does_not_load(tmp_path, stack):
+def test_the_command_publishes_under_the_stack_run_json_states(tmp_path, monkeypatch):
+    # A start on GPU 5, its engine and identity stood in for: the ranks write
+    # their files as the engine starts, and run.json names the stack.
+    r, out = tp2(tmp_path), tmp_path / "out"
+    stated = dict(STACK, aiter="0123abcde")
+
+    class Engine:
+        pid = 0
+
+        def __init__(self, *args, **kwargs):
+            ranks_wrote(out, r.config, [READINGS[2]] * 2)
+
+        def wait(self, timeout=None):
+            return 0
+
+    def gone(*args):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(
+        measure_memory, "quiet", lambda gpus, out: contextlib.nullcontext()
+    )
+    started_by = SimpleNamespace(
+        Popen=Engine, STDOUT=subprocess.STDOUT, TimeoutExpired=subprocess.TimeoutExpired
+    )
+    monkeypatch.setattr(measure_memory, "subprocess", started_by)
+    monkeypatch.setattr(measure_memory.os, "killpg", gone)
+    monkeypatch.setattr(measure_memory, "identity", lambda *a: {"stack": stated})
+    machine = tmp_path / "machine.json"
+    machine.write_text(json.dumps(DOCUMENT))
+    flags = ["--gpu", "5", "--machine", str(machine), "--store", str(tmp_path / "s")]
+    measure_memory.main([*flags, "--out", str(out), "--", "--model", r.config.model])
+
+    key = Key.of(
+        Kind.MEMORY_READINGS,
+        machine_spec=machine_spec_digest(MACHINE),
+        **memory.key_fields(r.config),
+    )
+    cells = dict(
+        ArtifactStore(tmp_path / "s").read(key).fingerprints[Row.MEMORY_READINGS].cells
+    )
+    assert (
+        cells[Axis.SOFTWARE_STACK].value == "rocm 7.2.4 / aiter 0123abcde / rccl 2.22.3"
+    )
+    assert json.loads((out / "run.json").read_text()) == {"stack": stated}
+
+
+def test_an_entry_measured_under_another_stack_does_not_load(tmp_path):
     r = tp2(tmp_path)
     started(tmp_path / "out", r.config, [READINGS[2]] * 2)
-    stack["aiter"] = "9205e1059"
+    other = dict(STACK, aiter="9205e1059")
 
-    measure_memory.publish(tmp_path / "out", MACHINE, tmp_path / "store", "c")
+    measure_memory.publish(tmp_path / "out", MACHINE, tmp_path / "store", "c", other)
 
     with pytest.raises(ArtifactRefusal) as refused:
         memory.load(tmp_path / "store", r.config, MACHINE, 0)
     assert "ROCm / AITER / RCCL" in str(refused.value)
 
 
-def test_ranks_whose_reserves_spread_past_the_limit_publish_nothing(tmp_path, stack):
+def test_ranks_whose_reserves_spread_past_the_limit_publish_nothing(tmp_path):
     r = tp2(tmp_path)
     crowded = dict(READINGS[2], driver_and_collective_reserve_bytes=10_000_000_000)
     started(tmp_path / "out", r.config, [READINGS[2], crowded])
 
     with pytest.raises(SpecRefusal, match="spread"):
-        measure_memory.publish(tmp_path / "out", MACHINE, tmp_path / "store", "c")
+        measure_memory.publish(
+            tmp_path / "out", MACHINE, tmp_path / "store", "c", STACK
+        )
     assert not (tmp_path / "store").exists()
 
 
-def test_ranks_that_read_two_configurations_publish_nothing(tmp_path, stack):
+def test_ranks_that_read_two_configurations_publish_nothing(tmp_path):
     r = tp2(tmp_path)
     started(tmp_path / "out", r.config, [READINGS[2]] * 2)
     one = next((tmp_path / "out" / measure_memory.READINGS).iterdir())
@@ -132,7 +181,9 @@ def test_ranks_that_read_two_configurations_publish_nothing(tmp_path, stack):
     one.write_text(json.dumps(held))
 
     with pytest.raises(ValueError, match="the ranks read 2 keys"):
-        measure_memory.publish(tmp_path / "out", MACHINE, tmp_path / "store", "c")
+        measure_memory.publish(
+            tmp_path / "out", MACHINE, tmp_path / "store", "c", STACK
+        )
 
 
 def test_a_key_stating_another_layout_than_its_members_publishes_nothing(tmp_path):

@@ -11,8 +11,9 @@ cache sized and its graphs captured. `gpu.quiet` checks those GPUs before the
 start and after it. Each rank writes its readings and the key it read off its
 resolved config, and the ranks must agree on the key. The entry's key is that
 one with the digest of the machine spec `--machine` names; its conditions are
-that spec's device and the stack this process runs, ROCm, AITER, RCCL and
-torch, so a run whose spec pins another stack refuses it. `non_torch` refuses a
+that spec's device and the stack the start ran, ROCm, AITER, RCCL and torch
+as run.json's identity states them, so a run whose spec pins another stack
+refuses it. `non_torch` refuses a
 spread across the ranks above `SPREAD_LIMIT`. One member per rank holds
 `memory.ENTRY_FIELDS`, its `record` the digest of the engine's log.
 
@@ -31,8 +32,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import torch
-
 from atom.compass import parity
 from atom.compass.artifacts import (
     ArtifactStore,
@@ -40,10 +39,8 @@ from atom.compass.artifacts import (
     Key,
     Kind,
     Provenance,
-    git_described_root,
     machine_spec_digest,
     machine_spec_key,
-    module_root,
     read_back,
     roots_for,
 )
@@ -122,29 +119,17 @@ def main(argv: list[str]) -> None:
             engine.wait()
     if exited != 0:
         raise ValueError(f"the engine did not start ({exited}); see {out / LOG}")
-    run = publish(out, machine, args.store, " ".join([PROG, *argv]))
-    (out / "engine.json").write_text(json.dumps(run["engine"]))
+    first = json.loads(min((out / READINGS).iterdir()).read_text())
+    (out / "engine.json").write_text(json.dumps(first["engine"]))
     identified = identity(out / "engine.json", model, sys.argv, args.gpu)
     _write_whole(out / "run.json", json.dumps(identified))
+    publish(out, machine, args.store, " ".join([PROG, *argv]), identified["stack"])
 
 
-def stack() -> dict:
-    """The stack this process runs, each component as a machine spec pins it."""
-    rocm = Path(os.environ.get("ROCM_PATH", "/opt/rocm")) / ".info" / "version"
-    aiter = git_described_root("aiter", module_root("aiter")).revision
-    return {
-        "rocm": rocm.read_text().strip(),
-        # `git describe` names a commit after `-g`; a spec pins the commit.
-        "aiter": aiter.rsplit("-g", 1)[-1],
-        "rccl": ".".join(map(str, torch.cuda.nccl.version())),
-        "torch": torch.__version__,
-    }
-
-
-def publish(out: Path, machine, store: str, command: str) -> dict:
+def publish(out: Path, machine, store: str, command: str, stack: dict) -> None:
     """Publish the readings the ranks wrote in `out` at their key on `machine`,
-    and write the entry's readable copy; the rank-0 file, which holds its
-    engine."""
+    under `stack`, the stack the start ran, as run.json's identity states it;
+    and write the entry's readable copy."""
     ranks = {p.name: json.loads(p.read_text()) for p in (out / READINGS).iterdir()}
     record = "sha256:" + hashlib.sha256((out / LOG).read_bytes()).hexdigest()
     for held in ranks.values():
@@ -160,7 +145,6 @@ def publish(out: Path, machine, store: str, command: str) -> dict:
         r["readings"]["driver_and_collective_reserve_bytes"] for r in ranks.values()
     ]
     across_ranks("non_torch", len(reserve), reserve)
-    held = stack()
     key = Key.of(
         Kind.MEMORY_READINGS, machine_spec=machine_spec_digest(machine), **fields
     )
@@ -176,8 +160,10 @@ def publish(out: Path, machine, store: str, command: str) -> dict:
         conditions=memory.conditions(
             fields,
             device=machine_spec_key(machine).values["device"],
-            software_stack=" / ".join(f"{c} {held[c]}" for c in PINNED if c != "torch"),
-            torch=held["torch"],
+            software_stack=" / ".join(
+                f"{c} {stack[c]}" for c in PINNED if c != "torch"
+            ),
+            torch=stack["torch"],
         ),
         gates=GateState.of(),
         members=members,
@@ -186,7 +172,6 @@ def publish(out: Path, machine, store: str, command: str) -> dict:
     copy["members"] = {name: r["readings"] for name, r in sorted(ranks.items())}
     (out / "memory_readings.json").write_text(json.dumps(copy, indent=1) + "\n")
     print(f"published {key} as {key.token()}")
-    return first
 
 
 def _parser() -> argparse.ArgumentParser:
