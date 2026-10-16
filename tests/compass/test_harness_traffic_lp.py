@@ -8,8 +8,8 @@ sends and hands each final event's credit return to the router. aiperf's
 strategy is a stand-in that schedules the next turn a fixed delay after a
 return, on a ``ClockPacedLoopScheduler`` paced by the traffic LP. The hold
 tests replace the authority with a scripted runtime, so a return can be put
-on either side of its final event's release. The stop test serves a run's
-recording authority over TCP and stops it as a SIGTERM does. Skips by name as
+on either side of its final event's release. The stop tests serve a run's
+recording authority over TCP and stop it as a SIGTERM does. Skips by name as
 ``test_harness_pacing.py`` does.
 """
 
@@ -20,6 +20,7 @@ import math
 import re
 import shutil
 import threading
+import time
 import uuid
 from importlib import metadata
 from pathlib import Path
@@ -290,6 +291,53 @@ def test_a_client_bound_at_a_stop_names_its_open_request(tmp_path):
         "final response"
     )
     assert engine.now == INF and not authority.stopped_whole
+
+
+def test_a_client_stopped_mid_stream_names_its_open_request(tmp_path):
+    """The frontend admits request 0 and sends its first stream event, which
+    the traffic LP reads; the stop comes before the frontend asks for time
+    again, so the authority has not released that event."""
+    run = {**RUN, "bound_s": 100.0, "out_dir": str(tmp_path)}
+    server = clock_transport.serve(
+        compass_run._RecordingAuthority(run), "tcp://127.0.0.1:0"
+    )
+    prefix, paced = str(tmp_path / "lp"), STREAM_S / 2
+
+    def connect(lp):
+        return clock_transport.connect(lp, server.endpoint)
+
+    traffic = LPRuntime(compass_run.TRAFFIC, TABLE, connect(compass_run.TRAFFIC))
+    engine = connect(ENGINE)  # held: a closed connection ends the run
+    engine.send((NER, INF, [], 50.0))
+
+    def stop():
+        frontend = compass_run._StoppingClock(FRONTEND, TABLE, connect(FRONTEND))
+        frontend.next_event(INF)  # request 0's admission
+        arrival, seq = frontend.stamp_send(STREAM)
+        with zmq.Context() as ctx, ctx.socket(zmq.PUSH) as push:
+            push.connect(addresses(prefix)[1])
+            push.send_pyobj((_key(0), seq, arrival, False))  # its worker's report
+            while seq not in traffic.arrived[STREAM]:
+                time.sleep(0.01)
+        frontend.end_run()  # the stop, as the frontend's event loop makes it
+
+    async def client():
+        lp = TrafficLP(traffic, prefix)
+        lp.send(_key(0))
+        while traffic.now < paced:  # a pacing timer, as the scheduler keeps one
+            await lp.wait(paced)
+        while 0 not in traffic.arrived[STREAM]:  # the hold waits for this task
+            await asyncio.sleep(0)
+        await lp.done
+
+    stopper = threading.Thread(target=stop, daemon=True)
+    stopper.start()
+    try:
+        with pytest.raises(UnansweredRequests, match=re.escape(f"[{_key(0)}]")):
+            _run(client())
+    finally:
+        stopper.join(10)
+        server.close()
 
 
 class ScriptedRuntime:
