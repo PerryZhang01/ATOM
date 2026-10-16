@@ -909,13 +909,14 @@ def runner(model_runner, tree) -> None:
         ours = host.get("laws") and {**host_key(config), "machine_spec": platform}
         theirs = host.get("key") or {}
         if ours and theirs != ours:
-            engine = theirs.get("engine") or {}
-            differ = [k for k in ours if k != "engine" and theirs.get(k) != ours[k]]
-            differ += [
-                f"engine.{k}"
-                for k in sorted(ours["engine"].keys() | engine.keys())
-                if engine.get(k) != ours["engine"].get(k)
-            ]
+            differ = [k for k in ours if theirs.get(k) != ours[k]]
+            if isinstance(engine := theirs.get("engine"), dict):
+                mine = ours["engine"]
+                differ = [k for k in differ if k != "engine"] + [
+                    f"engine.{n}"
+                    for n in sorted(mine.keys() | engine.keys())
+                    if engine.get(n) != mine.get(n)
+                ]
             raise ValueError(
                 f"the run file's host laws were fitted under another {differ}; "
                 f"this run's key is {ours}, and theirs is {theirs}"
