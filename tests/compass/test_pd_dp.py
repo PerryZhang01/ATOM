@@ -204,7 +204,8 @@ TABLE = prefill_decode_table(
 
 @pytest.fixture
 def ranks(geometry, monkeypatch):  # noqa: F811
-    """Both prefill ranks and decode rank 1, each on its own scripted runtime."""
+    """Both prefill ranks and both decode ranks, each on its own scripted runtime;
+    `d` is decode rank 1."""
     model = model_for(geometry, PEAKS[0])
     address = f"inproc://kv-write-req-{uuid.uuid4().hex}:5000"
 
@@ -225,6 +226,7 @@ def ranks(geometry, monkeypatch):  # noqa: F811
     return SimpleNamespace(
         p=[rank("engine-P", "kv_producer", r) for r in range(DP)],
         d=rank("engine-D", "kv_consumer", 1),
+        d0=rank("engine-D", "kv_consumer", 0),
     )
 
 
@@ -254,6 +256,7 @@ def _transfer(ranks, served_by: int, taken_by: int):
     )
     rt_p.conn.grants.append((1.0, {channel: [(seq, arrival)]}))
     rt_p.advance_to(1.0)
+    p.process_completions(KVConnectorOutput())
     return channel, p.process_completions(KVConnectorOutput())
 
 
@@ -271,3 +274,39 @@ def test_a_write_request_reaching_another_prefill_rank_is_refused_by_name(ranks)
     d._socks[1] = d._socks[0]  # a decode rank wired to the wrong prefill rank
     with pytest.raises(ValueError, match="is for prefill DP rank 1 and reached rank 0"):
         _transfer(ranks, 1, 0)
+
+
+def test_both_ends_of_each_rank_pair_queue_the_same_writes(ranks):
+    """Decode rank 1 writes to both prefill ranks and decode rank 0 to prefill
+    rank 0, all arriving at once: each write's two ends compute the same done
+    time, so each end keeps one link per rank pair, keyed by the other end."""
+    writes = {1: (ranks.d, 0), 2: (ranks.d, 1), 3: (ranks.d0, 0)}
+    released = [{} for _ in range(DP)]
+    for i, ((rt_d, d), p) in writes.items():
+        params = {"do_remote_prefill": True, "transfer_id": i, "dp_rank": p}
+        d.update_state_after_alloc(
+            SimpleNamespace(
+                id=i,
+                kv_transfer_params=params,
+                block_table=list(range(4 * i)),
+                has_per_req_cache=False,
+                num_cached_tokens=0,
+            )
+        )
+        channel, seq, arrival = rt_d.send_log[-1]
+        released[p].setdefault(channel, []).append((seq, arrival))
+        ranks.p[p][1].request_finished(
+            SimpleNamespace(
+                id=i,
+                kv_transfer_params={"do_remote_decode": True},
+                block_table=[],
+                output_tokens=[7],
+            )
+        )
+    # Released at the arrival, before any write is done.
+    for (rt_p, p), grant in zip(ranks.p, released):
+        rt_p.conn.grants.append((arrival, grant))
+        rt_p.advance_to(arrival)
+        p.process_completions(KVConnectorOutput())
+    for i, ((_, d), p) in writes.items():
+        assert d._due[i] == ranks.p[p][1]._due[i] + d._latency_s, i

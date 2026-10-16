@@ -32,7 +32,8 @@ member, the frontend's included, connects to.
   SIGTERM that stopped the frontend's event loop
   (`atom.utils.compass_loop.CompassEventLoop.stopped`) is a stop: the
   frontend's runtime first ends every LP's run through the authority, so each
-  engine leaves its loop at its ``+inf`` grant and hands in; `frontend_done`
+  engine leaves its loop at its ``+inf`` grant and hands in, and a client
+  still bound is granted ``+inf`` too; `frontend_done`
   hands in the signal, which the summary counts as an ``ended:`` reason, and
   the server leaves once the summary is written from every hand-in. A server
   whose ``client_runs`` is ``null`` serves until it is stopped: a stop with no
@@ -406,9 +407,8 @@ class _RecordingAuthority(ClockAuthority):
     has asked once. Each client run that ends before the last has its summary
     written once every server LP has handed in. A frontend's TAR to ``+inf``
     before the finish is a stop: it finishes the run there and sets `stopped`.
-    Every LP but the client is granted ``+inf``. The client holds no connection before
-    it binds or between client runs; a bound one is refused once a server LP's
-    connection ends. A client run is open from the client's bind to its end; a
+    Every server LP is granted ``+inf``, and the client too while a client run
+    is open, from its bind to its end; outside one it holds no connection. A
     stop with none open, on a server whose ``client_runs`` is ``null``, sets
     `stopped_whole`: the run ended as its run file says, as at the finish."""
 
@@ -466,7 +466,11 @@ class _RecordingAuthority(ClockAuthority):
             self.stopped_whole = (
                 self._client_runs == math.inf and not self.client_run_open
             )
-            replies = [r for r in self._address(self._finish()) if r[0] != TRAFFIC]
+            replies = [
+                r
+                for r in self._address(self._finish())
+                if r[0] != TRAFFIC or self.client_run_open
+            ]
         else:
             replies = super().on_request(lp, kind, t, log, t_daemon, member)
         for to, _, released, *_ in replies:
@@ -923,15 +927,21 @@ def _fingerprint(tok) -> str | None:
     return _file_digest(name, "tokenizer.json")
 
 
+def host_cpu() -> str:
+    """This host's CPU model, as /proc/cpuinfo names it, else as
+    `platform.processor` does."""
+    cpu = re.search(
+        r"^model name\s*:\s*(.+)$", Path("/proc/cpuinfo").read_text(), re.MULTILINE
+    )
+    return cpu.group(1) if cpu else platform.processor()
+
+
 def host_key(config) -> dict:
     """What host laws are keyed by: this host's CPU, ATOM's source less
     `COMPASS_ONLY`, the served config.json and the engine config a step grid
     bundle is keyed by."""
     from atom.compass.run.step_grid import keyed
 
-    cpu = re.search(
-        r"^model name\s*:\s*(.+)$", Path("/proc/cpuinfo").read_text(), re.MULTILINE
-    )
     root = Path(atom.__file__).parent
     digest = hashlib.sha256()
     for path in sorted(root.rglob("*.py")):
@@ -952,7 +962,7 @@ def host_key(config) -> dict:
                 del lines[prev.end_lineno if prev else 0 : node.end_lineno]
         digest.update(f"{relative}\0".encode() + b"".join(lines))
     return {
-        "host_cpu": cpu.group(1) if cpu else platform.processor(),
+        "host_cpu": host_cpu(),
         "atom": digest.hexdigest(),
         "model": _file_digest(config.model, "config.json"),
         "engine": keyed(config),

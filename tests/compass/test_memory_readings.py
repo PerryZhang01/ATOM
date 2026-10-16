@@ -91,7 +91,7 @@ def meta_tree(nbytes):
 #: states.
 META_8B = meta_tree(16_000_000_000)
 
-STACK = {"rocm": "7.2.4", "aiter": "f4e7c7509", "rccl": "2.22.3"}
+STACK = {"rocm": "7.2.4", "aiter": "f4e7c7509", "rccl": "2.22.3", "torch": "2.10.0"}
 
 TOKENIZER = {
     "id": "qwen3-151k-bpe",
