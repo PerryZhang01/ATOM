@@ -241,7 +241,9 @@ if [ -r "$MESH/Cargo.toml" ]; then
         for f in "$MESH"/tests/compass_*.rs; do
             [ -e "$f" ] && f=${f##*/} && TARGETS+=(--test "${f%.rs}")
         done
-        (cd "$MESH" && cargo test "${TARGETS[@]}") || MESH_RC=$?
+        # A wall-clock throughput floor that fails on a loaded host (#515).
+        SKIP=core::worker::tests::test_load_counter_performance
+        (cd "$MESH" && cargo test "${TARGETS[@]}" -- --exact --skip "$SKIP") || MESH_RC=$?
     else
         WHY=${WHY%%$'\n'*}
         grep -q '^atom/mesh/' <<<"$CHANGED" &&
