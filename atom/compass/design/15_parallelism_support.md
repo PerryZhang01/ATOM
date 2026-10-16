@@ -294,7 +294,7 @@ with `T_min` the smallest rendezvous duration on any carrier (the one at its thr
 The two channels' lookaheads sum to `T_min`: the ack makes the stage-to-stage cycle no
 tighter than the rendezvous itself. `L_data` is stated as the smallest carrier
 `latency_s` (`L`). It moves no modelled time, because the receiver's clock goes on to the
-end of the receive (below), which is at least `t_send + L_data`; it only decides how the
+metadata's arrival (below), which is at least `t_send + L_data`; it only decides how the
 cycle's lookahead is split. The channel table refuses, by name, either channel with a
 non-positive lookahead (README principle 6): a zero-lookahead coupling belongs inside one
 LP (`01` D4).
@@ -321,15 +321,16 @@ payload of send `n`:
 2. If that send was rendezvous and its ack is not yet released, the loop receives it
    inline: NER until the grant releases `(pp_ack, n-1)`, its clock reaching `done`. If it
    was eager, `advance_to` its local completion when that is later than now.
-3. The loop issues send `n` at `t_send`, the later of `e` and its clock, now past
-   `done`, and registers `(pp_data, n)` (K4), noting whether it is eager (a local completion) or rendezvous (an ack to receive).
+3. The loop issues send `n` at `t_send`, its clock, now past `done`, its tensors
+   leaving at `e`, and registers `(pp_data, n)` (K4), noting whether it is eager (a local completion) or rendezvous (an ack to receive).
 
 So a send still waits for its forward's compute and the previous send, but a rendezvous
 send's completion now comes from the receiver. At a downstream stage's forward
 call site, before the runner is called and with `t_recv_posted` the loop's clock there,
 the loop receives `(pp_data, n)` inline (its clock reaching `now_r`). If any part of the
 send is rendezvous it registers `(pp_ack, n)` stamped `done` (K4). Either way it then
-advances to the end of the receive (below), and the forward computes as usual.
+advances to the metadata's arrival, and the end of the receive (below) holds the
+forward's device start (`01` D4, R7).
 
 **The idle flushes are channel receives (`01` D4, K5).** At both idle call sites the loop
 first settles the pending send: an inline receive of its `pp_ack` if it was rendezvous, an
@@ -374,7 +375,8 @@ out of several parts, and each part's carrier is ATOM's:
 - a CPU tensor in the list goes on the PP CPU group, the gloo carrier.
 - an empty tensor is skipped on both sides and is no part.
 
-**How the parts combine.** The sender posts every part at `t_send`. The receiver,
+**How the parts combine.** The sender posts each gloo part at `t_send` and each RCCL part
+at `e`; `t_send` below is the part's own. The receiver,
 `GroupCoordinator.recv_tensor_dict`, takes them in order: the size and the metadata through
 `recv_object` (blocking gloo receives of the size, then the object), then each tensor in list order, and it posts a
 part's receive only when the previous part is done. With `r_1 = t_recv_posted` and parts

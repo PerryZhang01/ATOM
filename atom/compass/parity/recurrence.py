@@ -46,7 +46,8 @@ def _kind(step, prev) -> str:
 def check(steps: list[dict], stage=None, upstream=None) -> dict:
     """One DP rank's steps charged on their measured inputs: the gate's report.
 
-    On pipeline stage `stage = (rank, pp)`, `upstream` is the stage before's
+    On pipeline stage `stage = (rank, pp)`, a decode's `d_gap_ns` follows the
+    last forward's device end, not the launch, and `upstream` is the stage before's
     `sends`, per step its predicted metadata send and device end on the
     worker clock: the launch waits for the send, less the measured
     `t_pp_recv_ns`, and the device for the end, less `d_recv_ns`.
@@ -85,18 +86,19 @@ def check(steps: list[dict], stage=None, upstream=None) -> dict:
         batch.total_seqs_num_prefill = sum(not d for *_, d in s["rows"])
         batch.produces_output = lambda out=s["produces_output"]: out
         gap = 0 if batch.total_seqs_num_prefill else s.get("d_gap_ns", 0)
-        if upstream:  # R7's device side; the gap's device work precedes the receive
-            batch.compass_pp_release = ready - gap * 1e-9
+        if stage is not None:
+            # A stage's host often trails its device, so the gap may be idle:
+            # it follows the last forward's device end, not the launch. R7's
+            # device side holds the start as well.
+            start = rec.ends[-1] + gap * 1e-9
+            batch.compass_pp_release = max(ready, start) if upstream else start
+            gap = 0
         busy = s["d_busy_ns"]
         target = s.get("d_target_ns", busy)
         own = gap + target - s.get("d_recv_ns", 0)  # the receive is R7's wait
         charge = rec.charge(batch, own * 1e-9, (busy - target) * 1e-9)
-        sends.append(
-            [
-                origin + round(t * 1e9)
-                for t in (now + charge - post * 1e-9, rec.ends[-1])
-            ]
-        )
+        times = (now + charge - post * 1e-9, rec.ends[-1])
+        sends.append([origin + round(t * 1e9) for t in times])
         period = (s["t_exit_ns"] - last) * 1e-9
         r1_ms = None
         if "t_mtp_ns" in s:  # released before the launch

@@ -305,3 +305,18 @@ def test_a_downstream_stage_writes_its_own_file_with_its_receive_stamped(
         assert l0 < step["t_pp_recv_ns"][0] < step["t_pp_recv_ns"][1] < l1
         assert ("t_recv_ns" in step) == batch.produces_output()
     assert any(b.produces_output() for b in batches)
+
+
+def test_a_stage_gap_after_an_idle_device_does_not_delay_its_device():
+    """The head waits 100 ms for the last stage before its second forward, so
+    that forward's 102 ms device gap is idle; its device still ends at 105 ms,
+    and the fourth forward's entry, two back, is not held."""
+    head = [
+        _line(0, 0, (0, 0), (1, 2), 3, 1),
+        _line(1, 103, (103, 103), (104, 105), 106, 1, d_gap_ns=102),
+        _line(2, 107, (107, 107), (108, 109), 110, 1, d_gap_ns=3),
+        _line(3, 111, (111, 111), (112, 113), 114, 1, d_gap_ns=3),
+    ]
+    report = recurrence.check(head, (0, 2))
+    assert report["pass"] and report["total"] == pytest.approx(0, abs=1e-9)
+    assert [end for _, end in report["sends"]] == [t * MS for t in (2, 105, 109, 113)]
