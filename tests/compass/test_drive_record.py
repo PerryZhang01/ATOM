@@ -93,6 +93,21 @@ def test_each_dp_rank_gets_its_cost_lines_under_one_engine_entry(tmp_path, monke
     assert dp0 == dp1
 
 
+def test_a_dp_rank_no_request_reached_gets_the_version_line_alone(
+    tmp_path, monkeypatch
+):
+    out = _two_ranks(tmp_path, monkeypatch, ENGINE["num_kvcache_blocks"])
+    dummies = [
+        {**s, "is_dummy_run": True, "batch": [], "named": []}
+        for s in _lines(out / "steps/dp1.jsonl")
+    ]
+    (out / "steps/dp1.jsonl").write_text("".join(json.dumps(s) + "\n" for s in dummies))
+    record.write_engine_and_costs(out)
+
+    assert _lines(out / "steps/dp1.cost.jsonl") == [{"version": TABLE_VERSION}]
+    assert len(_lines(out / "steps/dp0.cost.jsonl")) > 1
+
+
 def test_dp_ranks_resolving_different_engines_refuse_the_entry(tmp_path, monkeypatch):
     out = _two_ranks(tmp_path, monkeypatch, 4000)
 

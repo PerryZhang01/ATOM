@@ -7,7 +7,8 @@ whatever client runs reach it until it is stopped.
 `serve` starts the server on the GPUs `--gpu` names with the step record on,
 and at its stop writes run.json's identity, unprofiled and with no workload.
 Then each DP rank's record, ``steps/dp<r>.jsonl``, gets its cost lines beside
-it (``dp<r>.cost.jsonl``, `step_labels.write_table`), and run.json its
+it (``dp<r>.cost.jsonl``, `step_labels.write_table`; a rank that ran only DP's
+dummy forwards gets the version line alone), and run.json its
 ``engine`` entry: the engine's bounds as the record's engine files state them,
 the fields `TARGET` names. DP ranks whose engine files state different bounds
 refuse the entry, naming each. One record spans the server's lifetime, every
@@ -87,4 +88,7 @@ def write_engine_and_costs(out) -> None:
     run["engine"] = engines[records[0].stem]
     _write_whole(out / serve.RUN_JSON, json.dumps(run))
     for record in records:
-        write_table(record, label(record)[1])
+        # A DP rank no request reached ran only the dummy forwards DP needs.
+        lines = [json.loads(line) for line in record.read_text().splitlines()]
+        idle = all(line["is_dummy_run"] for line in lines)
+        write_table(record, [] if idle else label(record)[1])
