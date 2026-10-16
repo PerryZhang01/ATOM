@@ -217,12 +217,13 @@ class LMCacheMPShell:
             arrival, (uid, _, response) = self._read.pop((ch, seq))
             future, op, request = self._futures.pop((ch, msgspec.msgpack.decode(uid)))
             # A STORE or RETRIEVE answers (device event, succeeded).
-            future.set_result(msgspec.msgpack.decode(response)[1])
+            ok = msgspec.msgpack.decode(response)[1]
+            future.set_result(ok)
             logger.info(
                 "compass: lmcache_mp %s of %s %s: arrived at %r, taken at %r",
                 op,
                 request,
-                "succeeded" if future.result() else "failed",
+                "succeeded" if ok else "failed",
                 arrival,
                 rt.now,
             )
@@ -325,8 +326,8 @@ def clocked_adapter(cls, config, **kwargs):
         """Hand lmcache each reply read and released, in arrival order."""
         wake.clear()
         sock.pull()
-        with rt.lock:
-            ready = [f for f in sock.held if f[0] is None or f[2] in rt.released[f[1]]]
+        # Membership only: the step loop adds to `released` and nothing removes.
+        ready = [f for f in sock.held if f[0] is None or f[2] in rt.released[f[1]]]
         sock.held = [f for f in sock.held if f not in ready]
         ready.sort(key=lambda f: (f[0] is not None, f[0] or 0.0, f[2] or 0))
         for arrival, back, seq, frames in ready:
@@ -350,7 +351,6 @@ def clocked_adapter(cls, config, **kwargs):
     waker = SimpleNamespace(
         socket=wake.fd, process_inbound=inbound, process_outbound_task=lambda: None
     )
-    with rt.lock:
-        rt.wakes[wake] = wake
+    rt.wakes[wake] = wake  # on the step loop, the one thread that reads `wakes`
     client._polling_loop.register(waker)
     return adapter

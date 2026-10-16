@@ -139,10 +139,6 @@ CORE_ROOTS = tuple(
 _REPLACED_RUNNER = "the real model runner, which a simulated run replaces"
 _REPLACED_TRANSFER = "a transfer backend the simulator replaces with a priced one"
 _LOG_ONLY = "times real work for a log line; nothing in the simulated record reads it"
-_MP_WORKER = (
-    "stamps a transfer the lmcache_mp worker connector submitted; the simulated "
-    "runner's worker half submits none"
-)
 _SAVE_LEASE = (
     "a save lease's age, which only the base reclaim_stale_leases reads; the "
     "lmcache_mp scheduler overrides it to release nothing, and every other "
@@ -261,12 +257,6 @@ _KEPT_REAL = (
      "K9", _REPLACED_TRANSFER, 1),
     ("atom/kv_transfer/offload/hybrid/kimi_k3/state_tier.py", "reclaim_stale_parks",
      "time.monotonic", "K9", _REPLACED_TRANSFER, 1),
-    ("atom/kv_transfer/offload/mp/native_state_worker.py", "_NativePending", "time.monotonic",
-     "K9", _MP_WORKER, 1),
-    ("atom/kv_transfer/offload/mp/transfer.py", "_PendingLoad", "time.monotonic",
-     "K9", _MP_WORKER, 1),
-    ("atom/kv_transfer/offload/mp/transfer.py", "_PendingSave", "time.monotonic",
-     "K9", _MP_WORKER, 1),
     *(
         (f"atom/kv_transfer/{path}", scope, f"time.{call}", "K9", _REPLACED_TRANSFER, n)
         for path, scopes in (
