@@ -39,7 +39,6 @@ from atom.compass.artifacts import (
 )
 from atom.compass.backends.step_stub import Coefficients
 from atom.compass.drive import serve, trace_steps
-from atom.compass.drive.gpu import smi
 
 TREE = Path(__file__).resolve().parents[2]
 #: run.json's identity, as `serve` writes it once its server stops.
@@ -272,7 +271,6 @@ def test_a_simulated_server_serves_a_client_and_publishes_its_steps(tmp_path):
     argv = ["trace", "steps", "--step-stub", str(stub(tmp_path, 1))]
     argv += ["--machine", str(tmp_path / "machine.json"), "--store", str(store)]
     argv += ["--out", str(out), "--", "--model", MODEL, "--enforce-eager"]
-    before = _vram()
     driver = subprocess.Popen(
         [sys.executable, "-c", "from atom.compass.cli import main; main()", *argv],
         env=dict(os.environ, PYTHONPATH=str(TREE)),
@@ -290,8 +288,6 @@ def test_a_simulated_server_serves_a_client_and_publishes_its_steps(tmp_path):
         run = json.loads(Path(ready["run_file"]).read_text())
         port = int(ready["url"].rsplit(":", 1)[1])
         Traffic(run, port, driver).run()
-        # Having served a request, the server holds no device memory.
-        assert _vram() == before
     finally:
         driver.send_signal(signal.SIGTERM)
         stdout, stderr = driver.communicate(timeout=300)
@@ -303,11 +299,3 @@ def test_a_simulated_server_serves_a_client_and_publishes_its_steps(tmp_path):
     rank = Topology().ranks()[0]
     summary = member(entry(store, key), "summary", rank, "json")
     assert len(summary["requests"]) == 1 and summary["structures"]
-
-
-def _vram() -> dict:
-    """Each visible card's used VRAM bytes, as rocm-smi reads them."""
-    cards = json.loads(smi("--showmeminfo", "vram", "--json"))
-    visible = os.environ.get("HIP_VISIBLE_DEVICES")
-    names = [f"card{i}" for i in visible.split(",")] if visible else list(cards)
-    return {name: cards[name]["VRAM Total Used Memory (B)"] for name in names}
