@@ -1400,8 +1400,8 @@ time.
   whose launch R1 holds is undercharged by that tail, about 1.1 ms per decode on #829's
   MTP1 record. #827's gate passes on that record only because a decode's measured
   `d_gap_ns` carries the tail as device time; a backend that prices device time alone
-  does not. The order is up for a ruling on
-  [#829](https://github.com/jgong5/ATOM/issues/829).
+  does not. [#1272](https://github.com/jgong5/ATOM/issues/1272) splits `W_pre` at this
+  wait, as ruled on [#829](https://github.com/jgong5/ATOM/issues/829).
 - **With every host law at zero**, a forward exits at the latest of `now`, R4's release
   and, for an output forward, R1's: in a run of output forwards, forward `n` charges the
   previous output forward's device time and the first output forward charges 0, one

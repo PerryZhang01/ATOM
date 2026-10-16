@@ -96,7 +96,7 @@ def _recorded(warmup, drafter=False):
                 p.prepare_sampled_ids(batch)
                 p.recv_async_output_draft()
             elif output:
-                assert p.recv_async_output([]) == []
+                assert p.prepare_sampled_ids(batch) == []
             self.next = "exit" if drafter and output else "busy"
             # The previous forward's exit event has completed, this one's has not.
             device.now = device.times[-2] if len(device.times) > 1 else -1
@@ -146,7 +146,7 @@ def test_each_line_carries_its_host_stamps_and_device_window(tmp_path, monkeypat
         stamps = [step["t_enter_ns"], *step["t_gate_ns"], *step["t_launch_ns"]]
         stamps += step["t_recv_ns"] if output else []
         assert stamps == sorted(stamps) and stamps[-1] < step["t_exit_ns"]
-        assert ("t_recv_ns" in step) == output
+        assert ("t_recv_ns" in step) == output and "d_target_ns" not in step
         assert step["d_busy_ns"] == BUSY + 2 * n + 1
         assert step.get("d_gap_ns") == (GAP if n else None)
     assert runner.tokenID_processor.calls == 1 + sum(outputs)
