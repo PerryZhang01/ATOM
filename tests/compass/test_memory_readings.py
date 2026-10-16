@@ -215,7 +215,8 @@ def publish_readings(store, config, document=DOCUMENT, readings=READINGS[1]):
     """`config`'s entry in the store at `store`, one member a rank, keyed and
     conditioned as `compass measure memory` publishes it on the platform
     `document` states; the one already there, if there is one."""
-    machine = MachineSpec.from_mapping(_width_keys(copy.deepcopy(document)))
+    # As a run file carries it: JSON, its width keys read back.
+    machine = MachineSpec.from_mapping(_width_keys(json.loads(json.dumps(document))))
     fields = entry.key_fields(config)
     key = Key.of(
         Kind.MEMORY_READINGS, machine_spec=machine_spec_digest(machine), **fields

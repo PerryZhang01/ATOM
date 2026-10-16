@@ -436,7 +436,6 @@ def test_every_term_agreeing_exactly_discharges_its_gate(spec, qwen):
     assert not comparison.failures()
     assert {t.name for t in comparison.compared if t.verdict is Verdict.PASS} == {
         "weights",
-        "buffers",
         "load residue",
         "persistent",
         "activations",
