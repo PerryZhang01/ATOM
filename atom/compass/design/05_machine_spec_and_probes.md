@@ -163,6 +163,7 @@ interconnect:
   inter_node:
     link_bandwidth_bytes_per_s: 5.0e10
     link_latency_s:             5.0e-6
+    # link_setup_s: optional, once on a rank pair's first KV write; absent is zero
     derate:                     0.80
   router_relay_s:               1.5e-3   # Atomesh per-hop, PD only
 ```
@@ -187,6 +188,7 @@ mapping so a reader can follow the term into ATOM's code without guessing. The
 | `ipc.*`, `interconnect.*_latency_s` | **Clock Authority lookahead floors** (doc 01 D3) | a zero lookahead serializes the whole simulation |
 | `compute.fp4_flops` | the roofline (`10` D64) for an FP4 leaf | DeepSeek-V4-Pro's routed experts are FP4 (`16` D95), and MI455X's dense FP4 peak is twice its FP8 peak ([#504](https://github.com/jgong5/ATOM/issues/504#issuecomment-6080974531)); priced at the FP8 rate they would read twice as slow |
 | `intra_node.domain_devices` | the link a collective group rides (`10` D66) | MI455X's UALoE fabric joins 72 GPUs across compute trays of 4 (#504), so a TP8 or EP8 group spans two trays without touching the NICs; `count_per_node` alone would send it over `inter_node` |
+| `*.link_setup_s` | a rank pair's first KV write (`01` D6) | on node 18 Mooncake TCP a pair's first write of 2 to 7 blocks took 9.0 to 28.1 ms longer than its later writes ([#1172](https://github.com/jgong5/ATOM/issues/1172)); absent is zero |
 | every `derate` | cost model | no kernel reaches spec peak; the gap between datasheet and achievable is the user's to state |
 
 **On `derate`.** The name was kept deliberately after considering `achievable_fraction`
@@ -415,6 +417,6 @@ which cancelled — the largest being 25% of a single term.
 | # | Decision | Date |
 |---|---|---|
 | D24 | The spec describes the machine; ATOM's config describes the deployment. Thread-pool width becomes an ATOM config option, not a Compass one. | 2026-09-18 |
-| D25 | Four-section schema: `provenance`, `host`, `device`, `interconnect`. Mandatory derates, no memory readings (`measure memory`'s entries, 2026-10-14), `software_pinned_to` checked, torch included, as the target's stack, whole spec echoed into every artifact. Revised for the MI455 projection: an optional dense `fp4_flops`, `intra_node.domain_devices` for a scale-up fabric wider than a node, and every field given an origin, `provenance.origin` and per field `provenance.origins` with a probe's subject, kept across a save. Revised: an optional `host.http_intake` pair, the event loop's charge per HTTP request taken in. | 2026-09-18; revised 2026-10-10; torch 2026-10-13 (#851); origin 2026-10-14 (#952); intake 2026-10-16 (#1103) |
+| D25 | Four-section schema: `provenance`, `host`, `device`, `interconnect`. Mandatory derates, no memory readings (`measure memory`'s entries, 2026-10-14), `software_pinned_to` checked, torch included, as the target's stack, whole spec echoed into every artifact. Revised for the MI455 projection: an optional dense `fp4_flops`, `intra_node.domain_devices` for a scale-up fabric wider than a node, and every field given an origin, `provenance.origin` and per field `provenance.origins` with a probe's subject, kept across a save. Revised: an optional `host.http_intake` pair, the event loop's charge per HTTP request taken in. An optional per-link `link_setup_s`, charged once on a rank pair's first KV write. | 2026-09-18; revised 2026-10-10; torch 2026-10-13 (#851); origin 2026-10-14 (#952); intake 2026-10-16 (#1103); link setup 2026-10-16 (#1172) |
 | D26 | Probes emit fragments; `merge` / `validate` / `explain` combine and check them. Four hardware probe classes plus a datasheet path; the transfer path dropped 2026-10-14 (#937). Every hardware probe implements the contamination refusals. All are the `spec` package's functions, run by per-machine scripts, with no `compass` command. Machine specs are developers', one per supported machine, passed by `--machine`; an engine start's memory readings are `measure memory`'s, not the spec's. | 2026-09-18; revised 2026-10-13 and 2026-10-14 (#851) |
 | D25.1 | Runtime-constant fields renamed to say what they are; ATOM's own term recorded as a mapping column. `host.tokenizer` becomes `host.tokenizers[]`, keyed by tokenizer identity (id + backend + fingerprint) with `applies_to` model architectures. | 2026-09-19 |

@@ -44,8 +44,10 @@ not a particular run drives it, and the value of refusing a missing term is that
 the refusal happens while a person is authoring the document rather than in the
 middle of a simulated run. The exceptions are the provenance fields `merge`
 fills in later, the activation entries, whose absence falls back to a
-declared form, `fp4_flops`, which a device with no FP4 matrix core omits, and
-the two `host.http_intake` terms, which a host not probed for them omits.
+declared form, `fp4_flops`, which a device with no FP4 matrix core omits, the
+pipeline send terms, which only a pipeline run reads, a link's
+`link_setup_s`, a one-off cost that is zero when absent, and the two
+`host.http_intake` terms, which a host not probed for them omits.
 
 **Every field says where it came from.** `provenance.origin` is one of
 `ORIGINS` or `transferred-from:<spec>`, and anything else is refused. A
@@ -181,6 +183,7 @@ FIELDS = (
         "interconnect.intra_node.link_bandwidth_bytes_per_s", Kind.QUANTITY, peak=True
     ),
     Field("interconnect.intra_node.link_latency_s", Kind.QUANTITY),
+    Field("interconnect.intra_node.link_setup_s", Kind.QUANTITY, required=False),
     # A pipeline stage's send, per carrier; a pipeline run requires them.
     *(
         Field(f"interconnect.intra_node.pp.{carrier}.{name}", kind, required=False)
@@ -197,6 +200,7 @@ FIELDS = (
         "interconnect.inter_node.link_bandwidth_bytes_per_s", Kind.QUANTITY, peak=True
     ),
     Field("interconnect.inter_node.link_latency_s", Kind.QUANTITY),
+    Field("interconnect.inter_node.link_setup_s", Kind.QUANTITY, required=False),
     Field("interconnect.router_relay_s", Kind.QUANTITY),
 )
 
