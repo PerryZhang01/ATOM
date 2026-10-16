@@ -205,8 +205,8 @@ def fit_host(samples) -> tuple[dict, dict]:
     host = {"key": json.loads(keys[0]), "laws": {}}
     report = {"cut": {"idle": sum(s.idle for s in samples)}, "unfitted": {}}
     for kind in HOST_KINDS:
-        extra = tuple({r[1] for r in rows if r[0] == kind} - set(HOST_SEGMENTS))
-        for segment in HOST_SEGMENTS[: 3 if kind == "middle" else 4] + extra:
+        extra = sorted({r[1] for r in rows if r[0] == kind} - set(HOST_SEGMENTS))
+        for segment in HOST_SEGMENTS[: 3 if kind == "middle" else 4] + tuple(extra):
             members = [r for r in rows if r[:2] == (kind, segment) and r[3] > 0]
             x = np.array([r[2] for r in members], dtype=np.float64).reshape(-1, 3)
             width = 2 if np.array_equal(x[:, 1], x[:, 2]) else 3
