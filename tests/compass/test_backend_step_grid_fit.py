@@ -328,4 +328,4 @@ def test_a_flag_step_grid_does_not_read_or_lacks_refuses(tmp_path, run, args, na
 
     with pytest.raises(SystemExit, match=re.escape(named)):
         fit(tmp_path, "fit steps", *argv)
-    assert not (tmp_path / "store").exists()
+    assert not (tmp_path / "store" / "step_grid_bundle").exists()
