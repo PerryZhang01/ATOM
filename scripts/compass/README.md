@@ -621,15 +621,13 @@ Grade a law only on cells whose traces its calibration cells do not replay.
 
 ## Schedule and end-to-end grades — `validate.runs`
 
-`python -m atom.compass.validate.runs SIMULATED PERTURBED REAL...` grades a
+`python -m atom.compass.validate.runs SIMULATED REAL...` grades a
 simulated `cctraces_sim.sh` cell against two or more spaced real runs of it
-(`REAL=1`), each metric against the real runs' own spread, and names a metric
-inadmissible when the cell PERTURBED, simulated at 0.97 of the law's prefill
-price, moves it no further than that spread. The module's docstring lists the
-metrics, their distances and the verdicts.
+(`REAL=1`), each metric against the real runs' own spread. The module's
+docstring lists the metrics, their distances and the verdicts.
 
 ## A cell graded from every source — `python -m atom.compass.validate`
 
 `python -m atom.compass.validate CELL...` joins the commands above and the run
-summaries into one table per cell directory: `step_linear/`, `p97/` and two or more
+summaries into one table per cell directory: `step_linear/` and two or more
 `real*/` runs of one workload. Its docstring lists the rows.

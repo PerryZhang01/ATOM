@@ -315,7 +315,6 @@ Audited, because an absent flag is a decision and should be a visible one:
 | virtual-clock enable/disable | there is no simulated run without one. A switch would create an untested second configuration. |
 | per-term memory overrides | a memory term comes from the machine spec or a `memory_readings` entry, where it is echoed and fingerprinted |
 | a workload, the client's settings | no command starts the client: a client started apart sends them, and grading reads which traces it served from the client run |
-| a perturbed price for grading's sensitivity control (`08` D45) | grading's tooling, outside the CLI, publishes a copy of the law with its prefill price scaled by 0.97 as its own `step_linear_law` entry, its provenance "scaled from <key> by 0.97", and the control is `run --step-linear <that key>` |
 | acceptance rate for speculative decoding | **ATOM's own flag** — `--spec-decode-acceptance-length` / `--spec-decode-acceptance-rate` already exist (`14` D83) |
 | thread-pool widths | ATOM's, per `05` D24 |
 | the run file's lookaheads, bound and admission path | fixed in code: no measurement backs the lookaheads (`atom/compass/clock/channels.py::single_engine_table`), and `run` always drives the API server |
