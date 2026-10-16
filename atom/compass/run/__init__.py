@@ -422,15 +422,14 @@ def _lmcache_stations(run: dict, chunk_bytes: int) -> dict:
 def _launch_lmcache(config, run: dict, side: str | None) -> None:
     """Start LP `lmcache`, the stand-in lmcache server, in a process of its own
     when this deployment offloads KV to one; refuse a deployment and a run file
-    that disagree on whether one runs, or a decode side that would start it."""
+    that disagree on whether one runs or on its writer ranks, or a decode side
+    that would start it."""
     from atom.kv_transfer.disaggregation.factory import KVConnectorFactory
+    from atom.kv_transfer.offload.mp.deployment import _tp_replication_factor
 
-    kv = config.kv_transfer_config or {}
-    offloads = any(
-        KVConnectorFactory.canonical_name(c.get("kv_connector", "moriio"))
-        == "lmcache_mp"
-        for c in (kv.get("connectors", [kv]) if kv else [])
-    )
+    leaves = KVConnectorFactory.leaf_connectors(config) or ()
+    lm = next((c for name, c in leaves if name == "lmcache_mp"), None)
+    offloads = lm is not None
     if offloads != ("lmcache" in run) and (offloads or side != "D"):
         raise ValueError(
             f"this deployment {'offloads' if offloads else 'offloads no'} KV to an "
@@ -442,6 +441,13 @@ def _launch_lmcache(config, run: dict, side: str | None) -> None:
         return
     if side == "D":
         raise ValueError("LP lmcache serves the prefill side; this is the decode side")
+    writers = lm.tensor_parallel_size // _tp_replication_factor(lm)
+    if run["lmcache"].get("writers", 1) != writers:
+        raise ValueError(
+            f"the run file's lmcache writers is {run['lmcache'].get('writers', 1)}; "
+            f"this deployment stores from {writers} rank(s) per DP rank, its "
+            "tensor_parallel_size over its TP replication factor"
+        )
     from atom.compass.backends import KvGeometry, Parallelism
     from atom.compass.kv.lmcache_server import parse_server_flags
 

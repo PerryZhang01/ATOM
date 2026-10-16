@@ -14,6 +14,7 @@ import socket
 import subprocess
 import threading
 import time
+from types import SimpleNamespace
 
 import msgspec
 import pytest
@@ -28,6 +29,7 @@ from atom.compass import run as compass_run
 from atom.compass.clock import ClockAuthority, LpId
 from atom.compass.clock.channels import ReceiveMode
 from atom.compass.clock_transport import connect, serve
+from atom.compass.kv.lmcache_server import LMCacheLP
 from atom.compass.spec.rules import SpecRefusal
 from atom.utils import clock
 from atom.utils.clock import LPRuntime
@@ -74,10 +76,14 @@ def _run(tmp_path, **entry):
     return json.loads(json.dumps(run))  # as the run file holds it
 
 
-def _config(connector="lmcache_mp"):
+OFFLOAD = {"kv_connector": "lmcache_mp", "kv_role": "offload"}
+#: The recipe's form: lmcache_mp as one sub of a multi.
+MULTI = {"kv_connector": "multi", "connectors": [{"kv_connector": "moriio"}, OFFLOAD]}
+
+
+def _config(kv=OFFLOAD, **overrides):
     hf = PretrainedConfig.from_dict(json.loads(CONFIG_JSON.read_text())["text_config"])
-    kv = {"kv_connector": connector, "kv_role": "offload"} if connector else {}
-    return atom_config_double(kv_transfer_config=kv, hf_config=hf)
+    return atom_config_double(kv_transfer_config=kv, hf_config=hf, **overrides)
 
 
 def _key(rid, worker_id=None):
@@ -146,18 +152,33 @@ def test_a_zero_lmcache_ipc_s_is_refused_as_a_cycle(tmp_path):
 # --- the launch's refusals ------------------------------------------------------
 
 
-def test_a_deployment_offloading_with_no_lmcache_entry_is_refused(tmp_path):
+@pytest.mark.parametrize("kv", [OFFLOAD, MULTI], ids=["lmcache_mp", "multi"])
+def test_a_deployment_offloading_with_no_lmcache_entry_is_refused(tmp_path, kv):
     run = _run(tmp_path)
     del run["lmcache"]
     with pytest.raises(ValueError, match="has no lmcache entry"):
-        compass_run._launch_lmcache(_config(), run, None)
+        compass_run._launch_lmcache(_config(kv), run, None)
+
+
+def test_the_decode_side_of_an_offloading_deployment_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="serves the prefill side"):
+        compass_run._launch_lmcache(_config(MULTI), _run(tmp_path), "D")
+
+
+@pytest.mark.parametrize("tp, writers", [(2, 1), (1, 2)], ids=["fewer", "more"])
+def test_writers_other_than_the_deployments_writer_ranks_are_refused(
+    tmp_path, tp, writers
+):
+    run = _run(tmp_path, writers=writers)
+    with pytest.raises(ValueError, match=f"writers is {writers}; .* from {tp} rank"):
+        compass_run._launch_lmcache(_config(tensor_parallel_size=tp), run, None)
 
 
 def test_an_lmcache_entry_with_no_deployment_to_start_it_is_refused(tmp_path):
     run = _run(tmp_path)
     with pytest.raises(ValueError, match="offloads no KV.*has an lmcache entry"):
-        compass_run._launch_lmcache(_config(None), run, None)
-    compass_run._launch_lmcache(_config(None), run, "D")  # prefill starts it
+        compass_run._launch_lmcache(_config({}), run, None)
+    compass_run._launch_lmcache(_config({}), run, "D")  # prefill starts it
 
 
 def test_an_entry_without_its_laws_is_refused_by_name(tmp_path):
@@ -233,20 +254,25 @@ def test_server_jobs_start_and_end_against_the_station_laws(tmp_path, monkeypatc
                 with rt.lock:
                     rt.count_done_locked(ch, seq)
 
+    def take_transfer_replies():
+        while rt.released[XFER_BACK] - rt.arrived[XFER_BACK]:
+            _take(rt, xfer.recv_multipart(), got)
+
     taker = threading.Thread(target=polling_loop, daemon=True)
     taker.start()
     try:
         _send(rt, look, LOOK, "lookup", _key("r0"), 1)
         _send(rt, look, LOOK, "query_prefetch_status", "r0")
+        _send(rt, xfer, XFER, "retrieve", _key("r0", 0), 1, [[0]], b"", 0)
         _send(rt, xfer, XFER, "store", _key("r0", 0), 1, [[0]], b"")
-        while not any(g[0] == XFER_BACK for g in got):
+        while sum(g[0] == XFER_BACK for g in got) < 2:
             rt.next_event(math.inf)
-            while rt.released[XFER_BACK] - rt.arrived[XFER_BACK]:
-                _take(rt, xfer.recv_multipart(), got)
+            take_transfer_replies()
+        _send(rt, xfer, XFER, "store", _key("r0", 0), 1, [[0]], b"")
         _send(rt, look, LOOK, "lookup", _key("r1"), 1)
         _send(rt, look, LOOK, "query_prefetch_status", "r1")
         while rt.next_event(math.inf) != math.inf:
-            pass
+            take_transfer_replies()
         assert proc.wait(120) == 0
     finally:
         stop.set()
@@ -259,22 +285,29 @@ def test_server_jobs_start_and_end_against_the_station_laws(tmp_path, monkeypatc
         served.close()
 
     # Hand-derived: both stations start at the requests' arrival; the request
-    # loop serves its two jobs one after the other, the copy engine the store.
+    # loop serves its jobs one after the other, the copy engine a retrieve of
+    # nothing resident, then the store; a copy is priced over the chunks it
+    # moves, so the failed retrieve and the second store of the same range
+    # cost the link's latency alone.
     a = IPC
     lookup = LOOKUP_S[0] + LOOKUP_S[1] * 4
     end1 = a + lookup
     end2 = end1 + REQUEST_S
-    end3 = a + LATENCY_S + 4 * chunk_bytes / BANDWIDTH
-    a2 = end3 + IPC + IPC  # the second pair, sent at the store's reply
-    end4 = a2 + lookup
-    end5 = end4 + REQUEST_S
+    end3 = a + LATENCY_S
+    end4 = end3 + LATENCY_S + 4 * chunk_bytes / BANDWIDTH
+    a2 = end4 + IPC + IPC  # the second store and pair, sent at the store's reply
+    end5 = a2 + lookup
+    end6 = end5 + REQUEST_S
+    end7 = a2 + LATENCY_S
     back = "lmcache->engine:"
     expected = [
         (back + "lookup#dp0", 0, end1 + IPC, None),
         (back + "lookup#dp0", 1, end2 + IPC, 0),  # nothing stored yet
-        (back + "transfer#dp0.tp0", 0, end3 + IPC, [b"", True]),
-        (back + "lookup#dp0", 2, end4 + IPC, None),
-        (back + "lookup#dp0", 3, end5 + IPC, 4),  # the store's four chunks
+        (back + "transfer#dp0.tp0", 0, end3 + IPC, [b"", False]),
+        (back + "transfer#dp0.tp0", 1, end4 + IPC, [b"", True]),
+        (back + "lookup#dp0", 2, end5 + IPC, None),
+        (back + "lookup#dp0", 3, end6 + IPC, 4),  # the store's four chunks
+        (back + "transfer#dp0.tp0", 2, end7 + IPC, [b"", True]),
     ]
     assert sorted(got, key=lambda g: g[2]) == got  # taken in timestamp order
     assert [g[:2] for g in got] == [e[:2] for e in expected]
@@ -282,3 +315,47 @@ def test_server_jobs_start_and_end_against_the_station_laws(tmp_path, monkeypatc
     assert [g[3] for g in got] == [e[3] for e in expected]
     handed = json.loads((tmp_path / "lp-lmcache.json").read_text())
     assert handed == {"refusals": []}
+
+
+# --- the server's ticks ---------------------------------------------------------
+
+
+class _Authority:
+    """An LP runtime whose authority grants each NER at its earlier deadline,
+    up to `until`, then ``+inf``; its grant is always already here."""
+
+    def __init__(self, until):
+        self.now, self.until, self.asked = 0.0, until, []
+        self.released = self.arrived = {}
+        self.conn, self.peer = socket.socketpair()
+        self.peer.send(b"!")
+
+    def ask_next_event(self, t, t_daemon):
+        self.asked.append((t, t_daemon))
+
+    def take_grant(self):
+        grant = min(self.asked[-1])
+        self.now = grant if grant <= self.until else math.inf
+        return self.now
+
+
+def test_the_eviction_and_session_ticks_land_on_their_grids_as_daemon_deadlines():
+    ticks = {"evict": [], "expire_sessions": []}
+    server = SimpleNamespace(**{name: times.append for name, times in ticks.items()})
+    rt, ctx = _Authority(until=130.0), zmq.Context()
+    sock = ctx.socket(zmq.ROUTER)
+    try:
+        LMCacheLP(
+            rt, sock, server, lookup_s=LOOKUP_S, request_s=REQUEST_S, copy=None
+        ).serve()
+    finally:
+        sock.close(linger=0)
+        ctx.term()
+        rt.conn.close()
+        rt.peer.close()
+    # The session sweep runs at the server's start and every 60 s after; the
+    # eviction loop every second from one second in.
+    assert ticks["expire_sessions"] == [0.0, 60.0, 120.0]
+    assert ticks["evict"] == [float(s) for s in range(1, 131)]
+    # Neither keeps the run alive: each is asked as a daemon deadline only.
+    assert rt.asked == [(math.inf, float(s)) for s in range(1, 132)]

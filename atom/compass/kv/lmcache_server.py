@@ -9,10 +9,12 @@ sessions. It holds no bytes and binds no socket; the caller owns the loop, the
 clock and the socket, and passes the time of each event in.
 
 `handle` takes the frames a ROUTER socket receives (identity, request id,
-operation, payloads) at a job's start and returns the reply frames plus a
-callable to run at the job's end: a store's chunks become visible, and a
-retrieve's read locks are released, when its copy completes. `evict` is one
-tick of the server's eviction loop, which wakes every `EVICTION_INTERVAL_S`.
+operation, payloads) at a job's start and returns the reply frames, a
+callable to run at the job's end (a store's chunks become visible, and a
+retrieve's read locks are released, when its copy completes) and the chunks
+the job works on: a lookup's prompt chunks, the chunks a store or retrieve
+copies, none otherwise. `evict` is one tick of the server's eviction loop,
+which wakes every `EVICTION_INTERVAL_S`.
 `expire_sessions` is one tick of its session cleanup, which runs at the
 server's start and every `SESSION_SWEEP_INTERVAL_S` after it, and drops each
 session created more than `SESSION_TTL_S` earlier.
@@ -146,9 +148,9 @@ class LMCacheServer:
 
     def handle(
         self, frames: list[bytes], now: float
-    ) -> tuple[list[bytes], Callable[[float], None]]:
-        """Serve one request at its job's start; return its reply frames and
-        the effect to apply at its job's end."""
+    ) -> tuple[list[bytes], Callable[[float], None], int]:
+        """Serve one request at its job's start; return its reply frames, the
+        effect to apply at its job's end and the chunks the job works on."""
         identity, b_uid, b_op, *payloads = frames
         op = self._wire.decode_operation(b_op)
         handler = self._handlers.get(op)
@@ -156,11 +158,12 @@ class LMCacheServer:
             raise LMCacheRefusal(f"lmcache stand-in does not model request type {op!r}")
         spec = self._spec(op)
         args = self._mq.unwrap_request_payloads(payloads, list(spec.payload_types))
-        response, at_end = handler(*args, now=now)
+        # A handler that works on no chunks returns two values.
+        response, at_end, *chunks = handler(*args, now=now)
         reply = [identity, b_uid, b_op]
         if response is not None:
             reply.append(self._mq.msgspec_encode(response, cls=spec.response_type))
-        return reply, at_end
+        return reply, at_end, sum(chunks)
 
     def evict(self, now: float) -> list[tuple]:
         """One eviction-loop tick: above the watermark, drop the configured
@@ -246,7 +249,7 @@ class LMCacheServer:
         s = self._session(key.request_id, now)
         s.tokens, s.key, s.hit = key.token_ids, key, -1
         self._prefetch[key.request_id] = hit
-        return None, _noop
+        return None, _noop, len(hashes)
 
     def _query_prefetch_status(
         self, request_id: str, *, now: float
@@ -317,7 +320,7 @@ class LMCacheServer:
             for k in reversed(fresh):
                 self.objects.move_to_end(k)
 
-        return (b"", True), admit
+        return (b"", True), admit, len(wanted)
 
     def _retrieve(
         self,
@@ -336,11 +339,13 @@ class LMCacheServer:
         if len(readable) < len(keys):
             self._unlock(readable, 1)
             return (b"", False), _noop
-        return (b"", True), lambda now: self._unlock(readable, 1)
+        return (b"", True), lambda now: self._unlock(readable, 1), len(keys)
 
 
 #: The request types the copy engine serves; the request loop serves the rest.
 COPIES = ("store", "retrieve")
+#: The server's periodic ticks and their intervals.
+TICKS = {"evict": EVICTION_INTERVAL_S, "expire_sessions": SESSION_SWEEP_INTERVAL_S}
 
 
 def reply_channel(ch: str) -> str:
@@ -355,12 +360,14 @@ class LMCacheLP:
 
     Each request released to it joins a station's queue in ``(arrival,
     channel, seq)`` order: the copy engine, `copy_width` servers pricing a
-    STORE or RETRIEVE as `copy` over the chunks of its range, or the request
+    STORE or RETRIEVE as `copy` over the chunks it copies, or the request
     loop, one server pricing a LOOKUP at ``lookup_s[0] + lookup_s[1]`` per
     prompt chunk and any other request at `request_s`. A job is served
     (`LMCacheServer.handle`) at its start and, at its end, applies its effect
     and sends its reply. The loop asks only NER: `t` its next job end, its
-    daemon deadline the eviction loop's next tick (`LMCacheServer.evict`).
+    daemon deadline the server's next tick: the eviction loop's
+    (`LMCacheServer.evict`), first a second after the server starts, or the
+    session sweep's (`LMCacheServer.expire_sessions`), first at its start.
     While it waits it answers at once the frames sent outside the run, which
     carry no stamp: lmcache's startup and teardown requests.
 
@@ -369,18 +376,11 @@ class LMCacheLP:
     """
 
     def __init__(self, rt, sock, server, *, lookup_s, request_s, copy, copy_width=1):
-        import msgspec
         import zmq
-        from lmcache.v1.multiprocess.rpc import get_rpc_spec
-        from lmcache.v1.multiprocess.transport.zmq_impl import mq, wire
+        from lmcache.v1.multiprocess.transport.zmq_impl import wire
 
         self.zmq, self.rt, self.sock, self.server = zmq, rt, sock, server
-        self._decode, self._spec, self._mq, self._wire = (
-            msgspec.msgpack.decode,
-            get_rpc_spec,
-            mq,
-            wire,
-        )
+        self._wire = wire
         self.lookup_s, self.request_s, self.copy = lookup_s, request_s, copy
         # ponytail: each copy server moves at the link's whole rate; share it
         # between them if a measured copy engine says they contend.
@@ -391,7 +391,7 @@ class LMCacheLP:
         self.jobs: list = []
         self.started = 0
         self.inbox: dict = {}  # (channel, seq) -> (arrival, frames), read, not taken
-        self.next_tick = rt.now + EVICTION_INTERVAL_S
+        self.due = {"evict": rt.now + EVICTION_INTERVAL_S, "expire_sessions": rt.now}
 
     def serve(self) -> None:
         """Serve until the ``+inf`` grant."""
@@ -402,7 +402,7 @@ class LMCacheLP:
             self._settle()
             self._at(rt.now)
             rt.ask_next_event(
-                self.jobs[0][0] if self.jobs else math.inf, self.next_tick
+                self.jobs[0][0] if self.jobs else math.inf, min(self.due.values())
             )
             while rt.conn.fileno() not in dict(poller.poll()):
                 self._pull()
@@ -410,7 +410,7 @@ class LMCacheLP:
                 return
 
     def _at(self, now: float) -> None:
-        """Everything due at `now`: job ends, an eviction tick, the requests
+        """Everything due at `now`: job ends, the server's ticks, the requests
         released, and the job starts they allow, until no job ends at `now`."""
         released = sorted(
             (a, ch, seq)
@@ -428,14 +428,15 @@ class LMCacheLP:
                 self.busy[station] -= 1
                 back = reply_channel(ch)
                 self._send(back, reply, self.rt.stamp_send(back))
-            if now >= self.next_tick:
-                self.server.evict(now)
-                self.next_tick += EVICTION_INTERVAL_S
+            for tick, due in self.due.items():
+                if now >= due:
+                    getattr(self.server, tick)(now)
+                    self.due[tick] += TICKS[tick]
             for station, queue in self.queued.items():
                 while queue and self.busy[station] < self.width[station]:
                     ch, op, frames = queue.popleft()
-                    reply, effect = self.server.handle(frames, now)
-                    end = now + self._price(op, frames, reply)
+                    reply, effect, chunks = self.server.handle(frames, now)
+                    end = now + self._price(op, chunks)
                     job = (end, self.started, station, ch, reply, effect)
                     heapq.heappush(self.jobs, job)
                     self.started += 1
@@ -443,17 +444,12 @@ class LMCacheLP:
             if not (self.jobs and self.jobs[0][0] <= now):
                 return
 
-    def _price(self, op: str, frames: list[bytes], reply: list[bytes]) -> float:
-        if op not in ("lookup", *COPIES):
-            return self.request_s
-        types = list(self._spec(op).payload_types)
-        key = self._mq.unwrap_request_payloads(frames[3:], types)[0]
-        # ponytail: whole chunks of the range, resident ones too; count what
-        # the server copies if a parity sample shows the difference.
-        n = (key.end - key.start) // self.server.chunk_size
+    def _price(self, op: str, chunks: int) -> float:
         if op == "lookup":
-            return self.lookup_s[0] + self.lookup_s[1] * n
-        return self.copy.duration_s(n if self._decode(reply[3])[1] else 0)
+            return self.lookup_s[0] + self.lookup_s[1] * chunks
+        if op in COPIES:
+            return self.copy.duration_s(chunks)
+        return self.request_s
 
     def _pull(self) -> None:
         """Read every frame already here without blocking: answer one sent
@@ -465,7 +461,7 @@ class LMCacheLP:
                 return
             ch, arrival, seq = pickle.loads(hdr)
             if arrival is None:
-                reply, effect = self.server.handle([identity, *rest], self.rt.now)
+                reply, effect, _ = self.server.handle([identity, *rest], self.rt.now)
                 effect(self.rt.now)
                 self._send(reply_channel(ch), reply, (None, None))
             else:
