@@ -606,7 +606,8 @@ def name_endpoints(
     socket of this LP opens is never resolved. An engine passes its `config`,
     which holds its pipeline-stage and prefill/decode addresses; a pipeline
     stage's own channels carry the index ATOM's engine core manager gives it,
-    ``dp * pp + stage``, as the frontend names them, and the head's batch to
+    its stage, as the frontend names them (ATOM runs no pipeline beside DP),
+    and the head's batch to
     stage ``k`` goes on ``meta#pp<k>``.
     """
     rt = _installed
@@ -615,7 +616,6 @@ def name_endpoints(
     kinds = {}
     if config is not None:
         pc = config.parallel_config
-        dp = dp * getattr(config, "pipeline_parallel_size", 1)
         dp += getattr(pc, "pipeline_parallel_rank", 0)
         kinds |= {a: f"meta#pp{k}" for k, a in enumerate(pc.pp_meta_addrs)}
         kinds |= {
