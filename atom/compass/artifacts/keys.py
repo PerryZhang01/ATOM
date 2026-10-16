@@ -9,9 +9,9 @@ source-root digest)**, and a bare or merged price file states no layout, so it
 silently prices nothing while looking layered.
 
 The machine-spec digest (`machine_spec_digest`) is the digest of the spec's own
-key, its device and software stack, so a `price_list` or `region_terms` entry
-measured on one platform does not answer on another, and a spec edit outside
-those two (an interconnect field, a re-probed constant) moves no key.
+key, its device and software stack, so an entry keyed by it that was measured
+on one platform does not answer on another, and a spec edit outside those two
+(an interconnect field, a re-probed constant) moves no key.
 
 The parallel layout (`LAYOUT`) is the rank widths (`AXES`) plus the settings
 that change kernels and groups at a fixed rank count: the switches
@@ -96,15 +96,15 @@ KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
     Kind.COVERAGE_HULL: ("price_list",),
     Kind.STEP_LINEAR_LAW: (
         "model",
-        "device",
+        "machine_spec",
         "parallel",
         "engine_config",
         "source_root",
         "form",
     ),
-    # The values `run.host_key` reads, the engine config as its sorted JSON,
-    # since a key holds only strings and numbers.
-    Kind.HOST_LAWS: ("host_cpu", "atom_src", "model", "engine_config"),
+    # The values `run.host_key` reads, the engine config as its sorted JSON
+    # since a key holds only strings and numbers, and the machine-spec digest.
+    Kind.HOST_LAWS: ("host_cpu", "atom_src", "model", "engine_config", "machine_spec"),
     # `engine_config` names the one the grid was planned for; `grid` names
     # the grid definition with its margin.
     Kind.STEP_GRID_BUNDLE: (

@@ -187,9 +187,12 @@ def test_two_keys_never_share_a_directory(tmp_path):
     [
         (
             Kind.STEP_LINEAR_LAW,
-            "(model, device, parallel, engine_config, source_root, form)",
+            "(model, machine_spec, parallel, engine_config, source_root, form)",
         ),
-        (Kind.HOST_LAWS, "(host_cpu, atom_src, model, engine_config)"),
+        (
+            Kind.HOST_LAWS,
+            "(host_cpu, atom_src, model, engine_config, machine_spec)",
+        ),
     ],
 )
 def test_a_key_short_of_its_last_field_refuses_naming_the_tuple(kind, fields):

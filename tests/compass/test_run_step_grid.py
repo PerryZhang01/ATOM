@@ -54,6 +54,7 @@ from atom.compass.artifacts import (
     Row,
     Topology,
     axes_of,
+    machine_spec_digest,
     member_name,
     rows_for,
 )
@@ -328,25 +329,33 @@ def test_the_runs_readings_take_the_stack_from_the_spec_and_the_host_cpu_as_host
     assert read.reading(Axis.HOST_CPU).value == host
 
 
+#: The suite's machine document's digest, as a law fitted on it is keyed.
+SPEC_DIGEST = machine_spec_digest(MachineSpec.from_mapping(DOCUMENT))
+
+
 def host_laws_key(r) -> dict:
-    """A `host_laws` key from the values `run.host_key` reads."""
+    """A `host_laws` key from the values `run.host_key` reads and the spec's
+    digest."""
     host = compass_run.host_key(r.config)
     return {
         "host_cpu": host["host_cpu"],
         "atom_src": host["atom"],
         "model": host["model"],
         "engine_config": json.dumps(host["engine"], sort_keys=True),
+        "machine_spec": SPEC_DIGEST,
     }
 
 
 #: The fields a step linear law shares with a bundle.
-MEASURED = {
-    k: KEY[k] for k in ("model", "device", "parallel", "engine_config", "source_root")
-}
+MEASURED = {k: KEY[k] for k in ("model", "parallel", "engine_config", "source_root")}
 #: A key per kind `fit` publishes; a `host_laws` key is the deployment's
 #: `host_laws_key`.
 NEW_KINDS = {
-    Kind.STEP_LINEAR_LAW: {**MEASURED, "form": "fixed+tokens+seqs"},
+    Kind.STEP_LINEAR_LAW: {
+        **MEASURED,
+        "machine_spec": SPEC_DIGEST,
+        "form": "fixed+tokens+seqs",
+    },
     Kind.HOST_LAWS: None,
 }
 
