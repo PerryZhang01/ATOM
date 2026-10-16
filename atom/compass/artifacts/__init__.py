@@ -24,10 +24,10 @@ thing it was measured against has moved.
 * **Invalidation is a per-artifact matrix** (`matrix`, `fingerprints`). The
   design's table is a table in the code, so a reader can hold the two side by
   side.
-  Each entry records the fingerprint of *its own dependency row* -- three rows
-  for a `machine_spec` -- and a load recomputes and compares cell by cell, so a
-  refusal names the cell and a change in a cell the row does not depend on
-  loads clean.
+  Each entry records the fingerprint of *its own dependency row* -- its
+  capacity's and its tokenizer terms' for a `machine_spec` -- and a load
+  recomputes and compares cell by cell, so a refusal names the cell and a
+  change in a cell the row does not depend on loads clean.
 * **Every gate's state is in the artifact** (`gates`). *"A dead gate is worse
   than no gate."* Loading checks the state the entry recorded, not the flag,
   which is the one thing the `PRICE_KERNELS` incident could not do.

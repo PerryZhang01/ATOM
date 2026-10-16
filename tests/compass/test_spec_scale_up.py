@@ -3,8 +3,7 @@
 
 The MI455 document is built the way its spec is authored: AMD's published
 numbers as a `datasheet` fragment, and everything nobody published or measured
-(the two link latencies, the derates, the host and the runtime constants) as an
-`assumed` one.
+(the two link latencies, the derates and the host) as an `assumed` one.
 """
 
 import copy
@@ -47,7 +46,6 @@ ASSUMED = {
     "device": {
         "memory": {"derate": 0.86},
         "compute": {"derate": 0.50},
-        "runtime_constants": copy.deepcopy(DOCUMENT["device"]["runtime_constants"]),
         "software_pinned_to": dict(STACK),
     },
     "interconnect": {

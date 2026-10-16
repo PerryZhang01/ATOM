@@ -36,7 +36,6 @@ from atom.compass.artifacts import (
 )
 from atom.compass.artifacts.keys import platform_key
 from atom.compass.fit.samples import load
-from atom.compass.run import _width_keys
 from atom.compass.spec import MachineSpec
 
 #: The rank every member is written at: a fit has one writer.
@@ -82,9 +81,7 @@ def inputs(args, sources) -> tuple[list, dict]:
             "runs its server served, so the fit records the traces they sent"
         )
     samples, config = load(runs)
-    spec = MachineSpec.from_mapping(
-        _width_keys(json.loads(Path(args.machine).read_text()))
-    )
+    spec = MachineSpec.from_mapping(json.loads(Path(args.machine).read_text()))
     torch = spec.value("device.software_pinned_to.torch")
     ran, stated = platform(config), {**machine_spec_key(spec).values, "torch": torch}
     differ = [

@@ -86,7 +86,8 @@ calls, a frontend's its executor's refused jobs and its refused clock calls.
 An engine's also holds what its worker's steps cost, for the summary's
 predicted seconds and their shares by method (`backends.cost.GROUPS`).
 It holds the memory the worker predicts too, for
-``python -m atom.compass.memory.check``, and under ``step_grid`` the bundle's
+``python -m atom.compass.memory.check``, with the assumption a
+`memory_readings` member it read states, which `compass run` records, and under ``step_grid`` the bundle's
 key, digest and ``describe()`` line, which the summary carries. The authority
 removes an earlier run's files there as it starts. At the end of client run
 ``k`` every server LP hands in to ``client-<k>/`` there, and the authority's
@@ -313,7 +314,7 @@ def channel_table(run: dict):
 def _machine(run: dict):
     from atom.compass.spec import MachineSpec
 
-    return MachineSpec.from_mapping(_width_keys(run["machine"]))
+    return MachineSpec.from_mapping(run["machine"])
 
 
 def _members(table, dp: int) -> dict | None:
@@ -358,10 +359,9 @@ def _bind_transfer(config, run: dict) -> None:
     KV block this deployment's workers hold."""
     from atom.compass.backends import KvGeometry, Parallelism
     from atom.compass.kv import TRANSFER_KEY, Scope, TransferModel
-    from atom.compass.spec import MachineSpec
 
     config.kv_transfer_config[TRANSFER_KEY] = TransferModel.from_spec(
-        MachineSpec.from_mapping(_width_keys(run["machine"])),
+        _machine(run),
         KvGeometry.from_hf_config(
             config.hf_config,
             block_size=config.kv_cache_block_size,
@@ -821,7 +821,6 @@ def runner(model_runner, tree) -> None:
         install_cost_backend,
         install_device_readings,
     )
-    from atom.compass.spec import MachineSpec
 
     config = model_runner.config
     tp = config.tensor_parallel_size
@@ -893,7 +892,7 @@ def runner(model_runner, tree) -> None:
             stack_layers=end - start,
             stage_share=share,
         )
-    machine = MachineSpec.from_mapping(_width_keys(run["machine"]))
+    machine = _machine(run)
     platform = machine_spec_digest(machine)
     fitted_on = run.get(STEP_LINEAR, {}).get("machine_spec")
     if STEP_LINEAR in run and fitted_on != platform:
@@ -961,7 +960,7 @@ def runner(model_runner, tree) -> None:
         if replay is not None:
             replay.now = lambda: float(slot[0])
     model_runner.compass_abort = run.get("on_refusal") == "abort"
-    reserved, captured = _graph_pool(model_runner, machine, model)
+    reserved = _graph_pool(model_runner, machine, model)
     # The readings' label: under DP-attention the layout, with the EP width
     # when the experts shard; one rank of it is a TP1 engine.
     dp = config.parallel_config.data_parallel_size
@@ -977,13 +976,11 @@ def runner(model_runner, tree) -> None:
         cudagraph_overhead=reserved,
     )
     install_device_readings(model_runner, readings)
-    pool = (
-        None
-        if captured is None
-        else predicts(machine, tp_width=tp, captured_tokens=captured)
-    )
     model_runner.compass_memory = record(
-        readings, tokens=config.max_num_batched_tokens, pool=pool
+        readings,
+        tokens=config.max_num_batched_tokens,
+        pool=predicts(measured),
+        assumed=measured.assumed,
     )
     if bundle is not None:
         model_runner.compass_step_grid = {**bundle, "describe": backend.describe()}
@@ -992,10 +989,7 @@ def runner(model_runner, tree) -> None:
 def _graph_pool(model_runner, machine, model):
     """What ATOM's `_estimate_cudagraph_overhead` reserves for this deployment:
     nothing under ``enforce_eager``, else the branch the runner's own
-    `_piecewise_cg_active` picks, over the same config fields it reads. With it,
-    the tokens `capture_cudagraph` captures, None under ``enforce_eager``. The
-    piecewise reservation caps only what it reserves; the capture takes the
-    same bounded ladder in both modes."""
+    `_piecewise_cg_active` picks, over the same config fields it reads."""
     from atom.compass.memory import (
         PiecewiseCapture,
         capture_token_shapes,
@@ -1005,15 +999,9 @@ def _graph_pool(model_runner, machine, model):
 
     config = model_runner.config
     if config.enforce_eager:
-        return reserves(enforce_eager=True), None
-    # At one token per sequence a batch size is its token count, so the
-    # capture loop's schedulable bound applies to both.
-    bound = min(config.max_num_seqs, config.max_num_batched_tokens)
-    captured = sum(
-        capture_token_shapes(config.capture_sizes, max_num_batched_tokens=bound)
-    )
+        return reserves(enforce_eager=True)
     if not model_runner._piecewise_cg_active():
-        return reserves(activations=model.activations), captured
+        return reserves(activations=model.activations)
     hf = config.hf_config
     sizes = config.compilation_config.cudagraph_capture_sizes or [config.max_num_seqs]
     capacity = machine.value("device.memory.capacity_bytes")
@@ -1029,7 +1017,7 @@ def _graph_pool(model_runner, machine, model):
         ),
         budget_bytes=int(config.gpu_memory_utilization * capacity),
     )
-    return reserves(piecewise=capture), captured
+    return reserves(piecewise=capture)
 
 
 def tokenizer(tok, config) -> None:
@@ -1039,10 +1027,10 @@ def tokenizer(tok, config) -> None:
     run = spec()
     if run is None:
         return
-    from atom.compass.spec import Backend, MachineSpec
+    from atom.compass.spec import Backend
     from atom.utils.compass_loop import wrap_decode, wrap_encode
 
-    entry = MachineSpec.from_mapping(_width_keys(run["machine"])).tokenizer_for(
+    entry = _machine(run).tokenizer_for(
         config.hf_config.architectures[0],
         Backend.FAST if tok.is_fast else Backend.SLOW,
         _fingerprint(tok),
@@ -1129,15 +1117,6 @@ def _file_digest(name: str, filename: str) -> str | None:
     except OSError:
         return None
     return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-
-def _width_keys(node):
-    """JSON writes a width table's integer keys as strings; read them back."""
-    if isinstance(node, list):
-        return [_width_keys(v) for v in node]
-    if not isinstance(node, dict):
-        return node
-    return {int(k) if k.isdigit() else k: _width_keys(v) for k, v in node.items()}
 
 
 def _write_whole(path: Path, text: str) -> None:

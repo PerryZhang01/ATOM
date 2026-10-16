@@ -50,7 +50,7 @@ from atom.compass.artifacts import (
 from atom.compass.drive import measure_memory
 from atom.compass.memory import ModelTerms, device_readings, reserves
 from atom.compass.memory.readings import MemoryReadings
-from atom.compass.run import _width_keys, memory
+from atom.compass.run import memory
 from atom.compass.spec import MachineSpec, SpecRefusal
 
 MACHINE = MachineSpec.from_mapping(copy.deepcopy(DOCUMENT))
@@ -299,7 +299,7 @@ FROM_THE_SPEC = {
 
 def test_the_mi308x_entry_gives_the_readings_its_spec_gave():
     path = CONFIG_JSON.parents[2] / "scripts/compass/machines/mi308x-hjbog18.json"
-    spec = MachineSpec.from_mapping(_width_keys(json.loads(path.read_text())))
+    spec = MachineSpec.from_mapping(json.loads(path.read_text()))
     raw = json.loads(CONFIG_JSON.read_text())
     entry = MemoryReadings.from_member(MI308X_READINGS, "memory_readings mi308x")
     model = ModelTerms.from_config(

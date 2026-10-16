@@ -44,10 +44,10 @@ read back through `naming.read_back`; a neighbour that does not parse, is not
 listed, or whose digest has moved is refused by name rather than returned.
 
 **The entry also states two things about its own validity.** A published entry carries the **fingerprint of every row
-the invalidation matrix gives its kind** -- three for a `machine_spec`, whose
-capacity, runtime constants and tokenizer terms are invalidated by different
-things -- and the **state of every gate that shaped it**. Both are required at
-publish rather than checked at load: a campaign that runs for hours and
+the invalidation matrix gives its kind** -- a `machine_spec`'s capacity and
+tokenizer terms are invalidated by different things -- and the **state of
+every gate that shaped it**. Both are required at publish rather than checked
+at load: a campaign that runs for hours and
 produces an entry nobody can certify has spent the hours, and the flag that
 decided the gate is not around to be asked afterwards. `read` states an entry;
 `load` states it *and certifies it*, and they are two calls because the first

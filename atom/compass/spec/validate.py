@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: MIT
 """What a spec is checked for, and why every reason is reported at once.
 
 A spec is authored by hand against a schema most of whose terms cannot be looked
@@ -17,100 +16,33 @@ exception raises the first.
 
 The check has two halves. The first asks whether the document is a complete
 instance of the schema -- every required field present and every value the shape
-its field declares. The second asks whether what it describes is consistent:
-whether the widths the deployment will actually use were probed, whether the
-stack the constants were taken on is the stack now loaded, and whether constants
-carried over from another spec came from one pinned to the same stack.
+its field declares. The second asks whether the stack the spec's numbers were
+taken on is the stack now loaded.
 
 **The second half is asked of whatever resolved, and not only of a complete
-spec.** Those questions are not intrinsically about a resolved document, only
-their implementation was: both width tables are present and schema-valid in a
-document that the first half refuses for a single missing derate, and that
-derate is a value its author types in at a desk. Running the second half only
-when the first came back clear therefore hid the expensive refusal -- a width
-nobody probed, which costs an eight-GPU reservation to fix -- behind the cheap
-one, and reintroduced at the halfway line exactly the one-refusal-per-attempt
-this module opens by rejecting. So each question is asked of the fields that did
-check out, and a question that reads a field which did not resolve says so by
-name rather than being passed over in silence.
+spec.** The stack pin is present and schema-valid in a document that the first
+half refuses for a single missing derate, and that derate is a value its author
+types in at a desk. So the question is asked of the fields that did check out,
+and a pin that did not resolve is named rather than passed over in silence.
 
 **That holds for the schema half too, so the walk over the document collects.**
 A key the table does not declare, or a block holding a scalar where the schema
 has fields, is one refusal about one key -- and reading the document stops
-there, which would leave every other field unchecked and every consistency
-question with nothing resolved to be asked of. A typo in a hand-authored
-document is the cheapest fix there is, and it would have hidden the width
-nobody probed behind itself. So the walk yields its refusals and carries on,
-and the document is checked field by field whatever it holds elsewhere.
+there, which would leave every other field unchecked and the stack question
+with nothing resolved to be asked of. So the walk yields its refusals and
+carries on, and the document is checked field by field whatever it holds
+elsewhere.
 
-**The same record makes the opt-in conditions legible.** Four of the six in
-`CONDITIONS` need something from the caller -- two of them `tp_widths=`, one
-`observed_stack=`, and one a `Merge` rather than a document -- and a clear
-result that does not say what it declined to ask is the shape this package
-exists to refuse. The sharpest case is the transfer: its source's pin is in no
-field of the merged document, by the decision below, so `validate(document)`
-can never ask that condition however the document was built, and the same spec
-is refused as a `Merge` and clear as a document. That is not a wrong number,
-but it must be visible, because a caller that holds only the document cannot
-ask it. Merging the document again recovers the transfer, since each field keeps
-its own origin, but not the pin, so a `Merge` holding the saved document is
-refused by the transfer check below, which names the merge. No command
-validates a machine file: a per-machine script such as
-`scripts/compass/mi308x_spec.py` merges its fragments and calls this module,
-and nothing in this package reads a spec file. `CONDITIONS` is what a count of
-reach is a count of; a condition added to the check set and not to it is one
-no result can report on.
-
-**The reach of a document is `ASKABLE_OF_A_DOCUMENT`, which is a value and not
-a sentence.** Writing the number down in prose here puts a person between the
-check set and the statement about it: the set changes, nobody rereads the
-paragraph, and the package goes on claiming a reach it no longer has. So the
-statement is the tuple below, a run's own `not_asked` is asserted against it,
-and a condition that becomes askable of a document -- or one that stops being
--- fails a test rather than quietly contradicting a docstring.
-
-**What was asked of only part of its fields is reported apart from what was not
-asked at all.** A question whose fields all failed to resolve was not asked and
-must not be counted as reach. A question asked of two width tables where only
-one resolved *was* asked, and can already have earned a refusal; filing it under
-"not asked" would report a refusal the run did make as a question it did not,
-and would subtract it from the count of what the run reached. Both are results
-and neither is the other, so they are two fields of the record.
-
-**A width nobody probed is two questions, not one.** The first is whether the
-document carries it, and the remedy that refusal offers is to go and measure it.
-The second is whether a probe here would fill it, and for one entry -- the
-allocator's retained bytes on a single card -- the answer is no: the single-card
-probe fills the other width-keyed term, and the multi-rank one starts above
-width one. So for that entry the first remedy cannot be followed with the tools
-this package ships, and a check that stopped at the first question would leave
-an author hunting a probe that does not exist. The second is asked only where
-the entry is absent: a spec that carries the number, measured by hand, is a good
-spec and is not refused for how it was obtained.
-
-Three of those questions need something the document does not carry, and the two
-about widths need the same thing.
-
-**The widths a deployment will use are ATOM's, not the spec's.** The spec
-describes a machine and says nothing about how the engine was launched, so the
-widths come in as an argument, from the engine's own configuration. A spec that
-probed widths 1 and 2 is complete and correct, and is still the wrong spec for
-a run at width 8 -- which is a fact about the pair, not about the document.
-
-**A transferred constant is checked against its source's stack pin.** The
-fragment that carried it declares the stack the source spec was pinned to, in
-pin fields whose own origin is the transfer, which is why the merge keeps that
-declaration aside instead of contributing it. A fragment counts as a transfer
-here only for a field it carried outside `host.`; a tokenizer swept on another
-host carries no stack to check. Here
-the two are compared, and a transfer out of a differently-pinned spec is refused
-by name. A transfer that declares no stack at all is refused too: the evidence
-that these constants move with the compute stack is the whole reason a transfer
-is allowed to be cheap, and a transfer that does not say what it was probed
-against cannot be checked by anyone, ever. A document saved from a merge of
-transfers from one spec reads back as such a transfer, since a merge keeps a
-transfer's pin out of what it writes, so its refusal names that merge rather
-than its author.
+**The same record makes the opt-in condition legible.** The stack question
+needs `observed_stack=` from the caller, and a clear result that does not say
+what it declined to ask is the shape this package exists to refuse. So a run
+names, in `not_asked`, each of `CONDITIONS` it could not ask and why, and in
+`asked_in_part` each it asked of only part of the fields it reads: a question
+asked of two pins where one resolved was asked, and can already have earned a
+refusal, so filing it under "not asked" would report a refusal the run did make
+as a question it did not. No command validates a machine file: a per-machine
+script such as `scripts/compass/mi308x_spec.py` merges its fragments and calls
+this module, and nothing in this package reads a spec file.
 
 A stack mismatch on the running machine is the one finding that is not fatal by
 default. The numbers are still measurements, taken on a stack that has since
@@ -122,53 +54,21 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .fields import PINNED, SCHEMA, Kind, check
+from .fields import PINNED, SCHEMA, check
 from .machine import MachineSpec, _missing, _survey
-from .merge import PINNED_BLOCK, Merge
-from .probes import FILLED_BY, probe_for
+from .merge import PINNED_BLOCK
 from .rules import Rule, SpecRefusal
 from .tokenizers import TokenizerTable
 
 #: The conditions a spec is checked for. The first two are asked of anything
 #: that is a mapping at all and name themselves in `not_asked` when the subject
-#: is not one; each of the rest names itself there when a run could not reach it.
+#: is not one; the last names itself there when a run could not reach it.
 MISSING = "whether every required field is present and every value its declared shape"
 DERATES = "whether a spec-peak number carries the derate it obliges"
-WIDTHS = "whether the widths this deployment will use were probed"
-PROBES = "whether a probe fills the widths this deployment uses and nobody probed"
-STACK = "whether the constants' stack pin is the stack now loaded"
-TRANSFERS = "whether a transferred constant came from a spec pinned to this stack"
+STACK = "whether the spec's stack pin is the stack now loaded"
 #: The whole check set, in the order a run asks it. What `not_asked` is measured
 #: against: a condition missing from here is one no result can report on.
-CONDITIONS = (MISSING, DERATES, WIDTHS, PROBES, STACK, TRANSFERS)
-#: What a document-taking run can reach, which is every condition but the
-#: transfer: a transfer's source pin is in no field of a document, however the
-#: document was built. This is the package's statement of its own reach, held to
-#: a run's `not_asked` by a test rather than written out in prose that nothing
-#: reads. A caller that passes `validate` only a document states its reach from
-#: here, or states one nothing checks.
-ASKABLE_OF_A_DOCUMENT = tuple(
-    condition for condition in CONDITIONS if condition != TRANSFERS
-)
-#: The fields each consistency question reads before it can be asked at all.
-WIDTH_TABLES = tuple(field.path for field in SCHEMA if field.kind is Kind.WIDTH_TABLE)
-#: The width tables the probe question can say anything about, which is not all
-#: of them. It reports a width a document is missing that no probe would fill
-#: either, so a table every probe covers is one it can only ever be silent
-#: about -- and a question registered as reading a field it cannot speak for
-#: reports a run that could not ask it and a run that asked and found nothing
-#: as the same record. Derived from `FILLED_BY`, so a probe given the width
-#: that has none empties this with no second list to remember. A table no
-#: probe is named for at all contributes nothing here rather than failing the
-#: derivation: this runs while the module is being imported, so a subscript
-#: would answer a table nobody has entered yet by denying every caller of the
-#: package, including the ones with no interest in probes, and the reader would
-#: be told which import failed rather than which term is missing. The naming is
-#: left to `probe_for`, which refuses such a term by name, and the two lists
-#: are held against each other by a test.
-PROBE_TABLES = tuple(
-    path for path in WIDTH_TABLES if None in FILLED_BY.get(path.rsplit(".", 1)[-1], ())
-)
+CONDITIONS = (MISSING, DERATES, STACK)
 STACK_PINS = tuple(f"{PINNED_BLOCK}.{component}" for component in PINNED)
 
 
@@ -237,45 +137,22 @@ def _unreached(
 
 
 def _reach(
-    resolved: Mapping[str, Any],
-    tp_widths: Sequence[int],
-    observed_stack: Mapping[str, str] | None,
-    merged: Merge | None,
-    read: bool,
+    resolved: Mapping[str, Any], observed_stack: Mapping[str, str] | None, read: bool
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """The conditions this run did not ask, and those it asked of only part of
     the fields they read. Each carries its reason."""
     unasked: list[str] = []
-    partial: list[str] = []
-
-    def reached(condition: str, reads: Sequence[str]) -> None:
-        none, some = _unreached(condition, reads, resolved)
-        unasked.extend(none)
-        partial.extend(some)
-
+    partial: tuple[str, ...] = ()
     if not read:
         why = "the subject is not a mapping, so there was no document to ask it of"
         unasked.append(f"{MISSING} -- {why}")
         unasked.append(f"{DERATES} -- {why}")
-    if not tp_widths:
-        unasked.append(f"{WIDTHS} -- no `tp_widths=` was given")
-        unasked.append(f"{PROBES} -- no `tp_widths=` was given")
-    else:
-        reached(WIDTHS, WIDTH_TABLES)
-        reached(PROBES, PROBE_TABLES)
     if observed_stack is None:
         unasked.append(f"{STACK} -- no `observed_stack=` was given")
     else:
-        reached(STACK, STACK_PINS)
-    if merged is None:
-        unasked.append(
-            f"{TRANSFERS} -- the subject is a document, and a transfer's source "
-            "pin is in no field of one; ask this of the `Merge` while the "
-            "fragments are still in hand"
-        )
-    elif merged.transfers:
-        reached(TRANSFERS, STACK_PINS)
-    return tuple(unasked), tuple(partial)
+        none, partial = _unreached(STACK, STACK_PINS, resolved)
+        unasked.extend(none)
+    return tuple(unasked), partial
 
 
 def _complete(
@@ -311,99 +188,13 @@ def _complete(
     return refusals, True
 
 
-def _widths(spec: MachineSpec, tp_widths: Sequence[int], resolved: Mapping[str, Any]):
-    for path in WIDTH_TABLES:
-        if path not in resolved:
-            continue
-        for width in tp_widths:
-            try:
-                spec.runtime_constant(path.rsplit(".", 1)[-1], width)
-            except SpecRefusal as refusal:
-                yield refusal
-
-
-def _probes(tp_widths: Sequence[int], resolved: Mapping[str, Any]):
-    """The widths a document is missing that no probe here would fill either.
-
-    Asked of the tables a probe can fall short on, which is the same set the
-    condition registers as what it reads: walking a table every probe covers
-    would ask a question whose answer is fixed.
-    """
-    for path in PROBE_TABLES:
-        if path not in resolved:
-            continue
-        name = path.rsplit(".", 1)[-1]
-        for width in tp_widths:
-            if width in resolved[path]:
-                continue
-            try:
-                probe_for(name, width)
-            except SpecRefusal as refusal:
-                yield refusal
-
-
-def _transfers(resolved: Mapping[str, Any], merged: Merge):
-    for fragment in merged.transfers:
-        declared = {
-            component: fragment.values[pin]
-            for component in PINNED
-            if (pin := f"{PINNED_BLOCK}.{component}") in fragment.values
-            and fragment.carried_from(pin)
-        }
-        listed = fragment.values.get("provenance.fragments")
-        if not declared and listed:
-            yield SpecRefusal(
-                Rule.PINNED_STACK,
-                f"{fragment.stanza()} carried constants over from "
-                f"{fragment.transferred_from!r}, and its provenance names the "
-                "fragments an earlier merge built it from; a merge keeps a "
-                "transfer's source stack pin out of the document it writes, so "
-                "this one cannot say which stack they were probed against",
-                "merge the fragments it was built from "
-                f"({', '.join(map(repr, listed))}) in its place, since a "
-                "transfer states its source's stack pin there and nowhere else; "
-                "any of them that is itself a saved document with no pin is "
-                "refused the same way",
-            )
-            continue
-        if not declared:
-            yield SpecRefusal(
-                Rule.PINNED_STACK,
-                f"{fragment.stanza()} carried constants over from "
-                f"{fragment.transferred_from!r} without saying which stack they "
-                "were probed against",
-                "a transfer carries both specs' stack pins; these constants "
-                "move with the compute stack, so one that cannot name its own "
-                "stack cannot be checked against this machine's",
-            )
-            continue
-        for component, version in declared.items():
-            if f"{PINNED_BLOCK}.{component}" not in resolved:
-                continue
-            here = resolved[f"{PINNED_BLOCK}.{component}"]
-            if version != here:
-                yield SpecRefusal(
-                    Rule.PINNED_STACK,
-                    f"{fragment.stanza()} carried constants over from "
-                    f"{fragment.transferred_from!r}, probed against "
-                    f"{component} {version!r}, into a spec pinned to "
-                    f"{component} {here!r}",
-                    "transfer from a spec pinned to this stack, or measure the "
-                    "constants on it; the untested assumption is transfer "
-                    "within a software generation, not across one",
-                )
-
-
 def validate(
-    subject: object,
+    document: object,
     *,
-    tp_widths: Sequence[int] = (),
     observed_stack: Mapping[str, str] | None = None,
     strict: bool = False,
 ) -> Validation:
-    """Check a document, or a merge of fragments, and report every refusal."""
-    merged = subject if isinstance(subject, Merge) else None
-    document = merged.document if merged is not None else subject
+    """Check a document and report every refusal."""
     resolved: dict[str, Any] = {}
     refusals, read = _complete(document, resolved)
     spec = None
@@ -412,13 +203,11 @@ def validate(
             spec = MachineSpec.from_mapping(document)
         except SpecRefusal as refusal:
             refusals.append(refusal)
-    # The consistency questions go through the fields that checked out, whether
-    # or not they add up to a spec. Where there is no spec this stands in for
-    # one, and it never leaves this function: a partial document is not a
-    # machine, and `Validation.spec` must not offer it as one.
+    # The stack question goes through the fields that checked out, whether or
+    # not they add up to a spec. Where there is no spec this stands in for one,
+    # and it never leaves this function: a partial document is not a machine,
+    # and `Validation.spec` must not offer it as one.
     asked_of = spec if spec is not None else MachineSpec(resolved, TokenizerTable(()))
-    refusals += _widths(asked_of, tp_widths, resolved)
-    refusals += _probes(tp_widths, resolved)
     differences: tuple = ()
     if observed_stack is not None:
         differences = asked_of.check_stack(observed_stack, carried_only=True)
@@ -435,7 +224,5 @@ def validate(
                     "strict check and take responsibility for the difference",
                 )
             )
-    if merged is not None:
-        refusals += _transfers(resolved, merged)
-    unasked, in_part = _reach(resolved, tp_widths, observed_stack, merged, read)
+    unasked, in_part = _reach(resolved, observed_stack, read)
     return Validation(spec, tuple(refusals), differences, unasked, in_part)

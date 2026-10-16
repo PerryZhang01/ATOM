@@ -8,7 +8,7 @@ invalidates the rows that name it and leaves the rest alone.
 `MATRIX` below holds the dependency rows, and it is deliberately a table: the
 deliverable is that a reader can check it cell by cell.
 
-**A uniform matrix has lost its point**, and two cells are the ones a tidying
+**A uniform matrix has lost its point**, and these cells are the ones a tidying
 hand would take away:
 
 * `price_list` does **not** depend on the model. Its leaves are
@@ -17,8 +17,9 @@ hand would take away:
   new pricing campaign.
 * `machine_spec`'s tokenizer terms do **not** depend on the device -- they are
   host CPU work -- and its capacity does not depend on the software stack. So
-  `machine_spec` is three rows here rather than one, and a device change
-  invalidates two of them while a tokenizer change invalidates the third.
+  `machine_spec` is a capacity row and a tokenizer-terms row here rather than
+  one, and a device change invalidates the first while a tokenizer change
+  invalidates the second.
 
 The host CPU invalidates `host_laws`, which time the host, and nothing that
 holds device time. A `shape_population`'s pricing backend is in its key rather
@@ -64,14 +65,14 @@ class Axis(enum.Enum):
 
 
 class Row(enum.Enum):
-    """The rows. `machine_spec` is three of them, and that is the point."""
+    """The rows. `machine_spec`'s capacity and tokenizer terms are rows apart,
+    and that is the point."""
 
     OP_GRAPH = "op_graph"
     PRICE_LIST = "price_list"
     REGION_TERMS = "region_terms"
     MEMORY_READINGS = "memory_readings"
     MACHINE_SPEC_CAPACITY = "machine_spec: capacity"
-    MACHINE_SPEC_RUNTIME_CONSTANTS = "machine_spec: runtime constants"
     MACHINE_SPEC_TOKENIZER_TERMS = "machine_spec: tokenizer terms"
     STEP_MEASUREMENT = "step_measurement"
     STEP_LINEAR_LAW = "step_linear_law"
@@ -157,15 +158,6 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: INDEPENDENT,
     },
-    Row.MACHINE_SPEC_RUNTIME_CONSTANTS: {
-        Axis.SOFTWARE_STACK: DEPENDS,
-        Axis.TORCH: INDEPENDENT,
-        Axis.ATOM_SRC: INDEPENDENT,
-        Axis.MODEL: INDEPENDENT,
-        Axis.DEVICE: DEPENDS,
-        Axis.HOST_CPU: INDEPENDENT,
-        Axis.ENGINE_CONFIG: INDEPENDENT,
-    },
     Row.MACHINE_SPEC_TOKENIZER_TERMS: {
         Axis.SOFTWARE_STACK: INDEPENDENT,
         Axis.TORCH: INDEPENDENT,
@@ -222,18 +214,15 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
     },
 }
 
-#: Which rows decide a kind's validity. `machine_spec` is three; `coverage_hull`
+#: Which rows decide a kind's validity. `machine_spec` is its capacity and
+#: tokenizer-terms rows; `coverage_hull`
 #: is none, and that is a gap in the matrix rather than a default taken here.
 ROWS_OF: Mapping[Kind, tuple[Row, ...]] = {
     Kind.OP_GRAPH: (Row.OP_GRAPH,),
     Kind.PRICE_LIST: (Row.PRICE_LIST,),
     Kind.REGION_TERMS: (Row.REGION_TERMS,),
     Kind.MEMORY_READINGS: (Row.MEMORY_READINGS,),
-    Kind.MACHINE_SPEC: (
-        Row.MACHINE_SPEC_CAPACITY,
-        Row.MACHINE_SPEC_RUNTIME_CONSTANTS,
-        Row.MACHINE_SPEC_TOKENIZER_TERMS,
-    ),
+    Kind.MACHINE_SPEC: (Row.MACHINE_SPEC_CAPACITY, Row.MACHINE_SPEC_TOKENIZER_TERMS),
     Kind.STEP_MEASUREMENT: (Row.STEP_MEASUREMENT,),
     Kind.STEP_LINEAR_LAW: (Row.STEP_LINEAR_LAW,),
     Kind.HOST_LAWS: (Row.HOST_LAWS,),
@@ -245,8 +234,8 @@ ROWS_OF: Mapping[Kind, tuple[Row, ...]] = {
 def rows_for(kind: Kind) -> tuple[Row, ...]:
     """The rows of the matrix a kind is checked against, or a refusal.
 
-    `machine_spec` answers with three, because a device change invalidates its
-    capacity and its runtime constants while leaving its tokenizer terms
+    `machine_spec` answers with its capacity and tokenizer-terms rows, because
+    a device change invalidates its capacity while leaving its tokenizer terms
     standing, and one row could not say that.
     """
     rows = ROWS_OF.get(kind, ())

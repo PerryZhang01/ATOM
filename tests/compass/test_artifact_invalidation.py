@@ -141,7 +141,6 @@ KEY_OF: dict[Row, Key] = {
         source_root=ATOM_ROOT.revision,
     ),
 }
-KEY_OF[Row.MACHINE_SPEC_RUNTIME_CONSTANTS] = KEY_OF[Row.MACHINE_SPEC_CAPACITY]
 KEY_OF[Row.MACHINE_SPEC_TOKENIZER_TERMS] = KEY_OF[Row.MACHINE_SPEC_CAPACITY]
 
 
@@ -183,7 +182,7 @@ def publish(
 
 
 def test_the_matrix_is_not_uniform():
-    """The four cells a tidying hand takes away, named one at a time.
+    """The cells a tidying hand takes away, named one at a time.
 
     Each is a sentence the document argues for, and a matrix that lost them
     would still pass a test that only checked the crosses.
@@ -193,7 +192,6 @@ def test_the_matrix_is_not_uniform():
     assert MATRIX[Row.REGION_TERMS][Axis.MODEL].depends
     assert not MATRIX[Row.MACHINE_SPEC_TOKENIZER_TERMS][Axis.DEVICE].depends
     assert not MATRIX[Row.MACHINE_SPEC_CAPACITY][Axis.SOFTWARE_STACK].depends
-    assert MATRIX[Row.MACHINE_SPEC_RUNTIME_CONSTANTS][Axis.SOFTWARE_STACK].depends
 
 
 @pytest.mark.parametrize("kind", [Kind.COVERAGE_HULL])
@@ -490,7 +488,6 @@ BEFORE_HOST_CPU = {
     "region_terms": BUT_HOST_CPU,
     "memory_readings": BUT_HOST_CPU,
     "machine_spec_capacity": ("device",),
-    "machine_spec_runtime_constants": ("software_stack", "device"),
     "machine_spec_tokenizer_terms": ("model",),
     "step_grid_bundle": BUT_HOST_CPU,
 }

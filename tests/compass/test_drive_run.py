@@ -23,9 +23,10 @@ from test_artifact_store import AITER_ROOT, ATOM_ROOT
 from test_dp_step_max import runner
 from test_drive_runfile import build
 from test_drive_trace_steps import IDENTITY
-from test_memory_readings import DOCUMENT
+from test_memory_readings import ASSUMED, DOCUMENT, READINGS
 from test_refused_step_continues import REFUSED, drive, finish, no_eager_rung
 from test_refused_step_continues import run_file as refusing_run_file
+from test_run_graph_pool import _installed
 from test_run_step_grid import KEY, deployment
 from test_step_grid_plan import (
     ENGINE,
@@ -201,7 +202,8 @@ def test_run_json_records_the_summarys_refusals_the_roofline_and_the_backend(
     assert written["run_file"] == handed and handed["out_dir"] == str(out)
     assert written["step_roofline"] is handed["step_roofline"] is True
     assert written["skip"] == [] and written["coverage"] is None
-    assert written["provenance"] == handed["backend"]
+    provenance = handed["backend"] | {"memory_readings_assumed": []}
+    assert written["provenance"] == provenance
     assert written["host_key"] == IDENTITY["host_key"]
 
 
@@ -234,5 +236,44 @@ def test_a_covered_run_starts_and_records_its_check_over_a_record_and_a_populati
     assert coverage["covered"] == coverage["steps"] == 15
     assert coverage["uncovered"] == [] and written["step_roofline"] is False
     handed = json.loads((out / serve.RUN_FILE).read_text())
-    assert written["provenance"] == handed["backend"]
+    provenance = handed["backend"] | {"memory_readings_assumed": []}
+    assert written["provenance"] == provenance
     assert handed["step_grid"]["grid"] == KEY["grid"]
+
+
+#: The planted server, which also hands in the engine's memory as
+#: `PLANTED_HAND_IN` holds it.
+HANDING_IN = (
+    "import json, os, shutil, sys\n"
+    'run = json.load(open(sys.argv[sys.argv.index("--compass-run") + 1]))\n'
+    'shutil.copy(os.environ["PLANTED_HAND_IN"], run["out_dir"])\n'
+) + PLANTED
+
+
+def test_run_json_names_the_assumed_memory_readings_its_engine_read(
+    tmp_path, monkeypatch
+):
+    # The engine's hand-in, as a worker installed from an assumed entry writes it.
+    worker = tmp_path / "worker"
+    worker.mkdir()
+    readings = dict(READINGS[1], assumed=ASSUMED)
+    memory = _installed(monkeypatch, worker, eager=True, readings=readings)
+    monkeypatch.delenv(compass_run.ENV)
+    run = {"out_dir": str(worker)}
+    compass_run._hand_in(run, "engine", [], memory=memory.compass_memory)
+    (tmp_path / "authority").mkdir()
+    summary = tmp_path / "authority" / compass_run.SUMMARY_FILE
+    summary.write_text(json.dumps({"schedule": {"refusals": RefusalTally().record()}}))
+    steps = recorded(tmp_path, monkeypatch, SHORT) / serve.STEPS
+    plant(tmp_path, monkeypatch, steps, summary)
+    (tmp_path / "planted.py").write_text(HANDING_IN)
+    hand_in = worker / compass_run.LP_FILE.format("engine")
+    monkeypatch.setenv("PLANTED_HAND_IN", str(hand_in))
+
+    drive_run.main(flags(tmp_path, "--step-stub", stub(tmp_path)))
+
+    out = tmp_path / "out"
+    written = json.loads((out / serve.RUN_JSON).read_text())
+    handed = json.loads((out / serve.RUN_FILE).read_text())
+    provenance = handed["backend"] | {"memory_readings_assumed": [ASSUMED]}
+    assert written["provenance"] == provenance
