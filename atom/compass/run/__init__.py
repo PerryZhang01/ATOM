@@ -18,9 +18,10 @@ member, the frontend's included, connects to.
 - `frontend(config)` wraps the `CoreManager` construction in `LLMEngine`: it
   selects the simulated runner, serves the authority and installs the
   frontend LP's runtime; leaving it, after READY from every engine, starts
-  the run. It refuses an `LLMEngine` the API server is not building, the
-  Atomesh entrypoints and a multi-node DP group, and makes a sync utility
-  command on the frontend's clock owner refuse.
+  the run. It refuses an `LLMEngine` the API server is not building and the
+  Atomesh entrypoints, and makes a sync utility command on the frontend's
+  clock owner refuse. On a worker node of a multi-node DP group it only
+  selects the simulated runner.
 - `engine(config)` wraps the engine's construction in its own process the
   same way, and maps every DP rank to the engine LP for the process-group
   check.
@@ -118,6 +119,14 @@ endpoint. Its frontend is ``frontend-P`` or ``frontend-D`` by ``kv_role``. The
 standalone authority writes the step table and the run summary once every
 server LP has handed in its refusals, which the out_dir both API servers share
 carries.
+
+A multi-node DP group runs on a standalone authority too, named on every node.
+The coordinator's API server, global DP rank 0's, is the one frontend LP; a
+worker node's runs no frontend LP and serves no authority, and each of its
+engine processes joins the engine LP over TCP as the member of its global rank.
+Hand-ins go to the out_dir, which every node must see at one path: the
+authority writes `AUTHORITY_FILE` there before it serves, and a node that does
+not find it naming its endpoint's port is refused.
 """
 
 import ast
@@ -174,6 +183,8 @@ LP_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
 )
 #: Each client run's hand-ins and summary, by its index.
 CLIENT_DIR = "client-{}"
+#: The endpoint a standalone authority serves at, written to its out_dir.
+AUTHORITY_FILE = "authority_endpoint.txt"
 #: Wall seconds the summary's writer waits for the server LPs' refusals.
 HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field is added, changes
@@ -626,18 +637,16 @@ def frontend(config):
             "reads would declare the wrong ranks"
         )
     if pc.data_parallel_size > 1 and pc.is_multinode_dp:
-        raise ValueError(
-            "this node runs part of a multi-node data-parallel group, and every "
-            "node's API server builds an engine and so a frontend and an "
-            "authority of its own, while one run has one authority and one "
-            "out_dir; run every DP rank on one node"
-        )
+        _refuse_unshared(run, standalone)
     if dp > 1 and config.fake_eplb:
         raise ValueError(
             "--fake-eplb may start fewer engines than the data-parallel ranks "
             "the channel table declares, and a rank that never joins holds the run"
         )
     config.runner_qualname = COMPASS_RUNNER_QUALNAME
+    if pc.data_parallel_rank > 0:
+        # A worker node of a multi-node group: engines only, each a member.
+        return contextlib.nullcontext()
     _refuse_sync_utility_commands()
     lp = FRONTEND if side is None else LpId(f"{FRONTEND.name}-{side}")
     authority = None
@@ -653,6 +662,27 @@ def frontend(config):
     rt = _runtime(lp, run, cls=_StoppingClock)
     rt.client_run_ended = lambda k: _frontend_hand_in(run, rt, k)
     return _start_on_leaving(rt, authority)
+
+
+def _refuse_unshared(run: dict, standalone: bool) -> None:
+    """Refuse a node of a multi-node data-parallel group that would not reach
+    the run's one authority, or whose hand-ins would miss the authority's
+    out_dir: that directory holds no `AUTHORITY_FILE` naming the port this
+    node's clock endpoint does."""
+    if not standalone:
+        raise ValueError(
+            "this node runs part of a multi-node data-parallel group, whose nodes "
+            "share one clock authority; start it on its own and name it with "
+            "--compass-clock-endpoint on every node"
+        )
+    mark = Path(run["out_dir"]) / AUTHORITY_FILE
+    port = run["clock_endpoint"].rpartition(":")[2]
+    if not mark.is_file() or mark.read_text().rpartition(":")[2] != port:
+        raise ValueError(
+            f"{mark} names no authority at {run['clock_endpoint']}: every node of "
+            "a multi-node data-parallel group hands in to the authority's out_dir, "
+            "so each must see it at the same path; start the authority first"
+        )
 
 
 def _refuse_unserved() -> None:
@@ -1311,10 +1341,12 @@ def _summary(run: dict, a, record, wall: float, hand_ins: dict, since: dict) -> 
 
 
 def authority(endpoint: str) -> None:
-    """Serve the run file's authority at `endpoint` until the finish or an early
+    """Name `endpoint` in the out_dir's `AUTHORITY_FILE`, then serve the run
+    file's authority there until the finish or an early
     end, then write its step table, and the run summary once the server LPs
     have handed in."""
     run = spec()
     a = _RecordingAuthority(run)
+    _write_whole(Path(run["out_dir"]) / AUTHORITY_FILE, endpoint)
     serve(a, endpoint)
     _write_summary(run, a, _until_end(run, a))
