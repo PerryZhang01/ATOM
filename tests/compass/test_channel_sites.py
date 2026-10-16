@@ -10,6 +10,7 @@ thread.
 """
 
 import ast
+import math
 import pickle
 import queue
 import threading
@@ -21,7 +22,7 @@ import zmq
 from aiter_stub import stubbed_aiter
 
 from atom.compass.audit import sync_scan
-from atom.compass.clock import ChannelTable, LpId, LpRegistry, single_engine_table
+from atom.compass.clock import LpId, single_engine_table
 from atom.distributed.pp_transport import PPStageTransport
 from atom.model_engine.engine_core_protocol import EngineCoreRequestType
 from atom.model_engine.sequence import get_exit_sequence
@@ -132,8 +133,10 @@ def test_every_channel_row_maps_to_an_address_its_wiring_names(monkeypatch):
     # the call, not on an ATOM socket.
     acks = [r for r in rows if "flush_pp_send" in r["expr"]]
     # Compass's own KV connector wraps its socket in `clock.WrappedSocket` on
-    # the channel it reads from the table; no address names that channel.
-    own = [r for r in rows if r["file"] == "atom/compass/kv/connector.py"]
+    # the channel it reads from the table, and a pipeline stage's `pp_data`
+    # rides the PP CPU group; no address names either channel.
+    own_files = ("atom/compass/kv/connector.py", "atom/compass/runner/pp_send.py")
+    own = [r for r in rows if r["file"] in own_files]
     rows = [r for r in rows if r not in acks + own]
     root = sync_scan.repo_root_from_here()
     trees = {f: ast.parse((root / f).read_text()) for f in {r["file"] for r in rows}}
@@ -190,24 +193,21 @@ def _engine_table():
 
 
 def _pp_table(stages):
-    registry = LpRegistry()
-    for k in range(stages):
-        registry.register(LpId(f"stage{k}"))
-    table = ChannelTable(registry)
-    for k in range(1, stages):
-        for src, dst, kind in ((0, k, "meta"), (k, 0, "tokens"), (k, 0, "kv_status")):
-            name = f"stage{src}->stage{dst}:{kind}"
-            table.declare(name, LpId(f"stage{src}"), LpId(f"stage{dst}"), IPC, "inline")
-    return table
-
-
-def _stage(monkeypatch, table, rank, stages, ctx):
-    monkeypatch.setattr(
-        clock, "_installed", LPRuntime(LpId(f"stage{rank}"), table, None)
+    return single_engine_table(
+        admission_path="serving", ipc_s=IPC, stream_s=IPC, pp=stages
     )
+
+
+def _stage(monkeypatch, table, rank, stages, ctx, conn=None, owner=None):
+    rt = LPRuntime(LpId(f"engine-pp{rank}"), table, conn, owner=owner)
+    monkeypatch.setattr(clock, "_installed", rt)
     addrs = [""] + [f"inproc://meta{k}" for k in range(1, stages)]
     clock.name_endpoints(0, "", "", "", _config(addrs, "inproc://tok", "inproc://kv"))
-    return PPStageTransport(rank, stages, addrs, "inproc://tok", "inproc://kv", ctx=ctx)
+    stage = PPStageTransport(
+        rank, stages, addrs, "inproc://tok", "inproc://kv", ctx=ctx
+    )
+    stage.rt = rt
+    return stage
 
 
 def test_the_shim_is_pyzmq_until_a_runtime_is_installed(monkeypatch):
@@ -259,7 +259,7 @@ def test_an_engine_names_its_own_and_its_configured_addresses(monkeypatch):
         "in": "request#dp1",
         "ctl": "control#dp1",
         "out": "output#dp1",
-        "m1": "meta",
+        "m1": "meta#pp1",
         "t": "tokens",
         "k": "kv_status",
         "p": "prefill_done",
@@ -280,14 +280,46 @@ def test_pp_stages_talk_through_their_wrapped_sockets(monkeypatch):
     assert head.recv_kv_status(timeout_ms=5000) == [(1, "kv")]
     socks = (*head._meta_send, head._token_recv, head._kv_status_recv)
     socks += (last._meta_recv, last._token_send, last._kv_status_send)
-    assert [s.ch.split(":")[1] for s in socks] == ["meta", "tokens", "kv_status"] * 2
+    assert [s.ch.split(":")[1] for s in socks] == [
+        "meta#pp1",
+        "tokens",
+        "kv_status",
+    ] * 2
     head.close()
     last.close()
 
 
-def test_a_head_with_two_downstream_stages_refuses_by_name(monkeypatch, shim_ctx):
-    with pytest.raises(KeyError, match="stage0 has 2 channels of kind 'meta'"):
-        _stage(monkeypatch, _pp_table(3), 0, 3, shim_ctx)
+def test_an_idle_downstream_stage_polls_on_a_daemon_deadline(monkeypatch, shim_ctx):
+    """Its poll waits for the head's batch and keeps no run alive."""
+    stage = _stage(monkeypatch, _pp_table(2), 1, 2, shim_ctx, FakeConn((0.1, {})))
+    stage.rt.start_run()
+    assert stage.recv_metadata(timeout_ms=100) is None
+    assert stage.rt.conn.sent == [("NER", math.inf, [], 0.1)]
+    stage.close()
+
+
+def test_a_head_hears_each_downstream_stage_on_its_own_channel(monkeypatch):
+    """Both stages' KV status reach the head's one socket; it waits for each
+    released frame, the later stage's sent after the grant."""
+    table = _pp_table(3)
+    late = threading.Timer(0.2, lambda: last.send_kv_status("b"))
+    last = _stage(monkeypatch, table, 2, 3, None, owner=late)
+    mid = _stage(monkeypatch, table, 1, 3, last._ctx)
+    kv = [f"engine-pp{k}->engine-pp0:kv_status" for k in (1, 2)]
+    grant = (1.0, {ch: [(0, IPC)] for ch in kv})
+    head = _stage(monkeypatch, table, 0, 3, last._ctx, FakeConn(grant))
+    head.send_metadata("batch")
+    assert [s.recv_metadata(timeout_ms=5000) for s in (mid, last)] == ["batch"] * 2
+    assert [s.ch.split(":")[1] for s in head._meta_send] == ["meta#pp1", "meta#pp2"]
+    assert head._kv_status_recv.into == tuple(kv)
+    for s in (head, mid, last):
+        s.rt.start_run()
+    mid.send_kv_status("a")
+    head.rt.advance_to(1.0)
+    late.start()
+    assert head.recv_kv_status(timeout_ms=0) == [(1, "a"), (2, "b")]
+    for s in (head, mid, last):
+        s.close()
 
 
 def test_the_engine_input_thread_takes_a_request_sent_by_the_frontend(

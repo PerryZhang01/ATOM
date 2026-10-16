@@ -8,20 +8,22 @@ the scheduler half takes part, on the engine's step loop and the LP clock of
 the `LPRuntime` installed in the engine's process:
 
 - Decode, in `update_state_after_alloc`, sends the write request on the
-  ``kv_write_req`` channel (arrival ``a``) and is ready at ``a + T + notify``,
+  ``kv_write_req`` channel (arrival ``a``) and is ready at ``c + notify``,
   where the notify latency is that channel's lookahead.
 - Prefill records a finished request's data-ready time ``r`` in
   `request_finished`, takes the write requests inline in `process_completions`
-  and is done at ``max(a, r) + T``. A write request for a request that has not
+  and is done at ``c``. A write request for a request that has not
   finished (``r > a``) is refused: the router forwards to decode only after
   prefill has returned.
 
 Both report from `process_completions`, which the engine calls at every step
 and every idle drain tick, one call after the first whose clock reached their
 time: the engine's KV aggregation keeps one poll in flight, so a real poll
-returns what the workers had seen at the previous one. Write-done is
-not a message, because both ends already know its time. ``T`` is the
-`TransferModel` bound at ``kv_transfer_config[TRANSFER_KEY]``; the write
+returns what the workers had seen at the previous one. ``c`` is when the
+write completes on its rank pair's `Link`, which moves the pair's writes one
+at a time, each priced by the `TransferModel` bound at
+``kv_transfer_config[TRANSFER_KEY]``. Both ends feed it the same writes in the
+same order, so write-done is not a message: both already know its time. The write
 request travels over the zmq address at ``kv_transfer_config[WRITE_REQ_KEY]``,
 which prefill binds and decode connects to.
 
@@ -35,11 +37,12 @@ The worker half reports nothing. The engine still builds and polls it.
 
 from __future__ import annotations
 
+import collections
 import logging
 import pickle
 
 from atom.compass.kv.handoff import transfer_params, whole_number
-from atom.compass.kv.transfer import TransferModel
+from atom.compass.kv.transfer import Link, TransferModel
 from atom.kv_transfer.disaggregation.base import (
     KVConnectorBase,
     KVConnectorSchedulerBase,
@@ -163,6 +166,8 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
         self._latency_s = table.lookahead(pairs[0])
         self._ready: dict = {}  # prefill: request -> r
         self._due: dict = {}  # request -> when its transfer is done
+        # Each pair's link, by the rank at the other end.
+        self._links = collections.defaultdict(lambda: Link(self._transfer))
         self._snapshot: list = []  # done at the last poll, reported at the next
         # Mooncake's send claim: a producer keeps a request's blocks from the
         # pool from `request_finished` until its write is reported done.
@@ -208,7 +213,7 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
         # Above DP width one, to the prefill rank that served the request.
         rank = params["dp_rank"] if len(self._socks) > 1 else 0
         self._socks[rank].send(pickle.dumps((params["transfer_id"], blocks, a, rank)))
-        self._due[seq.id] = a + self._transfer.duration_s(blocks) + self._latency_s
+        self._due[seq.id] = self._links[rank].start(a, blocks) + self._latency_s
 
     def request_finished(self, seq) -> None:
         """Record prefill's data-ready time, once, and attach the relayed blob.
@@ -242,14 +247,14 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
 
     def _write_requests(self):
         """Prefill: each write request released so far, pair by pair."""
-        for sock in self._socks.values() if self.is_producer else ():
+        for other, sock in self._socks.items() if self.is_producer else ():
             while sock.poll(0):
-                yield pickle.loads(sock.recv())
+                yield other, pickle.loads(sock.recv())
 
     def process_completions(self, output):
         """Take the write requests released so far; report what the clock had
         reached at the previous call."""
-        for req_id, blocks, a, rank in self._write_requests():
+        for other, (req_id, blocks, a, rank) in self._write_requests():
             if rank != self._dp_rank:
                 raise ValueError(
                     f"the write request for {req_id!r} is for prefill DP rank "
@@ -262,10 +267,13 @@ class SimulatedKVConnectorScheduler(KVConnectorSchedulerBase):
                     f"its prefill finished (at {r}); the router sends a request "
                     "to decode only after prefill has returned"
                 )
-            t = self._transfer.duration_s(blocks)
-            self._due[req_id] = max(a, r) + t
+            self._due[req_id] = self._links[other].start(a, blocks)
             logger.info(
-                "compass: KV transfer %s, %d blocks, %r simulated s", req_id, blocks, t
+                "compass: KV transfer %s, %d blocks, from %r to %r simulated s",
+                req_id,
+                blocks,
+                a,
+                self._due[req_id],
             )
         # The engine's aggregation keeps one poll in flight, so a poll returns
         # the snapshot the workers took at the previous poll: report that one.

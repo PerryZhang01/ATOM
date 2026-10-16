@@ -63,6 +63,7 @@ class Kind(enum.Enum):
     REGION_TERMS = "region_terms"
     MEMORY_READINGS = "memory_readings"
     COVERAGE_HULL = "coverage_hull"
+    STEP_MEASUREMENT = "step_measurement"
     STEP_LINEAR_LAW = "step_linear_law"
     HOST_LAWS = "host_laws"
     STEP_GRID_BUNDLE = "step_grid_bundle"
@@ -96,6 +97,17 @@ KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
         "block_size",
     ),
     Kind.COVERAGE_HULL: ("price_list",),
+    # `view` is the digest of the batch view the step was measured as.
+    Kind.STEP_MEASUREMENT: (
+        "model",
+        "device",
+        "parallel",
+        "engine_config",
+        "source_root",
+        "sampling",
+        "step_kind",
+        "view",
+    ),
     Kind.STEP_LINEAR_LAW: (
         "model",
         "machine_spec",

@@ -7,9 +7,10 @@
 Each backend in `BACKENDS` states the kind it publishes, the label sources it
 takes and its fit, which returns the key fields the configuration does not
 give, the params and the report. `step-linear` takes real runs only and fits
-`step_linear_fit.FORMS`' `--form` at the records' DP width, holding out each
-run on the others when there are two or more at width 1, as that module's
-command does; `--seed` fixes its shuffles. The law states the configuration's
+`step_linear_fit.FORMS`' `--form` at the DP width the configuration states, so
+a record with a rank that gave no sample refuses; it holds out each run on the
+others when there are two or more at width 1, as that module's command does;
+`--seed` fixes its shuffles. The law states the configuration's
 `machine_spec`, as that command's does, and the key holds it. The report's
 provenance names each run with every trace its steps served. A step stub's
 coefficients are stated, not fitted, so `step-stub` refuses.
@@ -26,7 +27,7 @@ STUB = "a step stub's coefficients are stated, not fitted; a run takes their fil
 
 
 def _step_linear(samples, config, args) -> tuple[dict, dict, dict]:
-    options = {"form": args.form, "dp": len({s.rank for s in samples})}
+    options = {"form": args.form, "dp": int(config["parallel"].split("-dp")[1])}
     law, report = step_linear_fit.fit(samples, options, args.seed)
     if options["dp"] == 1 and len({s.provenance["run"] for s in samples}) > 1:
         step_linear_fit.mark_held_out(law, report, samples, options, args.seed)
