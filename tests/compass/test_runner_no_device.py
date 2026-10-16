@@ -26,16 +26,18 @@ from atom.utils.h2d import PublicationOwner
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
 
-def _config(tp=1, dp=1, simulated_tp=None):
+def _config(tp=1, dp=1, simulated_tp=None, pp=1):
     return SimpleNamespace(
         tp_world_size=tp,
         tensor_parallel_size=tp if simulated_tp is None else simulated_tp,
         prefill_context_parallel_size=1,
-        pipeline_parallel_size=1,
+        decode_context_parallel_size=1,
+        pipeline_parallel_size=pp,
         master_addr="127.0.0.1",
         port=29500,
         parallel_config=SimpleNamespace(
             data_parallel_size=dp,
+            data_parallel_rank=0,
             data_parallel_master_ip="127.0.0.1",
             data_parallel_base_port=29501,
             _managed_distributed_store=False,
@@ -49,8 +51,11 @@ def started(monkeypatch):
     calls = []
     monkeypatch.setitem(
         sys.modules,
-        "aiter",
-        SimpleNamespace(init_dist_env=lambda *a, **k: calls.append((a, k))),
+        "aiter.dist.parallel_state",
+        SimpleNamespace(
+            init_distributed_environment=lambda *a, **k: calls.append((a, k)),
+            initialize_model_parallel=lambda *a, **k: calls.append((a, k)),
+        ),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -81,10 +86,11 @@ def started(monkeypatch):
 def test_the_start_sets_the_host_as_the_device_and_builds_groups_on_gloo(started):
     runner, calls = started(_config())
     assert runner.device == torch.device("cpu")
-    ((args, kwargs),) = calls
-    assert args == (1,)
-    assert kwargs["backend"] == "gloo"
-    assert kwargs["distributed_init_method"] == "tcp://127.0.0.1:29501"
+    (_, world), (args, groups) = calls
+    assert world["backend"] == "gloo"
+    assert world["distributed_init_method"] == "tcp://127.0.0.1:29501"
+    assert args == (1, 1)
+    assert groups["custom_group_config"] == {}
 
 
 def test_atoms_buffers_built_after_it_are_unpinned_and_on_the_host(started):
@@ -117,13 +123,16 @@ def test_an_event_built_after_it_records_and_waits_on_the_host(started):
     owner._wait_sources()
 
 
-@pytest.mark.parametrize("width", [{"tp": 2}, {"simulated_tp": 2}])
-def test_a_start_wider_than_one_rank_is_refused_before_anything_is_replaced(
-    started, width
+@pytest.mark.parametrize(
+    "width, refusal",
+    [({"pp": 2}, "a pipeline of 2"), ({"simulated_tp": 2}, "-tp 2 starts 1 workers")],
+)
+def test_a_start_the_host_groups_cannot_hold_is_refused_before_anything_is_replaced(
+    started, width, refusal
 ):
     stream = torch.cuda.Stream
     event = torch.cuda.Event
-    with pytest.raises(RunnerRefusal, match="2 ranks wide"):
+    with pytest.raises(RunnerRefusal, match=refusal):
         started(_config(**width))
     assert torch.cuda.Stream is stream
     assert torch.cuda.Event is event

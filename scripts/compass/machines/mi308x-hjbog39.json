@@ -7,14 +7,10 @@
     "origin": "mixed",
     "origins": {
       "host.cpu.cores_physical": {
-        "origin": "probed",
-        "model": "Qwen/Qwen3.8-27B",
-        "source_root": "commit:4f0f1281405dc531a533ff688dff779dd10c45f8"
+        "origin": "probed"
       },
       "host.cpu.cores_logical": {
-        "origin": "probed",
-        "model": "Qwen/Qwen3.8-27B",
-        "source_root": "commit:4f0f1281405dc531a533ff688dff779dd10c45f8"
+        "origin": "probed"
       },
       "device.name": {
         "origin": "probed",
@@ -128,6 +124,9 @@
         "origin": "assumed"
       },
       "interconnect.intra_node.topology": {
+        "origin": "assumed"
+      },
+      "interconnect.intra_node.domain_devices": {
         "origin": "assumed"
       },
       "interconnect.intra_node.link_bandwidth_bytes_per_s": {
@@ -247,6 +246,7 @@
   "interconnect": {
     "intra_node": {
       "topology": "fully_connected",
+      "domain_devices": 8,
       "link_bandwidth_bytes_per_s": 64000000000.0,
       "link_latency_s": 2e-06,
       "derate": 0.8

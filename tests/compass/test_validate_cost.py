@@ -123,11 +123,11 @@ def test_unvalidated_and_refused_steps_are_reported_apart(tmp_path):
     report = cost_accuracy(record, LAW)
 
     assert report["cut"] == {"exposed": 0, "mixed": 0}
-    (extrapolated,) = report["unvalidated"].values()
-    assert extrapolated["steps"] == 1
-    assert extrapolated["real_s"] == pytest.approx(2 * _price(wide[0]), rel=1e-9)
-    assert extrapolated["on_totals"] == pytest.approx(-0.5, rel=1e-9)
-    assert extrapolated["bands"]["prefill tokens 2048-8192"]["within_10pct"] == 0.0
+    (unvalidated,) = report["unvalidated"].values()
+    assert unvalidated["steps"] == 1
+    assert unvalidated["real_s"] == pytest.approx(2 * _price(wide[0]), rel=1e-9)
+    assert unvalidated["on_totals"] == pytest.approx(-0.5, rel=1e-9)
+    assert unvalidated["bands"]["prefill tokens 2048-8192"]["within_10pct"] == 0.0
     fitted = report["validated"]["prefill"]
     assert fitted["steps"] == 10
     assert fitted["on_totals"] == pytest.approx(0.0, abs=1e-9)

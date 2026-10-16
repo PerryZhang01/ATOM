@@ -19,9 +19,11 @@ missed.
 Two detectors:
 
 ``scan_calls``
-    Parses every file under :data:`SCANNED_ROOTS` and reports calls whose shape
-    can park a thread -- sleeps, socket receives, pollers, queue operations,
-    joins, lock and event waits, collectives, device synchronization, sends.
+    Parses every file under ``atom/`` outside :data:`UNSCANNED_ROOTS` and
+    reports calls whose shape can park a thread -- sleeps, socket receives,
+    pollers, queue operations, joins, lock and event waits, collectives,
+    device synchronization, sends, device-event polling loops -- and calls
+    that start a thread or process.
     Shapes are matched on the call's own text and argument form, never on what
     a name happens to be bound to at runtime, so the match is local and stable.
 
@@ -45,54 +47,21 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-# Directories whose calls are scanned, whole. Everything a request passes
-# through between the HTTP socket and the KV cache, plus the machinery that
-# moves it between processes.
-#
-# Directories, not a list of files: a file allowlist declares its blind spot at
-# a finer grain than it excludes, so a module added beside a scanned one is
-# invisible while the exclusion list still reads complete. Scanning the
-# directory makes a new file a test failure on the day it lands. A single file
-# is named only where it alone of its directory runs on a simulated step.
-SCANNED_ROOTS: tuple[tuple[str, str], ...] = (
-    (
-        "atom/model_engine/",
-        (
-            "the engine step loops and their IPC threads, the worker RPC "
-            "transport, admission and batching, request entry and egress, and "
-            "the runner class the simulated one replaces"
-        ),
-    ),
-    (
-        "atom/entrypoints/openai/",
-        (
-            "HTTP entry, the per-endpoint response generators, the hand-off "
-            "from the engine output threads to each stream, and metrics"
-        ),
-    ),
-    (
-        "atom/distributed/",
-        "pipeline-stage transport and tensor sends, and the KV event publisher",
-    ),
-    (
-        "atom/kv_transfer/disaggregation/",
-        "the prefill/decode transfer connectors and their handshake threads",
-    ),
-    (
-        "atom/utils/tbo/ubatching.py",
-        (
-            "the data-parallel step-shape all_gather every rank's worker runs "
-            "once per step from ForwardMode.decide, a simulated step included"
-        ),
-    ),
-)
-
+# Every Python file under `atom/` is scanned unless an entry here names it, a
+# directory (ending in `/`) or a single file, with the reason it is not on the
+# path a simulated run executes. The scanned set is read off the tree, so a
+# package added under `atom/` is scanned the day it lands and its blocking
+# calls fail the inventory test until they are classified or it is named here.
 UNSCANNED_ROOTS: tuple[tuple[str, str], ...] = (
     (
-        "atom/kv_transfer/offload/",
+        "atom/benchmarks/",
+        "client scripts that load a server from outside; they are not the server",
+    ),
+    (
+        "atom/diffusion/",
         (
-            "CPU and NVMe offload backends, selected by their own transfer "
-            "config and not by the prefill/decode path the simulator substitutes"
+            "the video generation engine, a server of its own; a simulated "
+            "run starts the language-model server"
         ),
     ),
     (
@@ -103,10 +72,88 @@ UNSCANNED_ROOTS: tuple[tuple[str, str], ...] = (
         ),
     ),
     (
+        "atom/examples/",
+        (
+            "scripts that drive the offline engine or a server from outside "
+            "it, not the serving path"
+        ),
+    ),
+    (
+        "atom/kv_transfer/offload/",
+        (
+            "CPU and NVMe offload backends, selected by their own transfer "
+            "config and not by the prefill/decode path the simulator substitutes"
+        ),
+    ),
+    (
+        "atom/mesh/",
+        (
+            "the Rust router; its one Python file refreshes vendored protocol "
+            "sources at build time, and the router's bounds are text anchors"
+        ),
+    ),
+    (
+        "atom/model_loader/",
+        (
+            "checkpoint loading, before the simulated window; a simulated run "
+            "builds its model on meta tensors and reads no weights"
+        ),
+    ),
+    (
         "atom/model_ops/",
         (
             "kernels and layers below the forward pass, which the simulator "
             "replaces whole rather than entering"
+        ),
+    ),
+    (
+        "atom/models/",
+        "the model definitions, the forward pass the simulated runner replaces",
+    ),
+    (
+        "atom/mono/",
+        (
+            "fused per-layer decode kernels and their tensor-parallel "
+            "consensus, inside the forward pass the simulated runner replaces"
+        ),
+    ),
+    (
+        "atom/plugin/",
+        (
+            "the vLLM, SGLang and rtpllm backends, which serve ATOM's models "
+            "from another engine's processes; a simulated run starts ATOM's own"
+        ),
+    ),
+    (
+        "atom/quantization/",
+        "quantized layers inside the forward pass the simulated runner replaces",
+    ),
+    (
+        "atom/utils/clock.py",
+        (
+            "the simulated clock's client: its waits are how a grant reaches "
+            "an LP, the mechanisms the inventory assigns, not sites they apply to"
+        ),
+    ),
+    (
+        "atom/utils/compass_loop.py",
+        (
+            "the frontend event loop's clock driver: its waits are the idle "
+            "points and receives the inventory assigns, not sites they apply to"
+        ),
+    ),
+    (
+        "atom/compass/clock/",
+        (
+            "the clock authority: its waits are the grant protocol itself, not "
+            "sites a mechanism applies to"
+        ),
+    ),
+    (
+        "atom/compass/clock_transport/",
+        (
+            "the wire between an LP and the clock authority: the grant "
+            "protocol's transport, not a site a mechanism applies to"
         ),
     ),
 )
@@ -122,6 +169,10 @@ class Shape:
     why: str
     # Optional extra predicate over the ast.Call node.
     form: object = None
+    # Matched only inside a `while` or `for` loop.
+    in_loop: bool = False
+    # False for a call that cannot park, so a loop around it can still spin.
+    parks: bool = True
 
 
 def _no_positional(node: ast.Call) -> bool:
@@ -189,6 +240,11 @@ def _worker_rpc_form(node: ast.Call) -> bool:
     )
 
 
+def _starts_one(node: ast.Call) -> bool:
+    """``psutil.Process(pid)`` attaches to a running process; it starts none."""
+    return not ast.unparse(node.func).startswith("psutil.")
+
+
 SHAPES: tuple[Shape, ...] = (
     Shape(
         "sleep",
@@ -239,12 +295,12 @@ SHAPES: tuple[Shape, ...] = (
     ),
     Shape(
         "event_wait",
-        frozenset({"wait", "wait_for", "result"}),
+        frozenset({"wait", "wait_for", "result", "as_completed"}),
         "parks until another thread signals, or a future resolves",
     ),
     Shape(
         "barrier",
-        frozenset({"barrier"}),
+        frozenset({"barrier", "monitored_barrier"}),
         "parks until every rank arrives",
     ),
     Shape(
@@ -282,7 +338,7 @@ SHAPES: tuple[Shape, ...] = (
     ),
     Shape(
         "executor_handoff",
-        frozenset({"run_in_executor", "submit"}),
+        frozenset({"run_in_executor", "submit", "to_thread"}),
         "runs a callable on a thread pool; an awaited hand-off parks the caller "
         "until it returns, and a full pool parks it longer",
     ),
@@ -291,6 +347,39 @@ SHAPES: tuple[Shape, ...] = (
         frozenset({"call_func", "call_func_with_aggregation"}),
         "sends work to the worker processes and parks until their reply arrives",
         _worker_rpc_form,
+    ),
+    Shape(
+        "object_collective",
+        frozenset(
+            {
+                "broadcast_object_list",
+                "all_gather_object",
+                "gather_object",
+                "send_object_list",
+                "recv_object_list",
+            }
+        ),
+        "pickles Python objects across ranks and parks until every rank in the "
+        "group, or the one peer, arrives",
+    ),
+    Shape(
+        "event_poll",
+        frozenset({"query"}),
+        "polls a device event's completion in a loop, which holds the thread "
+        "until the device finishes unless the loop stops at an unfinished event",
+        lambda node: not node.args and not node.keywords,
+        in_loop=True,
+        parks=False,
+    ),
+    Shape(
+        "thread_start",
+        frozenset(
+            {"Thread", "Process", "Popen", "ThreadPoolExecutor", "ProcessPoolExecutor"}
+        ),
+        "starts a thread or process; it parks nothing itself, but whatever the "
+        "new one waits on belongs to exactly one LP, which the row names",
+        _starts_one,
+        parks=False,
     ),
 )
 
@@ -379,6 +468,15 @@ class _ScopedVisitor(ast.NodeVisitor):
 
 
 class _CallVisitor(_ScopedVisitor):
+    _loops = 0  # enclosing `while` and `for` loops
+
+    def _loop(self, node) -> None:
+        self._loops += 1
+        self.generic_visit(node)
+        self._loops -= 1
+
+    visit_While = visit_For = visit_AsyncFor = _loop
+
     def visit_Call(self, node: ast.Call) -> None:
         func = node.func
         if isinstance(func, ast.Attribute):
@@ -390,6 +488,8 @@ class _CallVisitor(_ScopedVisitor):
         if name is not None and name not in NON_BLOCKING_NAMES:
             for shape in _SHAPE_BY_CALL.get(name, ()):
                 if shape.form is not None and not shape.form(node):
+                    continue
+                if shape.in_loop and not self._loops:
                     continue
                 text = ast.get_source_segment(self.source, func) or name
                 text = " ".join(text.split())
@@ -443,7 +543,8 @@ class _SpinVisitor(_ScopedVisitor):
                     if isinstance(func, ast.Attribute)
                     else func.id if isinstance(func, ast.Name) else None
                 )
-                if name in _SHAPE_BY_CALL and name not in NON_BLOCKING_NAMES:
+                parks = any(s.parks for s in _SHAPE_BY_CALL.get(name, ()))
+                if parks and name not in NON_BLOCKING_NAMES:
                     return False
         return has_continue
 
@@ -465,29 +566,25 @@ def _number(sites: list[Site]) -> list[Site]:
     return sites
 
 
+def _excluded(rel: str) -> bool:
+    return any(
+        rel.startswith(root) if root.endswith("/") else rel == root
+        for root, _why in UNSCANNED_ROOTS
+    )
+
+
 def iter_scanned_files(tree_root: str | os.PathLike) -> list[str]:
-    """Every file the scanner reads, relative to ``tree_root``, sorted."""
+    """Every file under ``atom/`` the scanner reads, relative to ``tree_root``.
+
+    Read off the tree, minus :data:`UNSCANNED_ROOTS`, and sorted.
+    """
     root = Path(tree_root)
-    found: list[str] = []
-    for rel, _why in SCANNED_ROOTS:
-        target = root / rel
-        if rel.endswith("/"):
-            if not target.is_dir():
-                raise FileNotFoundError(f"scanned root is missing: {rel}")
-            for path in sorted(target.rglob("*.py")):
-                found.append(str(path.relative_to(root)))
-        else:
-            if not target.is_file():
-                raise FileNotFoundError(f"scanned root is missing: {rel}")
-            found.append(rel)
-    for rel, _why in UNSCANNED_ROOTS:
-        found = [f for f in found if not f.startswith(rel.rstrip("/") + "/")]
-        found = [f for f in found if f != rel]
-    return sorted(set(found))
+    found = (str(p.relative_to(root)) for p in (root / "atom").rglob("*.py"))
+    return sorted(f for f in found if not _excluded(f))
 
 
 def scan(tree_root: str | os.PathLike) -> list[Site]:
-    """Every candidate site under :data:`SCANNED_ROOTS`, in file and line order."""
+    """Every candidate site :func:`iter_scanned_files` reads, in file and line order."""
     root = Path(tree_root)
     sites: list[Site] = []
     for rel in iter_scanned_files(root):

@@ -543,6 +543,7 @@ pub fn build_app(
         .merge(public_routes)
         .merge(admin_routes)
         .merge(worker_routes)
+        .layer(axum::middleware::from_fn(crate::compass_router::ingress))
         .layer(axum::extract::DefaultBodyLimit::max(max_payload_size))
         .layer(tower_http::limit::RequestBodyLimitLayer::new(
             max_payload_size,
@@ -615,6 +616,9 @@ pub async fn startup(config: ServerConfig) -> Result<(), Box<dyn std::error::Err
         config.router_config.policy,
         config.max_payload_size / (1024 * 1024)
     );
+
+    // Before the policies exist: under Compass they draw from the run.
+    crate::compass_router::start();
 
     let app_context = Arc::new(
         crate::app_context::AppContextBuilder::from_config(

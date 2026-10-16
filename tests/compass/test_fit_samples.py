@@ -1,30 +1,20 @@
 # SPDX-License-Identifier: MIT
-"""Labelled samples from record directories and step measurements, under one configuration.
+"""Labelled samples from record directories, under one configuration.
 
 A record directory holds `test_parity_served.py`'s record and a run.json
 written by hand with the identity entries `record` writes there; its server
-served two client runs. Measurements are published through `ArtifactStore`.
+served two client runs.
 """
 
-import copy
 import dataclasses
 import json
 import re
 
 import pytest
-from test_artifact_store import CONDITIONS, stanza
 from test_parity_served import SAMPLING, client_run, recorded
 
-from atom.compass.artifacts import (
-    ArtifactStore,
-    GateState,
-    Key,
-    Kind,
-    Topology,
-    member_name,
-)
 from atom.compass.backends.step_labels import digest, label
-from atom.compass.fit.samples import MEMBER, load
+from atom.compass.fit.samples import load
 from atom.compass.parity import ARRIVALS
 from atom.compass.parity.served import served
 from atom.compass.run.step_grid import BOUNDS
@@ -40,8 +30,6 @@ SOURCE = {
     "dirty": 0,
 }
 RUNS = [client_run([0, 1]), client_run([2, 3])]
-#: The batch a measurement holds, as a step-record line holds it.
-LINE = {"rows": [[1, 300, True], [1, 210, True]], "rung": 2, "produces_output": True}
 
 
 def record(tmp_path, monkeypatch, name="a", groups=((0, 1), (2, 3)), **run):
@@ -69,28 +57,6 @@ def edit(path, change):
     document = json.loads(path.read_text())
     change(document)
     path.write_text(json.dumps(document))
-
-
-def measured(store, config, sampling=SAMPLING, origin="replay"):
-    """A step measurement keyed by `config`, as `measure steps` publishes one."""
-    key = Key.of(
-        Kind.STEP_MEASUREMENT,
-        **{f: config[f] for f in ("model", "device", "parallel", "source_root")},
-        engine_config=json.dumps(config["engine_config"], sort_keys=True),
-        sampling=json.dumps(sampling, sort_keys=True),
-        step_kind="decode",
-        view="sha256:5e1f",
-    )
-    member = {**LINE, "seconds": 1.5e-4, "origin": origin, "traces": ["trace-9"]}
-    ArtifactStore(store).publish(
-        key,
-        provenance=stanza("compass measure steps"),
-        topology=Topology(),
-        conditions=CONDITIONS,
-        gates=GateState.of(),
-        members={member_name(*MEMBER): json.dumps(member).encode()},
-    )
-    return key
 
 
 def test_two_records_differing_only_in_kv_cache_dtype_refuse_naming_both_values(
@@ -199,65 +165,14 @@ def test_each_sample_copies_its_input_s_provenance_and_the_traces_it_served(
     }
 
 
-def test_a_measurement_loads_beside_records_of_its_configuration_only(
-    tmp_path, monkeypatch
-):
-    a, store = record(tmp_path, monkeypatch), tmp_path / "store"
-    config = load({a: RUNS})[1]
-    key = measured(store, config, origin="plan")
-
-    samples, both = load({a: RUNS}, [key], store)
-    [sample] = [s for s in samples if s.provenance["source"] == "plan"]
-    assert both == config
-    assert sample.device_s == 1.5e-4 and sample.view.capture_rung == 2
-    assert sample.provenance == {
-        "source": "plan",
-        "run": ArtifactStore(store).read(key).digest,
-        "requests": [],
-        "config": None,
-        "traces": ["trace-9"],
-    }
-
-
-@pytest.mark.parametrize(
-    "named, field, inner, value",
-    [
-        ("model", "model", None, "sha256:2"),
-        ("device", "device", None, "AMD Instinct MI355X M3550 gfx950"),
-        ("parallel", "parallel", None, "tp2-dp1"),
-        ("source_root", "source_root", None, "tree-0e724ed5"),
-        ("engine_config kv_cache_dtype", "engine_config", "kv_cache_dtype", "fp8"),
-        ("sampling top_p", "sampling", "top_p", 0.9),
-    ],
-)
-def test_a_measurement_differing_from_the_records_in_one_key_field_refuses(
-    tmp_path, monkeypatch, named, field, inner, value
-):
-    a, store = record(tmp_path, monkeypatch), tmp_path / "store"
-    config = load({a: RUNS})[1]
-    there = copy.deepcopy(config)
-    held = there[field] if inner else there
-    old, held[inner or field] = held[inner or field], value
-    key = measured(store, there, there["sampling"])
-
-    with pytest.raises(ValueError) as refused:
-        load({a: RUNS}, [key], store)
-    assert str(refused.value) == (
-        "the inputs are not one configuration:\n"
-        f"{named}: {json.dumps(old)} in {a}; {json.dumps(value)} in {key}"
-    )
-
-
 def test_samples_come_in_one_order_whatever_order_the_inputs_came_in(
     tmp_path, monkeypatch
 ):
     a = record(tmp_path, monkeypatch, "a")
     b = record(tmp_path, monkeypatch, "b", groups=((2, 3), (0, 1)))
-    store = tmp_path / "store"
-    key = measured(store, load({a: RUNS})[1])
 
-    forward = load({a: RUNS, b: RUNS}, [key], store)
-    backward = load({b: RUNS[::-1], a: RUNS}, [key], store)
+    forward = load({a: RUNS, b: RUNS})
+    backward = load({b: RUNS[::-1], a: RUNS})
     assert forward == backward
     runs = [s.provenance["run"] for s in forward[0]]
-    assert runs == sorted(runs) and len(set(runs)) == 3
+    assert runs == sorted(runs) and len(set(runs)) == 2

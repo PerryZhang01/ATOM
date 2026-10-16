@@ -22,8 +22,19 @@ use crate::{
         worker::{HealthChecker, RuntimeType, WorkerType},
         ConnectionMode, Worker,
     },
+    determinism,
     observability::metrics::MeshMetrics,
 };
+
+/// Under [`determinism::enable`], `workers` sorted by base URL, then DP rank,
+/// instead of the order the host hashed or registered them in, which the
+/// policies' tie-breaks read.
+fn fixed_order(mut workers: Vec<Arc<dyn Worker>>) -> Vec<Arc<dyn Worker>> {
+    if determinism::simulated() {
+        workers.sort_by(|a, b| (a.base_url(), a.dp_rank()).cmp(&(b.base_url(), b.dp_rank())));
+    }
+    workers
+}
 
 /// Number of virtual nodes per physical worker for even distribution.
 /// 150 is a common choice that provides good balance between memory and distribution.
@@ -252,7 +263,7 @@ impl WorkerRegistry {
                 // Create new snapshot with the additional worker
                 let mut new_workers: Vec<Arc<dyn Worker>> = existing.iter().cloned().collect();
                 new_workers.push(worker.clone());
-                *existing = Arc::from(new_workers.into_boxed_slice());
+                *existing = Arc::from(fixed_order(new_workers).into_boxed_slice());
             })
             .or_insert_with(|| Arc::from(vec![worker.clone()].into_boxed_slice()));
 
@@ -412,10 +423,12 @@ impl WorkerRegistry {
 
     /// Get all workers
     pub fn get_all(&self) -> Vec<Arc<dyn Worker>> {
-        self.workers
-            .iter()
-            .map(|entry| entry.value().clone())
-            .collect()
+        fixed_order(
+            self.workers
+                .iter()
+                .map(|entry| entry.value().clone())
+                .collect(),
+        )
     }
 
     /// Get all workers with their IDs
