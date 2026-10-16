@@ -301,6 +301,52 @@ def test_each_offload_decision_is_sent_once_from_each_writer_before_its_forward(
                 assert (starts[k - 1] if k else 0.0) <= at <= starts[k], (ch, k, at)
 
 
+TAKEN = re.compile(
+    r"lmcache_mp (store|retrieve) of atom-offload-dp(\d+):(\d+) \w+: "
+    r"arrived at (\S+), taken at (\S+)"
+)
+REPORTED = re.compile(r"lmcache_mp reports at (\S+): (.*)")
+
+
+@NEEDS_A_RUN
+def test_a_load_parked_request_is_released_no_earlier_than_its_load_is_reported(runs):
+    """The shell takes each reply no earlier than it arrives and reports it
+    once, no earlier than it took it; the request a load parked prefills on a
+    step that starts no earlier than that report."""
+    _, (run, _) = runs
+    takes, reports, retrieved = defaultdict(list), defaultdict(list), defaultdict(list)
+    for line in run["log"].splitlines():
+        if m := TAKEN.search(line):
+            op, rank, rid, arrived, at = m.groups()
+            assert float(at) >= float(arrived), line
+            takes[op == "retrieve", rid].append(float(at))
+            if op == "retrieve":
+                retrieved[int(rank)].append(rid)
+        elif m := REPORTED.search(line):
+            for kind, rid in re.findall(r"(Save|Load)OperationId\(req_id=(\d+)", m[2]):
+                reports[kind == "Load", rid].append(float(m[1]))
+    assert takes.keys() == reports.keys()
+    for op, at in takes.items():
+        assert len(reports[op]) == len(at), op
+        assert all(r >= t for t, r in zip(at, reports[op])), op
+    record = read(run["out"] / "parity")
+    starts = step_starts(run["table"], record)
+    for rank, steps in record.items():
+        loads = [
+            (k, key)
+            for k, step in enumerate(steps)
+            for key, kind, *_ in step.get("kv", ())
+            if kind == "load"
+        ]
+        for (k, key), rid in zip(loads, retrieved[rank], strict=True):
+            p = next(
+                j
+                for j in range(k, len(steps))
+                if key in {r[0] for r in steps[j]["batch"]}
+            )
+            assert starts[p] >= reports[True, rid][0], (rank, key, rid, p)
+
+
 @NEEDS_A_RUN
 def test_each_dp_member_parks_once_a_step_and_leaves_at_the_latest_park(runs):
     """Each member parks once before each forward and sends LP lmcache nothing
