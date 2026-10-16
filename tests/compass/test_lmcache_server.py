@@ -290,13 +290,41 @@ def test_a_new_lookup_forgets_the_previous_hit():
     assert _chunks(server, server.evict(0.0)) == {(0, 2), (0, 3)}
 
 
-def test_a_request_reaching_a_session_past_its_ttl_is_refused_by_name():
-    server = LMCacheServer(FLAGS, chunk_bytes=1)
-    _hit(server, "a")
-    _do(server, "end_session", "a", now=600.0)
-    _hit(server, "b")
-    with pytest.raises(LMCacheRefusal, match="session expiry"):
-        _do(server, "end_session", "b", now=600.5)
+@pytest.mark.parametrize(
+    "sweeps, victims",
+    [((0.0, 600.0), {(0, 2), (0, 3)}), ((0.0, 600.0, 660.0), {(0, 0), (0, 1)})],
+)
+def test_a_session_lives_until_the_first_sweep_past_its_ttl(sweeps, victims):
+    flags = FLAGS + ["--eviction-ratio", "0.5"]
+    server = LMCacheServer(flags, chunk_bytes=GIB // 4)  # four objects fit
+    key = _key(0, end=2 * CHUNK, rid="a", world=1)
+    _do(server, "store", key, 1, [[0]], b"", now=0.5)
+    _store(server, 0, start=2 * CHUNK, rid="z", world=1)  # LRU: 1, 0, 3, 2
+    for t in sweeps:
+        server.expire_sessions(t)
+    _do(server, "end_session", "a", now=sweeps[-1])  # touches only a live session
+    assert _chunks(server, server.evict(sweeps[-1])) == victims
+
+
+def test_free_lookup_locks_of_a_dropped_session_releases_the_whole_range():
+    flags = FLAGS + ["--eviction-ratio", "1.0", "--l1-read-ttl-seconds", "1000"]
+    server = LMCacheServer(flags, chunk_bytes=GIB // 8)  # eight objects fit
+    for w in (0, 1):
+        _store(server, w)
+    _do(server, "lookup", _key(rid="a", end=2 * CHUNK), 1)
+    assert _do(server, "query_prefetch_status", "a") == 2
+    assert _hit(server, "b", now=1.0) == 4
+    server.expire_sessions(600.5)  # drops "a", keeps "b"
+    _do(server, "free_lookup_locks", _key(rid="a"), 2, now=600.5)  # hit unknown
+    gone = server.evict(600.5)  # "b"'s locks on chunks 2 and 3 were released
+    assert _chunks(server, gone) == {(r, c) for r in (0, 1) for c in (2, 3)}
+
+
+def test_a_negative_ratio_evicts_none():
+    flags = FLAGS + ["--eviction-ratio", "-0.5"]
+    server = LMCacheServer(flags, chunk_bytes=GIB // 4)  # four objects fit
+    _store(server, 0, world=1)
+    assert server.evict(0.0) == []
 
 
 @pytest.mark.parametrize(

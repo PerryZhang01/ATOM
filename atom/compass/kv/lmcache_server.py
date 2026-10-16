@@ -13,6 +13,9 @@ operation, payloads) at a job's start and returns the reply frames plus a
 callable to run at the job's end: a store's chunks become visible, and a
 retrieve's read locks are released, when its copy completes. `evict` is one
 tick of the server's eviction loop, which wakes every `EVICTION_INTERVAL_S`.
+`expire_sessions` is one tick of its session cleanup, which runs at the
+server's start and every `SESSION_SWEEP_INTERVAL_S` after it, and drops each
+session created more than `SESSION_TTL_S` earlier.
 
 What it does not reproduce. Every object group of a chunk is one entry, so
 `--separate-object-groups` and sliding-window groups price and hit as full
@@ -21,10 +24,7 @@ attention, and all-null chunks are stored. The byte budget is
 are not modelled. Stores and retrieves need no prior REGISTER_KV_CACHE,
 because a simulated worker registers no device memory.
 
-A flag or a request type outside these is refused by name, and so is a request
-that reaches a session more than `SESSION_TTL_S` after its creation: lmcache
-drops such a session on a cleanup timer whose phase a simulated run cannot
-know.
+A flag or a request type outside these is refused by name.
 """
 
 from __future__ import annotations
@@ -37,10 +37,11 @@ from typing import Any
 
 EVICTION_INTERVAL_S = 1.0
 SESSION_TTL_S = 600.0  # lmcache's SessionManager.DEFAULT_SESSION_TTL
+SESSION_SWEEP_INTERVAL_S = 60.0
 
 
 class LMCacheRefusal(Exception):
-    """A server flag, a request type or a session age the stand-in does not model."""
+    """A server flag or a request type the stand-in does not model."""
 
 
 class _Flags(argparse.ArgumentParser):
@@ -176,6 +177,13 @@ class LMCacheServer:
             del self.objects[k]
         return victims
 
+    def expire_sessions(self, now: float) -> None:
+        """One session-cleanup tick: drop every session created more than
+        `SESSION_TTL_S` before `now`."""
+        for rid, s in list(self._sessions.items()):
+            if now - s.created > SESSION_TTL_S:
+                del self._sessions[rid]
+
     # Keys and LRU order, as lmcache's ObjectKey and its LRU policy.
 
     def _hashes(self, key: Any, start: int, end: int) -> list[bytes]:
@@ -212,14 +220,7 @@ class LMCacheServer:
                 o.readers = max(0, o.readers - n)
 
     def _session(self, request_id: str, now: float) -> _Session:
-        s = self._sessions.setdefault(request_id, _Session(now))
-        if now - s.created > SESSION_TTL_S:
-            raise LMCacheRefusal(
-                f"lmcache stand-in does not model session expiry: request "
-                f"{request_id!r} reached its session {now - s.created:.0f} s "
-                f"after creation, past lmcache's {SESSION_TTL_S:.0f} s TTL"
-            )
-        return s
+        return self._sessions.setdefault(request_id, _Session(now))
 
     # Request types, as lmcache's LookupModule, ManagementModule and
     # LMCacheDrivenTransferModule answer them.
