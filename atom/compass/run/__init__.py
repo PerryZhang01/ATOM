@@ -964,6 +964,12 @@ def host_key(config) -> dict:
     bundle is keyed by."""
     from atom.compass.run.step_grid import keyed
 
+    return host_key_of(config.model, keyed(config))
+
+
+def host_key_of(model: str, engine: dict) -> dict:
+    """`host_key` for the model `model` names and the engine config `engine`
+    that `keyed` gave, for a process that holds no resolved config."""
     root = Path(atom.__file__).parent
     digest = hashlib.sha256()
     for path in sorted(root.rglob("*.py")):
@@ -986,8 +992,8 @@ def host_key(config) -> dict:
     return {
         "host_cpu": host_cpu(),
         "atom": digest.hexdigest(),
-        "model": _file_digest(config.model, "config.json"),
-        "engine": keyed(config),
+        "model": _file_digest(model, "config.json"),
+        "engine": engine,
     }
 
 
