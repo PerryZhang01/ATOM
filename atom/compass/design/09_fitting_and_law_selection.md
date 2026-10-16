@@ -7,6 +7,12 @@ written against it yet; implementation follows the execution plan in `16`.
 **Depends on:** `07_calibration_toolchain.md` (the measurements being fitted),
 `04_model_capture_and_cost_ir.md` (the leaves a law prices).
 
+**Revised 2026-10-14 by the naming record in
+[#952](https://github.com/jgong5/ATOM/issues/952):** the fitted step-level law is the step
+linear law (`backends/step_linear.py::StepLinearBackend`), its terms `estimated` and
+validated only inside the hull of its held-out steps, with its support domain stated
+(D54, D58); a treatment Compass assumes is an assumed treatment (D61).
+
 **Scope.** How measurements become a model: objective, feature construction, outlier
 handling, guards, and how a functional form is chosen and shown to be right. This is a
 separate concern from the toolchain that produces the data and from the protocol that
@@ -80,7 +86,7 @@ is wrong in direction, not just in magnitude.
 ### Under DP and EP: one per-rank law, keyed by `(dp, ep)`
 
 Owner's DP ruling, 2026-10-01
-([#470](https://github.com/jgong5/ATOM/issues/470#issuecomment-5933154215)). Tier a covers
+([#470](https://github.com/jgong5/ATOM/issues/470#issuecomment-5933154215)). The step linear law covers
 DP and EP with a **per-rank** law: it prices one rank's step, and the group's step is the
 `max` over ranks (`15` D90).
 
@@ -116,7 +122,7 @@ step's period: about +4% after idle and -8% after a pure middle chunk, at c1 and
 ([#845](https://github.com/jgong5/ATOM/issues/845)): a record without device windows has
 no label, and the fit and the cost check refuse it.
 
-**The tier-a label is one forward's device time**, built from the window from a device
+**The step linear law's label is one forward's device time**, built from the window from a device
 event at `run_model` entry to one at the forward's exit (`01` D4, *Measured, not hooked*),
 and the device gap, from the previous forward's exit event to this forward's entry event.
 Owner ruling on [#843](https://github.com/jgong5/ATOM/issues/843#issuecomment-6116328961),
@@ -150,13 +156,13 @@ host and device clocks to each other. With MTP the label splits at
 prefill and pure middle chunk. A pure middle chunk returns from `ModelRunner.forward`
 before `postprocess`: no sampler launch, no output and no R1 wait, so a prefill law that
 mixed the two would misprice both. Its `W_post` is zero and not fitted.
-They use tier a's solver: D53's relative error and MAD drops, D57's report, D58's hull. An
+They use the step linear law's solver: D53's relative error and MAD drops, D57's report, D58's hull. An
 `E` sample whose gap spans an idle engine is cut as idle and counted apart.
 
-- **Key:** the host CPU, the `atom` source digest, the model and the engine config. A
-  mismatch refuses. There is no transfer mode: the MI455 projection prices no host floor
+- **Key:** the host CPU, the `atom` source digest, the model, the engine config and the
+  machine-spec digest (`07` D41). A mismatch refuses. There is no transfer mode: the MI455 projection prices no host floor
   (`08` D50.2).
-- **Home:** beside the tier-a law, not in the machine spec's `host.*` (`05` D25).
+- **Home:** beside the step linear law, not in the machine spec's `host.*` (`05` D25).
 - **Use:** the runner composes them with any backend's device time by `01` D4's
   recurrence; no backend adds them to its own price.
 
@@ -166,7 +172,7 @@ They use tier a's solver: D53's relative error and MAD drops, D57's report, D58'
 
 ```
 prefill:  [ 1,  tokens,  Σ_req N_Q²,  Σ_req N_Q·(ctx − N_Q) ]
-          + history: Σ_req (ctx − N_Q), in coarse_fit's `history` form
+          + history: Σ_req (ctx − N_Q), in `step_linear_fit`'s `history` form
 decode:   [ 1,  batch,   Σ ctx ]
 per rung: [ 1,  Σ ctx,   rung·max(ctx) − Σ ctx ]
           + rowmod(k), on a rung that adopts one (D61)
@@ -258,10 +264,18 @@ This cost **three** iterations to abandon:
    64 samples at raggedness exactly 1.00 against a run at 1.18–1.32
 
 **Decision: a convex hull or k-NN distance with a threshold, never a per-feature bounding
-box.** The k-NN oracle already computes the distance. The guard decides provenance, not
-whether a step is answered: a step outside the hull is priced `extrapolated` and reported
-apart, not refused (`08` D50.1; #627's
+box.** The k-NN oracle already computes the distance. The guard decides the answer's
+source and validation, not whether a step is answered: a step outside the hull is priced
+by the same law, `estimated` and unvalidated, its `source` naming the extrapolation, and
+reported apart, not refused (`08` D50.1; #627's
 [ruling 3](https://github.com/jgong5/ATOM/issues/627#issuecomment-6096543740)).
+
+**The step linear law's support domain** (#952, `backends/step_linear.py`). A discrete
+value it has no vector for refuses: a prefill step when the law has no prefill vector, a
+decode rung with none. Outside the continuous domain, the fitted hull, it extrapolates as
+above. A term is `validated` only inside a second hull, the steps `step_linear_fit`
+priced with a law fitted on the other records, whose errors per band it writes into the
+law beside that hull; a law without one prices every term unvalidated.
 
 And the dimensions are **workload-dependent** — 0.6B batches ran at raggedness 2.82–3.85,
 27B at 1.11–1.42 — so:
@@ -304,7 +318,7 @@ comparison moves 2.8% at 2,294 and 0.9% at 4,694.
 
 ### Decision
 
-1. **A family is validated on independently obtained data, never by LOO.** LOO ranks
+1. **A family is validated on independently gathered data, never by LOO.** LOO ranks
    candidates within a family; a held-out measurement decides the family.
 2. **Rank at least three candidate laws** and report all of them with their held-out error,
    not only the winner. The prior tool ranked five.
@@ -361,17 +375,18 @@ Prefill steps do not interpolate either, even averaged over hundreds of kernels:
 
 ### Decision
 
-**Laws are piecewise over declared dispatch bands.** A band boundary is read from the
+**Laws are piecewise over dispatch bands.** A band boundary is read from the
 recorded kernel identity, not inferred from a residual. A query between bands with no
 bracket **refuses** rather than interpolating.
 
 ---
 
-## D61. Declared treatments
+## D61. Assumed treatments
 
 A treatment is a factor that moves cost and is **invisible to every feature in the model**.
-It must be declared and the calibration population matched to the target, or the fit is
-silently averaging over it.
+It must be stated and the calibration population matched to the target, or the fit is
+silently averaging over it. A treatment Compass assumes rather than observes is an
+**assumed treatment**: a property of the query, recorded in the run summary (#952).
 
 **Decode row order: a treatment, then a feature.** At one fixed 32-row context multiset,
 row order alone moves measured decode attention across **1.77×** — grouped-descending 276.1 µs,
@@ -381,14 +396,14 @@ and launch-wave packing.
 
 > Every feature in every candidate law — `crit_waves`, `work_waves`, `launch_waves` — is a
 > function of the context multiset, so all four orders are the same vector. **No
-> coefficient over that basis can separate them, and a corpus that mixes orderings is
-> fitting an undeclared treatment.**
+> coefficient over those features can separate them, and a corpus that mixes orderings is
+> fitting an unstated treatment.**
 
 Consequence, already in `07` D39: calibration batches are **replayed** from the real
 scheduler's step table, with explicit `block_tables`. Hand-built ladders are grouped by
 construction.
 
-**Since #941, row order is a decode feature of tier a, not a treatment.** `rowmod(k)` is the
+**Since #941, row order is a decode feature of the step linear law, not a treatment.** `rowmod(k)` is the
 largest summed context over the rows `i ≡ r (mod k)` of a batch in scheduled order; `k = 1`
 is `Σ ctx`. It names no kernel, split rule, head count or CU count. A rung adopts one `k`
 as a fourth column (D55) only when all four hold:
@@ -411,9 +426,9 @@ On the hjbog-srdc-39 law's records the rule adopts `k = 16` at rung 32 alone: sc
 the gfx942 decode attention grid places workgroups so that the rows `i mod 16` share a
 dispatch class; the fit found 16 from the data alone.
 
-**Declared treatment: uniform routing** (owner's DP ruling, 2026-10-01). Under DP the
-MoE segment is priced as if routing spread tokens evenly over the experts, in every
-tier, from `T_moe` with EP off; with EP on its row count is open (`15` D90). Real
+**Assumed treatment: uniform routing** (owner's DP ruling, 2026-10-01). Under DP the
+MoE segment is priced as if routing spread tokens evenly over the experts, at every
+granularity, from `T_moe` with EP off; with EP on its row count is open (`15` D90). Real
 routing is data-dependent (`15` D92 Q2) and no feature carries it, so whatever skew a
 capture's routing has is folded into the fitted MoE terms. `max` over ranks is the
 per-layer critical path, by construction with EP off and under this treatment with EP on
@@ -463,14 +478,14 @@ choice that must be visible.
 | # | Decision | Date |
 |---|---|---|
 | D53 | Fit relative error, not absolute seconds. MAD outlier test on the same relative residuals. | 2026-09-18 |
-| D54 | Prefill and decode fitted separately; decode per CUDA-graph rung with both coefficients per rung. Under DP and EP, tier a is one per-rank law keyed by `(dp, ep)`, with the DP-unified rung and the MoE row count as features (`T_moe` with EP off; open with EP on), captured on a real deployment at that `(dp, ep)` and fitted by alternating max-affine regression. Tier a's label is one forward's device busy time, plus the device gap before it on a decode, with launch-exposed decodes cut and no prefill cut; four host laws (`E`, `W_pre`, `W_launch`, `W_post`), each `(1, tokens, seqs)` per decode, output prefill and pure middle chunk (a middle chunk has no sampler launch, output or R1 wait, so its `W_post` is zero and not fitted), are fitted beside it, keyed by host CPU, `atom` digest, model and engine config, with no transfer. | 2026-09-18; revised 2026-10-01, 2026-10-09 (`T_moe`, #502) and 2026-10-11 (#815); label per step kind 2026-10-12 (#843) |
+| D54 | Prefill and decode fitted separately; decode per CUDA-graph rung with both coefficients per rung. Under DP and EP, the step linear law is one per-rank law keyed by `(dp, ep)`, with the DP-unified rung and the MoE row count as features (`T_moe` with EP off; open with EP on), captured on a real deployment at that `(dp, ep)` and fitted by alternating max-affine regression. Its label is one forward's device busy time, plus the device gap before it on a decode, with launch-exposed decodes cut and no prefill cut; four host laws (`E`, `W_pre`, `W_launch`, `W_post`), each `(1, tokens, seqs)` per decode, output prefill and pure middle chunk (a middle chunk has no sampler launch, output or R1 wait, so its `W_post` is zero and not fitted), are fitted beside it, keyed by host CPU, `atom` digest, model and engine config, with no transfer. | 2026-09-18; revised 2026-10-01, 2026-10-09 (`T_moe`, #502) and 2026-10-11 (#815); label per step kind 2026-10-12 (#843); named 2026-10-14 (#952) |
 | D55 | Attention terms summed per request; the padding term is the rung's rectangle, not the batch's. A decode rung may add `rowmod(k)` (D61). | 2026-09-18; revised 2026-10-14 (#941) |
 | D56 | Distinguish rank deficiency from coverage gap: drop zero-variance features explicitly, report the condition number, and treat "widening the evidence does not move the error" as evidence the feature is wrong. | 2026-09-18 |
 | D57 | Every fit reports provenance, sample count, dropped count, condition number and validity hull. Report an interval or report nothing. | 2026-09-18 |
-| D58 | Refuse rather than fall back on a step kind with no samples. The extrapolation guard is a convex hull or k-NN distance, never a per-feature bounding box; an out-of-hull step is priced `extrapolated` and reported apart, not refused. | 2026-09-18; revised 2026-10-11 (#765) |
-| D59 | A family is validated on independently obtained data, never by LOO. Rank at least three candidates and report all held-out errors. A law that fits one axis is tested on a second before it ships. | 2026-09-18 |
-| D60 | Laws are piecewise over declared dispatch bands read from recorded kernel identity. A query with no same-band bracket refuses. | 2026-09-18 |
-| D61 | Treatments are declared and the calibration population matched. Decode row order, worth 1.77× at a fixed multiset, is a decode feature, `rowmod(k)` in scheduled order, adopted per rung by a four-condition rule. Uniform routing of the MoE segment under DP and EP is a declared treatment, in every tier. | 2026-09-18; revised 2026-10-01, 2026-10-14 (#941) |
+| D58 | Refuse rather than fall back on a step kind with no samples. The extrapolation guard is a convex hull or k-NN distance, never a per-feature bounding box; an out-of-hull step is priced `estimated` and unvalidated, its source naming the extrapolation, and reported apart, not refused. The step linear law refuses a discrete value it has no vector for, extrapolates outside its fitted hull, and is validated only inside the hull of its held-out steps. | 2026-09-18; revised 2026-10-11 (#765) and 2026-10-14 (#952) |
+| D59 | A family is validated on independently gathered data, never by LOO. Rank at least three candidates and report all held-out errors. A law that fits one axis is tested on a second before it ships. | 2026-09-18 |
+| D60 | Laws are piecewise over dispatch bands read from recorded kernel identity. A query with no same-band bracket refuses. | 2026-09-18 |
+| D61 | Treatments are stated and the calibration population matched; an assumed treatment is a property of the query, recorded in the run summary. Decode row order, worth 1.77× at a fixed multiset, is a decode feature, `rowmod(k)` in scheduled order, adopted per rung by a four-condition rule. Uniform routing of the MoE segment under DP and EP is an assumed treatment, at every granularity. | 2026-09-18; revised 2026-10-01, 2026-10-14 (#941, #952) |
 | D62 | Leading warmth is measured and reported, never charged. Error is reported stratified by the axes the law is linear in. | 2026-09-18 |
 
 ---
@@ -485,5 +500,5 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 | T29 | Choose the hull implementation (convex hull vs k-NN distance threshold) and its threshold | needs one calibration corpus to tune against |
 | T30 | Enumerate candidate laws per leaf family, with their held-out validation shapes | needs the leaf list frozen (`04` T3) |
 | T31 | Test raggedness, cached fraction and chunk-position for treatment status | each needs a controlled experiment like the row-order one |
-| T32 | Decide whether tier (a)'s coarse fit is derived from tier (b)'s symbolic expression or fitted independently | `04` T8; if derived, most of this document applies only to leaves |
+| T32 | Decide whether the step linear law is derived from the op level's symbolic expression or fitted independently | `04` T8; if derived, most of this document applies only to leaves |
 | T33 | Establish `warmup_seconds` for Qwen3.8-27B under the current stack | per-deployment constant, currently defaulting to 0 |

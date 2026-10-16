@@ -13,10 +13,8 @@ is machinery with no caller.
 
 Two things this file deliberately does not do.
 
-**It binds no `width`.** The matrix's six columns contain no width at all, so
-invalidation does not need #165 settled; where a key field happens to be
-called `width` the topology here is tensor-parallel only, so the two candidate
-readings coincide and no fixture settles the question by example.
+**It moves no layout.** The matrix's six columns contain no parallel axis: the
+layout is in the key, so another layout is another entry, never a stale one.
 
 **It settles nothing left open.** Whether an aiter bump invalidates or only
 warns is open (#168), and while it is open the default stands:
@@ -83,10 +81,18 @@ STANZA = Provenance(
 PRICE_KERNELS = Gate("PRICE_KERNELS", "off", "COMPASS_PRICE_KERNELS")
 GATES = GateState.of(PRICE_KERNELS)
 
-#: One rank per tensor-parallel rank, and no other axis: at this topology the
-#: tensor-parallel width and the rank count are both 2, so a key field named
-#: `width` states nothing #165 has to rule on.
+#: One rank per tensor-parallel rank, and no other axis.
 TP2 = Topology(tp=2)
+#: The layout the layout-keyed rows state, the one `TP2` publishes at.
+LAYOUT = {
+    "dp": 1,
+    "pp": 1,
+    "pcp": 1,
+    "tp": 2,
+    "enable_expert_parallel": False,
+    "enable_dp_attention": False,
+    "decode_context_parallel_size": 1,
+}
 
 BASE = Conditions.of(
     software_stack="rocm7.2.4 / aiter v0.1.21.dev0-49-gf4e7c7509 / rccl2.22.3",
@@ -102,13 +108,22 @@ BASE = Conditions.of(
 KEY_OF: dict[Row, Key] = {
     Row.OP_GRAPH: Key.of(Kind.OP_GRAPH, structure="qwen3-moe-48L"),
     Row.PRICE_LIST: Key.of(
-        Kind.PRICE_LIST, model="Qwen/Qwen3-32B", width=2, source_root=ATOM_ROOT.revision
+        Kind.PRICE_LIST,
+        model="Qwen/Qwen3-32B",
+        machine_spec="sha256:mi308x",
+        source_root=ATOM_ROOT.revision,
+        **LAYOUT,
     ),
-    Row.REGION_TERMS: Key.of(Kind.REGION_TERMS, model="Qwen/Qwen3-32B", width=2),
+    Row.REGION_TERMS: Key.of(
+        Kind.REGION_TERMS,
+        model="Qwen/Qwen3-32B",
+        machine_spec="sha256:mi308x",
+        **LAYOUT,
+    ),
     Row.MEMORY_READINGS: Key.of(
         Kind.MEMORY_READINGS,
         model="Qwen/Qwen3-32B",
-        width=2,
+        **LAYOUT,
         utilization=0.9,
         max_num_seqs=256,
         max_model_len=32768,
@@ -231,13 +246,7 @@ def test_a_fingerprint_carries_only_the_cells_its_row_depends_on():
 
 
 def test_no_axis_of_the_matrix_is_a_width():
-    """No axis is a width, so the matrix does not depend on #165.
-
-    The columns are the software stack, torch, ATOM's source, the model, the
-    device and the engine config. None of them is a width, so no fingerprint
-    here has to decide whether an artifact key's scalar `width` is the
-    tensor-parallel width or the rank count.
-    """
+    """No axis is a width: the layout is in the key, not in a fingerprint."""
     assert {axis.field for axis in Axis} == {
         "software_stack",
         "torch",

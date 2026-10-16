@@ -13,9 +13,14 @@ flags, and the run file is the tool's internal transport (D79, settling T96).
 **Revised 2026-10-14 by the owner's
 [ruling on #937](https://github.com/jgong5/ATOM/pull/937#issuecomment-6161726104), which
 [#851](https://github.com/jgong5/ATOM/issues/851)'s decisions carry:** users reach Compass
-only through the `compass` commands, and the environment tier goes (D79); one `record` or
+only through the `compass` commands, and the environment level goes (D79); one `record` or
 `run` serves one instance to any number of client runs, and no command starts the client;
 `compass measure memory` takes the memory readings a run reads (D78, D80).
+
+**Revised 2026-10-14 by the naming record in
+[#952](https://github.com/jgong5/ATOM/issues/952):** the backend flags follow the run-file
+keys, `--step-stub`, `--step-linear` and `--step-grid`, and precedence has levels (D79,
+D80).
 
 **Depends on:** `05_machine_spec_and_probes.md` D24 (the separation rule this extends),
 and every other topic, each of which contributed a flag.
@@ -83,7 +88,7 @@ with three rules on top:
    machine spec and the model are mandatory, and so is the artifact store whenever a key
    names an entry in it; omitting one names it and stops. Settings that cannot change a
    number (log level, output path) may default.
-2. **There is no environment tier** (2026-10-14, #851). Users reach Compass only through
+2. **There is no environment level** (2026-10-14, #851). Users reach Compass only through
    the `compass` commands' flags (D80), a container or CI harness included. A variable
    the tool sets to carry what it resolved, as the run file does, is not a setting.
 3. **The fully resolved configuration is echoed into every run artifact**, alongside the
@@ -114,7 +119,7 @@ written from the flags, handed to ATOM's API server by `--compass-run`, and kept
 `run.json` (D79, D81). ATOM's own arguments pass after `--`, unchanged.
 
 ```
-compass run --machine machine.json --step-fit <key> --store ./compass-store \
+compass run --machine machine.json --step-grid <key> --store ./compass-store \
     [--host-laws <key>] [--coverage <input>...] [--on-refusal mark|abort] --out <dir> \
     -- --model <model> -tp 4 --max-num-seqs 256 ...      # ordinary ATOM, unchanged
 
@@ -126,16 +131,16 @@ python -m atom.entrypoints.openai_server <ATOM arguments> \
 | `run` flag | Meaning | Default |
 |---|---|---|
 | `--machine` | the machine specification (`05` D25) | **none — refuses** |
-| `--law`, `--coefficients`, `--step-fit` | the backend, exactly one: tier a's law by store key, declared coefficients by file (declared, never fitted), a step fit bundle by store key (`17` D103). The backend is the cost tier; there is no tier flag | **none — refuses**, as does more than one |
+| `--step-linear`, `--step-stub`, `--step-grid` | the backend, exactly one, each named by its run-file key: a step linear law by store key, a step stub's stated coefficients by file (its terms declared, never fitted), a step grid bundle by store key (`17` D103). There is no granularity or method flag | **none — refuses**, as does more than one |
 | `--store` | the artifact store keys resolve in, the configuration's `memory_readings` included (`07` D41) | **none — refuses** |
 | `--host-laws` | the host laws by store key (`09` D54), composed by `01` D4's recurrence | none: the run charges no host time and records that |
 | `--on-refusal` | `mark`: a refused step costs 0 s, its reason is recorded, and the run continues. `abort`: stop at the first refusal; the run summary is still written. Either way a refusal makes the run a coverage report (`08` D50.1) | `mark` (`08` D50.1) |
-| `--roofline-floor-s` | a tier-0 floor prices the steps the backend refuses | off; `run.json` records it when given |
+| `--roofline-floor-s` | superseded by the owner's ruling on [#1047](https://github.com/jgong5/ATOM/issues/1047): the step roofline has no host bound, so this setting is a switch with no value, the run-file key `step_roofline`. On, it composes `StepFallbackBackend`: the step roofline (`10` D64) prices the device time of the steps the backend refuses, with the method its inputs give it | off; `run.json` records it when on |
 | `--coverage` | `shape_population` keys and `record` directories the backend's coverage check reads before the run starts; a failed check refuses the run (`07` D37) | off; `run.json` records the check's result, or that none ran |
 
 `run` reads the `memory_readings` entry for its configuration (`07` D41) and refuses when
 there is none, naming the configuration. `compass measure memory` takes it; for a device
-never measured, developer tooling declares it marked assumed, and `run.json` records that
+never measured, developer tooling states it, marked assumed, and `run.json` records that
 (`07` D38).
 
 `--compass-clock-endpoint` names a standalone Clock Authority (`01` D3.3); absent, it is
@@ -145,7 +150,7 @@ file's clock endpoint included, is settled by the launch script's own issue (bel
 run file selects the simulated runner through `Config.runner_qualname`, the seam (`02`
 D10).
 
-Two settings of tier b are settled with the toolchain's ops half (`16` W4.1): refusing an
+Two settings of the op-level backend are settled with the toolchain's ops half (`16` W4.1): refusing an
 unknown structure rather than tracing it in-run (`02`), and `--measure`, which
 additionally runs on a real GPU and records, and is **never valid in an acceptance run**
 (`07` D42).
@@ -153,9 +158,9 @@ additionally runs on a real GPU and records, and is **never valid in an acceptan
 ### Tool-side: the `compass` CLI
 
 One entry with subcommands: the `compass` console script, whose module is
-`atom/compass/cli.py`, declared in `pyproject.toml`. A verb with two halves takes `steps`
-or `ops`: the steps half is tier a's and step fit's, built for stage 2 (`16` S2.7); the ops
-half is tier b's, built by the toolchain task (`16` W4.1). Each command runs one of `07`
+`atom/compass/cli.py`, registered in `pyproject.toml`. A verb with two halves takes `steps`
+or `ops`: the steps half is the step-level backends', built for stage 2 (`16` S2.7); the ops
+half is the op-level backend's, built by the toolchain task (`16` W4.1). Each command runs one of `07`
 D38's phases or fits what a phase measured.
 
 **Users reach Compass only through these commands.** What developers use to check its
@@ -173,14 +178,14 @@ compass measure steps  [<batches>...] [--grid <population>...] <sample> \
                        --sampling P --out D --store S -- <ATOM args>          [GPU]
 compass measure ops               (ops half)                                  [GPU]
 compass measure memory                        --out D --store S -- <ATOM args> [GPU]
-compass fit steps      --backend law|step-fit <sample>... --out D --store S
+compass fit steps      --backend step-linear|step-grid <sample>... --out D --store S
 compass fit host       <record>... --out D --store S
 compass fit ops                   (ops half)
 compass run            <backend> --machine M  --out D --store S -- <ATOM args>
 
-<backend>   exactly one of --law KEY, --coefficients FILE, --step-fit KEY
+<backend>   exactly one of --step-linear KEY, --step-stub FILE, --step-grid KEY
 <batches>   record directories and shape_population keys, whose batches it replays
---grid      shape_population keys, and record directories, that step fit's planner
+--grid      shape_population keys, and record directories, that the step grid's planner
             places its points over
 <sample>    --sample N --seed S, or --sample all
 ```
@@ -191,9 +196,9 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
 | `trace steps` | 0 | none | `run`'s inputs | `--store`: one `shape_population`, keyed by the backend that priced it; `--out`: what `run` writes |
 | `trace ops` | 1a | none | the structures Phase 0 found | `--store`: one `op_graph` per structure |
 | `measure steps` | 1c, on the bench | GPU | its `<batches>`, and `--grid`'s inputs | `--store`: one `step_measurement` per distinct batch |
-| `measure ops` | 1b, collectives included | GPU, each width | the signatures `trace ops` captured; the declared collective entry points (`07` D40) | per-signature measurements |
+| `measure ops` | 1b, collectives included | GPU, each width | the signatures `trace ops` captured; the stated collective entry points (`07` D40) | per-signature measurements |
 | `measure memory` | 2 | GPU | ATOM's arguments | `--store`: one `memory_readings` for the configuration; `--out`: `run.json`, logs |
-| `fit steps` | from 1c's measurements | none | `record` directories and `step_measurement` entries, as the backend accepts | `--store`: a `step_law` or a step fit bundle, with its report; `--out`: a readable copy |
+| `fit steps` | from 1c's measurements | none | `record` directories and `step_measurement` entries, as the backend accepts | `--store`: a `step_linear_law` or a step grid bundle, with its report; `--out`: a readable copy |
 | `fit host` | from real runs | none | `record` directories only | `--store`: `host_laws`, with its report |
 | `fit ops` | from 1b's and 1c's measurements | none | `measure ops`'s measurements, and 1c's for the region terms | `price_list`, `region_terms` |
 | `run` | a simulated serve | none | a backend, the machine spec, the configuration's `memory_readings`, ATOM's arguments; the requests clients send | `--out`: the step record with its cost lines, the step table, the run summary, `run.json` with the run file and what grading reads (below), logs |
@@ -230,14 +235,14 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
   is stopped. Several instances are several invocations, started by a script outside the
   CLI that its own issue designs, with how simulated instances share one Clock Authority
   (`01` D3.3) and how a client started apart is pointed at its run.
-  A simulated server serves the client runs its run file declares, each ending when no
+  A simulated server serves the client runs its run file states, each ending when no
   essential work is left, and the clock waits between them (`01` D3, Client runs).
 - **A client run** is one client invocation against a server. Which requests and traces it
   sent comes from the client's export or from the requests (`06`). A step record splits
   per client run by the requests its lines name (`atom/compass/parity/`): a step belongs
   to the client run whose requests it holds, a step holding none to no client run, and a
   step holding two client runs' requests refuses the split. A run summary splits with its
-  steps: its step counts (the refusals, the analytic and extrapolated shares,
+  steps: its step counts (the refusals, the seconds by method,
   `coverage_report`; `01` D3.5) are taken over a client run's steps, while grants, speed
   and detector state stay the server's. Every reader of a record, grading included, takes
   its client runs and traces from this split. A later client run on a server meets the
@@ -257,7 +262,7 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
   shapes only, so any traces may drive it, and the population records the traces it
   served. It needs no GPU device.
 - **`measure steps`** replays the batches of its positional inputs, and with `--grid` runs
-  step fit's planner over the shapes of the `shape_population` keys, and the `record`
+  the step grid's planner over the shapes of the `shape_population` keys, and the `record`
   directories, it names and measures the points the planner places (`17` D98).
   `--sessions A:B` filters any input; one of `--sample N --seed S` (stratified by step
   kind and rung, or by prefill token band) or `--sample all` draws from the replayed
@@ -269,19 +274,19 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
 - **`measure memory`** starts the real engine with ATOM's arguments, reads the memory
   readings once the KV cache is allocated and the graphs are captured, publishes one
   `memory_readings` entry, and exits (`07` D38, Phase 2).
-- **`fit`**: each backend owns its fit and declares the label sources it takes. Tier a's
-  law and `fit host` take real records only (`09` D54); step fit takes bench points for
+- **`fit`**: each backend owns its fit and states the label sources it takes. The step linear
+  law and `fit host` take real records only (`09` D54); the step grid takes bench points for
   its grid and real records, bench replays or both for its residual (`17` D98, D100);
-  declared coefficients are not fitted, and `--backend coefficients` refuses. A fit copies
+  the step stub's coefficients are stated, not fitted, and `--backend step-stub` refuses. A fit copies
   its inputs' provenance into its output, the traces they came from included, and
   identical inputs and arguments give a bit-identical output. A grader refuses a backend
   fitted on the traces it grades (`08` D50).
-- **`run`** records in `run.json` what grading reads: the floor, whether host segments
-  were skipped (`01` D4's what-if), the refusals, the coverage check's result, and the
+- **`run`** records in `run.json` what grading reads: whether the step roofline was on,
+  whether host segments were skipped (`01` D4's what-if), the refusals, the coverage check's result, and the
   backend's provenance, its fitted traces and profiled inputs included.
   `python -m atom.compass.validate` decides from them whether a client run is gradeable:
-  not when the run skipped host segments, used `--roofline-floor-s`, priced with a backend
-  fitted on the traces it grades or on profiled inputs, ran step fit without a passed
+  not when the run skipped host segments, priced with a backend
+  fitted on the traces it grades or on profiled inputs, ran the step grid without a passed
   coverage check, or refused a step of that client run (`08` D50.1). A backend fitted
   under another engine configuration refuses to run: that is a mismatch, not a reason.
 
@@ -290,7 +295,7 @@ was built, and an entry asked for one refuses, naming where its work went.
 
 | Deprecated | Where its work went |
 |---|---|
-| `compass plan` | Nowhere as one command (`07` D37). Step fit's grid planning and coverage check sit beside its backend (`17` D98, D99): `measure steps --grid` runs the planner over a `shape_population`, and `run --coverage` calls the check before the run starts |
+| `compass plan` | Nowhere as one command (`07` D37). The step grid's planning and coverage check sit beside its backend (`17` D98, D99): `measure steps --grid` runs the planner over a `shape_population`, and `run --coverage` calls the check before the run starts |
 | `compass validate` | Grading stays `python -m atom.compass.validate` (`08`), outside the CLI, and decides whether a run is gradeable from what `run.json` records |
 | `compass explain`, `compass probe`, `compass spec` | Machine specs are developers', one per supported machine, maintained with the `spec` package (`05` D26) and per-machine scripts such as `scripts/compass/mi308x_spec.py`; a user passes one by `--machine` |
 | `compass measure collectives` | `measure ops` (`07` D40) |
@@ -309,7 +314,7 @@ Audited, because an absent flag is a decision and should be a visible one:
 | virtual-clock enable/disable | there is no simulated run without one. A switch would create an untested second configuration. |
 | per-term memory overrides | a memory term comes from the machine spec or a `memory_readings` entry, where it is echoed and fingerprinted |
 | a workload, the client's settings | no command starts the client: a client started apart sends them, and grading reads which traces it served from the client run |
-| a perturbed price for grading's sensitivity control (`08` D45) | grading's tooling, outside the CLI, publishes a copy of the law with its prefill price scaled by 0.97 as its own `step_law` entry, its provenance "scaled from <key> by 0.97", and the control is `run --law <that key>` |
+| a perturbed price for grading's sensitivity control (`08` D45) | grading's tooling, outside the CLI, publishes a copy of the law with its prefill price scaled by 0.97 as its own `step_linear_law` entry, its provenance "scaled from <key> by 0.97", and the control is `run --step-linear <that key>` |
 | acceptance rate for speculative decoding | **ATOM's own flag** — `--spec-decode-acceptance-length` / `--spec-decode-acceptance-rate` already exist (`14` D83) |
 | thread-pool widths | ATOM's, per `05` D24 |
 | the run file's lookaheads, bound and admission path | fixed in code: no measurement backs the lookaheads (`atom/compass/clock/channels.py::single_engine_table`), and `run` always drives the API server |
@@ -326,7 +331,7 @@ and the difference is invisible after the fact.
 
 ### Decision
 
-The **resolved** configuration — post-precedence, with every value tagged by the tier that
+The **resolved** configuration — post-precedence, with every value tagged by the precedence level that
 supplied it — is written into every run artifact and into every calibration artifact's
 fingerprint (`07` D41, D43).
 
@@ -348,8 +353,8 @@ have changed.
 | # | Decision | Date |
 |---|---|---|
 | D78 | Three homes. A setting is Compass's only if it would be meaningless in a real ATOM run — which keeps the surface small by construction. | 2026-09-19 |
-| D79 | Precedence is CLI > artifact > **refuse**, with no environment tier. No silent default for anything that changes a predicted number. The resolved configuration is echoed into every artifact. The run file `compass run` writes is its transport to ATOM, not a config file. | 2026-09-19; run file 2026-10-13 (#851); no environment tier 2026-10-14 (#851) |
-| D80 | A simulated serve is configured by `compass run`'s flags, handed to ATOM's server in a run file by `--compass-run`. One `compass` entry, the only way users reach Compass, with the toolchain's commands: `record`, `trace steps\|ops`, `measure steps\|ops\|memory`, `fit steps\|ops\|host` and `run`, sharing ATOM's arguments after `--`, `--out` and `--store`, one step-record format, `run.json` and the GPU refusals; no command starts the client or takes a workload. One `record` or `run` serves one instance to any number of client runs, and a record splits per client run by its requests. `run` records what grading reads, and grading decides whether a run is gradeable. The commands first listed are deprecated and removable, each with where its work went; developers' quality tooling stays outside the CLI. Non-flags audited and recorded. | 2026-09-19; revised 2026-10-13 and 2026-10-14 (#851) |
+| D79 | Precedence is CLI > artifact > **refuse**, with no environment level. No silent default for anything that changes a predicted number. The resolved configuration is echoed into every artifact. The run file `compass run` writes is its transport to ATOM, not a config file. | 2026-09-19; run file 2026-10-13 (#851); no environment level 2026-10-14 (#851) |
+| D80 | A simulated serve is configured by `compass run`'s flags, handed to ATOM's server in a run file by `--compass-run`. One `compass` entry, the only way users reach Compass, with the toolchain's commands: `record`, `trace steps\|ops`, `measure steps\|ops\|memory`, `fit steps\|ops\|host` and `run`, sharing ATOM's arguments after `--`, `--out` and `--store`, one step-record format, `run.json` and the GPU refusals; no command starts the client or takes a workload. One `record` or `run` serves one instance to any number of client runs, and a record splits per client run by its requests. `run` records what grading reads, and grading decides whether a run is gradeable. The commands first listed are deprecated and removable, each with where its work went; developers' quality tooling stays outside the CLI. Non-flags audited and recorded. | 2026-09-19; revised 2026-10-13 and 2026-10-14 (#851); backend flags named 2026-10-14 (#952); the step roofline setting made a switch 2026-10-15 (#1047) |
 | D81 | The resolved configuration is part of every artifact, by value and never by reference. | 2026-09-19 |
 
 ---
@@ -361,7 +366,7 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 
 | # | Item | Why deferred |
 |---|---|---|
-| ~~T57~~ | ~~Generate the `ATOM_COMPASS_*` environment twins from the flag table rather than hand-writing them~~ — retired 2026-10-14 on #851: there is no environment tier (D79) | mechanical; needs the flag table to be final first |
-| T58 | Decide whether a per-leaf tier override is worth the reproducibility cost | no demand yet |
+| ~~T57~~ | ~~Generate the `ATOM_COMPASS_*` environment twins from the flag table rather than hand-writing them~~ — retired 2026-10-14 on #851: there is no environment level (D79) | mechanical; needs the flag table to be final first |
+| T58 | Decide whether a per-leaf backend override is worth the reproducibility cost | no demand yet |
 | ~~T96~~ | ~~Reconcile D79 and D80 with the run file the code selects a backend by (`--compass-run`, `atom/compass/run/__init__.py::runner`): D79 rejects a Compass config file, the code reads one (`17` D103)~~ — settled 2026-10-13 on #851: `compass run` takes flags only, and the run file is its internal transport (D79, D80) | needs an owner choice between describing the run file here and moving selection to flags |
 | ~~T99~~ | ~~A simulated server outlives its client (D80): `01` D3 ends a run when no essential work is left, and must end a client run there instead, the clock then waiting for the next client~~ — settled 2026-10-14 on #966: `01` D3, Client runs | needs a change to `01` D3, not yet designed |

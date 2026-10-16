@@ -91,6 +91,7 @@ def deployment(tmp_path, **config):
         gpu_memory_utilization=0.9,
         torch_dtype=torch.bfloat16,
         enforce_eager=False,
+        enable_tbo=False,
         capture_sizes=list(LADDER),
         compilation_config=SimpleNamespace(cudagraph_capture_sizes=list(LADDER)),
         kv_cache_block_size=16,
@@ -211,10 +212,10 @@ def test_a_run_ended_by_abort_still_names_its_bundle(monkeypatch, tmp_path):
     assert reason.startswith("ended:engine raised CostRefused(")
 
 
-def test_a_roofline_floor_still_prices_below_step_grid(monkeypatch, tmp_path):
+def test_a_step_roofline_still_prices_below_step_grid(monkeypatch, tmp_path):
     r = deployment(tmp_path)
     publish(tmp_path, r)
-    run_file(tmp_path, monkeypatch, roofline_floor_s=1e-3)
+    run_file(tmp_path, monkeypatch, step_roofline=True)
 
     compass_run.runner(r, META_8B)
 

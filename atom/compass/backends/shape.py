@@ -192,6 +192,9 @@ class BatchView:
     gather carries, which the MoE segment is priced from. It is None on one
     rank. `produces_output` says whether the step samples, which a pure middle
     prefill chunk does not; None when the caller did not say.
+    `tbo_tokens` is the two-batch-overlap split the data-parallel group
+    agreed: per micro-batch, each rank's token count. It is None when the
+    step is not split, and on one rank.
 
     What this does not do is make the collapsed form unreachable: one row is
     a legal batch, and a one-row batch is `tokens x history` by construction.
@@ -202,6 +205,7 @@ class BatchView:
     capture_rung: int | None = None
     moe_rows: int | None = None
     produces_output: bool | None = None
+    tbo_tokens: tuple[tuple[int, ...], ...] | None = None
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)

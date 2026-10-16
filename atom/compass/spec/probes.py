@@ -1,14 +1,15 @@
 # SPDX-License-Identifier: MIT
 """What a probe that needs no device emits, and which probe fills which constant.
 
-The first half of this module is the tier that needs no device; the second is
-the table of which probe supplies each runtime constant, and the one entry that
-no probe supplies. The reading that makes two fragments comparable comes first.
+The first half of this module is probe class 0, which needs no device; the
+second is the table of which probe supplies each runtime constant, and the one
+entry that no probe supplies. The reading that makes two fragments comparable
+comes first.
 
 A probe measures part of a machine and emits a fragment: the fields it probed
 plus the stanza saying which machine they are for, by whom, when and how. What
-is here is the tier that needs no device: `tokenizer_sweep` times a loaded
-tokenizer, `tokenizer_fragment` composes whatever rates it is handed -- and a
+is here is probe class 0, which needs no device: `tokenizer_sweep` times a
+loaded tokenizer, `tokenizer_fragment` composes whatever rates it is handed -- and a
 tokenizer sweep needs no device, so it is the measurement most likely to be taken
 somewhere other than the machine it is authored for -- a laptop, a build agent,
 the login node in front of a cluster. That is not an abuse of it. Tokenization
@@ -50,11 +51,14 @@ it would travel into a spec looking exactly like a measurement.
 obtained.** This function composes a fragment and reads a topology. It does not
 encode or decode anything, so it cannot know whether the rates it was handed
 were swept on a loaded tokenizer, copied out of an older spec or typed in -- and
-`provenance.origin` is what a merge refusal quotes and what a run artifact
-carries as the numbers' source. An origin stamped here would be this function
-asserting a measurement it did not take, over data it received. So the caller
-states it, with no default to fall through to, and the core counts read here
-ride along under whatever the caller states about its own rates.
+a field's origin is what a run artifact carries as the number's source. An
+origin stamped here would be this function asserting a measurement it did not
+take, over data it received. So the caller states it, with no default to fall
+through to, and it goes on each entry, with the subject. The core counts are
+`probed`, because this function did read them, so the fragment is `mixed` and
+says each field's origin in `provenance.origins`. That is also what keeps a
+tokenizer carried over from another spec from making the whole fragment a
+transfer, which a merge would then check against a device stack it never had.
 
 **What the entries are is checked here rather than several verbs later.** They
 are read against the closed table a tokenizer entry has, the same one a spec is
@@ -79,8 +83,8 @@ writing a capability into the table that nothing states, and a table entry
 invented to close a gap travels onward as a measurement -- so asking for that
 entry's probe returns a refusal naming what has to be measured by hand instead.
 
-**And the hole is not a tier boundary somebody forgot to move.** The retained
-bytes measure 1.1e6 at width one and 2.17e9 flat at every width above it,
+**And the hole is not a probe-class boundary somebody forgot to move.** The
+retained bytes measure 1.1e6 at width one and 2.17e9 flat at every width above it,
 because what is retained above one card is a collective staging pool that does
 not exist on a single card. Running the multi-rank probe at width one would
 therefore not be the same probe measuring a smaller number; it would be
@@ -110,6 +114,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, NoReturn
 
 from .fields import SCHEMA_VERSION
+from .machine import entry_label
 from .merge import Fragment
 from .rules import Rule, SpecRefusal
 from .tokenizers import table
@@ -231,12 +236,23 @@ def tokenizer_fragment(
     # Read for its refusals: an entry that is not a tokenizer entry is refused
     # here, beside the caller that supplied it, rather than after a merge.
     table(entries)
+    origins = {
+        entry_label(entry["id"], entry.get("backend")): {"origin": origin}
+        | dict(subject or {})
+        for entry in entries
+    }
+    counts = cpu_counts(processors)
+    origins |= {f"host.cpu.{count}": {"origin": "probed"} for count in counts}
     document = {
         "schema_version": SCHEMA_VERSION,
         "name": machine,
-        "provenance": {"authored_by": authored_by, "date": date, "origin": origin}
-        | ({"subject": dict(subject)} if subject else {}),
-        "host": {"cpu": cpu_counts(processors), "tokenizers": list(entries)},
+        "provenance": {
+            "authored_by": authored_by,
+            "date": date,
+            "origin": "mixed",
+            "origins": origins,
+        },
+        "host": {"cpu": counts, "tokenizers": list(entries)},
     }
     return Fragment.from_mapping(document, source)
 
