@@ -1833,10 +1833,12 @@ Owner ruling on [#1087](https://github.com/jgong5/ATOM/issues/1087), 2026-10-16.
 V4 PD-Max recipe sets on prefill beside Mooncake (a `multi` connector), stores and loads
 KV through a separate `lmcache server` process. The scheduler half's adapter
 (`mp/deployment.py::_make_scheduler_adapter`) and each worker's
-(`_make_worker_adapter`) hold an lmcache `MessageQueueClient`
-(`lmcache/v1/multiprocess/mq.py`): a DEALER to the server's ROUTER at
-`lmcache.mp.host:port`, plus a client thread that sends queued requests and resolves
-each reply's future. Stores and loads finish steps after they are submitted, and the
+(`_make_worker_adapter`) hold a client that lmcache 0.5.6.dev, the nightly image's,
+builds with `lmcache/v1/multiprocess/transport/factory.py::RequestClientFactory.create`:
+for a ZMQ URL a `transport/zmq_impl/mq.py::MessageQueueClient`, a DEALER to the server's
+ROUTER at `lmcache.mp.host:port`. One `ClientPollingLoop` thread per process sends every
+client's queued requests and resolves each reply's future. Stores and loads finish steps
+after they are submitted, and the
 server's cached chunks decide later hits for every engine that reaches it.
 `NonAllocatingRunner.allocate_kv_cache` refuses the connector today.
 
@@ -1866,13 +1868,17 @@ stamp is its own header frame, as on every wrapped socket
 
 | Channel | Sender (K-class) | Receiver (mode, K-class) | Lookahead |
 |---|---|---|---|
-| `engine->lmcache:lookup#dpN` | step loop, at `MessageQueueClient.submit_request` (LOOKUP, QUERY_PREFETCH_STATUS, FREE_LOOKUP_LOCKS, END_SESSION); the client thread sends it as a relay (K4, registered at the put, as the engine output queue is) | stand-in loop (inline, K5) | stated `lmcache_ipc_s`: the recipe runs the server on loopback TCP beside prefill |
-| `lmcache->engine:lookup#dpN` | stand-in loop, at the job's completion (K4) | the adapter's client thread, which sets the future (thread, K5); TSO delivery resolves it at the reply's arrival | `lmcache_ipc_s` |
+| `engine->lmcache:lookup#dpN` | step loop, at `MessageQueueClient.submit_request` (LOOKUP, QUERY_PREFETCH_STATUS, FREE_LOOKUP_LOCKS, END_SESSION); the `ClientPollingLoop` thread sends it as a relay (K4, registered at the put, as the engine output queue is) | stand-in loop (inline, K5) | `lmcache_ipc_s` (below) |
+| `lmcache->engine:lookup#dpN` | stand-in loop, at the job's completion (K4) | the `ClientPollingLoop` thread, which sets the future (thread, K5); TSO delivery resolves it at the reply's arrival | `lmcache_ipc_s` |
 | `engine->lmcache:transfer#dpN.tpK` | STORE or RETRIEVE of TP rank `K`'s connector, one per writer rank (one per group under `lmcache.mp.tp_rank_collapse`) (K4) | stand-in loop (inline, K5) | `lmcache_ipc_s` |
 | `lmcache->engine:transfer#dpN.tpK` | stand-in loop, at the copy's completion (K4) | step loop, in `process_completions` (inline, K5) | `lmcache_ipc_s` |
 
 In a 1P+1D run the engine end is `engine-P`. Every cycle through the server crosses two
-channels, so its lookahead is `2 x lmcache_ipc_s`, positive. Startup and teardown frames
+channels, so its lookahead is `2 x lmcache_ipc_s`, positive. `lmcache_ipc_s` is a run-file
+key defaulting to the run's `ipc_s` (`2**-14` s in `scripts/compass/parity_one_node.sh`):
+the recipe runs the server on loopback TCP beside prefill, the same one-host ZMQ hop as
+the engine's IPC channels; sample (c) records the adapter's measured LOOKUP round trip
+beside it. Startup and teardown frames
 (GET_CHUNK_SIZE, REGISTER_KV_CACHE, UNREGISTER_KV_CACHE) fall outside the window and are
 not counted (D3).
 
@@ -1895,8 +1901,9 @@ arriving at `t_c + lmcache_ipc_s`. The grant that reaches that arrival releases 
 reply in `(arrival, channel, seq)` order; the shell takes it inline in
 `process_completions` and reports what TP aggregation of the workers' `get_finished`
 would have: `finished_saving` with the store and source-safe completions, or
-`finished_loading` / `failed_loading`, once every writer rank's reply is in. ATOM's
-scheduler half then runs unchanged.
+`finished_loading` / `failed_loading`, once every writer rank's reply is in. It reports
+at each call what it held at its previous call, as D6's connector does, because the
+aggregation answers one poll behind (#1159). ATOM's scheduler half then runs unchanged.
 
 **Idle points.** The idle offload work (`EngineCore._dispatch_idle_offload_work`, from
 `_advance_idle_kv_transfer`) stays where D4 put it: the busy loop's idle point
@@ -1905,13 +1912,7 @@ joining `t`. What changes is how a completion is found: a released message, not 
 future polled against the wall clock. The other sites in `kv_transfer/offload/mp/` and
 `chunked_scheduler.py`, scanned once #1080 drops their exclusion:
 
-- K3: a step-loop wait on a reply: the poll loop of `mp/lookup.py::_MPLookupClient.lookup`
-  and any wait inside the adapter bounded by `mq_timeout`. Each becomes
-  `next_event(now + bound)`, the bound (`lmcache.mp.lookup_timeout`, `mq_timeout`) a K7
-  timer, and ends when the grant releases the reply. A DP member cannot make such a
-  call alone (D3, member join, rule 1), so above DP width 1 a blocking lookup is
-  refused by name; the asynchronous path (`prefetch_lookups`, `lookup_pending`) never
-  blocks.
+- K3: a step-loop wait on a reply, the blocking lookup below.
 - K2: the defer clock in `chunked_scheduler.py::lookup_pending`
   (`OFFLOAD_LOOKUP_DEFER_S`), which decides whether admission passes over a request.
 - K7: the transfer deadlines (`mp/transfer.py::_enforce_transfer_deadline`, the
@@ -1920,6 +1921,36 @@ future polled against the wall clock. The other sites in `kv_transfer/offload/mp
 - K9: the worker connector and its heartbeat, which the simulated runner replaces; the shutdown
   drain (`_drain_kv_work_at_exit`); `perf_counter` reads that only feed counters. The
   stand-in runs no worker reaper: process death is K8.
+
+**Blocking lookups are request and reply.** Admission reaches the blocking
+`mp/lookup.py::_MPLookupClient.lookup` under the recipe's normal load, by two triggers:
+a waiting request beyond the first `OFFLOAD_ASYNC_LOOKUP_DEPTH`, which
+`Scheduler.schedule` never prefetched, and a prefetched lookup deferred past
+`OFFLOAD_LOOKUP_DEFER_S`. Its `maybe_submit_lookup_request` (LOOKUP) and
+`check_lookup_result` (QUERY_PREFETCH_STATUS) each put a request on the client (K4,
+arriving at `now + lmcache_ipc_s`) and wait on its future (K5). The wait, and the poll
+loop's `time.sleep` around it, is an idle point: `next_event(now + bound)`, the bound
+(`lmcache.mp.lookup_timeout`, `mq_timeout`) a K7 timer. The stand-in takes requests in
+timestamp order and replies at its job's end `t_c`; the grant that reaches
+`t_c + lmcache_ipc_s` releases the reply to the `ClientPollingLoop` thread, which sets
+the future before the owner returns. With positive lookahead both ways, the server's grant to `t_c`
+needs only the engine's NER target, so at DP width 1 nothing more is needed.
+
+**In a DP group this needs a ruling (#1162).** The waiting member asks NER alone. Its
+peers have scheduled and dispatched their forwards, whose DP collective waits on it
+(`chunked_scheduler.py::lookup_pending`: "every DP rank waits in lockstep"); they make
+no CA call. Rule 5 lets a lone call move no time, and rule 3 holds the grant for the
+peers' send logs, which carry their own lookups and stores to `lmcache`. While the peers
+count as running, the server's LBTS stays at the group's `now + lmcache_ipc_s`, below
+`t_c`, so the reply is never sent: a wall-clock deadlock. Proposed amendment of rules
+1, 2 and 5: each member, before dispatching a forward (real or dummy), calls the CA with
+a *park* request that ships its send log and stands in every round as NER `t = +inf`
+until every member is parked; that round returns all at its grant with no advance. A
+waiting member's NER rounds then complete with its peers parked, and a parked member
+walks the thread-channel messages a round releases to it inside its call, so I1 holds.
+The cost is one CA round per step per member, at DP above 1 with `lmcache_mp` only.
+The alternative is refusing a blocking lookup above DP width 1 by name, which refuses
+the recipe.
 
 **Service time.** Two stations in the server LP: the request loop, one server, FIFO,
 pricing a LOOKUP by a declared law in prompt chunks and the bookkeeping requests at a
@@ -1953,15 +1984,19 @@ measured; their accuracy is out of scope here.
 
 **Refusals that remain.** ATOM's own (`mp/deployment.py::_validate_mp_config`: PP, DCP,
 PCP, DP across hosts, `engine_driven`, more than one server) stand as they are. The
-stand-in refuses a server flag or request type it does not model, by name. A `multi`
+stand-in refuses a server flag or request type it does not model, by name, and the shell
+refuses a server URL that `RequestClientFactory` hands to gRPC (`grpc://`,
+`grpc+unix://`), a carrier with no wrapped socket, by its scheme. A `multi`
 connector runs only when each sub-connector is simulated (`compass` and `lmcache_mp`);
 `ATOM_KV_OFFLOAD=lmcache` (in-process, no server) and `mooncake_store` stay refused.
 
 **Acceptance**, per #1076's ruling:
 
 - (a) A one-deployment run, and one at DP2 whose ranks share the server, on a workload
-  that stores a prefix, evicts it from HBM and loads it back: each run reaches its
-  finish with no refusal, a seed pair gives byte-identical step tables, every
+  that stores a prefix, evicts it from HBM and loads it back, and holds more than
+  `OFFLOAD_ASYNC_LOOKUP_DEPTH` waiting requests on each rank with a lookup deferred past
+  `OFFLOAD_LOOKUP_DEFER_S`, so both blocking triggers fire on every rank: each run
+  reaches its finish with no refusal, a seed pair gives byte-identical step tables, every
   `(channel, seq)` on every channel is received once and none before its receiver's
   clock, every request gets its full output, and the runs carry at least one load hit,
   the DP2 run one across ranks.
@@ -1979,7 +2014,6 @@ connector runs only when each sub-connector is simulated (`compass` and `lmcache
 - *A station on each engine LP* (#1087 option (b)): it cannot express one server shared
   by several engines, which the recipe's eight prefill ranks are.
 - *The real server under Compass*: README principle 2.
-- *Worker endpoints with the loop stamping*: above.
 
 ---
 
@@ -2361,7 +2395,7 @@ Ordered by how much they could cost.
 | D5 | Every timer and clock read the CA can reach runs on the LP clock, except the out-of-band control-command reply deadline; only what it cannot reach is configured or left real; metric cadence is virtual time (revising `11` D72); the profiler and RL control commands are refused by the simulated runner with a reply, counted, and make the run a coverage report; a synchronous command from the frontend's clock owner is refused by the frontend | 2026-09-18; revised 2026-09-28, 2026-10-09, 2026-10-14, 2026-10-15 |
 | D5.1 | The simulated run uses stdlib asyncio, not uvloop: only a Python event loop can host virtual time | 2026-09-28 |
 | D6 | KV transfer is simulated through a connector registered in the existing factory, reproducing Mooncake (what ATOM's PD CI deploys) through scheduler-side hooks only | 2026-09-18; revised 2026-09-28 |
-| D6.1 | The lmcache MP server is LP `lmcache`, a Compass stand-in on the real ZMQ channels with a content index and two stations; a store or load completes as a stamped reply that the step loop takes in timestamp order; a step-loop wait on a reply is an idle point, refused inside a DP member | 2026-10-16 (#1087) |
+| D6.1 | The lmcache MP server is LP `lmcache`, a Compass stand-in on the real ZMQ channels with a content index and two stations; a store or load completes as a stamped reply that the step loop takes in timestamp order; a blocking lookup is a request and reply whose wait is an idle point; inside a DP group it awaits a ruling on a park request (#1162) | 2026-10-16 (#1087) |
 | D7 | Atomesh gets no virtual clock: mesh-only mode; in 1P1D the router is one segment of a channel, not an LP, and its relay latency is that channel's lookahead; its bounds are configured (health check and circuit breaker off, `--worker-request-timeout-secs` set large); timestamps ride carriers it already relays; xPyD is deferred; under `--dp-aware` the router is LP `router`, handling requests, prefill responses and stream events in timestamp order (#449) | 2026-09-18; revised 2026-09-30, 2026-10-15 |
 | D8 | Arrivals are messages in transit, covered by the send and receive counts for closed and open workloads alike; the arrival timestamp rides the `tracestate` header | 2026-09-18; revised 2026-09-28 |
 | D9 | The ATOM diff is enumerated (~1,980 lines with tests) and completeness enforced by test rather than by review; ATOM's own suite is the gate (`08` D43.1) | 2026-09-18; revised 2026-09-28 |
