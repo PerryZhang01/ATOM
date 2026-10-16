@@ -35,12 +35,14 @@ WALL_S = 3600.0
 WORDS = ["parity", "replays", "each", "real", "step", "on", "the", "clock"]
 
 
-def bodies(model: str, n: int) -> list[dict]:
-    """Request k: about 48 + 31k words starting with k, 16 to 96 output tokens."""
+def bodies(model: str, n: int, prefix_words: int = 0) -> list[dict]:
+    """Request k: `prefix_words` words every request shares, then about
+    48 + 31k words starting with k; 16 to 96 output tokens."""
+    prefix = "".join(f"{WORDS[i % len(WORDS)]} " for i in range(prefix_words))
     return [
         {
             "model": model,
-            "prompt": f"{k} "
+            "prompt": f"{prefix}{k} "
             + " ".join(WORDS[(k + i) % len(WORDS)] for i in range(48 + 31 * k)),
             "max_tokens": 16 + 16 * (k % 6),
             "ignore_eos": True,
