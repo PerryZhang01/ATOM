@@ -150,18 +150,6 @@
    "mechanism_why": "after the frontend's loop has left the run, so outside the simulated window"
   },
   {
-   "id": "atom/compass/run/__init__.py::_StoppingClock.end_run::self.conn.send((TAR, math.inf, [], math.inf))::p2p#0",
-   "file": "atom/compass/run/__init__.py",
-   "symbol": "_StoppingClock.end_run",
-   "call": "self.conn.send",
-   "expr": "self.conn.send((TAR, math.inf, [], math.inf))",
-   "shape": "p2p",
-   "peer": "process",
-   "why": "at a stop, the frontend asks the clock authority for a TAR to +inf, which grants every server LP +inf so each engine leaves its loop and hands in",
-   "mechanism": "K9",
-   "mechanism_why": "the clock protocol itself, on the frontend's clock owner as the stop ends its run: the request ends every LP's run, and nothing simulated waits on it"
-  },
-  {
    "id": "atom/compass/run/__init__.py::_StoppingClock.end_run::self.conn.recv()::socket_recv#0",
    "file": "atom/compass/run/__init__.py",
    "symbol": "_StoppingClock.end_run",

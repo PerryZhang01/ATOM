@@ -36,7 +36,7 @@ member, the frontend's included, connects to.
   (`atom.utils.compass_loop.CompassEventLoop.stopped`) is a stop: the
   frontend's runtime first ends every LP's run through the authority, so each
   engine leaves its loop at its ``+inf`` grant and hands in, and a client
-  still bound is granted ``+inf`` too; `frontend_done`
+  still bound gets ``+inf`` with every event sent it; `frontend_done`
   hands in the signal, which the summary counts as an ``ended:`` reason, and
   the server leaves once the summary is written from every hand-in. A server
   whose ``client_runs`` is ``null`` serves until it is stopped: a stop with no
@@ -53,7 +53,9 @@ member, the frontend's included, connects to.
 Run file keys: ``clock_endpoint``, ``bound_s`` (finite), ``admission_path``,
 ``ipc_s``, ``stream_s``, one of ``step_stub`` (a `Coefficients` mapping,
 priced by `StepStubBackend`), ``step_linear`` (a `StepLinearLaw` mapping,
-priced by `StepLinearBackend`), ``step_grid`` (an artifact store's root and a
+priced by `StepLinearBackend`; its ``machine_spec`` digest and, when stated,
+its ``engine_config``, `step_grid.keyed` as it was fitted, refuse a run under
+any other), ``step_grid`` (an artifact store's root and a
 bundle's key, priced by `StepGridBackend`; see `step_grid`) and ``replay`` (a
 real run's parity record directory, or for a prefill-decode run one holding
 each side's as ``prefill/`` and ``decode/``: each step ends when the real one
@@ -73,7 +75,9 @@ fitted under and the ``machine_spec`` digest of the spec of the platform they
 were fitted on, which a run with laws must match; ``skip``, segments zeroed for
 a what-if run, which the graders refuse),
 ``machine`` (a machine spec mapping), ``parameter_count`` (read with
-``step_roofline``), and ``out_dir``,
+``step_roofline``), ``store`` (the artifact store's root) and ``backend`` (the
+backend's ``digest`` and its fit ``provenance``, which nothing here reads),
+both written by `atom.compass.drive.runfile`, and ``out_dir``,
 where the step table, the run summary and each server LP's hand-in go, one
 file written as the LP leaves its loop. It holds the LP's refusals: an
 engine's are the worker's refused commands and the engine's refused clock
@@ -213,11 +217,13 @@ COMPASS_ONLY = {
     },
     "utils/zmq_shim.py": {"_Socket", "_ChannelSocket", "_Context"},
 }
+#: The run-file key of each backend a flag names (`atom.compass.drive.runfile`).
+STEP_STUB, STEP_LINEAR, STEP_GRID = "step_stub", "step_linear", "step_grid"
 #: Run-file keys that were renamed, to their names now.
 RENAMED_KEYS = {
-    "coefficients": "step_stub",
-    "law": "step_linear",
-    "step_fit": "step_grid",
+    "coefficients": STEP_STUB,
+    "law": STEP_LINEAR,
+    "step_fit": STEP_GRID,
     "roofline_floor_s": "step_roofline",
 }
 
@@ -465,11 +471,13 @@ class _RecordingAuthority(ClockAuthority):
     starts once every server LP, and every member of one declared with members,
     has asked once. Each client run that ends before the last has its summary
     written once every server LP has handed in. A frontend's TAR to ``+inf``
-    before the finish is a stop: it finishes the run there and sets `stopped`.
-    Every server LP is granted ``+inf``, and the client too while a client run
-    is open, from its bind to its end; outside one it holds no connection. A
-    stop with none open, on a server whose ``client_runs`` is ``null``, sets
-    `stopped_whole`: the run ended as its run file says, as at the finish."""
+    before the finish is a stop: it registers that frontend's send log,
+    finishes the run there and sets `stopped`. Every LP but the client is
+    granted ``+inf``, and the client too while a client run is open, from its
+    bind to its end, its grant releasing every message registered for it;
+    outside one it holds no connection. A stop with none open, on a server
+    whose ``client_runs`` is ``null``, sets `stopped_whole`: the run ended as
+    its run file says, as at the finish."""
 
     def __init__(self, run: dict) -> None:
         # The tree that runs, read before the run so an unidentifiable one is
@@ -521,14 +529,16 @@ class _RecordingAuthority(ClockAuthority):
             self.started = time.monotonic()
         stop = kind == TAR and t == math.inf and lp.name.startswith(FRONTEND.name)
         if stop and self.final_clocks is None:
+            for ch, seq, arrival in log:
+                self._register(lp, ch, seq, arrival, member)
             self.stopped = True
             self.stopped_whole = (
                 self._client_runs == math.inf and not self.client_run_open
             )
             replies = [
-                r
-                for r in self._address(self._finish())
-                if r[0] != TRAFFIC or self.client_run_open
+                (to, g, self._release_all(released) if to == TRAFFIC else released)
+                for to, g, released in self._address(self._finish())
+                if to != TRAFFIC or self.client_run_open
             ]
         else:
             replies = super().on_request(lp, kind, t, log, t_daemon, member)
@@ -557,6 +567,14 @@ class _RecordingAuthority(ClockAuthority):
             self.done.set()
         return replies
 
+    def _release_all(self, into: dict) -> dict:
+        """Every message registered on the channels of `into` and not yet
+        released, now released: by channel, its ``(seq, arrival)`` pairs."""
+        released = {ch: [*self._undelivered[ch].items()] for ch in into}
+        for ch in into:
+            self._undelivered[ch].clear()
+        return released
+
 
 class _PublishedClock(clock.LPRuntime):
     """An LP runtime whose clock is also written to the file `NOW_ENV` names."""
@@ -577,13 +595,14 @@ class _PublishedClock(clock.LPRuntime):
 class _StoppingClock(clock.LPRuntime):
     """An LP runtime that, when its run ends before its ``+inf`` grant, at a
     stop, first ends every LP's run through the authority with a TAR to
-    ``+inf``, so each engine leaves its loop and hands in before the server
-    closes the engines. A run a refusal ended has nothing left to end."""
+    ``+inf``, carrying its send log, so each engine leaves its loop and hands
+    in before the server closes the engines. A run a refusal ended has nothing
+    left to end."""
 
     def end_run(self) -> None:
         if self.now != math.inf:
             with contextlib.suppress(ClockAbort):
-                self.conn.send((TAR, math.inf, [], math.inf))
+                self._ca_send(TAR, math.inf, math.inf)
                 while self.conn.recv()[0] != math.inf:  # up to its own +inf grant
                     pass
         super().end_run()
@@ -833,11 +852,12 @@ def runner(model_runner, tree) -> None:
     config = model_runner.config
     tp = config.tensor_parallel_size
     refuse_renamed_keys(run, "the run file")
-    keys = [k for k in ("step_stub", "step_linear", "step_grid", "replay") if k in run]
+    backends = (STEP_STUB, STEP_LINEAR, STEP_GRID, "replay")
+    keys = [k for k in backends if k in run]
     if len(keys) != 1:
         raise ValueError(
-            "a run file prices its steps from one of step_stub, step_linear, "
-            f"step_grid and replay, and this one has {' and '.join(keys) or 'none'}"
+            f"a run file prices its steps from one of {', '.join(backends[:-1])} "
+            f"and replay, and this one has {' and '.join(keys) or 'none'}"
         )
     replay = None
     if "replay" in run:
@@ -851,7 +871,7 @@ def runner(model_runner, tree) -> None:
             )
         side = {"P": "prefill", "D": "decode"}.get(_pd_side(config), "")
         backend = replay = ReplayBackend(Path(run["replay"]) / side, dp_rank)
-    if "step_linear" in run:
+    if STEP_LINEAR in run:
         if tp != 1:
             raise ValueError(
                 "a step linear law is fitted on one rank of tensor-parallel width "
@@ -861,8 +881,23 @@ def runner(model_runner, tree) -> None:
         dpa = config.enable_dp_attention
         dp = config.parallel_config.data_parallel_size if dpa else 1
         ep = dp if config.enable_expert_parallel else 1
-        backend = StepLinearBackend(StepLinearLaw(run["step_linear"]), (dp, ep))
-    elif "step_stub" in run:
+        law = run[STEP_LINEAR]
+        backend = StepLinearBackend(StepLinearLaw(law), (dp, ep))
+        if "engine_config" in law:
+            from atom.compass.run.step_grid import keyed
+
+            fitted = law["engine_config"]
+            differ = [
+                f"{name} {fitted.get(name)!r} in the law and {value!r} here"
+                for name, value in keyed(config).items()
+                if fitted.get(name) != value
+            ]
+            if differ:
+                raise ValueError(
+                    "the step linear law was fitted under another engine "
+                    "config: " + "; ".join(differ)
+                )
+    elif STEP_STUB in run:
         # A pipeline stage is priced for its own span of the stack, the span
         # ATOM's `make_layers` builds it from.
         hf, pp = config.hf_config, getattr(config, "pipeline_parallel_size", 1)
@@ -884,25 +919,25 @@ def runner(model_runner, tree) -> None:
                 )
             share = ((end - start) / depth, paged_layers(text, start, end) / paged)
         backend = StepStubBackend(
-            Coefficients(**run["step_stub"]),
+            Coefficients(**run[STEP_STUB]),
             Parallelism(tp_size=tp, pp_size=pp),
             stack_layers=end - start,
             stage_share=share,
         )
     machine = MachineSpec.from_mapping(_width_keys(run["machine"]))
     platform = machine_spec_digest(machine)
-    fitted_on = run.get("step_linear", {}).get("machine_spec")
-    if "step_linear" in run and fitted_on != platform:
+    fitted_on = run.get(STEP_LINEAR, {}).get("machine_spec")
+    if STEP_LINEAR in run and fitted_on != platform:
         raise ValueError(
             f"the step linear law was fitted on machine spec {fitted_on} and this "
             f"run's is {platform}; a law measured on one platform is no evidence "
             "about another"
         )
     bundle = None
-    if "step_grid" in run:
+    if STEP_GRID in run:
         from atom.compass.run.step_grid import load
 
-        backend, bundle = load(run["step_grid"], config, machine)
+        backend, bundle = load(run[STEP_GRID], config, machine)
     config_json = _config_json(config)
     model = ModelTerms.from_config(
         config.hf_config,
@@ -1199,7 +1234,7 @@ def engine_loop(engine_core):
         from atom.compass.runner import pp_send
 
         pp_send.install(engine_core, _machine(run))
-    if run is not None and "step_grid" in run:
+    if run is not None and STEP_GRID in run:
         workers = engine_core.runner_mgr
         sections["step_grid"] = workers.call_func("step_grid_bundle", wait_out=True)
     if run is not None:
