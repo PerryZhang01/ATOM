@@ -757,7 +757,7 @@ receives it itself, at its own receive point.
 | `engine->frontend:output#dpN` | step loop `put` on the `RelayQueue`; output thread sends (`engine_core.py::EngineCore.process_output_sockets`) | frontend output thread, `poller.poll()` in `engine_core_mgr.py::CoreManager._create_output_thread` (thread) | stated IPC delay |
 | `frontend-P->frontend-D:relay` | frontend-P's event loop writes prefill's JSON; the router moves `kv_transfer_params` into the decode request (D2) | frontend-D's event loop (inline) | the router's per-request forward cost (D7) |
 | `engine-D->engine-P:kv_write_req` | decode step loop, in the scheduler-side hook `update_state_after_alloc` (`scheduler.py::Scheduler._notify_connector_after_prefill_alloc`); Mooncake's write request, sent from the engine process rather than the worker | prefill step loop, drained in `process_completions` (`scheduler.py::Scheduler._update_from_kv_xfer_finished`) (inline) | stated request latency (D6) |
-| PP stage to stage: `meta`, `tokens`, `kv_status` | stage loop, `pp_transport.py::PPStageTransport.send_metadata` / `send_tokens` / `send_kv_status` | the stage loop's own poll and receive (inline) | modelled NCCL send/recv of intermediate tensors. Microsecond scale. The only tight one. |
+| PP stage to stage: `meta`, `tokens`, `kv_status` | stage loop, `pp_transport.py::PPStageTransport.send_metadata` / `send_tokens` / `send_kv_status` | the stage loop's own poll and receive (inline) | stated IPC delay: each is one ZMQ message, as on the frontend channels; the head's batch to stage `k` is `meta#pp<k>`. The hidden states between stages are `pp_data` (`15` D91). |
 | `engine-P->engine-D:prefill_done` (RapidServe only, in neither M1 nor M2) | prefill step loop, direct send in `engine_core.py::PrefillEngineCore._process_engine_step` | decode handler thread `DecodeEngineCore._recv_prefill_done`, `sock.recv()` (thread) | stated IPC delay |
 | `engine-D->engine-P:block_assignment` (RapidServe only, in neither M1 nor M2) | decode step loop, direct send in `engine_core.py::DecodeEngineCore._send_block_assignment` | prefill handler thread `PrefillEngineCore._recv_block_assignments`, `sock.recv()` (thread) | stated IPC delay |
 
@@ -1247,7 +1247,14 @@ The rules that settle the boundaries #53's categories left in the wrong place:
   real step is tick 1, first simulated step is tick **89,336** — is this loop counted.
   Each becomes `next_event(t, t_daemon)`, `t` the LP's earliest essential local event and
   `t_daemon` its next daemon deadline (the metrics push). The PP bounded polls
-  (`PPStageTransport.recv_tokens` and `recv_metadata`) are `next_event(now + bound)`, and
+  (`PPStageTransport.recv_tokens` and `recv_metadata`) follow the owner's ruling (b) on
+  #468: a stage holding no pending send and no pending KV work polls on a daemon
+  deadline, `next_event(inf, now + bound)`, so an idle stage keeps no run alive; one
+  holding either polls on an essential one, `next_event(now + bound)`, so its idle flush
+  and KV status report still run on time. The stage loop decides which, since only it
+  knows what is pending; that choice is #468's. Until then the shim asks the daemon form
+  on every bounded poll, which is the same while the simulated runner holds no pending
+  send; and
   the offline driver's `CoreManager.get_output` (`atom/model_engine/engine_core_mgr.py`)
   is `next_event(inf)`.
 - **K2**, `Scheduler._passed_delay` / `--scheduler-delay-factor`,
@@ -1396,9 +1403,13 @@ The DP barriers are not wait rules: the step-seconds `all_gather` carries each
 member's charge, and the CA's member join grants each member's step end in turn (D3, `15` D90). PD's
 KV transfer keeps its own model (D6).
 
-Stage 2 builds R1 and R4 ([#825](https://github.com/jgong5/ATOM/issues/825)). The MTP
-split and R6 to R8 are stage 3's ([#829](https://github.com/jgong5/ATOM/issues/829));
-until they land, a forward that needs one refuses.
+Stage 2 builds R1 and R4 ([#825](https://github.com/jgong5/ATOM/issues/825)). R6 and R8
+come with the stage sends ([#468](https://github.com/jgong5/ATOM/issues/468)), and so does R7
+as one wait: the stage loop receives `pp_data` before the forward, so host launch and
+device start both wait for the whole receive, where R7 holds only the device for the
+tensors. The MTP split and the PP=2 record that gates R6 to R8 are
+[#829](https://github.com/jgong5/ATOM/issues/829)'s; until the split lands, an MTP
+forward refuses.
 
 **What-ifs.** The run-file key `host.skip` zeroes the named segments. Such a run is a
 what-if: never graded, and refused by the graders.

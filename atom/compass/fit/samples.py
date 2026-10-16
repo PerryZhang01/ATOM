@@ -5,6 +5,9 @@ A record directory is `record`'s output: `run.json`, holding the run's
 identity in format `FORMAT_VERSION`, and the step record in `steps/`, with the
 client runs its server served (`parity.served`). Its steps are labelled by
 `step_labels`, and a sample's provenance gains the `traces` its step served.
+A DP rank no request reached writes a line per dummy forward it runs, and gives
+no sample; its file still counts in the run's digest and its DP width. An empty
+rank file lost its lines, and refuses.
 
 Every record states one configuration, read from its `run.json`, its
 `dp0.engine.json` and the requests it served: `model`, the served
@@ -84,24 +87,34 @@ def _record(directory: Path, client_runs) -> tuple[list[Sample], dict]:
     files = sorted(steps.glob("dp*[0-9].jsonl"), key=lambda p: int(p.stem[2:]))
     name, samples = ", ".join(map(digest, files)), []
     for path in files:
+        lines = record[int(path.stem[2:])]
+        if lines and all(s["is_dummy_run"] for s in lines):
+            continue
         for s in label(path, name)[0]:
             traced = {**s.provenance, "traces": traces[s.rank, s.step]}
             samples.append(dataclasses.replace(s, provenance=traced))
     engine = json.loads((steps / "dp0.engine.json").read_text())
     host = run["host_key"]
     return samples, {
-        "model": host["model"],
-        "device": ", ".join(
-            sorted({" ".join(str(gpu[f]) for f in CARD) for gpu in run["device"]})
-        ),
+        **run_fields(run),
         "parallel": f"tp{engine['tensor_parallel_size']}-dp{len(files)}",
         "engine_config": {
             k: v for k, v in engine.items() if k not in (*BOUNDS, "num_kvcache_blocks")
         },
-        "source_root": f"{run['source']['revision_kind']}-{run['source']['revision']}",
         "stack": run["stack"],
         "sampling": json.loads(sampling[0]) if sampling else None,
         "host_key": {k: v for k, v in host.items() if k not in ("model", "engine")},
+    }
+
+
+def run_fields(run: dict) -> dict:
+    """The `model`, `device` and `source_root` a run.json's identity states."""
+    return {
+        "model": run["host_key"]["model"],
+        "device": ", ".join(
+            sorted({" ".join(str(gpu[f]) for f in CARD) for gpu in run["device"]})
+        ),
+        "source_root": f"{run['source']['revision_kind']}-{run['source']['revision']}",
     }
 
 

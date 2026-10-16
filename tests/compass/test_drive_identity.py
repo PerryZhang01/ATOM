@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 
 import pytest
 import torch
@@ -135,3 +136,19 @@ def test_each_named_gpu_is_recorded_with_its_model(planted):
     ]
     with pytest.raises(GpuRefusal, match=r"^rocm-smi lists no GPU \[8\]"):
         drive.identity(*served, ARGV, (7, 8))
+
+
+def test_a_phase_is_recorded_in_wall_and_monotonic_time_and_ends_when_it_does():
+    phases = {}
+    with drive.phase(phases, "warm-up"):
+        assert "end" not in phases["warm-up"]
+        time.sleep(0.01)
+    with drive.phase(phases, "measuring"):
+        time.sleep(0.01)
+    for edges in phases.values():
+        for clock in ("wall", "monotonic"):
+            assert edges["start"][clock] < edges["end"][clock]
+    assert (
+        phases["warm-up"]["end"]["monotonic"]
+        <= phases["measuring"]["start"]["monotonic"]
+    )
