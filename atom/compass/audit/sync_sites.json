@@ -4449,7 +4449,6 @@
   }
  ],
  "anchors": [
-
   {
    "file": "atom/model_engine/scheduler.py",
    "symbol": "Scheduler._passed_delay",
