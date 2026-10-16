@@ -646,13 +646,14 @@ summaries into one table per cell directory: `step_linear/` and two or more
 Qwen3.8-27B TP1 on MI308X, priced by a step linear law `compass fit steps` fits on
 this node, in two checks: check 1, that `cctraces_sim.sh` handed the run file a
 `compass run` kept schedules the same steps; check 2, the cell graded against real
-runs. Run everything from one tree in the GPU container: host laws are keyed by
-ATOM's source, so records, fits and runs from two trees refuse each other. In the
-image, `compass` is `PYTHONPATH=<tree> python3 -c 'from atom.compass.cli import
-main; main()'`, run from `/`. Below, `$ATOM` is `--model <Qwen3.8-27B> --max-model-len
-262144`, `$M` is `--machine scripts/compass/machines/mi308x-hjbog39.json` and
-`$S` is `--store <empty directory>`. Keep every `--out` under `/data` or `/tmp`:
-the raw export keeps every prompt, about 430 KB a request.
+runs. Run everything from one tree, `$T` below, in the GPU container: host laws are
+keyed by ATOM's source, so records, fits and runs from two trees refuse each other.
+In the image, `compass` is `PYTHONPATH=$T python3 -c 'from atom.compass.cli import
+main; main()'`, run from `/`, so every path it takes is absolute. Below, `$ATOM` is
+`--model <Qwen3.8-27B> --max-model-len 262144`, `$M` is `--machine
+$T/scripts/compass/machines/mi308x-hjbog39.json`, `$R` is a directory under `/data`
+or `/tmp` and `$S` is `--store $R/store`, empty at the start. The raw export keeps
+every prompt, about 100 KB to 760 KB a request on this cell.
 
 **A client run.** No command starts one. Each is `aiperf profile` with
 `cctraces_sim.sh`'s arguments, its benchmark id pinned as that script pins it for
@@ -664,35 +665,39 @@ outside the graded window: `--trajectory-start-min-ratio 0
 request per lane before profiling. The grace period after the duration stays
 aiperf's finite default: `--benchmark-grace-period inf` can hang aiperf's agentic
 replay after the cutoff, waiting on a credit the server no longer holds (upstream,
-in agentx-harness's aiperf). A `run` server's client is the Python
-`cctraces_sim.sh` takes as `HARNESS_PYTHON`, with this tree's `compass_harness`
-first on `PYTHONPATH` and `ATOM_COMPASS_RUN=OUT/run_file.json`. Then
+in agentx-harness's aiperf). Each client sets its own
+`AIPERF_DATASET_MMAP_BASE_PATH`, such as `OUT`: every client pins one benchmark id,
+so two at once would share a dataset directory. A `run` server's client is the
+Python `cctraces_sim.sh` takes as `HARNESS_PYTHON`, with
+`PYTHONPATH=$T:$T/compass_harness` (with the harness alone it imports the image's
+ATOM) and `ATOM_COMPASS_RUN=OUT/run_file.json`. Then
 `python -m atom.compass.parity.client_run OUT/artifacts` writes its export,
 `OUT/artifacts/client_run.json`, and SIGTERM to the command stops its server.
-A real server's environment sets `TRITON_CACHE_AUTOTUNING=1` and one
-`TRITON_CACHE_DIR` for every run, as `cctraces_sim.sh` does for a real cell. Take
-a graded record only in a container that has served one before: aiter builds its
-`mha_varlen_fwd` module on a server's first short prefill on a deep history,
-about 60 s inside the run, and keeps it in the container's aiter tree, which no
-cache directory above holds.
+Until #1301, a real server's environment sets `TRITON_CACHE_AUTOTUNING=1` and one
+`TRITON_CACHE_DIR` for every run, as `cctraces_sim.sh` does for a real cell. Until
+#1319, take a graded record only in a container that has served one before: aiter
+builds its `mha_varlen_fwd` module on a server's first short prefill on a deep
+history, about 60 s inside the run, and keeps it in the container's aiter tree,
+which no cache directory above holds.
 
-1. `compass measure memory --gpu G $M $S --out mem -- $ATOM`.
+1. `compass measure memory --gpu G $M $S --out $R/mem -- $ATOM`.
 2. Calibration, alone on the node: per concurrency 1, 4, 16, 64 and 256,
-   `compass record --gpu G --out cal/c<C> -- $ATOM` serving one client run of
+   `compass record --gpu G --out $R/cal/c<C> -- $ATOM` serving one client run of
    traces 256 to 392, then
-   `python -m atom.compass.parity.recurrence cal/c<C>/steps`.
-3. `compass fit steps --backend step-linear --form history cal/c* --client-run
-   cal/c<C> cal/c<C>/artifacts/client_run.json ... $M $S --out fit` and
+   `python -m atom.compass.parity.recurrence $R/cal/c<C>/steps`.
+3. `compass fit steps --backend step-linear --form history $R/cal/c* --client-run
+   $R/cal/c<C> $R/cal/c<C>/artifacts/client_run.json ... $M $S --out $R/fit` and
    `compass fit host` on the same inputs; each prints its store token.
-4. Real runs: per concurrency, two `compass record --out cell/c<C>/real<k>`, each
-   serving one client run of traces 0 to 255, at most two GPUs at once.
-5. `compass run --step-linear LAW --host-laws HOST $M $S --out cell/c<C>/step_linear
-   -- $ATOM`, serving the same client run.
-6. Check 2: `python -m atom.compass.validate cell/c<C>`.
+4. Real runs: per concurrency, two `compass record --gpu G --out
+   $R/cell/c<C>/real<k> -- $ATOM`, each serving one client run of traces 0 to 255,
+   at most two GPUs at once.
+5. `compass run --step-linear LAW --host-laws HOST $M $S --out
+   $R/cell/c<C>/step_linear -- $ATOM`, serving the same client run.
+6. Check 2: `python -m atom.compass.validate $R/cell/c<C>`.
 7. Check 1: `cctraces_sim.sh` with `RUN_FILE` the `run_file` of
-   `cell/c<C>/step_linear/run.json`, `FIRST_SESSION=0 SESSIONS=256 CONCURRENCY=<C>`,
-   `SERVER_ARGS="--max-model-len 262144"`, `AIPERF_EXTRA_ARGS` the warmup
-   arguments; then `python -m atom.compass.parity cell/c<C>/step_linear/steps
-   OUT/steps`. That run file serves until stopped (`client_runs` is null), so
-   the script reports the deployment still up `WAIT_S` after aiperf and exits 1;
-   its step record is whole by then.
+   `$R/cell/c<C>/step_linear/run.json`, `FIRST_SESSION=0 SESSIONS=256
+   CONCURRENCY=<C>`, `SERVER_ARGS="--max-model-len 262144"`, `AIPERF_EXTRA_ARGS` the
+   warmup arguments; then `python -m atom.compass.parity
+   $R/cell/c<C>/step_linear/steps OUT/steps`. That run file serves until stopped
+   (`client_runs` is null), so until #1337 the script reports the deployment still
+   up `WAIT_S` after aiperf and exits 1; its step record is whole by then.
