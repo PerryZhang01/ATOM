@@ -9,7 +9,8 @@ and ATOM runs as it always does.
 One engine LP at one stage, one frontend LP, and the traffic LP the harness
 drives, over `single_engine_table`. At data-parallel width above one, each DP
 rank's engine process is a member ``dp<rank>`` of the one engine LP and owns
-its rank's channels. The Clock Authority is co-hosted in the frontend's
+its rank's channels. At pipeline width above one, each stage's engine process
+is an engine LP of its own, ``engine-pp<stage>``. The Clock Authority is co-hosted in the frontend's
 process and served at the run file's ``clock_endpoint``, which every LP and
 member, the frontend's included, connects to.
 
@@ -86,7 +87,8 @@ host writes the step table and that client run's summary, its steps taken as
 each hand-in less the one at client run ``k - 1``'s end; the finish writes the
 last client run's beside the run summary. An optional
 ``data_parallel_size``, 1 when absent, is the deployment's DP width, which
-under DP-attention is its TP size times its DP size; the traffic LP reads the
+under DP-attention is its TP size times its DP size, and an optional
+``pipeline_parallel_size``, 1 when absent, its pipeline width; the traffic LP reads the
 channel table from the run file alone. Each DP rank's engine process hands in
 its own refusals, as ``<lp>.<member>``. A key `RENAMED_KEYS` lists refuses,
 naming its name now.
@@ -184,7 +186,8 @@ COMPASS_ONLY = {
     "utils/clock.py": {
         *("DIAG_S", "job", "current_job_time", "install", "Straggler", "_Wakeup"),
         *("LPRuntime", "UnsentRelayItem", "WrappedSocket", "WrappedPoller"),
-        *("RelayQueue", "channel_of", "REPLY_WAIT_S", "_WaitingReplyQueue"),
+        *("RelayQueue", "channel_of", "_of_kind", "socket_channels"),
+        *("REPLY_WAIT_S", "_WaitingReplyQueue"),
         *("COLLECTIVES", "_on_host", "settle_before_collectives"),
     },
     "utils/zmq_shim.py": {"_Socket", "_ChannelSocket", "_Context"},
@@ -263,6 +266,10 @@ def _dp(run: dict) -> int:
     return run.get("data_parallel_size", 1)
 
 
+def _pp(run: dict) -> int:
+    return run.get("pipeline_parallel_size", 1)
+
+
 def channel_table(run: dict):
     common = {k: run[k] for k in ("admission_path", "ipc_s", "stream_s")}
     if "kv_write_req_s" in run:
@@ -273,7 +280,7 @@ def channel_table(run: dict):
             dp=_dp(run),
             router_in_s=run.get("router_in_s"),
         )
-    return single_engine_table(**common, dp=_dp(run))
+    return single_engine_table(**common, dp=_dp(run), pp=_pp(run))
 
 
 def _members(table, dp: int) -> dict | None:
@@ -566,11 +573,13 @@ def frontend(config):
         return contextlib.nullcontext()
     _refuse_unserved()
     pc = config.parallel_config
-    widths = (pc.data_parallel_size, config.pipeline_parallel_size)
-    if widths[1] != 1 or config.enable_rapidserve:
+    if config.enable_rapidserve:
+        raise ValueError("a simulated run here is an engine LP without RapidServe")
+    if config.pipeline_parallel_size != _pp(run):
         raise ValueError(
-            f"a simulated run here is one engine LP at pipeline width 1 without "
-            f"RapidServe, got (dp, pp)={widths}, rapidserve={config.enable_rapidserve}"
+            f"the deployment runs {config.pipeline_parallel_size} pipeline stages "
+            f"and the run file's pipeline_parallel_size is {_pp(run)}; the "
+            "channel table every LP reads would declare the wrong stages"
         )
     if config.runner_qualname not in (ATOM_RUNNER, COMPASS_RUNNER_QUALNAME):
         raise ValueError(
@@ -678,7 +687,8 @@ def engine(config):
     """Around the engine's construction in its process; a no-op context on a real run.
 
     At DP width above one, the process joins the engine LP as the member of its
-    DP rank, and its host collectives first join the group rounds it owes.
+    DP rank, and its host collectives first join the group rounds it owes. A
+    pipeline stage is the engine LP ``engine-pp<stage>``.
     """
     global _member
     run = spec()
@@ -687,10 +697,12 @@ def engine(config):
     from atom.utils.distributed import utils
 
     lp, side = ENGINE, _pd_side(config)
+    pc = config.parallel_config
+    if config.pipeline_parallel_size > 1:
+        lp = LpId(f"{ENGINE.name}-pp{pc.pipeline_parallel_rank}")
     if side is not None:
         lp = LpId(f"{ENGINE.name}-{side}")
         _bind_transfer(config, run)
-    pc = config.parallel_config
     utils.LP_OF_RANK = dict.fromkeys(range(pc.data_parallel_size), lp)
     _member = f"dp{pc.data_parallel_rank}" if pc.data_parallel_size > 1 else None
     name = lp.name if _member is None else f"{lp.name}.{_member}"

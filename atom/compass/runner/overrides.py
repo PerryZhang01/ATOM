@@ -339,20 +339,14 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
     half, a driver allocation. All are replaced for the life of the worker
     process, which hosts this runner and nothing else.
 
-    The groups are the ones ATOM's own call builds -- TP, DCP, PCP, DP and EP
-    over `rank` of the engine's TP x PCP workers -- on gloo and with an empty
-    custom group configuration, under which aiter builds no device
-    communicator for any group. A pipeline stage is refused, and so is a
-    simulated TP width, which starts fewer workers than the TP group
-    `apply_simulated_tp` then reports on a device group.
+    The groups are the ones ATOM's own call builds -- TP, DCP, PCP, PP, DP and
+    EP over `rank` of the engine's TP x PCP workers, each pipeline stage's
+    after the stages before it -- on gloo and with an empty custom group
+    configuration, under which aiter builds no device communicator for any
+    group. A simulated TP width is refused: it starts fewer workers than the
+    TP group `apply_simulated_tp` then reports on a device group.
     """
     pc = config.parallel_config
-    if config.pipeline_parallel_size != 1:
-        raise RunnerRefusal(
-            f"this runner is one stage of a pipeline of "
-            f"{config.pipeline_parallel_size}; a runner starts on the host only "
-            "at pipeline width 1."
-        )
     if config.tp_world_size != config.tensor_parallel_size:
         raise RunnerRefusal(
             f"-tp {config.tensor_parallel_size} starts {config.tp_world_size} "
@@ -382,6 +376,9 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
         pc.data_parallel_master_ip, pc.data_parallel_base_port
     )
     tp, pcp = config.tensor_parallel_size, config.prefill_context_parallel_size
+    pp = config.pipeline_parallel_size
+    # This worker's rank among its DP rank's stages, as ATOM numbers it.
+    rank += (pc.pipeline_parallel_rank if pp > 1 else 0) * tp * pcp
     if pc._managed_distributed_store and not torch.distributed.is_initialized():
         # The engine core manager already listens on the base port; join its
         # store as a client, as ModelRunner does, and aiter reuses the group.
@@ -391,11 +388,11 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
         torch.distributed.init_process_group(
             backend="gloo",
             store=store,
-            rank=pc.data_parallel_rank * tp * pcp + rank,
-            world_size=pc.data_parallel_size * tp * pcp,
+            rank=pc.data_parallel_rank * pp * tp * pcp + rank,
+            world_size=pc.data_parallel_size * pp * tp * pcp,
         )
     init_distributed_environment(
-        world_size=tp * pcp,
+        world_size=pp * tp * pcp,
         rank=rank,
         distributed_init_method=method,
         backend="gloo",
@@ -405,7 +402,7 @@ def start_on_host(runner: Any, rank: int, config: Any) -> None:
     )
     initialize_model_parallel(
         tp,
-        1,
+        pp,
         decode_context_model_parallel_size=config.decode_context_parallel_size,
         data_parallel_size=pc.data_parallel_size,
         prefill_context_model_parallel_size=pcp,
