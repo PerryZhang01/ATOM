@@ -163,6 +163,20 @@
       "interconnect.inter_node.derate": {
         "origin": "assumed"
       },
+      "device.runtime_constants.driver_and_collective_reserve_bytes[1x8x8]": {
+        "origin": "probed",
+        "model": "/models/DeepSeek-V4-Pro",
+        "width": 8,
+        "source_root": "commit:906ea9e20",
+        "record": "sha256:554e32da64fd044fd623eefa468dbcd586ec6e9cdc5ed094493c00dcd5dcc567"
+      },
+      "device.runtime_constants.allocator_retained_after_load_bytes[1x8x8]": {
+        "origin": "probed",
+        "model": "/models/DeepSeek-V4-Pro",
+        "width": 8,
+        "source_root": "commit:906ea9e20",
+        "record": "sha256:554e32da64fd044fd623eefa468dbcd586ec6e9cdc5ed094493c00dcd5dcc567"
+      },
       "host.tokenizers[deepseek-v4-pro fast]": {
         "origin": "probed",
         "model": "/models/DeepSeek-V4-Pro",
@@ -173,9 +187,10 @@
       "tokenizer",
       "device",
       "datasheet",
-      "assumed"
+      "assumed",
+      "start 1x8x8"
     ],
-    "notes": "one DeepSeek-V4-Pro -tp 8 --enable-dp-attention --enable-tbo start at 409bedc98 | MI355X datasheet | no probe fills these"
+    "notes": "one DeepSeek-V4-Pro -tp 8 --enable-dp-attention --enable-tbo start at 409bedc98 | MI355X datasheet | no probe fills these | one DeepSeek-V4-Pro -tp 8 --enable-dp-attention --enable-tbo --enable-expert-parallel --moe-backend standard MORI_SHMEM_HEAP_SIZE=16G start at 906ea9e20"
   },
   "host": {
     "cpu": {
@@ -221,10 +236,12 @@
     },
     "runtime_constants": {
       "driver_and_collective_reserve_bytes": {
-        "1x8": 13291749376
+        "1x8": 13291749376,
+        "1x8x8": 30001856512
       },
       "allocator_retained_after_load_bytes": {
-        "1x8": 2773251124
+        "1x8": 2773251124,
+        "1x8x8": 2804771916
       },
       "persistent_forward_buffer_bytes": 2320913408,
       "cudagraph_pool": {

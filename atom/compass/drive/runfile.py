@@ -127,15 +127,13 @@ def _parameter_count(model: str) -> int:
     as loading resolves it."""
     from transformers.utils import cached_file
 
+    why = f"the step roofline reads the model's parameter count from its {INDEX}"
     try:
         path = cached_file(model, INDEX, local_files_only=True)
-        index = json.loads(Path(path).read_text())
-    except OSError:
-        index = {}
-    count = index.get("metadata", {}).get("total_parameters")
+    except OSError as missing:
+        raise ValueError(f"{why}, and {model} has none") from missing
+    metadata = json.loads(Path(path).read_text()).get("metadata", {})
+    count = metadata.get("total_parameters")
     if type(count) is not int:
-        raise ValueError(
-            f"the step roofline reads the model's parameter count, and {model} "
-            f"states none: its {INDEX} has no metadata.total_parameters"
-        )
+        raise ValueError(f"{why}, and {path} states no metadata.total_parameters")
     return count

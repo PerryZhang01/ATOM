@@ -48,13 +48,16 @@ pub fn set_now(seconds: f64) {
     CLOCK.store(seconds.to_bits(), Ordering::Release);
 }
 
+/// The simulated clock in seconds.
+pub fn seconds() -> f64 {
+    f64::from_bits(CLOCK.load(Ordering::Acquire))
+}
+
 /// `Instant::now()`, or the simulated clock once [`enable`] has run.
 pub fn now() -> Instant {
     match ORIGIN.get() {
         None => Instant::now(),
-        Some(origin) => {
-            *origin + Duration::from_secs_f64(f64::from_bits(CLOCK.load(Ordering::Acquire)))
-        }
+        Some(origin) => *origin + Duration::from_secs_f64(seconds()),
     }
 }
 

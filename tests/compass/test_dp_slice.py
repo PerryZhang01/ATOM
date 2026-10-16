@@ -57,6 +57,11 @@ for _name in (
 ):
     _width = DP_MACHINE["device"]["runtime_constants"][_name]
     _width["1x2"] = _width["1x2x2"] = _width[1]
+#: The tokenizers probed on the checked-in MI308X machine as well, so a slice
+#: model of theirs (Qwen3.8-27B) resolves its tokenizer.
+DP_MACHINE["host"]["tokenizers"] += json.loads(
+    (TREE / "scripts/compass/machines/mi308x-hjbog39.json").read_text()
+)["host"]["tokenizers"]
 #: Declared test values for a pipeline stage's send: every part is rendezvous.
 DP_MACHINE["interconnect"]["intra_node"]["pp"] = {
     carrier: {
