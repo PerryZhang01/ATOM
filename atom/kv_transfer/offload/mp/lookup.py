@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from atom.kv_transfer.offload.mp.deployment import _mp_session_id
+from atom.utils import clock
 
 logger = logging.getLogger("atom")
 
@@ -216,7 +217,7 @@ class _MPLookupClient:
 
         self._orphans.discard(lookup_id)
         if lookup_id in self._async:
-            deadline = time.monotonic() + self._timeout
+            deadline = clock.now(time.monotonic) + self._timeout
             while lookup_id in self._async:
                 try:
                     if self._advance(lookup_id):
@@ -227,7 +228,7 @@ class _MPLookupClient:
                         _ASYNC_LOOKUP_FAILED, lookup_id, phase, exc_info=True
                     )
                     raise
-                if time.monotonic() >= deadline:
+                if clock.now(time.monotonic) >= deadline:
                     logger.warning(
                         "LMCache MP async lookup timed out after %.1fs for "
                         "request %s",
@@ -246,14 +247,14 @@ class _MPLookupClient:
             return async_hit
         request_id = _mp_session_id(self._config, lookup_id)
         self._adapter.maybe_submit_lookup_request(request_id, token_ids)
-        deadline = time.monotonic() + self._timeout
+        deadline = clock.now(time.monotonic) + self._timeout
         while True:
             result = self._adapter.check_lookup_result(request_id)
             if result is not None:
                 hit = int(result)
                 state.hit = hit
                 return hit
-            if time.monotonic() >= deadline:
+            if clock.now(time.monotonic) >= deadline:
                 logger.warning(
                     "LMCache MP lookup timed out after %.1fs for request %s",
                     self._timeout,
