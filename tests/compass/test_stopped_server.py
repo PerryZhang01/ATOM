@@ -291,7 +291,7 @@ def test_an_engine_stopped_holding_a_read_request_hands_in_no_straggler(
     stop's ``+inf`` one has released it."""
     endpoint, request = f"inproc:{uuid.uuid4().hex}", "frontend->engine:request#dp0"
     run = {"clock_endpoint": endpoint, "bound_s": 100.0, "out_dir": str(tmp_path)}
-    run |= {"admission_path": "serving", "ipc_s": 2.0**-10, "stream_s": 2.0**-9}
+    run |= {"admission_path": "serving", "ipc_s": 0.001, "stream_s": 0.002}  # TABLE
     (tmp_path / "run.json").write_text(json.dumps(run))
     monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
     monkeypatch.setattr(compass_run, "_member", None)
@@ -325,10 +325,10 @@ def test_an_engine_stopped_holding_a_read_request_hands_in_no_straggler(
         t.start()
     said = {"refused_commands": [], "priced_steps": {}, "predicted_memory": {}}
     workers = SimpleNamespace(call_func=lambda name, wait_out: said[name])
-    with contextlib.suppress(clock.Straggler):  # handed in before it is raised
-        with compass_run.engine_loop(SimpleNamespace(runner_mgr=workers)):
-            while not clock.idle(lambda: math.inf):
-                pass
+    loop = compass_run.engine_loop(SimpleNamespace(runner_mgr=workers))
+    with contextlib.suppress(clock.Straggler), loop:  # it hands a raise in first
+        while not clock.idle(lambda: math.inf):
+            pass
     hand_in = tmp_path / compass_run.LP_FILE.format("engine")
     assert json.loads(hand_in.read_text())["refusals"] == []
     for t in threads:
