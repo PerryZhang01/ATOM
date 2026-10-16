@@ -50,8 +50,10 @@ def test_a_run_without_middle_laws_refuses_each_middle_chunk_by_name(
         clock[0] += overrides._group_step_seconds(r, b, BACKEND)
         refused.append(len(r.refused_commands()))
 
+    # Each middle chunk is refused, the streak's first forward among them, and
+    # no output forward.
     middle = [not b.produces_output() for b in streak]
-    assert refused.index(1) == middle.index(True) > 0
+    assert [b - a for a, b in zip([0, *refused], refused)] == middle
     out = finish(monkeypatch, tmp_path, run, r)["schedule"]["refusals"]
     assert out["reasons"] == [[f"cost:{NO_MIDDLE}", sum(middle)]]
     assert out["fraction_of_steps"] == sum(middle) / len(streak)
@@ -65,7 +67,7 @@ def test_under_abort_the_first_middle_chunk_ends_the_run_naming_its_law(
     with pytest.raises(CostRefused, match="middle.W_pre") as refusal:
         for b in streak:
             clock[0] += overrides._group_step_seconds(r, b, BACKEND)
-    assert b is next(b for b in streak if not b.produces_output())
+    assert b is next(m for m in streak if not m.produces_output())
     assert str(refusal.value.declined[0]) == f"refused({NO_MIDDLE})"
 
 
