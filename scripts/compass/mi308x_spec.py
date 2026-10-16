@@ -70,8 +70,13 @@ HJBOG39 = dict(
     current=55145206784,
     peak=58102190592,
 )
-#: The software stack each host's readings were taken under.
-STACK = {"rocm": "7.2.4", "aiter": "f4e7c7509", "rccl": "2.27.7"}
+#: The software stack each host's readings were taken under, torch included.
+STACK = {
+    "rocm": "7.2.4",
+    "aiter": "f4e7c7509",
+    "rccl": "2.27.7",
+    "torch": "2.10.0+rocm7.2.4.git3d3aa833",
+}
 DATE, COMMIT, READ, PIN = {
     "mi308x-hjbog18": ("2026-10-11", "983e42973", NODE18, STACK),
     "mi308x-hjbog39": (
@@ -161,6 +166,7 @@ DECLARED = {
     "interconnect": {
         "intra_node": {
             "topology": "fully_connected",
+            "domain_devices": 8,
             "link_bandwidth_bytes_per_s": 6.4e10,
             "link_latency_s": 2.0e-6,
             "derate": 0.80,

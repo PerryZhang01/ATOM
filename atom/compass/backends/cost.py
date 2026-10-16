@@ -32,6 +32,7 @@ adds a `+`.
 from __future__ import annotations
 
 import math
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
@@ -118,12 +119,20 @@ class StepCost:
     Construct it from its parts. There is no constructor that takes a total,
     because a total that can be set independently of the parts is a total that
     will eventually disagree with them.
+
+    `treatments` names each assumed treatment the step was priced under: a
+    factor that moves cost and that no feature of the query carries. It
+    belongs to the query, so no term's method changes with it.
     """
 
     terms: tuple[CostTerm, ...]
+    treatments: tuple[str, ...]
 
-    def __init__(self, terms: Sequence[CostTerm]) -> None:
+    def __init__(
+        self, terms: Sequence[CostTerm], treatments: Sequence[str] = ()
+    ) -> None:
         object.__setattr__(self, "terms", _checked(terms))
+        object.__setattr__(self, "treatments", tuple(treatments))
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         """Refuse a subclass that shadows anything this class reports.
@@ -233,9 +242,12 @@ class ProvenanceMix:
         self._method_seconds: dict[tuple[Method, bool], float] = {}
         self._method_steps: dict[tuple[Method, bool], int] = {}
         self._reasons: dict[tuple[str, str], int] = {}
+        #: Steps priced under each assumed treatment, by its name.
+        self.treatments: Counter[str] = Counter()
 
     def record(self, step: StepCost) -> None:
         self.steps += 1
+        self.treatments.update(step.treatments)
         self.seconds = fold_step(self.seconds, step.seconds)
         if step.is_refused:
             self.refused_steps += 1
