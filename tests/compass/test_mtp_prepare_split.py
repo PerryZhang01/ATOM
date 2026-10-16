@@ -4,6 +4,7 @@
 stamps the wait, and gated with no device gap fed on an MTP decode."""
 
 import json
+import re
 from types import SimpleNamespace
 
 import numpy as np
@@ -13,6 +14,7 @@ from test_host_device_recurrence import cost_lines, streak  # noqa: F401
 from test_parity_recurrence import MS, line
 
 from atom.compass import run as compass_run
+from atom.compass.backends.resolver import CostRefused
 from atom.compass.backends.step_linear_fit import fit_host, label_records
 from atom.compass.parity import recurrence
 from atom.compass.runner.overrides import (
@@ -26,23 +28,12 @@ from atom.compass.runner.overrides import (
 INPUTS = {"decode": [1e-4, 2e-6, 0.0], "prefill": [2e-4, 3e-8, 3e-5]}
 
 
-@pytest.mark.parametrize(
-    "laws, exits",
-    [
-        ({"W_pre": [0.5, 0, 0], MTP_SEGMENT: [0.5, 0, 0]}, [4, 14.5, 28.5]),
-        ({}, [4, 14, 28]),
-    ],
-)
-def test_under_mtp_the_prepare_after_the_status_wait_is_charged_after_it(laws, exits):
-    """Three decodes, 1 s per host segment, 10 s of target and 4 of draft.
-
-    The second forward's wait releases at the first one's target end (12), so
-    half a second of its prepare after the wait moves its launch and exit by
-    that much; a law without the segment charges it 0 and is not refused.
-    """
+def _three_decodes(laws, mtp):
+    """Three decodes' exits, 1 s per host segment unless `laws` says otherwise,
+    10 s of target and 4 of draft."""
     seg = {**{s: [1, 0, 0] for s in HOST_SEGMENTS}, **laws}
     clock = [0.0]
-    host = HostDeviceRecurrence({"decode": seg}, (), lambda: clock[0], mtp=True)
+    host = HostDeviceRecurrence({"decode": seg}, (), lambda: clock[0], mtp=mtp)
     b = SimpleNamespace(
         total_seqs_num_prefill=0,
         total_tokens_num=2,
@@ -50,10 +41,26 @@ def test_under_mtp_the_prepare_after_the_status_wait_is_charged_after_it(laws, e
         produces_output=lambda: True,
     )
     out = []
-    for _ in exits:
+    for _ in range(3):
         clock[0] += host.charge(b, 10, 4)
         out.append(clock[0])
-    assert out == pytest.approx(exits)
+    return out
+
+
+def test_under_mtp_the_prepare_after_the_status_wait_is_charged_after_it():
+    """The second forward's wait releases at the first one's target end (12), so
+    half a second of its prepare after the wait moves its launch and exit by
+    that much."""
+    laws = {"W_pre": [0.5, 0, 0], MTP_SEGMENT: [0.5, 0, 0]}
+    assert _three_decodes(laws, True) == pytest.approx([4, 14.5, 28.5])
+
+
+def test_under_mtp_a_law_without_the_segment_is_refused_and_without_mtp_charges_0():
+    with pytest.raises(
+        CostRefused, match=re.escape(f"no law for decode.{MTP_SEGMENT}")
+    ):
+        _three_decodes({}, True)
+    assert _three_decodes({}, False) == pytest.approx([4, 13, 27])
 
 
 def test_a_skipped_mtp_segment_is_charged_0_and_listed_skipped(

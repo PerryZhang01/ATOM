@@ -242,7 +242,7 @@ def install_cost_backend(runner: Any, backend: CostBackend) -> None:
 
 
 HOST_SEGMENTS = ("E", "W_pre", "W_launch", "W_post")  # in the order the host runs them
-#: The part of prepare after the MTP status wait; a law without it charges 0.
+#: The part of prepare after the MTP status wait; an output forward runs it under MTP.
 MTP_SEGMENT = "W_inputs"
 FORWARD_KINDS = ("decode", "prefill", "middle")
 #: The format of a simulated run's `dp<r>.cost.jsonl`, its first line.
@@ -280,12 +280,14 @@ class HostDeviceRecurrence:
         and then `draft_s` of draft; advances the device state. With any
         laws and `refuse`, a forward whose kind lacks one for a segment it runs
         is refused, naming each ``<kind>.<segment>``, the state as it was;
-        without `refuse` that segment is 0. A segment in `skip` needs none, and
-        a middle chunk runs no `W_post`."""
+        without `refuse` that segment is 0. A segment in `skip` needs none, a
+        middle chunk runs no `W_post`, and only an output forward under `mtp`
+        runs `MTP_SEGMENT`."""
         kind = "decode" if batch.total_seqs_num_prefill == 0 else "prefill"
         kind = kind if batch.produces_output() else "middle"
         law = self.laws.get(kind, {})
         ran = HOST_SEGMENTS[: 3 if kind == "middle" else 4]
+        ran += (MTP_SEGMENT,) if self.mtp and kind != "middle" else ()
         missing = [s for s in ran if s not in {*law, *self.skip}]
         if refuse and self.laws and missing:
             from atom.compass.backends.resolver import CostRefused, Refusal
@@ -1076,8 +1078,9 @@ def _group_step_seconds(
 
     On the rank that keeps the parity record, each step also appends its cost
     line to `dp<r>.cost.jsonl` beside it: the record's `step`; with a
-    `compass_host` that reports them, each of `HOST_SEGMENTS` in seconds and
-    `skipped`, those its `skip` charged as 0; `device_s`, the backend's price;
+    `compass_host` that reports them, each of `HOST_SEGMENTS` and
+    `MTP_SEGMENT` in seconds, `MTP_SEGMENT` 0.0 where the law has none, and `skipped`,
+    those its `skip` charged as 0; `device_s`, the backend's price;
     `charge_s`, that composed with host time (`device_s` with no host);
     `group_s`, its DP group target; `terms`, each one's `name`, `seconds`
     and its provenance's `method`, `validated` and `source`; and `refused`,

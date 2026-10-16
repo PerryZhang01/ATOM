@@ -1364,7 +1364,8 @@ stage and per DP rank, with a TP group modelled on its rank 0.
 - `W_pre`: prepare (`ModelRunner.prepare_model`), which waits only at its two ends;
   under MTP, an output forward's prepare up to R1's wait.
 - `W_inputs`: under MTP, an output forward's prepare after R1's wait: the input ids,
-  `prepare_inputs` and the drafter's staging. A law file without it charges it 0.
+  `prepare_inputs` and the drafter's staging. A run without MTP never runs it; an MTP
+  run whose law lacks it is refused by name.
 - `W_launch`: the launch (`ModelRunner.run_model`).
 - `W_post`: the sampler launch and the output (`ModelRunner.postprocess`).
 
