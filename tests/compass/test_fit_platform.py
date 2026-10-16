@@ -4,11 +4,11 @@
 so a law fitted from a record of that platform loads under a run's readings of
 the spec, and records from another device, stack or torch refuse at the fit.
 
-The records are `test_fit_steps.py`'s. The named result's run.json is what
+The records are `test_fit_steps.py`'s. The first test's run.json is what
 `drive.identity` writes in compass-next:nightly-20261013 on hjbog-srdc-18's
 MI308X, from a planted `rocm-smi` listing, ROCm version file and RCCL and torch
 versions, and aiter's commit planted as that image's, which no planted checkout
-can have; it is loaded under `test_run_step_grid.py`'s deployment.
+can have; its law loads under `test_run_step_grid.py`'s deployment.
 """
 
 import json
