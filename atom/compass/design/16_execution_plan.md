@@ -472,7 +472,7 @@ Depends on Wave 1. The first three are the vertical slice.
 
 | ID | Task | Effort | Notes |
 |---|---|---|---|
-| **W3.1** | LP structure for DP: the DP group is one LP with one member process per rank, joined by the CA (#528); its step is one TAR costing the `max` over ranks of each rank's own cost, no operator-level TAR/NER (`01` D4, `15` D90); both collectives run for real; dummy-batch pricing for idle ranks (`15` D90) | 300–500 | |
+| **W3.1** | LP structure for DP: the DP group is one LP with one member process per rank, joined by the CA (#528); each member's step is one TAR at its own release from the group's device end, the `max` over ranks, no operator-level TAR/NER (`01` D4, `15` D90); both collectives run for real; dummy-batch pricing for idle ranks (`15` D90) | 300–500 | |
 | ~~**W3.2**~~ | ~~LP structure for PP: one LP per stage; transfer as a size from the spec; layer split via `get_pp_indices`~~ | ~~400–600~~ | **deferred by D95** — see *After v1* |
 | ~~**W3.3**~~ | ~~EP: `exclusive` occupancy honoured in the IR; group membership per P0.6~~ | ~~200–350~~ | **moved to W4.10 by D95**, M2's EP8 step |
 | **W3.4** | Standalone CA exercised against the synthetic-LP harness at multi-container topology | 200–300 | consumes W1.2 |

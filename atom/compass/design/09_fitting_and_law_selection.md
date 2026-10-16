@@ -87,8 +87,8 @@ is wrong in direction, not just in magnitude.
 
 Owner's DP ruling, 2026-10-01
 ([#470](https://github.com/jgong5/ATOM/issues/470#issuecomment-5933154215)). The step linear law covers
-DP and EP with a **per-rank** law: it prices one rank's step, and the group's step is the
-`max` over ranks (`15` D90).
+DP and EP with a **per-rank** law: it prices one rank's step, and the group's device end is
+the `max` over ranks (`15` D90).
 
 - **Key.** `(dp, ep)`. A law fitted at one pair is not evidence about another, by the
   per-width discipline of `15` D89.
