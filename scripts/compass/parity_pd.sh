@@ -20,6 +20,8 @@
 #                    simulated run sees PREFILL_GPUS and allocates nothing
 #   ATOMESH          the router binary (default atomesh), on both runs
 #   MACHINE          machine spec (default scripts/compass/machines/mi308x-hjbog18.json)
+#   STORE            artifact store holding the simulated configuration's memory
+#                    readings, taken by `compass measure memory` (required)
 #   SERVER_ARGS      more API server flags, on all four servers (default
 #                    --enforce-eager --max-model-len 8192 --no-enable_prefix_caching)
 #   WAIT_S           seconds a server has to start, and to stop (default 1800)
@@ -33,6 +35,7 @@ compass_env "$ROOT"
 compass_require_tree "$ROOT" || exit $?
 OUT=${1:?usage: parity_pd.sh OUT_DIR}
 MODEL=${MODEL:?MODEL names the model directory}
+STORE=${STORE:?STORE names the store holding the memory readings}
 SERVER_ARGS=${SERVER_ARGS:---enforce-eager --max-model-len 8192 --no-enable_prefix_caching}
 ATOMESH=${ATOMESH:-atomesh}
 WAIT_S=${WAIT_S:-1800}
@@ -91,11 +94,11 @@ for side in prefill decode; do cp "$OUT/real/record/arrivals.json" "$OUT/real/re
 RUN=$OUT/sim/run.json
 CLOCK_PORT=$(compass_free_port)
 python3 - "$RUN" "$OUT" "${MACHINE:-$ROOT/scripts/compass/machines/mi308x-hjbog18.json}" \
-    "$MODEL" "$CLOCK_PORT" <<'EOF'
+    "$MODEL" "$STORE" "$CLOCK_PORT" <<'EOF'
 import json, sys
 from pathlib import Path
 
-run, out, machine, model, port = sys.argv[1:]
+run, out, machine, model, store, port = sys.argv[1:]
 machine = json.loads(Path(machine).read_text())
 # ponytail: prices the model's tokenizer as the spec's first entry measured it,
 # as parity_one_node.sh does; only arrival latency reads it.
@@ -113,7 +116,7 @@ Path(run).write_text(json.dumps({
     "clock_endpoint": f"tcp://127.0.0.1:{port}", "bound_s": 1e7,
     "admission_path": "serving", "ipc_s": 2.0**-14, "stream_s": 2.0**-12,
     "router_s": 2.0**-12, "kv_write_req_s": 2.0**-10, "kv_link": "intra_node",
-    "replay": f"{out}/real/record", "machine": machine,
+    "replay": f"{out}/real/record", "machine": machine, "memory_readings": store,
     "data_parallel_size": 2, "out_dir": f"{out}/sim",
 }))
 EOF

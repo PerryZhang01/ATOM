@@ -233,7 +233,7 @@ carries a method, as cost terms do (#952, `memory/terms.py`):
 | **weights** | A | ask a meta build, dedupe by storage; the run file's `parameter_count` where the runner hands in no meta build | analytical from the meta build; declared from `parameter_count` | **exact at every width** — the existence proof |
 | **KV bytes/token** | A | layers × kv_heads/TP × head_dim × 2 × dtype | analytical | arithmetic |
 | **buffers** | A-ish | the stated formula over stated `config.json` fields, until a recording exists ([`03` D16's source table](03_memory_and_kv_model.md#the-source-of-each-term)) | analytical; declared on the assumed `partial_rotary_factor` branch | the first formula matched the 0.6B and was **4× wrong** on the 27B |
-| **activations** | B | `k_model × tokens`, k measured on one real run per model and width; ATOM's formula (2.8 live tensors) where no run exists | estimated from the measured entry; declared from the formula | linear scaling holds — a 3,494-token trace scaled to an independently measured 4,096-token peak at **+0.0% at TP=1/2/4**. Whether `k` itself is derivable from geometry is **untested**. |
+| **activations** | B | `k_model × tokens`, k read on one real start per configuration (`07` D38) | measured at the entry's warmup tokens, estimated at others; declared from an assumed entry | linear scaling holds — a 3,494-token trace scaled to an independently measured 4,096-token peak at **+0.0% at TP=1/2/4**. `k` is not derivable from geometry within 25% (T34). |
 | **invisible scratch** | **C** | inside the measured `k` | that of the activations term | kernel-internal. **0.1 KB/token on the 0.6B, 39.6 KB/token on the 27B** — worth the difference between −35.0% and +3.4% held out |
 | **`non_torch`, load residue** | **C** | — | measured where probed at this width; declared if assumed or transferred | no form fits; a `memory_readings` entry, marked assumed for a device never run (`07` D38) |
 | **graph pool** | C | `reserves()` mirrors ATOM; `predicts()` reads a pool line | `reserves()` analytical on the eager branch, combined with the activations term on the whole-graph one; `predicts()` estimated if probed, declared if assumed | measured line at W=1, flat 104 MiB above |
@@ -249,17 +249,13 @@ precisely the arrangement doc 03 already describes. Analytical memory is therefo
 design; it is the existing memory model (`03` D16) with the activation coefficient
 measured or derived rather than walked.
 
-**Revised 2026-10-10: the measured coefficient comes first.** `k_model` is one real
-run's `peak - current` after warmup over the warmup tokens, per model and width, so the
-scratch is inside it ([#704](https://github.com/jgong5/ATOM/issues/704)). A geometry form
-is the fallback for a model nobody has run, the MI455 projection included.
-
-**The one thing to test:** whether `k_model` can be derived from geometry (hidden,
-intermediate, dtype, layer types, width, and under DP-attention the DP group's gathered MoE
-rows) within the ≤25% goal of D67.1. If yes, a model nobody has run needs no run for its
-activation term. If no, it needs one real run per (model, width) — cheap, but not zero.
-T34; [#705](https://github.com/jgong5/ATOM/issues/705) tests it on Qwen3.8-27B TP1 and on
-DeepSeek-V4-Pro at the nightly DPA cell.
+**Revised 2026-10-10 and 2026-10-16: the measured coefficient is the source.** `k_model`
+is one real start's `peak - current` after warmup over the warmup tokens, per
+configuration, so the scratch is inside it
+([#704](https://github.com/jgong5/ATOM/issues/704)). It is not derivable from geometry
+within the ≤25% goal of D67.1 ([#705](https://github.com/jgong5/ATOM/issues/705), T34),
+so a configuration nobody has run takes an entry marked assumed, the MI455 projection
+included (`07` D38).
 
 ---
 
@@ -454,7 +450,7 @@ what the op-level backend exists for.
 | D65 | An analytical law is a smooth model and says so: it answers a leaf with a known discontinuity in range with a band, as the analytical fallback too. | 2026-09-19; revised 2026-10-14 (#952) |
 | D66 | Two-regime collective model with the algorithm named in the spec. Textbook ring/log models are refuted on this fabric. | 2026-09-19 |
 | D67.1 | Roofline accuracy goals stated per quantity: ≤5% on weights and on KV capacity/block count (the empirical gate for KV, tighter than it for weights), ≤25% each other non-KV memory term, ≤30% step time, ≤40% end-to-end. **Configuration ranking (top-1 and top-3 set) is the primary gate**; no false "fits". The goals attach to the backend and are graded against real runs. | 2026-09-19; revised 2026-10-14 (#952) |
-| D67 | Analytical memory is the existing memory model with the activation coefficient derived rather than walked. Weights and KV exact; scratch stays a stated constant, and `non_torch` and load residue come from a `memory_readings` entry, marked assumed for a device never run. Revised: the coefficient is measured on one real run per model and width, with the scratch inside it rather than a stated constant; a geometry form is the fallback for a model nobody has run (T34). Each term carries a method, and a declared one cannot pass its gate. | 2026-09-19; revised 2026-10-10, 2026-10-14 (#937) and 2026-10-14 (#952) |
+| D67 | Analytical memory is the existing memory model with the activation coefficient derived rather than walked. Weights and KV exact; scratch stays a stated constant, and `non_torch` and load residue come from a `memory_readings` entry, marked assumed for a device never run. Revised: the coefficient is measured on one real run per model and width, with the scratch inside it rather than a stated constant; no geometry form stands in for it (T34, 2026-10-16, #965). Each term carries a method, and a declared one cannot pass its gate. | 2026-09-19; revised 2026-10-10, 2026-10-14 (#937) and 2026-10-14 (#952) |
 | D68 | The analytical laws are authored **during** the empirical campaign, because that campaign is their only check. A leaf family's law-over-measured time is its implementation efficiency, a self-check in the calibration report, off the critical path, and declared when carried to another device. An op-level backend answers an unpriced leaf by its analytical law; no law moves ahead of a measurement. Revised for `16` D95: the laws for DeepSeek-V4-Pro's operator families are on M2's critical path, for the MI455 projection. | 2026-09-19; revised 2026-10-10 and 2026-10-14 (#952) |
 | D69 | On an unmeasured device, the roofline is derate-dominated and declared. Report the derate and a ±20% sensitivity band; prefer ranking claims to absolute ones. | 2026-09-19 |
 | D70 | Expected accuracy is stated in advance, per use. Single-digit latency error is not a roofline target. | 2026-09-19 |
@@ -468,7 +464,7 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 
 | # | Item | Why deferred |
 |---|---|---|
-| T34 | Test whether the activation coefficient `k_model` is derivable from geometry, against the measured coefficient ([#705](https://github.com/jgong5/ATOM/issues/705)) | decides whether a model nobody has run needs a real run for its activation term |
+| ~~T34~~ | ~~Test whether the activation coefficient `k_model` is derivable from geometry~~ — closed 2026-10-16 by [#965](https://github.com/jgong5/ATOM/issues/965): not within 25% ([#705](https://github.com/jgong5/ATOM/issues/705)) | — |
 | T35 | Derive FLOPs and bytes-moved expressions for the ~20 opaque leaves | Class A is free from the IR for aten ops, but an opaque leaf's internal work must be described by hand (doc 04 D20's parameter extractor, extended) |
 | T36 | Name the collective algorithm per code path in the machine spec schema | doc 05 D25 has no field for it yet |
 | ~~T37~~ | ~~Decide whether `h` (the host floor) is derivable or stays a per-model measured constant~~ — **ruled 2026-10-11 on #815**: host time is measured, as host laws keyed by host CPU, `atom` digest, model and engine config, with no transfer (`09` D54) | 40% apart between two models; it is the largest single Class-C term |

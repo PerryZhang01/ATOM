@@ -7,8 +7,7 @@ import pathlib
 import pytest
 from test_memory_readings import (
     CONFIG_JSON,
-    META_8B,
-    WARMUP_TOKENS,
+    model_terms,
     readings_at,
     spec_of,
 )
@@ -17,7 +16,6 @@ from transformers import PretrainedConfig
 from atom.compass.backends.provenance import Method
 from atom.compass.memory import (
     MemoryRefusal,
-    ModelTerms,
     Term,
     footprint_terms,
     predicts,
@@ -101,12 +99,10 @@ def test_the_piecewise_reservation_is_analytical(qwen):
     assert {t.method for t in reading.terms} == {Method.ANALYTICAL}
 
 
-def test_meta_build_weights_are_analytical_and_the_activation_formula_declared(qwen):
-    model = ModelTerms.from_config(
-        qwen, tree=META_8B, tp_size=1, warmup_tokens=WARMUP_TOKENS
-    )
+def test_meta_build_weights_are_analytical_and_the_entry_s_activations_measured(qwen):
+    model = model_terms(qwen)
     assert model.weights.method is Method.ANALYTICAL
-    assert model.activations.method is Method.DECLARED
+    assert model.activations.method is Method.MEASURED
 
 
 def test_a_recording_is_measured():

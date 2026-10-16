@@ -66,7 +66,6 @@ from atom.compass.memory import (
 )
 from atom.compass.spec import MachineSpec
 from tests.compass.test_memory_readings import (
-    ACTIVATIONS,
     CAPTURE_SIZES,
     CONFIG_JSON,
     DOCUMENT,
@@ -74,6 +73,7 @@ from tests.compass.test_memory_readings import (
     MAX_NUM_BATCHED_TOKENS,
     PARAMETERS,
     WARMUP_TOKENS,
+    measured,
     meta_tree,
     spec_of,
 )
@@ -343,12 +343,12 @@ def live_readings(spec, qwen, tp_width=1):
     total_bytes = int(spec.value("device.memory.capacity_bytes"))
     return device_readings(
         spec,
+        memory=measured(tp_width),
         tp_width=tp_width,
         model=ModelTerms.from_config(
             qwen,
+            activations=measured(tp_width).activations(WARMUP_TOKENS),
             tree=meta_tree(PARAMETERS * element_bytes(qwen.dtype) // tp_width),
-            tp_size=tp_width,
-            warmup_tokens=WARMUP_TOKENS,
         ),
         cudagraph_overhead=reserved(qwen, total_bytes),
     )
@@ -935,23 +935,20 @@ def _server_log(path, *, peak, non_torch, start="08:31:41"):
 
 def _hand_in(tmp_path, qwen, record):
     """A hand-in sized off the suite's document, probed on the run `record`
-    names, with this model's activations measured on that run."""
+    names, with its entry's readings, the activations included, measured on
+    that run."""
     document = copy.deepcopy(DOCUMENT)
     document["provenance"] |= {"origin": "probed", "subject": {"record": record}}
-    document["device"]["activations"] = [ACTIVATIONS]
     spec = MachineSpec.from_mapping(document)
-    entry = spec.activations_for(
-        ACTIVATIONS["applies_to"][0], ACTIVATIONS["fingerprint"], 1
-    )
+    entry = measured(1, record=record, activation_bytes=WARMUP_TOKENS * 180_480)
     model = ModelTerms.from_config(
         qwen,
+        activations=entry.activations(WARMUP_TOKENS),
         tree=meta_tree(PARAMETERS * 2),
-        tp_size=1,
-        warmup_tokens=WARMUP_TOKENS,
-        activations_entry=entry,
     )
     readings = device_readings(
         spec,
+        memory=entry,
         tp_width=1,
         model=model,
         cudagraph_overhead=reserved(qwen, int(spec.value(CAPACITY))),

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-"""The five device readings, taken off a spec, with the device readings broken.
+"""The five device readings, taken off a spec and a `memory_readings` entry,
+with the device readings broken.
 
 Every test here runs with `torch.cuda.mem_get_info` and
 `torch.cuda.memory_stats` replaced by functions that raise. That is the point of
@@ -21,7 +22,8 @@ The model is the vendored Qwen3.8-27B config, as `test_backend_kv_geometry.py`
 uses it, so the geometry here and the KV geometry there are the same model. The
 spec is a complete MI355X document written out below rather than imported from
 the spec tests, because the per-term table below is meant to be readable beside
-its inputs.
+its inputs; `READINGS` is one rank's member of the entry at each width, and
+`publish_readings` publishes it for a run's configuration.
 
 Two things are asserted as byte counts rather than as properties, because what
 this file pins is a per-term table and a table nobody checked is a claim. The
@@ -39,12 +41,23 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from test_artifact_invalidation import STANZA
 from transformers import PretrainedConfig
 
 import atom.compass.memory as memory_package
+from atom.compass.artifacts import (
+    ArtifactStore,
+    GateState,
+    Key,
+    Kind,
+    machine_spec_digest,
+    machine_spec_key,
+    member_name,
+)
 from atom.compass.backends.geometry import dtype_bytes as element_bytes
 from atom.compass.backends.provenance import Method, combine
 from atom.compass.memory import (
+    MemoryReadings,
     MemoryRefusal,
     ModelTerms,
     PiecewiseCapture,
@@ -57,6 +70,7 @@ from atom.compass.memory import (
     reserves,
 )
 from atom.compass.run import _config_json
+from atom.compass.run import memory as entry
 from atom.compass.spec import MachineSpec, SpecRefusal
 from atom.config import get_hf_config
 
@@ -170,6 +184,98 @@ DOCUMENT = {
 }
 
 
+#: One rank's member of the `memory_readings` entry at each width, as
+#: `compass measure memory` publishes it: the reserve, residue and persistent
+#: buffers at DOCUMENT's sizes, and the activations at its warmup tokens.
+READINGS = {
+    width: {
+        "capacity_bytes": 288_000_000_000,
+        "driver_and_collective_reserve_bytes": reserve,
+        "allocator_retained_after_load_bytes": residue,
+        "persistent_forward_buffer_bytes": 124_000_000,
+        "activation_bytes": 805_306_368,
+        "warmup_tokens": WARMUP_TOKENS,
+        "cudagraph_pool_bytes": None,
+        "record": "sha256:" + "e" * 64,
+    }
+    for width, reserve, residue in (
+        (1, 970_000_000, 1_100_000),
+        (2, 7_200_000_000, 2_170_000_000),
+    )
+}
+SOURCE = "memory_readings test entry"
+
+
+def measured(tp_width, **readings):
+    """One rank's readings at `tp_width`, with `readings` moved."""
+    return MemoryReadings.from_member({**READINGS[tp_width], **readings}, SOURCE)
+
+
+def publish_readings(store, config, document=DOCUMENT, readings=READINGS[1]):
+    """`config`'s entry in the store at `store`, one member a rank, keyed and
+    conditioned as `compass measure memory` publishes it on the platform
+    `document` states; the one already there, if there is one."""
+    machine = MachineSpec.from_mapping(copy.deepcopy(document))
+    fields = entry.key_fields(config)
+    key = Key.of(
+        Kind.MEMORY_READINGS, machine_spec=machine_spec_digest(machine), **fields
+    )
+    store = ArtifactStore(store)
+    if not store.directory_for(key).exists():
+        platform = machine_spec_key(machine).values
+        platform["torch"] = machine.value("device.software_pinned_to.torch")
+        store.publish(
+            key,
+            provenance=STANZA,
+            topology=entry.topology(config),
+            conditions=entry.conditions(fields, **platform),
+            gates=GateState.of(),
+            members={
+                member_name(entry.STEM, rank, entry.EXTENSION): json.dumps(
+                    readings
+                ).encode()
+                for rank in entry.topology(config).ranks()
+            },
+        )
+    return key
+
+
+#: What a worker's resolved config holds for the fields its memory key reads,
+#: where a test's worker states none: a one-rank, unquantized deployment.
+WORKER = {
+    "pipeline_parallel_size": 1,
+    "prefill_context_parallel_size": 1,
+    "decode_context_parallel_size": 1,
+    "enable_expert_parallel": False,
+    "enable_dp_attention": False,
+    "max_num_seqs": 256,
+    "max_model_len": 2048,
+    "gpu_memory_utilization": GPU_MEMORY_UTILIZATION,
+    "capture_sizes": list(CAPTURE_SIZES),
+    "kv_cache_block_size": 16,
+    "kv_cache_dtype": "bf16",
+    # ATOM's `QuantizationConfig` resolves aiter dtypes, which needs a driver.
+    "quant_config": SimpleNamespace(compute_hash=lambda: "unquantized-bf16"),
+}
+
+
+def with_readings(runner, store, readings=READINGS[1], document=DOCUMENT):
+    """`runner`, a test's worker, given what its memory key reads and it does
+    not state, with its configuration's entry published in `store`."""
+    config = runner.config
+    for name, value in WORKER.items():
+        if not hasattr(config, name):
+            setattr(config, name, value)
+    if not hasattr(config, "tp_world_size"):
+        config.tp_world_size = config.tensor_parallel_size
+    if not hasattr(config.parallel_config, "pipeline_parallel_rank"):
+        config.parallel_config.pipeline_parallel_rank = 0
+    if not hasattr(runner, "rank"):
+        runner.rank = 0
+    publish_readings(store, config, document, readings)
+    return runner
+
+
 @pytest.fixture(autouse=True)
 def no_device_readings(monkeypatch):
     """Both device readings raise, for every test in this file."""
@@ -205,16 +311,8 @@ def qwen():
 #: 4-byte dtype. With bfloat16 alone, a size that collapsed to the literal 2
 #: would read exactly like the right one; float32 is every term doubled.
 MODEL_TERMS_BY_DTYPE = {
-    "bfloat16": {
-        "weights": 54_000_000_000,
-        "buffers": 33_554_432,
-        "activations": 805_306_368,
-    },
-    "float32": {
-        "weights": 108_000_000_000,
-        "buffers": 67_108_864,
-        "activations": 1_610_612_736,
-    },
+    "bfloat16": {"weights": 54_000_000_000, "buffers": 33_554_432},
+    "float32": {"weights": 108_000_000_000, "buffers": 67_108_864},
 }
 GRAPH_POOL_BY_DTYPE = {"bfloat16": 1_877_213_184, "float32": 3_754_426_368}
 
@@ -255,16 +353,24 @@ def reserved(qwen, total_bytes):
     )
 
 
+def model_terms(config, tree=META_8B, config_json=None):
+    """`config`'s model terms, the activations off the TP1 entry."""
+    return ModelTerms.from_config(
+        config,
+        activations=measured(1).activations(WARMUP_TOKENS),
+        config_json=config_json,
+        tree=tree,
+    )
+
+
 def readings_at(spec, qwen, tp_width):
     total_bytes = int(spec.value("device.memory.capacity_bytes"))
     return device_readings(
         spec,
+        memory=measured(tp_width),
         tp_width=tp_width,
-        model=ModelTerms.from_config(
-            qwen,
-            tree=meta_tree(PARAMETERS * element_bytes(qwen.dtype) // tp_width),
-            tp_size=tp_width,
-            warmup_tokens=WARMUP_TOKENS,
+        model=model_terms(
+            qwen, meta_tree(PARAMETERS * element_bytes(qwen.dtype) // tp_width)
         ),
         cudagraph_overhead=reserved(qwen, total_bytes),
     )
@@ -353,11 +459,11 @@ def test_every_term_names_where_it_came_from(spec, qwen, tp_width):
                 assert term.note.strip(), f"{name}.{term.name}"
 
 
-def test_on_a_probed_spec_the_only_declared_term_is_activations(qwen):
-    # Declared until a measured entry or a liveness walk replaces it. The
-    # weights come off a meta build.
+def test_on_a_probed_spec_no_term_is_declared(qwen):
+    # The weights come off a meta build and the activations off the entry.
     readings = readings_at(spec_of("probed"), qwen, 1)
-    assert set(readings.peak_torch.declared) == {"activations"}
+    assert readings.declared == ()
+    assert readings.peak_torch.terms[-1].method is Method.MEASURED
 
 
 @pytest.mark.parametrize("tp_width", [1, 2])
@@ -379,45 +485,13 @@ def test_the_min_budget_free_clamp_cannot_bind(spec, qwen, tp_width):
         assert min(available, readings.free.total) == available, utilisation
 
 
-# --- a width nobody measured -------------------------------------------------
-
-
-def test_an_unmeasured_width_refuses_naming_the_field_and_the_width(spec, qwen):
-    with pytest.raises(SpecRefusal) as refusal:
-        readings_at(spec, qwen, 3)
-    message = str(refusal.value)
-    assert "driver_and_collective_reserve_bytes" in message
-    assert "width 3" in message
-    assert "[1, 2, 4, 8]" in message
-
-
-def test_the_refusal_names_whichever_table_is_short(qwen):
-    # The two width tables are read separately, so a width present in one and
-    # missing from the other refuses on the one that is missing it, by name.
-    document = copy.deepcopy(DOCUMENT)
-    del document["device"]["runtime_constants"]["allocator_retained_after_load_bytes"][
-        2
-    ]
-    short = MachineSpec.from_mapping(document)
-    with pytest.raises(SpecRefusal) as refusal:
-        readings_at(short, qwen, 2)
-    message = str(refusal.value)
-    assert "allocator_retained_after_load_bytes" in message
-    assert "width 2" in message
-    assert "nothing here to interpolate along" in message
-
-
 def test_a_configuration_that_does_not_fit_refuses_rather_than_clamping(spec, qwen):
     with pytest.raises(MemoryRefusal) as refusal:
         device_readings(
             spec,
+            memory=measured(1),
             tp_width=1,
-            model=ModelTerms.from_config(
-                qwen,
-                tree=meta_tree(800_000_000_000),
-                tp_size=1,
-                warmup_tokens=WARMUP_TOKENS,
-            ),
+            model=model_terms(qwen, meta_tree(800_000_000_000)),
             cudagraph_overhead=reserved(qwen, 288.0e9),
         )
     assert "clean box is negative" in str(refusal.value)
@@ -432,13 +506,9 @@ def test_the_predicting_function_cannot_be_spent_as_the_reserving_one(spec, qwen
     with pytest.raises(MemoryRefusal) as refusal:
         device_readings(
             spec,
+            memory=measured(1),
             tp_width=1,
-            model=ModelTerms.from_config(
-                qwen,
-                tree=META_8B,
-                tp_size=1,
-                warmup_tokens=WARMUP_TOKENS,
-            ),
+            model=model_terms(qwen),
             cudagraph_overhead=predicts(
                 spec, tp_width=1, captured_tokens=sum(ladder())
             ),
@@ -528,12 +598,7 @@ def test_an_absent_partial_rotary_factor_says_so_in_the_table(qwen):
     # row must not look the same as a config that states 1.0.
     full = copy.deepcopy(qwen)
     del full.partial_rotary_factor
-    stated = ModelTerms.from_config(
-        qwen, tree=META_8B, tp_size=1, warmup_tokens=WARMUP_TOKENS
-    )
-    assumed = ModelTerms.from_config(
-        full, tree=META_8B, tp_size=1, warmup_tokens=WARMUP_TOKENS
-    )
+    stated, assumed = model_terms(qwen), model_terms(full)
     assert "absent from config, assumed" in assumed.buffers.source
     assert "absent from config, assumed" not in stated.buffers.source
     assert assumed.buffers.nbytes == 4 * stated.buffers.nbytes
@@ -546,9 +611,7 @@ def test_the_model_dtype_sizes_the_model_terms(qwen):
     # Read off the config, not a module constant: a term sized in fp32 where
     # the tensors are resident in bf16 is twice what the model holds.
     assert str(qwen.dtype).endswith("bfloat16")
-    terms = ModelTerms.from_config(
-        qwen, tree=META_8B, tp_size=1, warmup_tokens=WARMUP_TOKENS
-    )
+    terms = model_terms(qwen)
     assert terms.buffers.nbytes == 262_144 * 64 * 2
     assert " x 2 B" in terms.buffers.source
 
@@ -565,6 +628,36 @@ def test_the_graph_pool_reservation_follows_the_element_size(resident):
     assert reserved(config, 288.0e9).total == GRAPH_POOL_BY_DTYPE[name]
 
 
+def test_the_entry_measures_the_activations_at_its_own_warmup_and_scales_them():
+    # One start reads `peak - current` over its warmup: measured at those
+    # tokens, and the coefficient times another count is an estimate.
+    term = measured(1).activations(WARMUP_TOKENS)
+    assert (term.nbytes, term.method) == (805_306_368, Method.MEASURED)
+    assert (
+        term.source == f"{SOURCE} activation_bytes over {WARMUP_TOKENS} warmup tokens"
+    )
+    half = measured(1).activations(WARMUP_TOKENS // 2)
+    assert (half.nbytes, half.method) == (402_653_184, Method.ESTIMATED)
+    assert not half.validated
+
+
+@pytest.mark.parametrize(
+    "readings",
+    [
+        {"warmup_tokens": 0},
+        {"activation_bytes": 1.5},
+        {"capacity_bytes": None},
+        {"persistent_forward_buffer_bytes": True},
+        {"made_up_bytes": 1},
+        {"record": 5},
+        {"record": "a log"},
+    ],
+)
+def test_a_member_that_is_not_one_ranks_readings_is_refused(readings):
+    with pytest.raises(MemoryRefusal, match=SOURCE):
+        measured(1, **readings)
+
+
 #: A `device.activations` entry: one real run's `peak - current` after warmup
 #: over its warmup tokens, for this model at TP1.
 ACTIVATIONS = {
@@ -573,39 +666,6 @@ ACTIVATIONS = {
     "applies_to": ["Qwen3_5ForConditionalGeneration"],
     "bytes_per_token": {1: 180_480},
 }
-
-
-def test_a_measured_entry_prices_the_activations_only_for_its_model_and_width(qwen):
-    document = copy.deepcopy(DOCUMENT)
-    document["device"]["activations"] = [ACTIVATIONS]
-    measured_spec = MachineSpec.from_mapping(document)
-    arch, digest = ACTIVATIONS["applies_to"][0], ACTIVATIONS["fingerprint"]
-
-    def activations(architecture, fingerprint, tp_width):
-        return ModelTerms.from_config(
-            qwen,
-            tree=META_8B,
-            tp_size=tp_width,
-            warmup_tokens=WARMUP_TOKENS,
-            activations_entry=measured_spec.activations_for(
-                architecture, fingerprint, tp_width
-            ),
-        ).activations
-
-    term = activations(arch, digest, 1)
-    assert term.method is Method.ESTIMATED and not term.validated
-    assert term.nbytes == WARMUP_TOKENS * 180_480
-    assert "device.activations[qwen3.8-27b].bytes_per_token[1]" in term.source
-    # Another size of the same architecture, an unmeasured width, and another
-    # architecture keep the declared form.
-    for key in (
-        (arch, "sha256:" + "c" * 64, 1),
-        (arch, digest, 2),
-        ("Qwen3ForCausalLM", digest, 1),
-    ):
-        fallback = activations(*key)
-        assert fallback.method is Method.DECLARED, key
-        assert fallback.nbytes == MODEL_TERMS_BY_DTYPE["bfloat16"]["activations"]
 
 
 def test_two_activation_entries_for_one_model_are_refused_where_the_spec_is_read():
@@ -619,27 +679,15 @@ def test_a_config_with_no_dtype_refuses_rather_than_assuming_one(qwen):
     nameless = copy.deepcopy(qwen)
     del nameless.dtype
     with pytest.raises(MemoryRefusal, match="states no `dtype`, and every byte"):
-        ModelTerms.from_config(
-            nameless,
-            tree=META_8B,
-            tp_size=1,
-            warmup_tokens=WARMUP_TOKENS,
-        )
+        model_terms(nameless)
 
 
-@pytest.mark.parametrize(
-    "field", ["hidden_size", "intermediate_size", "head_dim", "max_position_embeddings"]
-)
+@pytest.mark.parametrize("field", ["head_dim", "max_position_embeddings"])
 def test_a_config_missing_a_geometry_field_refuses_naming_that_field(qwen, field):
     shapeless = copy.deepcopy(qwen)
     delattr(shapeless, field)
     with pytest.raises(MemoryRefusal) as refusal:
-        ModelTerms.from_config(
-            shapeless,
-            tree=META_8B,
-            tp_size=1,
-            warmup_tokens=WARMUP_TOKENS,
-        )
+        model_terms(shapeless)
     assert refusal.value.what == (
         f"this config states no `{field}`, and the memory model reads it"
     )
@@ -652,13 +700,9 @@ def test_the_negative_box_refusal_carries_its_decomposition(spec, qwen):
     with pytest.raises(MemoryRefusal) as refusal:
         device_readings(
             spec,
+            memory=measured(1),
             tp_width=1,
-            model=ModelTerms.from_config(
-                qwen,
-                tree=meta_tree(800_000_000_000),
-                tp_size=1,
-                warmup_tokens=WARMUP_TOKENS,
-            ),
+            model=model_terms(qwen, meta_tree(800_000_000_000)),
             cudagraph_overhead=reserved(qwen, 288.0e9),
         )
     message = str(refusal.value)
@@ -704,13 +748,7 @@ def loaded(tmp_path, raw):
 
 
 def terms_of(config, config_json):
-    return ModelTerms.from_config(
-        config,
-        tree=META_8B,
-        tp_size=1,
-        warmup_tokens=WARMUP_TOKENS,
-        config_json=config_json,
-    )
+    return model_terms(config, config_json=config_json)
 
 
 def test_v4_pro_terms_name_only_fields_its_config_json_states(tmp_path):
@@ -720,26 +758,9 @@ def test_v4_pro_terms_name_only_fields_its_config_json_states(tmp_path):
     terms = terms_of(config, config_json)
     assert terms.buffers.nbytes == 1_048_576 * 64 * 2
     assert terms.buffers.source == "1048576 positions x 64 qk_rope_head_dim x 2 B"
-    assert terms.activations.nbytes == int(
-        WARMUP_TOKENS * 2 * (2.8 * 7168 + 2 * (6 + 1) * 3072)
-    )
-    assert terms.activations.source == (
-        "8192 warmup tokens x 2 B x (2.8 x 7168 hidden + 2 x (6 num_experts_per_tok"
-        " + 1 n_shared_experts) x 3072 moe_intermediate_size)"
-    )
 
 
-@pytest.mark.parametrize(
-    "dropped,named",
-    [
-        ("hidden_size", "hidden_size"),
-        ("max_position_embeddings", "max_position_embeddings"),
-        ("num_experts_per_tok", "num_experts_per_tok"),
-        ("n_shared_experts", "n_shared_experts"),
-        # Not an MoE model any more, so the dense field is read: unstated too.
-        ("moe_intermediate_size", "intermediate_size"),
-    ],
-)
+@pytest.mark.parametrize("dropped,named", [("max_position_embeddings",) * 2])
 def test_a_field_only_the_config_class_supplies_is_refused_by_name(
     tmp_path, dropped, named
 ):
@@ -756,84 +777,8 @@ def test_a_field_only_the_config_class_supplies_is_refused_by_name(
 
 def test_without_its_config_json_a_class_default_cannot_count_as_stated(tmp_path):
     config, _ = loaded(tmp_path, V4_PRO)
-    with pytest.raises(MemoryRefusal, match="states no `hidden_size`"):
+    with pytest.raises(MemoryRefusal, match="states no `max_position_embeddings`"):
         terms_of(config, None)
-
-
-#: Qwen3-30B-A3B's config.json, the fields the model terms read. The
-#: architecture has no shared expert, so neither the file nor `Qwen3MoeConfig`
-#: names one.
-QWEN3_30B_A3B = {
-    "architectures": ["Qwen3MoeForCausalLM"],
-    "model_type": "qwen3_moe",
-    "hidden_size": 2048,
-    "head_dim": 128,
-    "intermediate_size": 6144,
-    "max_position_embeddings": 40960,
-    "moe_intermediate_size": 768,
-    "num_experts": 128,
-    "num_experts_per_tok": 8,
-    "num_hidden_layers": 48,
-    "torch_dtype": "bfloat16",
-}
-
-
-def test_an_moe_class_with_no_shared_expert_field_reads_zero(tmp_path):
-    config, config_json = loaded(tmp_path, QWEN3_30B_A3B)
-    assert type(config).__name__ == "Qwen3MoeConfig"
-    terms = terms_of(config, config_json)
-    # 8 x 768 is the dense 6144: the expert form changes no number here.
-    assert terms.activations.nbytes == int(WARMUP_TOKENS * 2 * (2.8 * 2048 + 2 * 6144))
-    assert terms.activations.source == (
-        "8192 warmup tokens x 2 B x (2.8 x 2048 hidden + 2 x (8 num_experts_per_tok"
-        " + 0 n_shared_experts (Qwen3MoeConfig has none)) x 768 moe_intermediate_size)"
-    )
-
-
-def test_a_bare_config_with_no_shared_expert_count_is_refused():
-    raw = {k: v for k, v in QWEN3_30B_A3B.items() if k != "model_type"}
-    config = PretrainedConfig.from_dict({**raw, "dtype": "bfloat16"})
-    with pytest.raises(MemoryRefusal, match="states no `n_shared_experts`"):
-        terms_of(config, raw)
-
-
-@pytest.mark.parametrize(
-    "extra,klass,named",
-    [
-        # A class that counts its shared experts under another name.
-        ({"model_type": "exaone_moe"}, "ExaoneMoeConfig", "num_shared_experts"),
-        # A class with no shared-expert field, and a config.json that names one.
-        (
-            {"shared_expert_intermediate_size": 768},
-            "Qwen3MoeConfig",
-            "shared_expert_intermediate_size",
-        ),
-    ],
-)
-def test_a_config_naming_a_shared_expert_otherwise_is_refused(
-    tmp_path, extra, klass, named
-):
-    config, config_json = loaded(tmp_path, {**QWEN3_30B_A3B, **extra})
-    assert type(config).__name__ == klass
-    with pytest.raises(MemoryRefusal, match="states no `n_shared_experts`") as refusal:
-        terms_of(config, config_json)
-    assert named in refusal.value.remedy
-
-
-def test_an_unstated_count_the_class_defaults_is_refused_without_disowning_it(
-    tmp_path,
-):
-    # DeepseekV3Config defaults n_shared_experts, so the class names it: the
-    # remedy names it as the shared-expert field, not as one left unread.
-    config, config_json = loaded(
-        tmp_path, {k: v for k, v in V4_PRO.items() if k != "n_shared_experts"}
-    )
-    with pytest.raises(MemoryRefusal) as refusal:
-        terms_of(config, config_json)
-    assert refusal.value.remedy == (
-        "state it in the model's config.json; this config names a shared "
-        "expert as n_shared_experts"
-    )
 
 
 def test_a_dense_model_through_atoms_loader_keeps_its_terms(tmp_path, qwen):
@@ -874,95 +819,6 @@ def test_a_field_neither_the_file_nor_hf_overrides_states_is_refused(tmp_path):
         tmp_path, without_positions(V4_PRO), {"num_hidden_layers": 4}
     )
     with pytest.raises(MemoryRefusal, match="states no `max_position_embeddings`"):
-        terms_of(config, config_json)
-
-
-# --- a shared expert sized by width, and dense layers beside the experts -----
-
-#: Qwen3.5-35B-A3B's config.json, the fields the model terms read. Its class
-#: sizes one shared expert by `shared_expert_intermediate_size`.
-QWEN3_5_35B_A3B = {
-    "architectures": ["Qwen3_5MoeForConditionalGeneration"],
-    "model_type": "qwen3_5_moe",
-    "text_config": {
-        "model_type": "qwen3_5_moe_text",
-        "dtype": "bfloat16",
-        "head_dim": 256,
-        "hidden_size": 2048,
-        "max_position_embeddings": 262144,
-        "moe_intermediate_size": 512,
-        "num_experts": 256,
-        "num_experts_per_tok": 8,
-        "num_hidden_layers": 40,
-        "shared_expert_intermediate_size": 512,
-    },
-}
-
-
-@pytest.mark.parametrize(
-    "raw,klass,live",
-    [
-        (QWEN3_5_35B_A3B, "Qwen3_5MoeTextConfig", (8, 512, 512)),
-        (
-            {
-                **QWEN3_30B_A3B,
-                "model_type": "qwen2_moe",
-                "shared_expert_intermediate_size": 5632,
-            },
-            "Qwen2MoeConfig",
-            (8, 768, 5632),
-        ),
-    ],
-)
-def test_a_shared_expert_sized_by_width_prices_and_is_named(tmp_path, raw, klass, live):
-    config, config_json = loaded(tmp_path, raw)
-    assert type(getattr(config, "text_config", config)).__name__ == klass
-    routed, experts, width = live
-    activations = terms_of(config, config_json).activations
-    assert activations.nbytes == int(
-        WARMUP_TOKENS * 2 * (2.8 * 2048 + 2 * (routed * experts + width))
-    )
-    assert activations.source.endswith(
-        f" + 2 x ({routed} num_experts_per_tok x {experts} moe_intermediate_size"
-        f" + {width} shared_expert_intermediate_size))"
-    )
-
-
-def test_a_shared_expert_width_only_the_class_supplies_is_refused_by_name(tmp_path):
-    text = dict(QWEN3_5_35B_A3B["text_config"])
-    del text["shared_expert_intermediate_size"]
-    config, config_json = loaded(tmp_path, {**QWEN3_5_35B_A3B, "text_config": text})
-    with pytest.raises(MemoryRefusal) as refusal:
-        terms_of(config, config_json)
-    assert refusal.value.what == (
-        "this config states no `shared_expert_intermediate_size`, and the memory "
-        "model reads it"
-    )
-
-
-@pytest.mark.parametrize(
-    "raw,moe",
-    [
-        ({**V4_PRO, "first_k_dense_replace": 3}, 7 * 3072),
-        ({**QWEN3_30B_A3B, "mlp_only_layers": [0]}, 8 * 768),
-        ({**QWEN3_30B_A3B, "decoder_sparse_step": 2}, 8 * 768),
-    ],
-)
-@pytest.mark.parametrize("wider", [True, False])
-def test_stated_dense_layers_take_the_wider_of_the_two_forms(tmp_path, raw, moe, wider):
-    dense = moe + 1024 if wider else moe - 1024
-    config, config_json = loaded(tmp_path, {**raw, "intermediate_size": dense})
-    activations = terms_of(config, config_json).activations
-    hidden = raw["hidden_size"]
-    assert activations.nbytes == int(
-        WARMUP_TOKENS * 2 * (2.8 * hidden + 2 * max(dense, moe))
-    )
-    assert f" + 2 x max({dense} intermediate_size, (" in activations.source
-
-
-def test_dense_layers_need_their_width_stated(tmp_path):
-    config, config_json = loaded(tmp_path, {**V4_PRO, "first_k_dense_replace": 3})
-    with pytest.raises(MemoryRefusal, match="states no `intermediate_size`"):
         terms_of(config, config_json)
 
 

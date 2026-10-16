@@ -35,7 +35,7 @@ from test_backend_step_grid import (
     point,
 )
 from test_dp_slice import _deployment
-from test_memory_readings import CONFIG_JSON, DOCUMENT, META_8B
+from test_memory_readings import CONFIG_JSON, DOCUMENT, META_8B, publish_readings
 from test_refused_step_continues import drive
 from test_runner_control_refusals import Worker
 from test_vertical_slice import _run_file
@@ -83,17 +83,26 @@ BUNDLE = {
 
 
 def deployment(tmp_path, **config):
-    """A graphed worker's runner, carrying the config fields `run.runner` reads."""
+    """A graphed worker's runner, carrying the config fields `run.runner` reads,
+    with its memory readings published in the store at ``tmp_path / "store"``."""
     (tmp_path / "config.json").write_text(CONFIG_JSON.read_text())
     hf = PretrainedConfig.from_dict(json.loads(CONFIG_JSON.read_text())["text_config"])
     r = graphed(None)
     r._piecewise_cg_active = lambda: False
+    r.rank = 0
     r.config = SimpleNamespace(
         model=str(tmp_path),
         hf_config=hf,
         tensor_parallel_size=1,
+        tp_world_size=1,
         pipeline_parallel_size=1,
-        parallel_config=SimpleNamespace(data_parallel_size=1, data_parallel_rank=0),
+        prefill_context_parallel_size=1,
+        decode_context_parallel_size=1,
+        enable_expert_parallel=False,
+        enable_dp_attention=False,
+        parallel_config=SimpleNamespace(
+            data_parallel_size=1, data_parallel_rank=0, pipeline_parallel_rank=0
+        ),
         **BOUNDS,
         gpu_memory_utilization=0.9,
         torch_dtype=torch.bfloat16,
@@ -108,6 +117,7 @@ def deployment(tmp_path, **config):
         kv_transfer_config={},
     )
     vars(r.config).update(config)
+    publish_readings(tmp_path / "store", r.config)
     return r
 
 

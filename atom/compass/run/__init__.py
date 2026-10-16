@@ -71,8 +71,9 @@ on ``(1, tokens, seqs)``, zero where absent; ``key``, the `host_key` they were
 fitted under and the ``machine_spec`` digest of the spec of the platform they
 were fitted on, which a run with laws must match; ``skip``, segments zeroed for
 a what-if run, which the graders refuse),
-``machine`` (a machine spec mapping), ``parameter_count`` (read with
-``step_roofline``), and ``out_dir``,
+``machine`` (a machine spec mapping), ``memory_readings`` (an artifact
+store's root, which holds the configuration's memory readings; see `memory`),
+``parameter_count`` (read with ``step_roofline``), and ``out_dir``,
 where the step table, the run summary and each server LP's hand-in go, one
 file written as the LP leaves its loop. It holds the LP's refusals: an
 engine's are the worker's refused commands and the engine's refused clock
@@ -836,17 +837,19 @@ def runner(model_runner, tree) -> None:
         from atom.compass.run.step_grid import load
 
         backend, bundle = load(run["step_grid"], config, machine)
-    config_json = _config_json(config)
+    if "memory_readings" not in run:
+        raise ValueError(
+            "the run file names no memory_readings store, and a run reads its "
+            "configuration's memory readings from one; compass measure memory "
+            "takes them"
+        )
+    from atom.compass.run import memory
+
+    measured = memory.load(run["memory_readings"], config, machine, model_runner.rank)
     model = ModelTerms.from_config(
         config.hf_config,
-        tp_size=tp,
-        warmup_tokens=config.max_num_batched_tokens,
-        config_json=config_json,
-        activations_entry=machine.activations_for(
-            (config_json.get("architectures") or [None])[0],
-            _file_digest(config.model, "config.json"),
-            tp,
-        ),
+        activations=measured.activations(config.max_num_batched_tokens),
+        config_json=_config_json(config),
         tree=tree,
     )
     fallback = run.get("step_roofline", False)
@@ -890,15 +893,19 @@ def runner(model_runner, tree) -> None:
             replay.now = lambda: float(slot[0])
     model_runner.compass_abort = run.get("on_refusal") == "abort"
     reserved, captured = _graph_pool(model_runner, machine, model)
-    # Under DP-attention the reserve and the residue are keyed by the layout,
-    # and by the EP width when the experts shard; one rank of it is a TP1 engine.
+    # The readings' label: under DP-attention the layout, with the EP width
+    # when the experts shard; one rank of it is a TP1 engine.
     dp = config.parallel_config.data_parallel_size
     layout = tp
     if dp > 1 and config.enable_dp_attention:
         ep = f"x{tp * dp}" if config.enable_expert_parallel else ""
         layout = f"{tp}x{dp}{ep}"
     readings = device_readings(
-        machine, tp_width=layout, model=model, cudagraph_overhead=reserved
+        machine,
+        memory=measured,
+        tp_width=layout,
+        model=model,
+        cudagraph_overhead=reserved,
     )
     install_device_readings(model_runner, readings)
     pool = (

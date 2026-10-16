@@ -84,15 +84,8 @@ KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
     Kind.OP_GRAPH: ("structure",),
     Kind.PRICE_LIST: ("model", *LAYOUT, "machine_spec", "source_root"),
     Kind.REGION_TERMS: ("model", *LAYOUT, "machine_spec"),
-    Kind.MEMORY_READINGS: (
-        "model",
-        *LAYOUT,
-        "utilization",
-        "max_num_seqs",
-        "max_model_len",
-        "kv_dtype",
-        "block_size",
-    ),
+    # The engine config as `run.memory.key_fields` reads it, as sorted JSON.
+    Kind.MEMORY_READINGS: ("model", "machine_spec", *LAYOUT, "engine_config"),
     Kind.COVERAGE_HULL: ("price_list",),
     Kind.STEP_LINEAR_LAW: (
         "model",
