@@ -34,14 +34,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from lmcache.v1.multiprocess.rpc import get_rpc_spec
-from lmcache.v1.multiprocess.token_hasher import TokenHasher
-from lmcache.v1.multiprocess.transport.zmq_impl.mq import (
-    msgspec_encode,
-    unwrap_request_payloads,
-)
-from lmcache.v1.multiprocess.transport.zmq_impl.wire import decode_operation
-
 EVICTION_INTERVAL_S = 1.0
 
 
@@ -115,6 +107,12 @@ class LMCacheServer:
     """The state and replies of one `lmcache server` process."""
 
     def __init__(self, argv: list[str], *, chunk_bytes: int) -> None:
+        # lmcache brings torch with it, so importing this module stays free of both.
+        from lmcache.v1.multiprocess.rpc import get_rpc_spec
+        from lmcache.v1.multiprocess.token_hasher import TokenHasher
+        from lmcache.v1.multiprocess.transport.zmq_impl import mq, wire
+
+        self._spec, self._mq, self._wire = get_rpc_spec, mq, wire
         self.args = parse_server_flags(argv)
         self.chunk_size = self.args.chunk_size
         self.chunk_bytes = chunk_bytes
@@ -149,16 +147,16 @@ class LMCacheServer:
         """Serve one request at its job's start; return its reply frames and
         the effect to apply at its job's end."""
         identity, b_uid, b_op, *payloads = frames
-        op = decode_operation(b_op)
+        op = self._wire.decode_operation(b_op)
         handler = self._handlers.get(op)
         if handler is None:
             raise LMCacheRefusal(f"lmcache stand-in does not model request type {op!r}")
-        spec = get_rpc_spec(op)
-        args = unwrap_request_payloads(payloads, list(spec.payload_types))
+        spec = self._spec(op)
+        args = self._mq.unwrap_request_payloads(payloads, list(spec.payload_types))
         response, at_end = handler(*args, now=now)
         reply = [identity, b_uid, b_op]
         if response is not None:
-            reply.append(msgspec_encode(response, cls=spec.response_type))
+            reply.append(self._mq.msgspec_encode(response, cls=spec.response_type))
         return reply, at_end
 
     def evict(self, now: float) -> list[tuple]:
