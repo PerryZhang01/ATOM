@@ -47,6 +47,7 @@ from atom.compass.artifacts import (
     read_back,
     roots_for,
 )
+from atom.compass.drive import serve
 from atom.compass.drive.gpu import add_gpu_flag, quiet
 from atom.compass.drive.identity import identity
 from atom.compass.run import CLOCK_ENV, ENV, _width_keys, _write_whole, memory
@@ -88,13 +89,7 @@ def main(argv: list[str]) -> None:
                 f"{arg} is among ATOM's arguments; dummy weights are not yet "
                 "shown to read as a real load's do"
             )
-    named = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
-    named.add_argument("--model")
-    model = named.parse_known_args(atom_args)[0].model
-    if not model:
-        raise ValueError(
-            "ATOM's arguments name no --model; run.json digests its config"
-        )
+    model = serve._model(atom_args)
     machine = MachineSpec.from_mapping(
         _width_keys(json.loads(Path(args.machine).read_text()))
     )
