@@ -1950,7 +1950,10 @@ own process with the policy code untouched. It is (owner ruling on
   run's seed (`ATOM_COMPASS_SEED`, the cell's `SEED`): the policies read the LP clock, a
   seeded RNG and a fixed hasher. Without the endpoint nothing changes.
 - **Unchanged.** Cancels stay off behind the router; a clock error ends the router
-  process. The radix tree's eviction timer still runs on the wall clock (#1093).
+  process.
+- **Periodic tasks.** Under the LP, `PeriodicTask` (cache_aware's tree eviction) starts
+  no thread: the task's next deadline is the daemon deadline of each NER, and it runs
+  before any message arriving at or after that deadline (#1093).
 - **Several instances.** A run file's `prefill_instances` and `decode_instances`
   declare LPs `frontend-P<k>` and `engine-P<k>` (`-D<k>` for decode) per deployment
   (`channels.py::prefill_decode_table`), each with its own hops and write-request

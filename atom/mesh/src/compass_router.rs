@@ -12,13 +12,19 @@
 //! (`{"<channel>": seconds}`); a request is sent on once it is placed. Where
 //! several frontends take one kind, `ATOM_COMPASS_ROUTER_WORKERS`
 //! (`{"<worker base url>": "<frontend LP>"}`) names each worker's. The
-//! policies draw from the run's seed, `ATOM_COMPASS_SEED`. Any clock error
-//! ends the process. Without the endpoint nothing here runs.
+//! policies draw from the run's seed, `ATOM_COMPASS_SEED`. A periodic task
+//! fires on the LP clock instead of a thread ([`periodic`]): its next deadline
+//! goes out as the daemon deadline of each request, and it runs before any
+//! message arriving at or after that deadline. Any clock error ends the
+//! process. Without the endpoint nothing here runs.
 
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap},
-    sync::OnceLock,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, OnceLock,
+    },
     time::Duration,
 };
 
@@ -78,6 +84,15 @@ struct Lp {
     /// (channel, seq) of each message read and not yet released.
     waiting: parking_lot::Mutex<HashMap<(String, u64), oneshot::Sender<Turn>>>,
     arrived: Notify,
+    /// Periodic tasks, in registration order.
+    timers: parking_lot::Mutex<Vec<Timer>>,
+}
+
+struct Timer {
+    due: f64,
+    every: f64,
+    stopped: Arc<AtomicBool>,
+    task: Box<dyn Fn() + Send>,
 }
 
 static LP: OnceLock<Lp> = OnceLock::new();
@@ -146,6 +161,27 @@ impl Lp {
             workers,
             waiting: Default::default(),
             arrived: Notify::new(),
+            timers: Default::default(),
+        }
+    }
+
+    /// The earliest deadline of a task still running.
+    fn next_due(&self) -> f64 {
+        let mut timers = self.timers.lock();
+        timers.retain(|t| !t.stopped.load(Ordering::Relaxed));
+        timers.iter().map(|t| t.due).fold(f64::INFINITY, f64::min)
+    }
+
+    /// Run each task due by `time`, in deadline then registration order, with
+    /// the policies' clock at its deadline.
+    fn fire(&self, time: f64) {
+        while self.next_due() <= time {
+            let mut timers = self.timers.lock();
+            let first = timers.iter_mut().min_by(|a, b| a.due.total_cmp(&b.due));
+            let timer = first.expect("a due task");
+            determinism::set_now(timer.due);
+            (timer.task)();
+            timer.due += timer.every;
         }
     }
 
@@ -153,8 +189,9 @@ impl Lp {
     /// the client until it is handled.
     async fn serve(&self, mut client: ClockClient) -> Result<(), ClockError> {
         loop {
-            let grant = client.next_event(f64::INFINITY, f64::INFINITY).await?;
+            let grant = client.next_event(f64::INFINITY, self.next_due()).await?;
             for message in grant.released {
+                self.fire(message.arrival);
                 determinism::set_now(message.arrival);
                 let take = self.taken(&message.channel, message.seq).await;
                 let (back, done) = oneshot::channel();
@@ -170,6 +207,7 @@ impl Lp {
             if grant.time == f64::INFINITY {
                 return Ok(());
             }
+            self.fire(grant.time);
         }
     }
 
@@ -287,6 +325,26 @@ pub fn header(name: &str, value: &str) -> String {
             false => e.to_owned(),
         });
     entries.collect::<Vec<_>>().join(",")
+}
+
+/// Run `task` every `interval_secs` of the LP clock, from now, until `stopped`
+/// is set. Without the router LP, hands `task` back.
+pub fn periodic<F: Fn() + Send + 'static>(
+    interval_secs: u64,
+    stopped: &Arc<AtomicBool>,
+    task: F,
+) -> Result<(), F> {
+    let Some(lp) = LP.get() else {
+        return Err(task);
+    };
+    let every = interval_secs as f64;
+    lp.timers.lock().push(Timer {
+        due: determinism::seconds() + every,
+        every,
+        stopped: stopped.clone(),
+        task: Box::new(task),
+    });
+    Ok(())
 }
 
 /// Hold a prefill response until it is released and restamp its relay entry
