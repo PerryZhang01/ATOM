@@ -6,9 +6,8 @@
 `HostDeviceRecurrence` charges each forward with `d_busy_ns` as its device
 time, plus `d_gap_ns` on a decode, and its line's host segments: `E` from the previous exit to the entry,
 `W_pre` to the launch less the staging gate's and MTP status waits, `W_launch`, and `W_post`
-from the launch to the exit less the recv and draft-copy waits. A record with
-`d_target_ns` is charged under MTP, `d_target_ns` (and the gap) as target and
-the rest of `d_busy_ns` as draft. Each forward is called at the
+from the launch to the exit less the recv and draft copy waits; with
+`d_target_ns`, under MTP, the rest of `d_busy_ns` is draft. Each forward is called at the
 exit predicted for the one before, so only the waits and device times move it.
 
 Per kind (decode, output prefill, middle chunk, and idle: sharing no request
