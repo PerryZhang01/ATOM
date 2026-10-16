@@ -243,7 +243,7 @@ class ArtifactStore:
             raise ArtifactRefusal(
                 Rule.INVALIDATED,
                 f"{conditions!r} is not a set of conditions",
-                "state all six axes; an entry records the "
+                "state every axis; an entry records the "
                 "fingerprint of its own dependency row and cannot take one "
                 "from conditions nobody stated",
             )

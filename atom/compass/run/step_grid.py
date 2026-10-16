@@ -34,8 +34,6 @@ check here. The residual's recipe reads no chunk size, so none is keyed.
 import json
 from collections.abc import Mapping
 
-import torch
-
 from atom.compass.artifacts import (
     ArtifactStore,
     Axis,
@@ -73,15 +71,17 @@ def keyed(config) -> dict:
 
 
 def conditions(config, machine) -> Conditions:
-    """This run's readings: the stack and device the machine spec states,
-    this process's torch and ATOM tree, the served config.json and `keyed`."""
-    from atom.compass.run import _file_digest
+    """This run's readings: the stack, torch included, and the device the
+    machine spec states, this process's ATOM tree, this host's CPU, the served
+    config.json and `keyed`."""
+    from atom.compass.run import _file_digest, host_cpu
 
     return Conditions.of(
         **machine_spec_key(machine).values,
-        torch=torch.__version__,
+        torch=machine.value("device.software_pinned_to.torch"),
         atom_src=Reading.of_source_root(git_tree_root("atom", module_root("atom"))),
         model=_file_digest(config.model, "config.json"),
+        host_cpu=host_cpu(),
         engine_config=json.dumps(keyed(config), sort_keys=True),
     )
 

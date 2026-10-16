@@ -6,7 +6,7 @@ fine and the question of *which artifact answered* was not -- turned into
 refusals, plus the answer to a ninth: an artifact that is still read after the
 thing it was measured against has moved.
 
-* **A key is a tuple, never a path** (`keys`). The six artifacts and what keys
+* **A key is a tuple, never a path** (`keys`). The artifacts and what keys
   each one; a `price_list` is `(model, parallel layout, machine-spec digest,
   source-root digest)`, because a bare or merged price file states no layout
   and silently prices nothing.
