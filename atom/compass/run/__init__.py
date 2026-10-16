@@ -113,7 +113,11 @@ decode side: `engine(config)` makes it the ``engine-P`` or ``engine-D`` LP and
 binds the connector's transfer model. The write-request address comes with the
 deployment's own ``kv_transfer_config``. Above DP width one each DP rank is a
 member of its side's engine LP, and ATOM's DP dispatch on each side picks the
-rank a request runs on. `frontend(config)` refuses such a
+rank a request runs on. Optional ``prefill_instances`` and ``decode_instances``,
+1 when absent, run that many deployments of a side, each naming its index in
+its ``kv_transfer_config`` as ``compass_instance``; above one, its LPs carry
+the index (``engine-P1``), and the router is the ``router`` LP, which chooses
+among them. `frontend(config)` refuses such a
 deployment unless the authority is standalone: a prefill-decode run spans two
 API servers that must share one.
 
@@ -178,6 +182,10 @@ CLOCK_ENV = "ATOM_COMPASS_CLOCK_ENDPOINT"
 NOW_ENV = "ATOM_COMPASS_NOW"
 FRONTEND, ENGINE, TRAFFIC = LpId("frontend"), LpId("engine"), LpId("traffic")
 ROUTER = LpId("router")
+#: Run-file keys for how many deployments of each prefill-decode side run.
+INSTANCES = {"P": "prefill_instances", "D": "decode_instances"}
+#: The kv_transfer_config key a deployment names its index among them by.
+INSTANCE_KEY = "compass_instance"
 ATOM_RUNNER = "atom.model_engine.model_runner.ModelRunner"
 #: Keys that differ between two runs of one configuration, kept out of its name.
 #: The store is a place: the memory readings a run reads from it are keyed by
@@ -301,6 +309,8 @@ def channel_table(run: dict):
             kv_write_req_s=run["kv_write_req_s"],
             dp=_dp(run),
             router_in_s=run.get("router_in_s"),
+            prefill=run.get(INSTANCES["P"], 1),
+            decode=run.get(INSTANCES["D"], 1),
         )
     links = ()
     if _pp(run) > 1:
@@ -351,6 +361,24 @@ def _pd_side(config) -> str | None:
     if KVConnectorFactory.canonical_name(kv.get("kv_connector", "moriio")) != "compass":
         return None
     return "P" if kv.get("kv_role", "kv_producer") == "kv_producer" else "D"
+
+
+def _pd_name(config, run: dict) -> str | None:
+    """`_pd_side`, followed above one deployment of that side by the index
+    ``compass_instance`` in its ``kv_transfer_config`` names."""
+    side = _pd_side(config)
+    if side is None:
+        return None
+    n, k = run.get(INSTANCES[side], 1), config.kv_transfer_config.get(INSTANCE_KEY)
+    if n == 1 and k is None:
+        return side
+    if type(k) is not int or not 0 <= k < n:
+        raise ValueError(
+            f"kv_transfer_config's {INSTANCE_KEY} is {k!r} and the run file "
+            f"declares {n} as {INSTANCES[side]}; each deployment names its own "
+            "index, from 0"
+        )
+    return side if n == 1 else f"{side}{k}"
 
 
 def _bind_transfer(config, run: dict) -> None:
@@ -673,7 +701,8 @@ def frontend(config):
         # A worker node of a multi-node group: engines only, each a member.
         return contextlib.nullcontext()
     _refuse_sync_utility_commands()
-    lp = FRONTEND if side is None else LpId(f"{FRONTEND.name}-{side}")
+    name = _pd_name(config, run)
+    lp = FRONTEND if name is None else LpId(f"{FRONTEND.name}-{name}")
     authority = None
     if not standalone:
         _authority = authority = _RecordingAuthority(run)
@@ -778,7 +807,7 @@ def engine(config):
     if getattr(config, "pipeline_parallel_size", 1) > 1:
         lp = LpId(f"{ENGINE.name}-pp{pc.pipeline_parallel_rank}")
     if side is not None:
-        lp = LpId(f"{ENGINE.name}-{side}")
+        lp = LpId(f"{ENGINE.name}-{_pd_name(config, run)}")
         _bind_transfer(config, run)
     utils.LP_OF_RANK = dict.fromkeys(range(pc.data_parallel_size), lp)
     _member = f"dp{pc.data_parallel_rank}" if pc.data_parallel_size > 1 else None
@@ -838,6 +867,11 @@ def runner(model_runner, tree) -> None:
         from atom.compass.parity.replay import ReplayBackend
 
         dp_rank = config.parallel_config.data_parallel_rank
+        if max(run.get(k, 1) for k in INSTANCES.values()) > 1:
+            raise ValueError(
+                "replay reads one record per side, prefill/ and decode/, and this "
+                "run has several deployments of a side"
+            )
         side = {"P": "prefill", "D": "decode"}.get(_pd_side(config), "")
         backend = replay = ReplayBackend(Path(run["replay"]) / side, dp_rank)
     if STEP_LINEAR in run:

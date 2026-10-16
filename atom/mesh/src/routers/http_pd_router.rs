@@ -791,7 +791,9 @@ impl PDRouter {
             .await
             .map_err(|error| placement_err_to_response(error, context.model_id))?;
         let pair = self.reserve_pair(plan, context.headers.as_deref());
-        crate::compass_router::placed();
+        if let Ok(pair) = &pair {
+            crate::compass_router::placed(pair.prefill.base_url(), pair.decode.base_url());
+        }
         pair
     }
 
@@ -1761,6 +1763,7 @@ impl PDRouter {
                 }
                 if header_utils::should_forward_request_header(name.as_str()) {
                     if let Ok(val) = value.to_str() {
+                        let val = crate::compass_router::header(name.as_str(), val);
                         request = request.header(name, val);
                     }
                 }

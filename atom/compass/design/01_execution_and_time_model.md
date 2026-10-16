@@ -2145,7 +2145,7 @@ get disabled — not virtualized.
 
    A single deployment (M1's stage 1 and M2's first gate, no router) uses the same carriers.
 
-**Under `--dp-aware` the router is an LP; xPyD is deferred.** With several
+**Under `--dp-aware`, or with several instances per role, the router is an LP.** With several
 instances per role, or `--dp-aware`, every policy this router ships
 (`atom/mesh/src/policies/`) reads state that changes over time:
 `power_of_two`, `cache_aware` and `prefix_hash` compare `load()`, which moves as
@@ -2153,8 +2153,8 @@ requests start and finish; `random` draws from an unseeded generator; `round_rob
 counts requests in the order they reach the router, which is wall-clock order under
 concurrency; `dp_sticky` reads `Instant::now()`. A component whose time-varying state
 decides its output is an LP, so the router would have to become one, instrumented in its
-own process with the policy code untouched. Under `--dp-aware` it is (owner ruling on
-#449, 2026-10-15); several instances per role stay deferred.
+own process with the policy code untouched. It is (owner ruling on
+#449, 2026-10-15; several instances per role, #1085).
 
 - **Channels.** A run file with `router_in_s` declares LP `router`
   (`channels.py::prefill_decode_table`): each path through the router is a hop in,
@@ -2180,6 +2180,14 @@ own process with the policy code untouched. Under `--dp-aware` it is (owner ruli
 - **Periodic tasks.** Under the LP, `PeriodicTask` (cache_aware's tree eviction) starts
   no thread: the task's next deadline is the daemon deadline of each NER, and it runs
   before any message arriving at or after that deadline (#1093).
+- **Several instances.** A run file's `prefill_instances` and `decode_instances`
+  declare LPs `frontend-P<k>` and `engine-P<k>` (`-D<k>` for decode) per deployment
+  (`channels.py::prefill_decode_table`), each with its own hops and write-request
+  channels; without `router_in_s` the table refuses them. Each server names its index as
+  `compass_instance` in its `kv_transfer_config`; `pd_sim.sh` starts them and names each
+  worker URL's frontend LP to the router (`ATOM_COMPASS_ROUTER_WORKERS`). A request goes
+  on, stamped, to the prefill it was placed on, and a relay to its decode; decode finds
+  the prefill deployment by the relayed `remote_engine_id`.
 
 ### An unused hook worth knowing about
 
@@ -2455,7 +2463,7 @@ Ordered by how much they could cost.
 | D5.1 | The simulated run uses stdlib asyncio, not uvloop: only a Python event loop can host virtual time | 2026-09-28 |
 | D6 | KV transfer is simulated through a connector registered in the existing factory, reproducing Mooncake (what ATOM's PD CI deploys) through scheduler-side hooks only; a rank pair's writes queue on its link | 2026-09-18; revised 2026-09-28; link sharing 2026-10-16 (#1157) |
 | D6.1 | The lmcache MP server is LP `lmcache`, a Compass stand-in on the real ZMQ channels with a content index and two stations; a store or load completes as a stamped reply that the step loop takes in timestamp order; a blocking lookup is a request and reply whose wait is an idle point; inside a DP group each member parks before its forward, amending member join rules 1, 2 and 5, and the last park releases every member at the group's time | 2026-10-16 (#1087, #1162) |
-| D7 | Atomesh gets no virtual clock: mesh-only mode; in 1P1D the router is one segment of a channel, not an LP, and its relay latency is that channel's lookahead; its bounds are configured (health check and circuit breaker off, `--worker-request-timeout-secs` set large); timestamps ride carriers it already relays; xPyD is deferred; under `--dp-aware` the router is LP `router`, handling requests, prefill responses and stream events in timestamp order (#449) | 2026-09-18; revised 2026-09-30, 2026-10-15 |
+| D7 | Atomesh gets no virtual clock: mesh-only mode; in 1P1D the router is one segment of a channel, not an LP, and its relay latency is that channel's lookahead; its bounds are configured (health check and circuit breaker off, `--worker-request-timeout-secs` set large); timestamps ride carriers it already relays; under `--dp-aware`, or with several instances per role, the router is LP `router`, handling requests, prefill responses and stream events in timestamp order (#449, #1085) | 2026-09-18; revised 2026-09-30, 2026-10-15, 2026-10-16 |
 | D8 | Arrivals are messages in transit, covered by the send and receive counts for closed and open workloads alike; the arrival timestamp rides the `tracestate` header | 2026-09-18; revised 2026-09-28 |
 | D9 | The ATOM diff is enumerated (~1,980 lines with tests) and completeness enforced by test rather than by review; ATOM's own suite is the gate (`08` D43.1) | 2026-09-18; revised 2026-09-28 |
 
