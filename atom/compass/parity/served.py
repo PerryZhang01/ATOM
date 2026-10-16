@@ -4,8 +4,9 @@
 A server serves any number of client runs, one client invocation each, and its
 step record holds them all. A client run is stated by its export, a JSON
 document ``{"requests": {NAME: {"trace": TRACE, "sampling": {...}}}}`` naming
-each request it sent by the key the record gives it (`read`), with the trace it
-came from and its request parameters; or by that ``requests`` mapping itself.
+each request it sent by its response ``id``, with the trace it came from and
+its request parameters; or by that ``requests`` mapping itself. A request the
+record names with no response id (`read`) is named by its key instead.
 
 `served` splits a record by them: a step belongs to the client run whose
 requests it holds, a step holding none to no client run, and a step holding two
@@ -43,8 +44,10 @@ def served(directory, client_runs: Sequence = ()) -> dict[int, list[dict]]:
                 )
     record = read(directory)
     for rank, steps in record.items():
+        ids = {k: v for s in steps for k, v in s.get("response_ids", {}).items()}
         for step in steps:
-            names = [row[0] for row in step["batch"] if row[0] in owner]
+            names = [ids.get(r[0], r[0]) for r in step["batch"]]
+            names = [n for n in names if n in owner]
             ks = sorted({owner[n] for n in names})
             if len(ks) > 1:
                 raise ValueError(

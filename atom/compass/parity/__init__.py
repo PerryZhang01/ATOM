@@ -33,7 +33,8 @@ with the variable set.
 A request is named by its key, because request ids are numbered per run: a
 digest of its whole prompt as its prefill windows carry it, taken when its final
 chunk is scheduled, so it does not move with chunking. A line records request
-ids and names each request whose final chunk it holds; `read` puts the keys in.
+ids and names each request whose final chunk it holds, with its response id if
+it has one (`carry_response_ids`); `read` puts the keys in.
 Prefix caching is not covered: the worker never sees a cached prefix, so parity
 runs need caching off or the same cache hits in both runs. Requests of one
 record with one prompt are named in the order their final chunks are scheduled:
@@ -49,6 +50,7 @@ import hashlib
 import json
 import os
 import pathlib
+import sys
 import time
 from itertools import zip_longest
 
@@ -147,6 +149,8 @@ class StepRecord:
                     key = f"{key}.{n}"
                 self.keys[req_id] = key
                 named.append([req_id, key])
+                if batch.external_request_ids[i] is not None:
+                    named[-1].append(batch.external_request_ids[i])
         line = {
             "step": self.step,
             "dp_rank": self.dp_rank,
@@ -228,6 +232,23 @@ def record_step(runner, batch, forward=None):
     if runner._parity_record is not None:
         return runner._parity_record.add(batch, runner, forward)
     return None if forward is None else forward(batch)
+
+
+def carry_response_ids() -> None:
+    """Set a one-sequence request's `external_request_id` to its response id,
+    the `request_id` of the API server function calling `add_request`, read
+    off its frame. A sequence with an id keeps it; a fan-out's get none."""
+    from atom.model_engine.engine_core_mgr import CoreManager, DisaggCoreManager
+
+    for cls in (CoreManager, DisaggCoreManager):
+
+        def add_request(self, seqs, add=cls.add_request):
+            if len(seqs) == 1 and seqs[0].external_request_id is None:
+                caller = sys._getframe(1).f_locals
+                seqs[0].external_request_id = caller.get("request_id")
+            return add(self, seqs)
+
+        cls.add_request = add_request
 
 
 class StepRecording:
@@ -322,7 +343,8 @@ def read(directory) -> dict[int, list[dict]]:
     ends inside a request's prefill parts from a full one at that request's
     first step. With `ARRIVALS`, the worker-clock times a workload was sent,
     the steps entered before the first send are the engine's start, not the
-    workload's: they are left out and the rest renumbered from 0.
+    workload's: they are left out and the rest renumbered from 0. A step
+    naming requests with response ids holds them by key in `response_ids`.
     """
     directory, record, start = pathlib.Path(directory), {}, None
     if (directory / ARRIVALS).exists():
@@ -330,7 +352,12 @@ def read(directory) -> dict[int, list[dict]]:
     # Each rank's record, and not the cost lines a simulated run writes beside it.
     for path in sorted(directory.glob("dp*[0-9].jsonl")):
         steps = [json.loads(line) for line in path.read_text().splitlines()]
-        keys = dict(pair for step in steps for pair in step.pop("named"))
+        keys = {}
+        for step in steps:
+            for req_id, key, *response_id in step.pop("named"):
+                keys[req_id] = key
+                if response_id:
+                    step.setdefault("response_ids", {})[key] = response_id[0]
         if start is not None:
             steps = [s for s in steps if s["t_enter_ns"] >= start]
             for i, step in enumerate(steps):
@@ -362,7 +389,7 @@ def compare(real, simulated) -> dict:
     A rank's entry is None where its steps all agree, else the step index and
     both steps, None for a record that has already ended. A record with no
     steps is refused: two runs that scheduled nothing agree, and that means
-    nothing. Steps are compared and reported without their timestamps. Under
+    nothing. Steps are compared and reported without timestamps or response ids. Under
     `steps`, each rank's count of step pairs compared and of identical ones.
     """
     records = {"real": read(real), "simulated": read(simulated)}
@@ -371,7 +398,7 @@ def compare(real, simulated) -> dict:
             raise ValueError(f"the {name} record has no steps to compare.")
         for steps in record.values():
             for step in steps:
-                for key in TIMESTAMPS:
+                for key in (*TIMESTAMPS, "response_ids"):
                     step.pop(key, None)
     first, counts = {}, {}
     for rank in sorted(records["real"].keys() | records["simulated"].keys()):

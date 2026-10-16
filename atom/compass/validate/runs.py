@@ -79,7 +79,7 @@ def _requests(steps) -> collections.Counter:
     """Prefill tokens per request, keyed by (prompt length, arrival place)."""
     tokens, length = collections.Counter(), {}
     for step in steps:
-        named = {request for request, _key in step["named"]}
+        named = {request for request, _key, *_response_id in step["named"]}
         for (request, _n, context), (q, _c, decode) in zip(step["batch"], step["rows"]):
             tokens[request] += 0 if decode else q
             if request in named:  # its final chunk: the context is the prompt
