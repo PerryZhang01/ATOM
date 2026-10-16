@@ -394,11 +394,11 @@
    "call": "p2p.work.wait",
    "expr": "p2p.work.wait()",
    "shape": "event_wait",
-   "category": "undecided",
+   "category": "ignore",
    "peer": "process",
-   "why": "reached through the flush the stage loop still asks the runner for; whether the replacement runner has any send to commit is not settled",
+   "why": "reached through the flush the stage loop asks the runner for, and only with a send pending; the simulated runner's forward sends nothing, so on a simulated run the flush finds none and this wait never runs",
    "mechanism": "K9",
-   "mechanism_why": "commit_pp_send_work runs inside the runner the simulator replaces; its wait for the send to finish is reproduced by the simulated runner's flush_pp_send answer and the forward's cost"
+   "mechanism_why": ""
   },
   {
    "id": "atom/distributed/pp_transport.py::PPStageTransport.send_metadata::sock.send(payload, copy=False)::p2p#0",
@@ -424,7 +424,7 @@
    "peer": "process",
    "why": "bounded poll whose bound the head varies between zero and its idle interval, so it paces the head loop",
    "mechanism": "K3",
-   "mechanism_why": "a bounded poll in a pipeline-stage loop is an idle point: the loop's next event is now plus the bound"
+   "mechanism_why": "a bounded poll in a pipeline-stage loop is an idle point: it waits for an arrival, and its bound is a daemon deadline that paces the loop without keeping the run alive"
   },
   {
    "id": "atom/distributed/pp_transport.py::PPStageTransport.recv_tokens::self._token_recv.recv()::socket_recv#0",
@@ -476,7 +476,7 @@
    "peer": "process",
    "why": "bounded poll that paces the downstream stage loop between batches",
    "mechanism": "K3",
-   "mechanism_why": "a bounded poll in a pipeline-stage loop is an idle point: the loop's next event is now plus the bound"
+   "mechanism_why": "a bounded poll in a pipeline-stage loop is an idle point: it waits for an arrival, and its bound is a daemon deadline that paces the loop without keeping the run alive"
   },
   {
    "id": "atom/distributed/pp_transport.py::PPStageTransport.recv_metadata::self._meta_recv.recv()::socket_recv#0",

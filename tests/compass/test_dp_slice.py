@@ -99,13 +99,18 @@ class Requests(Traffic):
         self.open = set(range(done, len(MAX_TOKENS)))
 
 
-def run_dp_slice(out: Path, seed: str, width=DP_WIDTH, dp=2) -> dict:
+def run_dp_slice(out: Path, seed: str, width=DP_WIDTH, dp=2, pp=1) -> dict:
     """One run in its own process tree: its step table, summary, parity record.
 
-    `width` is the server's parallelism flags, `dp` the DP ranks they start."""
+    `width` is the server's parallelism flags, `dp` the DP ranks and `pp` the
+    pipeline stages they start; a pipeline keeps no parity record."""
     out.mkdir()
     run_file = _run_file(
-        out, data_parallel_size=dp, step_stub=CONSTANT, machine=DP_MACHINE
+        out,
+        data_parallel_size=dp,
+        pipeline_parallel_size=pp,
+        step_stub=CONSTANT,
+        machine=DP_MACHINE,
     )
     port = _free_port()
     env = dict(
@@ -113,8 +118,9 @@ def run_dp_slice(out: Path, seed: str, width=DP_WIDTH, dp=2) -> dict:
         PYTHONHASHSEED=seed,
         PYTHONPATH=str(TREE),
         AITER_LOG_LEVEL="WARNING",
-        ATOM_COMPASS_PARITY_RECORD=str(out / "parity"),
     )
+    if pp == 1:
+        env["ATOM_COMPASS_PARITY_RECORD"] = str(out / "parity")
     args = ["--model", MODEL, "--host", "127.0.0.1", "--server-port", str(port)]
     args += width
     args += ["--enforce-eager", "--max-model-len", "2048"]
@@ -144,7 +150,7 @@ def run_dp_slice(out: Path, seed: str, width=DP_WIDTH, dp=2) -> dict:
         "table": (out / compass_run.STEP_TABLE_FILE).read_text(),
         "summary": json.loads((out / compass_run.SUMMARY_FILE).read_text()),
         "events": traffic.events,
-        "parity": read(out / "parity"),
+        "parity": read(out / "parity") if pp == 1 else None,
     }
 
 
