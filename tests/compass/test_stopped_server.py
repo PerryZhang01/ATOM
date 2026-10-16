@@ -10,7 +10,9 @@ or not a stamped request it holds, which only a grant would release, is open.
 The stop first ends every LP's run through the authority, so an engine in a
 process of its own leaves its loop and hands in what its steps cost, whether
 the signal reaches the server alone or its process group, whose SIGTERM would
-have ATOM's handler stop the engine's workers.
+have ATOM's handler stop the engine's workers. An engine whose input thread
+has read a request the authority has not released leaves the same way: the
+stop's ``+inf`` grant releases it.
 """
 
 import asyncio
@@ -23,17 +25,21 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import zmq
 
+from atom.compass import clock_transport
 from atom.compass import run as compass_run
 from atom.compass.carriers import tracestate_with
 from atom.compass.clock import LpId, single_engine_table
 from atom.utils import clock
-from atom.utils.clock import LPRuntime
+from atom.utils.clock import LPRuntime, WrappedSocket
 from atom.utils.compass_loop import CompassEventLoop
 
 TREE = Path(__file__).resolve().parents[2]
@@ -275,3 +281,57 @@ def test_a_stopped_servers_summary_carries_its_engines_priced_steps(tmp_path, gr
     reasons = dict(summary["schedule"]["refusals"]["reasons"])
     assert reasons == {"ended:frontend stopped by SIGTERM": 1}, out
     assert summary["schedule"]["predicted_seconds"] == 0.75, out
+
+
+def test_an_engine_stopped_holding_a_read_request_hands_in_no_straggler(
+    monkeypatch, tmp_path
+):
+    """The frontend sends request 0 and the engine's input thread reads it; the
+    stop comes before the frontend asks for time again, so no grant before the
+    stop's ``+inf`` one has released it."""
+    endpoint, request = f"inproc:{uuid.uuid4().hex}", "frontend->engine:request#dp0"
+    run = {"clock_endpoint": endpoint, "bound_s": 100.0, "out_dir": str(tmp_path)}
+    run |= {"admission_path": "serving", "ipc_s": 2.0**-10, "stream_s": 2.0**-9}
+    (tmp_path / "run.json").write_text(json.dumps(run))
+    monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
+    monkeypatch.setattr(compass_run, "_member", None)
+    server = clock_transport.serve(compass_run._RecordingAuthority(run), endpoint)
+    ctx, address = zmq.Context(), f"inproc://{uuid.uuid4().hex}"
+    push, pull = ctx.socket(zmq.PUSH), ctx.socket(zmq.PULL)
+    push.bind(address)
+    pull.connect(address)
+    engine = LPRuntime(
+        compass_run.ENGINE, TABLE, clock_transport.connect(compass_run.ENGINE, endpoint)
+    )
+    engine.start_run()
+    monkeypatch.setattr(clock, "_installed", engine)
+    sock = WrappedSocket(engine, pull, request)
+
+    def read():  # the engine's input thread: it takes the request, then waits again
+        sock.recv()
+        engine.back_at_wait_point()
+
+    def stop():
+        conn = clock_transport.connect(compass_run.FRONTEND, endpoint)
+        frontend = compass_run._StoppingClock(compass_run.FRONTEND, TABLE, conn)
+        frontend.start_run()
+        WrappedSocket(frontend, push, request).send(b"request 0")
+        while 0 not in engine.arrived[request]:
+            time.sleep(0.01)
+        frontend.end_run()  # the stop, as the frontend's event loop makes it
+
+    threads = [threading.Thread(target=f, daemon=True) for f in (read, stop)]
+    for t in threads:
+        t.start()
+    said = {"refused_commands": [], "priced_steps": {}, "predicted_memory": {}}
+    workers = SimpleNamespace(call_func=lambda name, wait_out: said[name])
+    with contextlib.suppress(clock.Straggler):  # handed in before it is raised
+        with compass_run.engine_loop(SimpleNamespace(runner_mgr=workers)):
+            while not clock.idle(lambda: math.inf):
+                pass
+    hand_in = tmp_path / compass_run.LP_FILE.format("engine")
+    assert json.loads(hand_in.read_text())["refusals"] == []
+    for t in threads:
+        t.join(10)
+    server.close()
+    ctx.destroy(linger=0)
