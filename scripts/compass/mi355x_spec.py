@@ -34,23 +34,24 @@ MODEL = "/models/DeepSeek-V4-Pro"
 LAYOUT = "1x8"
 FLAGS = "-tp 8 --enable-dp-attention --enable-tbo"
 
-#: What ATOM's `ModelRunner` read at the start, at commit COMMIT (image
-#: nightly-20261013): `non_torch`, the minimum over the 8 ranks; from that
+#: What ATOM's `ModelRunner` read at the start, the second of two back to back
+#: so the compile cache was warm, at commit COMMIT (image nightly-20261013):
+#: `non_torch`, the minimum over the 8 ranks; from that
 #: rank, `allocated` and the unique parameter and buffer bytes right after the
 #: model loaded, then the allocator's current and peak after warmup.
-DATE, COMMIT = "2026-10-16", "0000000"
+DATE, COMMIT = "2026-10-16", "409bedc98"
 READ = {
-    "total": 0,
-    "non_torch": 0,
-    "loaded": 0,
-    "parameters": 0,
-    "buffers": 0,
-    "current": 0,
-    "peak": 0,
-    "warmup_tokens": 0,
+    "total": 309220868096,
+    "non_torch": 13291749376,
+    "loaded": 136926286848,
+    "parameters": 132113063884,
+    "buffers": 2039971840,
+    "current": 139247200256,
+    "peak": 148339363840,
+    "warmup_tokens": 16384,
 }
 #: The sha256 of the start's server log.
-RECORD = "0" * 64
+RECORD = "02618dade3d07bcaac510da11cf8a279a1fe3ef2fce72d41e88a76f2df7c32c6"
 SUBJECT = {"model": MODEL, "width": 8, "source_root": f"commit:{COMMIT}"}
 SUBJECT["record"] = f"sha256:{RECORD}"
 #: The sha256 of the model's config.json, which the run fingerprints.
