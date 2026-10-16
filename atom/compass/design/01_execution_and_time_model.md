@@ -1749,12 +1749,18 @@ and receives both run on the engine's step loop, and no worker takes part.
   and no worker ever sends or receives across LPs. A prefill-side local timer would not
   do: when decode posts depends on its own admission, which prefill cannot know, and
   assuming "at once" frees prefill's blocks early exactly when decode is congested.
-- **Ceiling.** Writes on different rank pairs do not contend, though above DP width one
-  real pairs can share a NIC. Pricing that would make `c` depend on writes one end
-  cannot see, which needs the write-done message back, plus protocol support for a
-  thread that handles a write request sending a message; in this protocol only an LP's
-  clock owner registers a send (D3). Mooncake's send-worker cap
-  (`num_worker_threads`) on writes in flight per producer rank is not modelled either.
+- **Ceiling.** FIFO per rank pair is measured on Mooncake TCP only; for RDMA it is an
+  assumption. Under RDMA the real sharing unit is each prefill rank's NIC: its worker
+  writes through the HCA set `_select_ib_devices` resolves for its GPU, and
+  `MooncakeConnector._write_listener` hands every write request, from any decode rank,
+  to one `_send_executor` of `send_worker_count` (`num_worker_threads`) threads. Writes
+  on different rank pairs do not contend here. At decode DP width one a prefill rank's
+  NIC carries only the one decode rank's writes, so both ends still compute the same `c`
+  under any sharing discipline. Above that, `c` depends on other decode ranks' writes,
+  which this decode rank never sees, so a per-prefill-rank model cannot keep both ends
+  computing `c` without a message: decode would need Mooncake's own write-done notice
+  (`MooncakeConnector._send_write_done` to the consumer's `_notification_listener`) as a
+  prefill-to-decode channel (#1179).
 - It must still emit the `kv_transfer_params` blob that Atomesh relays, so
   `AtomAdapter` works unmodified. The router hard-errors if it is absent
   (`http_pd_router.rs::PDRouter::dispatch_atom_relay_internal`). The two backends emit
