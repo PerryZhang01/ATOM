@@ -315,16 +315,17 @@ runs while the next forward computes; the forward then waits for it and sends. A
 non-last stage's forward call site, after the runner answers the compute time `c` and the
 payload of send `n`:
 
-1. `advance_to(t0 + c)`, TAR to the end of compute. The previous send's `pp_ack`, if
-   stamped at or before `t0 + c`, is released during this TAR, which is the common case.
+1. `advance_to(t0 + c)`, the forward's charge (`01` D4), and `e` is its device work's end
+   (R7). The previous send's `pp_ack`, if stamped at or before
+   `t0 + c`, is released during this TAR, which is the common case.
 2. If that send was rendezvous and its ack is not yet released, the loop receives it
    inline: NER until the grant releases `(pp_ack, n-1)`, its clock reaching `done`. If it
    was eager, `advance_to` its local completion when that is later than now.
-3. The loop issues send `n` at `t_send = max(t0 + c, done)` and registers `(pp_data, n)`
-   (K4), noting whether it is eager (a local completion) or rendezvous (an ack to receive).
+3. The loop issues send `n` at `t_send`, the later of `e` and its clock, now past
+   `done`, and registers `(pp_data, n)` (K4), noting whether it is eager (a local completion) or rendezvous (an ack to receive).
 
-So the forward still costs `max(compute done, previous send done) - start`, but a
-rendezvous send's completion now comes from the receiver. At a downstream stage's forward
+So a send still waits for its forward's compute and the previous send, but a rendezvous
+send's completion now comes from the receiver. At a downstream stage's forward
 call site, before the runner is called and with `t_recv_posted` the loop's clock there,
 the loop receives `(pp_data, n)` inline (its clock reaching `now_r`). If any part of the
 send is rendezvous it registers `(pp_ack, n)` stamped `done` (K4). Either way it then
@@ -400,9 +401,8 @@ protocol, so each carrier (`rccl`, `gloo`) gets these fields under
 `overhead_s` (`o`), `per_byte_s` (`G`) and `rendezvous_fixed_s`, the size-independent part
 of `T = rendezvous_fixed_s + bytes × G`. So `T_min` is `T` at the threshold. PP is
 single-node (every PP address is ZMQ IPC), hence the intra-node section. The fields are
-optional in the schema and required by a PP run. None has a value until a two-GPU
-measurement on RCCL and gloo supplies it (README principle 8); until then a PP run is
-refused by name.
+optional in the schema and required by a PP run. A two-GPU measurement on RCCL and gloo supplies them (README
+principle 8); a PP run whose machine does not state them is refused by name.
 
 ### Q4: memory — layers split, and the split is ATOM's
 

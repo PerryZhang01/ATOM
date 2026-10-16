@@ -97,6 +97,9 @@ def test_a_stage_backend_prices_its_forward_at_pipeline_width_two():
     whole = runner(StepStubBackend()).forward(prefill(8)).predicted_s
     stage = runner(StepStubBackend(stage_share=(0.5, 0.5)))
     stage.config.pipeline_parallel_size = 2
+    stage.config.parallel_config.pipeline_parallel_rank = (
+        1  # the last, which sends on nothing
+    )
 
     assert stage.forward(prefill(8)).predicted_s == pytest.approx(whole / 2)
 

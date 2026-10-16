@@ -93,10 +93,12 @@ source and compare it with this table.
 
 from __future__ import annotations
 
+import collections
 import json
 import logging
 import math
 import os
+import pickle
 from typing import Any
 
 import numpy as np
@@ -154,7 +156,9 @@ RPC_SURFACE: dict[str, bool] = {
     "freeze_gc_heap": True,  # EngineCore._freeze_after_startup catches a raise, not a None
     "process_kvconnector_output": False,  # EngineCore does not wait
     "async_proc_aggregation": True,  # EngineCore polls it; a simulated run waits for it
-    "flush_pp_send": True,  # PPEngineCoreProc waits before the next send
+    # PPEngineCoreProc waits; ATOM's own answers at once, as a simulated runner
+    # holds no real send and the stage loop has already waited for its own.
+    "flush_pp_send": True,
     "poll_forward_metrics": False,  # EngineUtilityHandler does not wait
     "release_multimodal_requests": False,  # EngineCore does not wait
     # Refused by `RefusedControlCommands`: ATOM's own starts a real profiler.
@@ -247,16 +251,20 @@ class HostDeviceRecurrence:
     """One runner's host and device timelines, composed into each forward's charge.
 
     The host runs `HOST_SEGMENTS` from `now`. A forward's entry waits for the
-    device work two forwards back; an output forward, after launch, waits for the
-    previous output forward's. `laws[kind][segment]` are coefficients on `(1,
+    device work two forwards back, or on a pipeline stage `stage = (rank, pp)`,
+    `pp` forwards back; an output forward, after launch, waits for the previous
+    output forward's, or on the last stage for its own, and on any other stage
+    for nothing. `ends[-1]` is the last forward's device end. `laws[kind][segment]` are coefficients on `(1,
     tokens, seqs)`, zero where absent. `now` reads the engine LP's clock.
     `segments` holds the seconds the last `charge` charged each segment, 0 for
     one in `skip`.
     """
 
-    def __init__(self, laws: dict, skip, now) -> None:
+    def __init__(self, laws: dict, skip, now, stage=None) -> None:
         self.laws, self.skip, self.now = laws, frozenset(skip), now
-        self.ends = (-math.inf, -math.inf)  # device end of forwards n-2, n-1
+        ring = 2 if stage is None else stage[1]
+        self.ends = collections.deque([-math.inf] * ring, maxlen=ring)  # n-ring..n-1
+        self.last = None if stage is None else stage[0] == stage[1] - 1
         self.output_end = -math.inf  # device end of the last output forward
 
     def charge(self, batch: Any, device_s: float) -> float:
@@ -272,11 +280,13 @@ class HostDeviceRecurrence:
         now = self.now()
         host = max(now + e, self.ends[0]) + pre
         launch_end = host + launch
-        device_end = max(self.ends[1], host) + device_s
-        self.ends = (self.ends[1], max(device_end, launch_end))
+        device_end = max(self.ends[-1], host) + device_s
+        self.ends.append(max(device_end, launch_end))
         released = launch_end
-        if batch.produces_output():
+        if batch.produces_output() and self.last is None:
             released, self.output_end = max(launch_end, self.output_end), device_end
+        elif batch.produces_output() and self.last:
+            released = max(launch_end, device_end)
         return released + post - now
 
 
@@ -941,11 +951,66 @@ class NonAllocatingRunner(
             self._token_stream = stream
         tokens = stream.step(batch)
         seconds = _group_step_seconds(self, batch, backend, mode)
-        return ScheduledBatchOutput(
+        out = ScheduledBatchOutput(
             **tokens,
             predicted_s=seconds,
             group_targets=getattr(self, "_group_targets", None),
         )
+        out.pp_send = self._pp_send(batch, seconds)
+        return out
+
+    def _pp_send(self, batch: Any, seconds: float) -> tuple | None:
+        """What this stage's forward sends the next stage, None on the last:
+        when its device work ends, in seconds from the call, and its parts as
+        ``(carrier, bytes)`` in the order the next receives them, the size and
+        the pickled metadata on gloo, then each tensor on RCCL."""
+        pp = int(_config_field(self, "pipeline_parallel_size") or 1)
+        if pp == 1 or self.config.parallel_config.pipeline_parallel_rank == pp - 1:
+            return None
+        from aiter.dist.parallel_state import TensorMetadata
+
+        self._setup_pp_shared_indexer()
+        n, width = batch.total_tokens_num, self.hf_text_config.hidden_size
+        sizes = dict.fromkeys(
+            ("hidden_states", "residual"), ((n, width), self.config.torch_dtype)
+        )
+        if self._pp_send_needs_sparse:
+            sizes["sparse_kv_indices"] = ((n * self._pp_index_topk,), torch.int32)
+        meta = [
+            (k, TensorMetadata("cuda", d, torch.Size(s))) for k, (s, d) in sizes.items()
+        ]
+        tensors = [("rccl", math.prod(s) * d.itemsize) for s, d in sizes.values()]
+        host = getattr(self, "compass_host", None)
+        if isinstance(host, HostDeviceRecurrence):
+            seconds = host.ends[-1] - host.now()
+        return seconds, [("gloo", 8), ("gloo", len(pickle.dumps(meta))), *tensors]
+
+    def send_pp_frame(self, kind: str, frame: dict) -> bool:
+        """Post one stage-loop frame to the next stage (``pp_data``) or the one
+        before (``pp_ack``), from TP rank 0, without waiting for it."""
+        if self.rank == 0:
+            from aiter.dist.parallel_state import get_pp_group
+
+            from atom.distributed.pp_comm import _async_send_object
+
+            pp = get_pp_group()
+            dst = pp.ranks[pp.rank_in_group + (1 if kind == "pp_data" else -1)]
+            # Each in-flight send's work and payload stay alive until it completes.
+            live = [
+                w for w in getattr(self, "_pp_frames", []) if not w.work.is_completed()
+            ]
+            self._pp_frames = live + _async_send_object(frame, dst, pp.cpu_group)
+        return True
+
+    def recv_pp_frame(self, kind: str) -> Any:
+        """Read one released frame from the stage before (``pp_data``) or the
+        next (``pp_ack``), on TP rank 0."""
+        if self.rank != 0:
+            return True
+        from aiter.dist.parallel_state import get_pp_group
+
+        pp = get_pp_group()
+        return pp.recv_object(pp.rank_in_group + (-1 if kind == "pp_data" else 1))
 
 
 def _group_step_seconds(

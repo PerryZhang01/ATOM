@@ -10,8 +10,8 @@ One engine LP at one stage, one frontend LP, and the traffic LP the harness
 drives, over `single_engine_table`. At data-parallel width above one, each DP
 rank's engine process is a member ``dp<rank>`` of the one engine LP and owns
 its rank's channels. Each pipeline stage's engine process is an engine LP of
-its own, ``engine-pp<stage>``, though `frontend` still refuses a pipeline: no
-stage's forward waits for the stage before it. The Clock Authority is co-hosted in the frontend's
+its own, ``engine-pp<stage>``, and each stage's forward waits for the stage
+before it on ``pp_data`` (`atom.compass.runner.pp_send`). The Clock Authority is co-hosted in the frontend's
 process and served at the run file's ``clock_endpoint``, which every LP and
 member, the frontend's included, connects to.
 
@@ -281,7 +281,18 @@ def channel_table(run: dict):
             dp=_dp(run),
             router_in_s=run.get("router_in_s"),
         )
-    return single_engine_table(**common, dp=_dp(run), pp=_pp(run))
+    links = ()
+    if _pp(run) > 1:
+        from atom.compass.runner.pp_send import carrier_models, lookaheads
+
+        links = lookaheads(carrier_models(_machine(run)))
+    return single_engine_table(**common, dp=_dp(run), pp=_pp(run), pp_links=links)
+
+
+def _machine(run: dict):
+    from atom.compass.spec import MachineSpec
+
+    return MachineSpec.from_mapping(_width_keys(run["machine"]))
 
 
 def _members(table, dp: int) -> dict | None:
@@ -574,14 +585,17 @@ def frontend(config):
         return contextlib.nullcontext()
     _refuse_unserved()
     pc = config.parallel_config
-    widths = (pc.data_parallel_size, config.pipeline_parallel_size)
-    if widths[1] != 1 or config.enable_rapidserve:
-        raise ValueError(
-            f"a simulated run here is one engine LP at pipeline width 1 without "
-            f"RapidServe, got (dp, pp)={widths}, rapidserve={config.enable_rapidserve}; "
-            "a pipeline runs once each stage's forward waits for the stage "
-            "before it (#468)"
-        )
+    if config.enable_rapidserve:
+        raise ValueError("a simulated run here is an engine LP without RapidServe")
+    if config.pipeline_parallel_size > 1 and config.tensor_parallel_size > 1:
+        from atom.utils import envs
+
+        if envs.ATOM_PP_SEND_ALLGATHER:
+            raise ValueError(
+                "a pipeline stage at TP above 1 sends its shard of each tensor and "
+                "the next stage all-gathers it, which nothing prices; set "
+                "ATOM_PP_SEND_ALLGATHER=0"
+            )
     if config.pipeline_parallel_size != _pp(run):
         raise ValueError(
             f"the deployment runs {config.pipeline_parallel_size} pipeline stages "
@@ -866,8 +880,10 @@ def runner(model_runner, tree) -> None:
                 f"the run file's host laws were fitted under another {differ}; "
                 f"this run's key is {ours}, and theirs is {theirs}"
             )
+        pp = getattr(config, "pipeline_parallel_size", 1)
+        stage = (config.parallel_config.pipeline_parallel_rank, pp) if pp > 1 else None
         model_runner.compass_host = replay or HostDeviceRecurrence(
-            host.get("laws", {}), host.get("skip", ()), lambda: float(slot[0])
+            host.get("laws", {}), host.get("skip", ()), lambda: float(slot[0]), stage
         )
         if replay is not None:
             replay.now = lambda: float(slot[0])
@@ -1101,8 +1117,14 @@ def engine_loop(engine_core):
 
     In a run the engine ignores SIGTERM until it has handed in: ATOM's handler
     would stop the workers inside a clock call, before they say what their
-    steps cost. A stop reaches the engine as the ``+inf`` grant instead."""
+    steps cost. A stop reaches the engine as the ``+inf`` grant instead.
+
+    A pipeline stage's runner calls go through `pp_send.install`'s sends."""
     run, sections = spec(), {}
+    if run is not None and getattr(engine_core, "pp_size", 1) > 1:
+        from atom.compass.runner import pp_send
+
+        pp_send.install(engine_core, _machine(run))
     if run is not None and "step_grid" in run:
         workers = engine_core.runner_mgr
         sections["step_grid"] = workers.call_func("step_grid_bundle", wait_out=True)
