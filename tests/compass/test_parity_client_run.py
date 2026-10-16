@@ -107,9 +107,15 @@ def test_a_record_splits_by_the_exports_aiperf_s_raw_records_give(
                 raw([]),
             ],
         )
-        assert write(cell / "artifacts") == (cell / CLIENT_RUN, 1, 1)
-        assert json.loads((cell / CLIENT_RUN).read_text())["warmup"] == 1
-        exports.append(cell / CLIENT_RUN)
+        path, export, unnamed = write(cell / "artifacts")
+        assert (path, unnamed) == (cell / CLIENT_RUN, 1)
+        assert json.loads(path.read_text()) == export
+        ids = {i: json.loads(bodies[i])["id"] for i in (warm, whole, chunked)}
+        assert export["warmup"] == {
+            ids[warm]: {"trace": "trace-0", "sampling": PARAMETERS}
+        }
+        assert set(export["requests"]) == {ids[whole], ids[chunked]}
+        exports.append(path)
     split = served(tmp_path / "steps", exports)[0]
 
     run_of = {_key(_prompt(i)): k for k, (_, *named) in enumerate(runs) for i in named}
@@ -171,7 +177,7 @@ def test_the_trace_is_the_conversation_and_the_parameters_are_what_shape_no_prom
             "a": {"trace": "t1", "sampling": PARAMETERS},
             "b": {"trace": "t1", "sampling": {}},
         },
-        "warmup": 0,
+        "warmup": {},
     }
 
 
@@ -180,6 +186,13 @@ def test_the_trace_is_the_conversation_and_the_parameters_are_what_shape_no_prom
     [
         (
             [raw([sse(("data", '{"id": "a"}'))]), raw([sse(("data", '{"id": "a"}'))])],
+            "two requests got response id a",
+        ),
+        (
+            [
+                raw([sse(("data", '{"id": "a"}'))], phase="warmup"),
+                raw([sse(("data", '{"id": "a"}'))]),
+            ],
             "two requests got response id a",
         ),
         ([raw([sse(("data", '{"id": "a"}'))], None)], "has no conversation_id"),

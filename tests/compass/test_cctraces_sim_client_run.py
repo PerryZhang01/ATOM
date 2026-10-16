@@ -110,5 +110,5 @@ def test_a_cell_writes_its_client_run_s_export(tmp_path, ids, cell_rc):
                 "a": {"trace": "t0", "sampling": PARAMETERS},
                 "b": {"trace": "t1", "sampling": PARAMETERS},
             },
-            "warmup": 0,
+            "warmup": {},
         }
