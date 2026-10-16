@@ -9,7 +9,14 @@ the blocks it reports, which then become `config.num_kvcache_blocks`,
 `measure(batch)` runs `bench_step` on every worker and returns rank 0's reply,
 the window's result (`window.py`). Data parallelism above one, expert
 parallelism and pipeline parallelism refuse.
+
+The manager leaves SIGINT ignored in the process that starts it, as an engine
+core's process wants; the bench's is the command's, so the bench restores
+Python's handler there, and a stop from the keyboard stops the bench, while
+the workers keep ignoring it.
 """
+
+import signal
 
 from torch.distributed import TCPStore
 
@@ -47,6 +54,7 @@ class Bench:
             RUNNER,
             config,
         )
+        signal.signal(signal.SIGINT, signal.default_int_handler)
         try:
             blocks = self.runner_mgr.call_func("get_num_blocks", wait_out=True)
             blocks = blocks["num_kvcache_blocks"]
