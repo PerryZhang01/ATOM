@@ -136,9 +136,11 @@ def test_every_channel_row_maps_to_an_address_its_wiring_names(monkeypatch):
     # the channel it reads from the table, LP lmcache's stand-in reads the
     # channel from each frame's header, and a pipeline stage's `pp_data`
     # rides the PP CPU group; no address names any of them. An lmcache_mp
-    # LOOKUP leaves on lmcache's own client socket, which no ATOM address names.
+    # LOOKUP leaves on lmcache's own client socket, which no ATOM address names,
+    # and the lmcache_mp shell names each channel it stamps.
     own_files = (
         "atom/compass/kv/connector.py",
+        "atom/compass/kv/lmcache_mp.py",
         "atom/compass/kv/lmcache_server.py",
         "atom/compass/runner/pp_send.py",
         "atom/kv_transfer/offload/chunked_scheduler.py",

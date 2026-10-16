@@ -1974,9 +1974,16 @@ a waiting request beyond the first `OFFLOAD_ASYNC_LOOKUP_DEPTH`, which
 `Scheduler.schedule` never prefetched, and a prefetched lookup deferred past
 `OFFLOAD_LOOKUP_DEFER_S`. Its `maybe_submit_lookup_request` (LOOKUP) and
 `check_lookup_result` (QUERY_PREFETCH_STATUS) each put a request on the client (K4,
-arriving at `now + lmcache_ipc_s`) and wait on its future (K5). The wait, and the poll
-loop's `time.sleep` around it, is an idle point: `next_event(now + bound)`, the bound
-(`lmcache.mp.lookup_timeout`, `mq_timeout`) a K7 timer. The stand-in takes requests in
+arriving at `now + lmcache_ipc_s`) and wait on its future (K5). The wait is an idle
+point, `next_event(+inf, now + mq_timeout)`: the bound is a daemon deadline, not a K7
+timer. While a reply is on its way, the server's job end is essential at LP `lmcache`,
+so the grant reaches the reply first, as a real 300 s timeout never fires. An essential
+bound would itself be work: it keeps the run alive to `now + mq_timeout` and lets LP
+`lmcache`'s daemon ticks fire up to it, past the run's `bound_s`. With no reply coming,
+the authority grants `+inf` and the wait returns false. The poll loop's `time.sleep`
+between QUERY_PREFETCH_STATUS calls is `next_event(now + poll interval)`, an essential target, since the
+loop acts then on its own, and `lmcache.mp.lookup_timeout` is a deadline it reads on the
+LP clock. The stand-in takes requests in
 timestamp order and replies at its job's end `t_c`; the grant that reaches
 `t_c + lmcache_ipc_s` releases the reply to the `ClientPollingLoop` thread, which sets
 the future before the owner returns. With positive lookahead both ways, the server's
@@ -2046,6 +2053,11 @@ measured; their accuracy is out of scope here.
   the transfer channels above. The scheduler adapter is lmcache's own; its client's
   queue and socket get the relay and wrapped-socket treatment at
   `_make_scheduler_adapter`, its one construction site.
+- Inside a `multi`, the composite's scheduler half is a Compass subclass of ATOM's
+  through the same factory, whose `process_completions` lets `compass`'s scheduler half
+  add its writes before the one offload sub-connector reads the output. ATOM's composite
+  calls that method on one sub only, since a real P/D connector reports through its
+  workers' `get_finished`; the two write disjoint fields.
 - The stand-in server replies to every request with the real payload: a hit count from
   its index, a success flag, a chunk size.
 

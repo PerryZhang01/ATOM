@@ -22,9 +22,11 @@ from atom.utils import clock, envs
 
 
 class _LP:
-    """An installed runtime as `clock.now` sees it: a clock the test sets."""
+    """An installed runtime as `clock.now` sees it: a clock the test sets. It is
+    outside a run, so `clock.sleep` sleeps on the wall clock."""
 
     t = 0.0
+    in_run = False
 
     def read_clock(self) -> float:
         return self.t

@@ -237,7 +237,7 @@ class _MPLookupClient:
                     )
                     self._orphans.add(lookup_id)
                     return None
-                time.sleep(self._poll_interval)
+                clock.sleep(self._poll_interval, time.sleep)
         self._async_tokens.pop(lookup_id, None)
         async_hit = self._async_hits.pop(lookup_id, None)
         state = _LookupState(token_ids=list(token_ids))
@@ -267,7 +267,7 @@ class _MPLookupClient:
                 # which is what tells clear_lookup_status() the job is still
                 # outstanding.
                 return None
-            time.sleep(self._poll_interval)
+            clock.sleep(self._poll_interval, time.sleep)
 
     def prepare_retrieve(
         self,

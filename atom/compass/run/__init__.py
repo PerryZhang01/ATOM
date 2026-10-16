@@ -135,7 +135,10 @@ the request loop's laws, ``lookup_s`` (``[fixed, per prompt chunk]``) and
 ``request_s``; optional ``copy_width``, 1 when absent; and optional
 ``writers``, the writer ranks per DP rank, 1 when absent. The copy engine
 prices on the machine's ``interconnect.host_link``. Its channels' lookahead is
-``lmcache_ipc_s``, the run's ``ipc_s`` when absent (`add_lmcache`).
+``lmcache_ipc_s``, the run's ``ipc_s`` when absent (`add_lmcache`). `engine(config)`
+has the connector factory build ``lmcache_mp`` as Compass's
+(`atom.compass.kv.lmcache_mp`), whose scheduler half sends each transfer to LP
+``lmcache`` from the step loop.
 
 The API server's ``--compass-clock-endpoint`` sets `CLOCK_ENV`: the authority
 is not co-hosted but served by `authority`, its own process started before the
@@ -382,14 +385,19 @@ def _members(table, dp: int) -> dict | None:
     }
 
 
-def _pd_side(config) -> str | None:
-    """``P`` or ``D`` for a deployment on the simulated KV connector, else None."""
-    kv = config.kv_transfer_config
-    if not kv:
-        return None
+def _pd_kv(config) -> dict | None:
+    """The simulated KV connector's ``kv_transfer_config``, alone or one
+    connector of a ``multi``, else None."""
     from atom.kv_transfer.disaggregation.factory import KVConnectorFactory
 
-    if KVConnectorFactory.canonical_name(kv.get("kv_connector", "moriio")) != "compass":
+    leaves = KVConnectorFactory.leaf_connectors(config) or ()
+    return next((c.kv_transfer_config for n, c in leaves if n == "compass"), None)
+
+
+def _pd_side(config) -> str | None:
+    """``P`` or ``D`` for a deployment on the simulated KV connector, else None."""
+    kv = _pd_kv(config)
+    if kv is None:
         return None
     return "P" if kv.get("kv_role", "kv_producer") == "kv_producer" else "D"
 
@@ -400,7 +408,7 @@ def _pd_name(config, run: dict) -> str | None:
     side = _pd_side(config)
     if side is None:
         return None
-    n, k = run.get(INSTANCES[side], 1), config.kv_transfer_config.get(INSTANCE_KEY)
+    n, k = run.get(INSTANCES[side], 1), _pd_kv(config).get(INSTANCE_KEY)
     if n == 1 and k is None:
         return side
     if type(k) is not int or not 0 <= k < n:
@@ -418,7 +426,7 @@ def _bind_transfer(config, run: dict) -> None:
     from atom.compass.backends import KvGeometry, Parallelism
     from atom.compass.kv import TRANSFER_KEY, Scope, TransferModel
 
-    config.kv_transfer_config[TRANSFER_KEY] = TransferModel.from_spec(
+    _pd_kv(config)[TRANSFER_KEY] = TransferModel.from_spec(
         _machine(run),
         KvGeometry.from_hf_config(
             config.hf_config,
@@ -946,6 +954,10 @@ def engine(config):
     if side is not None:
         lp = LpId(f"{ENGINE.name}-{_pd_name(config, run)}")
         _bind_transfer(config, run)
+    if "lmcache" in run:
+        from atom.compass.kv.lmcache_mp import substitute
+
+        substitute()
     utils.LP_OF_RANK = dict.fromkeys(range(pc.data_parallel_size), lp)
     _member = f"dp{pc.data_parallel_rank}" if pc.data_parallel_size > 1 else None
     name = lp.name if _member is None else f"{lp.name}.{_member}"
