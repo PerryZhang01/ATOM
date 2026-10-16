@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: MIT
 """The step grid's residual: the lookup times a factor fitted over the rows' features
-in batch order, answering only inside the hull it was fitted on.
+in batch order, one fit per grid kind, answering only inside the hull it was
+fitted on.
 
 Decode steps come from ATOM's `Scheduler` and are priced through the runner's
 `forward` and `_group_step_seconds`. Each holds 32 rows caching prompts of 575
 and 959 tokens, or 767, so every batch's equivalent shape is B = 32 at c = 767,
 and its lookup in the eager grid is f(32, 767) = 1000 + 960 + 767 + 1534 =
-4261 us. All three share tokens 1/32, query_square 1/32768 and query_context
-3/128; with k = N_KV, they differ in
+4261 us. All three share tokens 1/32 and query_context 3/128; with k = N_KV,
+they differ in
 
     batch         prompts                  order   raggedness
     homogeneous   767 x 32                 0       1
@@ -19,6 +20,7 @@ batches at the lookup times the factor its triples were planted with.
 """
 
 import math
+import re
 from fractions import Fraction
 
 import numpy as np
@@ -41,17 +43,27 @@ from test_dp_step_max import runner
 from atom.compass.backends import CostRefused, Method, RequestShape
 from atom.compass.backends.shape import sum_context
 from atom.compass.backends.step_grid import equivalent_shape
-from atom.compass.backends.step_grid_residual import V1, Recipe, Residual, band, fit
+from atom.compass.backends.step_grid_residual import (
+    RECIPE,
+    Recipe,
+    Residual,
+    band,
+    fit,
+    kind,
+)
 
 HOMOGENEOUS = [767] * 32
 GROUPED = [575] * 16 + [959] * 16
 ALTERNATING = [575, 959] * 16
 # 0.75 + 0.5 x order + 0.25 x raggedness: 1, 1.0703125 and 1.3046875 above.
 ORDERED = linear(0.75, order=0.5, raggedness=0.25)
+FINAL = [point(1, 8, 192, time=3)]
+MEMBERS = [("identity", "linear", "identity"), ("exp", "linear", "exp")]
+MEMBERS += [("band", "band", None)]
 
 
-def residual(hull=None, **members):
-    return Residual(fitted(members, dict.fromkeys(members, 1.0), hull))
+def residual(hulls=None, **members):
+    return Residual(fitted(members, dict.fromkeys(members, 1.0), hulls))
 
 
 def price(prompts, backend):
@@ -80,37 +92,74 @@ def test_one_shape_in_another_order_or_raggedness_is_priced_apart():
     ],
     ids=["homogeneous", "grouped", "alternating"],
 )
-def test_the_recipe_reads_order_and_raggedness_off_the_rows_in_order(
+def test_decode_is_read_on_order_and_raggedness_in_row_order_and_no_query_square(
     rows, order, raggedness
 ):
     rows = tuple(RequestShape(*r) for r in rows)
 
     assert equivalent_shape(rows) == (32, 1, 767)
-    shared = (Fraction(1, 32), Fraction(1, 32768), Fraction(3, 128))
-    assert V1(rows) == shared + (order, raggedness)
+    assert RECIPE("decode", rows) == (
+        Fraction(1, 32),
+        Fraction(3, 128),
+        order,
+        raggedness,
+    )
 
 
-def test_a_prefill_chunk_takes_the_same_form():
+def test_a_prefill_chunk_is_read_on_query_square_too():
     # Rows (N_Q, N_KV) of (3, 3) then (5, 15): 34 and 9 + 75 token pairs,
     # a jump of 12 over 18 context tokens, and 2 x 15 / 18.
     rows = (RequestShape(3, 3, False), RequestShape(5, 15, False))
-    assert V1(rows) == (
-        Fraction(8, 1024),
-        Fraction(34, 2**20),
-        Fraction(84, 2**20),
-        Fraction(2, 3),
-        Fraction(5, 3),
-    )
+    for k in ("prefill_output", "prefill_no_output"):
+        assert RECIPE(k, rows) == (
+            Fraction(8, 1024),
+            Fraction(34, 2**20),
+            Fraction(84, 2**20),
+            Fraction(2, 3),
+            Fraction(5, 3),
+        )
     # 1 + 2 x tokens: 1.125 on a 64-token middle chunk, 1.015625 on the final 8.
     backend = eager(
         residual=residual(t=linear(tokens=2.0)),
-        output=[point(1, 8, 192, time=3)],
+        output=FINAL,
         no_output=MIDDLE,
         unit="ms",
     )
     steps, refused = chunks(backend)
     assert steps == [(False, 1e-3 * 1.125)] * 3 + [(True, 3e-3 * 1.015625)]
     assert refused == ()
+
+
+def test_each_kind_is_priced_by_its_own_fit_and_a_kind_it_lacks_refuses():
+    mapping = fitted({"u": linear()}, {"u": 1.0})
+    del mapping["kinds"]["decode"]
+    mapping["kinds"]["prefill_output"]["members"]["u"]["intercept"] = 2.0
+    mapping["kinds"]["prefill_no_output"]["members"]["u"]["intercept"] = 1.5
+    backend = eager(
+        residual=Residual(mapping), output=FINAL, no_output=MIDDLE, unit="ms"
+    )
+
+    assert chunks(backend) == ([(False, 1.5e-3)] * 3 + [(True, 6e-3)], ())
+    assert price(GROUPED, backend) == (
+        0.0,
+        ("cost:step-grid: the residual fits no decode step",),
+    )
+
+
+# The coverage check asks the residual even of a step the grid refuses.
+@pytest.mark.parametrize(
+    "rows,produces_output,said",
+    [
+        ([(1, 9, True), (8, 8, False)], False, "a batch of prefill and decode rows"),
+        ([(8, 8, False)], None, "a prefill batch that does not say whether it"),
+    ],
+    ids=["mixed", "unsaid"],
+)
+def test_a_step_of_no_grid_kind_is_refused_naming_why(rows, produces_output, said):
+    v = view(*rows, produces_output=produces_output)
+
+    with pytest.raises(CostRefused, match=said):
+        residual(u=linear()).factor(v)
 
 
 def test_the_term_is_fitted_and_its_detail_holds_the_lookup_and_each_member():
@@ -126,25 +175,25 @@ def test_the_term_is_fitted_and_its_detail_holds_the_lookup_and_each_member():
         "lookup 0.004261 s, interpolated; decode cell B=32, c 512..1024; "
         f"residual {factor!r} = 1.0 x o 1.3046875 + 1.0 x e {math.exp(0.484375)!r}"
     )
-    assert backend.describe().endswith("; recipe step-grid-residual v1, members o, e")
+    assert backend.describe().endswith(
+        "; recipe step-grid-residual v2, members decode: o, e; "
+        "prefill_output: o, e; prefill_no_output: o, e"
+    )
 
 
-# Both hulls bound order <= 1/4; the second also holds raggedness at 1, so its
-# facet has no raggedness entry.
+# Both decode hulls bound order <= 1/4; the second also holds raggedness at 1, so
+# its facet has no raggedness entry.
 @pytest.mark.parametrize(
     "hull,inside,outside,named",
     [
         (
-            {"facets": [[0, 0, 0, 1, 0, -0.25]]},
+            {"facets": [[0, 0, 1, 0, -0.25]]},
             GROUPED,
             ALTERNATING,
             "order=0.484375, raggedness=1.25",
         ),
         (
-            {
-                "equal": {"raggedness": 1.0},
-                "facets": [[0, 0, 0, 1, -0.25]],
-            },
+            {"equal": {"raggedness": 1.0}, "facets": [[0, 0, 1, -0.25]]},
             HOMOGENEOUS,
             GROUPED,
             "order=0.015625, raggedness=1.25",
@@ -155,16 +204,15 @@ def test_the_term_is_fitted_and_its_detail_holds_the_lookup_and_each_member():
 def test_a_step_outside_the_residuals_hull_refuses_naming_it(
     hull, inside, outside, named
 ):
-    backend = eager(residual=residual(hull, o=ORDERED))
+    backend = eager(residual=residual({"decode": hull}, o=ORDERED))
 
     assert price(inside, backend)[1] == ()
     assert price(outside, backend) == (
         0.0,
         (
             (
-                "cost:step-grid: the step at tokens=0.03125, "
-                "query_square=3.05176e-05, query_context=0.0234375, "
-                f"{named} is outside the residual's hull"
+                "cost:step-grid: the step at tokens=0.03125, query_context=0.0234375, "
+                f"{named} is outside the residual's hull of decode steps"
             ),
         ),
     )
@@ -172,9 +220,11 @@ def test_a_step_outside_the_residuals_hull_refuses_naming_it(
 
 def test_a_hull_refusal_refuses_that_step_only():
     # tokens <= 1/32: the three 64-token middle chunks are outside, the final 8 in.
+    tokens = {"facets": [[1, 0, 0, 0, 0, -1 / 32]]}
+    hulls = dict.fromkeys(("prefill_output", "prefill_no_output"), tokens)
     backend = eager(
-        residual=residual({"facets": [[1, 0, 0, 0, 0, -1 / 32]]}, u=linear()),
-        output=[point(1, 8, 192, time=3)],
+        residual=residual(hulls, u=linear()),
+        output=FINAL,
         no_output=MIDDLE,
         unit="ms",
     )
@@ -192,13 +242,13 @@ def test_a_hull_refusal_refuses_that_step_only():
         # other member answering does not rescue the step.
         (
             {"u": linear(), "falls": linear(1.0625, order=-4.0)},
-            "member falls gives -0.875",
+            "decode member falls gives -0.875",
         ),
         (
             {"u": linear(), "big": linear(0.0, "exp", tokens=1e6)},
-            "member big gives inf",
+            "decode member big gives inf",
         ),
-        ({"a": linear(1e308), "b": linear(1e308)}, "factor is inf"),
+        ({"a": linear(1e308), "b": linear(1e308)}, "decode factor is inf"),
     ],
     ids=["negative", "overflow", "factor"],
 )
@@ -218,20 +268,26 @@ def raggedness(rows):
     return Fraction(len(rows) * longest, 2 * sum_context(rows))
 
 
-def test_the_digest_is_over_the_feature_functions_source():
-    edited = Recipe(V1.name, V1.version, V1.features[:-1] + (raggedness,))
+EDITED = {k: fs[:-1] + (raggedness,) for k, fs in RECIPE.features.items()}
 
-    assert edited.names == V1.names
-    assert edited.digest != V1.digest
-    assert Recipe(V1.name, V1.version, V1.features).digest == V1.digest
+
+def test_the_digest_is_over_the_feature_functions_source_and_each_kinds_names():
+    edited = Recipe(RECIPE.name, RECIPE.version, EDITED)
+    # Decode reading query_square: the same functions, another kind's names.
+    moved = {**RECIPE.features, "decode": RECIPE.features["prefill_output"]}
+
+    assert edited.names == RECIPE.names
+    assert edited.digest != RECIPE.digest
+    assert Recipe(RECIPE.name, RECIPE.version, moved).digest != RECIPE.digest
+    assert Recipe(RECIPE.name, RECIPE.version, RECIPE.features).digest == RECIPE.digest
 
 
 @pytest.mark.parametrize(
     "field,value",
     [
         ("name", "other"),
-        ("version", 2),
-        ("digest", Recipe(V1.name, 1, V1.features[:-1] + (raggedness,)).digest),
+        ("version", 1),
+        ("digest", Recipe(RECIPE.name, RECIPE.version, EDITED).digest),
     ],
     ids=["name", "version", "digest"],
 )
@@ -243,12 +299,22 @@ def test_a_residual_fitted_under_another_recipe_fails_loading(field, value):
         Residual(mapping)
 
 
+@pytest.mark.parametrize("kinds", [[], ["decode", "mixed"]], ids=["none", "unknown"])
+def test_a_residual_of_no_kind_or_another_fails_loading(kinds):
+    mapping = fitted({"u": linear()}, {"u": 1.0})
+    mapping["kinds"] = {k: mapping["kinds"]["decode"] for k in kinds}
+
+    with pytest.raises(ValueError, match=re.escape(f"fits the kinds {kinds}, and")):
+        Residual(mapping)
+
+
 def test_a_member_the_residual_does_not_select_never_loads():
     tree = {"form": "tree", "nodes": []}
     loaded = Residual(fitted({"u": linear(), "tree": tree}, {"u": 1.0}))
 
-    assert [name for name, _, _ in loaded.members] == ["u"]
-    with pytest.raises(ValueError, match="member tree does not load: ValueError"):
+    names = {k: [name for name, _, _ in f.members] for k, f in loaded.kinds.items()}
+    assert names == {k: ["u"] for k in RECIPE.names}
+    with pytest.raises(ValueError, match="decode member tree does not load: Value"):
         Residual(fitted({"u": linear(), "tree": tree}, {"u": 1.0, "tree": 1.0}))
 
 
@@ -269,29 +335,30 @@ def test_a_member_the_residual_does_not_select_never_loads():
 def test_a_selected_member_that_cannot_load_fails_loading_naming_it(
     member, weight, match
 ):
-    with pytest.raises(ValueError, match=f"member m does not load: .*{match}"):
+    with pytest.raises(ValueError, match=f"decode member m does not load: .*{match}"):
         Residual(fitted({"m": member}, {"m": weight}))
 
 
 @pytest.mark.parametrize(
     "selected,hull,match",
     [
-        ({}, None, "selects no member"),
-        ({"ghost": 1.0}, None, "member ghost does not load: KeyError"),
-        ({"u": 1.0}, {"facets": [[1, 0]]}, "facet not 6 wide"),
+        ({}, None, "selects no decode member"),
+        ({"ghost": 1.0}, None, "decode member ghost does not load: KeyError"),
+        ({"u": 1.0}, {"facets": [[1, 0]]}, "decode hull has a facet not 5 wide"),
         ({"u": 1.0}, {"facets": []}, "with no facets"),
-        ({"u": 1.0}, {"facets": [[0, 0, 0, 0, 1, -math.inf]]}, "not finite"),
+        ({"u": 1.0}, {"facets": [[0, 0, 0, 1, -math.inf]]}, "not finite"),
         ({"u": 1.0}, {"equal": {"rows": 1}, "facets": []}, "not all among"),
     ],
     ids=["none", "absent", "width", "no-facets", "infinite", "unknown-equal"],
 )
 def test_a_residual_that_cannot_be_read_fails_loading(selected, hull, match):
+    hulls = {"decode": hull} if hull else None
     with pytest.raises(ValueError, match=match):
-        Residual(fitted({"u": linear()}, selected, hull))
+        Residual(fitted({"u": linear()}, selected, hulls))
 
 
 def features(v):
-    return dict(zip(V1.names, map(float, V1(v.requests))))
+    return dict(zip(RECIPE.names[kind(v)], map(float, RECIPE(kind(v), v.requests))))
 
 
 def test_a_band_member_prices_decode_by_rung_and_prefill_by_token_band():
@@ -307,26 +374,28 @@ def test_a_band_member_prices_decode_by_rung_and_prefill_by_token_band():
     assert r.forward(decode(GROUPED)).predicted_s == 7461e-6 * 1.25
     assert r.forward(decode(B37)).predicted_s == 0.0
     assert r.refused_commands() == (
-        "cost:step-grid: the residual's member b has no band decode rung 48",
+        "cost:step-grid: the residual's decode member b has no band decode rung 48",
     )
     assert price(GROUPED, eager(residual=banded)) == (4261e-6 * 1.5, ())
-    final = [point(1, 8, 192, time=3)]
-    prefill = eager(residual=banded, output=final, no_output=MIDDLE, unit="ms")
+    prefill = eager(residual=banded, output=FINAL, no_output=MIDDLE, unit="ms")
     assert chunks(prefill) == ([(False, 2e-3)] * 3 + [(True, 6e-3)], ())
     # A batch holding a prefill row is read at its token count.
     assert band(view((1, 600, True), (511, 511, False))) == "prefill tokens 512-2048"
 
 
-def triples_of(factor, n=400, b=(24, 41), prefill=True):
-    """`n` triples: one in four of one to three prefill chunks (none without
-    `prefill`), the rest a decode batch of B in `b` rows reading two contexts,
-    grouped, shuffled or alternating. Each is measured at its lookup times
-    `factor` of its view, times 1 within 0.5%."""
+def triples_of(factor, n=400, b=(24, 41), prefill=True, q=(8, 65)):
+    """`n` triples: one in four of one to three prefill chunks of `q` tokens a
+    row (none without `prefill`), alternately producing no output and output,
+    the rest a decode batch of B in `b` rows reading two contexts, grouped,
+    shuffled or alternating. Each is measured at its lookup times `factor` of
+    its view, times 1 within 0.5%."""
     rng, triples = np.random.default_rng(0), []
     for i in range(n):
+        output = None
         if prefill and not i % 4:
-            q, c = rng.integers(8, 65, 3), rng.integers(0, 193, 3)
-            rows = [(int(q[j]), int(q[j] + c[j]), False) for j in range(i % 3 + 1)]
+            q_rows, c = rng.integers(*q, 3), rng.integers(0, 193, 3)
+            rows = [(int(t), int(t + k), False) for t, k in zip(q_rows, c)]
+            rows, output = rows[: i % 3 + 1], bool(i % 8)
         else:
             rows_b = rng.integers(*b)
             lo, hi = rng.integers(512, 700), rng.integers(800, 1025)
@@ -334,9 +403,10 @@ def triples_of(factor, n=400, b=(24, 41), prefill=True):
             ks = [lo] * (rows_b - hi_rows) + [hi] * hi_rows
             ks = [ks, list(rng.permutation(ks)), ([lo, hi] * rows_b)[:rows_b]][i % 3]
             rows = [(1, int(k), True) for k in ks]
+        v = view(*rows, produces_output=output)
         lookup = float(rng.uniform(1e-3, 5e-3))
         noise = 1.0 + rng.uniform(-0.005, 0.005)
-        triples.append((view(*rows), lookup, lookup * factor(view(*rows)) * noise))
+        triples.append((v, lookup, lookup * factor(v) * noise))
     return triples
 
 
@@ -361,13 +431,46 @@ def test_the_fit_recovers_a_planted_factor_within_1pc_on_held_out_views():
     triples = triples_of(planted)
     mapping, report = fit(triples, seed=0)
 
-    ((_, weight, member),) = load_and_price(mapping, planted).members
-    assert weight == 1.0 and len(report["held_out"]) == 100
-    for i in report["held_out"]:
-        v = triples[i][0]
-        assert member(v, tuple(features(v).values())) == pytest.approx(
-            planted(v), rel=0.01
-        )
+    loaded = load_and_price(mapping, planted)
+    held = {k: len(r["held_out"]) for k, r in report.items()}
+    assert held == {"decode": 75, "prefill_output": 12, "prefill_no_output": 12}
+    for k, r in report.items():
+        ((_, weight, member),) = loaded.kinds[k].members
+        assert weight == 1.0
+        for i in r["held_out"]:
+            v = triples[i][0]
+            assert kind(v) == k
+            assert member(v, tuple(features(v).values())) == pytest.approx(
+                planted(v), rel=0.01
+            )
+
+
+def test_a_fit_on_decode_triples_alone_prices_atoms_decode_batches_and_no_prefill():
+    # On decode rows alone query_square would be tokens / 1024, and a hull
+    # over both would span nothing.
+    mapping, report = fit(triples_of(planted, prefill=False), seed=0)
+
+    assert list(mapping["kinds"]) == list(report) == ["decode"]
+    loaded = load_and_price(mapping, planted)
+    backend = eager(residual=loaded, output=FINAL, no_output=MIDDLE, unit="ms")
+    no_output, output = (
+        f"cost:step-grid: the residual fits no {k} step"
+        for k in ("prefill_no_output", "prefill_output")
+    )
+    assert chunks(backend)[1] == (no_output,) * 3 + (output,)
+
+
+def test_each_kind_is_fitted_on_its_own_triples_alone():
+    triples = triples_of(planted)
+    mapping, report = fit(triples, seed=0)
+
+    for k in RECIPE.names:
+        own = [t for t in triples if kind(t[0]) == k]
+        alone, alone_report = fit(own, seed=0)
+        assert alone["kinds"] == {k: mapping["kinds"][k]}
+        assert [own[i] for i in alone_report[k]["held_out"]] == [
+            triples[i] for i in report[k]["held_out"]
+        ]
 
 
 def curved(v):
@@ -381,59 +484,73 @@ def straight(v):
 
 
 def stepped(v):
-    return 1.1 if band(v) == "decode rung eager" else 1.3
+    return 1.1 if band(v) == "prefill tokens 0-512" else 1.3
 
 
-@pytest.mark.parametrize(
-    "factor,selected",
-    [(curved, "exp"), (straight, "identity"), (stepped, "band")],
-    ids=["exp", "identity", "band"],
-)
-def test_every_member_is_kept_and_the_lowest_held_out_error_is_selected(
-    factor, selected
-):
-    mapping, report = fit(triples_of(factor), seed=0)
+def by_kind(v):
+    """Curved on decode, straight on prefill with output, and stepped by token
+    band on prefill without."""
+    kinds = {"decode": curved, "prefill_output": straight}
+    return kinds.get(kind(v), stepped)(v)
 
-    load_and_price(mapping, factor)
-    assert mapping["selected"] == {selected: 1.0}
-    members = mapping["members"]
-    assert [(n, m["form"], m.get("transform")) for n, m in members.items()] == [
-        ("identity", "linear", "identity"),
-        ("exp", "linear", "exp"),
-        ("band", "band", None),
-    ]
-    assert list(members["exp"]["coefficients"]) == list(V1.names)
-    assert list(members["band"]["values"]) == [
-        "decode rung eager",
+
+def test_each_kind_ranks_every_family_and_selects_its_lowest_held_out_error():
+    # Prefill rows of 64 to 400 tokens, so chunks fall on both sides of 512.
+    mapping, report = fit(triples_of(by_kind, q=(64, 401)), seed=0)
+
+    load_and_price(mapping, by_kind)
+    assert {k: fitted["selected"] for k, fitted in mapping["kinds"].items()} == {
+        "decode": {"exp": 1.0},
+        "prefill_output": {"identity": 1.0},
+        "prefill_no_output": {"band": 1.0},
+    }
+    for k, fitted_kind in mapping["kinds"].items():
+        members = fitted_kind["members"]
+        assert [(n, m["form"], m.get("transform")) for n, m in members.items()] == (
+            MEMBERS
+        )
+        assert list(members["exp"]["coefficients"]) == list(RECIPE.names[k])
+        errors = {n: m["held_out_error"] for n, m in report[k]["members"].items()}
+        assert {min(errors, key=errors.get): 1.0} == fitted_kind["selected"]
+    stepped_bands = mapping["kinds"]["prefill_no_output"]["members"]["band"]
+    assert list(stepped_bands["values"]) == [
         "prefill tokens 0-512",
+        "prefill tokens 512-2048",
     ]
-    errors = {n: m["held_out_error"] for n, m in report["members"].items()}
-    assert min(errors, key=errors.get) == selected
 
 
 def test_outliers_are_dropped_until_settled_and_the_hull_is_the_kept_views():
     triples = triples_of(planted)
-    held = set(fit(triples, seed=0)[1]["held_out"])
-    dev = [i for i in range(len(triples)) if i not in held]
-    # Five fitted triples measured 1.5x slow, one a 64-row batch no other reaches.
+    held = {i for r in fit(triples, seed=0)[1].values() for i in r["held_out"]}
+    dev = {
+        k: [i for i, (v, _, _) in enumerate(triples) if kind(v) == k and i not in held]
+        for k in RECIPE.names
+    }
+    # Five fitted decode triples measured 1.5x slow, one a 64-row batch no
+    # other reaches.
     wide = view(*[(1, 700, True)] * 64)
-    triples[dev[0]] = (wide, 1e-3, 1.5e-3 * planted(wide))
-    for i in dev[1:5]:
+    triples[dev["decode"][0]] = (wide, 1e-3, 1.5e-3 * planted(wide))
+    for i in dev["decode"][1:5]:
         v, lookup, measured = triples[i]
         triples[i] = (v, lookup, 1.5 * measured)
-    # Two 600-token prefill chunks alone in their band, measured 1x and 2x:
-    # every member drops both, and the band member holds no factor for them.
+    # Two 600-token chunks producing output alone in their band, measured 1x
+    # and 2x: the band member drops both and holds no factor for their band.
     for i, (rows, slow) in zip(
-        dev[5:7], [((600, 600, False), 1), ((600, 700, False), 2)]
+        dev["prefill_output"], [((600, 600, False), 1), ((600, 700, False), 2)]
     ):
-        triples[i] = (view(rows), 1e-3, slow * 1e-3 * planted(view(rows)))
+        v = view(rows, produces_output=True)
+        triples[i] = (v, 1e-3, slow * 1e-3 * planted(v))
     mapping, report = fit(triples, seed=0)
 
-    counts = {n: (m["samples"], m["dropped"]) for n, m in report["members"].items()}
-    assert counts == dict.fromkeys(("identity", "exp", "band"), (293, 7))
-    assert report["members"]["band"]["zero"] == ["prefill tokens 512-2048"]
-    assert "prefill tokens 512-2048" not in mapping["members"]["band"]["values"]
-    with pytest.raises(CostRefused, match="outside the residual's hull"):
+    counts = {
+        n: (m["samples"], m["dropped"]) for n, m in report["decode"]["members"].items()
+    }
+    assert counts == dict.fromkeys(("identity", "exp", "band"), (220, 5))
+    output = report["prefill_output"]["members"]["band"]
+    assert output["zero"] == ["prefill tokens 512-2048"]
+    banded = mapping["kinds"]["prefill_output"]["members"]["band"]["values"]
+    assert "prefill tokens 512-2048" not in banded
+    with pytest.raises(CostRefused, match="outside the residual's hull of decode"):
         load_and_price(mapping, planted).factor(wide)
 
 
@@ -450,24 +567,30 @@ def relative_error(member, triple):
 
 def test_the_report_is_each_members_spread_where_fitted_and_error_where_held_out():
     triples = triples_of(planted)
-    held = fit(triples, seed=0)[1]["held_out"]
-    dev = [i for i in range(len(triples)) if i not in held]
-    # A held-out 600-token chunk, in a band no fitted triple reaches.
-    unseen = view((600, 600, False))
+    held = fit(triples, seed=0)[1]["prefill_output"]["held_out"]
+    # A held-out 600-token chunk producing output, in a band no fitted triple
+    # of its kind reaches.
+    unseen = view((600, 600, False), produces_output=True)
     triples[held[0]] = (unseen, 1e-3, 1e-3 * planted(unseen))
     mapping, report = fit(triples, seed=0)
 
-    for name, reported in report["members"].items():
-        ((_, _, member),) = Residual({**mapping, "selected": {name: 1.0}}).members
-        r = np.array([relative_error(member, triples[i]) for i in dev])
-        mad = 1.4826 * np.median(np.abs(r - np.median(r)))
-        held_out = [abs(relative_error(member, triples[i])) for i in held]
-        assert (reported["centre"], reported["mad"]) == pytest.approx(
-            (np.median(r), mad), rel=1e-9, abs=1e-12
-        )
-        assert reported["held_out_error"] == pytest.approx(
-            np.median(held_out), rel=1e-9
-        )
+    for k, by_member in report.items():
+        held = by_member["held_out"]
+        dev = [i for i, (v, _, _) in enumerate(triples) if kind(v) == k]
+        dev = [i for i in dev if i not in held]
+        for name, reported in by_member["members"].items():
+            one = {**mapping["kinds"][k], "selected": {name: 1.0}}
+            loaded = Residual({**mapping, "kinds": {k: one}})
+            ((_, _, member),) = loaded.kinds[k].members
+            r = np.array([relative_error(member, triples[i]) for i in dev])
+            mad = 1.4826 * np.median(np.abs(r - np.median(r)))
+            held_out = [abs(relative_error(member, triples[i])) for i in held]
+            assert (reported["centre"], reported["mad"]) == pytest.approx(
+                (np.median(r), mad), rel=1e-9, abs=1e-12
+            )
+            assert reported["held_out_error"] == pytest.approx(
+                np.median(held_out), rel=1e-9
+            )
 
 
 def test_the_target_is_measured_over_lookup_and_the_seed_fixes_the_split():
@@ -476,20 +599,25 @@ def test_the_target_is_measured_over_lookup_and_the_seed_fixes_the_split():
 
     assert fit(triples, seed=0) == fitted_once
     assert fit([(v, 2 * lo, 2 * m) for v, lo, m in triples], seed=0) == fitted_once
-    assert fit(triples, seed=1)[1]["held_out"] != fitted_once[1]["held_out"]
+    held = fitted_once[1]["decode"]["held_out"]
+    assert fit(triples, seed=1)[1]["decode"]["held_out"] != held
     load_and_price(fitted_once[0], planted)
 
 
 def test_a_feature_constant_over_the_fit_is_zeroed_and_held_at_its_value():
-    # Every batch is 32 decode rows: tokens 1/32 and query_square 1/32768.
+    # Every batch is 32 decode rows: tokens 1/32.
     mapping, report = fit(triples_of(planted, b=(32, 33), prefill=False), seed=0)
 
     load_and_price(mapping, planted)
-    assert mapping["hull"]["equal"] == {"tokens": 1 / 32, "query_square": 1 / 32768}
+    decode_fit = mapping["kinds"]["decode"]
+    assert decode_fit["hull"]["equal"] == {"tokens": 1 / 32}
     for name in ("identity", "exp"):
-        assert report["members"][name]["zero"] == ["tokens", "query_square"]
-        coefficients = mapping["members"][name]["coefficients"]
-        assert coefficients["tokens"] == coefficients["query_square"] == 0.0
+        assert report["decode"]["members"][name]["zero"] == ["tokens"]
+        assert decode_fit["members"][name]["coefficients"]["tokens"] == 0.0
+
+
+def replaced(triples, v):
+    return triples[:3] + [(v, 1e-3, 1e-3)] + triples[4:]
 
 
 def negated(triples):
@@ -500,18 +628,33 @@ def negated(triples):
 @pytest.mark.parametrize(
     "triples,match",
     [
-        (lambda: triples_of(planted)[:8], "8 triples hold out 2 and leave 6 to fit 6"),
+        (
+            lambda: triples_of(planted)[:8],
+            "the decode fit: 6 triples hold out 1 and leave 5 to fit 5",
+        ),
         (
             lambda: negated(triples_of(planted)),
             r"triples \[3\] have a time that is not",
         ),
-        # Decode rows only: query_square is tokens / 1024 on every batch.
         (
-            lambda: triples_of(planted, prefill=False),
-            "kept views' features span no hull",
+            lambda: replaced(triples_of(planted), view((1, 9, True), (8, 8, False))),
+            "triple 3: a batch of prefill and decode rows is of no grid kind",
+        ),
+        (
+            lambda: replaced(triples_of(planted), view((8, 8, False))),
+            "triple 3: a prefill batch that does not say whether it produces",
+        ),
+        # Decode rows at one context: order and raggedness are constant, and
+        # query_context is tokens times that context.
+        (
+            lambda: [
+                (view(*[(1, 700, True)] * b), 1e-3, 1e-3)
+                for b in list(range(24, 41)) * 2
+            ],
+            "the decode fit: the kept views' features span no hull",
         ),
     ],
-    ids=["few", "time", "flat"],
+    ids=["few", "time", "mixed", "unsaid", "collinear"],
 )
 def test_a_fit_that_cannot_be_made_is_refused_naming_why(triples, match):
     with pytest.raises(ValueError, match=match):

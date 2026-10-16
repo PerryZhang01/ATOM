@@ -28,7 +28,7 @@ width. Loading refuses, naming what differs:
 - a configured bound above the one the grid was planned for.
 
 A cell past the KV capacity is incomplete, so it refuses at lookup and needs no
-check here. Recipe v1 reads no chunk size, so none is keyed.
+check here. The residual's recipe reads no chunk size, so none is keyed.
 """
 
 import json
