@@ -301,7 +301,7 @@ def test_a_cell_record_and_run_wrote_grades_as_the_one_cctraces_sim_wrote(
     graded = _graded(capsys, tmp_path / "c4")
     stated = [graded.pop(k) for k in list(graded) if k[0].startswith("warmup ")]
     assert graded == rows
-    # Each run's export names a warmup no step holds; a `cctraces_sim.sh` run reads none.
+    # Each export names a warmup no step holds; a `cctraces_sim.sh` run reads none.
     assert stated == [["requests 1, steps 0", "not graded"]] * 4
 
 
