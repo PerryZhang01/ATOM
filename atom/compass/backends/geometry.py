@@ -187,15 +187,6 @@ class Parallelism:
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} must be at least 1")
 
-    @property
-    def kv_replicas(self) -> int:
-        """How many full copies of the KV exist -- one per data-parallel engine."""
-        return self.dp_size
-
-    def stage_names(self) -> tuple[str, ...]:
-        """One name per pipeline stage: the participants a clock coordinates."""
-        return tuple(f"stage-{rank}" for rank in range(self.pp_size))
-
     def collectives(self) -> tuple[str, ...]:
         """The collectives a step performs, named.
 

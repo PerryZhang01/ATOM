@@ -5,9 +5,8 @@ The geometry itself is a handful of multiplications, and a test that only
 re-derives them proves nothing: it would pass against a number the engine
 refuses. So every claim below is made by handing the geometry to the code
 that consumes it for real -- `page_pool` and `plan_pools` from
-`atom.model_ops.attentions`, `BlockManager` from `atom.model_engine`, ATOM's
-own pipeline partitioner, and Compass's own clock registry -- and reading the
-answer back out of those.
+`atom.model_ops.attentions`, `BlockManager` from `atom.model_engine` and ATOM's
+own pipeline partitioner -- and reading the answer back out of those.
 
 The model is the published Qwen3.8-27B config, vendored beside this file so
 the numbers are reproducible without a checkout of the weights. It is a
@@ -41,7 +40,6 @@ from conftest import atom_config_double
 from transformers import PretrainedConfig
 
 from atom.compass.backends import KvGeometry, Parallelism
-from atom.compass.clock import LpId, LpRegistry
 from atom.model_engine.block_manager import BlockManager
 from atom.model_ops.attentions.pool_layout.sub_pool_spec import page_pool, plan_pools
 from atom.models.utils import get_pp_indices
@@ -158,14 +156,6 @@ def test_a_declared_pipeline_stage_must_say_which_one_it_is(qwen):
         )
 
 
-@pytest.mark.parametrize("pp_size", [1, 4])
-def test_the_clock_gets_one_participant_per_pipeline_stage(pp_size):
-    registry = LpRegistry()
-    for name in Parallelism(pp_size=pp_size).stage_names():
-        registry.register(LpId(name))
-    assert len(registry) == pp_size
-
-
 def test_data_and_expert_parallel_leave_the_kv_block_alone(qwen):
     alone = KvGeometry.from_hf_config(
         qwen, block_size=BLOCK_SIZE, parallelism=Parallelism(tp_size=2)
@@ -175,9 +165,6 @@ def test_data_and_expert_parallel_leave_the_kv_block_alone(qwen):
         KvGeometry.from_hf_config(qwen, block_size=BLOCK_SIZE, parallelism=wide)
         == alone
     )
-    # Replicated, not divided: four engines each hold that same full pool.
-    assert wide.kv_replicas == 4
-    assert Parallelism(tp_size=2).kv_replicas == 1
 
 
 def test_expert_parallelism_alone_builds_no_all_to_all():
