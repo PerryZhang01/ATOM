@@ -119,10 +119,15 @@ def _check(gpus: tuple[int, ...], out: Path, when: str) -> str:
 
 def _vram(pid: str, gpu: int) -> int:
     """Bytes of GPU `gpu`'s memory KFD charges to `pid`; 0 once it has exited.
-    GPU indices follow KFD's GPU nodes in order, as rocm-smi's and HIP's do."""
+    GPU indices follow KFD's GPU nodes in order, as rocm-smi's and HIP's do.
+    The topology is read only for a process KFD lists: a container without the
+    GPU devices may not read it."""
+    proc = KFD / "proc" / pid
+    if not proc.is_dir():
+        return 0
     try:
         nodes = sorted((KFD / "topology/nodes").iterdir(), key=lambda n: int(n.name))
         ids = [i for n in nodes if (i := (n / "gpu_id").read_text().strip()) != "0"]
-        return int((KFD / "proc" / pid / f"vram_{ids[gpu]}").read_text())
+        return int((proc / f"vram_{ids[gpu]}").read_text())
     except FileNotFoundError:
         return 0
