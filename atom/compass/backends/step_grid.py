@@ -29,8 +29,10 @@ image tokens.
 
 The answer is the lookup times the residual's factor for the batch's ordered
 rows (`step_grid_residual.py`), which the residual may refuse. It is one
-`estimated` term for the whole forward, unvalidated, never multiplied by the TP
-width, since the measurement already holds the collectives. Its detail calls
+`estimated` term for the whole forward, validated iff its coordinates in its
+grid lie inside the hull of those of the batches its kind's residual was held
+out on (`Residual.validated`), and never multiplied by the TP width, since the
+measurement already holds the collectives. Its detail calls
 the lookup `measured` for a homogeneous batch on a node and `interpolated`
 otherwise, and gives each member's output.
 
@@ -89,6 +91,13 @@ def equivalent_shape(
         query,
         (Fraction(work, rows_n) - query * (query + 1) / 2) / query,
     )
+
+
+def coordinates(rows: Sequence[RequestShape], prefill: bool) -> tuple[Fraction, ...]:
+    """The equivalent shape as a grid reads it: (B, T, c) in prefill, (B, c) in
+    decode."""
+    rows_n, query, cached = equivalent_shape(rows)
+    return (rows_n, rows_n * query, cached) if prefill else (rows_n, cached)
 
 
 def _refused(view: BatchView, reason: str) -> CostRefused:
@@ -252,7 +261,7 @@ class StepGrid:
         ]
         if odd:
             raise _refused(view, f"the count {odd[0]!r} is not an int")
-        rows_n, query, cached = equivalent_shape(rows)
+        at = coordinates(rows, bool(prefill))
         if prefill:
             if view.produces_output is None:
                 raise _refused(
@@ -261,7 +270,6 @@ class StepGrid:
                     "output, which picks its grid",
                 )
             cells = self.prefill[view.produces_output]
-            at = (rows_n, rows_n * query, cached)
         else:
             widest = max(row.query_tokens for row in decode)
             if widest > 1:
@@ -270,7 +278,6 @@ class StepGrid:
                     f"a decode row computes {widest} tokens; the decode grid has "
                     "no N_Q axis",
                 )
-            at = (rows_n, cached)
             if self.graph_mode == "eager":
                 cells = self.decode
             elif view.capture_rung is None:
@@ -315,7 +322,8 @@ class StepGridBackend(CostBackend):
             f"lookup {lookup!r} s, {looked_up}; {cells.name} cell {cell}; "
             f"residual {factor!r} = {summed}"
         )
-        estimated = Provenance(Method.ESTIMATED, detail, SOURCE)
+        validated = self.residual.validated(view, at)
+        estimated = Provenance(Method.ESTIMATED, detail, SOURCE, validated=validated)
         return StepCost([CostTerm("forward", lookup * factor, estimated)])
 
     def describe(self) -> str:
