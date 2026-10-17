@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: MIT
 """The bench: `EngineCore` without its scheduler.
 
-`Bench(config)` publishes the workers' rendezvous store as `CoreManager` does
-for an engine, then starts `RUNNER` on every worker through ATOM's runner
-manager, in `EngineCore`'s order: `get_num_blocks`, `allocate_kv_cache` with
-the blocks it reports, which then become `config.num_kvcache_blocks`,
-`capture_cudagraph` unless the engine runs eagerly, and `freeze_gc_heap`.
+`Bench(config, num_blocks)` publishes the workers' rendezvous store as
+`CoreManager` does for an engine, then starts `RUNNER` on every worker through
+ATOM's runner manager, in `EngineCore`'s order: `get_num_blocks`, which sizes
+the per-request state, `allocate_kv_cache` with `num_blocks`, which then
+becomes `config.num_kvcache_blocks`, `capture_cudagraph` unless the engine
+runs eagerly, and `freeze_gc_heap`. The pool is the one the batches ran on,
+not the count `get_num_blocks` reports: that count reads the device's memory
+outside torch, which moves from one start to the next, so a pool sized by it
+can be smaller than the one a batch filled. A device that cannot hold the pool
+stops the bench, naming both counts.
 `measure(batch)` runs `bench_step` on every worker and returns rank 0's reply,
 the window's result (`window.py`). Data parallelism above one, expert
 parallelism and pipeline parallelism refuse.
@@ -26,7 +31,7 @@ RUNNER = "atom.compass.bench.runner.BenchModelRunner"
 
 
 class Bench:
-    def __init__(self, config) -> None:
+    def __init__(self, config, num_blocks: int) -> None:
         # Under DP attention every TP rank becomes a DP rank.
         dp = config.parallel_config.data_parallel_size * (
             config.tensor_parallel_size if config.enable_dp_attention else 1
@@ -56,12 +61,20 @@ class Bench:
         )
         signal.signal(signal.SIGINT, signal.default_int_handler)
         try:
-            blocks = self.runner_mgr.call_func("get_num_blocks", wait_out=True)
-            blocks = blocks["num_kvcache_blocks"]
-            assert self.runner_mgr.call_func(
-                "allocate_kv_cache", blocks, wait_out=True
-            ), "Failed to allocate kv cache"
-            config.num_kvcache_blocks = blocks
+            budget = self.runner_mgr.call_func("get_num_blocks", wait_out=True)
+            try:
+                allocated = self.runner_mgr.call_func(
+                    "allocate_kv_cache", num_blocks, wait_out=True
+                )
+            except SystemExit as stop:
+                # The manager stops, with a bare SystemExit, when a worker dies.
+                raise ValueError(
+                    f"the bench stopped allocating a pool of {num_blocks} KV "
+                    "blocks, and this device's budget gives "
+                    f"{budget['num_kvcache_blocks']}"
+                ) from stop
+            assert allocated, "Failed to allocate kv cache"
+            config.num_kvcache_blocks = num_blocks
             if not config.enforce_eager:
                 self.runner_mgr.call_func("capture_cudagraph", wait_out=True)
             # Unfrozen, a worker's collections walk its startup heap, and their
