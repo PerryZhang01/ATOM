@@ -121,5 +121,5 @@ def test_the_probe_recovers_the_carriers_it_was_sampled_from():
             s["end"] *= 1 + (-1) ** s["bytes"].bit_length() * 0.01
     fixed = truth["rccl"][4]
     assert probe.fit(samples)["rccl"]["rendezvous_fixed_s"] == pytest.approx(
-        fixed, rel=0.05
+        fixed, rel=0.01
     )
