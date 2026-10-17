@@ -58,7 +58,7 @@ Run file keys: ``clock_endpoint``, ``bound_s`` (finite), ``admission_path``,
 priced by `StepStubBackend`), ``step_linear`` (a `StepLinearLaw` mapping,
 priced by `StepLinearBackend`; its ``machine_spec`` digest and, when stated,
 its ``engine_config``, `step_grid.keyed` as it was fitted, refuse a run under
-any other), ``step_grid`` (an artifact store's root and a
+any other; a list of them is one per engine config, a process taking its own), ``step_grid`` (an artifact store's root and a
 bundle's key, priced by `StepGridBackend`; see `step_grid`) and ``replay`` (a
 real run's parity record directory, or for a prefill-decode run one holding
 each side's as ``prefill/`` and ``decode/``: each step ends when the real one
@@ -76,7 +76,7 @@ essential work is left, and the last one's end finishes the run),
 on ``(1, tokens, seqs)``, refused where absent; ``key``, the `host_key` they were
 fitted under and the ``machine_spec`` digest of the spec of the platform they
 were fitted on, which a run with laws must match; ``skip``, segments zeroed for
-a what-if run, which the graders refuse),
+a what-if run, which the graders refuse; a list of them as ``step_linear``'s),
 ``machine`` (a machine spec mapping), ``parameter_count`` (read with
 ``step_roofline``), ``store`` (the artifact store's root, where `memory` reads
 the configuration's memory readings) and ``backend`` (the backend's ``digest``
@@ -258,6 +258,44 @@ def refuse_renamed_keys(run: dict, where) -> None:
         raise ValueError(f"{where} holds run-file keys that were renamed: {named}")
 
 
+def entries(run: dict, key: str) -> list:
+    """The run file's `key` entries: its list, or its one mapping."""
+    value = run.get(key, [])
+    return [value] if isinstance(value, dict) else value
+
+
+def _differ(*mappings) -> list[str]:
+    """The fields `mappings` differ in, a nested mapping's as `key.field`."""
+    flat = [
+        {
+            f"{k}.{s}" if s else k: w
+            for k, v in (m or {}).items()
+            for s, w in (v.items() if isinstance(v, dict) else [("", v)])
+        }
+        for m in mappings
+    ]
+    return sorted(
+        {n for f in flat for n in f if any(g.get(n) != f.get(n) for g in flat)}
+    )
+
+
+def _fitted_here(listed: list, here: dict, engine, what: str) -> dict:
+    """The entry of `listed` whose engine config, read by `engine`, is `here`;
+    a lone entry is checked as a mapping is."""
+    found = [e for e in listed if engine(e) == here]
+    if len(listed) == 1 or len(found) == 1:
+        return (found or listed)[0]
+    if found:
+        raise ValueError(
+            f"{len(found)} {what} entries were fitted under this engine config, "
+            f"and they differ in {_differ(*found)}"
+        )
+    named = "; ".join(
+        f"entry {i} in {_differ(engine(e), here)}" for i, e in enumerate(listed)
+    )
+    raise ValueError(f"no {what} entry was fitted under this engine config: {named}")
+
+
 _authority: "_RecordingAuthority | None" = None
 #: The co-hosted authority's early-end writer.
 _early_end: threading.Thread | None = None
@@ -288,7 +326,8 @@ def spec() -> dict | None:
             f"{path}: client_runs is {count!r}; a server serves a positive number "
             "of client runs, or null for no limit"
         )
-    _check_host(path, run.get("host", {}))
+    for host in entries(run, "host"):
+        _check_host(path, host)
     run["clock_endpoint"] = os.environ.get(CLOCK_ENV, run.get("clock_endpoint"))
     return run
 
@@ -1054,6 +1093,15 @@ def runner(model_runner, tree) -> None:
     config = model_runner.config
     tp = config.tensor_parallel_size
     refuse_renamed_keys(run, "the run file")
+    engines = {
+        STEP_LINEAR: lambda e: e.get("engine_config"),
+        "host": lambda e: e.get("key", {}).get("engine"),
+    }
+    for name, engine in engines.items():
+        if isinstance(run.get(name), list):
+            from atom.compass.run.step_grid import keyed
+
+            run[name] = _fitted_here(run[name], keyed(config), engine, name)
     backends = (STEP_STUB, STEP_LINEAR, STEP_GRID, "replay")
     keys = [k for k in backends if k in run]
     if len(keys) != 1:

@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
 """Grade cells from every source, in one table: `python -m atom.compass.validate CELL...`
 
-A CELL holds runs of one workload: `step_linear/` (at its run file's step linear law)
+A CELL holds runs of one workload: `step_linear/` (at its run file's step linear law, or
+of several the one fitted under the engine config each real run states)
 and two or more `real*/`. `cctraces_sim.sh` writes each run.json as the run file with
 the `workload` every run must share; `record` and `run` write their own, the run file
 as `run_file`, and `validate.runs` decides which client run of theirs is graded, and
@@ -23,7 +24,14 @@ from statistics import median
 
 from atom.compass.backends.cost import GROUPS
 from atom.compass.memory.check import MemoryRefusal, parts
-from atom.compass.run import LP_FILE, refuse_renamed_keys
+from atom.compass.run import (
+    LP_FILE,
+    STEP_LINEAR,
+    _fitted_here,
+    entries,
+    refuse_renamed_keys,
+)
+from atom.compass.run.step_grid import keyed_of
 from atom.compass.validate import cost, runs
 
 BANDS = {0: "0-512", 512: "512-2048", 2048: "2048-8192", 8192: "8192+"}
@@ -149,8 +157,14 @@ def rows(cell) -> list[tuple]:
     out += _runs(real, law)
     for r in real:
         law_file = run["step_linear"].get("run_file", run["step_linear"])
+        laws = entries(law_file, STEP_LINEAR)
+        if len(laws) > 1:
+            here = keyed_of(json.loads((r / "steps/dp0.engine.json").read_text()))
+            laws = [
+                _fitted_here(laws, here, lambda e: e.get("engine_config"), STEP_LINEAR)
+            ]
         steps, _traces, warmup = runs.graded(r)
-        out += [*_warmup(r, warmup), *_cost(r, law_file["step_linear"], steps)]
+        out += [*_warmup(r, warmup), *_cost(r, laws[0], steps)]
         out += _memory(law, r)
     out += [*_warmup(law, runs.graded(law)[2]), *_summary(law, summary)]
     return out
