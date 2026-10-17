@@ -318,7 +318,8 @@ def test_each_reader_of_host_reads_every_entry_of_a_list(tmp_path):
     with pytest.raises(ValueError, match="skips host segments"):
         runs.graded(tmp_path)
 
-    table = CONFIGURATION_PREFIX + json.dumps({"host": hosts})
+    constant = dataclasses.asdict(Coefficients.constant(0.1, 0.01))
+    table = CONFIGURATION_PREFIX + json.dumps({"step_stub": constant, "host": hosts})
     assert scenario._timeline(table, "lp", None) == [
         "lp: a timeline is computed for a constant step stub with no host laws"
     ]
