@@ -371,6 +371,19 @@ def test_each_dp_member_parks_once_a_step_and_leaves_at_the_latest_park(runs):
         assert {left for _, left in at} == {max(p for p, _ in at)} == {start}, k
 
 
+@NEEDS_A_RUN
+def test_each_rank_looks_up_blocking_by_both_triggers(runs):
+    """Each rank looks a request up with no prefetch to consume, and stops
+    waiting for a deferred prefetch at least once."""
+    dp, (run, _) = runs
+    for rank in read(run["out"] / "parity"):
+        lp = compass_run.LP_FILE.format("engine" if dp == 1 else f"engine.dp{rank}")
+        n = json.loads((run["out"] / lp).read_text())["lookups"]
+        print(f"\ndp{rank}: {n}")
+        assert n["lookup_n"] > n["lookup_prefetched"], (rank, n)
+        assert n["lookup_defer_expired"] > 0, (rank, n)
+
+
 # --- (c): the parity record's offload decisions, without a driver -------------
 
 
