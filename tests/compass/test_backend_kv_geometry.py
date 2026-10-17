@@ -34,6 +34,7 @@ right; it is not agreement with a live engine, and nothing here claims it is.
 
 import json
 import pathlib
+from types import SimpleNamespace
 
 import pytest
 from conftest import atom_config_double
@@ -262,3 +263,20 @@ def test_a_config_with_no_dtype_is_refused_rather_than_sized(qwen):
         nameless, block_size=BLOCK_SIZE, kv_dtype="float16"
     )
     assert stated.element_bytes == 2
+
+
+def test_a_dtype_with_no_known_element_size_is_refused(qwen):
+    with pytest.raises(ValueError, match="no element size known"):
+        KvGeometry.from_hf_config(qwen, block_size=BLOCK_SIZE, kv_dtype="posit8")
+    fp8 = KvGeometry.from_hf_config(
+        qwen, block_size=BLOCK_SIZE, kv_dtype="float8_e4m3fn"
+    )
+    assert fp8.element_bytes == 1
+
+
+def test_a_multimodal_config_is_read_through_its_text_config(qwen):
+    """The published file nests the stack under `text_config`."""
+    nested = SimpleNamespace(text_config=qwen)
+    assert KvGeometry.from_hf_config(
+        nested, block_size=BLOCK_SIZE
+    ) == KvGeometry.from_hf_config(qwen, block_size=BLOCK_SIZE)
