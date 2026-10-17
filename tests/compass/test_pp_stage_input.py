@@ -345,6 +345,76 @@ def test_four_stages_are_each_charged_from_the_stage_befores_sends(tmp_path, cap
     assert not recurrence.check(stages[2], (3, 4), sends[2])["pass"]
 
 
+def serial_record(pp):
+    """`pp` stages on one decoding request, written by the wait rules, 1 ms per
+    host segment and 10 ms of device work per stage after its input. The head
+    enters 1 ms after the last stage's exit, whose tokens it waits for; stage
+    `i` enters `2 i + 1` ms after the head's call, after the stage before has
+    sent, so only its entry waits."""
+    p = 10 * pp + 3
+    head = [
+        _line(n, n * p, (n * p,) * 2, (n * p + 1, n * p + 2), n * p + 3, 10)
+        for n in range(4)
+    ]
+    rest = [
+        [
+            _downstream(
+                n,
+                n * p + 2 * i,
+                n * p + 2 * i,
+                0,
+                8 * i,
+                (n + 1) * p - 2 if i == pp - 1 else None,
+            )
+            for n in range(4)
+        ]
+        for i in range(1, pp)
+    ]
+    return [head] + rest
+
+
+@pytest.mark.parametrize("pp", [2, 4])
+def test_each_stage_waits_for_the_other_stages_predicted_times(pp):
+    """With the last stage's second forward predicted 2 ms late, the head's
+    next entry follows it, and so does every middle stage's at the head's
+    call; the last stage's own next forward is charged as measured."""
+    stages = serial_record(pp)
+    for report in recurrence.pipeline(stages):
+        assert report["pass"] and report["total"] == pytest.approx(0, abs=1e-9)
+    stages[-1][1]["d_busy_ns"] += 2 * MS
+    late = [
+        [(r[0], round(r[3], 6)) for r in rep["failures"]]
+        for rep in recurrence.pipeline(stages)
+    ]
+    assert late == [[(2, 2.0)]] * (pp - 1) + [[(1, 2.0)]]
+
+
+def test_the_head_waits_for_the_tokens_its_batch_needs():
+    """Rows are (request, decode): a request's next chunk waits for nothing,
+    its first decode, or any request of a batch that decoded, for that batch,
+    and every forward for the one `pp` back if that one produced output."""
+    head = [
+        {
+            "produces_output": out,
+            "batch": [[k] for k, _ in rows],
+            "rows": [[d] for _, d in rows],
+        }
+        for out, rows in (
+            (True, [("A", False), ("B", False)]),
+            (False, [("B", False)]),
+            (True, [("A", True), ("B", False)]),
+            (False, [("B", False)]),
+            (True, [("C", False)]),
+            (True, [("D", False)]),
+        )
+    ]
+    for pp, waits in (
+        (2, [None, None, 0, 2, 2, None]),
+        (4, [None, None, 0, 2, 0, None]),
+    ):
+        assert [recurrence._waited(head, n, pp) for n in range(6)] == waits
+
+
 class _Group:
     is_first_rank = False
 

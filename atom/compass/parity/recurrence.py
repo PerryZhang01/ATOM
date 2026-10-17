@@ -10,8 +10,8 @@ from the launch to the exit less the recv and draft copy waits; with
 `d_target_ns`, under MTP, the rest of `d_busy_ns` is draft, `W_inputs` is the part of
 `W_pre` after the MTP status wait, and no `d_gap_ns` is fed. Each forward is called at the
 exit predicted for the one before, so only the waits and device times move it.
-A pipeline record is gated stage by stage, each charged with the predicted
-sends of the stage before (`check`).
+A pipeline record is gated step by step, each stage charged with the predicted
+times of the others (`pipeline`).
 
 Per kind (decode, output prefill, middle chunk, and idle: sharing no request
 with the forward before), p10 and p90 of charge over measured exit-to-exit
@@ -21,6 +21,7 @@ A failing kind's steps outside the band are named with their residual, the
 device work queued at their launch, and their recv release less the measured.
 """
 
+import math
 import sys
 from types import SimpleNamespace
 
@@ -44,6 +45,44 @@ def _kind(step, prev) -> str:
     return "decode" if all(d for *_, d in step["rows"]) else "prefill"
 
 
+def _waited(steps: list[dict], n: int, pp: int):
+    """The head's last forward before `n` whose tokens `n` is scheduled after,
+    or None: `n - pp`, which leaves the in-flight queue only with its tokens,
+    or a later one holding a request of `n`'s, every request of a batch with a
+    decode in it, else the requests `n` decodes."""
+    mine = {k: d for (k, *_), (*_, d) in zip(steps[n]["batch"], steps[n]["rows"])}
+    for m in range(n - 1, max(n - pp, 0) - 1, -1):
+        s, decode = steps[m], any(d for *_, d in steps[m]["rows"])
+        held = any(k in mine and (decode or mine[k]) for k, *_ in s["batch"])
+        if s["produces_output"] and (m == n - pp or held):
+            return m
+    return None
+
+
+def pipeline(stages: list[list[dict]]) -> list[dict]:
+    """One DP rank's stages charged step by step, `check`'s report for each:
+    the head's entry released at the last stage's exit of the forward whose
+    tokens it waits for, each downstream entry at the head's call."""
+    if len({len(s) for s in stages}) > 1:
+        raise ValueError(f"stages of {[len(s) for s in stages]} steps")
+    pp, head, tail = len(stages), stages[0], stages[-1]
+    out, held = [[] for _ in stages], [[] for _ in stages]
+    runs = [
+        _charged(s, (i, pp), out[i - 1] if i else None, held[i])
+        for i, s in enumerate(stages)
+    ]
+    for n in range(len(head)):
+        w = _waited(head, n, pp)
+        tokens = w is not None and (tail[w]["t_exit_ns"], out[-1][w][3])
+        held[0].append(tokens)
+        out[0].append(next(runs[0]))
+        call = n and (max(head[n - 1]["t_exit_ns"], tokens and tokens[0]), out[0][n][2])
+        for i in range(1, pp):
+            held[i].append(call)
+            out[i].append(next(runs[i]))
+    return [next(r) for r in runs]
+
+
 def check(steps: list[dict], stage=None, upstream=None) -> dict:
     """One DP rank's steps charged on their measured inputs: the gate's report.
 
@@ -53,6 +92,14 @@ def check(steps: list[dict], stage=None, upstream=None) -> dict:
     """
     if upstream is not None and len(upstream) != len(steps):
         raise ValueError(f"{len(steps)} steps, and {len(upstream)} upstream")
+    *_, report = _charged(steps, stage, upstream, None)
+    return report
+
+
+def _charged(steps, stage, upstream, held):
+    """`check`, yielding each step's predicted send, device end, call and exit
+    before the report; step `n` called no earlier than `held[n] = (measured,
+    predicted)`'s `predicted`, its `E` from `measured` if after the last exit."""
     now, prev, rows, sends = 0.0, None, [], []
     origin = steps[0]["t_enter_ns"]
     mtp = any("d_target_ns" in s for s in steps)
@@ -66,12 +113,15 @@ def check(steps: list[dict], stage=None, upstream=None) -> dict:
         d0, d1 = s.get("t_draft_recv_ns", (0, 0))
         p0, p1 = s.get("t_pp_recv_ns", (l0, l0))
         last = prev["t_exit_ns"] if prev else s["t_enter_ns"]
-        e = s["t_enter_ns"] - last
+        e, called = s["t_enter_ns"] - last, now
+        if held and held[n]:  # E runs from the release, called at its prediction
+            e = s["t_enter_ns"] - max(last, held[n][0])
+            called = max(now, (held[n][1] - origin) * 1e-9)
         pre = l0 - s["t_enter_ns"] - (g1 - g0) - (m1 - m0)
         post = s["t_exit_ns"] - l1 - (r1 - r0) - (d1 - d0)
-        entry = max(now + e * 1e-9, rec.ends[0])
+        entry = max(called + e * 1e-9, rec.ends[0])
         if upstream:  # the stage before's send holds the launch
-            sent, ready = ((t - origin) * 1e-9 for t in upstream[n])
+            sent, ready = ((t - origin) * 1e-9 for t in upstream[n][:2])
             pre += max(sent - entry - pre * 1e-9, 0.0) * 1e9
         launch = l1 - l0 - (p1 - p0)
         law = {"E": e, "W_pre": pre - (l0 - m1), "W_launch": launch, "W_post": post}
@@ -83,6 +133,7 @@ def check(steps: list[dict], stage=None, upstream=None) -> dict:
         head = (m0 - s["t_enter_ns"] - (g1 - g0)) * 1e-9
         due = max(entry + head, rec.output_end)
         batch = SimpleNamespace(total_tokens_num=0, total_seqs_num=0)
+        batch.compass_pp_host = (called, -math.inf)
         batch.total_seqs_num_prefill = sum(not d for *_, d in s["rows"])
         batch.produces_output = lambda out=s["produces_output"]: out
         gap = 0 if batch.total_seqs_num_prefill or mtp else s.get("d_gap_ns", 0)
@@ -109,6 +160,7 @@ def check(steps: list[dict], stage=None, upstream=None) -> dict:
             (s["step"], _kind(s, prev), 100 * (charge / period - 1), res, queued, r1_ms)
         )
         now, prev = now + charge, s
+        yield [*sends[-1], *(origin + round(t * 1e9) for t in (called, now))]
     kinds = {}
     for k in KINDS:
         if err := [r[2] for r in rows if r[1] == k]:
@@ -118,7 +170,7 @@ def check(steps: list[dict], stage=None, upstream=None) -> dict:
             kinds[k] = (len(err), p10, p50, p90, np.median(r1) if r1 else None, ok)
     span = (steps[-1]["t_exit_ns"] - steps[0]["t_enter_ns"]) * 1e-9
     total = 100 * (now / span - 1)
-    return {
+    yield {
         "kinds": kinds,
         "total": total,
         "pass": abs(total) <= TOTAL_BAND and all(v[-1] for v in kinds.values()),
@@ -129,15 +181,14 @@ def check(steps: list[dict], stage=None, upstream=None) -> dict:
 
 def main(record: str) -> int:
     """Print the gate per DP rank and pipeline stage of `record`; 1 if any fails."""
-    ok, stages, sends = True, [read(record)], {}
+    ok, stages = True, [read(record)]
     while more := read(record, len(stages)):
         stages.append(more)
-    pp = len(stages)
-    runs = [(i, r, s) for i, d in enumerate(stages) for r, s in d.items()]
-    for i, rank, steps in runs:
-        stage = (i, pp) if pp > 1 else None
-        report = check(steps, stage, sends.get((i - 1, rank)))
-        sends[i, rank] = report["sends"]
+    pp, runs = len(stages), []
+    for rank, steps in stages[0].items():
+        reports = pipeline([d[rank] for d in stages]) if pp > 1 else [check(steps)]
+        runs += [(i, rank, report) for i, report in enumerate(reports)]
+    for i, rank, report in runs:
         ok &= report["pass"]
         name = f"dp{rank} pp{i}" if pp > 1 else f"dp{rank}"
         print(f"{name} kind      n      p10      p50      p90  recv p50 ms  gate")

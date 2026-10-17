@@ -1422,7 +1422,12 @@ come with the stage sends ([#468](https://github.com/jgong5/ATOM/issues/468)), R
 [#1200](https://github.com/jgong5/ATOM/issues/1200): a simulated stage loop receives `pp_data`
 at the forward's call, its launch waits for the metadata's arrival and its device start for
 the tensors', and a non-last stage sends at its launch end (#1324).
-The gate charges a PP record's stages together. A simulated run refuses a
+The gate charges a PP record's stages together, step by step, and predicts both waits
+between them that ATOM's stage loops hold outside the recurrence: the head's
+`recv_tokens` before it schedules, released at the last stage's exit of forward `n - pp`
+or of a later output forward holding a request it schedules, and a downstream stage's
+`recv_metadata`, released at the head's call ([#1325](https://github.com/jgong5/ATOM/issues/1325)).
+A simulated run refuses a
 speculative config until [#1090](https://github.com/jgong5/ATOM/issues/1090).
 
 **What-ifs.** The run-file key `host.skip` zeroes the named segments. Such a run is a
