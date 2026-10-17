@@ -275,7 +275,9 @@ class HostDeviceRecurrence:
     ) -> float:
         """The forward's exit less `now`, for `device_s` of target device time
         and then `draft_s` of draft, starting no earlier than the batch's
-        `compass_pp_release`; advances the device state. With any
+        `compass_pp_release`; advances the device state. A batch's
+        `compass_pp_host = (called, meta)` runs the host from `called` in place
+        of `now` and holds the launch until `meta`. With any
         laws and `refuse`, a forward whose kind lacks one for a segment it runs
         is refused, naming each ``<kind>.<segment>``, the state as it was;
         without `refuse` that segment is 0. A segment in `skip` needs none, and
@@ -297,7 +299,8 @@ class HostDeviceRecurrence:
         }
         e, pre, launch, post = self.segments.values()
         now = self.now()
-        host = max(now + e, self.ends[0]) + pre
+        called, meta = getattr(batch, "compass_pp_host", (now, -math.inf))
+        host = max(max(called + e, self.ends[0]) + pre, meta)
         output = batch.produces_output()
         if self.mtp and output:  # output_end stays -inf on a PP stage
             host = max(host, self.output_end)
@@ -591,7 +594,8 @@ class PipelineFrames:
 
     def _pp_send(self, batch: Any, seconds: float) -> tuple | None:
         """What this stage's forward sends the next stage, None on the last:
-        when its device work ends, in seconds from the call, and its parts as
+        when its device work ends, in seconds from the call; the `W_post` the
+        stage loop charges after its send, left out of `predicted_s`; and its parts as
         ``(carrier, bytes)`` in the order the next receives them, the size and
         the pickled metadata on gloo, then each tensor on RCCL."""
         pp = int(_config_field(self, "pipeline_parallel_size") or 1)
@@ -611,9 +615,10 @@ class PipelineFrames:
         ]
         tensors = [("rccl", math.prod(s) * d.itemsize) for s, d in sizes.values()]
         host = getattr(self, "compass_host", None)
-        if isinstance(host, HostDeviceRecurrence):
-            seconds = host.ends[-1] - host.now()
-        return seconds, [("gloo", 8), ("gloo", len(pickle.dumps(meta))), *tensors]
+        post = 0.0
+        if isinstance(host, HostDeviceRecurrence) and self.rank == 0:
+            seconds, post = host.ends[-1] - host.now(), host.segments["W_post"]
+        return seconds, post, [("gloo", 8), ("gloo", len(pickle.dumps(meta))), *tensors]
 
     def send_pp_frame(self, kind: str, frame: dict) -> bool:
         """Post one stage-loop frame to the next stage (``pp_data``) or the one
@@ -1050,6 +1055,8 @@ class NonAllocatingRunner(
             group_targets=getattr(self, "_group_targets", None),
         )
         out.pp_send = self._pp_send(batch, seconds)
+        if out.pp_send is not None:
+            out.predicted_s -= out.pp_send[1]
         return out
 
 

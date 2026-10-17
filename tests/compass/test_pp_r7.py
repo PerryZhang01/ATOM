@@ -51,13 +51,13 @@ def _stage(rank, *grants, frames=(), ready=C, parts=()):
         calls.append((name, *args))
         if name == "forward":
             rt.advance_to(rt.now + C)
-            return SimpleNamespace(pp_send=(ready, parts))
+            return SimpleNamespace(pp_send=(ready, 0.0, parts))
         return frames.pop(0) if name == "recv_pp_frame" else True
 
     return rt, partial(on_owner, StageSends(rt, call, rank, 2, MODELS)), calls
 
 
-def test_a_downstream_forward_starts_at_the_metadata_and_its_device_at_the_tensors():
+def test_a_downstream_forward_is_called_at_the_send_its_launch_held_to_the_metadata():
     t_send, t_ready = 0.25, 0.5
     frame = {"seq": 0, "t_send": t_send, "t_ready": t_ready, "parts": RDV}
     done, meta, end = pp_send.arrivals(MODELS, frame, 0.0)
@@ -67,18 +67,16 @@ def test_a_downstream_forward_starts_at_the_metadata_and_its_device_at_the_tenso
     rt, run, calls = _stage(
         1,
         (t_send + L_DATA, {DATA: [(0, t_send + L_DATA)]}),
-        (meta, {}),
-        (meta + C, {}),
+        (t_send + L_DATA + C, {}),
         frames=[frame],
     )
     batch = SimpleNamespace()
     run("forward", batch)
     assert [m[:3] for m in rt.conn.sent] == [
         ("NER", math.inf, []),
-        ("TAR", meta, [(ACK, 0, done)]),
-        ("TAR", meta + C, []),
+        ("TAR", t_send + L_DATA + C, [(ACK, 0, done)]),
     ]
-    assert batch.compass_pp_release == end
+    assert (batch.compass_pp_host, batch.compass_pp_release) == ((0.0, meta), end)
     assert done - (t_send + L_DATA) >= L_ACK
     assert [c[0] for c in calls] == ["recv_pp_frame", "send_pp_frame", "forward"]
 

@@ -1373,6 +1373,7 @@ forward is called (the previous forward's exit, or the grant that ended an idle 
 entry      = now + E
 h          = max(entry, R4) + W_pre
 h          = max(h, R1)                        # MTP only: R1 waits before launch
+h          = max(h, R7)                        # non-first PP stage: the metadata
 launch_end = h + W_launch
 start      = max(end[n-1], h)
 target_end = start + D_target
@@ -1424,8 +1425,8 @@ KV transfer keeps its own model (D6).
 Stage 2 builds R1 and R4 ([#825](https://github.com/jgong5/ATOM/issues/825)). R6 and R8
 come with the stage sends ([#468](https://github.com/jgong5/ATOM/issues/468)), R7 with
 [#1200](https://github.com/jgong5/ATOM/issues/1200): a simulated stage loop receives `pp_data`
-before the forward and advances to the metadata's arrival, so its host waits at the
-forward's call rather than its launch, and the tensors' arrival holds the device start.
+at the forward's call, its launch waits for the metadata's arrival and its device start for
+the tensors', and a non-last stage sends at its launch end (#1324).
 The gate charges a PP record's stages together. A simulated run refuses a
 speculative config until [#1090](https://github.com/jgong5/ATOM/issues/1090).
 
