@@ -641,12 +641,24 @@ class PipelineFrames:
         return pp.recv_object(pp.rank_in_group + (-1 if kind == "pp_data" else 1))
 
 
+class OffloadDecisions:
+    """The offload decisions each dispatch hands the worker, kept for the
+    parity record before ATOM's own dispatch runs."""
+
+    def process_kvconnector_output(self, meta: Any) -> None:
+        from atom.compass.parity import record_kv
+
+        record_kv(self, meta)
+        return super().process_kvconnector_output(meta)
+
+
 class NonAllocatingRunner(
     RefusedControlCommands,
     PricedSteps,
     PredictedMemory,
     StepGridBundle,
     PipelineFrames,
+    OffloadDecisions,
 ):
     """Overrides that construct a model runner without touching device memory."""
 
