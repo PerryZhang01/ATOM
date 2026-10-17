@@ -701,11 +701,15 @@ def main(argv=None) -> None:
     parser.add_argument(
         "--engine",
         help="the engine file the records ran under, stated in place of the "
-        ".engine.json beside each",
+        ".engine.json beside each; refused where one contradicts it",
     )
     args = parser.parse_args(argv)
     if args.engine:
         engine = keyed_of(json.loads(Path(args.engine).read_text()))
+        for own in (Path(r).with_suffix(".engine.json") for r in args.records):
+            held = keyed_of(json.loads(own.read_text())) if own.exists() else {}
+            if differ := [k for k, v in held.items() if engine.get(k, v) != v]:
+                raise ValueError(f"{own} contradicts {args.engine} in {differ}")
     else:
         engine = engine_config(args.records)
     dp = join_width(engine)

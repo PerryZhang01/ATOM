@@ -188,3 +188,19 @@ def test_records_predating_the_width_fit_at_the_width_an_engine_file_states(tmp_
 
     assert law_["engine_config"] == engine
     assert law_["prefill"]["coefficients"] == pytest.approx(PREFILL, rel=1e-6)
+
+
+def test_a_stated_engine_file_contradicting_the_records_own_refuses(tmp_path):
+    from atom.compass.backends.step_linear_fit import main
+
+    records = _records(tmp_path, _groups(0))
+    for path in records:
+        _engine_file(path, {"data_parallel_size": DP, "enable_dp_attention": True})
+    stated = tmp_path / "stated.engine.json"
+    stated.write_text(
+        json.dumps({"data_parallel_size": 1, "enable_dp_attention": True})
+    )
+    out = ["--out", str(tmp_path / "law.json"), *SPEC]
+    with pytest.raises(ValueError, match=r"contradicts .* in \['data_parallel_size'\]"):
+        main([*map(str, records), *out, "--engine", str(stated)])
+    assert not (tmp_path / "law.json").exists()
