@@ -113,6 +113,7 @@ def a_start(tmp_path, monkeypatch, stack):
         pid = 0
 
         def __init__(self, *args, **kwargs):
+            (tmp_path / "hip").write_text(kwargs["env"]["HIP_VISIBLE_DEVICES"])
             ranks_wrote(out, r.config, [READINGS[2]] * 2)
 
         def wait(self, timeout=None):
@@ -130,11 +131,19 @@ def a_start(tmp_path, monkeypatch, stack):
     monkeypatch.setattr(measure_memory, "subprocess", started_by)
     monkeypatch.setattr(measure_memory.os, "killpg", gone)
     monkeypatch.setattr(measure_memory, "_device", lambda gpus: [MI355X])
+    # rocm-smi GPU 5 as HIP device 2.
+    monkeypatch.setattr(measure_memory, "hip_visible", {(5,): "2"}.get)
     monkeypatch.setattr(measure_memory, "identity", lambda *a: {"stack": stack})
     machine = tmp_path / "machine.json"
     machine.write_text(json.dumps(DOCUMENT))
     flags = ["--gpu", "5", "--machine", str(machine), "--store", str(tmp_path / "s")]
     return r, [*flags, "--out", str(out), "--", "--model", r.config.model]
+
+
+def test_the_engine_starts_on_the_hip_device_of_its_rocm_smi_gpu(tmp_path, monkeypatch):
+    _, argv = a_start(tmp_path, monkeypatch, STACK)
+    measure_memory.main(argv)
+    assert (tmp_path / "hip").read_text() == "2"
 
 
 def test_the_command_publishes_under_the_stack_the_spec_pins(tmp_path, monkeypatch):

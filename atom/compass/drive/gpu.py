@@ -14,6 +14,10 @@ match against its own, so this run's processes are told apart by when the
 checks run rather than by PID: before the run none has started, and after it
 every one has exited, so a process listed on a named GPU at either check is not
 this run's.
+
+`--gpu` and the listing number GPUs as rocm-smi does, in PCI bus order; HIP
+numbers them in KFD topology node order, and on some nodes the two differ, so
+a command hands its server or engine `hip_visible`'s translation.
 """
 
 import argparse
@@ -27,6 +31,8 @@ PREFLIGHT = Path(__file__).resolve().parents[3] / "scripts/compass/preflight.sh"
 PREFLIGHT_TIMEOUT_S = 300
 SMI_TIMEOUT_S = 60
 _ON = re.compile(r"PID (\d+) is using \d+ DRM device\(s\):\n([\d ]*)")
+#: A `rocm-smi --showhw` row: the GPU's index, then its KFD node.
+_NODE = re.compile(r"^(\d+) +(\d+) ", re.MULTILINE)
 
 
 class GpuRefusal(Exception):
@@ -66,6 +72,17 @@ def smi(*args: str) -> str:
             f"rocm-smi {' '.join(args)} exited {done.returncode}: {done.stderr.strip()}"
         )
     return done.stdout
+
+
+def hip_visible(gpus: tuple[int, ...]) -> str:
+    """`HIP_VISIBLE_DEVICES` for the rocm-smi GPUs `gpus`: each one's HIP
+    ordinal is its KFD node's rank among the nodes `rocm-smi --showhw` lists.
+    A GPU it does not list refuses."""
+    node = {int(g): int(n) for g, n in _NODE.findall(smi("--showhw"))}
+    if missing := [gpu for gpu in gpus if gpu not in node]:
+        raise GpuRefusal(f"rocm-smi --showhw lists no GPU {missing}")
+    order = sorted(node.values())
+    return ",".join(str(order.index(node[gpu])) for gpu in gpus)
 
 
 @contextmanager

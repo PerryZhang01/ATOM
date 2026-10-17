@@ -22,6 +22,7 @@
 # `import atom`, atom.config, atom.compass, atom.model_engine.llm_engine and
 # atom.entrypoints.openai_server run no rocminfo.
 set -uo pipefail
+. "$(dirname -- "${BASH_SOURCE[0]}")/_lib.sh"
 RC=0
 
 # --- 0. D-state census -------------------------------------------------------
@@ -133,7 +134,9 @@ if [ -n "$FREE" ]; then
     # `printf ... | cut -d' ' -f1-2` took fields of the whole line, so
     # "export HIP_VISIBLE_DEVICES=0 1 2" was cut back to "...=0" -- the line
     # above reported three devices free and the line you copy handed you one.
-    printf 'export HIP_VISIBLE_DEVICES=%s\n' "$(printf '%s' "${FREE# }" | tr ' ' ',')"
+    # FREE is rocm-smi's indexes; HIP_VISIBLE_DEVICES takes the same GPUs' HIP ordinals.
+    hip=$(compass_gpus hip "$(printf '%s' "${FREE# }" | tr ' ' ',')") &&
+        printf 'export HIP_VISIBLE_DEVICES=%s\n' "$hip"
 else
     printf 'none idle and empty -- every device is busy or holds VRAM.\n'
 fi

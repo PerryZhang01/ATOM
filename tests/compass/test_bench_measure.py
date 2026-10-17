@@ -12,6 +12,7 @@ pass and the provenance names planted trees.
 
 import copy
 import json
+import os
 import re
 import shutil
 from contextlib import nullcontext
@@ -81,6 +82,9 @@ def run(tmp_path, monkeypatch, model_dir):  # noqa: F811
     monkeypatch.setattr(measure, "atom_config", lambda atom_args: config)
     monkeypatch.setattr(measure, "identity", lambda *_: copy.deepcopy(run.identity))
     monkeypatch.setattr(measure, "quiet", lambda gpus, out: nullcontext())
+    # rocm-smi GPU 7 as HIP device 3; the command sets the variable in-process.
+    monkeypatch.setattr(measure, "hip_visible", {(7,): "3"}.get)
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising=False)
     monkeypatch.setattr(measure, "roots_for", lambda _: (ATOM_ROOT, AITER_ROOT))
     monkeypatch.setattr(measure, "start_bench", Bench)
     monkeypatch.setattr(Bench, "started", [])
@@ -128,6 +132,12 @@ def entries(store) -> list:
 
 def by_view(store) -> dict:
     return {key.values["view"]: (key, member) for key, member in entries(store)}
+
+
+def test_the_bench_runs_on_the_hip_device_of_its_rocm_smi_gpu(run):
+    rec = str(run.record)
+    run(rec, "--sample", "all", *run.named(rec))
+    assert os.environ["HIP_VISIBLE_DEVICES"] == "3"
 
 
 def test_measuring_one_record_twice_publishes_each_view_once_and_then_nothing(run):

@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from test_drive_gpu import GPU45, SHOWHW
 
 ROOT = Path(__file__).resolve().parents[2]
 STUB = """#!/bin/bash
@@ -38,11 +39,14 @@ exec "$REAL_PYTHON" "$@"
 """
 
 
-def _parity(tmp_path, **env):
+def _parity(tmp_path, showhw=SHOWHW, **env):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     (bindir / "python3").write_text(STUB)
     (bindir / "python3").chmod(0o755)
+    (tmp_path / "showhw").write_text(showhw)
+    (bindir / "rocm-smi").write_text(f"#!/bin/sh\ncat {tmp_path}/showhw\n")
+    (bindir / "rocm-smi").chmod(0o755)
     model = tmp_path / "model"
     model.mkdir()
     (model / "config.json").write_text('{"architectures": ["DeepseekV4ForCausalLM"]}')
@@ -164,6 +168,12 @@ def test_the_measurement_takes_the_real_runs_gpus(tmp_path):
     assert r.returncode == 0, r.stderr
     assert " measure memory --gpu 4,5 " in servers[0]
     assert len(servers) == 3
+
+
+def test_the_measurement_names_the_real_runs_hip_devices_as_rocm_smi_gpus(tmp_path):
+    r, servers, _ = _parity(tmp_path, GPU45, STORE=None, HIP_VISIBLE_DEVICES="0,1")
+    assert r.returncode == 0, r.stderr
+    assert " measure memory --gpu 3,0 " in servers[0]
 
 
 def test_a_failed_measurement_starts_no_server(tmp_path):
