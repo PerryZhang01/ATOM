@@ -16,7 +16,7 @@ holds the runs it was fitted on, each vector's fit figures and hull, and, once
 `rowmod` shuffles, so the same samples and arguments give the same bytes.
 
 With `--dp N` (EP off) the records come in runs of N, each run's `dp0.jsonl`
-to `dp<N-1>.jsonl`, and the law is keyed `(N, 1)`. A step is its ranks' lines
+to `dp<N-1>.jsonl`; the law states no width. A step is its ranks' lines
 joined on step index, labelled with the smallest rank label (the others wait
 for the last rank to enter), and a prefill row adds the line's `moe_rows`. A
 step that some rank cut, or whose ranks' rows fall to different vectors, is
@@ -36,7 +36,8 @@ host laws as a run file's `host` entry: `key`, and `laws[kind][segment]`,
 seconds on `(1, tokens, seqs)`, fitted on the samples' host labels. They take
 the step linear law's solver, MAD drops and hulls; `seqs` equal to `tokens` on
 every sample gets zero. Two keys refuse. The law and the host key state the
-`--machine-spec` digest, which a run's spec must match.
+`--machine-spec` digest, which a run's spec must match. A segment outside `HOST_SEGMENTS` is
+fitted for a kind whose samples carry it: `W_inputs`, on an MTP record.
 
 Each equation is divided by its own label and the coefficients are bound to be
 non-negative. Steps whose relative residual is more than `MAD_K` scaled MADs
@@ -204,7 +205,8 @@ def fit_host(samples) -> tuple[dict, dict]:
     host = {"key": json.loads(keys[0]), "laws": {}}
     report = {"cut": {"idle": sum(s.idle for s in samples)}, "unfitted": {}}
     for kind in HOST_KINDS:
-        for segment in HOST_SEGMENTS[: 3 if kind == "middle" else 4]:
+        extra = sorted({r[1] for r in rows if r[0] == kind} - set(HOST_SEGMENTS))
+        for segment in HOST_SEGMENTS[: 3 if kind == "middle" else 4] + tuple(extra):
             members = [r for r in rows if r[:2] == (kind, segment) and r[3] > 0]
             x = np.array([r[2] for r in members], dtype=np.float64).reshape(-1, 3)
             width = 2 if np.array_equal(x[:, 1], x[:, 2]) else 3
@@ -435,7 +437,6 @@ def fit(samples, options=None, seed: int = 0) -> tuple[dict, dict]:
         f"({', '.join(runs)})",
         "form": form,
         "cut": cut,
-        "key": [dp, 1],
         "warm_steps": [[] for _ in runs],
         "unfitted": {},
         "decode": {},

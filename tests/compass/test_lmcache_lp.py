@@ -133,13 +133,18 @@ def test_the_rows_join_each_dp_rank_and_writer_to_lmcache(tmp_path, stated):
     assert "lmcache" in compass_run._hand_ins(run)
 
 
-def test_a_prefill_decode_run_joins_lmcache_to_the_prefill_engine(tmp_path):
+@pytest.mark.parametrize("widths", [(), (2, 1)], ids=["no-widths", "P2D1"])
+def test_a_prefill_decode_run_joins_lmcache_to_the_prefill_engine(tmp_path, widths):
     run = _run(tmp_path)
     run.update(router_s=2.0**-12, kv_write_req_s=2.0**-10)
+    run.update(zip(compass_run.DP_WIDTHS.values(), widths))
     table = compass_run.channel_table(run)
-    assert {c.target for c in table.channels_from(LpId("lmcache"))} == {
-        LpId("engine-P")
-    }
+    lm = LpId("lmcache")
+    assert {c.target for c in table.channels_from(lm)} == {LpId("engine-P")}
+    # One lookup channel per prefill DP rank, at the prefill side's own width.
+    lookups = {c.name for c in table.channels_into(lm) if ":lookup#" in c.name}
+    ranks = widths[0] if widths else 1
+    assert lookups == {f"engine-P->lmcache:lookup#dp{r}" for r in range(ranks)}
 
 
 def test_a_zero_lmcache_ipc_s_is_refused_as_a_cycle(tmp_path):
@@ -165,13 +170,28 @@ def test_the_decode_side_of_an_offloading_deployment_is_refused(tmp_path):
         compass_run._launch_lmcache(_config(MULTI), _run(tmp_path), "D")
 
 
-@pytest.mark.parametrize("tp, writers", [(2, 1), (1, 2)], ids=["fewer", "more"])
+COLLAPSED = OFFLOAD | {
+    "kv_connector_extra_config": {"lmcache.mp.tp_rank_collapse": True}
+}
+
+
+@pytest.mark.parametrize(
+    "kv, tp, dp_attention, writers, ranks",
+    [
+        (OFFLOAD, 2, False, 1, 2),
+        (OFFLOAD, 1, False, 2, 1),
+        (OFFLOAD, 2, True, 2, 1),  # each DP rank runs at TP 1
+        (COLLAPSED, 2, True, 2, 1),  # its TP 1 collapses no further
+    ],
+    ids=["fewer", "more", "dp-attention", "collapsed-dp-attention"],
+)
 def test_writers_other_than_the_deployments_writer_ranks_are_refused(
-    tmp_path, tp, writers
+    tmp_path, kv, tp, dp_attention, writers, ranks
 ):
     run = _run(tmp_path, writers=writers)
-    with pytest.raises(ValueError, match=f"writers is {writers}; .* from {tp} rank"):
-        compass_run._launch_lmcache(_config(tensor_parallel_size=tp), run, None)
+    config = _config(kv, tensor_parallel_size=tp, enable_dp_attention=dp_attention)
+    with pytest.raises(ValueError, match=f"writers is {writers}; .* from {ranks} rank"):
+        compass_run._launch_lmcache(config, run, None)
 
 
 def test_an_lmcache_entry_with_no_deployment_to_start_it_is_refused(tmp_path):

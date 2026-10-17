@@ -4,7 +4,7 @@ checked against the resolved ATOM config before the first step.
 
 The run file's ``step_grid`` is the store's root and the bundle's key fields:
 
-    {"store": <root directory>, "model": ..., "device": ..., "parallel": ...,
+    {"store": <root directory>, "model": ..., "device": ...,
      "engine_config": ..., "grid": ..., "source_root": ...}
 
 A bundle prices a TP group's whole step, so a run reads one member at any

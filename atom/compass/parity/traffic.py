@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: MIT
 """The parity workload: distinct completions sent on a schedule, to a real or a simulated run.
 
-    python -m atom.compass.parity.traffic PORT MODEL RECORD [REQUESTS [GAP_S]]
+    python -m atom.compass.parity.traffic PORT MODEL RECORD [REQUESTS [GAP_S [PREFIX_WORDS [IMAGES]]]]
 
-Request k's prompt starts with k, and it asks for a fixed number of tokens
-with ``ignore_eos``, streamed. On a real run (`ATOM_COMPASS_RUN` unset)
+Request k's prompt starts with PREFIX_WORDS words every request shares (none
+by default), then k; with IMAGES it is a chat message after that many images
+(`image`). It asks for a fixed number of tokens with
+``ignore_eos``, streamed. On a real run (`ATOM_COMPASS_RUN` unset)
 request k is sent GAP_S * k wall seconds after the first and not before the
 server has admitted request k - 1, each on its own thread; the worker clock's
 reading as each was sent, and as its response headers arrived (the server
@@ -15,7 +17,9 @@ first one, on the run's clock, and takes every stream event the authority
 releases until the finish.
 """
 
+import base64
 import http.client
+import io
 import json
 import math
 import sys
@@ -35,20 +39,39 @@ WALL_S = 3600.0
 WORDS = ["parity", "replays", "each", "real", "step", "on", "the", "clock"]
 
 
-def bodies(model: str, n: int) -> list[dict]:
-    """Request k: about 48 + 31k words starting with k, 16 to 96 output tokens."""
-    return [
-        {
+def image(k: int) -> str:
+    """Request k's image: a 224 x 224 PNG of one colour, as a data URL."""
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (224, 224), (37 * k % 256, 91 * k % 256, 53 * k % 256)).save(
+        out, "PNG"
+    )
+    return "data:image/png;base64," + base64.b64encode(out.getvalue()).decode()
+
+
+def bodies(model: str, n: int, prefix_words: int = 0, images: int = 0) -> list[dict]:
+    """Request k: `prefix_words` words every request shares, then about
+    48 + 31k words starting with k; 16 to 96 output tokens. With `images`, a
+    chat message whose text follows that many copies of `image(k)`."""
+    prefix = "".join(f"{WORDS[i % len(WORDS)]} " for i in range(prefix_words))
+    out = []
+    for k in range(n):
+        body = {
             "model": model,
-            "prompt": f"{k} "
+            "prompt": f"{prefix}{k} "
             + " ".join(WORDS[(k + i) % len(WORDS)] for i in range(48 + 31 * k)),
             "max_tokens": 16 + 16 * (k % 6),
             "ignore_eos": True,
             "temperature": 0,
             "stream": True,
         }
-        for k in range(n)
-    ]
+        if images:
+            part = {"type": "image_url", "image_url": {"url": image(k)}}
+            text = {"type": "text", "text": body.pop("prompt")}
+            body["messages"] = [{"role": "user", "content": [part] * images + [text]}]
+        out.append(body)
+    return out
 
 
 def post(port: int, body: dict, headers: dict):
@@ -56,7 +79,8 @@ def post(port: int, body: dict, headers: dict):
     (its headers follow the engine's `add_request`); raises unless it answers 200."""
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=WALL_S)
     headers = {"content-type": "application/json", **headers}
-    conn.request("POST", "/v1/completions", json.dumps(body), headers)
+    path = "/v1/chat/completions" if "messages" in body else "/v1/completions"
+    conn.request("POST", path, json.dumps(body), headers)
     response = conn.getresponse()
     if response.status != 200:
         raise RuntimeError(f"HTTP {response.status}: {response.read()[:500]!r}")
@@ -64,11 +88,19 @@ def post(port: int, body: dict, headers: dict):
 
 
 def real(
-    port: int, requests: list[dict], gap_s: float, record: Path, wait: bool = True
+    port: int,
+    requests: list[dict],
+    gap_s: float,
+    record: Path,
+    wait: bool = True,
+    prefix_words: int = 0,
+    images: int = 0,
 ) -> None:
     """Send request k at `gap_s` * k, once k - 1 is admitted when `wait`, read
-    each to its end, write `ARRIVALS`. Through a prefill-decode router a request
-    is admitted only once its prefill returns, so `wait` keeps prefills apart."""
+    each to its end, write `ARRIVALS` with the requests' `prefix_words` and
+    `images`.
+    Through a prefill-decode router a request is admitted only once its
+    prefill returns, so `wait` keeps prefills apart."""
     sent, start = [0] * len(requests), time.monotonic()
     admitted = [threading.Event() for _ in requests]
     admitted_ns = [0] * len(requests)
@@ -88,7 +120,12 @@ def real(
 
     with ThreadPoolExecutor(len(requests)) as pool:
         list(pool.map(one, range(len(requests))))
-    arrivals = {"sent_ns": sent, "admitted_ns": admitted_ns}
+    arrivals = {
+        "sent_ns": sent,
+        "admitted_ns": admitted_ns,
+        "prefix_words": prefix_words,
+        "images": images,
+    }
     (record / ARRIVALS).write_text(json.dumps(arrivals))
 
 
@@ -161,8 +198,12 @@ if __name__ == "__main__":
     run, record = compass_run.spec(), Path(record)
     if run is None:
         n, gap_s = int(rest[0]) if rest else 64, float(rest[1]) if rest[1:] else 0.05
-        real(int(port), bodies(model, n), gap_s, record)
+        prefix, images = (int(rest[i]) if rest[i:] else 0 for i in (2, 3))
+        requests = bodies(model, n, prefix, images)
+        real(int(port), requests, gap_s, record, prefix_words=prefix, images=images)
     else:
-        sent = json.loads((record / ARRIVALS).read_text())["sent_ns"]
+        arrivals = json.loads((record / ARRIVALS).read_text())
+        sent, prefix = arrivals["sent_ns"], arrivals.get("prefix_words", 0)
+        requests = bodies(model, len(sent), prefix, arrivals.get("images", 0))
         offsets = [(t - min(sent)) / 1e9 for t in sent]
-        Traffic(run, int(port), bodies(model, len(sent)), offsets).run()
+        Traffic(run, int(port), requests, offsets).run()

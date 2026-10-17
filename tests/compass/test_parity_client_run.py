@@ -17,7 +17,7 @@ import pytest
 from test_parity_record import _config, _key, _prompt, _Runner
 from test_parity_response_ids import SAMPLING, _frontend, engine  # noqa: F401
 
-from atom.compass.parity.client_run import NAME, RAW, response_id, write
+from atom.compass.parity.client_run import AIPERF, NAME, RAW, response_id, write
 from atom.compass.parity.served import served
 from atom.compass.validate.runs import CLIENT_RUN
 from atom.entrypoints.openai import api_server
@@ -26,6 +26,8 @@ from atom.model_engine.scheduler import Scheduler
 
 #: The payload's request parameters, beside what the export leaves out.
 PARAMETERS = {"ignore_eos": True, **SAMPLING}
+#: A cc-trace id, as cc-traces names a trace.
+CC_TRACE = "a3acb7e89fb41af79510cf1ecf36a703490f"
 
 
 def raw(responses, conversation="trace-0", payload=None, phase="profiling") -> dict:
@@ -54,9 +56,24 @@ def sse(*packets) -> dict:
     return {"perf_ns": 1, "packets": [{"name": n, "value": v} for n, v in packets]}
 
 
-def _write_raw(artifacts, records) -> None:
+def weka(path, *ids) -> dict:
+    """aiperf's input config entry for weka traces `ids` at `path`: one file
+    when `path` is a `.json`, else a directory holding a file each."""
+    files = [path] if path.suffix == ".json" else [path / f"{t}.json" for t in ids]
+    files[0].parent.mkdir(parents=True, exist_ok=True)
+    for f, t in zip(files, ids):
+        f.write_text(json.dumps({"id": t, "block_size": 64, "requests": []}))
+    return {"name": "main", "type": "file", "path": str(path), "format": "weka_trace"}
+
+
+def _write_raw(artifacts, records, dataset=None) -> None:
+    """`records` as aiperf's raw records, beside its export, whose input
+    config names `dataset`, by default a directory of trace `trace-0`."""
     artifacts.mkdir(parents=True, exist_ok=True)
     (artifacts / RAW).write_text("".join(json.dumps(r) + "\n" for r in records))
+    dataset = dataset or weka(artifacts / "traces", "trace-0")
+    config = {"input_config": {"datasets": [dataset]}}
+    (artifacts / AIPERF).write_text(json.dumps(config))
 
 
 def test_a_record_splits_by_the_exports_aiperf_s_raw_records_give(
@@ -178,7 +195,62 @@ def test_the_trace_is_the_conversation_and_the_parameters_are_what_shape_no_prom
             "b": {"trace": "t1", "sampling": {}},
         },
         "warmup": {},
+        "traces": ["trace-0"],
+        "sessions": {},
     }
+
+
+@pytest.mark.parametrize(
+    "path, traces", [("traces", ["t0", "t1", "t2"]), ("t1.json", ["t1"])]
+)
+def test_the_export_names_every_trace_aiperf_was_given_not_only_those_finished(
+    tmp_path, path, traces
+):
+    dataset = weka(tmp_path / path, "t1", "t2", "t0")
+    if path == "traces":  # aiperf reads only a directory's `.json` files
+        (tmp_path / path / "notes.txt").write_text("{}")
+    _write_raw(tmp_path, [raw([sse(("data", '{"id": "a"}'))], "t1")], dataset)
+
+    export = json.loads(write(tmp_path)[0].read_text())
+
+    assert export["traces"] == traces
+    assert {r["trace"] for r in export["requests"].values()} == {"t1"}
+
+
+@pytest.mark.parametrize(
+    "path, files, sessions",
+    [
+        ("", {"00256": CC_TRACE, "00003": "t3", "t9": "t9"}, {CC_TRACE: 256, "t3": 3}),
+        ("00007.json", {"00007": CC_TRACE}, {CC_TRACE: 7}),
+    ],
+)
+def test_the_export_gives_each_trace_whose_file_is_numbered_that_session(
+    tmp_path, path, files, sessions
+):
+    """A trace's session is its file's number, which a cc-trace id is not."""
+    traces = tmp_path / "traces"
+    traces.mkdir()
+    for stem, trace in files.items():
+        (traces / f"{stem}.json").write_text(json.dumps({"id": trace}))
+    dataset = {"name": "main", "path": str(traces / path), "format": "weka_trace"}
+    _write_raw(tmp_path, [raw([sse(("data", '{"id": "a"}'))], CC_TRACE)], dataset)
+
+    export = json.loads(write(tmp_path)[0].read_text())
+
+    assert export["sessions"] == sessions
+    assert export["traces"] == sorted(files.values())
+
+
+@pytest.mark.parametrize(
+    "entry", [{"format": "mooncake_trace"}, {"path": None, "records": []}]
+)
+def test_a_dataset_not_of_weka_traces_at_a_path_refuses(tmp_path, entry):
+    dataset = weka(tmp_path / "traces", "t0") | entry
+    _write_raw(tmp_path, [raw([sse(("data", '{"id": "a"}'))], "t0")], dataset)
+
+    with pytest.raises(ValueError, match="dataset main is not weka traces at a path"):
+        write(tmp_path)
+    assert not (tmp_path / NAME).exists()
 
 
 @pytest.mark.parametrize(
@@ -223,3 +295,11 @@ def test_the_planted_records_are_aiperf_s_own():
     metadata = dumped["metadata"]
     assert {k: metadata[k] for k in planted["metadata"]} == planted["metadata"]
     assert response_id(dumped["responses"]) == "a"
+
+
+def test_the_planted_dataset_is_aiperf_s_own(tmp_path):
+    config = pytest.importorskip("aiperf.config.dataset.config")
+    planted = weka(tmp_path / "traces", "t0")
+
+    dataset = config.FileDataset.model_validate(planted)
+    assert (str(dataset.path), str(dataset.format)) == (planted["path"], "weka_trace")

@@ -43,11 +43,15 @@ def test_a_cell_writes_its_client_run_s_export(tmp_path, ids, cell_rc):
         "fi\n"
         f'exec {sys.executable} "$@"\n'
     )
+    # The input config of the trace files the script gives aiperf.
+    given = str(tmp_path / "cell" / "traces")
+    dataset = {"name": "main", "path": given, "format": "weka_trace"}
     export = tmp_path / "export.json"
     export.write_text(
         json.dumps(
             {k: {"avg": 1} for k in METRICS}
             | {"benchmark_id": "000000000000", "error_summary": []}
+            | {"input_config": {"datasets": [dataset]}}
         )
     )
     records = tmp_path / "raw.jsonl"
@@ -71,8 +75,9 @@ def test_a_cell_writes_its_client_run_s_export(tmp_path, ids, cell_rc):
     (bin_ / "rocm-smi").write_text("#!/bin/sh\nexit 0\n")
     for f in bin_.iterdir():
         f.chmod(0o755)
+    # Sessions 1 and 2 of three.
     traces = tmp_path / "traces.jsonl"
-    traces.write_text('{"id": 0}\n')
+    traces.write_text("".join(f'{{"id": "s{k}"}}\n' for k in range(3)))
     run_file = tmp_path / "run.json"
     run_file.write_text("{}")
     env = dict(
@@ -83,6 +88,7 @@ def test_a_cell_writes_its_client_run_s_export(tmp_path, ids, cell_rc):
         TRACES=str(traces),
         HARNESS_PYTHON=str(harness),
         WAIT_S="30",
+        FIRST_SESSION="1",
     )
     cell = tmp_path / "cell"
     done = subprocess.run(
@@ -111,4 +117,6 @@ def test_a_cell_writes_its_client_run_s_export(tmp_path, ids, cell_rc):
                 "b": {"trace": "t1", "sampling": PARAMETERS},
             },
             "warmup": {},
+            "traces": ["s1", "s2"],
+            "sessions": {"s1": 1, "s2": 2},
         }

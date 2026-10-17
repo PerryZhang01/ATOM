@@ -15,7 +15,14 @@ server sent it, the id the step record names it by; its trace is its
 name the conversations it derives from one trace; and its request parameters
 are its payload less the prompt, the model, the output length and the stream's
 framing. A request that got no response id, failing before its first chunk,
-names nothing and is counted.
+names nothing and is counted. ``traces`` names every trace aiperf was given:
+the ``id`` of each weka trace its input config's dataset holds, a file or each
+``*.json`` of a directory, as aiperf's weka trace loader reads them. Which of
+them a run's finished requests came from moves with its schedule, since aiperf
+records nothing of a request in flight at its cutoff. ``sessions`` gives each
+of them whose file is named by a number that number, its session:
+`cctraces_sim.sh` names each trace's file by its line in the traces it splits,
+counted from 0.
 """
 
 import argparse
@@ -23,6 +30,8 @@ import json
 from pathlib import Path
 
 RAW = "profile_export_raw.jsonl"
+#: aiperf's export, whose `input_config` names the dataset aiperf was given.
+AIPERF = "profile_export_aiperf.json"
 NAME = "client_run.json"
 #: aiperf's phases, as a raw record's `benchmark_phase` states them.
 WARMUP, PROFILING = "warmup", "profiling"
@@ -54,6 +63,21 @@ def response_id(responses) -> str | None:
     return None
 
 
+def given(artifacts) -> dict:
+    """The traces of the one dataset aiperf was given, as its export names it,
+    each to its file's name when that is a number, else None."""
+    config = json.loads((Path(artifacts) / AIPERF).read_text())["input_config"]
+    (d,) = config["datasets"]
+    if d.get("format") != "weka_trace" or not d.get("path"):
+        raise ValueError(f"aiperf's dataset {d['name']} is not weka traces at a path")
+    path = Path(d["path"])
+    files = path.glob("*.json") if path.is_dir() else [path]
+    return {
+        json.loads(f.read_text())["id"]: int(f.stem) if f.stem.isdigit() else None
+        for f in files
+    }
+
+
 def write(artifacts) -> tuple[Path, dict, int]:
     """Write `artifacts`' export; its path, the export, and how many requests
     got no response id."""
@@ -83,7 +107,13 @@ def write(artifacts) -> tuple[Path, dict, int]:
                 k: v for k, v in record["payload"].items() if k not in NOT_SAMPLING
             },
         }
-    export = {"requests": named[PROFILING], "warmup": named[WARMUP]}
+    traces = given(artifacts)
+    export = {
+        "requests": named[PROFILING],
+        "warmup": named[WARMUP],
+        "traces": sorted(traces),
+        "sessions": {t: s for t, s in traces.items() if s is not None},
+    }
     path = artifacts / NAME
     path.write_text(json.dumps(export, sort_keys=True))
     return path, export, unnamed

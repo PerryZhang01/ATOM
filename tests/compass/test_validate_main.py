@@ -252,7 +252,9 @@ def _as_recorded(cell, warmup=()):
     """Lay `cell`'s runs out as `record` and `run` write them: each request
     named at its last prefill row, by key `k<id>` and response id `id-<id>`;
     an export naming them all, from trace `t<id>`, those in `warmup` as its
-    warmup's, else request `w`, which no step holds; and run.json's identity,
+    warmup's, else request `w`, a one-step prefill before every other step,
+    numbered below them, and the same traces given to every run's client; and
+    run.json's identity,
     with `run`'s grading entries for `step_linear/`, its law and host laws in
     its run file and its refusals its summary's."""
     for d in sorted(cell.iterdir()):
@@ -264,8 +266,12 @@ def _as_recorded(cell, warmup=()):
                 last[r] = i if not decode else last.get(r, i)
         for r, i in last.items():
             lines[i]["named"].append([r, f"k{r}", f"id-{r}"])
+        if not warmup:
+            r, step = max(last) + 1, lines[0]["step"] - 1
+            w = {"step": step, "batch": [[r, 1, 1]], "named": [[r, "kw", "id-w"]]}
+            lines.insert(0, lines[0] | w | {"rows": [[1, 1, False]], "rung": None})
         path.write_text("".join(json.dumps(x) + "\n" for x in lines))
-        export = {"requests": {}, "warmup": {}}
+        export = {"requests": {}, "warmup": {}, "traces": ["t0", "t1", "tw"]}
         for r in last:
             part = "warmup" if r in warmup else "requests"
             export[part][f"id-{r}"] = {"trace": f"t{r}", "sampling": {}}
@@ -301,8 +307,8 @@ def test_a_cell_record_and_run_wrote_grades_as_the_one_cctraces_sim_wrote(
     graded = _graded(capsys, tmp_path / "c4")
     stated = [graded.pop(k) for k in list(graded) if k[0].startswith("warmup ")]
     assert graded == rows
-    # Each export names a warmup no step holds; a `cctraces_sim.sh` run reads none.
-    assert stated == [["requests 1, steps 0", "not graded"]] * 4
+    # Each run's warmup is request `w`'s step; a `cctraces_sim.sh` run reads none.
+    assert stated == [["requests 1, steps 1", "not graded"]] * 4
 
 
 def test_a_refusal_in_the_client_run_record_and_run_wrote_refuses_the_cell(
@@ -315,16 +321,16 @@ def test_a_refusal_in_the_client_run_record_and_run_wrote_refuses_the_cell(
         main([str(tmp_path / "c4")])
 
 
-def test_runs_record_and_run_wrote_that_served_other_traces_are_not_one_cell(
+def test_runs_record_and_run_wrote_that_were_given_other_traces_are_not_one_cell(
     capsys, tmp_path
 ):
     _rows(capsys, tmp_path)
     _as_recorded(tmp_path / "c4")
     export = tmp_path / "c4" / "real1" / CLIENT_RUN
-    t9 = {"requests": {"id-0": {"trace": "t9", "sampling": {}}}}
-    export.write_text(json.dumps(json.loads(export.read_text()) | t9))
+    other = {"traces": ["tx"]}
+    export.write_text(json.dumps(json.loads(export.read_text()) | other))
 
-    with pytest.raises(ValueError, match=r"sent different traces; .*real1': \['t9'\]"):
+    with pytest.raises(ValueError, match=r"given different traces; .*real1': \['tx'\]"):
         main([str(tmp_path / "c4")])
 
 
@@ -358,3 +364,24 @@ def test_a_warmed_run_is_graded_on_its_profiling_steps_and_slow_warmup_moves_not
     assert rows["cost real0", "prefill validated"][0].startswith("10 steps")
     assert rows["cost real0", "decode validated"][0].startswith("10 steps")
     assert rows["cost real0", "left out"][0].endswith("warm steps, real s {}")
+
+
+def test_a_run_file_of_a_law_per_engine_config_costs_real_runs_at_their_own(
+    capsys, tmp_path
+):
+    cell = tmp_path / "c4"
+    _rows(capsys, tmp_path)
+    _as_recorded(cell)
+    rows = _graded(capsys, cell)
+    ours, theirs = {"enable_tbo": False}, {"enable_tbo": True}
+    other = json.loads(json.dumps(LAW))
+    other["prefill"]["coefficients"]["step"] *= 2
+    run = json.loads((cell / "step_linear" / "run.json").read_text())
+    laws = [other | {"engine_config": theirs}, LAW | {"engine_config": ours}]
+    run["run_file"]["step_linear"] = laws
+    (cell / "step_linear" / "run.json").write_text(json.dumps(run))
+    for real in ("real0", "real1", "real2"):
+        engine = ours | {"num_kvcache_blocks": 8, "max_num_seqs": 4}
+        (cell / real / "steps" / "dp0.engine.json").write_text(json.dumps(engine))
+
+    assert _graded(capsys, cell) == rows

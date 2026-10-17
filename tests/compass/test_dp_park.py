@@ -224,6 +224,7 @@ def test_an_idle_step_that_waits_alone_parks_and_releases_its_peer_at_its_now(dp
     rank._execute_dummy_batch()
 
     assert rt.now == 0.5 + STEP_S and rank.polled == [None] and not rt.refusals
+    assert [p[:2] for p in rt.parks] == [(0.5, 0.5)]  # parked and left at its now
     rt.next_event(INF)
     for t in threads:
         t.join(timeout=10)

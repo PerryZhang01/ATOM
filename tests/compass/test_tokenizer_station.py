@@ -20,7 +20,6 @@ import pytest
 
 from atom.compass.clock import LpId, RefusalTally, single_engine_table
 from atom.compass.spec.tokenizers import Backend, table
-from atom.entrypoints.openai.api_server import _prepare_multimodal_inputs
 from atom.model_engine import llm_engine
 from atom.sampling_params import SamplingParams
 from atom.utils import clock
@@ -261,7 +260,7 @@ def _unregistered():
     return None
 
 
-@pytest.mark.parametrize("fn", [_unregistered, _prepare_multimodal_inputs])
+@pytest.mark.parametrize("fn", [_unregistered])
 def test_an_unregistered_job_refuses_by_name_and_counts(loop, fn):
     ex, release = _executor(loop, width=1)
     try:

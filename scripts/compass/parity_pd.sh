@@ -4,10 +4,10 @@
 # The router's parity at xPyD: one workload (atom/compass/parity/traffic.py)
 # through `atomesh launch --pd-disaggregation --dp-aware --policy dp_sticky`,
 # the agentic cell's router, first to real prefill and decode servers, each at
-# `-tp 2 --enable-dp-attention` with its KV over Mooncake's TCP transport and
-# its steps recorded, then to pd_sim.sh's simulated servers replaying those
-# steps (the run file's `replay`). Each request's server and DP rank on each
-# side is read from both runs' records and compared.
+# `-tp <its DP width> --enable-dp-attention` with its KV over Mooncake's TCP
+# transport and its steps recorded, then to pd_sim.sh's simulated servers
+# replaying those steps (the run file's `replay`). Each request's server and
+# DP rank on each side is read from both runs' records and compared.
 #
 # Usage: parity_pd.sh OUT_DIR
 #   MODEL            model directory with its weights (required)
@@ -15,6 +15,8 @@
 #                    0.01); no request waits for the one before it to be
 #                    admitted, so prefills overlap and the router chooses a
 #                    prefill rank
+#   PREFILL_DP DECODE_DP
+#                    each side's DP width (default 2); width 1 serves at -tp 1
 #   PREFILL_GPUS DECODE_GPUS
 #                    the real servers' devices, a comma list per server and a
 #                    space between servers (defaults 0,1 and 2,3: 1P1D); the
@@ -43,6 +45,9 @@ STORE=${STORE:?STORE names the store holding the memory readings}
 SERVER_ARGS=${SERVER_ARGS:---enforce-eager --max-model-len 8192 --no-enable_prefix_caching}
 ATOMESH=${ATOMESH:-atomesh}
 WAIT_S=${WAIT_S:-1800}
+PREFILL_DP=${PREFILL_DP:-2} DECODE_DP=${DECODE_DP:-2}
+# A side's DP width as its server flags.
+dp_args() { if (($1 > 1)); then echo "-tp $1 --enable-dp-attention"; else echo "-tp 1"; fi; }
 mkdir -p "$OUT/real/record" "$OUT/sim"
 OUT=$(realpath "$OUT")
 pids=()
@@ -51,17 +56,17 @@ ROUTER_PORT=$(compass_free_port)
 read -ra prefill_gpus <<<"${PREFILL_GPUS:-0,1}"
 read -ra decode_gpus <<<"${DECODE_GPUS:-2,3}"
 
-# serve SIDE K N GPUS KV_ROLE: server K of N of a side, recording to
+# serve SIDE K N GPUS KV_ROLE DP: server K of N of a side, recording to
 # OUT/real/record/SIDE, or SIDE<K> above one, as pd_sim.sh names its servers.
 urls=()
 serve() {
     local port name=$1
     (($3 == 1)) || name+=$2
     port=$(compass_free_port)
-    # shellcheck disable=SC2086 # SERVER_ARGS is a word list
+    # shellcheck disable=SC2086 # the server flags are word lists
     HIP_VISIBLE_DEVICES=$4 ATOM_COMPASS_PARITY_RECORD=$OUT/real/record/$name setsid \
         python3 -m atom.entrypoints.openai_server --model "$MODEL" --host 127.0.0.1 \
-        --server-port "$port" -tp 2 --enable-dp-attention \
+        --server-port "$port" $(dp_args "$6") \
         --data-parallel-master-port "$(compass_free_port)" $SERVER_ARGS --kv-transfer-config \
         "{\"kv_role\":\"$5\",\"kv_connector\":\"mooncake\",\"protocol\":\"tcp\",\"proxy_ip\":\"127.0.0.1\",\"handshake_port\":$(compass_free_port)}" \
         >"$OUT/real/$name.log" 2>&1 &
@@ -70,10 +75,10 @@ serve() {
     urls+=("--$1" "http://127.0.0.1:$port")
 }
 for k in "${!prefill_gpus[@]}"; do
-    serve prefill "$k" "${#prefill_gpus[@]}" "${prefill_gpus[k]}" kv_producer
+    serve prefill "$k" "${#prefill_gpus[@]}" "${prefill_gpus[k]}" kv_producer "$PREFILL_DP"
 done
 for k in "${!decode_gpus[@]}"; do
-    serve decode "$k" "${#decode_gpus[@]}" "${decode_gpus[k]}" kv_consumer
+    serve decode "$k" "${#decode_gpus[@]}" "${decode_gpus[k]}" kv_consumer "$DECODE_DP"
 done
 # The router's flags as pd_sim.sh passes them under BENCHMARK_KIND=aiperf_agentic.
 setsid "$ATOMESH" launch --host 127.0.0.1 --port "$ROUTER_PORT" \
@@ -103,11 +108,12 @@ for record in "$OUT"/real/record/*/; do cp "$OUT/real/record/arrivals.json" "$re
 RUN=$OUT/sim/run.json
 CLOCK_PORT=$(compass_free_port)
 python3 - "$RUN" "$OUT" "${MACHINE:-$ROOT/scripts/compass/machines/mi308x-hjbog18.json}" \
-    "$MODEL" "$STORE" "$CLOCK_PORT" "${#prefill_gpus[@]}" "${#decode_gpus[@]}" <<'EOF'
+    "$MODEL" "$STORE" "$CLOCK_PORT" "${#prefill_gpus[@]}" "${#decode_gpus[@]}" \
+    "$PREFILL_DP" "$DECODE_DP" <<'EOF'
 import json, sys
 from pathlib import Path
 
-run, out, machine, model, store, port, prefills, decodes = sys.argv[1:]
+run, out, machine, model, store, port, prefills, decodes, dp_p, dp_d = sys.argv[1:]
 machine = json.loads(Path(machine).read_text())
 # ponytail: prices the model's tokenizer as the spec's first entry measured it,
 # as parity_one_node.sh does; only arrival latency reads it.
@@ -118,7 +124,8 @@ Path(run).write_text(json.dumps({
     "admission_path": "serving", "ipc_s": 2.0**-14, "stream_s": 2.0**-12,
     "router_s": 2.0**-12, "kv_write_req_s": 2.0**-10, "kv_link": "intra_node",
     "replay": f"{out}/real/record", "machine": machine, "store": store,
-    "data_parallel_size": 2, "out_dir": f"{out}/sim",
+    "prefill_data_parallel_size": int(dp_p), "decode_data_parallel_size": int(dp_d),
+    "out_dir": f"{out}/sim",
     "prefill_instances": int(prefills), "decode_instances": int(decodes),
 }))
 EOF
@@ -130,7 +137,8 @@ done
 # shellcheck disable=SC2086 # SERVER_ARGS is a word list
 env "${ports[@]}" ROUTER_PORT="$ROUTER_PORT" MODEL="$MODEL" ATOMESH="$ATOMESH" \
     BENCHMARK_KIND=aiperf_agentic HIP_VISIBLE_DEVICES="${prefill_gpus[0]}" \
-    SERVER_ARGS="-tp 2 --enable-dp-attention $SERVER_ARGS" WAIT_S="$WAIT_S" \
+    SERVER_ARGS="$SERVER_ARGS" PREFILL_ARGS="$(dp_args "$PREFILL_DP")" \
+    DECODE_ARGS="$(dp_args "$DECODE_DP")" WAIT_S="$WAIT_S" \
     ATOM_COMPASS_PARITY_RECORD="$OUT/sim/record" setsid \
     bash "$ROOT/scripts/compass/pd_sim.sh" "$RUN" >"$OUT/sim/pd_sim.out" 2>&1 &
 pids+=($!)
