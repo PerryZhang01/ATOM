@@ -2205,7 +2205,9 @@ own process with the policy code untouched. It is (owner ruling on
   waits with NER only.
 - **Policy inputs.** `determinism::enable` runs before the policies are built, with the
   run's seed (`ATOM_COMPASS_SEED`, the cell's `SEED`): the policies read the LP clock, a
-  seeded RNG and a fixed hasher. Without the endpoint nothing changes.
+  seeded RNG and a fixed hasher. Without the endpoint nothing changes. `power_of_two` is
+  refused by name when it is built: its loads come from each worker's `/get_load`,
+  polled on a wall-clock interval (`LoadMonitor`), which no channel carries (#1134).
 - **Unchanged.** Cancels stay off behind the router; a clock error ends the router
   process.
 - **Periodic tasks.** Under the LP, `PeriodicTask` (cache_aware's tree eviction) starts
