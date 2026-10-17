@@ -1,0 +1,102 @@
+# SPDX-License-Identifier: MIT
+"""The PP carriers: fitted by the probe, stated by the MI308X spec, and
+pricing a stage's input in the recurrence gate."""
+
+import copy
+import importlib.util
+import json
+from pathlib import Path
+
+import pytest
+from test_pp_stage_input import MS, pp2_record
+
+from atom.compass.parity import recurrence
+from atom.compass.runner.pp_send import CarrierModel
+from atom.compass.spec import MachineSpec, SpecRefusal
+
+TREE = Path(__file__).resolve().parents[2]
+SPEC = TREE / "scripts/compass/machines/mi308x-hjbog39.json"
+_probe = importlib.util.spec_from_file_location(
+    "pp_carriers", TREE / "scripts/compass/pp_carriers.py"
+)
+probe = importlib.util.module_from_spec(_probe)
+_probe.loader.exec_module(probe)
+
+#: gloo free; each RCCL tensor of one 500-byte token rendezvous in 0.5 ms.
+MODELS = {
+    "gloo": CarrierModel(10**9, 0.0, 0.0, 0.0, 0.0),
+    "rccl": CarrierModel(0, 0.0, 0.0, 1e-6, 0.0),
+}
+
+
+def _late(steps, x):
+    """The last stage of `pp2_record` with its input arriving `x` ns after
+    the head's device end: its first device wait, and everything after, later."""
+    first, *rest = (copy.deepcopy(s) for s in steps)
+    first["t_recv_ns"][1] += x
+    for k in ("t_exit_ns", "d_busy_ns", "d_recv_ns"):
+        first[k] += x
+    for s in rest:
+        for k, v in s.items():
+            if k.startswith("t_"):
+                s[k] = [t + x for t in v] if isinstance(v, list) else v + x
+    return [first, *rest]
+
+
+def test_the_last_stage_waits_for_the_heads_tensors_on_the_carriers():
+    head, last = pp2_record()
+    sends = recurrence.check(head, (0, 2))["sends"]
+    late = _late(last, MS)
+    priced = recurrence.check(late, (1, 2), sends, (MODELS, 500))
+    assert priced["pass"] and priced["total"] == pytest.approx(0, abs=1e-9)
+    assert not recurrence.check(late, (1, 2), sends)["pass"]
+
+
+def test_the_script_prices_the_send_on_a_machine_specs_carriers(tmp_path, capsys):
+    for name, steps in zip(("dp0", "pp1.dp0"), pp2_record()):
+        (tmp_path / f"{name}.jsonl").write_text(
+            "".join(json.dumps(s) + "\n" for s in steps)
+        )
+    assert recurrence.main(str(tmp_path), str(SPEC), "10240") in (0, 1)
+    assert "dp0 pp1 kind" in capsys.readouterr().out
+
+
+def test_a_carrier_may_have_no_eager_size_and_no_fewer():
+    document = json.loads(SPEC.read_text())
+    gloo = document["interconnect"]["intra_node"]["pp"]["gloo"]
+    gloo["eager_threshold_bytes"] = 0
+    MachineSpec.from_mapping(document)
+    gloo["eager_threshold_bytes"] = -1
+    with pytest.raises(SpecRefusal, match="eager_threshold_bytes"):
+        MachineSpec.from_mapping(document)
+
+
+def _sample(c, n, late, eager, o, lat, g, fixed):
+    post = probe.LATE if late else -0.002
+    if n <= eager:
+        done = o + n * g
+        end = max(post, done + lat)
+    else:
+        done = end = max(0.0, post) + fixed + n * g
+    stamps = {"send": 0.0, "done": done, "post": post, "end": end}
+    return {"carrier": c, "bytes": n, "late": late} | stamps
+
+
+def test_the_probe_recovers_the_carriers_it_was_sampled_from():
+    truth = {"rccl": (1024, 1e-5, 2e-6, 1e-11, 5e-5), "gloo": (0, 0, 0, 1e-9, 3e-5)}
+    samples = [
+        _sample(c, n, late, *truth[c])
+        for c in probe.SIZES
+        for n in probe.SIZES[c]
+        for late in (False, True)
+    ]
+    fit = probe.fit(samples)
+    eager, o, lat, g, fixed = truth["rccl"]
+    assert fit["rccl"]["eager_threshold_bytes"] == eager
+    got = [fit["rccl"][k] for k in ("overhead_s", "latency_s")]
+    assert got == pytest.approx([o, lat], rel=1e-6)
+    for c, (_, _, _, g, fixed) in truth.items():
+        assert fit[c]["per_byte_s"] == pytest.approx(g, rel=1e-6)
+        assert fit[c]["rendezvous_fixed_s"] == pytest.approx(fixed, rel=1e-6)
+    assert fit["gloo"]["eager_threshold_bytes"] == 0
+    assert fit["gloo"]["early"] == pytest.approx([0] * 5, abs=1e-12)
