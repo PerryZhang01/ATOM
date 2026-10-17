@@ -31,7 +31,6 @@ from test_memory_readings import (
 )
 from test_run_step_grid import deployment
 from test_vertical_slice import _run_file
-from transformers import PretrainedConfig
 
 from atom.compass import cli
 from atom.compass import run as compass_run
@@ -341,13 +340,9 @@ FROM_THE_SPEC = {
 def test_the_mi308x_entry_gives_the_readings_its_spec_gave():
     path = CONFIG_JSON.parents[2] / "scripts/compass/machines/mi308x-hjbog18.json"
     spec = MachineSpec.from_mapping(json.loads(path.read_text()))
-    raw = json.loads(CONFIG_JSON.read_text())
     entry = MemoryReadings.from_member(MI308X_READINGS, "memory_readings mi308x")
-    model = ModelTerms.from_config(
-        PretrainedConfig.from_dict(raw["text_config"]),
-        activations=entry.activations(16_384),
-        config_json=raw,
-        tree=meta_tree(54_713_457_120),
+    model = ModelTerms.from_tree(
+        meta_tree(54_713_457_120), activations=entry.activations(16_384)
     )
     readings = device_readings(
         spec,
