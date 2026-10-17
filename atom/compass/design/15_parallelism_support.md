@@ -414,9 +414,11 @@ protocol, so each carrier (`rccl`, `gloo`) gets these fields under
 `overhead_s` (`o`), `per_byte_s` (`G`) and `rendezvous_fixed_s`, the size-independent part
 of `T = rendezvous_fixed_s + bytes × G`. So `T_min` is `T` at the threshold. PP is
 single-node (every PP address is ZMQ IPC), hence the intra-node section. The fields are
-optional in the schema and required by a PP run. No machine states them yet: #516 measures
-them on two GPUs over RCCL and gloo (README principle 8), and until a machine states them a
-PP run is refused by name.
+optional in the schema and required by a PP run; a machine that does not state them refuses
+a PP run by name. `scripts/compass/pp_carriers.py` fits them on two GPUs over RCCL and gloo
+(README principle 8). A threshold of 0 states that no size is eager: on MI308X a gloo send
+completes only once its receive is posted, at every size probed, so each of its parts is
+rendezvous and each send takes an ack.
 
 ### Q4: memory — layers split, and the split is ATOM's
 
