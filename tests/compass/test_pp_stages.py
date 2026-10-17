@@ -180,27 +180,32 @@ def _two_stage_table(*rows) -> str:
     return table.text()
 
 
-#: Forward 0's output leaves the head at 1.5; the next stage's receive ends at 1.6.
-SENT = ("engine-pp1", 1.0 + IPC, 1.5 + L_DATA, "release", DATA, 0)
+#: Forward 0's output leaves the head at 1.5 and is released to the next stage
+#: at `IN`; its rendezvous completes at 1.6.
+IN = 1.5 + L_DATA
+SENT = ("engine-pp1", 1.0 + IPC, IN, "release", DATA, 0)
 ACKED = ("engine-pp0", 1.0, 1.6, "release", ACK, 0)
 
 
-def test_the_pipeline_check_holds_a_stage_to_the_end_of_its_input():
-    computes = ("engine-pp1", 1.6, 1.8, "TAR")
+def test_the_pipeline_check_holds_a_stage_to_the_release_of_its_input():
+    # The forward starts at the release; the rendezvous completes inside it.
+    computes = ("engine-pp1", IN, 1.8, "TAR")
     assert pipeline_timeline(_two_stage_table(SENT, ACKED, computes)) == []
-    # An eager last part ends the receive after the ack, at 1.7.
-    waits = ("engine-pp1", 1.0 + IPC, 1.7, "TAR")
-    late = ("engine-pp1", 1.7, 1.9, "TAR")
-    assert pipeline_timeline(_two_stage_table(SENT, ACKED, waits, late)) == []
-    # A stage that forwards as its batch arrives, as before the stage sends.
+    # A stage busy at the release starts the forward when it frees.
+    busy, late = ("engine-pp1", 1.4, 1.7, "TAR"), ("engine-pp1", 1.7, 1.9, "TAR")
+    assert pipeline_timeline(_two_stage_table(SENT, ACKED, busy, late)) == []
+    # A stage that forwards as its batch arrives, as before the stage sends,
+    # fails whether the send was rendezvous or eager.
     early = ("engine-pp1", 1.0 + IPC, 1.2, "TAR")
-    assert pipeline_timeline(_two_stage_table(SENT, ACKED, early)) == [
-        "engine-pp1 starts no forward 0 at 1.6"
-    ]
+    for rows in ((SENT, ACKED, early), (SENT, early)):
+        assert pipeline_timeline(_two_stage_table(*rows)) == [
+            f"engine-pp1 starts no forward 0 at {IN}"
+        ]
     assert pipeline_timeline(_two_stage_table(early)) == [
         f"engine-pp0 never sent forward 0's output on {DATA}"
     ]
     sent_early = ("engine-pp1", 0.5, 0.9 + L_DATA, "release", DATA, 0)
+    computes = ("engine-pp1", 0.9 + L_DATA, 1.8, "TAR")
     failed = pipeline_timeline(_two_stage_table(sent_early, ACKED, computes))
     assert failed == ["engine-pp0 sent forward 0 at 0.9, before 1.0"]
 
