@@ -369,8 +369,8 @@ def _read(name: str, store, client_runs, sessions, engine: dict, sampling: dict)
     if sessions:
         exports = [json.loads(Path(c).read_text()) for c in client_runs]
         given = {t: s for e in exports for t, s in e.get("sessions", {}).items()}
-        traces = {r["trace"] for e in exports for r in e["requests"].values()}
-        if unnumbered := sorted(traces - given.keys()):
+        traces = sorted({r["trace"] for e in exports for r in e["requests"].values()})
+        if unnumbered := [t for t in traces if t not in given]:
             raise ValueError(
                 f"--sessions selects traces by the session their client run's "
                 f"export states, and {name} served {', '.join(unnumbered)}, which "
