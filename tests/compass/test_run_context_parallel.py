@@ -52,8 +52,16 @@ def test_a_context_parallel_engine_starts_on_its_own_layouts_entry(
     assert r.compass_readings.non_torch.total == 970_000_000
 
 
-@pytest.mark.parametrize("width", [PCP2, DCP2], ids=["pcp2", "dcp2"])
-@pytest.mark.parametrize("backend", [compass_run.STEP_LINEAR, compass_run.STEP_GRID])
+# A DCP width divides the TP width, which a step linear law already refuses.
+@pytest.mark.parametrize(
+    "backend, width",
+    [
+        (compass_run.STEP_LINEAR, PCP2),
+        (compass_run.STEP_GRID, PCP2),
+        (compass_run.STEP_GRID, DCP2),
+    ],
+    ids=["step_linear-pcp2", "step_grid-pcp2", "step_grid-dcp2"],
+)
 def test_a_measured_backend_refuses_a_context_parallel_engine_by_name(
     tmp_path, monkeypatch, width, backend
 ):
