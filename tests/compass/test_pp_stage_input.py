@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
-"""R7 on a pipeline: a stage's input from the stage before holds its host at
-the metadata's arrival and its device at the tensors', in a simulated run, in
-the parity record and in the recurrence's gate.
+"""A pipeline stage's input from the stage before holds its host at the
+metadata's arrival and its device at the tensors', in a simulated run, in the
+parity record and in the recurrence's gate.
 """
 
 import json
@@ -230,9 +230,10 @@ class _Tokens:
         return {}
 
 
-def test_a_downstream_stage_writes_its_own_file_with_its_receive_stamped(
-    tmp_path, monkeypatch
-):
+def _record_last_stage(tmp_path, monkeypatch, pp):
+    """A simulated run's batches, recorded on the last of `pp` stages by a
+    runner whose processor reads each output forward's tokens itself; the
+    batches and the record directory."""
     batches = _drive(tmp_path / "simulated", monkeypatch, {0: [0]})[0][0]
     group = _Group()
     monkeypatch.setitem(
@@ -240,8 +241,8 @@ def test_a_downstream_stage_writes_its_own_file_with_its_receive_stamped(
         "aiter.dist.parallel_state",
         SimpleNamespace(get_pp_group=lambda: group),
     )
-    config = _config(pipeline_parallel_size=2)
-    config.parallel_config.pipeline_parallel_rank = 1
+    config = _config(pipeline_parallel_size=pp)
+    config.parallel_config.pipeline_parallel_rank = pp - 1
     times = iter(range(0, 10**9, 1000))  # each device event 1 us after the last
 
     class _Event:
@@ -295,8 +296,15 @@ def test_a_downstream_stage_writes_its_own_file_with_its_receive_stamped(
     for b in batches:
         runner.forward(b)
     runner.exit()
-    assert read(tmp_path / "real") == {}
-    steps = read(tmp_path / "real", 1)[0]
+    return batches, tmp_path / "real"
+
+
+def test_a_downstream_stage_writes_its_own_file_with_its_receive_stamped(
+    tmp_path, monkeypatch
+):
+    batches, real = _record_last_stage(tmp_path, monkeypatch, 2)
+    assert read(real) == {}
+    steps = read(real, 1)[0]
     assert len(steps) == len(batches)
     for step, batch in zip(steps, batches):
         # Events: the launch, the receive, the exit, 1 us apart.
@@ -305,6 +313,32 @@ def test_a_downstream_stage_writes_its_own_file_with_its_receive_stamped(
         assert l0 < step["t_pp_recv_ns"][0] < step["t_pp_recv_ns"][1] < l1
         assert ("t_recv_ns" in step) == batch.produces_output()
     assert any(b.produces_output() for b in batches)
+
+
+def test_a_runner_off_a_pipeline_leaves_its_token_read_unstamped(tmp_path, monkeypatch):
+    """A P/D producer of a recurrent-state model reads its tokens itself, as
+    the last stage does; off a pipeline the gate releases that wait at the
+    forward's device end, so the record stamps no receive."""
+    batches, real = _record_last_stage(tmp_path, monkeypatch, 1)
+    steps = read(real)[0]
+    assert len(steps) == len(batches)
+    assert not any({"t_recv_ns", "t_pp_recv_ns"} & step.keys() for step in steps)
+
+
+def test_a_single_stage_token_read_is_released_at_the_device_end():
+    """Decodes whose host waits inside `W_post` for their own device end, 1 ms
+    per host segment and 10 ms of device: the gate holds them unstamped, and a
+    receive stamped around that wait would take it out of `W_post`."""
+    steps = [
+        _line(n, 14 * n, (14 * n,) * 2, (14 * n + 1, 14 * n + 2), 14 * n + 13, 10)
+        | ({"d_gap_ns": 3 * MS} if n else {})
+        for n in range(6)
+    ]
+    report = recurrence.check(steps)
+    assert report["pass"] and report["total"] == pytest.approx(0, abs=1e-9)
+    for s in steps:
+        s["t_recv_ns"] = [s["t_enter_ns"] + 2 * MS, s["t_enter_ns"] + 12 * MS]
+    assert not recurrence.check(steps)["pass"]
 
 
 def test_a_stage_gap_after_an_idle_device_does_not_delay_its_device():
@@ -320,6 +354,22 @@ def test_a_stage_gap_after_an_idle_device_does_not_delay_its_device():
     report = recurrence.check(head, (0, 2))
     assert report["pass"] and report["total"] == pytest.approx(0, abs=1e-9)
     assert [end for _, end in report["sends"]] == [t * MS for t in (2, 105, 109, 113)]
+
+
+def test_a_stage_device_idles_its_gap_while_its_host_runs_ahead():
+    """The head's host launches each forward 3 ms after the last, its device
+    takes 10 ms and idles 2 ms before each forward after the first, so its
+    device ends at 11, 23, 35 and 47 ms, and the fourth forward's entry waits
+    for the second's end."""
+    head = [
+        _line(0, 0, (0, 0), (1, 2), 3, 10),
+        _line(1, 3, (3, 3), (4, 5), 6, 10, d_gap_ns=2),
+        _line(2, 6, (6, 11), (12, 13), 14, 10, d_gap_ns=2),
+        _line(3, 14, (14, 23), (24, 25), 26, 10, d_gap_ns=2),
+    ]
+    report = recurrence.check(head, (0, 2))
+    assert report["pass"] and report["total"] == pytest.approx(0, abs=1e-9)
+    assert [end for _, end in report["sends"]] == [t * MS for t in (11, 23, 35, 47)]
 
 
 def test_a_middle_chunk_launches_once_the_head_has_sent():
