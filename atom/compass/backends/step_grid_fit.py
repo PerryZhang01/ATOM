@@ -5,9 +5,10 @@
 
 `bundle(definition, planned, points, targets, seed)` takes the grid definition,
 `step_grid_plan.plan`'s output for it, each planned line's measurement in the
-plan's line order (a mapping holding `seconds`, `statistic` and `repeats`), and
-the residual's targets, `step_labels.Sample`s whose provenance names their
-`source`. Each measurement becomes the grid point on its line's node: prefill's
+plan's line order (a mapping holding `seconds`, `statistic` and `repeats`, the
+kept repeats), and the residual's targets, `step_labels.Sample`s whose
+provenance names their `source`. Each measurement becomes the grid point on its
+line's node, with its statistic and the count of its kept repeats: prefill's
 `[B, T, c]` in the grid of chunks that produce output or of those that do not,
 decode's `[rung, B, c]`. The grid keeps the plan's nodes, graph mode and timing
 scope, holds seconds, and states `VALUE`, what its points hold.
@@ -46,7 +47,8 @@ def bundle(definition, planned, points, targets, seed: int) -> tuple[dict, dict]
     grid = copy.deepcopy({k: planned[k] for k in keys}) | {"unit": "s", "value": VALUE}
     for line, measurement in zip(planned["lines"], points, strict=True):
         (n_q, context, decode), b = line["rows"][0], len(line["rows"])
-        point = {k: measurement[k] for k in ("statistic", "repeats")}
+        point = {"statistic": measurement["statistic"]}
+        point["repeats"] = len(measurement["repeats"])
         point["time"] = measurement["seconds"]
         if decode:
             at, into = [line["rung"], b, context - 1], grid["decode"]["points"]
