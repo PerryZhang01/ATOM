@@ -87,6 +87,33 @@ INTAKE = {
     ),
 }.get(NAME)
 
+#: A pipeline stage's send, per carrier, fitted on hjbog-srdc-39 GPUs 4 and 5
+#: by `scripts/compass/pp_carriers.py` at commit 03fe57e9c. The record is the
+#: probe's output, its samples and source.
+PP = {
+    "mi308x-hjbog39": (
+        "2026-10-17",
+        "03fe57e9c",
+        {
+            "rccl": {
+                "eager_threshold_bytes": 33554432,
+                "latency_s": 4.930421710014343e-06,
+                "overhead_s": 7.6834230353662e-05,
+                "per_byte_s": 2.0272089471219546e-11,
+                "rendezvous_fixed_s": 0.00010065316219206269,
+            },
+            "gloo": {
+                "eager_threshold_bytes": 0,
+                "latency_s": 1.2128206435590982e-05,
+                "overhead_s": 2.329037179401216e-05,
+                "per_byte_s": 1.308262564440539e-10,
+                "rendezvous_fixed_s": 3.444512935035571e-05,
+            },
+        },
+        "3faf61ae8165bcfc3216d677ac5a957e5f63776e79b17c299a04ac068e0db2cb",
+    ),
+}.get(NAME)
+
 DEVICE = {
     "host": {"cpu": {"cores_physical": 112, "cores_logical": 224}},
     "device": {
@@ -150,6 +177,12 @@ def device_fragments() -> list[Fragment]:
         how = f"one real c=256 first-turn cc-traces burst at {root}"
         body = {"host": {"http_intake": terms}}
         probes.append(fragment("intake", body, "probed", how, subject, date))
+    if PP:
+        date, root, carriers, record = PP
+        subject = {"source_root": f"commit:{root}", "record": f"sha256:{record}"}
+        body = {"interconnect": {"intra_node": {"pp": carriers}}}
+        how = f"pp_carriers.py on two GPUs at {root}"
+        probes.append(fragment("pp", body, "probed", how, subject, date))
     return [
         fragment("device", DEVICE, "probed", notes, SUBJECT),
         fragment("assumed", DECLARED, "assumed", "no probe fills these"),
