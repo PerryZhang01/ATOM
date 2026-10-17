@@ -171,6 +171,10 @@ def sum_context(rows: Sequence[RequestShape]) -> int:
     return _per_request(rows, lambda r: r.context_tokens)
 
 
+#: The refusal of a backend with no vision encoder in what it prices from.
+IMAGES = "{} image tokens, and no vision encoder in what this prices from"
+
+
 @dataclass(frozen=True)
 class BatchView:
     """The projection a cost backend is handed: one row per scheduled request.
@@ -194,7 +198,9 @@ class BatchView:
     prefill chunk does not; None when the caller did not say.
     `tbo_tokens` is the two-batch-overlap split the data-parallel group
     agreed: per micro-batch, each rank's token count. It is None when the
-    step is not split, and on one rank.
+    step is not split, and on one rank. `image_tokens` counts the scheduled
+    tokens whose embedding the step's vision encoder supplies; a backend that
+    has no basis for pricing that encoder refuses a step with any.
 
     What this does not do is make the collapsed form unreachable: one row is
     a legal batch, and a one-row batch is `tokens x history` by construction.
@@ -206,6 +212,7 @@ class BatchView:
     moe_rows: int | None = None
     produces_output: bool | None = None
     tbo_tokens: tuple[tuple[int, ...], ...] | None = None
+    image_tokens: int = 0
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)

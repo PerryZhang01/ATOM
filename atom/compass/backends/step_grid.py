@@ -24,7 +24,8 @@ does not fail loading; it refuses the steps that need it.
 Also refused: a step mixing prefill and decode rows, a decode row computing
 more than one token, a count that is not an int, a prefill step that does not
 say whether it produces output, and under a replay bundle a decode step that
-replays no graph, being wider than the widest rung or eager.
+replays no graph, being wider than the widest rung or eager, and a step with
+image tokens.
 
 The answer is the lookup times the residual's factor for the batch's ordered
 rows (`step_grid_residual.py`), which the residual may refuse. It is one
@@ -60,6 +61,7 @@ from atom.compass.backends.cost import CostTerm, StepCost
 from atom.compass.backends.provenance import Method, Provenance, Refusal
 from atom.compass.backends.resolver import CostRefused
 from atom.compass.backends.shape import (
+    IMAGES,
     BatchView,
     RequestShape,
     sum_query_cached,
@@ -301,6 +303,8 @@ class StepGridBackend(CostBackend):
                 f"this backend prices a BatchView, not {type(batch_view).__name__}"
             )
         view, rows = batch_view, batch_view.requests
+        if view.image_tokens:
+            raise _refused(view, IMAGES.format(view.image_tokens))
         cells, at = self.grid.locate(view)
         value, on_node, cell = cells.lookup(view, at)
         homogeneous = len({(r.query_tokens, r.context_tokens) for r in rows}) == 1
