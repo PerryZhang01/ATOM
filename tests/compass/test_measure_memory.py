@@ -17,6 +17,7 @@ import copy
 import hashlib
 import json
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -28,6 +29,7 @@ from test_memory_readings import (
     READINGS,
     STACK,
     meta_tree,
+    publish_readings,
 )
 from test_run_step_grid import deployment
 from test_vertical_slice import _run_file
@@ -198,6 +200,61 @@ def test_a_start_under_another_stack_than_the_spec_pins_publishes_nothing(
         "torch '2.9.1' in the start and '2.10.0' in the spec"
     )
     assert not (tmp_path / "s").exists()
+
+
+def test_the_command_beside_runs_between_the_gpu_checks(tmp_path, monkeypatch):
+    r, argv = a_start(tmp_path, monkeypatch, STACK)
+    events = []
+
+    @contextlib.contextmanager
+    def quiet(gpus, out):
+        events.append("check")
+        yield
+        events.append("check")
+
+    class Process:
+        def __init__(self, command, **kwargs):
+            self.pid = command[0]
+            events.append(f"start {self.pid}")
+            if self.pid == sys.executable:
+                ranks_wrote(tmp_path / "out", r.config, [READINGS[2]] * 2)
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(measure_memory, "quiet", quiet)
+    monkeypatch.setattr(measure_memory.subprocess, "Popen", Process)
+    monkeypatch.setattr(
+        measure_memory.os, "killpg", lambda pid, sig: events.append(f"stop {pid}")
+    )
+    cut = argv.index("--")
+
+    measure_memory.main([*argv[:cut], "--beside", "lmcache server -p 1", *argv[cut:]])
+
+    assert events == [
+        "check",
+        "start lmcache",
+        f"start {sys.executable}",
+        f"stop {sys.executable}",
+        "stop lmcache",
+        "check",
+    ]
+
+
+def test_readings_taken_without_the_offload_connector_refuse_a_run_that_offloads(
+    tmp_path,
+):
+    r = deployment(tmp_path)
+    assert "kv_offload" not in memory.key_fields(r.config)["engine_config"]
+    r.config.kv_transfer_config = {"kv_connector": "lmcache_mp", "kv_role": "offload"}
+
+    with pytest.raises(ArtifactRefusal) as refused:
+        memory.load(tmp_path / "store", r.config, MACHINE, 0)
+    assert '"kv_offload": ["lmcache_mp"]' in str(refused.value)
+    assert "the nearest entry differs in engine_config" in str(refused.value)
+
+    publish_readings(tmp_path / "store", r.config, readings=READINGS[2])
+    assert memory.load(tmp_path / "store", r.config, MACHINE, 0).values == READINGS[2]
 
 
 def test_ranks_whose_reserves_spread_past_the_limit_publish_nothing(tmp_path):

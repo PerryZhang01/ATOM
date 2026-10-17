@@ -29,7 +29,8 @@
 #   STORE            artifact store holding the simulated configuration's memory
 #                    readings, taken by `compass measure memory`. Unset, the
 #                    script takes them first into OUT_DIR/store: `compass measure
-#                    memory` on the real run's GPUs, flags and environment.
+#                    memory` on the real run's GPUs, flags and environment,
+#                    under LMCACHE with an lmcache server of its own beside it.
 #   SERVER_ARGS      more API server flags, on both runs (default CONFIG's; tp2's are
 #                    --enforce-eager --max-model-len 8192 --no-enable_prefix_caching)
 #   WAIT_S           seconds a server has to start, and to stop (default 1800)
@@ -86,15 +87,6 @@ ALONE=${ALONE:-0} GAP=0.05
 [[ $ALONE == 1 ]] && GAP=0.25
 mkdir -p "$OUT/real" "$OUT/sim"
 OUT=$(realpath "$OUT")
-if [[ -z ${STORE:-} ]]; then
-    STORE=$OUT/store
-    # shellcheck disable=SC2086 # SERVER_ARGS is a word list
-    ATOM_DP_MASTER_PORT=$(compass_free_port) python3 -c \
-        "from atom.compass.cli import main; main()" measure memory \
-        --gpu "${HIP_VISIBLE_DEVICES:-$(seq -s, 0 $((TP - 1)))}" --machine "$MACHINE" \
-        --store "$STORE" --out "$OUT/memory" -- --model "$MODEL" -tp "$TP" \
-        $DPA $SERVER_ARGS
-fi
 LMCACHE=${LMCACHE:-0} PREFIX=0 LM_FLAGS=
 if [[ $LMCACHE == 1 ]]; then
     PREFIX=${PREFIX_WORDS:-600} LM_PORT=$(compass_free_port)
@@ -104,6 +96,16 @@ if [[ $LMCACHE == 1 ]]; then
     export ATOM_KV_OFFLOAD=lmcache_mp OFFLOAD_MIN_LOAD_TOKENS=256 OFFLOAD_MIN_SAVE_TOKENS=256
     export ATOM_KV_OFFLOAD_EXTRA_CONFIG="{\"lmcache.mp.host\": \"tcp://127.0.0.1\",
         \"lmcache.mp.port\": $LM_PORT}"
+fi
+if [[ -z ${STORE:-} ]]; then
+    STORE=$OUT/store
+    # shellcheck disable=SC2086 # SERVER_ARGS is a word list
+    ATOM_DP_MASTER_PORT=$(compass_free_port) python3 -c \
+        "from atom.compass.cli import main; main()" measure memory \
+        --gpu "${HIP_VISIBLE_DEVICES:-$(seq -s, 0 $((TP - 1)))}" --machine "$MACHINE" \
+        ${LM_FLAGS:+--beside "lmcache server $LM_FLAGS"} \
+        --store "$STORE" --out "$OUT/memory" -- --model "$MODEL" -tp "$TP" \
+        $DPA $SERVER_ARGS
 fi
 
 server= lmcache=

@@ -8,8 +8,10 @@ ATOM's engine starts from ATOM's arguments (`EngineArgs`) on the GPUs `--gpu`
 names, through `MemoryReadingModelRunner`, and stops once it has started: its
 weights loaded, its warmup run a second time on a warm compile cache, its KV
 cache sized and its graphs captured. `gpu.quiet` checks those GPUs before the
-start and after it. Each rank writes its readings and the key it read off its
-resolved config, and the ranks must agree on the key. The entry's key is that
+start and after it; `--beside` names a command run between the two, such as
+the lmcache server an offload connector reaches. Each rank writes its readings
+and the key it read off its resolved config, and the ranks must agree on the
+key. The entry's key is that
 one with the digest of the machine spec `--machine` names; its conditions are
 that spec's device and stack, torch included. A start under a stack the
 spec does not pin, as run.json's identity states it, refuses before it
@@ -24,10 +26,12 @@ file, and ``memory_readings.json``, the entry's readable copy. ATOM's
 """
 
 import argparse
+import contextlib
 import datetime
 import hashlib
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -109,6 +113,14 @@ def main(argv: list[str]) -> None:
     env["HIP_VISIBLE_DEVICES"] = ",".join(map(str, args.gpu))
     code = f"import sys; from {__name__} import start; start(sys.argv[1:])"
     with quiet(args.gpu, out), (out / LOG).open("w") as log:
+        # Inside the GPU checks, so what it puts on the GPUs is this run's own.
+        beside = args.beside and subprocess.Popen(
+            shlex.split(args.beside),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            env=env,
+            start_new_session=True,
+        )
         engine = subprocess.Popen(
             [sys.executable, "-c", code, *atom_args],
             stdout=log,
@@ -127,6 +139,10 @@ def main(argv: list[str]) -> None:
             except ProcessLookupError:
                 pass
             engine.wait()
+            if beside:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(beside.pid, signal.SIGKILL)
+                beside.wait()
     if exited != 0:
         raise ValueError(f"the engine did not start ({exited}); see {out / LOG}")
     first = json.loads(min((out / READINGS).iterdir()).read_text())
@@ -196,4 +212,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--machine", required=True, help="this platform's machine spec")
     p.add_argument("--store", required=True, help="the artifact store's root")
     p.add_argument("--out", required=True, help="an empty directory for the logs")
+    p.add_argument(
+        "--beside", help="a command to run beside the start, such as a server"
+    )
     return p
