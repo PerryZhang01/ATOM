@@ -195,3 +195,28 @@ def test_an_entry_at_the_expert_parallel_off_layout_does_not_answer_one_on(
         _installed(
             monkeypatch, tmp_path, eager=True, dpa=True, dp=8, ep=True, readings=None
         )
+
+
+def test_a_run_prices_the_activations_at_the_warmup_its_reading_took(
+    monkeypatch, tmp_path
+):
+    # A max_model_len that does not divide max_num_batched_tokens: ATOM's
+    # `warmup_model` runs one sequence of 6144 tokens, not 8192.
+    import test_memory_readings
+
+    monkeypatch.setitem(test_memory_readings.WORKER, "max_model_len", 6144)
+    measured = dict(READINGS[1], warmup_tokens=6144)
+    runner = _installed(monkeypatch, tmp_path, eager=False, readings=measured)
+    assert runner.compass_memory["tokens"] == 6144
+    (activations,) = [
+        row
+        for row in runner.compass_memory["readings"]["peak_torch"]
+        if row["name"] == "activations"
+    ]
+    assert (activations["nbytes"], activations["method"]) == (
+        measured["activation_bytes"],
+        "measured",
+    )
+    assert NonAllocatingRunner._estimate_cudagraph_overhead(runner) == int(
+        measured["activation_bytes"] * 0.2
+    )
