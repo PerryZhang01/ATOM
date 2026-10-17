@@ -701,6 +701,4 @@ which no cache directory above holds.
    `$R/cell/c<C>/step_linear/run.json`, `FIRST_SESSION=0 SESSIONS=256
    CONCURRENCY=<C>`, `SERVER_ARGS="--max-model-len 262144"`, `AIPERF_EXTRA_ARGS` the
    warmup arguments; then `python -m atom.compass.parity
-   $R/cell/c<C>/step_linear/steps OUT/steps`. That run file serves until stopped
-   (`client_runs` is null), so until #1337 the script reports the deployment still
-   up `WAIT_S` after aiperf and exits 1; its step record is whole by then.
+   $R/cell/c<C>/step_linear/steps OUT/steps`.
