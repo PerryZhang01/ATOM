@@ -13,7 +13,7 @@ parts leave at ``t_send``, the sender's host send; the ``rccl`` parts at
 ``rccl`` parts are done, whichever is later.
 
 `StageSends` is the stage loop's side. Before a downstream stage's forward it
-receives that forward's input on ``pp_data``, the post and the metadata's arrival
+receives that forward's input on ``pp_data``, the call and the metadata's arrival
 as the batch's ``compass_pp_host`` and
 the tensors' as the batch's ``compass_pp_release``, and, when the ``gloo`` parts
 are rendezvous, returns their completion on ``pp_ack`` stamped at it; at a
@@ -134,7 +134,7 @@ class StageSends:
             self.settle()
             return self.call(name, *args, wait_out=wait_out)
         if self.data_in:
-            args[0].compass_pp_host, args[0].compass_pp_release = self.receive()
+            args[0].compass_pp_host, args[0].compass_pp_release = self.receive(args[0])
         t0 = self.rt.now
         reply = self.call(name, *args, wait_out=wait_out)
         if self.data_out:
@@ -152,12 +152,16 @@ class StageSends:
             raise RuntimeError(f"{ch}: read frame {frame['seq']}, released {seq}")
         return frame
 
-    def receive(self) -> tuple:
-        """Return ``(posted, meta)`` and the tensors' arrival. The tensors
-        leave no earlier than the previous frame's are done: one stream sends both."""
-        seq, posted = self.received, self.rt.now
+    def receive(self, batch) -> tuple:
+        """``(called, meta)`` and the tensors' arrival, posted at `batch`'s prepare end.
+        The tensors leave once the previous frame's are done: one stream sends both."""
+        from atom.compass.runner.overrides import forward_shape
+
+        seq, called = self.received, self.rt.now
         self.received += 1
         frame = self._frame("pp_data", self.data_in, seq)
+        shape = forward_shape(batch)
+        posted = self.call("pp_recv_posted", called, *shape, wait_out=True)
         gloo, tensors = split(frame["parts"])
         sent, meta = recv_done(self.models, frame["t_send"], posted, gloo)
         ready = max(frame["t_ready"], self.tensors_done)
@@ -165,7 +169,7 @@ class StageSends:
         if is_rendezvous(self.models, gloo):
             self.call("send_pp_frame", "pp_ack", {"seq": seq}, wait_out=True)
             self.rt.stamp_send(self.ack_out, sent)
-        return (posted, meta), end
+        return (called, meta), end
 
     def send(self, ready: float, parts) -> None:
         """Send once the previous send's ``gloo`` parts are done: the metadata

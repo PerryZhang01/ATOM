@@ -57,6 +57,8 @@ def _stage(rank, *grants, frames=(), ready=C, parts=(), pp=2, post=0.0):
         if name == "forward":
             rt.advance_to(rt.now + C)
             return SimpleNamespace(pp_send=(ready, post, parts))
+        if name == "pp_recv_posted":
+            return args[0]  # no host laws: posted at the call
         return frames.pop(0) if name == "recv_pp_frame" else True
 
     return rt, partial(on_owner, StageSends(rt, call, rank, pp, MODELS)), calls
@@ -75,14 +77,14 @@ def test_a_downstream_forward_is_called_at_the_arrival_its_launch_held_to_the_me
         (t_send + L_DATA + C, {}),
         frames=[frame],
     )
-    batch = SimpleNamespace()
+    batch = _decode()
     run("forward", batch)
     assert [m[:3] for m in rt.conn.sent] == [
         ("NER", math.inf, []),
         ("TAR", t_send + L_DATA + C, []),  # an eager size needs no ack
     ]
     assert (batch.compass_pp_host, batch.compass_pp_release) == ((0.0, meta), end)
-    assert [c[0] for c in calls] == ["recv_pp_frame", "forward"]
+    assert [c[0] for c in calls] == ["recv_pp_frame", "pp_recv_posted", "forward"]
 
 
 def test_a_send_stamps_its_metadata_at_the_host_and_its_tensors_at_the_device_end():
@@ -128,7 +130,7 @@ def test_a_middle_stage_receives_then_sends_and_acks_both_ways():
         pp=4,
         post=C,
     )
-    batch = SimpleNamespace()
+    batch = _decode()
     run("forward", batch)
     assert (batch.compass_pp_host, batch.compass_pp_release) == ((0.0, meta), end)
     run("flush_pp_send")
@@ -140,6 +142,7 @@ def test_a_middle_stage_receives_then_sends_and_acks_both_ways():
     ]
     assert calls == [
         ("recv_pp_frame", "pp_data"),
+        ("pp_recv_posted", 0.0, "decode", (1, 1, 1)),
         ("send_pp_frame", "pp_ack", {"seq": 0}),
         ("forward", batch),
         ("send_pp_frame", "pp_data", sent),
@@ -190,7 +193,7 @@ def test_the_last_stage_acks_each_size_and_holds_each_tensor_behind_the_last(
         frames=frames,
         pp=pp,
     )
-    batches = [SimpleNamespace(), SimpleNamespace()]
+    batches = [_decode(), _decode()]
     for batch in batches:
         run("forward", batch)
     assert [m[:3] for m in rt.conn.sent] == [
