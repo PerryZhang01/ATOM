@@ -15,9 +15,11 @@
 #                    the nightly's flags and environment; it needs MACHINE.
 #                    Under DP-attention the DP width is the -tp width.
 #   MODEL            model directory with its weights (required)
-#   REQUESTS         requests in the workload (default 64)
-#   GAP_S            seconds between sends, each also waiting for the server to
-#                    admit the one before; 0 sends them back to back (default 0.05)
+#   REQUESTS         requests in the workload (default 64); request 0 runs alone
+#                    to its end before the rest are sent
+#   GAP_S            seconds between the later sends, each also waiting for the
+#                    server to admit the one before; 0 sends them back to back
+#                    (default 0.05)
 #   MACHINE          machine spec (tp2's and tp2-plain's default scripts/compass/machines/mi308x-hjbog18.json)
 #   STORE            artifact store holding the simulated configuration's memory
 #                    readings, taken by `compass measure memory`. Unset, the
