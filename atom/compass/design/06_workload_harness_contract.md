@@ -480,7 +480,10 @@ the event loop. Each pool job is classified by a registry (`classify` in
 `atom/utils/compass_loop.py`): `do_preprocess` is a **service** job, and so is the
 multimodal preprocessing hand-off in `api_server.py::chat_completions`
 (`_prepare_multimodal_inputs`), charged the run file's `image_preprocess_s` for each image
-it loads, an image named by a remote URL refused (#1089); the
+it loads, an image named by a remote URL refused (#1089). The price is flat per image and
+covers the whole job: the real job grows with the image's pixels and the prompt's text, but
+the processor tokenizes that text itself, outside the priced `encode`, so the text is charged
+nothing beyond it. The
 `outputs_queue.get` that `engine_core_mgr.py::CoreManager._async_output_handler` hands to
 the pool is a **wait** job, passed straight through because a channel event completes it
 at no cost, and it holds one thread for the life of the server, which is why the encode
