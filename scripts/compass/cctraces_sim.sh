@@ -111,15 +111,17 @@ from pathlib import Path
 run_file, out, traces, benchmark_id, *args = sys.argv[1:]
 out = Path(out)
 run = json.loads(Path(run_file).read_text())
-n = run.get("data_parallel_size", 1)
+dp = run.get("data_parallel_size", 1)
+# One write-request port per prefill rank and decode rank pair, as pd_sim.sh binds.
+n = run.get("prefill_data_parallel_size", dp) * run.get("decode_data_parallel_size", dp)
 # Held together, so no two are the same port.
 socks = [socket.socket() for _ in range(6)]
 for s in socks:
     s.bind(("127.0.0.1", 0))
 ports = [s.getsockname()[1] for s in socks]
-# The write requests take n*n ports from KV_WRITE_REQ_PORT, the fifth: re-pick
+# The write requests take n ports from KV_WRITE_REQ_PORT, the fifth: re-pick
 # it, the others still held, until none of them lies in that block.
-while {*ports[:4], ports[5]} & set(range(ports[4], ports[4] + n * n)):
+while {*ports[:4], ports[5]} & set(range(ports[4], ports[4] + n)):
     socks.append(socket.socket())
     socks[-1].bind(("127.0.0.1", 0))
     ports[4] = socks[-1].getsockname()[1]
