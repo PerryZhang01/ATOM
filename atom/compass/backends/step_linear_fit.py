@@ -3,7 +3,7 @@
 
 """The step linear law fitted from real step records.
 
-    python -m atom.compass.backends.step_linear_fit RECORD... --out LAW --machine-spec DIGEST [--form FORM]
+    python -m atom.compass.backends.step_linear_fit RECORD... --out LAW --machine-spec DIGEST [--form FORM] [--engine FILE]
 
 Each RECORD is a real run's step record (`steps/dp0.jsonl`, written with
 `ATOM_COMPASS_PARITY_RECORD`), labelled by `step_labels`, whose docstring
@@ -16,8 +16,9 @@ holds the runs it was fitted on, each vector's fit figures and hull, and, once
 `rowmod` shuffles, so the same samples and arguments give the same bytes.
 
 The law states the records' `engine_config`, read from the `.engine.json`
-beside each (`engine_config`), and a run under another engine config refuses
-it. At its `data_parallel_size` N above 1 (EP off) the records come in runs of
+beside each (`engine_config`) or from `--engine FILE` in their place, and a run
+under another engine config refuses it. At its `data_parallel_size` N above 1
+(EP off) the records come in runs of
 N, each run's `dp0.jsonl` to `dp<N-1>.jsonl`. A step is its ranks' lines
 joined on step index, labelled with the smallest rank label (the others wait
 for the last rank to enter), and a prefill row adds the line's `moe_rows`. A
@@ -697,8 +698,16 @@ def main(argv=None) -> None:
         help="the machine_spec_digest of the spec of the platform the records ran "
         "on, which keys the law and its host laws",
     )
+    parser.add_argument(
+        "--engine",
+        help="the engine file the records ran under, stated in place of the "
+        ".engine.json beside each",
+    )
     args = parser.parse_args(argv)
-    engine = engine_config(args.records)
+    if args.engine:
+        engine = keyed_of(json.loads(Path(args.engine).read_text()))
+    else:
+        engine = engine_config(args.records)
     dp = join_width(engine)
     options = {"form": args.form, "dp": dp}
     samples, tables = label_records(args.records, dp)

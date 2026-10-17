@@ -575,12 +575,14 @@ the log of one rank.
 
 ## The step linear law from real cells — `step_linear_fit`
 
-`python -m atom.compass.backends.step_linear_fit RECORD... --out LAW --machine-spec DIGEST [--form FORM]`
+`python -m atom.compass.backends.step_linear_fit RECORD... --out LAW --machine-spec DIGEST [--form FORM] [--engine FILE]`
 fits the law a run file's `step_linear` key holds (`atom/compass/backends/step_linear.py`) from
 the step records of real cells, `OUT_DIR/steps/dp0.jsonl` of `REAL=1
 cctraces_sim.sh` runs, each with the `dp0.engine.json` the run wrote beside it,
 whose engine config the law states and whose `data_parallel_size` its ranks
-join at. `atom/compass/backends/step_labels.py` states the label
+join at. Records that ran before a run wrote that file, or wrote it without
+`data_parallel_size`, take an engine file stated from their `server.log` as
+`--engine FILE`. `atom/compass/backends/step_labels.py` states the label
 and what is cut, and the command writes each record's labels beside it for
 reading, `dp0.cost.jsonl`; the module's docstring states how outliers are
 dropped. The written law also carries, per vector, its samples, warm and dropped
