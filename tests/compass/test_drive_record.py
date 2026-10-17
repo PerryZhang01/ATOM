@@ -219,7 +219,7 @@ def test_a_record_s_out_directory_loads_through_the_fit_s_loader(tmp_path, plant
     run = json.loads((out / "run.json").read_text())
     assert run.keys() == {
         *("format_version", "argv", "source", "host_key", "device", "stack"),
-        *("profiled", "engine"),
+        *("profiled", "env", "engine"),
     }
     assert (run["profiled"], run["engine"]) == (False, ENGINE)
     samples, config = load({out: RUNS})
@@ -231,3 +231,35 @@ def test_a_record_s_out_directory_loads_through_the_fit_s_loader(tmp_path, plant
         "tp1-dp1",
         aiter,
     )
+
+
+#: Put before the planted server: the value its environment holds for Triton's
+#: autotune cache, written where ``PLANTED_SEEN`` points.
+SEES = """\
+import os
+seen = repr(os.environ.get("TRITON_CACHE_AUTOTUNING"))
+open(os.environ["PLANTED_SEEN"], "w").write(seen)
+"""
+
+
+@pytest.mark.skipif(GIT is None, reason="needs git")
+@pytest.mark.parametrize("caller, held", [(None, "1"), ("0", "0")])
+def test_a_record_s_server_keeps_triton_s_autotune_choices_unless_the_caller_says(
+    tmp_path, planted_gpu, monkeypatch, caller, held
+):
+    """The named result: the server's environment holds
+    TRITON_CACHE_AUTOTUNING=1, or the caller's value, which run.json states."""
+    server = tmp_path / "server.py"
+    server.write_text(SEES + server.read_text())
+    monkeypatch.setenv("PLANTED_SEEN", str(tmp_path / "seen"))
+    if caller is None:
+        monkeypatch.delenv("TRITON_CACHE_AUTOTUNING", raising=False)
+    else:
+        monkeypatch.setenv("TRITON_CACHE_AUTOTUNING", caller)
+    out = tmp_path / "out"
+    cli.main(f"record --gpu 7 --out {out} -- --model {planted_gpu}".split())
+
+    assert (tmp_path / "seen").read_text() == repr(held)
+    run = json.loads((out / "run.json").read_text())
+    assert run["env"] == {"TRITON_CACHE_AUTOTUNING": held}
+    assert os.environ.get("TRITON_CACHE_AUTOTUNING") == caller

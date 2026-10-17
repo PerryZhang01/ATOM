@@ -14,6 +14,12 @@ the fields `TARGET` names. DP ranks whose engine files state different bounds
 refuse the entry, naming each. One record spans the server's lifetime, every
 client run it served included; `parity.served` splits it per client run.
 
+The server's environment holds `AUTOTUNE_CACHE` as the command's does, 1 when
+the command's has none, and run.json's ``env`` states the value. With it on,
+Triton loads an autotuned kernel's choice for a shape an earlier server of the
+same ``TRITON_CACHE_DIR`` tuned; a shape the cache lacks still tunes on its
+first launch, inside the record.
+
 `--profile-ops` and `--profile-steps A:B`, the op-level half's profiled pass,
 refuse; so does ATOM's ``--load_dummy``: a record times real weights, and MoE
 routing follows them.
@@ -21,6 +27,7 @@ routing follows them.
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from atom.compass.backends.step_grid_plan import TARGET
@@ -33,6 +40,9 @@ from atom.compass.run import _write_whole
 PROG = "compass record"
 #: ATOM's dummy weights flag; its parser reads `_` in a flag as `-`.
 LOAD_DUMMY = "--load-dummy"
+#: Triton's switch for keeping autotune choices on disk, as `cctraces_sim.sh`
+#: sets it for a real cell.
+AUTOTUNE_CACHE = "TRITON_CACHE_AUTOTUNING"
 
 
 def main(argv: list[str]) -> None:
@@ -48,7 +58,11 @@ def main(argv: list[str]) -> None:
                 f"{arg} is among ATOM's arguments; a record times real weights, "
                 "and MoE routing follows them"
             )
-    serve.serve(atom_args, args.out, args.gpu)
+    env = {AUTOTUNE_CACHE: os.environ.get(AUTOTUNE_CACHE, "1")}
+    serve.serve(atom_args, args.out, args.gpu, extra_env=env)
+    run_json = Path(args.out) / serve.RUN_JSON
+    run = {**json.loads(run_json.read_text()), "env": env}
+    _write_whole(run_json, json.dumps(run))
     write_engine_and_costs(args.out)
 
 
