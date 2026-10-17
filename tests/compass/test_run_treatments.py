@@ -46,12 +46,11 @@ def dp_summary(monkeypatch, tmp_path, ranks):
     return json.loads((tmp_path / compass_run.SUMMARY_FILE).read_text())
 
 
-def test_a_dp_attention_run_under_a_dp2_law_names_uniform_routing_and_its_steps(
+def test_a_dp_attention_run_at_dp2_names_uniform_routing_and_its_steps(
     monkeypatch, tmp_path, dp2  # noqa: F811
 ):
-    keyed = law() | {"key": [2, 1]}
     ranks = [
-        runner(StepLinearBackend(StepLinearLaw(keyed), (2, 1)), dp_size=2, dp_rank=r)
+        runner(StepLinearBackend(StepLinearLaw(law()), 2), dp_size=2, dp_rank=r)
         for r in range(2)
     ]
     # Two steps per rank, so a count reads 4 where a per-rank flag reads 2.

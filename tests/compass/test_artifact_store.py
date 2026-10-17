@@ -188,13 +188,13 @@ def test_two_keys_never_share_a_directory(tmp_path):
         (
             Kind.STEP_MEASUREMENT,
             (
-                "(model, device, parallel, engine_config, source_root, sampling, "
+                "(model, device, engine_config, source_root, sampling, "
                 "step_kind, view)"
             ),
         ),
         (
             Kind.STEP_LINEAR_LAW,
-            "(model, machine_spec, parallel, engine_config, source_root, form)",
+            "(model, machine_spec, engine_config, source_root, form)",
         ),
         (
             Kind.HOST_LAWS,

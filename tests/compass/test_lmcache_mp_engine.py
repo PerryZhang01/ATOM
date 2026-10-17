@@ -11,7 +11,9 @@ The last test starts a whole simulated run, as `test_vertical_slice` does, and
 needs a driver and `ATOM_COMPASS_SLICE_MODEL`.
 """
 
+import dataclasses
 import json
+import logging
 import math
 import os
 import re
@@ -64,9 +66,11 @@ from atom.kv_transfer.offload.metadata import (
     LMCacheOffloadMetadata,
     LMCacheReqMeta,
     LoadSpec,
+    NativeStateTransfer,
     SaveSpec,
 )
 from atom.kv_transfer.offload.mp import native_state_worker, transfer
+from atom.model_engine.page_unit_checkpoint import PagedStateCheckpointSpec
 from atom.utils import clock, forward_context
 from atom.utils.distributed import utils as dist_utils
 
@@ -85,7 +89,9 @@ def factory(monkeypatch):
 
 
 def _kv(port) -> dict:
+    """The connector's config, its chunk size the one LP lmcache runs at."""
     extra = {"lmcache.mp.host": "tcp://127.0.0.1", "lmcache.mp.port": int(port)}
+    extra["lmcache.chunk_size"] = CHUNK
     return {**OFFLOAD, "kv_connector_extra_config": extra}
 
 
@@ -93,9 +99,11 @@ class Engine:
     """An engine process's scheduler half on the step loop, against LP lmcache
     and an authority served here; every other LP idles. With `pd`, the engine
     is the prefill side of a prefill-decode run, its connector a `multi` of
-    `compass` and `lmcache_mp`."""
+    `compass` and `lmcache_mp`. `blocks` is the block manager the shell binds."""
 
-    def __init__(self, tmp_path, monkeypatch, tp=1, pd=False, **entry) -> None:
+    def __init__(
+        self, tmp_path, monkeypatch, tp=1, pd=False, blocks=None, **entry
+    ) -> None:
         monkeypatch.setattr(clock, "_installed", None)
         monkeypatch.setattr(dist_utils, "LP_OF_RANK", None)
         self.run = run = _run(tmp_path, writers=tp, **entry)
@@ -134,12 +142,15 @@ class Engine:
             conn.send(("NER", math.inf, [], math.inf))
         with compass_run.engine(self.config):
             self.shell = KVConnectorFactory.create_connector(self.config, "scheduler")
-            self.shell.bind_block_manager(SimpleNamespace(paged_state_checkpoints=None))
+            self.shell.bind_block_manager(
+                blocks or SimpleNamespace(paged_state_checkpoints=None)
+            )
         self.rt = clock.installed()
         subs = getattr(self.shell, "_connectors", [self.shell])
         [self.lm] = [s for s in subs if isinstance(s, LMCacheMPShell)]
-        # What the shell hands ATOM's scheduler half at each step, when anything.
-        self.reported = []
+        # What the shell hands ATOM's scheduler half at each step, when anything,
+        # and the native-state store completions apart.
+        self.reported, self.native = [], []
         impl = self.lm._inner._impl
         real = impl.process_completions
 
@@ -147,6 +158,11 @@ class Engine:
             done = [*output.finished_saving, *output.finished_loading]
             if done or output.failed_loading:
                 self.reported.append((self.rt.now, done, list(output.failed_loading)))
+            self.native += [
+                (self.rt.now, c.operation_id, c.succeeded)
+                for c in output.connector_completions
+                if c.channel == native_state_worker.NATIVE_STATE_MP_STORE_CHANNEL
+            ]
             return real(output)
 
         monkeypatch.setattr(impl, "process_completions", spy)
@@ -249,6 +265,78 @@ def test_each_reply_is_reported_one_step_after_the_step_that_takes_it(
             [],
         ),
     ]
+
+
+#: A block manager keeping PAGE checkpoints: ATOM's selector picks the
+#: native-state scheduler for it, and the shell native-state ranks.
+NATIVE_BLOCKS = SimpleNamespace(
+    hash_block_size=CHUNK,
+    paged_state_checkpoints=SimpleNamespace(
+        store=SimpleNamespace(spec=PagedStateCheckpointSpec(32, 128, "native", 80))
+    ),
+)
+
+
+def test_a_native_state_rank_saves_on_its_channel_and_loads_with_its_restore(
+    tmp_path, monkeypatch, factory, caplog
+):
+    caplog.set_level(logging.INFO, logger="atom")
+    engine = Engine(tmp_path, monkeypatch, blocks=NATIVE_BLOCKS)
+    shell, rt = engine.shell, engine.rt
+    [rank] = shell._ranks
+    assert isinstance(rank, native_state_worker.NativeStateLMCacheMPConnector)
+    copy = LATENCY_S + CHUNKS * engine.chunk_bytes / BANDWIDTH
+    # A checkpoint image ends a chunk: its unit rides the last chunk's groups.
+    tokens, end = list(TOKENS[: CHUNKS * CHUNK]), CHUNKS * CHUNK
+    image = NativeStateTransfer(unit_ids=(CHUNKS,), boundary_tokens=end, prefix_hash=0)
+
+    engine.build(
+        LMCacheReqMeta(
+            "r0",
+            tokens,
+            list(range(CHUNKS)),
+            save_spec=SaveSpec(skip_leading_tokens=0),
+            save_operation=SaveOperationId("r0", 0),
+            native_state=image,
+        )
+    )  # at 0
+    stored = IPC + copy + IPC
+    while rt.now < stored + 3 * STEP:
+        engine.step()
+    assert shell._inner._impl._lookup_client.lookup(list(TOKENS), "r1") == end
+    sent = rt.now
+    engine.build(
+        LMCacheReqMeta(
+            "r1",
+            tokens,
+            list(range(CHUNKS)),
+            load_spec=LoadSpec(0, end, can_load=True),
+            load_operation=LoadOperationId("r1", 0),
+            native_state=dataclasses.replace(image, destination_slot=0),
+        )
+    )
+    loaded = sent + IPC + copy + IPC
+    while rt.now < loaded + 3 * STEP:
+        engine.step()
+    assert engine.finish() == {"refusals": []}
+
+    print(f"\nstore reply at {stored!r}, retrieve reply at {loaded!r}")
+    print("native", engine.native, "\nreported", engine.reported)
+    # The save on the native-state store channel, the load as loaded once
+    # restored, each one step after the step that takes its reply.
+    assert engine.native == [
+        (pytest.approx(_at_step(stored) + STEP), SaveOperationId("r0", 0), True)
+    ]
+    assert engine.reported == [
+        (
+            pytest.approx(sent + _at_step(loaded - sent) + STEP),
+            [LoadOperationId("r1", 0)],
+            [],
+        )
+    ]
+    # The shell's report names the native save it hands on.
+    reports = [r.message for r in caplog.records if "reports at" in r.message]
+    assert f"saved {[str(SaveOperationId('r0', 0))]}" in reports[0]
 
 
 @pytest.mark.parametrize("width", [1, 2])

@@ -94,7 +94,6 @@ KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
     Kind.STEP_MEASUREMENT: (
         "model",
         "device",
-        "parallel",
         "engine_config",
         "source_root",
         "sampling",
@@ -104,7 +103,6 @@ KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
     Kind.STEP_LINEAR_LAW: (
         "model",
         "machine_spec",
-        "parallel",
         "engine_config",
         "source_root",
         "form",
@@ -117,7 +115,6 @@ KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
     Kind.STEP_GRID_BUNDLE: (
         "model",
         "device",
-        "parallel",
         "engine_config",
         "grid",
         "source_root",

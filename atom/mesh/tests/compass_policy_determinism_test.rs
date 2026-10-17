@@ -9,7 +9,7 @@ use mesh::{
     determinism,
     policies::{
         tree::Tree, CacheAwareConfig, CacheAwarePolicy, DpStickyPolicy, LoadBalancingPolicy,
-        SelectWorkerInfo,
+        RandomPolicy, SelectWorkerInfo,
     },
 };
 use rand::Rng;
@@ -30,8 +30,8 @@ fn session(id: &str) -> http::HeaderMap {
 }
 
 /// One run: cache_aware breaking four-way load ties, then two-way ties when
-/// imbalanced, and placing at random with no tree; dp_sticky sessions
-/// idling past expiry on the simulated clock, and radix-tree owner picks
+/// imbalanced, and placing at random with no tree; random's draws; dp_sticky
+/// sessions idling past expiry on the simulated clock, and radix-tree owner picks
 /// after each node's cached owner leaves. A random wall-clock pause precedes
 /// every request.
 async fn run(seed: u64) -> Vec<String> {
@@ -68,6 +68,9 @@ async fn run(seed: u64) -> Vec<String> {
         let rank = sticky.select_worker(&sticky_workers, &info).await.unwrap();
         sticky_workers[rank].increment_load();
         picks.push(format!("dp_sticky {rank}"));
+
+        let pick = RandomPolicy::new().select_worker(&workers, &info).await;
+        picks.push(format!("random {pick:?}"));
     }
 
     // Ranks 0 and 1 past balance_abs_threshold: the imbalanced branch breaks

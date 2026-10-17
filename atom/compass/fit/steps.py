@@ -14,11 +14,12 @@ The entry is published under the readings a run on the spec `--machine` names
 takes, which `publish.inputs` loads each measurement under.
 
 `step-linear` takes real runs only and fits `step_linear_fit.FORMS`' `--form`,
-`base` by default, at the DP width the configuration states, so a record with a
+`base` by default, joining each step's ranks at the engine config's
+`data_parallel_size`, so a record with a
 rank that gave no sample refuses; it holds out each run on the others when
 there are two or more at width 1, as that module's command does; `--seed` fixes
 its shuffles. The law states the configuration's
-`machine_spec`, as that command's does, and the key holds it. The report's
+`machine_spec` and `engine_config`, as that command's does, and the key holds them. The report's
 provenance names each run with every trace its steps served. A step stub's
 coefficients are stated, not fitted, so `step-stub` refuses.
 
@@ -56,12 +57,13 @@ STUB = "a step stub's coefficients are stated, not fitted; a run takes their fil
 
 def _step_linear(samples, config, args) -> tuple[dict, dict, dict]:
     form = args.form or "base"
-    options = {"form": form, "dp": int(config["parallel"].split("-dp")[1])}
+    options = {"form": form, "dp": step_linear_fit.join_width(config["engine_config"])}
     law, report = step_linear_fit.fit(samples, options, args.seed)
     if options["dp"] == 1 and len({s.provenance["run"] for s in samples}) > 1:
         step_linear_fit.mark_held_out(law, report, samples, options, args.seed)
     report["provenance"] = publish.runs(samples)
     law["machine_spec"] = config["machine_spec"]
+    law["engine_config"] = config["engine_config"]
     return {"form": form, "machine_spec": law["machine_spec"]}, law, report
 
 
@@ -81,7 +83,7 @@ def _step_grid(samples, config, args) -> tuple[dict, dict, dict]:
         read[n] = measure._read(n, store, runs, args.sessions, engine, sampling)
     steps = [(f"{n} step {x['step']}", x) for n in args.grid for x in read[n][1]]
     planned = plan(definition, steps, {f"{n} dp0": read[n][2] for n in args.grid})
-    fields = ("model", "device", "parallel", "source_root")
+    fields = ("model", "device", "source_root")
     keys = [
         measure.measurement_key(
             {f: config[f] for f in fields},
@@ -181,7 +183,7 @@ def main(argv: list[str]) -> None:
     fields, params, report = fit(samples, config, args)
     key = Key.of(
         kind,
-        **{f: config[f] for f in ("model", "parallel", "source_root")},
+        **{f: config[f] for f in ("model", "source_root")},
         engine_config=json.dumps(config["engine_config"], sort_keys=True),
         **fields,
     )
