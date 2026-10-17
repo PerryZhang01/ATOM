@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: MIT
 """Each memory term's method, site by site, from the origin of what it reads."""
 
-import copy
 import json
 import pathlib
 
@@ -17,6 +16,7 @@ from transformers import PretrainedConfig
 from atom.compass.backends.provenance import Method
 from atom.compass.memory import (
     MemoryRefusal,
+    Reading,
     Term,
     footprint_terms,
     reserves,
@@ -85,9 +85,10 @@ def test_the_piecewise_reservation_is_analytical(qwen):
     assert {t.method for t in reading.terms} == {Method.ANALYTICAL}
 
 
-def test_meta_build_weights_are_analytical_and_the_entry_s_activations_measured(qwen):
-    model = model_terms(qwen)
+def test_meta_build_weights_are_analytical_and_the_entry_s_activations_measured():
+    model = model_terms()
     assert model.weights.method is Method.ANALYTICAL
+    assert model.buffers.method is Method.ANALYTICAL
     assert model.activations.method is Method.MEASURED
 
 
@@ -105,9 +106,10 @@ def test_only_an_estimated_term_can_be_validated():
 def test_a_reading_as_one_term_combines_its_terms_methods(qwen):
     peak = readings_at(spec_of("probed"), qwen, 1).peak_torch
     assert peak.as_term().method is Method.ESTIMATED
-    full = copy.deepcopy(qwen)
-    del full.partial_rotary_factor
-    term = readings_at(spec_of("probed"), full, 1).peak_torch.as_term()
+    assumed = Term(
+        "buffers", 1, Method.DECLARED, "a formula", "a meta build replaces it"
+    )
+    term = Reading("peak_torch", (*peak.terms[:1], assumed, *peak.terms[2:])).as_term()
     assert term.method is Method.DECLARED
     assert "It sums buffers, which are declared" in term.note
     measured = readings_at(spec_of("probed"), qwen, 1).non_torch.as_term()

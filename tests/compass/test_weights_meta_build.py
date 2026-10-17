@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
-"""The weights term a simulated run installs is read off its meta build.
+"""The weights and buffers a simulated run installs are read off its meta build.
 
 `NonAllocatingRunner._build_and_load_model` builds the model class on the meta
 device and hands the tree to `run.runner`; the weights term in the readings it
-installs is then the bytes of the tree's parameter storages, each once.
+installs is then the bytes of the tree's parameter storages, each once, and the
+buffers term those of its buffer storages.
 """
 
 import json
@@ -40,7 +41,32 @@ class TiedPacked(torch.nn.Module):
         )
 
 
-def _built(monkeypatch, tmp_path):
+class Buffered(torch.nn.Module):
+    """Buffers held the ways ATOM's models hold them, and a table held as none."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.weight = torch.nn.Parameter(
+            torch.empty(VOCAB, HIDDEN, dtype=torch.bfloat16), requires_grad=False
+        )
+        # One rotary module every layer shares, as `get_rope` caches it.
+        rope = torch.nn.Module()
+        rope.register_buffer("cos_sin", torch.empty(ROWS, COLS, dtype=torch.bfloat16))
+        self.layers = torch.nn.ModuleList(torch.nn.Module() for _ in range(2))
+        for layer in self.layers:
+            layer.rope = rope
+        # A warmup placeholder, as DeepSeek-V4's indexer registers its cache.
+        self.register_buffer(
+            "kv_cache", torch.zeros(1, ROWS, HIDDEN, dtype=torch.float32)
+        )
+        # A buffer over a parameter's storage is resident once, as the parameter.
+        self.register_buffer("row", self.weight.data[0])
+        # DeepSeek-V4's rotary table: a plain attribute, so the load residue
+        # holds it and the buffers do not.
+        self.cos_cache = torch.empty(ROWS, COLS)
+
+
+def _built(monkeypatch, tmp_path, model_class=TiedPacked):
     """A worker's runner after `_build_and_load_model` under a run file."""
     monkeypatch.setenv(compass_run.ENV, str(_run_file(tmp_path)))
     (tmp_path / "config.json").write_text(CONFIG_JSON.read_text())
@@ -58,7 +84,7 @@ def _built(monkeypatch, tmp_path):
         ),
     )
     with_readings(runner, tmp_path / "store")
-    NonAllocatingRunner._build_and_load_model(runner, TiedPacked)
+    NonAllocatingRunner._build_and_load_model(runner, model_class)
     return runner
 
 
@@ -71,3 +97,15 @@ def test_the_weights_are_the_meta_builds_storages_each_counted_once(
     assert weights.method is Method.ANALYTICAL
     assert weights.nbytes == VOCAB * HIDDEN * 2 + EXPERTS * ROWS * COLS // 2
     assert all(p.is_meta for p in runner.model.parameters())
+
+
+def test_the_buffers_are_the_meta_builds_buffer_storages_each_counted_once(
+    monkeypatch, tmp_path
+):
+    runner = _built(monkeypatch, tmp_path, Buffered)
+    weights, buffers = runner.compass_readings.peak_torch.terms[:2]
+    assert buffers.name == "buffers"
+    assert buffers.method is Method.ANALYTICAL
+    assert buffers.nbytes == ROWS * COLS * 2 + ROWS * HIDDEN * 4
+    assert buffers.source == "2 buffer storages of a meta build of Buffered"
+    assert weights.nbytes == VOCAB * HIDDEN * 2

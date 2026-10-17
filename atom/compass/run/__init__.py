@@ -1276,12 +1276,7 @@ def runner(model_runner, tree) -> None:
     # the DP and PCP widths, all in the readings' key, so the tokens the
     # reading warmed up with are the ones this deployment's warmup runs.
     warmup = measured.values["warmup_tokens"]
-    model = ModelTerms.from_config(
-        config.hf_config,
-        activations=measured.activations(warmup),
-        config_json=_config_json(config),
-        tree=tree,
-    )
+    model = ModelTerms.from_tree(tree, activations=measured.activations(warmup))
     fallback = run.get("step_roofline", False)
     if not isinstance(fallback, bool):
         raise TypeError(
@@ -1478,17 +1473,6 @@ def host_key_of(model: str, engine: dict) -> dict:
         "model": _file_digest(model, "config.json"),
         "engine": engine,
     }
-
-
-def _config_json(config) -> dict:
-    """The model's config.json as loading reads it, with `config.hf_overrides`
-    set over its text-level keys, as `Config` sets them over `hf_config`, so
-    an overridden field counts as stated."""
-    from transformers import PretrainedConfig
-
-    file = PretrainedConfig.get_config_dict(config.model)[0]
-    file.get("text_config", file).update(getattr(config, "hf_overrides", None) or {})
-    return file
 
 
 def _file_digest(name: str, filename: str) -> str | None:
