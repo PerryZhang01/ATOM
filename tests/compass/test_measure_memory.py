@@ -17,7 +17,6 @@ import copy
 import hashlib
 import json
 import subprocess
-import sys
 from types import SimpleNamespace
 
 import pytest
@@ -202,43 +201,33 @@ def test_a_start_under_another_stack_than_the_spec_pins_publishes_nothing(
     assert not (tmp_path / "s").exists()
 
 
-def test_the_command_beside_runs_between_the_gpu_checks(tmp_path, monkeypatch):
+def test_the_engine_session_starts_the_command_beside_before_the_engine(
+    tmp_path, monkeypatch
+):
     r, argv = a_start(tmp_path, monkeypatch, STACK)
-    events = []
+    envs = []
+    engine = measure_memory.subprocess.Popen
 
-    @contextlib.contextmanager
-    def quiet(gpus, out):
-        events.append("check")
-        yield
-        events.append("check")
+    def recorded(command, **kwargs):
+        envs.append(kwargs["env"])
+        return engine(command, **kwargs)
 
-    class Process:
-        def __init__(self, command, **kwargs):
-            self.pid = command[0]
-            events.append(f"start {self.pid}")
-            if self.pid == sys.executable:
-                ranks_wrote(tmp_path / "out", r.config, [READINGS[2]] * 2)
-
-        def wait(self, timeout=None):
-            return 0
-
-    monkeypatch.setattr(measure_memory, "quiet", quiet)
-    monkeypatch.setattr(measure_memory.subprocess, "Popen", Process)
-    monkeypatch.setattr(
-        measure_memory.os, "killpg", lambda pid, sig: events.append(f"stop {pid}")
-    )
+    monkeypatch.setattr(measure_memory.subprocess, "Popen", recorded)
     cut = argv.index("--")
-
     measure_memory.main([*argv[:cut], "--beside", "lmcache server -p 1", *argv[cut:]])
+    assert envs[0][measure_memory.BESIDE_ENV] == "lmcache server -p 1"
 
-    assert events == [
-        "check",
-        "start lmcache",
-        f"start {sys.executable}",
-        f"stop {sys.executable}",
-        "stop lmcache",
-        "check",
-    ]
+    class Started(Exception):
+        pass
+
+    def beside(command, **kwargs):
+        raise Started(command)
+
+    monkeypatch.setenv(measure_memory.BESIDE_ENV, envs[0][measure_memory.BESIDE_ENV])
+    monkeypatch.setattr(measure_memory.subprocess, "Popen", beside)
+    with pytest.raises(Started) as started:
+        measure_memory.start(["--model", r.config.model])
+    assert started.value.args == (["lmcache", "server", "-p", "1"],)
 
 
 def test_readings_taken_without_the_offload_connector_refuse_a_run_that_offloads(
