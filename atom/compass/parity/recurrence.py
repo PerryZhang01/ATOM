@@ -41,7 +41,10 @@ from atom.compass.spec import MachineSpec
 
 STEP_BAND, TOTAL_BAND, SHOWN = 2, 0.5, 10  # bands in percent
 KINDS = ("decode", "prefill", "middle", "idle")
-#: A send's gloo parts: the size, and the metadata of two 2-D tensors pickled.
+#: A send's gloo parts: the size, and aiter's metadata of `hidden_states` and
+#: `residual` pickled, 179 bytes at bf16 from 256 to 65535 tokens.
+# ponytail: one length for every batch; it moves by a few bytes, about a
+# nanosecond on gloo, so pickle aiter's metadata here only if that changes.
 META = [("gloo", 8), ("gloo", 179)]
 
 
