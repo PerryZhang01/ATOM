@@ -26,6 +26,57 @@ from atom.model_engine.scheduler import Scheduler
 
 #: The payload's request parameters, beside what the export leaves out.
 PARAMETERS = {"ignore_eos": True, **SAMPLING}
+#: aiperf's input config beside its dataset, as a real cell's client wrote it.
+CONFIG = {
+    "models": {"items": [{"name": "/models/m"}]},
+    "endpoint": {
+        "urls": ["http://127.0.0.1:40165"],
+        "type": "chat",
+        "streaming": True,
+        "use_server_token_count": True,
+        "extra": {"ignore_eos": True},
+    },
+    "phases": [
+        {
+            "name": "profiling",
+            "kind": "profiling",
+            "type": "concurrency",
+            "duration": 1800.0,
+            "concurrency": 64,
+            "grace_period": 30.0,
+            "timing_mode": "agentic_replay",
+            "trajectory_start_min_ratio": 0.0,
+            "trajectory_start_max_ratio": 0.0,
+            "system_idle_gap_cap_seconds": 10.0,
+            "warmup_requests_per_lane": 1,
+        }
+    ],
+    "artifacts": {"dir": "/cell/real1/artifacts", "raw": True},
+    "tokenizer": {"name": "/models/m"},
+    "scenario": "inferencex-agentx-mvp",
+    "unsafe_override": True,
+}
+#: The export's `arguments` of `CONFIG` and a `weka` dataset.
+ARGUMENTS = {
+    "phases.profiling.kind": "profiling",
+    "phases.profiling.type": "concurrency",
+    "phases.profiling.duration": 1800.0,
+    "phases.profiling.concurrency": 64,
+    "phases.profiling.grace_period": 30.0,
+    "phases.profiling.timing_mode": "agentic_replay",
+    "phases.profiling.trajectory_start_min_ratio": 0.0,
+    "phases.profiling.trajectory_start_max_ratio": 0.0,
+    "phases.profiling.system_idle_gap_cap_seconds": 10.0,
+    "phases.profiling.warmup_requests_per_lane": 1,
+    "datasets.main.type": "file",
+    "datasets.main.format": "weka_trace",
+    "datasets.main.random_seed": 20260707,
+    "endpoint.type": "chat",
+    "endpoint.streaming": True,
+    "endpoint.use_server_token_count": True,
+    "endpoint.extra": {"ignore_eos": True},
+    "scenario": "inferencex-agentx-mvp",
+}
 
 
 def raw(responses, conversation="trace-0", payload=None, phase="profiling") -> dict:
@@ -61,16 +112,23 @@ def weka(path, *ids) -> dict:
     files[0].parent.mkdir(parents=True, exist_ok=True)
     for f, t in zip(files, ids):
         f.write_text(json.dumps({"id": t, "block_size": 64, "requests": []}))
-    return {"name": "main", "type": "file", "path": str(path), "format": "weka_trace"}
+    return {
+        "name": "main",
+        "type": "file",
+        "path": str(path),
+        "format": "weka_trace",
+        "random_seed": 20260707,
+    }
 
 
-def _write_raw(artifacts, records, dataset=None) -> None:
+def _write_raw(artifacts, records, dataset=None, config=CONFIG) -> None:
     """`records` as aiperf's raw records, beside its export, whose input
-    config names `dataset`, by default a directory of trace `trace-0`."""
+    config is `config` naming `dataset`, by default a directory of trace
+    `trace-0`."""
     artifacts.mkdir(parents=True, exist_ok=True)
     (artifacts / RAW).write_text("".join(json.dumps(r) + "\n" for r in records))
     dataset = dataset or weka(artifacts / "traces", "trace-0")
-    config = {"input_config": {"datasets": [dataset]}}
+    config = {"input_config": config | {"datasets": [dataset]}}
     (artifacts / AIPERF).write_text(json.dumps(config))
 
 
@@ -194,6 +252,7 @@ def test_the_trace_is_the_conversation_and_the_parameters_are_what_shape_no_prom
         },
         "warmup": {},
         "traces": ["trace-0"],
+        "arguments": ARGUMENTS,
     }
 
 
@@ -212,6 +271,36 @@ def test_the_export_names_every_trace_aiperf_was_given_not_only_those_finished(
 
     assert export["traces"] == traces
     assert {r["trace"] for r in export["requests"].values()} == {"t1"}
+
+
+def test_the_export_names_what_decides_the_requests_aiperf_sends_and_not_where(
+    tmp_path,
+):
+    # Another run's URL, artifact directory and model path, and no override.
+    elsewhere = CONFIG | {
+        "endpoint": CONFIG["endpoint"] | {"urls": ["http://10.0.0.2:8000"]},
+        "artifacts": {"dir": "/cell/real2/artifacts", "raw": True},
+        "models": {"items": [{"name": "/mnt/m"}]},
+        "tokenizer": {"name": "/mnt/m"},
+        "unsafe_override": False,
+    }
+    # The same traces at another concurrency, and a warmup phase before it.
+    (profiling,) = CONFIG["phases"]
+    warmup = {"name": "warmup", "kind": "warmup", "type": "concurrency"}
+    other = CONFIG | {"phases": [warmup, profiling | {"concurrency": 16}]}
+    records = [raw([sse(("data", '{"id": "a"}'))], "t0")]
+    got = {}
+    for name, config in (("here", CONFIG), ("elsewhere", elsewhere), ("other", other)):
+        dataset = weka(tmp_path / name / "traces", "t0")
+        _write_raw(tmp_path / name, records, dataset, config)
+        got[name] = write(tmp_path / name)[1]["arguments"]
+
+    assert got["here"] == got["elsewhere"] == ARGUMENTS
+    assert got["other"] == ARGUMENTS | {
+        "phases.profiling.concurrency": 16,
+        "phases.warmup.kind": "warmup",
+        "phases.warmup.type": "concurrency",
+    }
 
 
 @pytest.mark.parametrize(
@@ -276,3 +365,14 @@ def test_the_planted_dataset_is_aiperf_s_own(tmp_path):
 
     dataset = config.FileDataset.model_validate(planted)
     assert (str(dataset.path), str(dataset.format)) == (planted["path"], "weka_trace")
+
+
+def test_the_planted_config_is_aiperf_s_own(tmp_path):
+    config = pytest.importorskip("aiperf.config.config")
+    planted = CONFIG | {"datasets": [weka(tmp_path / "traces", "t0")]}
+
+    # As aiperf's JSON exporter dumps its input config.
+    dumped = config.BenchmarkConfig.model_validate(planted).model_dump(
+        mode="json", exclude_unset=True, exclude_none=True
+    )
+    assert dumped == planted

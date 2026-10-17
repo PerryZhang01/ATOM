@@ -19,7 +19,11 @@ names nothing and is counted. ``traces`` names every trace aiperf was given:
 the ``id`` of each weka trace its input config's dataset holds, a file or each
 ``*.json`` of a directory, as aiperf's weka trace loader reads them. Which of
 them a run's finished requests came from moves with its schedule, since aiperf
-records nothing of a request in flight at its cutoff.
+records nothing of a request in flight at its cutoff. ``arguments`` names, by
+its path in the input config, all else there that decides which requests
+aiperf sends, when, and what each asks for: every field of each phase
+(concurrency, duration, grace period, warmup) and of the dataset but its path
+(its seed), the endpoint's `ENDPOINT` fields, and the scenario.
 """
 
 import argparse
@@ -45,6 +49,9 @@ NOT_SAMPLING = frozenset(
         "stream_options",
     }
 )
+#: The endpoint's fields that shape what a request asks for, or how aiperf
+#: counts its tokens; the others say where and how it connects.
+ENDPOINT = ("type", "streaming", "use_server_token_count", "extra")
 
 
 def response_id(responses) -> str | None:
@@ -69,6 +76,25 @@ def given(artifacts) -> list:
     path = Path(d["path"])
     files = path.glob("*.json") if path.is_dir() else [path]
     return sorted({json.loads(f.read_text())["id"] for f in files})
+
+
+def arguments(artifacts) -> dict:
+    """The export's ``arguments``, from the input config of `artifacts`."""
+    config = json.loads((Path(artifacts) / AIPERF).read_text())["input_config"]
+    (d,) = config["datasets"]
+    out = {
+        f"phases.{p['name']}.{k}": v
+        for p in config["phases"]
+        for k, v in p.items()
+        if k != "name"
+    }
+    out |= {
+        f"datasets.{d['name']}.{k}": v
+        for k, v in d.items()
+        if k not in ("name", "path")
+    }
+    out |= {f"endpoint.{k}": config["endpoint"].get(k) for k in ENDPOINT}
+    return out | {"scenario": config.get("scenario")}
 
 
 def write(artifacts) -> tuple[Path, dict, int]:
@@ -104,6 +130,7 @@ def write(artifacts) -> tuple[Path, dict, int]:
         "requests": named[PROFILING],
         "warmup": named[WARMUP],
         "traces": given(artifacts),
+        "arguments": arguments(artifacts),
     }
     path = artifacts / NAME
     path.write_text(json.dumps(export, sort_keys=True))
