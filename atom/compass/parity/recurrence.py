@@ -7,7 +7,8 @@
 time, plus `d_gap_ns` on a decode, and its line's host segments: `E` from the previous exit to the entry,
 `W_pre` to the launch less the staging gate's and MTP status waits, `W_launch`, and `W_post`
 from the launch to the exit less the recv and draft copy waits; with
-`d_target_ns`, under MTP, the rest of `d_busy_ns` is draft. Each forward is called at the
+`d_target_ns`, under MTP, the rest of `d_busy_ns` is draft, `W_inputs` is the part of
+`W_pre` after the MTP status wait, and no `d_gap_ns` is fed. Each forward is called at the
 exit predicted for the one before, so only the waits and device times move it.
 A pipeline record is gated stage by stage, each charged with the predicted
 sends of the stage before (`check`).
@@ -72,8 +73,9 @@ def check(steps: list[dict], stage=None, upstream=None) -> dict:
         if upstream:  # R7's host side, a wait before the launch
             sent, ready = ((t - origin) * 1e-9 for t in upstream[n])
             pre += max(sent - entry - pre * 1e-9, 0.0) * 1e9
-        law = {"E": e, "W_pre": pre, "W_launch": l1 - l0 - (p1 - p0), "W_post": post}
-        law = {g: (v * 1e-9, 0, 0) for g, v in law.items()}
+        launch = l1 - l0 - (p1 - p0)
+        law = {"E": e, "W_pre": pre - (l0 - m1), "W_launch": launch, "W_post": post}
+        law = {g: (v * 1e-9, 0, 0) for g, v in {**law, "W_inputs": l0 - m1}.items()}
         rec.laws = {k: law for k in FORWARD_KINDS}
         queued = rec.ends[1] - entry - pre * 1e-9
         # Under MTP, the wait for the previous output's MTP status sits inside
@@ -83,7 +85,7 @@ def check(steps: list[dict], stage=None, upstream=None) -> dict:
         batch = SimpleNamespace(total_tokens_num=0, total_seqs_num=0)
         batch.total_seqs_num_prefill = sum(not d for *_, d in s["rows"])
         batch.produces_output = lambda out=s["produces_output"]: out
-        gap = 0 if batch.total_seqs_num_prefill else s.get("d_gap_ns", 0)
+        gap = 0 if batch.total_seqs_num_prefill or mtp else s.get("d_gap_ns", 0)
         if stage is not None:
             # A stage's host may trail its device, so the gap may be idle: it
             # follows the last forward's device end. R7 holds the start too.

@@ -27,6 +27,9 @@ from atom.compass.run.step_grid import keyed_of
 FORMAT_VERSION = 2
 #: rocm-smi's series is this brand and then the model a machine spec names.
 BRAND = "AMD Instinct "
+#: The model a machine spec names for each PCI device id (rocm-smi's model),
+#: for a card whose series is not the brand and a model.
+MODELS = {"0x75a3": "MI355X"}
 #: The hex digits of aiter's commit a machine spec pins; git's own default
 #: follows the checkout's object count, and a shallow clone reads fewer.
 AITER_ABBREV = 9
@@ -60,7 +63,9 @@ def identity(
 
 def _device(gpus: tuple[int, ...]) -> list[dict]:
     """Each GPU's index, and its name and arch as a machine spec states them,
-    from rocm-smi's series and gfx version; a GPU it does not list refuses."""
+    from rocm-smi's series and gfx version, or `MODELS` when the series is not
+    the brand and a model; a GPU it does not list or a model `MODELS` lacks
+    refuses."""
     if not gpus:
         return []
     cards = json.loads(smi("--showproductname", "--json"))
@@ -70,11 +75,23 @@ def _device(gpus: tuple[int, ...]) -> list[dict]:
     return [
         {
             "index": gpu,
-            "name": cards[f"card{gpu}"]["Card Series"].removeprefix(BRAND),
+            "name": _model(gpu, cards[f"card{gpu}"]),
             "arch": cards[f"card{gpu}"]["GFX Version"],
         }
         for gpu in gpus
     ]
+
+
+def _model(gpu: int, card: dict) -> str:
+    """The model a machine spec names GPU `gpu` by, from its rocm-smi `card`."""
+    series, model = card["Card Series"], card.get("Card Model")
+    if series.startswith(BRAND):
+        return series.removeprefix(BRAND)
+    if model in MODELS:
+        return MODELS[model]
+    raise GpuRefusal(
+        f"GPU {gpu} is {series} with model {model}, which no machine spec names"
+    )
 
 
 def _commit(root: str) -> str:

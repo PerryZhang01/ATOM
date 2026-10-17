@@ -213,13 +213,18 @@ GRADED = {
 }
 
 
-def _recorded(cell, sent=None, warmup=("kw",), **run):
+#: The traces every client run here was given.
+GIVEN = ["trace-ka", "trace-kb", "trace-kc", "trace-kw"]
+
+
+def _recorded(cell, sent=None, warmup=("kw",), given=GIVEN, **run):
     """`cell` as `record` lays it out, or with `run`'s entries as `run` does:
     each named request also named by its response id `id-<key>`, and the
     export naming those whose keys are in `sent` (all by default), each from
-    trace `trace-<key>`; and its warmup naming those whose keys are in
-    `warmup`, by default `kw`, which `_schedule` holds no step of. With
-    `warmup` None the export has no warmup entry."""
+    trace `trace-<key>`; its warmup naming those whose keys are in `warmup`,
+    by default `kw`, which `_schedule` holds no step of; and the traces its
+    client was given, `given`. With `warmup` or `given` None the export has no
+    such entry."""
     path = cell / "steps" / "dp0.jsonl"
     lines = [json.loads(x) for x in path.read_text().splitlines()]
     for line in lines:
@@ -233,6 +238,8 @@ def _recorded(cell, sent=None, warmup=("kw",), **run):
     export = {"requests": named(k for k in keys if sent is None or k in sent)}
     if warmup is not None:
         export["warmup"] = named(warmup)
+    if given is not None:
+        export["traces"] = given
     (cell / CLIENT_RUN).write_text(json.dumps(export))
     (cell / "run.json").write_text(json.dumps({"format_version": 2, **run}))
     return cell
@@ -383,16 +390,36 @@ def test_the_steps_of_a_later_client_run_are_not_graded(tmp_path):
     assert grade(real, simulated) == report
 
 
-def test_runs_that_served_different_traces_are_not_one_cell(tmp_path):
+def test_runs_given_different_traces_are_not_one_cell(tmp_path):
     *real, simulated = (_recorded(c) for c in _four(tmp_path))
-    export = json.loads((real[2] / CLIENT_RUN).read_text())
-    export["requests"]["id-kb"]["trace"] = "trace-other"
-    (real[2] / CLIENT_RUN).write_text(json.dumps(export))
+    _recorded(real[2], given=["trace-other", *GIVEN[1:]])
 
-    beyond = f"'{real[2]}': ['trace-other'], '{simulated}': ['trace-kb']}}"
-    with pytest.raises(ValueError, match="sent different traces") as refused:
+    beyond = f"'{real[2]}': ['trace-other'], '{simulated}': ['trace-ka']}}"
+    with pytest.raises(ValueError, match="were given different traces") as refused:
         grade(real, simulated)
     assert str(refused.value).endswith(beyond)
+
+
+def test_runs_given_the_same_traces_pair_though_their_finished_requests_differ(
+    tmp_path,
+):
+    *real, simulated = (_recorded(c) for c in _four(tmp_path))
+    report = grade(real, simulated)
+    # Request `kb` was in flight at every real run's cutoff, and aiperf
+    # records nothing of it: only the simulated run's export names it.
+    for cell in real:
+        _recorded(cell, sent={"ka"})
+
+    assert grade(real, simulated) == report
+
+
+def test_a_client_run_whose_export_names_no_traces_given_is_refused(tmp_path):
+    *real, simulated = (_recorded(c) for c in _four(tmp_path))
+    _recorded(real[1], given=None)
+
+    unknown = "its export names no traces its client was given"
+    with pytest.raises(ValueError, match=f"r1 is not graded: {unknown}$"):
+        grade(real, simulated)
 
 
 def _ran(monkeypatch, tmp_path, served):

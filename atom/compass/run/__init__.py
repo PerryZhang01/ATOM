@@ -295,18 +295,18 @@ def spec() -> dict | None:
 
 def _check_host(path, host: dict) -> None:
     """Refuse a ``host`` entry the runner would read as zero host time."""
-    from atom.compass.runner.overrides import FORWARD_KINDS, HOST_SEGMENTS
+    from atom.compass.runner.overrides import FORWARD_KINDS, HOST_SEGMENTS, MTP_SEGMENT
 
-    laws = host.get("laws", {})
+    laws, segments = host.get("laws", {}), (*HOST_SEGMENTS, MTP_SEGMENT)
     if (
         set(host) - {"laws", "skip", "key"}
-        or set(host.get("skip", ())) - set(HOST_SEGMENTS)
+        or set(host.get("skip", ())) - set(segments)
         or set(laws) - set(FORWARD_KINDS)
-        or {s for v in laws.values() for s in v} - set(HOST_SEGMENTS)
+        or {s for v in laws.values() for s in v} - set(segments)
         or {len(c) for v in laws.values() for c in v.values()} - {3}
     ):
         raise ValueError(
-            f"{path}: host is {host!r}; it takes skip, a list of {HOST_SEGMENTS}, "
+            f"{path}: host is {host!r}; it takes skip, a list of {segments}, "
             f"laws, mapping {FORWARD_KINDS} to segments to three coefficients, "
             "and key, the host key the laws were fitted under"
         )
@@ -484,17 +484,18 @@ def _launch_lmcache(config, run: dict, side: str | None) -> None:
         return
     if side == "D":
         raise ValueError("LP lmcache serves the prefill side; this is the decode side")
-    writers = lm.tensor_parallel_size // _tp_replication_factor(lm)
+    # Under DP-attention each DP rank runs at TP 1.
+    tp = 1 if config.enable_dp_attention else config.tensor_parallel_size
+    writers = tp // min(tp, _tp_replication_factor(lm))
     if run["lmcache"].get("writers", 1) != writers:
         raise ValueError(
             f"the run file's lmcache writers is {run['lmcache'].get('writers', 1)}; "
-            f"this deployment stores from {writers} rank(s) per DP rank, its "
-            "tensor_parallel_size over its TP replication factor"
+            f"this deployment stores from {writers} rank(s) per DP rank, its TP "
+            "width per DP rank (1 under DP-attention) over its TP replication factor"
         )
     from atom.compass.backends import KvGeometry, Parallelism
     from atom.compass.kv.lmcache_server import parse_server_flags
 
-    tp = 1 if config.enable_dp_attention else config.tensor_parallel_size
     chunk_bytes = KvGeometry.from_hf_config(
         config.hf_config,
         block_size=parse_server_flags(run["lmcache"]["server"]).chunk_size,
@@ -998,7 +999,10 @@ def _park_before_dispatch() -> None:
     def parking(self, func_name, *args, **kwargs):
         rt = clock.installed()
         if func_name in ("forward", "dummy_execution") and rt and rt.in_run:
+            cpu, at = time.thread_time(), rt.now
             rt.park()
+            parks = rt.__dict__.setdefault("parks", [])
+            parks.append((at, rt.now, time.thread_time() - cpu))
         return call(self, func_name, *args, **kwargs)
 
     @functools.wraps(sync)
@@ -1413,11 +1417,16 @@ def engine_done(engine_core, **sections) -> None:
 
 def _engine_hand_in(run: dict, engine_core, sections: dict, client_run=None) -> None:
     """Hand in what the worker's steps cost and the memory it predicts, with
-    `sections`, its command refusals and the engine's refused clock calls."""
+    `sections`, its command refusals and the engine's refused clock calls; a
+    DP member that parked also hands in ``parks``: their count, CPU seconds, and
+    each park's clock and the clock it left at."""
     said = _workers_say(engine_core)
     rt = clock.installed()
     lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
     reasons = said.pop("refusals") + rt.refusals
+    if parks := getattr(rt, "parks", None):
+        cpu_s, at = sum(p[2] for p in parks), [p[:2] for p in parks]
+        sections = sections | {"parks": {"count": len(parks), "cpu_s": cpu_s, "at": at}}
     _hand_in(run, lp, reasons, client_run, **said, **sections)
 
 

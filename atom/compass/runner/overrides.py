@@ -242,6 +242,8 @@ def install_cost_backend(runner: Any, backend: CostBackend) -> None:
 
 
 HOST_SEGMENTS = ("E", "W_pre", "W_launch", "W_post")  # in the order the host runs them
+#: The part of prepare after the MTP status wait; an output forward runs it under MTP.
+MTP_SEGMENT = "W_inputs"
 FORWARD_KINDS = ("decode", "prefill", "middle")
 #: The format of a simulated run's `dp<r>.cost.jsonl`, its first line.
 COST_TABLE_VERSION = 1
@@ -256,7 +258,8 @@ class HostDeviceRecurrence:
     output forward's, or on the last stage for its own, and on any other stage
     for nothing. With `mtp`, a forward's device work is its target's and then
     its draft's, and a single-stage output forward waits before launch, for
-    the previous output forward's target. `ends[-1]` is the last forward's device end. `laws[kind][segment]` are coefficients on `(1,
+    the previous output forward's target; `MTP_SEGMENT` runs after that wait,
+    before the launch. `ends[-1]` is the last forward's device end. `laws[kind][segment]` are coefficients on `(1,
     tokens, seqs)`; `charge` says what an absent one costs. `now` reads the engine LP's clock.
     `segments` holds the seconds the last `charge` charged each segment, 0 for
     one in `skip`.
@@ -278,12 +281,14 @@ class HostDeviceRecurrence:
         `compass_pp_release`; advances the device state. With any
         laws and `refuse`, a forward whose kind lacks one for a segment it runs
         is refused, naming each ``<kind>.<segment>``, the state as it was;
-        without `refuse` that segment is 0. A segment in `skip` needs none, and
-        a middle chunk runs no `W_post`."""
+        without `refuse` that segment is 0. A segment in `skip` needs none, a
+        middle chunk runs no `W_post`, and only an output forward under `mtp`
+        runs `MTP_SEGMENT`."""
         kind = "decode" if batch.total_seqs_num_prefill == 0 else "prefill"
         kind = kind if batch.produces_output() else "middle"
         law = self.laws.get(kind, {})
         ran = HOST_SEGMENTS[: 3 if kind == "middle" else 4]
+        ran += (MTP_SEGMENT,) if self.mtp and kind != "middle" else ()
         missing = [s for s in ran if s not in {*law, *self.skip}]
         if refuse and self.laws and missing:
             from atom.compass.backends.resolver import CostRefused, Refusal
@@ -293,14 +298,15 @@ class HostDeviceRecurrence:
         x = (1, batch.total_tokens_num, batch.total_seqs_num)
         self.segments = {
             s: float(np.dot(law.get(s, (0, 0, 0)), x)) * (s not in self.skip)
-            for s in HOST_SEGMENTS
+            for s in (*HOST_SEGMENTS, MTP_SEGMENT)
         }
-        e, pre, launch, post = self.segments.values()
+        e, pre, launch, post, inputs = self.segments.values()
         now = self.now()
         host = max(now + e, self.ends[0]) + pre
         output = batch.produces_output()
         if self.mtp and output:  # output_end stays -inf on a PP stage
             host = max(host, self.output_end)
+        host += inputs
         launch_end = host + launch
         release = getattr(batch, "compass_pp_release", -math.inf)
         target_end = max(self.ends[-1], host, release) + device_s
@@ -643,12 +649,24 @@ class PipelineFrames:
         return pp.recv_object(pp.rank_in_group + (-1 if kind == "pp_data" else 1))
 
 
+class OffloadDecisions:
+    """The offload decisions each dispatch hands the worker, kept for the
+    parity record before ATOM's own dispatch runs."""
+
+    def process_kvconnector_output(self, meta: Any) -> None:
+        from atom.compass.parity import record_kv
+
+        record_kv(self, meta)
+        return super().process_kvconnector_output(meta)
+
+
 class NonAllocatingRunner(
     RefusedControlCommands,
     PricedSteps,
     PredictedMemory,
     StepGridBundle,
     PipelineFrames,
+    OffloadDecisions,
 ):
     """Overrides that construct a model runner without touching device memory."""
 
@@ -1081,8 +1099,9 @@ def _group_step_seconds(
 
     On the rank that keeps the parity record, each step also appends its cost
     line to `dp<r>.cost.jsonl` beside it: the record's `step`; with a
-    `compass_host` that reports them, each of `HOST_SEGMENTS` in seconds and
-    `skipped`, those its `skip` charged as 0; `device_s`, the backend's price;
+    `compass_host` that reports them, each of `HOST_SEGMENTS` and
+    `MTP_SEGMENT` in seconds, `MTP_SEGMENT` 0.0 where the law has none, and `skipped`,
+    those its `skip` charged as 0; `device_s`, the backend's price;
     `charge_s`, that composed with host time (`device_s` with no host);
     `group_s`, its DP group target; `terms`, each one's `name`, `seconds`
     and its provenance's `method`, `validated` and `source`; and `refused`,
@@ -1150,7 +1169,7 @@ def _group_step_seconds(
     step = record.step - 1  # the step `record_step` just recorded
     segments = {}
     if hasattr(host, "segments"):
-        skipped = [s for s in HOST_SEGMENTS if s in host.skip]
+        skipped = [s for s in host.segments if s in host.skip]
         segments = {**host.segments, "skipped": skipped}
     line = {
         "step": step,

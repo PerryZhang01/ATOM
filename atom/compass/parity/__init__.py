@@ -21,7 +21,9 @@ exit event to this launch's entry event, absent on the first line; summed in
 order they lay every forward on one device timeline. A later pipeline stage's
 receive of its input is `t_pp_recv_ns`, its device part `d_recv_ns`. The events are polled,
 never waited on, so a line is written once its exit event has completed, and
-`exit` writes the rest. `compare` reads two records and names, per DP rank,
+`exit` writes the rest. Under `kv` a line carries the lmcache offload loads
+and saves the scheduler handed the worker since the previous line
+(`StepRecord.note_kv`), where any were. `compare` reads two records and names, per DP rank,
 the first step where they part; timestamps are not part of a step's decision.
 
 Setting `ATOM_COMPASS_PARITY_RECORD` to a directory turns recording on: TP rank 0
@@ -97,6 +99,22 @@ class StepRecord:
         self.prompts: dict[int, tuple] = {}  # request id -> (digest, next position)
         # (line, its device window: a callable taking `wait`, or None once closed)
         self.pending: collections.deque[tuple] = collections.deque()
+        # Offload decisions handed to the worker, not yet on a line.
+        self.kv: list[list] = []
+
+    def note_kv(self, meta) -> None:
+        """Keep each lmcache offload load and save `meta` hands the worker:
+        ``[request id, "load", HBM-cached tokens, offload-cached tokens]`` or
+        ``[request id, "save", tokens already saved, tokens computed]``."""
+        for req in getattr(meta, "requests", ()):
+            if (ls := req.load_spec) is not None:
+                self.kv.append(
+                    [req.req_id, "load", ls.hbm_cached_tokens, ls.lmcache_cached_tokens]
+                )
+            if (ss := req.save_spec) is not None:
+                self.kv.append(
+                    [req.req_id, "save", ss.skip_leading_tokens, len(req.token_ids)]
+                )
 
     def add(self, batch, runner, forward=None):
         """Append `batch`'s line; with `forward`, run it inside the line's timestamps.
@@ -169,6 +187,8 @@ class StepRecord:
             "batch": rows,
             "named": named,
         }
+        if self.kv:
+            line["kv"], self.kv = self.kv, []
         reply, window, mode = None, None, None
         if forward is not None:
             line["t_enter_ns"] = runner.step_clock_ns()
@@ -215,6 +235,20 @@ def record_step(runner, batch, forward=None):
     Without `forward`, a recorded step returns the `ForwardMode` it settled
     and an unrecorded one None.
     """
+    if _record(runner) is not None:
+        return runner._parity_record.add(batch, runner, forward)
+    return None if forward is None else forward(batch)
+
+
+def record_kv(runner, meta) -> None:
+    """Keep the offload decisions in `meta`, dispatched to `runner`'s worker,
+    for its next recorded step's line, as `record_step` would record it."""
+    if _record(runner) is not None:
+        runner._parity_record.note_kv(meta)
+
+
+def _record(runner):
+    """`runner`'s record, made on its first call; None unless recorded."""
     if not hasattr(runner, "_parity_record"):
         directory = os.environ.get(ENV)
         record = None
@@ -225,7 +259,7 @@ def record_step(runner, batch, forward=None):
             pp = runner.config.pipeline_parallel_size > 1
             stage = pc.pipeline_parallel_rank if pp else 0
             record = StepRecord(directory, pc.data_parallel_rank, stage)
-            # By its first forward the runner has resolved its engine.
+            # By its first step the runner has resolved its engine.
             engine = keyed(runner.config) | {
                 name: getattr(runner.config, name)
                 for name in (*BOUNDS, "num_kvcache_blocks")
@@ -235,9 +269,7 @@ def record_step(runner, batch, forward=None):
             if key is not None:
                 record.path.with_suffix(".key.json").write_text(json.dumps(key))
         runner._parity_record = record
-    if runner._parity_record is not None:
-        return runner._parity_record.add(batch, runner, forward)
-    return None if forward is None else forward(batch)
+    return runner._parity_record
 
 
 def carry_response_ids() -> None:
@@ -315,6 +347,11 @@ class StepRecording:
         if self._recording:
             return record_step(self, batch, super().forward)
         return super().forward(batch)
+
+    def process_kvconnector_output(self, meta):
+        if self._recording:
+            record_kv(self, meta)
+        return super().process_kvconnector_output(meta)
 
     def _stamped(self, key, call, *args):
         """`call(*args)`, stamped under `key` when this forward is recorded."""
@@ -413,7 +450,7 @@ def read(directory, stage: int = 0) -> dict[int, list[dict]]:
             for i, step in enumerate(steps):
                 step["step"] = i
         for step in steps:
-            for row in step["batch"]:
+            for row in (*step["batch"], *step.get("kv", ())):
                 row[0] = keys.get(row[0], row[0])
         record[int(path.stem[len(prefix) + 2 :])] = steps
     return record

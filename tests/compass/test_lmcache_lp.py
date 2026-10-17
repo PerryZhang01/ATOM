@@ -165,13 +165,28 @@ def test_the_decode_side_of_an_offloading_deployment_is_refused(tmp_path):
         compass_run._launch_lmcache(_config(MULTI), _run(tmp_path), "D")
 
 
-@pytest.mark.parametrize("tp, writers", [(2, 1), (1, 2)], ids=["fewer", "more"])
+COLLAPSED = OFFLOAD | {
+    "kv_connector_extra_config": {"lmcache.mp.tp_rank_collapse": True}
+}
+
+
+@pytest.mark.parametrize(
+    "kv, tp, dp_attention, writers, ranks",
+    [
+        (OFFLOAD, 2, False, 1, 2),
+        (OFFLOAD, 1, False, 2, 1),
+        (OFFLOAD, 2, True, 2, 1),  # each DP rank runs at TP 1
+        (COLLAPSED, 2, True, 2, 1),  # its TP 1 collapses no further
+    ],
+    ids=["fewer", "more", "dp-attention", "collapsed-dp-attention"],
+)
 def test_writers_other_than_the_deployments_writer_ranks_are_refused(
-    tmp_path, tp, writers
+    tmp_path, kv, tp, dp_attention, writers, ranks
 ):
     run = _run(tmp_path, writers=writers)
-    with pytest.raises(ValueError, match=f"writers is {writers}; .* from {tp} rank"):
-        compass_run._launch_lmcache(_config(tensor_parallel_size=tp), run, None)
+    config = _config(kv, tensor_parallel_size=tp, enable_dp_attention=dp_attention)
+    with pytest.raises(ValueError, match=f"writers is {writers}; .* from {ranks} rank"):
+        compass_run._launch_lmcache(config, run, None)
 
 
 def test_an_lmcache_entry_with_no_deployment_to_start_it_is_refused(tmp_path):
