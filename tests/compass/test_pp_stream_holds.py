@@ -125,7 +125,9 @@ def test_an_eager_tensor_holds_the_stream_at_its_local_end_and_an_unacked_one_re
     rt, run, _ = fake_stage(0, (C, {}), (C + SIZE, {}), ready=4 * C, parts=rdv, pp=pp)
     run("forward", SimpleNamespace())
     run("flush_pp_send")
-    with pytest.raises(RuntimeError, match="no ack carries when its rccl parts end"):
+    with pytest.raises(
+        RuntimeError, match="no ack says when the last send.s rccl parts end"
+    ):
         run("forward", SimpleNamespace())
 
 

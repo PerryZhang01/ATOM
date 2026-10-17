@@ -7,22 +7,19 @@ takes them. A part up to its carrier's eager threshold completes on the
 sender's clock at ``t_send + o + bytes x G``; a larger one is rendezvous and
 completes on both sides at ``max(t_send, r) + T``, ``r`` the time the receiver
 posts its receive and ``T = rendezvous_fixed_s + bytes x G``. The receiver
-posts each part's receive when the part before it has arrived, and the
-``rccl`` parts no earlier than its own device end, which its stream runs
-first. The ``gloo`` parts leave at ``t_send``, the sender's host send; the
-``rccl`` parts at ``t_ready``, when the sender's device work ends, or when the
-previous send's ``rccl`` parts are done, whichever is later.
+posts each part's receive when the part before it has arrived. The ``gloo``
+parts leave at ``t_send``, the sender's host send; the ``rccl`` parts at
+``t_ready``, when the sender's device work ends, or when the previous send's
+``rccl`` parts are done, whichever is later; their receive waits for the receiver's device end.
 
 `StageSends` is the stage loop's side. Before a downstream stage's forward it
 receives that forward's input on ``pp_data``, the call and the metadata's arrival
 as the batch's ``compass_pp_host`` and
 the tensors' as the batch's ``compass_pp_release``, and, when the ``gloo`` parts
-are rendezvous, returns their completion on ``pp_ack`` stamped at it, carrying
-the ``rccl`` parts' completion; at a
+are rendezvous, returns their completion, and the ``rccl`` parts', on ``pp_ack`` stamped at it; at a
 non-last stage's forward's launch end it waits for its previous send's ``gloo``
-parts, then sends. The ``rccl`` parts hold the sender's stream, not its host:
-every forward after that wait starts its device work no earlier than their
-completion, also through ``compass_pp_release``. An idle
+parts, then sends. The ``rccl`` parts hold the sender's stream, not its host: its
+forwards after that wait start their device work no earlier. An idle
 flush waits for the previous send the same way. The frames move between the
 stages' TP-rank-0 workers over the PP CPU group.
 """
@@ -128,10 +125,9 @@ class StageSends:
         self.data_out = rank < pp - 1 and ch(rank, rank + 1, "pp_data")
         self.ack_in = rank < pp - 1 and ch(rank + 1, rank, "pp_ack")
         self.received = self.sent = 0
-        # the previous send: ("ack", seq, None) or ("eager", done, its rccl parts' done)
-        self.pending = None
+        self.pending = None  # the last send: ("ack", seq, _) or ("eager", done, held)
         self.tensors_done = -math.inf  # the previous frame received's rccl parts
-        self.held = -math.inf  # the last waited-for send's rccl parts; None: unknown
+        self.held = -math.inf  # the rccl parts' end of the send last waited for
 
     def __call__(self, name, *args, wait_out=False):
         if not self.rt.in_run or name not in ("forward", "flush_pp_send"):
@@ -139,16 +135,13 @@ class StageSends:
         if name == "flush_pp_send":
             self.settle()
             return self.call(name, *args, wait_out=wait_out)
-        if self.held is None:
+        if self.held is None:  # an eager send's rendezvous rccl part
             raise RuntimeError(
-                f"{self.data_out}: the send last waited for has eager gloo parts and "
-                "a rendezvous rccl part, so no ack carries when its rccl parts end, "
-                "and the stream holds this forward until then"
+                f"{self.data_out}: no ack says when the last send's rccl parts end"
             )
         release = self.held
-        if self.data_in:
-            args[0].compass_pp_host, end = self.receive(args[0])
-            release = max(release, end)
+        if self.data_in:  # the tensors' arrival, no earlier than `held`
+            args[0].compass_pp_host, release = self.receive(args[0])
         if release > -math.inf:
             args[0].compass_pp_release = release
         t0 = self.rt.now
@@ -169,9 +162,9 @@ class StageSends:
         return frame
 
     def receive(self, batch) -> tuple:
-        """``(called, meta)`` and the tensors' arrival, posted at `batch`'s prepare end,
-        the tensors no earlier than the stage's device end. They leave once the
-        previous frame's are done: one stream sends both."""
+        """``(called, meta)`` and the tensors' arrival, posted at `batch`'s prepare end.
+        The tensors wait for the stage's device end, and leave once the previous
+        frame's are done: one stream sends both."""
         from atom.compass.runner.overrides import forward_shape
 
         seq, called = self.received, self.rt.now
@@ -182,9 +175,8 @@ class StageSends:
         gloo, tensors = split(frame["parts"])
         sent, meta = recv_done(self.models, frame["t_send"], posted, gloo)
         ready = max(frame["t_ready"], self.tensors_done)
-        self.tensors_done, end = recv_done(
-            self.models, ready, max(meta, device, self.held), tensors
-        )
+        posted = max(meta, device, self.held)
+        self.tensors_done, end = recv_done(self.models, ready, posted, tensors)
         if is_rendezvous(self.models, gloo):
             ack = {"seq": seq, "tensors_done": self.tensors_done}
             self.call("send_pp_frame", "pp_ack", ack, wait_out=True)
@@ -206,16 +198,14 @@ class StageSends:
         if is_rendezvous(self.models, gloo):
             self.pending = ("ack", seq, None)
         else:
-            done = None  # a rendezvous rccl part ends when the receiver posts it
+            done = None  # a rendezvous rccl part ends at the receiver's post
             if self.held is not None and not is_rendezvous(self.models, tensors):
-                done = recv_done(self.models, max(ready, self.held), 0.0, tensors)[0]
-            sent = arrivals(self.models, frame, t_send)[0]
-            self.pending = ("eager", sent, done)
+                done = recv_done(self.models, max(ready, self.held), ready, tensors)[0]
+            self.pending = ("eager", arrivals(self.models, frame, t_send)[0], done)
 
     def settle(self) -> None:
-        """Wait for the previous send's ``gloo`` parts, their ack if
-        rendezvous, else their local end; hold the stream at its ``rccl``
-        parts' completion, which the ack carries."""
+        """Wait for the previous send's ``gloo`` parts: their ack if
+        rendezvous, else their local end, and take its rccl parts' end as `held`."""
         pending, self.pending = self.pending, None
         if pending is None:
             return

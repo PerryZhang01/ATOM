@@ -691,8 +691,7 @@ class PipelineFrames:
 
     def pp_recv_posted(self, called: float, kind: str, x: tuple) -> tuple:
         """Where this stage posts its ``pp_data`` receive, its forward's prepare
-        end, and its device end so far, before which its stream starts no
-        receive; the call and -inf without a host recurrence."""
+        end, and its device end; the call and -inf with no host recurrence."""
         host = getattr(self, "compass_host", None)
         if not isinstance(host, HostDeviceRecurrence):
             return called, -math.inf
