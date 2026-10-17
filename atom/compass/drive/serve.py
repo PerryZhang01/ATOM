@@ -67,13 +67,14 @@ class ServeError(ValueError):
     `ValueError`, so the console script exits with its message."""
 
 
-def serve(atom_args, out, gpus=(), run=None) -> None:
+def serve(atom_args, out, gpus=(), run=None, extra_env=None) -> None:
     """Serve one instance from ATOM's arguments `atom_args`, writing to the
     directory `out`, until SIGINT or SIGTERM or the server's exit.
 
     A real server names its GPUs in `gpus`; a simulated one is handed `run`,
     the run file's mapping, whose ``out_dir`` and ``clock_endpoint`` are set
-    here. Raises `ServeError` when the server exits before ``/health``
+    here. `extra_env` maps variables the server's environment holds over the
+    command's. Raises `ServeError` when the server exits before ``/health``
     answers, or on its own with a non-zero status, and `GpuRefusal` from the
     GPU checks. Once the server has stopped, writes run.json from the engine
     file, and raises `ServeError` when no step wrote one.
@@ -94,7 +95,8 @@ def serve(atom_args, out, gpus=(), run=None) -> None:
     argv += ["--server-port", str(server_port), "--port", str(engine_port)]
     ready = {"url": f"http://{HOST}:{server_port}"}
     # Nor can the environment hand the server a run file or a clock.
-    env = {k: v for k, v in os.environ.items() if k not in (ENV, CLOCK_ENV)}
+    env = {**os.environ, **(extra_env or {})}
+    env = {k: v for k, v in env.items() if k not in (ENV, CLOCK_ENV)}
     env["PYTHONPATH"] = os.pathsep.join(
         filter(None, [str(TREE), env.get("PYTHONPATH")])
     )
