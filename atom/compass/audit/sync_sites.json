@@ -4315,11 +4315,11 @@
    "mechanism_why": "startup, before any batch; the bench measures real forwards on a real runner for a measuring command, and no simulated run starts one"
   },
   {
-   "id": "atom/compass/bench/engine.py::Bench.__init__::self.runner_mgr.call_func( \"allocate_kv_cache\", blocks, wait_out=True )::worker_rpc#0",
+   "id": "atom/compass/bench/engine.py::Bench.__init__::self.runner_mgr.call_func( \"allocate_kv_cache\", num_blocks, wait_out=True )::worker_rpc#0",
    "file": "atom/compass/bench/engine.py",
    "symbol": "Bench.__init__",
    "call": "self.runner_mgr.call_func",
-   "expr": "self.runner_mgr.call_func( \"allocate_kv_cache\", blocks, wait_out=True )",
+   "expr": "self.runner_mgr.call_func( \"allocate_kv_cache\", num_blocks, wait_out=True )",
    "shape": "worker_rpc",
    "peer": "process",
    "why": "the bench's startup calls to its workers, in EngineCore's order, before it measures any batch",
