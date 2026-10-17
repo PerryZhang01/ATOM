@@ -317,8 +317,9 @@ class HostDeviceRecurrence:
         return end
 
     def release(self, end: float) -> float:
-        """The exit less `now` of the forward `device_end` priced, its device work
-        ending at `end`, no earlier than it said; a later `end` moves its target's too."""
+        """The exit less `now` of the forward `device_end` priced, its device
+        work ending at `end`, no earlier than it said; a later `end` moves its
+        target's too."""
         now, launch_end, target_end, draft_s, own, output, post = self._held
         if end > own:
             target_end = end - draft_s
