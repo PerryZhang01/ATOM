@@ -1409,7 +1409,7 @@ time.
 | R1 | output forward, single stage | after launch; before launch with MTP | the previous output forward's `target_end` | `tokenIDProcessor.recv_async_output`, from `prepare_sampled_ids`; with MTP, `tokenIDProcessor.recv_mtp_status_async`, from `prepare_input_ids` in `ModelRunner.prepare_model` |
 | R4 | every forward, single stage | forward entry | `end[n-2]` | `ModelRunner._gate_staging_reuse` |
 | R6 | every forward, PP | forward entry | this stage's `end[n-pp]` | `ModelRunner._advance_forward_vars`, the `forward_vars` ring |
-| R7 | non-first PP stage | device start, host launch | the upstream stage's `end`, and its host send | the `PPStageTransport` receives (`atom/distributed/pp_transport.py`) |
+| R7 | non-first PP stage | device start, host launch | the upstream stage's `end`, and its host send | `GroupCoordinator.recv_tensor_dict`, from `recv_intermediate_tensors` (`atom/distributed/pp_comm.py`) in `ModelRunner.run_model`: the metadata on gloo holds the host, the tensors the device |
 | R8 | last PP stage, output batch | after launch | its own `target_end` | `tokenIDProcessor.prepare_sampled_ids`'s `tolist`, on the stage that does not defer output |
 
 The DP barriers are not wait rules: the step-seconds `all_gather` carries each
@@ -1417,11 +1417,11 @@ member's charge, and the CA's member join grants each member's step end in turn 
 KV transfer keeps its own model (D6).
 
 Stage 2 builds R1 and R4 ([#825](https://github.com/jgong5/ATOM/issues/825)). R6 and R8
-come with the stage sends ([#468](https://github.com/jgong5/ATOM/issues/468)), and so does R7
-as one wait: the stage loop receives `pp_data` before the forward, so host launch and
-device start both wait for the whole receive, where R7 holds only the device for the
-tensors. R7's host side and the PP=2 record that gates R6 to R8 are
-[#1200](https://github.com/jgong5/ATOM/issues/1200)'s; a simulated run refuses a
+come with the stage sends ([#468](https://github.com/jgong5/ATOM/issues/468)), R7 with
+[#1200](https://github.com/jgong5/ATOM/issues/1200): a simulated stage loop receives `pp_data`
+before the forward and advances to the metadata's arrival, so its host waits at the
+forward's call rather than its launch, and the tensors' arrival holds the device start.
+The gate charges a PP record's stages together. A simulated run refuses a
 speculative config until [#1090](https://github.com/jgong5/ATOM/issues/1090).
 
 **What-ifs.** The run-file key `host.skip` zeroes the named segments. Such a run is a
@@ -1429,8 +1429,10 @@ what-if: never graded, and refused by the graders.
 
 **Measured, not hooked.** The parity recorder, `RecordingModelRunner`
 (`atom/compass/parity/runner.py`), stamps host time around the staging gate, the launch
-and the R1 wait (with MTP also the draft copy wait), and records device events at
-`run_model` entry, with MTP at the target's end, and at the forward's exit, drained with `query()`, never `synchronize()`
+and the R1 wait (with MTP also the draft copy wait; on a non-first PP stage also the R7
+receive, and on the last stage its own token read), and records device events at
+`run_model` entry, with MTP at the target's end, on a non-first PP stage where the
+received tensors are in, and at the forward's exit, drained with `query()`, never `synchronize()`
 ([#824](https://github.com/jgong5/ATOM/issues/824)). It edits no ATOM file.
 
 **The recurrence's own check, provisional.** Fed each real record's measured device
