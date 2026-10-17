@@ -221,6 +221,7 @@ ARGUMENTS = {
     "phases.profiling.duration": 1800.0,
     "phases.profiling.warmup_requests_per_lane": 1,
     "datasets.main.random_seed": 20260707,
+    "benchmark_id": "000000000000",
 }
 
 
@@ -437,6 +438,8 @@ def test_a_client_run_whose_export_names_no_traces_given_is_refused(tmp_path):
         {"phases.profiling.concurrency": 16},
         {"phases.profiling.duration": 600.0, "datasets.main.random_seed": 1},
         {"phases.profiling.warmup_requests_per_lane": None},
+        {"endpoint.timeout": 60.0},
+        {"benchmark_id": "0f8c2b6a"},
     ],
 )
 def test_runs_given_the_same_traces_and_other_arguments_are_not_one_cell(
@@ -449,7 +452,7 @@ def test_runs_given_the_same_traces_and_other_arguments_are_not_one_cell(
 
     cells = [str(c) for c in (*real, simulated)]
     differ = {
-        name: {c: ARGUMENTS[name] for c in cells} | {str(real[1]): value}
+        name: {c: ARGUMENTS.get(name) for c in cells} | {str(real[1]): value}
         for name, value in sorted(other.items())
     }
     with pytest.raises(ValueError, match="were given different arguments") as refused:

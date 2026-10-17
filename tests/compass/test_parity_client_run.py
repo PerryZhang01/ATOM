@@ -75,7 +75,9 @@ ARGUMENTS = {
     "endpoint.streaming": True,
     "endpoint.use_server_token_count": True,
     "endpoint.extra": {"ignore_eos": True},
+    "endpoint.timeout": None,
     "scenario": "inferencex-agentx-mvp",
+    "benchmark_id": "000000000000",
 }
 
 
@@ -121,14 +123,17 @@ def weka(path, *ids) -> dict:
     }
 
 
-def _write_raw(artifacts, records, dataset=None, config=CONFIG) -> None:
+def _write_raw(
+    artifacts, records, dataset=None, config=CONFIG, benchmark_id="000000000000"
+) -> None:
     """`records` as aiperf's raw records, beside its export, whose input
     config is `config` naming `dataset`, by default a directory of trace
-    `trace-0`."""
+    `trace-0`, and whose benchmark id is `benchmark_id`."""
     artifacts.mkdir(parents=True, exist_ok=True)
     (artifacts / RAW).write_text("".join(json.dumps(r) + "\n" for r in records))
     dataset = dataset or weka(artifacts / "traces", "trace-0")
     config = {"input_config": config | {"datasets": [dataset]}}
+    config["benchmark_id"] = benchmark_id
     (artifacts / AIPERF).write_text(json.dumps(config))
 
 
@@ -284,15 +289,23 @@ def test_the_export_names_what_decides_the_requests_aiperf_sends_and_not_where(
         "tokenizer": {"name": "/mnt/m"},
         "unsafe_override": False,
     }
-    # The same traces at another concurrency, and a warmup phase before it.
+    # The same traces at another concurrency, with a warmup phase before it,
+    # a request timeout and another benchmark id.
     (profiling,) = CONFIG["phases"]
     warmup = {"name": "warmup", "kind": "warmup", "type": "concurrency"}
-    other = CONFIG | {"phases": [warmup, profiling | {"concurrency": 16}]}
+    other = CONFIG | {
+        "phases": [warmup, profiling | {"concurrency": 16}],
+        "endpoint": CONFIG["endpoint"] | {"timeout": 60.0},
+    }
     records = [raw([sse(("data", '{"id": "a"}'))], "t0")]
     got = {}
-    for name, config in (("here", CONFIG), ("elsewhere", elsewhere), ("other", other)):
+    for name, config, benchmark_id in (
+        ("here", CONFIG, "000000000000"),
+        ("elsewhere", elsewhere, "000000000000"),
+        ("other", other, "0f8c2b6a"),
+    ):
         dataset = weka(tmp_path / name / "traces", "t0")
-        _write_raw(tmp_path / name, records, dataset, config)
+        _write_raw(tmp_path / name, records, dataset, config, benchmark_id)
         got[name] = write(tmp_path / name)[1]["arguments"]
 
     assert got["here"] == got["elsewhere"] == ARGUMENTS
@@ -300,6 +313,8 @@ def test_the_export_names_what_decides_the_requests_aiperf_sends_and_not_where(
         "phases.profiling.concurrency": 16,
         "phases.warmup.kind": "warmup",
         "phases.warmup.type": "concurrency",
+        "endpoint.timeout": 60.0,
+        "benchmark_id": "0f8c2b6a",
     }
 
 

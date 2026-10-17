@@ -23,7 +23,9 @@ records nothing of a request in flight at its cutoff. ``arguments`` names, by
 its path in the input config, all else there that decides which requests
 aiperf sends, when, and what each asks for: every field of each phase
 (concurrency, duration, grace period, warmup) and of the dataset but its path
-(its seed), the endpoint's `ENDPOINT` fields, and the scenario.
+(its seed), the endpoint's `ENDPOINT` fields, and the scenario; and the
+export's ``benchmark_id``, which marks each conversation's first turn, so every
+prompt's length moves with it.
 """
 
 import argparse
@@ -49,9 +51,11 @@ NOT_SAMPLING = frozenset(
         "stream_options",
     }
 )
-#: The endpoint's fields that shape what a request asks for, or how aiperf
-#: counts its tokens; the others say where and how it connects.
-ENDPOINT = ("type", "streaming", "use_server_token_count", "extra")
+#: The endpoint's fields that shape what a request asks for, how long aiperf
+#: waits on it (ATOM aborts a request whose client leaves), or how aiperf
+#: counts its tokens. The others say where and how it connects, or shape a
+#: request as no documented client run does (`template`, `headers`).
+ENDPOINT = ("type", "streaming", "use_server_token_count", "extra", "timeout")
 
 
 def response_id(responses) -> str | None:
@@ -79,8 +83,9 @@ def given(artifacts) -> list:
 
 
 def arguments(artifacts) -> dict:
-    """The export's ``arguments``, from the input config of `artifacts`."""
-    config = json.loads((Path(artifacts) / AIPERF).read_text())["input_config"]
+    """The export's ``arguments``, from aiperf's export in `artifacts`."""
+    export = json.loads((Path(artifacts) / AIPERF).read_text())
+    config = export["input_config"]
     (d,) = config["datasets"]
     out = {
         f"phases.{p['name']}.{k}": v
@@ -94,7 +99,10 @@ def arguments(artifacts) -> dict:
         if k not in ("name", "path")
     }
     out |= {f"endpoint.{k}": config["endpoint"].get(k) for k in ENDPOINT}
-    return out | {"scenario": config.get("scenario")}
+    return out | {
+        "scenario": config.get("scenario"),
+        "benchmark_id": export["benchmark_id"],
+    }
 
 
 def write(artifacts) -> tuple[Path, dict, int]:
