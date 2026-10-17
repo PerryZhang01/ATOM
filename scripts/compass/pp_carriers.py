@@ -7,8 +7,11 @@ Rank 0 sends one message per size to rank 1 with `torch.distributed.isend`, a
 device tensor on an RCCL group and a CPU tensor on a gloo group, as ATOM's PP
 send does; rank 1 posts its receive before the send, or `LATE` seconds after
 it. Each side stamps its completion on the monotonic clock both processes
-share. A size is eager when its sender completes before a late receive is
-posted, its threshold the largest eager size, 0 when there is none. With the
+share. An RCCL send is queued behind device work, as ATOM queues it behind
+the forward, and is timed from that work's end; RCCL stamps are device
+events polled to completion, so no host call or synchronize is in them. A
+size is eager when its sender completes before a late receive is posted,
+its threshold the largest eager size, 0 when there is none. With the
 receive posted first, rendezvous sizes fit ``rendezvous_fixed_s + bytes x
 per_byte_s`` from the send, weighted by relative error; eager sizes, or every
 size when none is eager, take that ``per_byte_s`` and fit ``overhead_s`` on the
@@ -26,6 +29,7 @@ from pathlib import Path
 import numpy as np
 
 LATE, WARM, REPS = 0.05, 3, 20
+SPIN = 10**6  # device cycles the RCCL send waits behind, well past its host call
 SIZES = {"rccl": [2**k for k in range(3, 30)], "gloo": [2**k for k in range(3, 25)]}
 #: The stamps of one sample: rank 0's send and completion, rank 1's post and end.
 STAMPS = ("send", "done", "post", "end")
@@ -81,6 +85,21 @@ def fit(samples: list[dict]) -> dict:
     return out
 
 
+def _event():
+    import torch
+
+    event = torch.cuda.Event()
+    event.record()
+    return event
+
+
+def _polled(event) -> float:
+    """When `event` is first seen complete, on the monotonic clock."""
+    while not event.query():
+        pass
+    return time.monotonic()
+
+
 def probe() -> list[dict]:
     """This rank's stamps over every carrier, size, order and repeat."""
     import torch
@@ -104,14 +123,23 @@ def probe() -> list[dict]:
                     if rank == 0:
                         time.sleep(0 if late else 0.002)  # an early receive is up first
                         t0 = time.monotonic()
+                        if dev == "cuda":  # queued behind device work, as ATOM's send
+                            torch.cuda._sleep(SPIN)
+                            ready = _event()
                         dist.isend(x, 1, group=groups[c]).wait()
                     else:
                         time.sleep(LATE if late else 0)
                         t0 = time.monotonic()
                         dist.irecv(x, 0, group=groups[c]).wait()
-                    torch.cuda.synchronize()
+                    if dev == "cuda":
+                        end = _event()
+                        if rank == 0:
+                            t0 = _polled(ready)
+                        t1 = _polled(end)
+                    else:
+                        t1 = time.monotonic()
                     if i >= WARM:
-                        stamps.append((c, n, late, t0, time.monotonic()))
+                        stamps.append((c, n, late, t0, t1))
     dist.barrier(groups["gloo"])
     both = [None, None]
     dist.all_gather_object(both, stamps, group=groups["gloo"])
