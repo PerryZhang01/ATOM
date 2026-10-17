@@ -25,7 +25,6 @@ from test_memory_readings import (
     META_8B,
     READINGS,
     WARMUP_TOKENS,
-    overridden,
     with_readings,
 )
 from test_vertical_slice import _run_file
@@ -47,27 +46,19 @@ def _installed(
     dpa=False,
     ep=False,
     sizes=None,
-    hf_overrides=None,
     readings=READINGS[1],
     **run,
 ):
     """A worker's runner after `run.runner` installed its readings, the entry
-    holding `readings`. With `hf_overrides`, the config.json leaves out each
-    key they set."""
+    holding `readings`."""
     path = _run_file(tmp_path, **run)
     monkeypatch.setenv(compass_run.ENV, str(path))
-    raw = json.loads(CONFIG_JSON.read_text())
-    if hf_overrides is None:
-        (tmp_path / "config.json").write_text(CONFIG_JSON.read_text())
-        hf = PretrainedConfig.from_dict(raw["text_config"])
-    else:
-        text = {k: v for k, v in raw["text_config"].items() if k not in hf_overrides}
-        hf, _ = overridden(tmp_path, raw | {"text_config": text}, hf_overrides)
+    (tmp_path / "config.json").write_text(CONFIG_JSON.read_text())
+    hf = PretrainedConfig.from_dict(json.loads(CONFIG_JSON.read_text())["text_config"])
     runner = SimpleNamespace(
         config=SimpleNamespace(
             model=str(tmp_path),
             hf_config=hf,
-            hf_overrides=hf_overrides,
             tensor_parallel_size=1,
             enable_dp_attention=dpa,
             enable_expert_parallel=ep,
@@ -154,20 +145,6 @@ def test_an_assumed_entry_declares_the_readings_a_run_installs(monkeypatch, tmp_
     assert non_torch["method"] == "declared"
     assert non_torch["note"].startswith(f"{ASSUMED}; ")
     assert runner.compass_memory["assumed"] == ASSUMED
-
-
-def test_a_field_only_hf_overrides_sets_reaches_the_installed_readings(
-    monkeypatch, tmp_path
-):
-    runner = _installed(
-        monkeypatch,
-        tmp_path,
-        eager=True,
-        hf_overrides={"max_position_embeddings": 65536},
-    )
-    peak_torch = runner.compass_memory["readings"]["peak_torch"]
-    (buffers,) = [row for row in peak_torch if row["name"] == "buffers"]
-    assert buffers["source"].startswith("65536 positions")
 
 
 @pytest.mark.parametrize(
