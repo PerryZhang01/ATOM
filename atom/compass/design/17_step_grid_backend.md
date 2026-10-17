@@ -20,9 +20,11 @@ from `run.json` (D99).
 **Revised 2026-10-14 by the naming record in
 [#952](https://github.com/jgong5/ATOM/issues/952):** the backend is the step grid,
 `StepGridBackend` under the run-file key `step_grid` and the flag `--step-grid`, a
-step-level backend whose one term is `estimated` and unvalidated, answering only inside
-its support domain, the complete cells (D96, D99, D103); a step it declines falls back
-only along method inside the step level (D102).
+step-level backend whose one term is `estimated`, answering only inside its support
+domain, the complete cells (D96, D99, D103); a step it declines falls back only along
+method inside the step level (D102). The term was unvalidated then; since
+[#962](https://github.com/jgong5/ATOM/issues/962) it is validated inside its kind's
+held-out hull and unvalidated elsewhere ("Method and support domain").
 
 **Revised 2026-10-16 by the owner's
 [ruling on #1035](https://github.com/jgong5/ATOM/issues/1035#issuecomment-6205714588):**
