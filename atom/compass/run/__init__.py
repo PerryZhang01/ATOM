@@ -954,13 +954,15 @@ def _price_images(price: float | None) -> None:
 
     @functools.wraps(load)
     def priced(self, data):
-        why = None
+        rt, why = clock.installed(), None
+        if rt is None:  # no LP clock in this process: a load outside any run
+            return load(self, data)
         if isinstance(data, str) and data.startswith(("http://", "https://")):
             why = "an image named by a remote URL"
         elif price is None:
             why = f"an image with no {IMAGE_PREPROCESS} in the run file"
         if why is not None:
-            clock.installed().refusals.append(f"media:{why}")
+            rt.refusals.append(f"media:{why}")
             raise Refused(("media", why))
         charge(price)
         return load(self, data)

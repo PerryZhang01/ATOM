@@ -122,6 +122,12 @@ def test_the_bootstrap_charges_each_image_once_however_often_it_runs(loop, price
     assert _prepare(loop, _png())[1] == pytest.approx(0.25)
 
 
+def test_a_load_outside_any_run_is_neither_charged_nor_refused(priced, monkeypatch):
+    priced(None)
+    monkeypatch.setattr(clock, "_installed", None)
+    assert MediaLoader().load_image(_png()).size == (4, 4)
+
+
 # --- a step that carries image tokens ---------------------------------------
 
 
