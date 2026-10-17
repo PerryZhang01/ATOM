@@ -39,7 +39,8 @@ host laws as a run file's `host` entry: `key`, and `laws[kind][segment]`,
 seconds on `(1, tokens, seqs)`, fitted on the samples' host labels. They take
 the step linear law's solver, MAD drops and hulls; `seqs` equal to `tokens` on
 every sample gets zero. Two keys refuse. The law and the host key state the
-`--machine-spec` digest, which a run's spec must match. A segment outside `HOST_SEGMENTS` is
+`--machine-spec` digest, which a run's spec must match, and the host key's `engine` is the
+law's `engine_config`. A segment outside `HOST_SEGMENTS` is
 fitted for a kind whose samples carry it: `W_inputs`, on an MTP record.
 
 Each equation is divided by its own label and the coefficients are bound to be
@@ -723,7 +724,7 @@ def main(argv=None) -> None:
     law["machine_spec"] = args.machine_spec
     law["engine_config"] = engine
     if "host" in law:
-        law["host"]["key"]["machine_spec"] = args.machine_spec
+        law["host"]["key"] |= {"machine_spec": args.machine_spec, "engine": engine}
     if len(args.records) > 1 and dp == 1:
         mark_held_out(law, report, samples, options)
     Path(args.out).write_text(json.dumps(law) + "\n")

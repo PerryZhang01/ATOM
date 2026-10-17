@@ -628,12 +628,24 @@ and its host key state `machine_spec`, the digest `machine_spec_digest` gives
 `scripts/compass/machines/mi308x-hjbog39.json`, so it refuses under any other
 spec's device or software stack.
 
+`scripts/compass/laws/deepseek-v4-pro-dpa8-mi355x-gpu45-{prefill,decode}.json`
+are DeepSeek-V4-Pro's DPA-TP8 laws on mi355-gpu-45, one per side of a 1P1D
+deployment: the `base` form with host laws, each fitted alone on its side's
+capture (calibration cells at concurrency 1, 4, 16, 64 and 256, at ATOM
+8f1d8ef6e). The records predate the engine key's parallel layout, TBO and
+environment, so each law's `--engine` file states them from the cells'
+`server.log` engine arguments and the capture script's environment for that
+side; the law's `provenance` names both. Their host keys carry the `atom`
+digest of the tree they were last re-keyed at; `provenance` names the
+capture tree's.
+
 ## Cost accuracy on a real run's own steps — `validate.cost`
 
 `python -m atom.compass.validate.cost RECORD LAW` prices each step of a real
 cell's record (`OUT_DIR/steps` of a `REAL=1 cctraces_sim.sh` run) with a law
 file as `step_linear_fit` writes it, and prints the error per kind, per decode rung
-and per prefill token band. The module's docstring states what each figure is.
+and per prefill token band; a record of several DP ranks is joined on step index,
+each step priced and banded as its slowest rank. The module's docstring states what each figure is.
 Grade a law only on cells whose traces its calibration cells do not replay.
 
 ## Schedule and end-to-end grades — `validate.runs`
