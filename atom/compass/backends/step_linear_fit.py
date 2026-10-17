@@ -16,7 +16,7 @@ holds the runs it was fitted on, each vector's fit figures and hull, and, once
 `rowmod` shuffles, so the same samples and arguments give the same bytes.
 
 With `--dp N` (EP off) the records come in runs of N, each run's `dp0.jsonl`
-to `dp<N-1>.jsonl`, and the law is keyed `(N, 1)`. A step is its ranks' lines
+to `dp<N-1>.jsonl`; the law states no width. A step is its ranks' lines
 joined on step index, labelled with the smallest rank label (the others wait
 for the last rank to enter), and a prefill row adds the line's `moe_rows`. A
 step that some rank cut, or whose ranks' rows fall to different vectors, is
@@ -437,7 +437,6 @@ def fit(samples, options=None, seed: int = 0) -> tuple[dict, dict]:
         f"({', '.join(runs)})",
         "form": form,
         "cut": cut,
-        "key": [dp, 1],
         "warm_steps": [[] for _ in runs],
         "unfitted": {},
         "decode": {},

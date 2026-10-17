@@ -135,7 +135,6 @@ KEY_OF: dict[Row, Key] = {
         Kind.STEP_GRID_BUNDLE,
         model="Qwen/Qwen3-32B",
         device="MI308X-80CU",
-        parallel="tp2",
         engine_config="replay-mns48",
         grid="s2-sparse-margin0.25",
         source_root=ATOM_ROOT.revision,

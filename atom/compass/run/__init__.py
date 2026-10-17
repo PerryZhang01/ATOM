@@ -1190,9 +1190,8 @@ def runner(model_runner, tree) -> None:
         # Under DP-attention every rank runs at TP 1, and experts shard over the group.
         dpa = config.enable_dp_attention
         dp = config.parallel_config.data_parallel_size if dpa else 1
-        ep = dp if config.enable_expert_parallel else 1
         law = run[STEP_LINEAR]
-        backend = StepLinearBackend(StepLinearLaw(law), (dp, ep))
+        backend = StepLinearBackend(StepLinearLaw(law), dp)
         if "engine_config" in law:
             from atom.compass.run.step_grid import keyed
 

@@ -31,7 +31,7 @@ engine they state and the nodes and margin `--grid-definition` states, and its
 points are measured with origin `plan`, the digest of the plan, which
 `<out>/plan.json` holds, and the `--grid` inputs as their sources.
 
-A measurement's key is the configuration (model, device, parallel layout,
+A measurement's key is the configuration (model, device,
 `keyed` engine, source root, `--sampling`), the step kind and the view's
 digest, so a view the store holds is not measured again and a stopped
 invocation resumes; a held entry taken under other readings than this run's
@@ -105,9 +105,7 @@ def main(argv: list[str]) -> None:
     engine_file.write_text(json.dumps(resolved))
     command = [*PROG.split(), *argv]
     run, phases = identity(engine_file, config.model, command, args.gpu), {}
-    configuration = run_fields(run) | {
-        "parallel": f"tp{config.tensor_parallel_size}-dp1"
-    }
+    configuration = run_fields(run)
     readings = conditions(
         {**configuration, "engine_config": engine}
         | {k: run[k] for k in ("stack", "host_key")}
@@ -167,7 +165,7 @@ def _todo(points, configuration, engine, sampling, store, readings) -> list:
 
 def measurement_key(configuration: dict, engine: dict, sampling, view: dict) -> Key:
     """The key of `view`'s measurement under `configuration` (model, device,
-    parallel layout, source root), `engine`, `keyed`'s fields, and `sampling`."""
+    source root), `engine`, `keyed`'s fields, and `sampling`."""
     return Key.of(
         Kind.STEP_MEASUREMENT,
         **configuration,

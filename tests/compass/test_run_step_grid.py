@@ -72,7 +72,6 @@ from atom.utils.clock import LPRuntime
 KEY = {
     "model": "Qwen/Qwen3.5-27B",
     "device": "MI355X",
-    "parallel": "tp1",
     "engine_config": "replay-mns48",
     "grid": "s2-sparse-margin0.25",
     "source_root": "tree-67c176f0",
@@ -270,9 +269,7 @@ def test_the_key_is_its_fields_never_a_path(monkeypatch, tmp_path, fields, named
 
     with pytest.raises(ArtifactRefusal, match=re.escape(named)) as refused:
         compass_run.runner(r, META_8B)
-    assert "(model, device, parallel, engine_config, grid, source_root)" in str(
-        refused.value
-    )
+    assert "(model, device, engine_config, grid, source_root)" in str(refused.value)
 
 
 def test_a_key_with_no_bundle_refuses_naming_it(monkeypatch, tmp_path):
@@ -362,7 +359,7 @@ def host_laws_key(r) -> dict:
 
 
 #: The fields a step measurement and a step linear law share with a bundle.
-MEASURED = {k: KEY[k] for k in ("model", "parallel", "engine_config", "source_root")}
+MEASURED = {k: KEY[k] for k in ("model", "engine_config", "source_root")}
 #: A key per kind `fit` publishes and `measure steps` measures; a `host_laws`
 #: key is the deployment's `host_laws_key`.
 NEW_KINDS = {

@@ -11,6 +11,7 @@ import argparse
 import dataclasses
 import hashlib
 import json
+from types import SimpleNamespace
 
 import pytest
 from test_artifact_invalidation import STANZA
@@ -37,6 +38,7 @@ from atom.compass.artifacts import (
     member_name,
 )
 from atom.compass.backends import StepGridBackend, StepLinearBackend, StepStubBackend
+from atom.compass.backends.step_linear import UNIFORM_ROUTING
 from atom.compass.backends.step_roofline import StepFallbackBackend
 from atom.compass.backends.step_stub import Coefficients
 from atom.compass.detect import scenario
@@ -149,6 +151,53 @@ def test_a_law_fitted_under_another_engine_config_refuses_naming_each_field(
         install(tmp_path, monkeypatch, run, here)
     assert "kv_cache_block_size 16 in the law and 32 here" in str(e.value)
     assert "kv_cache_dtype 'bf16' in the law and 'fp8' here" in str(e.value)
+
+
+def _dp(n):
+    return SimpleNamespace(
+        data_parallel_size=n, data_parallel_rank=0, pipeline_parallel_rank=0
+    )
+
+
+#: A DP-attention deployment at DP width 8, EP off.
+DP8 = {"enable_dp_attention": True, "enable_expert_parallel": False}
+
+
+def test_a_dp8_law_installs_at_its_own_layout_naming_uniform_routing(
+    monkeypatch, tmp_path
+):
+    r = deployment(tmp_path, **DP8, parallel_config=_dp(8))
+    run = build(tmp_path, "--step-linear", step_linear(tmp_path, r).key.token())
+
+    install(tmp_path, monkeypatch, run, r)
+
+    assert r.compass_backend.treatments == (UNIFORM_ROUTING,)
+
+
+@pytest.mark.parametrize(
+    "here, named",
+    [
+        (
+            {"enable_dp_attention": False, "parallel_config": _dp(1)},
+            "data_parallel_size 8 in the law and 1 here",
+        ),
+        (
+            {"enable_expert_parallel": True},
+            "enable_expert_parallel False in the law and True here",
+        ),
+    ],
+    ids=["dp1", "ep8"],
+)
+def test_a_dp8_ep_off_law_refuses_another_layout_naming_the_field(
+    monkeypatch, tmp_path, here, named
+):
+    fitted = {**DP8, "parallel_config": _dp(8)}
+    entry = step_linear(tmp_path, deployment(tmp_path, **fitted))
+    run = build(tmp_path, "--step-linear", entry.key.token())
+
+    with pytest.raises(ValueError, match="fitted under another engine config") as e:
+        install(tmp_path, monkeypatch, run, deployment(tmp_path, **fitted | here))
+    assert named in str(e.value)
 
 
 def test_a_step_stub_file_is_stated_with_its_digest(monkeypatch, tmp_path):
