@@ -21,6 +21,12 @@ holds `memory.ENTRY_FIELDS`, its `record` the digest of the engine's log.
 as the lmcache server an offload connector reaches, so the GPU checks hold it
 to the engine's rule.
 
+Each start takes a free `ATOM_DP_MASTER_PORT`, which keys ATOM's compiled-graph
+cache, as a parity run's server does. A start in which inductor autotuned a
+kernel moves its files to `<out>.cold` and starts once more, on the cache it
+warmed: the configs autotuning tried stay loaded and read in `non_torch`. A
+second start that autotunes refuses.
+
 ``--out`` gets the engine's log, run.json's identity from the rank-0 engine
 file, and ``memory_readings.json``, the entry's readable copy. ATOM's
 ``--load_dummy`` refuses until its readings are shown to match a real load's.
@@ -84,7 +90,7 @@ def start(argv: list[str]) -> None:
     LLMEngine(args.model, runner_qualname=RUNNER, **kwargs).close()
 
 
-def main(argv: list[str]) -> None:
+def main(argv: list[str], again: bool = False) -> None:
     cut = argv.index("--") if "--" in argv else len(argv)
     args = _parser().parse_args(argv[:cut])
     atom_args = argv[cut + 1 :]
@@ -115,6 +121,7 @@ def main(argv: list[str]) -> None:
     env = {k: v for k, v in os.environ.items() if k not in (ENV, CLOCK_ENV, parity.ENV)}
     env[OUT_ENV] = str(out / READINGS)
     env["HIP_VISIBLE_DEVICES"] = ",".join(map(str, args.gpu))
+    env["ATOM_DP_MASTER_PORT"] = str(serve._free_ports(1)[0])
     if args.beside:
         env[BESIDE_ENV] = args.beside
     code = f"import sys; from {__name__} import start; start(sys.argv[1:])"
@@ -139,11 +146,30 @@ def main(argv: list[str]) -> None:
             engine.wait()
     if exited != 0:
         raise ValueError(f"the engine did not start ({exited}); see {out / LOG}")
+    if missed := _cold(out):
+        if again:
+            raise ValueError(
+                f"{', '.join(missed)} autotuned kernels again on a second start; "
+                "non_torch on a cold inductor cache reads high, so nothing is published"
+            )
+        # The configs inductor's autotuning tried stay loaded and read in
+        # `non_torch`; the next start finds their best configs cached.
+        out.rename(f"{out}.cold")
+        return main(argv, again=True)
     first = json.loads(min((out / READINGS).iterdir()).read_text())
     (out / "engine.json").write_text(json.dumps(first["engine"]))
     identified = identity(out / "engine.json", model, sys.argv, args.gpu)
     _write_whole(out / "run.json", json.dumps(identified))
     publish(out, machine, args.store, " ".join([PROG, *argv]), identified["stack"])
+
+
+def _cold(out: Path) -> list[str]:
+    """The ranks' files in `out` whose start autotuned a kernel."""
+    return [
+        p.name
+        for p in sorted((out / READINGS).iterdir())
+        if json.loads(p.read_text()).get("autotuned_kernels")
+    ]
 
 
 def publish(out: Path, machine, store: str, command: str, stack: dict) -> None:

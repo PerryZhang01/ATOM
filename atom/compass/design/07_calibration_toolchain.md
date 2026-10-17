@@ -288,7 +288,7 @@ campaign and the one with the tightest acceptance gate behind it — KV block co
 |---|---|
 | **Input** | ATOM's arguments: the model, its widths, and the engine config that fixes the capture ladder |
 | **Output** | one `memory_readings` entry for that configuration (D41) |
-| **Cost** | one start per configuration. Minutes, no workload, no traffic |
+| **Cost** | one start per configuration, two on a cold inductor cache. Minutes, no workload, no traffic |
 | **Needs a GPU** | **yes**, and a **quiet** one |
 
 **What is read, and where it comes from:**
@@ -296,7 +296,7 @@ campaign and the one with the tightest acceptance gate behind it — KV block co
 | Reading | Source |
 |---|---|
 | `capacity_bytes` | the device, once; the capacity a run sizes against stays the machine spec's configured one (`13` D78) |
-| `driver_and_collective_reserve_bytes` | ATOM's own `get_num_blocks` `non_torch` term |
+| `driver_and_collective_reserve_bytes` | ATOM's own `get_num_blocks` `non_torch` term, from a start in which inductor autotuned no kernel: the configs autotuning tries stay loaded, +12 to 26 MiB a rank on a cold cache (Qwen3.8-27B TP2), so a start that autotuned is started again on the cache it warmed, under a free `ATOM_DP_MASTER_PORT`, since the first start to load ATOM's compiled-graph cache autotunes again ([#1428](https://github.com/jgong5/ATOM/issues/1428)) |
 | `allocator_retained_after_load_bytes` | torch allocator, after weight load completes, less the model's parameter and buffer storages |
 | `persistent_forward_buffer_bytes` | allocated bytes where `get_num_blocks` reads the device, less those after load: `allocate_forward_vars`, attention metadata setup |
 | `activation_bytes` over `warmup_tokens` | the warmup forward's allocator peak above what stays allocated, on a second warmup: on a cold compile cache the first's peak sat in inductor's autotuning tensors, +15.8% (Qwen3-0.6B) and +65.2% (Qwen3-30B-A3B) ([#705](https://github.com/jgong5/ATOM/issues/705)) |
