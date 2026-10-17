@@ -255,7 +255,7 @@ ATOM's PP send (`atom/distributed/pp_comm.py`):
 |---|---|
 | `async_send_intermediate_tensors` | non-blocking `isend`s: the metadata list through `_async_send_object`, then each tensor |
 | `_async_send_object` | two gloo `isend`s on the PP CPU group: a one-element size tensor, then the pickled object |
-| `commit_pp_send_work` | blocks until the in-flight `isend`s complete |
+| `commit_pp_send_work` | `wait()`s on each in-flight `isend`: a gloo part blocks the host until it completes, an RCCL part only makes the current stream wait for it (measured, #1383) |
 | `pp_send_allgather_group` | TP group for PP send-allgather, `None` if disabled or tp=1 |
 
 `send_intermediate_tensors`, the blocking variant, has no caller under `atom/`.
@@ -265,7 +265,9 @@ ATOM's PP send (`atom/distributed/pp_comm.py`):
 it issues the next one (`commit_pp_send_work`, called from `ModelRunner.run_model`), and
 when its loop is idle (`flush_pp_send`, called from `PPEngineCoreProc._pp_head_step` when
 the head launched nothing this round and from `_downstream_busy_loop` when a downstream
-stage received nothing). Which clock bounds that completion is decided by the transport's
+stage received nothing). Both wait on the host for the send's gloo parts only; its RCCL
+parts hold the stage's stream, so the next send's tensors leave once they are done
+(#1383). Which clock bounds that completion is decided by the transport's
 protocol for the message's size, the standard MPI-level PDES treatment (SimGrid SMPI's
 `smpi/send-is-detached-thresh`, SST/macro, CODES):
 
@@ -288,7 +290,7 @@ with the others in `01` D3.
 | Channel | Sent | Stamped | Received |
 |---|---|---|---|
 | `stage(k)->stage(k+1):pp_data#dp0` | at stage k's send point | `t_send + L_data` | before stage k+1's forward computes |
-| `stage(k+1)->stage(k):pp_ack#dp0` | by stage k+1, rendezvous sends only | `done` | at stage k's pre-send wait and idle flush |
+| `stage(k+1)->stage(k):pp_ack#dp0` | by stage k+1, sends with a rendezvous gloo part only | `done` of the gloo parts | at stage k's pre-send wait and idle flush |
 
 **Lookahead of `pp_ack`.** The receiver can compute `done` only once it holds the data
 message and has posted its receive, at `now_r = max(t_recv_posted, t_send + L_data)`, and
@@ -315,7 +317,7 @@ LP (`01` D4).
 - A carrier's `latency_s <= 0`: `L_data` is then not positive and `pp_data` has no
   lookahead. The refusal names the carrier and its value.
 
-**Eager sends take no ack.** An eager completion `t_send + o + bytes × G` can lie before
+**A send whose gloo parts are eager takes no ack.** An eager completion `t_send + o + bytes × G` can lie before
 the receiver's clock (a receiver that posts late), so an ack stamped with it would break
 any positive lookahead. The sender computes it itself, and both waits advance to it (K1's
 rule).
@@ -328,7 +330,7 @@ the time `p` after it to its exit, and the payload of send `n`:
 1. `advance_to(t0 + c)`, the forward's charge (`01` D4), and `e` is its device work's end
    (R7). The previous send's `pp_ack`, if stamped at or before
    `t0 + c`, is released during this TAR, which is the common case.
-2. If that send was rendezvous and its ack is not yet released, the loop receives it
+2. If that send took an ack and its ack is not yet released, the loop receives it
    inline: NER until the grant releases `(pp_ack, n-1)`, its clock reaching `done`. If it
    was eager, `advance_to` its local completion when that is later than now.
 3. The loop issues send `n` at `t_send`, its clock, now past `done`, its tensors
@@ -338,13 +340,13 @@ the time `p` after it to its exit, and the payload of send `n`:
 So a send still waits for its forward's launch and the previous send, but a rendezvous
 send's completion now comes from the receiver. At a downstream stage's forward
 call site, before the runner is called and with `t_recv_posted` the loop's clock there,
-the loop receives `(pp_data, n)` inline (its clock reaching `now_r`). If any part of the
-send is rendezvous it registers `(pp_ack, n)` stamped `done` (K4). The forward's host runs
+the loop receives `(pp_data, n)` inline (its clock reaching `now_r`). If any gloo part of
+the send is rendezvous it registers `(pp_ack, n)` stamped their `done` (K4). The forward's host runs
 from `t_recv_posted`, its launch waits for the metadata's arrival and its device start for
 the end of the receive, below (`01` D4, R7).
 
 **The idle flushes are channel receives (`01` D4, K5).** At both idle call sites the loop
-first settles the pending send: an inline receive of its `pp_ack` if it was rendezvous, an
+first settles the pending send: an inline receive of its `pp_ack` if it took one, an
 advance to its local completion if it was eager, nothing if no send is pending. ATOM's own
 `flush_pp_send` call then runs, and the simulated runner answers it at once (`02` D10). The
 shutdown call in `_downstream_busy_loop` is the same call as the idle one and shares its
@@ -400,8 +402,10 @@ part's receive only when the previous part is done. With `r_1 = t_recv_posted` a
   all-gather that the receiving stage runs right after receiving a sharded tensor (an
   ordinary priced collective on the receiver's time), else 0.
 
-The receive ends at the last part's `a_i + g_i`. The send takes an ack when any part is
-rendezvous, and `done` is the latest sender-side completion over its parts; `(pp_data, n)`
+The receive ends at the last part's `a_i + g_i`. The send takes an ack when any gloo part
+is rendezvous, and `done` is the latest sender-side completion over its gloo parts, the
+only ones the sender's host waits for. Its RCCL parts leave no earlier than the previous
+send's are done, one stream sending both. `(pp_data, n)`
 carries each part's carrier and bytes, so the receiver computes both. The lookahead
 derivation still holds: every `r_i >= t_recv_posted`, so `done` is at least
 `max(t_send, t_recv_posted) + T_min`, the only bound it uses.
@@ -818,7 +822,7 @@ CPU-only path (`08` D43.1).
 | D88 | One frame of four questions per strategy — LPs and lookahead, scheduling coupling, cost, memory. **Only PP adds logical processes**; TP, DP and EP each sit behind an existing barrier. | 2026-09-19 |
 | D89 | TP is the settled instance and supplies the per-width discipline: width is a key, not a parameter. | 2026-09-19 |
 | D90 | DP's two collectives **run for real** — both reduce over scheduling metadata, never over model outputs, so the real reduction is more faithful than a model and free. The DP group stays one LP, with one member process per rank. With host time the group's device end is the `max` over ranks of each rank's own device end, computed not rank-0-sourced by one `all_reduce(MAX)`, and each rank leaves at its own charge; with no host time an output rank leaves at the `max` of the step seconds. The step targets are exchanged by one `all_gather` inside the predicted forward (#988); both collectives are K6 waits that carry no cost; the lockstep `all_reduce` keeps its payload. With EP off the MoE segment reads `T_moe`, the rows the group's MoE gather carries (`dp x running_bs x max_seqlen_q` when every rank decodes, `sum(num_tokens_across_dp)` otherwise), and is rank-invariant by construction, which makes `max` the per-layer critical path. With EP on its row count is not settled, `max` rests on uniform routing, and non-uniform routing is a stated limit. Idle ranks are priced through `dummy_execution`'s own `forward`. Q4's replicated weights and DP-independent width key hold for plain DP only; under DP-attention the routed experts shard over the DP group and the width key is open. | 2026-09-19, revised 2026-09-28, 2026-10-01 (owner's DP ruling, [#470](https://github.com/jgong5/ATOM/issues/470#issuecomment-5933154215)), 2026-10-09 (`T_moe`, [#502](https://github.com/jgong5/ATOM/issues/502#issuecomment-6081138199)), 2026-10-10 (Q4, [#702](https://github.com/jgong5/ATOM/issues/702)), 2026-10-15 (the `all_gather` and each member's own step end, [#988](https://github.com/jgong5/ATOM/issues/988#issuecomment-6183664946)) and 2026-10-16 (the device end, [#1267](https://github.com/jgong5/ATOM/issues/1267#issuecomment-6215701399)) |
-| D91 | PP is one LP per stage at microsecond lookahead, and PP boundaries are never a hierarchical-CA cut point. The inter-stage transfer is a **size from the machine spec**, like KV transfer. Layer split comes from `get_pp_indices`, never re-derived; weights shard by that range but **KV shards by the paged-layer count inside it**, which on a hybrid is not proportional to it. Memory readings gain a PP-degree key. Revised: a send part completes on the sender's clock when eager and at `max(t_send, r_i) + T` when rendezvous, `r_i` the time its receive is posted, a per-carrier size threshold deciding which, and a send's `done` is the latest over its parts; the receiver returns a rendezvous completion on `stage(k+1)->stage(k):pp_ack#dp0`, lookahead `T_min - L_data`, and both waits receive it (K5). Confirmed by the owner on 2026-10-02: the send reaches the next stage on `stage(k)->stage(k+1):pp_data#dp0`, and the TP-rank-0 workers carry both channels' frames over the PP CPU group. | 2026-09-19, revised 2026-09-28 and 2026-09-30, confirmed 2026-10-02 |
+| D91 | PP is one LP per stage at microsecond lookahead, and PP boundaries are never a hierarchical-CA cut point. The inter-stage transfer is a **size from the machine spec**, like KV transfer. Layer split comes from `get_pp_indices`, never re-derived; weights shard by that range but **KV shards by the paged-layer count inside it**, which on a hybrid is not proportional to it. Memory readings gain a PP-degree key. Revised: a send part completes on the sender's clock when eager and at `max(t_send, r_i) + T` when rendezvous, `r_i` the time its receive is posted, a per-carrier size threshold deciding which, and a send's `done` is the latest over its gloo parts, the only ones its host waits for, its RCCL parts holding the next send's (#1383); the receiver returns that completion, when a gloo part is rendezvous, on `stage(k+1)->stage(k):pp_ack#dp0`, lookahead `T_min - L_data`, and both waits receive it (K5). Confirmed by the owner on 2026-10-02: the send reaches the next stage on `stage(k)->stage(k+1):pp_data#dp0`, and the TP-rank-0 workers carry both channels' frames over the PP CPU group. | 2026-09-19, revised 2026-09-28 and 2026-09-30, confirmed 2026-10-02, revised 2026-10-18 |
 | D92 | EP adds no LPs (inherits the TP group) but its all-to-all is invisible and must be a stated node, and its `exclusive` occupancy forbids placing it in a `Par`. Expert sharding is Class A, remainder included. | 2026-09-19 |
 | D93 | LP count = 1 traffic LP + per deployment (1 frontend LP + one engine LP per PP stage): 3 aggregated, 5 for 1P1D, independent of GPU count. The clock protocol's cost tracks PP degree and PD roles, not width. | 2026-09-19, revised 2026-09-28 |
 | D94 | Parallelism splits across `16` D95's milestones: TP and DP plumbing (LP structure, couplings, memory shape) at **M1**, with no parity test; at **M2**, scheduling parity and then cost accuracy. The parity test needs no cost model and runs TP2/DP2 as `-tp 2 --enable-dp-attention`, then DeepSeek-V4-Pro 1P+1D in the nightly DP-attention configuration with expert parallelism off; M2's EP8 step, which also carries EP's plumbing, repeats both with expert parallelism on, EP2 as `-tp 2 --enable-dp-attention --enable-expert-parallel`, then EP8. PP, its accuracy, and EP beyond one node come after v1. | 2026-09-19, revised 2026-10-10 (`16` D95) |

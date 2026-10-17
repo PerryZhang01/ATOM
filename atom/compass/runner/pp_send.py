@@ -9,14 +9,16 @@ completes on both sides at ``max(t_send, r) + T``, ``r`` the time the receiver
 posts its receive and ``T = rendezvous_fixed_s + bytes x G``. The receiver
 posts each part's receive when the part before it has arrived. The ``gloo``
 parts leave at ``t_send``, the sender's host send; the ``rccl`` parts at
-``t_ready``, when the sender's device work ends.
+``t_ready``, when the sender's device work ends, or when the previous send's
+``rccl`` parts are done, whichever is later.
 
 `StageSends` is the stage loop's side. Before a downstream stage's forward it
 receives that forward's input on ``pp_data``, the post and the metadata's arrival
 as the batch's ``compass_pp_host`` and
-the tensors' as the batch's ``compass_pp_release``, and, for a rendezvous send,
-returns the completion on ``pp_ack`` stamped at it; at a non-last stage's forward's
-launch end it waits for its previous send's completion, then sends. An idle
+the tensors' as the batch's ``compass_pp_release``, and, when the ``gloo`` parts
+are rendezvous, returns their completion on ``pp_ack`` stamped at it; at a
+non-last stage's forward's launch end it waits for its previous send's ``gloo``
+parts, then sends. The ``rccl`` parts hold the sender's stream, not its host. An idle
 flush waits for the previous send the same way. The frames move between the
 stages' TP-rank-0 workers over the PP CPU group.
 """
@@ -90,15 +92,18 @@ def recv_done(models, t_send: float, t_recv_posted: float, parts):
     return done, r
 
 
+def split(parts) -> tuple[list, list]:
+    """A frame's ``gloo`` parts and its ``rccl`` parts."""
+    return [p for p in parts if p[0] == "gloo"], [p for p in parts if p[0] != "gloo"]
+
+
 def arrivals(models, frame, t_recv_posted: float):
-    """``(done, meta, end)`` of a ``pp_data`` frame: the send's latest
-    sender-side completion, the ``gloo`` parts' arrival, and the ``rccl``
-    parts' after it, which are posted when the metadata has arrived."""
-    gloo = [p for p in frame["parts"] if p[0] == "gloo"]
-    tensors = [p for p in frame["parts"] if p[0] != "gloo"]
+    """``(sent, meta, end)`` of a ``pp_data`` frame: the ``gloo`` parts'
+    sender-side completion, their arrival, and the ``rccl`` parts' after it,
+    which are posted when the metadata has arrived."""
+    gloo, tensors = split(frame["parts"])
     sent, meta = recv_done(models, frame["t_send"], t_recv_posted, gloo)
-    done, end = recv_done(models, frame["t_ready"], meta, tensors)
-    return max(sent, done), meta, end
+    return sent, meta, recv_done(models, frame["t_ready"], meta, tensors)[1]
 
 
 class StageSends:
@@ -120,6 +125,7 @@ class StageSends:
         self.ack_in = rank < pp - 1 and ch(rank + 1, rank, "pp_ack")
         self.received = self.sent = 0
         self.pending = None  # the previous send: ("ack", seq) or ("eager", done)
+        self.tensors_done = -math.inf  # the previous frame received's rccl parts
 
     def __call__(self, name, *args, wait_out=False):
         if not self.rt.in_run or name not in ("forward", "flush_pp_send"):
@@ -147,19 +153,23 @@ class StageSends:
         return frame
 
     def receive(self) -> tuple:
-        """Return ``(posted, meta)`` and the tensors' arrival."""
+        """Return ``(posted, meta)`` and the tensors' arrival. The tensors
+        leave no earlier than the previous frame's are done: one stream sends both."""
         seq, posted = self.received, self.rt.now
         self.received += 1
         frame = self._frame("pp_data", self.data_in, seq)
-        done, meta, end = arrivals(self.models, frame, posted)
-        if is_rendezvous(self.models, frame["parts"]):
+        gloo, tensors = split(frame["parts"])
+        sent, meta = recv_done(self.models, frame["t_send"], posted, gloo)
+        ready = max(frame["t_ready"], self.tensors_done)
+        self.tensors_done, end = recv_done(self.models, ready, meta, tensors)
+        if is_rendezvous(self.models, gloo):
             self.call("send_pp_frame", "pp_ack", {"seq": seq}, wait_out=True)
-            self.rt.stamp_send(self.ack_out, done)
+            self.rt.stamp_send(self.ack_out, sent)
         return (posted, meta), end
 
     def send(self, ready: float, parts) -> None:
-        """Send once the previous send is done: the metadata now, the tensors
-        once the forward's device work, at `ready`, is done."""
+        """Send once the previous send's ``gloo`` parts are done: the metadata
+        now, the tensors once the forward's device work, at `ready`, is done."""
         self.settle()
         seq, t_send = self.sent, self.rt.now
         self.sent += 1
@@ -168,13 +178,14 @@ class StageSends:
         self.rt.stamp_send(
             self.data_out, t_send + self.rt.table.lookahead(self.data_out)
         )
-        if is_rendezvous(self.models, parts):
+        if is_rendezvous(self.models, split(parts)[0]):
             self.pending = ("ack", seq)
         else:
             self.pending = ("eager", arrivals(self.models, frame, t_send)[0])
 
     def settle(self) -> None:
-        """Wait for the previous send: its ack if rendezvous, else its local end."""
+        """Wait for the previous send's ``gloo`` parts: their ack if
+        rendezvous, else their local end."""
         pending, self.pending = self.pending, None
         if pending is None:
             return

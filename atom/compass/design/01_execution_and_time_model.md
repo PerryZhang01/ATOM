@@ -1314,8 +1314,8 @@ thread declares anything:
   message is held at the wait point until the clock owner's `advance_to` walks past its
   arrival time, and released one at a time in arrival order.
 - **K5**, the PP idle flush, `flush_pp_send` in `PPEngineCoreProc._pp_head_step` and
-  `_downstream_busy_loop`: it waits for the stage's previous send, whose completion a
-  rendezvous (large) send learns from the next stage. The stage loop receives that send's
+  `_downstream_busy_loop`: it waits on the host for the gloo parts of the stage's
+  previous send, whose completion a rendezvous gloo part learns from the next stage. The stage loop receives that send's
   `stage(k+1)->stage(k):pp_ack#dp0` inline before the call; an eager (small) send has a
   local completion and no ack, and the loop advances to it by K1's rule. The forward's
   own wait for the previous send is the same receive, made at the forward call site after
