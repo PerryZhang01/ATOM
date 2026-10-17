@@ -32,9 +32,10 @@ SIZE = 2.0**-12 + 8 * 2.0**-20  # the eager size part, sender side
 RDV = [("gloo", 8), ("rccl", 2048)]
 
 
-def _stage(rank, *grants, frames=(), ready=C, parts=(), pp=2):
+def _stage(rank, *grants, frames=(), ready=C, parts=(), pp=2, post=0.0):
     """Stage `rank` of `pp`, whose forward takes `C` of host time and ends its
-    device work `ready` after the call; its runner calls by name and frame."""
+    device work `ready` after the call, and whose `W_post` is `post`; its
+    runner calls by name and frame."""
     table = single_engine_table(
         admission_path="serving",
         ipc_s=0.5,
@@ -51,7 +52,7 @@ def _stage(rank, *grants, frames=(), ready=C, parts=(), pp=2):
         calls.append((name, *args))
         if name == "forward":
             rt.advance_to(rt.now + C)
-            return SimpleNamespace(pp_send=(ready, 0.0, parts))
+            return SimpleNamespace(pp_send=(ready, post, parts))
         return frames.pop(0) if name == "recv_pp_frame" else True
 
     return rt, partial(on_owner, StageSends(rt, call, rank, pp, MODELS)), calls
@@ -95,37 +96,46 @@ def test_a_send_stamps_its_metadata_at_the_host_and_its_tensors_at_the_device_en
 
 
 def test_a_middle_stage_receives_then_sends_and_acks_both_ways():
-    """Stage 1 of four: its forward takes the stage before's frame, returning
-    that rendezvous send's completion, runs, then sends the stage after its
-    own frame; the idle flush settles on the stage after's completion."""
+    """Stage 1 of four: its forward is called at the stage before's frame,
+    returning that rendezvous send's completion, its launch held to the
+    metadata; it sends the stage after its own frame at the launch end and
+    then runs its `W_post`; the idle flush settles on the stage after's
+    completion."""
     t_send, t_ready = 0.25, 0.5
     frame = {"seq": 0, "t_send": t_send, "t_ready": t_ready, "parts": RDV}
     done, meta, end = pp_send.arrivals(MODELS, frame, 0.0)
+    arrived = t_send + L_DATA
     data_out = "engine-pp1->engine-pp2:pp_data#dp0"
     ack_in = "engine-pp2->engine-pp1:pp_ack#dp0"
-    sent = {"seq": 0, "t_send": meta + C, "t_ready": meta + 4 * C, "parts": RDV}
+    sent = {
+        "seq": 0,
+        "t_send": arrived + C,
+        "t_ready": arrived + 4 * C,
+        "parts": RDV,
+    }
     # The stage after posts its receive when the frame arrives.
-    acked = pp_send.arrivals(MODELS, sent, meta + C + L_DATA)[0]
+    acked = pp_send.arrivals(MODELS, sent, arrived + C + L_DATA)[0]
     rt, run, calls = _stage(
         1,
-        (t_send + L_DATA, {DATA: [(0, t_send + L_DATA)]}),
-        (meta, {}),
-        (meta + C, {}),
+        (arrived, {DATA: [(0, arrived)]}),
+        (arrived + C, {}),
+        (arrived + 2 * C, {}),
         (acked, {ack_in: [(0, acked)]}),
         frames=[frame, {"seq": 0}],
         ready=4 * C,
         parts=RDV,
         pp=4,
+        post=C,
     )
     batch = SimpleNamespace()
     run("forward", batch)
-    assert batch.compass_pp_release == end
+    assert (batch.compass_pp_host, batch.compass_pp_release) == ((0.0, meta), end)
     run("flush_pp_send")
     assert [m[:3] for m in rt.conn.sent] == [
         ("NER", math.inf, []),
-        ("TAR", meta, [(ACK, 0, done)]),
-        ("TAR", meta + C, []),
-        ("NER", math.inf, [(data_out, 0, meta + C + L_DATA)]),
+        ("TAR", arrived + C, [(ACK, 0, done)]),
+        ("TAR", arrived + 2 * C, [(data_out, 0, arrived + C + L_DATA)]),
+        ("NER", math.inf, []),
     ]
     assert calls == [
         ("recv_pp_frame", "pp_data"),
