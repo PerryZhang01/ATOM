@@ -88,6 +88,16 @@ def test_tp2_is_the_default(tmp_path):
     )
 
 
+def test_tp2_plain_drops_dp_attention_everywhere(tmp_path):
+    r, servers, run = _parity(tmp_path, CONFIG="tp2-plain", STORE=None)
+    assert r.returncode == 0, r.stderr
+    assert len(servers) == 3 and " measure memory " in servers[0]
+    for line in servers:
+        assert " -tp 2 --enforce-eager " in line
+        assert "--enable-dp-attention" not in line
+    assert json.loads(run.read_text())["data_parallel_size"] == 1
+
+
 def test_dsv4_dpa8_runs_the_nightly_prefill_server_at_eight_ranks(tmp_path):
     machine = ROOT / "scripts/compass/machines/mi308x-hjbog18.json"
     r, servers, run = _parity(tmp_path, CONFIG="dsv4-dpa8", MACHINE=str(machine))
