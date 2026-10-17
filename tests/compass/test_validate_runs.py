@@ -21,7 +21,7 @@ from test_stop_between_client_runs import CLIENT_RUN as UNREFUSED
 from atom.compass import run as compass_run
 from atom.compass.drive import run as drive_run
 from atom.compass.drive import serve
-from atom.compass.validate.runs import CLIENT_RUN, _requests, grade, main
+from atom.compass.validate.runs import CLIENT_RUN, _requests, grade, graded, main
 
 EXPORT = {
     "request_count": {"unit": "requests", "avg": 3.0},
@@ -217,25 +217,31 @@ GRADED = {
 GIVEN = ["trace-ka", "trace-kb", "trace-kc", "trace-kw"]
 
 
-def _recorded(cell, sent=None, warmup=("kw",), given=GIVEN, **run):
+def _recorded(cell, sent=None, warmup=("kw",), given=GIVEN, held=True, **run):
     """`cell` as `record` lays it out, or with `run`'s entries as `run` does:
     each named request also named by its response id `id-<key>`, and the
-    export naming those whose keys are in `sent` (all by default), each from
-    trace `trace-<key>`; its warmup naming those whose keys are in `warmup`,
-    by default `kw`, which `_schedule` holds no step of; and the traces its
-    client was given, `given`. With `warmup` or `given` None the export has no
-    such entry."""
+    export naming those whose keys are in `sent` (all but its warmup's by
+    default), each from trace `trace-<key>`; its warmup naming those whose
+    keys are in `warmup`, by default `kw`, each that no step holds served
+    first in a prefill step of its own unless `held` is False; and the traces
+    its client was given, `given`. With `warmup` or `given` None the export
+    has no such entry."""
     path = cell / "steps" / "dp0.jsonl"
     lines = [json.loads(x) for x in path.read_text().splitlines()]
     for line in lines:
         line["named"] = [[r, k, f"id-{k}"] for r, k, *_ in line["named"]]
-    path.write_text("".join(json.dumps(x) + "\n" for x in lines))
     keys = sorted({k for line in lines for _, k, *_ in line["named"]})
+    # Request ids 0 and up arrived before every request a cell here holds.
+    for r, k in enumerate(sorted(set(warmup or ()) - set(keys)) if held else ()):
+        warm = {"batch": [[r, 30, 30]], "named": [[r, k, f"id-{k}"]]}
+        lines.insert(r, lines[0] | warm | {"rows": [[30, 30, False]]})
+    path.write_text("".join(json.dumps(x) + "\n" for x in lines))
 
     def named(mine):
         return {f"id-{k}": {"trace": f"trace-{k}", "sampling": {}} for k in mine}
 
-    export = {"requests": named(k for k in keys if sent is None or k in sent)}
+    sent = set(keys) - set(warmup or ()) if sent is None else sent
+    export = {"requests": named(k for k in keys if k in sent)}
     if warmup is not None:
         export["warmup"] = named(warmup)
     if given is not None:
@@ -378,6 +384,23 @@ def test_a_client_run_whose_export_names_no_warmup_is_refused(tmp_path, warmup):
     cold = "its export names no warmup, so its first steps may be cold"
     with pytest.raises(ValueError, match=f"r2 is not graded: {cold}$"):
         grade(real, simulated)
+
+
+def test_a_client_run_whose_record_holds_no_step_of_its_warmup_is_refused(tmp_path):
+    *real, simulated = (_recorded(c, held=c.name != "r2") for c in _four(tmp_path))
+
+    unheld = "its record holds no step of its warmup, which may not have run"
+    with pytest.raises(ValueError, match=f"r2 is not graded: {unheld}$"):
+        grade(real, simulated)
+
+
+def test_a_warmup_held_only_in_steps_its_client_run_shares_is_graded(tmp_path):
+    keys = {6: "kw", 7: "ka", 8: "kb"}
+    first, *rest = _schedule()
+    shared = [[(6, 30, 30, False), *first], *rest]
+    cells = [_recorded(c, warmup={"kw"}) for c in _four(tmp_path, shared, keys)]
+
+    assert [graded(c)[2] for c in cells] == [{"requests": 1, "steps": 0}] * 4
 
 
 def test_the_steps_of_a_later_client_run_are_not_graded(tmp_path):

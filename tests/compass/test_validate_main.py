@@ -252,8 +252,9 @@ def _as_recorded(cell, warmup=()):
     """Lay `cell`'s runs out as `record` and `run` write them: each request
     named at its last prefill row, by key `k<id>` and response id `id-<id>`;
     an export naming them all, from trace `t<id>`, those in `warmup` as its
-    warmup's, else request `w`, which no step holds, and the same traces given
-    to every run's client; and run.json's identity,
+    warmup's, else request `w`, a one-step prefill after every other step so
+    that no step number a row names moves, and the same traces given to every
+    run's client; and run.json's identity,
     with `run`'s grading entries for `step_linear/`, its law and host laws in
     its run file and its refusals its summary's."""
     for d in sorted(cell.iterdir()):
@@ -265,6 +266,10 @@ def _as_recorded(cell, warmup=()):
                 last[r] = i if not decode else last.get(r, i)
         for r, i in last.items():
             lines[i]["named"].append([r, f"k{r}", f"id-{r}"])
+        if not warmup:
+            r, step = max(last) + 1, lines[-1]["step"] + 1
+            w = {"step": step, "batch": [[r, 1, 1]], "named": [[r, "kw", "id-w"]]}
+            lines.append(lines[-1] | w | {"rows": [[1, 1, False]], "rung": None})
         path.write_text("".join(json.dumps(x) + "\n" for x in lines))
         export = {"requests": {}, "warmup": {}, "traces": ["t0", "t1", "tw"]}
         for r in last:
@@ -302,8 +307,8 @@ def test_a_cell_record_and_run_wrote_grades_as_the_one_cctraces_sim_wrote(
     graded = _graded(capsys, tmp_path / "c4")
     stated = [graded.pop(k) for k in list(graded) if k[0].startswith("warmup ")]
     assert graded == rows
-    # Each export names a warmup no step holds; a `cctraces_sim.sh` run reads none.
-    assert stated == [["requests 1, steps 0", "not graded"]] * 4
+    # Each run's warmup is request `w`'s step; a `cctraces_sim.sh` run reads none.
+    assert stated == [["requests 1, steps 1", "not graded"]] * 4
 
 
 def test_a_refusal_in_the_client_run_record_and_run_wrote_refuses_the_cell(
