@@ -477,14 +477,16 @@ Terms come from `host.tokenizers[]` in the machine spec (doc 05 D25), populated 
 **The encode and decode stages are resource stations** (revised 2026-09-28, #443; PDES
 term: a multi-server FIFO queue). The simulated run installs its own default executor on
 the event loop. Each pool job is classified by a registry (`classify` in
-`atom/utils/compass_loop.py`): `do_preprocess` is a **service** job; the
+`atom/utils/compass_loop.py`): `do_preprocess` is a **service** job, and so is the
+multimodal preprocessing hand-off in `api_server.py::chat_completions`
+(`_prepare_multimodal_inputs`), charged the run file's `image_preprocess_s` for each image
+it loads, an image named by a remote URL refused (#1089); the
 `outputs_queue.get` that `engine_core_mgr.py::CoreManager._async_output_handler` hands to
 the pool is a **wait** job, passed straight through because a channel event completes it
 at no cost, and it holds one thread for the life of the server, which is why the encode
 width subtracts it. **Anything unregistered is refused by name** and counted in the run
 summary's refusals, so a job ATOM later adds to the pool is reported rather than silently
-charged zero; the multimodal preprocessing hand-off in `api_server.py::chat_completions`
-(`_prepare_multimodal_inputs`) is refused today. A service job runs for real to get its
+charged zero. A service job runs for real to get its
 result, takes a server in submission order, and its result reaches the coroutine at its
 completion time. Service jobs run for real one at a time, in submission order: jobs
 submitted at one instant share side effects, such as the request id each `Sequence` draws
