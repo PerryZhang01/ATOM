@@ -9,8 +9,8 @@ image, then tokenizes it, and the engine prefills the image's tokens with the
 prompt.
 
 The runs need a driver, as in `test_vertical_slice`, and
-`ATOM_COMPASS_IMAGE_MODEL`, a multimodal model directory ATOM serves holding
-its config, tokenizer and image processor; no weight is read.
+`ATOM_COMPASS_IMAGE_MODEL`, a multimodal model directory ATOM serves; its
+memory readings are measured first on the GPU ``HIP_VISIBLE_DEVICES`` names.
 """
 
 import json
@@ -47,6 +47,9 @@ NEEDS_AN_IMAGE_RUN = pytest.mark.skipif(
 )
 REQUESTS = 3
 IMAGE_S = 2.0**-5
+MACHINE = TREE / "scripts" / "compass" / "machines" / "mi308x-hjbog18.json"
+ARGS = ["--model", MODEL, "--enforce-eager", "--max-model-len", "2048"]
+ARGS += ["--no-enable_prefix_caching"]
 
 
 class Workload(Traffic):
@@ -68,9 +71,15 @@ class Workload(Traffic):
 
 
 def run_images(out: Path, seed: str) -> dict:
-    """One run in its own process tree."""
+    """One run in its own process tree, reading the readings in its parent's store."""
     out.mkdir()
-    run_file = _run_file(out, step_stub=CONSTANT, image_preprocess_s=IMAGE_S)
+    run_file = _run_file(
+        out,
+        step_stub=CONSTANT,
+        image_preprocess_s=IMAGE_S,
+        machine=json.loads(MACHINE.read_text()),
+        store=str(out.parent / "store"),
+    )
     port = _free_port()
     env = dict(
         os.environ,
@@ -83,9 +92,8 @@ def run_images(out: Path, seed: str) -> dict:
     with open(out / "server.log", "w") as log:
         server = subprocess.Popen(
             [sys.executable, "-m", "atom.entrypoints.openai.api_server"]
-            + ["--model", MODEL, "--enforce-eager", "--max-model-len", "2048"]
-            + ["--host", "127.0.0.1", "--server-port", str(port)]
-            + ["--no-enable_prefix_caching", "--compass-run", str(run_file)],
+            + [*ARGS, "--host", "127.0.0.1", "--server-port", str(port)]
+            + ["--compass-run", str(run_file)],
             cwd=TREE,
             env=env,
             stdout=log,
@@ -113,7 +121,17 @@ def run_images(out: Path, seed: str) -> dict:
 
 @pytest.fixture(scope="module")
 def runs(tmp_path_factory):
+    from atom.compass import cli
+
     root = tmp_path_factory.mktemp("images")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("AITER_LOG_LEVEL", "WARNING")  # the readings are keyed by it
+        cli.main(
+            ["measure", "memory", "--machine", str(MACHINE)]
+            + ["--gpu", os.environ.get("HIP_VISIBLE_DEVICES", "0")]
+            + ["--store", str(root / "store"), "--out", str(root / "measure")]
+            + ["--", *ARGS]
+        )
     return [run_images(root / f"seed{seed}", seed) for seed in ("1", "2")]
 
 
