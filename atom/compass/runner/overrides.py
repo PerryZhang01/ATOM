@@ -305,11 +305,11 @@ class HostDeviceRecurrence:
         e, pre, launch, post, inputs = self.segments.values()
         now = self.now()
         called, meta = getattr(batch, "compass_pp_host", (now, -math.inf))
-        host = max(max(called + e, self.ends[0]) + pre, meta)
+        host = max(called + e, self.ends[0]) + pre
         output = batch.produces_output()
         if self.mtp and output:  # output_end stays -inf on a PP stage
             host = max(host, self.output_end)
-        host += inputs
+        host = max(host + inputs, meta)
         launch_end = host + launch
         release = getattr(batch, "compass_pp_release", -math.inf)
         target_end = max(self.ends[-1], host, release) + device_s
