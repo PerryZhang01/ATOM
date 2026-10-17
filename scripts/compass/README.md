@@ -516,7 +516,8 @@ The header of the script lists its environment; `MODEL`, `TRACES` and
 `HARNESS_PYTHON` are required.
 
 - `RUN_FILE` is a run file as `atom/compass/run/__init__.py` describes it. The
-  script replaces its `out_dir` and `clock_endpoint` and adds a `workload` entry:
+  script replaces its `out_dir` and `clock_endpoint`, sets `client_runs` to 1, so
+  the server leaves at the end of aiperf's run, and adds a `workload` entry:
   the sha256 of `TRACES` and of each replayed trace, the aiperf arguments and the
   pinned benchmark id. The step table's configuration line and the run summary
   carry it.
