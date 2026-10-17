@@ -10,6 +10,7 @@ import shutil
 
 import pytest
 
+from atom.compass.drive import gpu as drive_gpu
 from atom.compass.drive.gpu import GpuRefusal, add_gpu_flag, quiet
 
 FREE = "No KFD PIDs currently running\n"
@@ -109,3 +110,42 @@ def test_the_gpu_flag_is_required_and_has_no_default(capsys):
         with pytest.raises(SystemExit):
             parser.parse_args(argv)
     assert "--gpu" in capsys.readouterr().err
+
+
+def _kfd(tmp_path, monkeypatch, gpu, vram):
+    """A KFD tree of two CPU nodes and ten GPU nodes, in which PID 3362894,
+    on no DRM device in LISTING, holds `vram` bytes of GPU `gpu` alone."""
+    kfd = tmp_path / "kfd"
+    proc = kfd / "proc/3362894"
+    proc.mkdir(parents=True)
+    for node in range(12):
+        (kfd / f"topology/nodes/{node}").mkdir(parents=True)
+        gpu_id = 100 + node if node > 1 else 0
+        (kfd / f"topology/nodes/{node}/gpu_id").write_text(f"{gpu_id}\n")
+        if gpu_id:
+            (proc / f"vram_{gpu_id}").write_text(f"{vram if node - 2 == gpu else 0}\n")
+    monkeypatch.setattr(drive_gpu, "KFD", kfd)
+
+
+@pytest.mark.parametrize(
+    "listings, when",
+    [
+        ((LISTING,), "before the run, so it was not started"),
+        ((FREE, LISTING), "after the run, so it fails"),
+    ],
+)
+def test_memory_held_on_a_named_gpu_without_its_drm_device_fails_the_check(
+    tmp_path, monkeypatch, listings, when
+):
+    out = _plant(tmp_path, monkeypatch, *listings)
+    _kfd(tmp_path, monkeypatch, gpu=9, vram=2 << 20)
+    with pytest.raises(GpuRefusal) as refused, quiet((8, 9), out):
+        pass
+    assert str(refused.value) == f"GPU 9 has PID 3362894 on it {when}"
+
+
+def test_memory_held_only_on_unnamed_gpus_leaves_the_run_alone(tmp_path, monkeypatch):
+    out = _plant(tmp_path, monkeypatch, LISTING)
+    _kfd(tmp_path, monkeypatch, gpu=2, vram=2 << 20)
+    with quiet((8, 9), out):
+        pass
