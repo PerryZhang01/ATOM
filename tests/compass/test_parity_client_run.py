@@ -79,6 +79,8 @@ ARGUMENTS = {
     "scenario": "inferencex-agentx-mvp",
     "benchmark_id": "000000000000",
 }
+#: A cc-trace id, as cc-traces names a trace.
+CC_TRACE = "a3acb7e89fb41af79510cf1ecf36a703490f"
 
 
 def raw(responses, conversation="trace-0", payload=None, phase="profiling") -> dict:
@@ -257,6 +259,7 @@ def test_the_trace_is_the_conversation_and_the_parameters_are_what_shape_no_prom
         },
         "warmup": {},
         "traces": ["trace-0"],
+        "sessions": {},
         "arguments": ARGUMENTS,
     }
 
@@ -316,6 +319,30 @@ def test_the_export_names_what_decides_the_requests_aiperf_sends_and_not_where(
         "endpoint.timeout": 60.0,
         "benchmark_id": "0f8c2b6a",
     }
+
+
+@pytest.mark.parametrize(
+    "path, files, sessions",
+    [
+        ("", {"00256": CC_TRACE, "00003": "t3", "t9": "t9"}, {CC_TRACE: 256, "t3": 3}),
+        ("00007.json", {"00007": CC_TRACE}, {CC_TRACE: 7}),
+    ],
+)
+def test_the_export_gives_each_trace_whose_file_is_numbered_that_session(
+    tmp_path, path, files, sessions
+):
+    """A trace's session is its file's number, which a cc-trace id is not."""
+    traces = tmp_path / "traces"
+    traces.mkdir()
+    for stem, trace in files.items():
+        (traces / f"{stem}.json").write_text(json.dumps({"id": trace}))
+    dataset = {"name": "main", "path": str(traces / path), "format": "weka_trace"}
+    _write_raw(tmp_path, [raw([sse(("data", '{"id": "a"}'))], CC_TRACE)], dataset)
+
+    export = json.loads(write(tmp_path)[0].read_text())
+
+    assert export["sessions"] == sessions
+    assert export["traces"] == sorted(files.values())
 
 
 @pytest.mark.parametrize(

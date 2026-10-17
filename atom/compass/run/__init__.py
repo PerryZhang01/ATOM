@@ -1233,6 +1233,18 @@ def runner(model_runner, tree) -> None:
             stack_layers=end - start,
             stage_share=share,
         )
+    # Neither a law's nor a bundle's engine config states a context-parallel width.
+    cp = {
+        name: getattr(config, name)
+        for name in ("prefill_context_parallel_size", "decode_context_parallel_size")
+        if getattr(config, name) != 1
+    }
+    if cp and keys[0] in (STEP_LINEAR, STEP_GRID):
+        raise ValueError(
+            f"the run file's {keys[0]} is measured at context-parallel width 1 and "
+            "states no context-parallel width, and this run has "
+            + " and ".join(f"{name} {width}" for name, width in cp.items())
+        )
     machine = _machine(run)
     platform = machine_spec_digest(machine)
     fitted_on = run.get(STEP_LINEAR, {}).get("machine_spec")
