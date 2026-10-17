@@ -917,9 +917,12 @@ def test_a_rowmod_rung_is_validated_on_its_rowmod_coordinate_too(tmp_path):
     [
         (
             [ENGINE | {"kv_cache_dtype": "bf16"}, ENGINE | {"kv_cache_dtype": "fp8"}],
-            "two engine configs:\nengine_config kv_cache_dtype: ",
+            "two engine configs, differing in ['kv_cache_dtype']",
         ),
-        ([ENGINE, {"kv_cache_dtype": "bf16"}], "engine_config data_parallel_size: "),
+        (
+            [ENGINE, {"kv_cache_dtype": "bf16"}],
+            "differing in ['data_parallel_size', 'kv_cache_dtype']",
+        ),
         ([{"kv_cache_dtype": "bf16"}] * 2, "states no data_parallel_size"),
         ([ENGINE, None], "dp0-7.jsonl has no dp0-7.engine.json"),
     ],

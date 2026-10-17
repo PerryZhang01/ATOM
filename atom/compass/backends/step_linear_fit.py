@@ -92,6 +92,7 @@ from atom.compass.backends.shape import (
     sum_query_square,
     sum_tokens,
 )
+from atom.compass.backends.step_grid_plan import keyed_of
 from atom.compass.backends.step_labels import CUTS, HOST_SEGMENTS, host_kind
 from atom.compass.backends.step_linear import (
     DECODE,
@@ -652,23 +653,24 @@ def _table(errors: dict) -> str:
 
 def engine_config(records) -> dict:
     """The engine config `records` ran under: `keyed_of` the `.engine.json`
-    beside each. A record without one, or records under two, refuse."""
-    from atom.compass.fit.samples import _differ
-    from atom.compass.run.step_grid import keyed_of
-
-    held = {}
+    beside each. A record without one, or records under two, refuse, naming
+    the fields that differ."""
+    held = []
     for record in records:
         engine = Path(record).with_suffix(".engine.json")
         if not engine.exists():
             raise ValueError(
                 f"{record} has no {engine.name}, the engine config it ran under"
             )
-        held[str(record)] = keyed_of(json.loads(engine.read_text()))
-    if differ := _differ("engine_config", held):
+        held.append(keyed_of(json.loads(engine.read_text())))
+    names = {k for e in held for k in e}
+    if differ := sorted(
+        k for k in names if any(e.get(k) != held[0].get(k) for e in held)
+    ):
         raise ValueError(
-            "the records ran under two engine configs:\n" + "\n".join(differ)
+            f"the records ran under two engine configs, differing in {differ}"
         )
-    return held[str(records[0])]
+    return held[0]
 
 
 def join_width(engine: dict) -> int:
