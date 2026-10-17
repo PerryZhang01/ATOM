@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 from test_memory_readings import META_8B
@@ -30,6 +31,7 @@ from atom.compass.runner.overrides import RunnerRefusal, install_cost_backend
 from atom.model_engine.scheduler import Scheduler
 from atom.model_engine.sequence import Sequence
 from atom.sampling_params import SamplingParams
+from atom.utils import clock
 
 #: Worker-clock nanoseconds: the first send, and step i's entry and exit.
 SENT = [5_000_000, 6_000_000]
@@ -150,6 +152,40 @@ def test_a_run_file_naming_a_record_replays_it_on_the_engine_clock(
     charged = [r.forward(decode(B37)).predicted_s for _ in "ab"]
     ends = [(ENTER * n + EXIT - SENT[0]) / 1e9 for n in (1, 2)]
     assert charged == pytest.approx([t - engine.now for t in ends])
+
+
+def test_a_worker_that_replays_past_its_record_names_why_in_the_engine_hand_in(
+    real, tmp_path, monkeypatch
+):
+    # ATOM's process monitor hands the engine a bare SystemExit for a dead worker.
+    directory, _ = real
+    path = directory / "dp0.jsonl"
+    path.write_text("".join(path.read_text().splitlines(keepends=True)[:3]))
+    monkeypatch.delenv(ENV)
+    r = deployment(tmp_path)
+    run = json.loads(_run_file(tmp_path).read_text())
+    del run["step_stub"]
+    (tmp_path / "run.json").write_text(json.dumps(run | {"replay": str(directory)}))
+    monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
+    now = tmp_path / compass_run.NOW_FILE.format(compass_run.ENGINE.name)
+    monkeypatch.setenv(compass_run.NOW_ENV, str(now))
+    engine = compass_run._PublishedClock(
+        compass_run.ENGINE, compass_run.channel_table(run), None
+    )
+    monkeypatch.setattr(clock, "_installed", engine)
+    compass_run.runner(r, META_8B)
+
+    with pytest.raises(SystemExit), compass_run.engine_loop(SimpleNamespace()):
+        with pytest.raises(RunnerRefusal):
+            for _ in "abc":
+                r.forward(decode(B37))
+        raise SystemExit()
+
+    hand_in = tmp_path / compass_run.LP_FILE.format(compass_run.ENGINE.name)
+    why = RunnerRefusal(f"replay: {path} has 2 steps, and this is step 2")
+    assert json.loads(hand_in.read_text())["refusals"] == [
+        f"ended:engine raised SystemExit(); rank 0 raised {why!r}"
+    ]
 
 
 def test_a_real_workload_is_sent_in_order_and_its_send_times_written(tmp_path):
