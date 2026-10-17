@@ -34,8 +34,8 @@ from atom.compass.artifacts import (
     Topology,
     member_name,
 )
-from atom.compass.backends import BatchView, RequestShape
-from atom.compass.backends.step_grid import equivalent_shape
+from atom.compass.backends import BatchView, CostRefused, RequestShape
+from atom.compass.backends.step_grid import StepGridBackend, equivalent_shape
 from atom.compass.backends.step_grid_residual import Residual, order, raggedness
 from atom.compass.bench.measure import measurement_key
 from atom.compass.fit.samples import MEMBER
@@ -220,6 +220,48 @@ def test_a_fitted_bundle_prices_each_grid_node_at_its_measured_time_times_the_fa
     assert copy["params"]["definition"] == DEFINITION
     assert copy["params"]["bounds"] == BOUNDS
     assert copy["params"]["sources"] == ["record"]
+
+
+def test_a_fitted_bundle_validates_its_held_out_batches_and_not_a_batch_outside_them(
+    tmp_path, run
+):
+    """Every target lies in the box whose corners are the prefill nodes, so a
+    prefill node is inside the hull of the held-out batches iff one of them has
+    its shape. A held-out batch outside the residual's hull, which is of the
+    batches fitted, is refused."""
+    lines = nodes() * 4 + mixed()
+    a = record(tmp_path, run, lines)
+    for line in nodes():
+        measured(tmp_path, run, line)
+
+    copy = fitted(tmp_path, a, *clients(a))
+    backend = loaded(tmp_path, run, copy)
+
+    def validated(line, priced_by=backend):
+        try:
+            (term,) = priced_by.price(view(line)).terms
+        except CostRefused:
+            return None
+        return term.provenance.validated
+
+    def shape(line):
+        return line["produces_output"], equivalent_shape(view(line).requests)
+
+    report = copy["report"]
+    assert (report["unpriced"], report["cut"]) == ([], {})  # triple i is lines[i]
+    held = [lines[i] for k in report["kinds"].values() for i in k["held_out"]]
+    outcomes = [validated(x) for x in held]
+    assert True in outcomes and set(outcomes) <= {True, None}
+    corners = [x for x in nodes() if not x["rows"][0][2]]
+    inside = [shape(x) in set(map(shape, held)) for x in corners]
+    assert [validated(x) for x in corners] == inside
+    assert any(inside) and not all(inside)
+    # A bundle that records no held-out batches validates none.
+    residual = copy["params"]["residual"]
+    for fitted_kind in residual["kinds"].values():
+        del fitted_kind["held_out"]
+    bare = StepGridBackend(backend.grid, Residual(residual), "bare")
+    assert [validated(x, bare) for x in held] == [o and False for o in outcomes]
 
 
 def test_a_planned_point_the_store_does_not_hold_refuses_naming_each(tmp_path, run):

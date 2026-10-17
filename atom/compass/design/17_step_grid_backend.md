@@ -338,10 +338,11 @@ is the residual's job (D100).
 ### Method and support domain, per `02` D11
 
 A step's one term is `estimated`: a lookup and a residual derived from measurements of
-the subject, none of which timed this batch. It is unvalidated: `validated` waits for the
-residual to record its held-out region
-([#962](https://github.com/jgong5/ATOM/issues/962)), so every step grid answer is reported
-among the unvalidated seconds (`08` D50.1). The detail says whether the lookup was an exact
+the subject, none of which timed this batch. It is validated iff the batch's coordinates in
+its grid lie inside the hull of those of the batches its kind's residual was held out on,
+which the fit records per kind ([#962](https://github.com/jgong5/ATOM/issues/962)); a
+bundle that records none, or a kind whose held-out batches span no hull, reports its
+answers among the unvalidated seconds (`08` D50.1). The detail says whether the lookup was an exact
 hit on a measured node by a homogeneous batch or an interpolation inside a cell; an exact
 hit on a heterogeneous batch's equivalent shape counts as an interpolation, since the
 batch itself was never timed.
