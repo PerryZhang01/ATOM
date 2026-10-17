@@ -3,7 +3,8 @@
 machine-spec digest: the digest of the spec's device and software stack.
 
 The checked-in hjbog-srdc-39 law loads under its own machine
-file and refuses under node 18's, naming both digests.
+file and refuses under node 18's as the image before nightly-20261013 pinned
+it, naming both digests.
 """
 
 import copy
@@ -31,7 +32,9 @@ ROOT = Path(__file__).resolve().parents[2] / "scripts" / "compass"
 LAW = json.loads(
     (ROOT / "laws" / "qwen3.8-27b-tp1-mi308x-hjbog39-661ef7661.json").read_text()
 )
+#: Node 18's spec under the image before nightly-20261013: another aiter.
 N18 = json.loads((ROOT / "machines" / "mi308x-hjbog18.json").read_text())
+N18["device"]["software_pinned_to"]["aiter"] = "f4e7c7509"
 N39 = json.loads((ROOT / "machines" / "mi308x-hjbog39.json").read_text())
 #: The law at the test deployment's engine config, which `_installed` states.
 HERE = {k: v for k, v in LAW.items() if k != "engine_config"}
