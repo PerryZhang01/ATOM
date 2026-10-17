@@ -8,7 +8,8 @@
 # GPU, aiperf as shipped, the duration on the wall clock.
 #
 # Usage: cctraces_sim.sh RUN_FILE OUT_DIR
-#   RUN_FILE        a run file; its out_dir and clock_endpoint are replaced
+#   RUN_FILE        a run file; its out_dir and clock_endpoint are replaced,
+#                   and its client_runs set to 1
 #   MODEL           model directory: config.json and the tokenizer (required;
 #                   with REAL=1, the weights too)
 #   TRACES          a cc-traces traces.jsonl (required)
@@ -136,6 +137,10 @@ def sha256(path):
 
 run["out_dir"] = str(out)
 run["clock_endpoint"] = f"tcp://127.0.0.1:{ports[0]}"
+# The cell is one client run, and its end the run's finish: a run file that
+# declares more, or none (null, as `compass run` keeps one), leaves the server
+# up after aiperf.
+run["client_runs"] = 1
 run["workload"] = {
     "dataset_sha256": sha256(traces),
     "traces_sha256": [sha256(p) for p in sorted((out / "traces").iterdir())],
