@@ -10,7 +10,10 @@ twice, the second under another `PYTHONHASHSEED` and with a random wall delay
 on every hop into and out of the router: before each send by the traffic LP and
 the frontends, and before a frontend reads what the router posted.
 `check_run` holds the two to the scenario checks, and each request's (prefill,
-decode) rank must be the least-load choice worked out by hand in `RANKS`.
+decode) rank must be the least-load choice worked out by hand in `RANKS`. The
+same pair of runs under ``--policy random`` (as `pd_sim.sh` runs a cell that
+maps ranks outside aiperf_agentic) must pick the same ranks, and
+``--policy power_of_two`` must be refused by name.
 
 Skips where cargo cannot resolve atomesh's dependencies, as
 ``test_mesh_clock_client.py`` does.
@@ -235,7 +238,9 @@ def _launch(out: Path, name: str, args: list, **env) -> subprocess.Popen:
         )
 
 
-def run_router_lp(atomesh: Path, out: Path, hash_seed: str, delay) -> list:
+def run_router_lp(
+    atomesh: Path, out: Path, hash_seed: str, delay, policy: str = "dp_sticky"
+) -> list:
     """One run in `out`; each request's (prefill, decode) rank, in order."""
     out.mkdir()
     run_file = _run_file(
@@ -278,7 +283,7 @@ def run_router_lp(atomesh: Path, out: Path, hash_seed: str, delay) -> list:
             "router",
             [str(atomesh), "launch", "--host", "127.0.0.1", "--port", str(router_port)]
             + ["--pd-disaggregation", "--prefill", frontends["P"].url]
-            + ["--decode", frontends["D"].url, "--policy", "dp_sticky", "--dp-aware"]
+            + ["--decode", frontends["D"].url, "--policy", policy, "--dp-aware"]
             + ["--backend", "atom", "--disable-health-check"]
             + ["--disable-circuit-breaker", "--disable-retries"]
             + ["--prometheus-port", str(_free_port()), "--log-level", "info"],
@@ -337,3 +342,41 @@ def test_both_runs_meet_every_scenario_check(runs):
 def test_each_request_takes_the_least_load_ranks_under_any_host_delay(runs):
     print("\n(prefill, decode) rank per request, per run:", list(runs.values()))
     assert list(runs.values()) == [RANKS, RANKS]
+
+
+def test_random_picks_the_same_ranks_from_one_seed_under_any_host_delay(
+    atomesh, tmp_path
+):
+    wall = random.Random(2)
+    first = run_router_lp(atomesh, tmp_path / "a", "1", lambda: 0.0, "random")
+    second = run_router_lp(
+        atomesh, tmp_path / "b", "2", lambda: wall.uniform(0.0, 0.02), "random"
+    )
+    print("\nrandom: (prefill, decode) rank per request, per run:", [first, second])
+    assert first == second
+
+
+def test_power_of_two_is_refused_by_name(atomesh, tmp_path):
+    # A clock that accepts the bind and never answers: the refusal comes first.
+    clock = socket.create_server(("127.0.0.1", 0))
+    router = _launch(
+        tmp_path,
+        "router",
+        [str(atomesh), "launch", "--host", "127.0.0.1", "--port", str(_free_port())]
+        + ["--pd-disaggregation", "--prefill", "http://127.0.0.1:9"]
+        + ["--decode", "http://127.0.0.1:9", "--policy", "power_of_two", "--dp-aware"]
+        + ["--backend", "atom", "--prometheus-port", str(_free_port())],
+        ATOM_COMPASS_CLOCK_ENDPOINT=f"tcp://127.0.0.1:{clock.getsockname()[1]}",
+        ATOM_COMPASS_SEED="1",
+        ATOM_COMPASS_ROUTER_LOOKAHEADS="{}",
+    )
+    try:
+        code = router.wait(30)
+    except subprocess.TimeoutExpired:
+        router.kill()
+        code = "still running after 30 s"
+    finally:
+        clock.close()
+    log = (tmp_path / "router.log").read_text()
+    assert code == 1, log
+    assert "policy power_of_two is refused" in log
