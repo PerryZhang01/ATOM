@@ -159,6 +159,19 @@ def test_a_replay_reads_the_record_of_its_own_deployment(
     assert read.value.args == (tmp_path / record, 1)
 
 
+def test_a_worker_order_lists_each_deployment_rank_once_and_names_no_configuration():
+    run = XPYD | {"prefill_data_parallel_size": 2, "clock_endpoint": "tcp://x"}
+    order = {"P": [[1, 0], [0, 0], [1, 1], [0, 1]], "D": [[1, 0], [0, 0]]}
+    assert compass_run.worker_order(run | {"worker_order": order}) == order
+    assert compass_run.worker_order(run) == {}
+    assert compass_run.configuration(run | {"worker_order": order}) == XPYD | {
+        "prefill_data_parallel_size": 2
+    }
+    for bad in ({"P": order["P"][:3]}, {"D": [[0, 0], [0, 0]]}, {"X": [[0, 0]]}):
+        with pytest.raises(ValueError, match="list each of its deployments"):
+            compass_run.worker_order(run | {"worker_order": bad})
+
+
 # --- the connector -----------------------------------------------------------
 
 
