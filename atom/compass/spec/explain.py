@@ -1,56 +1,13 @@
 # SPDX-License-Identifier: MIT
 """Where a number came from: the spec fields under it, and the origin of each.
 
-A run artifact carries the whole resolved spec, which makes every number it
-reports recoverable in principle. This is what makes it recoverable in practice.
-The reader has one quantity and one question -- what is this built out of -- and
-the answer is the fields that feed it, each with the value the document holds,
-the haircut applied to it, the fragment that supplied it, and its origin as
-`MachineSpec.origin` answers it -- so a spec that cannot say where a field came
-from is refused here too.
+Each field is reported on its own line, in its own unit, with the fragment that
+supplied it and its origin; nothing is summed, since a summed check once hid
+three errors, two of which cancelled. A spec-peak number is shown with its
+derate and the derated value beside it.
 
-**It is a decomposition and never a total.** A summed check over these terms
-once read +13.8% while hiding three separate errors, two of which cancelled and
-the largest of which was a quarter of a single term. So each field is reported
-on its own line in its own unit, and nothing here adds them up. The arithmetic
-that combines them belongs to whatever consumes them, and a sum taken across
-seconds, bytes and bytes-per-second would be a fiction anyway.
-
-**A spec-peak number is shown twice, with the derate between them.** That is the
-one decomposition this module can always do, and it is the one most worth doing:
-the gap between a datasheet figure and what a kernel reaches is a declared
-judgement, not a measurement, and a reader tracing an over-optimistic prediction
-wants to see the declared figure beside the derated one rather than a single
-number that is silently either.
-
-Two ways to name what to explain. A **field** or a block of fields is named by
-its dotted path, and is exact -- there is nothing to maintain and nothing to
-drift. A **quantity** is named out of `QUANTITIES`, which lists the spec fields
-each predicted quantity is built from; that is the spec half of the relationship
-and the only half this package can see, so it is checked for naming real fields
-and nothing more. A consumer that reaches for a term this table does not list
-for it is the thing to fix, in the table.
-
-Tokenizer rates explain per entry and per rate, because a spec holding two
-tokenizers has two different answers and a reader tracing a tokenization cost
-needs to see which of them was used.
-
-A term with nothing to explain is refused one of two ways, because the two want
-different actions. A term the schema does not know is asked for again by a real
-path. A term the schema does know, with no field under it that this spec holds,
-would come back empty however it was spelled, so it is refused as the absent
-field it is -- the same refusal `MachineSpec.value` gives for that field.
-
-A term naming several fields is refused when any required field under it is
-absent, and the refusal names every one of them. Explaining from the fields
-that are there would present part of a basis as the whole of it. An optional
-field the document left out is not missing, so a block holding one still
-explains from the rest.
-
-A field the spec does hold is never refused here, even when it holds nothing:
-a tokenizer table with no entries explains to no rows, as `MachineSpec.value`
-answers it with none. It is still printed, as the empty value it holds, so a
-reader can tell a field that contributed nothing from one that was left out.
+A term is a field or block by dotted path, or a predicted quantity out of
+`QUANTITIES`. Tokenizer rates explain per entry and per rate.
 """
 
 from collections.abc import Mapping
@@ -60,35 +17,13 @@ from typing import Any
 from .fields import BY_PATH, SCHEMA, Kind
 from .machine import MachineSpec, entry_label
 from .merge import Merge
-from .rules import Rule, SpecRefusal, refuse_absent_field, refuse_absent_fields
+from .rules import Rule, SpecRefusal
 from .tokenizers import ENTRY_FIELDS
 
-#: Predicted quantities, and the spec fields each one is built out of.
+#: Predicted quantities, and the spec fields each one is built out of. The rest
+#: of the KV budget is the run's `memory_readings` entry's.
 QUANTITIES: Mapping[str, tuple[str, ...]] = {
-    # The rest of the KV budget is the run's `memory_readings` entry's.
     "kv_blocks": ("device.memory.capacity_bytes",),
-    "admission": (
-        "host.admission_fixed_s",
-        "host.http_intake.fixed_s",
-        "host.http_intake.per_byte_s",
-        "host.ipc.zmq_roundtrip_s",
-        "host.ipc.shm_broadcast_s",
-        "host.tokenizers",
-    ),
-    "collective": (
-        "device.count_per_node",
-        "interconnect.intra_node.topology",
-        "interconnect.intra_node.link_bandwidth_bytes_per_s",
-        "interconnect.intra_node.link_latency_s",
-        "interconnect.inter_node.link_bandwidth_bytes_per_s",
-        "interconnect.inter_node.link_latency_s",
-    ),
-    "kv_transfer": (
-        "interconnect.inter_node.link_bandwidth_bytes_per_s",
-        "interconnect.inter_node.link_latency_s",
-        "interconnect.inter_node.link_setup_s",
-        "interconnect.router_relay_s",
-    ),
 }
 
 
@@ -126,14 +61,11 @@ class Explanation:
     term: str
     digest: str
     contributions: tuple[Contribution, ...]
-    #: Fields the spec holds that contribute no rows, printed so as not to
-    #: read as fields left out.
-    empty: tuple[Contribution, ...] = ()
 
     def __str__(self) -> str:
         return "\n".join(
             [f"{self.term}, from spec {self.digest}"]
-            + [f"  {row}" for row in self.contributions + self.empty]
+            + [f"  {row}" for row in self.contributions]
         )
 
 
@@ -189,34 +121,18 @@ def explain(
     spec: MachineSpec, term: str, *, origin: Merge | None = None
 ) -> Explanation:
     """The spec fields a quantity is built from, each with its value and source."""
-    paths = QUANTITIES.get(term)
-    if paths is None:
-        paths = tuple(
-            field.path
-            for field in SCHEMA
-            if field.path == term or field.path.startswith(f"{term}.")
-        )
-    if not paths:
+    paths = QUANTITIES.get(term) or tuple(
+        field.path
+        for field in SCHEMA
+        if field.path == term or field.path.startswith(f"{term}.")
+    )
+    held = [path for path in paths if path in spec.values]
+    if not held:
         raise SpecRefusal(
             Rule.ADDRESSING,
-            f"`{term}` is not a field, a block of fields or a quantity this "
-            "schema knows",
-            "ask again by the whole dotted path of a field or a block of fields, "
-            f"or by one of the quantities {sorted(QUANTITIES)}",
+            f"`{term}` names no field this spec states",
+            "ask again by the dotted path of a field or a block of fields the "
+            f"spec states, or by one of the quantities {sorted(QUANTITIES)}",
         )
-    absent = [path for path in paths if path not in spec.values]
-    missing = tuple(path for path in absent if BY_PATH[path].required)
-    if missing:
-        refuse_absent_fields(missing)
-    if len(absent) == len(paths):
-        refuse_absent_field(paths[0], False)
-    contributions: list[Contribution] = []
-    empty: list[Contribution] = []
-    for path in paths:
-        if path in spec.values:
-            rows = _rows(spec, path, origin)
-            contributions += rows
-            if not rows:
-                held = spec.values[path]
-                empty.append(_row(path, held, None, _supplied(origin, path)))
-    return Explanation(term, spec.digest(), tuple(contributions), tuple(empty))
+    rows = tuple(row for path in held for row in _rows(spec, path, origin))
+    return Explanation(term, spec.digest(), rows)

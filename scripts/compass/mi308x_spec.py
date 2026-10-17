@@ -104,7 +104,6 @@ DEVICE = {
 DECLARED = {
     "host": {
         "ipc": {"zmq_roundtrip_s": 5.0e-5, "shm_broadcast_s": 2.0e-5},
-        "admission_fixed_s": 9.0e-3,
     },
     "device": {
         "memory": {"bandwidth_bytes_per_s": 5.3e12, "derate": 0.85},

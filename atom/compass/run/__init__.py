@@ -1142,7 +1142,7 @@ def runner(model_runner, tree) -> None:
         StepRooflineBackend,
     )
     from atom.compass.backends.step_stub import Coefficients, StepStubBackend
-    from atom.compass.memory import ModelTerms, device_readings, predicts
+    from atom.compass.memory import ModelTerms, device_readings
     from atom.compass.memory.check import record
     from atom.compass.runner.overrides import (
         HostDeviceRecurrence,
@@ -1342,10 +1342,7 @@ def runner(model_runner, tree) -> None:
     )
     install_device_readings(model_runner, readings)
     model_runner.compass_memory = record(
-        readings,
-        tokens=config.max_num_batched_tokens,
-        pool=predicts(measured),
-        assumed=measured.assumed,
+        readings, tokens=config.max_num_batched_tokens, memory=measured
     )
     if bundle is not None:
         model_runner.compass_step_grid = {**bundle, "describe": backend.describe()}

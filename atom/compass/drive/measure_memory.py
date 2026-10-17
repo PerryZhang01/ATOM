@@ -165,7 +165,7 @@ def publish(out: Path, machine, store: str, command: str, stack: dict) -> None:
     reserve = [
         r["readings"]["driver_and_collective_reserve_bytes"] for r in ranks.values()
     ]
-    across_ranks("non_torch", len(reserve), reserve)
+    across_ranks("non_torch", reserve)
     key = Key.of(
         Kind.MEMORY_READINGS, machine_spec=machine_spec_digest(machine), **fields
     )

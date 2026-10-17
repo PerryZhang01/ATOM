@@ -1,94 +1,38 @@
 # SPDX-License-Identifier: MIT
 """The machine specification: what Compass is told about the machine it simulates.
 
-Compute capability, memory size, bandwidth and interconnect are configured, not
-read from a device runtime, so this artifact is load-bearing rather than
-convenient -- a simulated run is only as true as the document that describes the
-hardware it is pretending to be.
+Compute, memory, bandwidth and interconnect are configured, not read from a
+device runtime. The spec describes the machine; ATOM's config describes the
+deployment, and the closed schema refuses any key it does not declare. An
+engine start's memory readings are not the spec's: `compass measure memory`
+publishes them per configuration as a `memory_readings` entry.
 
-One rule decides what may appear in it. The spec describes the **machine**;
-ATOM's config describes the **deployment**; anything ATOM could configure
-belongs to ATOM, and Compass reads it from there. A spec that carried a
-tensor-parallel width or a block size would silently contradict the engine it
-claims to describe, because the engine was launched with its own.
+A per-machine script (`scripts/compass/mi3*_spec.py`) authors a spec with the
+verbs here: `tokenizer_sweep` and `tokenizer_fragment` probe the tokenizer,
+`merge` combines fragments and refuses ones that describe two hosts, `validate`
+reports every refusal of the merged document, and `explain` takes a quantity
+back to the fields under it. A run reads the result with `MachineSpec`.
+`across_ranks` is `compass measure memory`'s spread check.
 
-The rule is kept by the schema being closed rather than by a list of exclusions,
-so it holds for knobs nobody has thought of yet. Everything else here is a
-refusal: a missing field names itself, a spec-peak number without its derate
-is declined, a stack pin that no longer matches what is loaded warns and names
-both versions, and an unprobed tokenizer is refused rather than guessed. A
-refusal is read by whoever hit it, so a path that does not resolve says which
-of the three it is: a key the schema never declared, a declared field the spec
-in hand was assembled without, or a block, which groups fields and holds no
-value of its own. An engine start's memory readings are not the spec's:
-`compass measure memory` publishes them per configuration as a
-`memory_readings` entry.
-
-Nothing here imports a tensor library, a device runtime or the engine, so a spec
-can be authored, read and checked anywhere Python runs. The document is a plain
-mapping, and turning a file into one belongs to the tools built over this, which
-can declare the parser they need.
-
-Three verbs work over that mapping. `merge` combines the fragments separate
-probes produce and refuses the ones that name different machines, which
-is the hazard the schema cannot see: two tokenizers probed on two machines
-contradict nothing in their shape. `validate` reports everything a document is
-missing or inconsistent about, rather than completing it. `explain` takes a
-predicted quantity back to the spec fields under it, which is what makes echoing
-the whole spec into every artifact worth anything. `across_ranks` reduces a
-reading taken per rank, keeping the smallest and reporting how far the ranks
-disagreed; `compass measure memory` reduces its reserve with it.
-
-A probe fills part of the document for them to work over. `tokenizer_fragment`
-is the probe class that needs no device: it takes the rates somebody measured,
-checks them against the table a tokenizer entry has, and emits them with the
-core counts of the processor it read here -- which is what makes a fragment
-composed somewhere other than its target contradict the target rather than
-merge quietly into it. How the rates were obtained is the caller's to state,
-because `tokenizer_fragment` did not measure them; `tokenizer_sweep` is one
-way to, timing a loaded tokenizer over a length sweep.
+Nothing here imports a tensor library, a device runtime or the engine.
 """
 
-from .explain import QUANTITIES, Contribution, Explanation, explain
-from .fields import FIELDS, SCHEMA, SCHEMA_VERSION, Field, Kind
+from .explain import explain
 from .machine import MachineSpec
-from .merge import Fragment, Merge, merge
+from .merge import Fragment, merge
 from .probes import tokenizer_fragment, tokenizer_sweep
-from .ranks import SPREAD_LIMIT, RankSpread, across_ranks
-from .rules import (
-    DEPLOYMENT_OWNED,
-    FingerprintMismatch,
-    Rule,
-    SpecRefusal,
-    StackMismatch,
-)
-from .tokenizers import Backend, TokenizerEntry, TokenizerKey, TokenizerTable
-from .validate import Validation, validate
+from .ranks import across_ranks
+from .rules import FingerprintMismatch, Rule, SpecRefusal
+from .tokenizers import Backend
+from .validate import validate
 
 __all__ = [
-    "DEPLOYMENT_OWNED",
-    "FIELDS",
-    "QUANTITIES",
-    "SCHEMA",
-    "SCHEMA_VERSION",
-    "SPREAD_LIMIT",
     "Backend",
-    "Contribution",
-    "Explanation",
-    "Field",
     "FingerprintMismatch",
     "Fragment",
-    "Kind",
     "MachineSpec",
-    "Merge",
-    "RankSpread",
     "Rule",
     "SpecRefusal",
-    "StackMismatch",
-    "TokenizerEntry",
-    "TokenizerKey",
-    "TokenizerTable",
-    "Validation",
     "across_ranks",
     "explain",
     "merge",

@@ -956,7 +956,7 @@ def _hand_in(tmp_path, qwen, record):
         cudagraph_overhead=reserved(qwen, int(spec.value(CAPACITY))),
     )
     path = tmp_path / "lp-engine.json"
-    hand_in = check.record(readings, tokens=WARMUP_TOKENS, pool=None)
+    hand_in = check.record(readings, tokens=WARMUP_TOKENS, memory=entry)
     path.write_text(json.dumps({"memory": hand_in}))
     return path, readings
 

@@ -124,7 +124,7 @@ def test_a_document_of_one_origin_answers_without_the_map():
     stanza = dict(DOCUMENT["provenance"], subject={"model": "Qwen/Qwen3-8B"})
     spec = MachineSpec.from_mapping(dict(DOCUMENT, provenance=stanza))
     assert "provenance.origins" not in spec.values
-    assert spec.origin("host.admission_fixed_s") == {
+    assert spec.origin("host.ipc.zmq_roundtrip_s") == {
         "origin": "probed",
         "model": "Qwen/Qwen3-8B",
     }
@@ -148,7 +148,7 @@ def test_one_field_is_never_mixed_and_only_a_probed_one_has_a_subject():
     ):
         broken = copy.deepcopy(document)
         broken["provenance"]["origins"] = dict(
-            origins, **{"host.admission_fixed_s": entry}
+            origins, **{"host.ipc.zmq_roundtrip_s": entry}
         )
         with pytest.raises(SpecRefusal, match=wanted):
             MachineSpec.from_mapping(broken)
@@ -156,24 +156,16 @@ def test_one_field_is_never_mixed_and_only_a_probed_one_has_a_subject():
         fragment("links", LINKS, origin="assumed", subject={"model": "m"})
 
 
-def test_the_old_key_is_refused_naming_the_new_one():
-    document = saved(merge(three_origins()).document)
-    document["provenance"]["method"] = document["provenance"].pop("origin")
-    with pytest.raises(
-        SpecRefusal, match="`provenance.method` is now `provenance.origin`"
-    ):
-        MachineSpec.from_mapping(document)
-
-
 def test_origin_is_asked_per_tokenizer_entry():
     spec = MachineSpec.from_mapping(saved(merge(three_origins()).document))
-    for path in ("host.tokenizers", "host.tokenizers[nope fast]"):
-        with pytest.raises(SpecRefusal, match="not one tokenizer entry"):
+    for e in spec.tokenizers.entries:
+        assert spec.origin(entry_label(e.key.id, e.key.backend.value)) == {
+            "origin": "probed",
+            "model": "Qwen/Qwen3-8B",
+        }
+    for path in ("host.tokenizers[nope fast]", "device.memory.colour"):
+        with pytest.raises(SpecRefusal, match="not a field of this schema"):
             spec.origin(path)
-    with pytest.raises(SpecRefusal, match="describes the document"):
-        spec.origin("provenance.date")
-    with pytest.raises(SpecRefusal, match="not a field of this schema"):
-        spec.origin("device.memory.colour")
 
 
 def test_explain_names_each_contributions_origin():
