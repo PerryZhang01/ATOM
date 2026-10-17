@@ -85,9 +85,7 @@ def _row(
     supplied: tuple[str, ...],
     origin: dict | None = None,
 ) -> Contribution:
-    effective = value
-    if derate is not None and isinstance(value, (int, float)):
-        effective = value * derate
+    effective = value if derate is None else value * derate
     return Contribution(path, value, derate, effective, supplied, origin)
 
 
