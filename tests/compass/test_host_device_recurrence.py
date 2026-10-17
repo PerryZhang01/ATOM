@@ -29,6 +29,7 @@ from atom.compass.runner import overrides
 from atom.compass.runner.overrides import (
     FORWARD_KINDS,
     HOST_SEGMENTS,
+    MTP_SEGMENT,
     HostDeviceRecurrence,
 )
 from atom.compass.validate import runs
@@ -282,7 +283,7 @@ def test_with_mtp_an_output_forward_waits_for_the_target_before_its_launch(mtp, 
     With MTP the second forward's launch waits for the first one's target end
     (12), and its target for the first one's draft (16); its exit is 12 + 1 + 1.
     """
-    seg = {s: [1, 0, 0] for s in HOST_SEGMENTS}
+    seg = {**{s: [1, 0, 0] for s in HOST_SEGMENTS}, MTP_SEGMENT: [0, 0, 0]}
     clock = [0.0]
     host = HostDeviceRecurrence({"decode": seg}, (), lambda: clock[0], mtp=mtp)
     b = SimpleNamespace(

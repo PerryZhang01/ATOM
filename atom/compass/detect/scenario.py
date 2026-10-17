@@ -19,7 +19,7 @@ Each OUT_DIR holds one run of one run file, each under its own
 - with `records`, an engine LP's name to the parity record its run wrote
   (`atom.compass.parity`): the LP's TAR rows are `expected_timeline`'s.
 - above pipeline width one, the order of the stages' forwards and sends: a
-  stage starts a forward no earlier than its input's receive completes, and
+  stage starts a forward no earlier than its input is released to it, and
   sends on no earlier than that forward starts and its previous send is done
   (`pipeline_timeline`, which recomputes no time).
 
@@ -135,11 +135,10 @@ def pipeline_timeline(table: str) -> list[str]:
 
     The head's forward n starts when it sends ``meta#pp1`` seq n. A stage's
     send n leaves no earlier than its forward n starts and its send n-1
-    completes, read from the ``pp_ack`` the stage after returned. When send n
-    is rendezvous, its ``pp_ack`` is stamped at its completion, and the stage
-    after starts its forward n there or, when the send's last part is eager
-    and its receive ends later, at the end of the wait that spans the ack. An
-    eager send has no ``pp_ack``, so the forward it feeds is not checked.
+    completes, read from the ``pp_ack`` the stage after returned. The stage
+    after starts its forward n where its ``pp_data`` n is released, or, when
+    that release falls inside one of its TARs, at that TAR's end; the
+    forward's own waits for the metadata and the tensors come after.
     """
     lines = table.splitlines()
     run = json.loads(lines[0].removeprefix(CONFIGURATION_PREFIX))
@@ -157,7 +156,6 @@ def pipeline_timeline(table: str) -> list[str]:
         lp, data_ch = f"engine-pp{k}", f"engine-pp{k}->engine-pp{k + 1}:pp_data#dp0"
         data = arrived[data_ch]
         ack = arrived[f"engine-pp{k + 1}->engine-pp{k}:pp_ack#dp0"]
-        after = {}
         for n, start in sorted(starts.items()):
             span = (
                 b for a, b in tars[lp] if a < start < b and not math.isclose(a, start)
@@ -172,9 +170,7 @@ def pipeline_timeline(table: str) -> list[str]:
                 sent = data[n] - channels.lookahead(data_ch)
                 if sent < least and not math.isclose(sent, least):
                     failed.append(f"{lp} sent forward {n} at {sent}, before {least}")
-            if n in ack:
-                after[n] = ack[n]
-        starts = after
+        starts = data
     return failed
 
 

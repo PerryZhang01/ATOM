@@ -168,6 +168,46 @@ def test_each_named_gpu_is_recorded_with_its_model(planted):
         drive.identity(*served, ARGV, (7, 8))
 
 
+#: rocm-smi's listing of GPU 0 in compass-next:nightly-20261013 on mi355-gpu-45.
+GPU45_CARD = {
+    "Card Series": "AMD Radeon Graphics",
+    "Card Model": "0x75a3",
+    "Card Vendor": "Advanced Micro Devices, Inc. [AMD/ATI]",
+    "Card SKU": "N/A",
+    "Subsystem ID": "0x75a3",
+    "Device Rev": "0x00",
+    "Node ID": "3",
+    "GUID": "42583",
+    "GFX Version": "gfx950",
+}
+
+
+@pytest.mark.parametrize(
+    "card, machine",
+    [(CARD, "mi308x-hjbog18"), (CARD, "mi308x-hjbog39"), (GPU45_CARD, "mi355x-gpu45")],
+)
+def test_each_machine_s_listing_names_the_device_its_spec_states(
+    monkeypatch, card, machine
+):
+    monkeypatch.setattr(drive, "smi", lambda *args: json.dumps({"card0": card}))
+    spec = json.loads((MACHINES / f"{machine}.json").read_text())["device"]
+    assert drive._device((0,)) == [
+        {"index": 0, "name": spec["name"], "arch": spec["arch"]}
+    ]
+
+
+def test_a_card_neither_its_series_nor_its_model_names_refuses_naming_both(
+    monkeypatch,
+):
+    card = {**GPU45_CARD, "Card Model": "0x75a0"}
+    monkeypatch.setattr(drive, "smi", lambda *args: json.dumps({"card3": card}))
+    with pytest.raises(GpuRefusal) as refused:
+        drive._device((3,))
+    assert str(refused.value) == (
+        "GPU 3 is AMD Radeon Graphics with model 0x75a0, which no machine spec names"
+    )
+
+
 def test_a_phase_is_recorded_in_wall_and_monotonic_time_and_ends_when_it_does():
     phases = {}
     with drive.phase(phases, "warm-up"):
