@@ -12,7 +12,10 @@
 //! (`{"<channel>": seconds}`); a request is sent on once it is placed. Where
 //! several frontends take one kind, `ATOM_COMPASS_ROUTER_WORKERS`
 //! (`{"<worker base url>": "<frontend LP>"}`) names each worker's. The
-//! policies draw from the run's seed, `ATOM_COMPASS_SEED`. A periodic task
+//! policies draw from the run's seed, `ATOM_COMPASS_SEED`. With
+//! `ATOM_COMPASS_ROUTER_ORDER` (`[["<worker base url>", <DP rank>], ...]`) the
+//! registry lists the workers in that order ([`determinism::set_worker_order`]).
+//! A periodic task
 //! fires on the LP clock instead of a thread ([`periodic`]): its next deadline
 //! goes out as the daemon deadline of each request, and it runs before any
 //! message arriving at or after that deadline. Any clock error ends the
@@ -45,6 +48,7 @@ use crate::{
 pub const SEED_ENV: &str = "ATOM_COMPASS_SEED";
 pub const LOOKAHEADS_ENV: &str = "ATOM_COMPASS_ROUTER_LOOKAHEADS";
 pub const WORKERS_ENV: &str = "ATOM_COMPASS_ROUTER_WORKERS";
+pub const ORDER_ENV: &str = "ATOM_COMPASS_ROUTER_ORDER";
 
 /// A released message being handled. It holds the clock client, for the one
 /// message it sends on; dropping it hands the client back and marks it handled.
@@ -133,7 +137,11 @@ pub fn start() {
     let workers = std::env::var(WORKERS_ENV)
         .map_or_else(|_| Some(BTreeMap::new()), |s| serde_json::from_str(&s).ok());
     let workers = workers.unwrap_or_else(|| fail(format!("{WORKERS_ENV} is not a worker map")));
+    let order = std::env::var(ORDER_ENV)
+        .map_or_else(|_| Some(Vec::new()), |s| serde_json::from_str(&s).ok());
+    let order = order.unwrap_or_else(|| fail(format!("{ORDER_ENV} is not a list of [url, rank]")));
     determinism::enable(seed);
+    determinism::set_worker_order(order);
     let lp = LP.get_or_init(|| Lp::new(lookaheads, workers));
     tokio::spawn(async move {
         let result = async {
