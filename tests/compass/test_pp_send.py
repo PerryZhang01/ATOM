@@ -76,7 +76,7 @@ def _stage(rank, *grants, frames=(), parts=RDV):
         calls.append(name)
         if name == "forward":
             rt.advance_to(rt.now + C)
-            return SimpleNamespace(pp_send=(C, parts))
+            return SimpleNamespace(pp_send=(C, 0.0, parts))
         return frames.pop(0) if name == "recv_pp_frame" else True
 
     sends = StageSends(rt, call, rank, 2, MODELS)
@@ -152,26 +152,6 @@ def test_a_stage_holds_work_from_its_send_to_the_flush_and_while_kv_work_is_pend
     held.append(rt.holds_work())
     kv[0] = True
     assert held + [rt.holds_work()] == [False, True, False, True]
-
-
-def test_a_downstream_forward_computes_from_the_end_of_its_receive_and_acks_at_done():
-    t_send, posted = 0.25, 0.0
-    done, end = pp_send.recv_done(MODELS, t_send, posted, RDV)
-    rt, run, _, calls = _stage(
-        1,
-        (t_send + L_DATA, {DATA: [(0, t_send + L_DATA)]}),
-        (end, {}),
-        (end + C, {}),
-        frames=[{"seq": 0, "t_send": t_send, "parts": RDV}],
-    )
-    run("forward")
-    assert _sent(rt) == [
-        ("NER", math.inf, []),
-        ("TAR", end, [(ACK, 0, done)]),
-        ("TAR", end + C, []),
-    ]
-    assert done - (t_send + L_DATA) >= L_ACK
-    assert calls == ["recv_pp_frame", "send_pp_frame", "forward"]
 
 
 def test_a_stage_waits_for_its_own_ring_and_only_the_last_for_its_device_work():

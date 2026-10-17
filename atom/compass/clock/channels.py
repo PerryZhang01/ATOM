@@ -286,13 +286,14 @@ def prefill_decode_table(
     stream_s: float,
     router_s: float,
     kv_write_req_s: float,
-    dp: int = 1,
+    dp: int | tuple[int, int] = 1,
     router_in_s: float | None = None,
     prefill: int = 1,
     decode: int = 1,
 ) -> ChannelTable:
     """`prefill` prefill and `decode` decode deployments behind the router,
-    each with the channels of its `dp` data-parallel ranks.
+    each with the channels of its data-parallel ranks: `dp` of them on each
+    side, or ``(prefill width, decode width)``.
 
     Requests enter at frontend-P and the stream leaves from frontend-D. Three
     paths cross the router -- the request, the stream and the relay from
@@ -304,7 +305,7 @@ def prefill_decode_table(
     both are positive, so `router_in_s` lies strictly between 0 and `router_s`.
     The router receives each hop in on a thread and handles it before the next.
     Decode posts the KV write request to prefill engine to engine, above width
-    one on a channel per decode and prefill rank pair,
+    one on either side on a channel per decode and prefill rank pair,
     ``kv_write_req#dp<decode rank>.dp<prefill rank>``.
 
     Above one deployment of a role, deployment ``k`` of it is the LPs
@@ -353,7 +354,10 @@ def prefill_decode_table(
             "through the router LP needs a positive lookahead, so 0 < router_in_s "
             "< router_s"
         )
-    pairs = [""] if dp == 1 else [f"#dp{d}.dp{p}" for d in range(dp) for p in range(dp)]
+    dp_p, dp_d = (dp, dp) if isinstance(dp, int) else dp
+    pairs = [f"#dp{d}.dp{p}" for d in range(dp_d) for p in range(dp_p)]
+    pairs = [""] if pairs == ["#dp0.dp0"] else pairs
+    width = dict.fromkeys(ps, dp_p) | dict.fromkeys(ds, dp_d)
     return _table(
         lps,
         [*hops]
@@ -372,6 +376,6 @@ def prefill_decode_table(
         + [
             row
             for s in ps + ds
-            for row in _frontend_engine(f"frontend-{s}", f"engine-{s}", ipc_s, dp)
+            for row in _frontend_engine(f"frontend-{s}", f"engine-{s}", ipc_s, width[s])
         ],
     )

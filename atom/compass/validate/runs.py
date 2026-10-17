@@ -12,13 +12,15 @@ run.json skips host segments. In one `record` or `run` wrote, whose run.json
 states a `format_version`, the graded client run is the one whose export is
 `artifacts/client_run.json`, split from the record by `parity.served`: only
 its steps are graded, and every run's client must have been given the same
-traces, as its export's `traces` states them; which of them its finished
+`traces` and `arguments`, as its export states them; which traces its finished
 requests came from moves with its schedule. A step holding only requests its
 export names as its warmup's (`warmup`) is its warmup, and not graded. It is
 refused, naming every reason, when steps of any other request precede its own:
 it is then not its server's first client run, and meets the prefix cache an
 earlier one left; when its export names no warmup, since its first steps may
-then be cold; and when its export names no traces given. A simulated run, whose
+then be cold; when no step up to its own first, that one included, holds a
+request the export names as the warmup's, since its graded steps may then
+precede it; and when its export lacks traces or arguments. A simulated run, whose
 run.json holds `run_file`, is also refused when it skips host segments, or its
 run file has no host laws and so prices no host time; when the step roofline
 was on; when its first client run refused anything, or has no summary to say;
@@ -190,8 +192,14 @@ def _client_run(cell, run) -> tuple[list[dict], list[str], dict]:
     why = [] if all(before) else ["steps of requests it did not send precede its own"]
     if not warmup_names:
         why.append("its export names no warmup, so its first steps may be cold")
+    elif not any(names & warmup_names for names in held[: mine.index(True) + 1]):
+        why.append(
+            "no step up to its own first holds its warmup, so its first steps may be cold"
+        )
     if "traces" not in export:
         why.append("its export names no traces its client was given")
+    if "arguments" not in export:
+        why.append("its export names no arguments its client was given")
     if "run_file" in run:
         why += _not_graded(run, traces)
     if why:
@@ -240,12 +248,15 @@ def graded(cell) -> tuple[list[dict], list[str] | None, dict | None]:
 def _read(cell) -> dict:
     steps, traces, _warmup = graded(cell)
     export = json.loads((Path(cell) / EXPORT).read_text())
+    # A run `cctraces_sim.sh` wrote, graded whole, states its arguments in run.json.
+    client = {} if traces is None else json.loads((Path(cell) / CLIENT_RUN).read_text())
     return {
         "counts": _counts(steps, export),
         "distributions": _distributions(steps),
         "end to end": _end_to_end(export),
         "requests": _requests(steps),
         "traces": traces,
+        "arguments": client.get("arguments", {}),
     }
 
 
@@ -292,6 +303,15 @@ def grade(real_cells, simulated_cell) -> dict:
         raise ValueError(
             f"the runs were given different traces; beyond those all were: {odd}"
         )
+    args = {c: r["arguments"] for c, r in zip(given, (*real, simulated))}
+    first, *rest = args.values()
+    odd = {
+        k: {c: a.get(k) for c, a in args.items()}
+        for k in sorted(set().union(*args.values()))
+        if any(a.get(k) != first.get(k) for a in rest)
+    }
+    if odd:
+        raise ValueError(f"the runs' clients were given different arguments: {odd}")
     report = {
         family: {
             name: _grade(

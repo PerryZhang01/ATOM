@@ -83,20 +83,23 @@ In place over 2,174 measured decode steps: **0.73% median**, per rung 0.46 / 0.4
 Twelve sequences cost *less* per step than one. A model assuming monotone growth in batch
 is wrong in direction, not just in magnitude.
 
-### Under DP and EP: one per-rank law, keyed by `(dp, ep)`
+### Under DP and EP: one per-rank law per engine config
 
 Owner's DP ruling, 2026-10-01
 ([#470](https://github.com/jgong5/ATOM/issues/470#issuecomment-5933154215)). The step linear law covers
 DP and EP with a **per-rank** law: it prices one rank's step, and the group's device end is
 the `max` over ranks (`15` D90).
 
-- **Key.** `(dp, ep)`. A law fitted at one pair is not evidence about another, by the
-  per-width discipline of `15` D89.
+- **Key.** The engine config, the one source of the parallel layout (owner ruling on
+  [#973](https://github.com/jgong5/ATOM/issues/973#issuecomment-6210598012), 2026-10-16):
+  a law at one layout is no evidence about another (`15` D89), so a run under another
+  engine config refuses it, naming each field that differs. A law stating `(dp, ep)`
+  is refused, and no store key holding the engine config states `parallel`.
 - **Features.** The rank's own batch features (D55), plus two the group decides: the
   DP-unified rung every rank shares, settled by `ForwardMode.decide`, and the MoE row
   count, which the MoE terms read alone. With EP off that count is `T_moe`, the rows the
   group's MoE gather carries; with EP on it is open (`15` D90).
-- **The capture.** Full-engine steps on a real deployment at the law's `(dp, ep)`,
+- **The capture.** Full-engine steps on a real deployment at the law's layout,
   logging per forward each rank's batch features and the MoE row count beside the
   measured step seconds. Under DP-attention the local segment runs at TP 1, as in the
   TP1-only full-engine calibration of `07` D38; with EP off the MoE segment does not,
@@ -481,7 +484,7 @@ choice that must be visible.
 | # | Decision | Date |
 |---|---|---|
 | D53 | Fit relative error, not absolute seconds. MAD outlier test on the same relative residuals. | 2026-09-18 |
-| D54 | Prefill and decode fitted separately; decode per CUDA-graph rung with both coefficients per rung. Under DP and EP, the step linear law is one per-rank law keyed by `(dp, ep)`, with the DP-unified rung and the MoE row count as features (`T_moe` with EP off; open with EP on), captured on a real deployment at that `(dp, ep)` and fitted by alternating max-affine regression. Its label is one forward's device busy time, plus the device gap before it on a decode, with launch-exposed decodes cut and no prefill cut; host laws (`E`, `W_pre`, `W_launch`, `W_post`, and under MTP `W_inputs`, `W_pre` split at the MTP status wait), each `(1, tokens, seqs)` per decode, output prefill and pure middle chunk (a middle chunk has no sampler launch, output or R1 wait, so its `W_post` is zero and not fitted), are fitted beside it, keyed by host CPU, `atom` digest, model and engine config, with no transfer. | 2026-09-18; revised 2026-10-01, 2026-10-09 (`T_moe`, #502) and 2026-10-11 (#815); label per step kind 2026-10-12 (#843); named 2026-10-14 (#952); `W_inputs` 2026-10-16 (#829) |
+| D54 | Prefill and decode fitted separately; decode per CUDA-graph rung with both coefficients per rung. Under DP and EP, the step linear law is one per-rank law per engine config, which states the parallel layout, with the DP-unified rung and the MoE row count as features (`T_moe` with EP off; open with EP on), captured on a real deployment at that layout and fitted by alternating max-affine regression. Its label is one forward's device busy time, plus the device gap before it on a decode, with launch-exposed decodes cut and no prefill cut; host laws (`E`, `W_pre`, `W_launch`, `W_post`, and under MTP `W_inputs`, `W_pre` split at the MTP status wait), each `(1, tokens, seqs)` per decode, output prefill and pure middle chunk (a middle chunk has no sampler launch, output or R1 wait, so its `W_post` is zero and not fitted), are fitted beside it, keyed by host CPU, `atom` digest, model and engine config, with no transfer. | 2026-09-18; revised 2026-10-01, 2026-10-09 (`T_moe`, #502) and 2026-10-11 (#815); label per step kind 2026-10-12 (#843); named 2026-10-14 (#952); `W_inputs` 2026-10-16 (#829); engine config as the key 2026-10-16 (#973) |
 | D55 | Attention terms summed per request; the padding term is the rung's rectangle, not the batch's. A decode rung may add `rowmod(k)` (D61). | 2026-09-18; revised 2026-10-14 (#941) |
 | D56 | Distinguish rank deficiency from coverage gap: drop zero-variance features explicitly, report the condition number, and treat "widening the evidence does not move the error" as evidence the feature is wrong. | 2026-09-18 |
 | D57 | Every fit reports provenance, sample count, dropped count, condition number and validity hull. Report an interval or report nothing. | 2026-09-18 |

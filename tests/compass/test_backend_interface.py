@@ -30,14 +30,11 @@ from atom.compass.backends import (
     BatchView,
     CostBackend,
     CostTerm,
-    FakeModel,
     Granularity,
-    HfConfig,
     Method,
     Provenance,
     RequestShape,
     StepCost,
-    SyntheticStack,
 )
 
 PACKAGE = pathlib.Path(__file__).resolve().parents[2] / "atom" / "compass" / "backends"
@@ -155,7 +152,7 @@ def test_the_package_imports_nothing_from_the_engine(path):
 
 @pytest.mark.parametrize(
     "crossing",
-    [BatchView, RequestShape, FakeModel, SyntheticStack, HfConfig],
+    [BatchView, RequestShape],
 )
 def test_the_type_that_crosses_the_seam_is_where_the_scan_can_reach_it(crossing):
     """Every type this package hands out or takes in is defined in a file the
@@ -175,12 +172,11 @@ def test_the_type_that_crosses_the_seam_is_where_the_scan_can_reach_it(crossing)
     second voice on the same fact rather than a new guarantee.
 
     What it does not catch, and what no import scan can: a config type defined
-    beside the engine that reaches `FakeModel` as an argument.
-    `FakeModel.__init__(self, config, ...)` is unannotated and reads attribute
-    names off whatever it is handed, so that route needs no import in this
-    package and leaves nothing here to read. It was tried; neither guard
-    fires. The route is open, and closing it needs an instrument that reads
-    what is passed rather than what is imported.
+    beside the engine that reaches `KvGeometry.from_hf_config` as an argument.
+    Its `hf_config` parameter is unannotated and reads attribute names off
+    whatever it is handed, so that route needs no import in this package and
+    leaves nothing here to read. The route is open, and closing it needs an
+    instrument that reads what is passed rather than what is imported.
     """
     defined_in = pathlib.Path(inspect.getfile(crossing)).resolve()
     assert defined_in.parent == PACKAGE

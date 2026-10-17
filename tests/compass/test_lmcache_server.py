@@ -324,6 +324,18 @@ def test_free_lookup_locks_of_a_dropped_session_releases_the_whole_range():
     assert _chunks(server, gone) == {(r, c) for r in (0, 1) for c in (2, 3)}
 
 
+def test_a_sweep_says_when_it_drops_which_sessions(capsys):
+    server = LMCacheServer(FLAGS, chunk_bytes=1)
+    _hit(server, "a", now=0.0)
+    _hit(server, "b", now=31.0)
+    server.expire_sessions(600.0)
+    assert capsys.readouterr().err == ""
+    server.expire_sessions(630.5)
+    assert capsys.readouterr().err == (
+        "lmcache stand-in at 630.500000 s: Cleaned up 1 expired sessions ['a']\n"
+    )
+
+
 def test_a_negative_ratio_evicts_none():
     flags = FLAGS + ["--eviction-ratio", "-0.5"]
     server = LMCacheServer(flags, chunk_bytes=GIB // 4)  # four objects fit

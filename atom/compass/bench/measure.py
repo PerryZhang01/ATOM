@@ -13,8 +13,8 @@ entry named by the token `Key.token` prints, whose members are, per DP rank,
 engine file. Its lines are read as `parity.served` reads a record, each with
 the traces the client runs `--client-run` names for it sent. Lines a dummy run
 wrote are dropped; under `--sessions A:B` so is every line serving no trace, or
-a trace whose name's number lies outside A to B, inclusive; a trace name
-holding no number, or more than one, refuses.
+a trace whose session, as its client run's export states it, lies outside A to
+B, inclusive; a trace no export gives a session refuses.
 An input refuses unless a `--client-run` names it, its kept lines served
 requests under `--sampling` alone, and it states the engine ATOM's arguments
 resolve, `keyed`'s fields, at data-parallel width 1, the bench's.
@@ -31,7 +31,7 @@ engine they state and the nodes and margin `--grid-definition` states, and its
 points are measured with origin `plan`, the digest of the plan, which
 `<out>/plan.json` holds, and the `--grid` inputs as their sources.
 
-A measurement's key is the configuration (model, device, parallel layout,
+A measurement's key is the configuration (model, device,
 `keyed` engine, source root, `--sampling`), the step kind and the view's
 digest, so a view the store holds is not measured again and a stopped
 invocation resumes; a held entry taken under other readings than this run's
@@ -50,7 +50,6 @@ import hashlib
 import json
 import os
 import random
-import re
 import tempfile
 from pathlib import Path
 
@@ -72,7 +71,7 @@ from atom.compass.drive.gpu import add_gpu_flag, quiet
 from atom.compass.drive.identity import identity, phase
 from atom.compass.fit.publish import conditions
 from atom.compass.fit.samples import MEMBER, run_fields
-from atom.compass.parity.served import requests, served
+from atom.compass.parity.served import served
 from atom.compass.run import _write_whole
 from atom.compass.run.step_grid import BOUNDS, keyed, keyed_of
 
@@ -105,9 +104,7 @@ def main(argv: list[str]) -> None:
     engine_file.write_text(json.dumps(resolved))
     command = [*PROG.split(), *argv]
     run, phases = identity(engine_file, config.model, command, args.gpu), {}
-    configuration = run_fields(run) | {
-        "parallel": f"tp{config.tensor_parallel_size}-dp1"
-    }
+    configuration = run_fields(run)
     readings = conditions(
         {**configuration, "engine_config": engine}
         | {k: run[k] for k in ("stack", "host_key")}
@@ -167,7 +164,7 @@ def _todo(points, configuration, engine, sampling, store, readings) -> list:
 
 def measurement_key(configuration: dict, engine: dict, sampling, view: dict) -> Key:
     """The key of `view`'s measurement under `configuration` (model, device,
-    parallel layout, source root), `engine`, `keyed`'s fields, and `sampling`."""
+    source root), `engine`, `keyed`'s fields, and `sampling`."""
     return Key.of(
         Kind.STEP_MEASUREMENT,
         **configuration,
@@ -370,17 +367,16 @@ def _read(name: str, store, client_runs, sessions, engine: dict, sampling: dict)
             )
         )
     if sessions:
-        chosen = set()
-        for trace in sorted(
-            {r["trace"] for c in client_runs for r in requests(c).values()}
-        ):
-            if len(number := re.findall(r"\d+", trace)) != 1:
-                raise ValueError(
-                    f"--sessions selects traces by the number in their names, and "
-                    f"{name} served trace {trace!r}, which holds {len(number)} numbers"
-                )
-            if sessions[0] <= int(number[0]) <= sessions[1]:
-                chosen.add(trace)
+        exports = [json.loads(Path(c).read_text()) for c in client_runs]
+        given = {t: s for e in exports for t, s in e.get("sessions", {}).items()}
+        traces = sorted({r["trace"] for e in exports for r in e["requests"].values()})
+        if unnumbered := [t for t in traces if t not in given]:
+            raise ValueError(
+                f"--sessions selects traces by the session their client run's "
+                f"export states, and {name} served {', '.join(unnumbered)}, which "
+                "no export gives one"
+            )
+        chosen = {t for t in traces if sessions[0] <= given[t] <= sessions[1]}
     lines = [
         line
         for line in lines

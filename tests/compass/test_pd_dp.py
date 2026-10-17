@@ -58,22 +58,31 @@ FORMS = {
 }
 
 
-def run_pd_dp(out: Path, seed: str, form: str) -> dict:
-    """One run under `pd_sim.sh` at DP width 2 on each side."""
+def run_pd_dp(out: Path, seed: str, form: str, sides=None) -> dict:
+    """One run under `pd_sim.sh` at DP width 2 on each side, or at `sides`,
+    (prefill width, decode width), each side at its own."""
     cell, requests = FORMS[form]
+    p, d = sides or (DP, DP)
+    widths, flags = {"data_parallel_size": DP}, {"SERVER_ARGS": SERVER_ARGS}
+    if sides:
+        widths = {"prefill_data_parallel_size": p, "decode_data_parallel_size": d}
+        flags = {"SERVER_ARGS": "--enforce-eager --max-model-len 2048"} | {
+            f"{side}_ARGS": f"-tp {n} --enable-dp-attention" * (n > 1)
+            for side, n in (("PREFILL", p), ("DECODE", d))
+        }
     out.mkdir()
     ports = {name: _free_port() for name in PORTS}
-    # The write requests take DP * DP ports from KV_WRITE_REQ_PORT; successive
+    # The write requests take p * d ports from KV_WRITE_REQ_PORT; successive
     # free ports are often a step of 2 apart, so the next one may be among them.
     kv = "KV_WRITE_REQ_PORT"
-    while {p for n, p in ports.items() if n != kv} & set(
-        range(ports[kv], ports[kv] + DP * DP)
+    while {port for n, port in ports.items() if n != kv} & set(
+        range(ports[kv], ports[kv] + p * d)
     ):
         ports[kv] = _free_port()
     run_file = _run_file(
         out,
         clock_endpoint=f"tcp://127.0.0.1:{ports['CLOCK_PORT']}",
-        data_parallel_size=DP,
+        **widths,
         step_stub=CONSTANT,
         machine=DP_MACHINE,
         **PD,
@@ -85,7 +94,7 @@ def run_pd_dp(out: Path, seed: str, form: str) -> dict:
         AITER_LOG_LEVEL="WARNING",
         ATOM_COMPASS_PARITY_RECORD=str(out / "parity"),
         MODEL=MODEL,
-        SERVER_ARGS=SERVER_ARGS,
+        **flags,
         **cell,
         **{name: str(port) for name, port in ports.items()},
     )

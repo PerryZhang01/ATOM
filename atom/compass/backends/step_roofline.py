@@ -19,12 +19,14 @@ this price. The step's one term is named by the bound that won. It is
 is stated, and `analytical` otherwise: compute reads `parameter_count` and
 `device.compute` (`FIELDS`), memory `device.memory`. A spec field from a
 datasheet or probe is not stated, the run file's numbers always are, and the
-weights never are: they are read off a meta build.
+weights never are: they are read off a meta build. A step with image tokens is
+refused: nothing here prices the vision encoder that fills them.
 
 `StepFallbackBackend` asks a backend first and the roofline only for a step
 that backend refuses, so a law with no vector for a step still prices it. The
 roofline's term carries what the first backend declined, which shows the
-fall-through in the record; the step is answered, not refused. Both backends
+fall-through in the record; the step is answered unless the roofline refuses
+it too. Both backends
 are step-level: there is no fallback across granularities, so a first backend
 of another granularity is refused at construction.
 """
@@ -35,9 +37,9 @@ import dataclasses
 
 from atom.compass.backends.base import CostBackend, Granularity
 from atom.compass.backends.cost import CostTerm, StepCost
-from atom.compass.backends.provenance import Method, Provenance
+from atom.compass.backends.provenance import Method, Provenance, Refusal
 from atom.compass.backends.resolver import CostRefused
-from atom.compass.backends.shape import BatchView, sum_context, sum_tokens
+from atom.compass.backends.shape import IMAGES, BatchView, sum_context, sum_tokens
 
 SOURCE = "step-roofline"
 #: The machine spec fields a roofline reads; `device.<bound>` counts in that bound.
@@ -97,6 +99,9 @@ class StepRooflineBackend(CostBackend):
 
     def price(self, batch_view: BatchView) -> StepCost:
         rows = batch_view.requests
+        if batch_view.image_tokens:
+            reason = IMAGES.format(batch_view.image_tokens)
+            raise CostRefused(batch_view, [Refusal(SOURCE, reason)])
         tokens = sum_tokens(rows)
         moved = self.weight_bytes + self.kv_token_bytes * (sum_context(rows) + tokens)
         bounds = {

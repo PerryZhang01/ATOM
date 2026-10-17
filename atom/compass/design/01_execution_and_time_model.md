@@ -1166,7 +1166,7 @@ undecided**.
 
 | Class | Mechanism | PDES rule | Representative sites |
 |---|---|---|---|
-| K1 | Event cost | TAR: `advance_to(now + d)`, `d` from the cost model or a resource station; for a forward, from the runner's host and device recurrence (below) | the forward, the idle DP rank's dummy batch, KV-transfer completion, tokenization, the DP lockstep `all_reduce`, multimodal preprocessing (refused today) |
+| K1 | Event cost | TAR: `advance_to(now + d)`, `d` from the cost model or a resource station; for a forward, from the runner's host and device recurrence (below) | the forward, the idle DP rank's dummy batch, KV-transfer completion, tokenization, the DP lockstep `all_reduce`, multimodal preprocessing |
 | K2 | Clock read | returns the LP's logical time | the arrive / leave / first-token stamps, `_passed_delay`, the waiting-prefill age |
 | K3 | Idle point | NER: `next_event(t, t_daemon)` | the step loops' spin, the PP bounded polls, offline `get_output`, a step-loop wait on an lmcache reply (D6.1) |
 | K4 | Channel send | timestamped send, logged on the clock owner | PD direct sends, PP sends, output sends through the relay queue |
@@ -1251,8 +1251,8 @@ The rules that settle the boundaries #53's categories left in the wrong place:
   `setup_streaming_request` and `setup_streaming_request_fanout`
   (`atom/entrypoints/openai/api_server.py`): a multi-server resource station in the
   frontend LP whose completion times come from D33's service model. The multimodal
-  preprocessing hand-off in `chat_completions` is K1 too, and is refused today because no
-  service time is modelled for it. A tokenizer call on the event loop thread itself, such
+  preprocessing hand-off in `chat_completions` is K1 too, a service job on the same
+  station charged a run-file price per image (#1089). A tokenizer call on the event loop thread itself, such
   as the final `decode` of a non-streaming completion, is no station job: the loop is the
   LP's clock owner, so the call is a TAR on the loop, `advance_to(now + d)` with `d` from
   the same service model, and nothing else on the loop runs until it ends.
@@ -1388,6 +1388,7 @@ forward is called (the previous forward's exit, or the grant that ended an idle 
 entry      = now + E
 h          = max(entry, R4) + W_pre
 h          = max(h, R1) + W_inputs             # MTP only: R1 waits before launch
+h          = max(h, R7)                        # non-first PP stage: the metadata
 launch_end = h + W_launch
 start      = max(end[n-1], h)
 target_end = start + D_target
@@ -1420,7 +1421,7 @@ time.
 | R1 | output forward, single stage | after launch; before launch with MTP | the previous output forward's `target_end` | `tokenIDProcessor.recv_async_output`, from `prepare_sampled_ids`; with MTP, `tokenIDProcessor.recv_mtp_status_async`, from `prepare_input_ids` in `ModelRunner.prepare_model` |
 | R4 | every forward, single stage | forward entry | `end[n-2]` | `ModelRunner._gate_staging_reuse` |
 | R6 | every forward, PP | forward entry | this stage's `end[n-pp]` | `ModelRunner._advance_forward_vars`, the `forward_vars` ring |
-| R7 | non-first PP stage | device start, host launch | the upstream stage's `end`, and its host send | the `PPStageTransport` receives (`atom/distributed/pp_transport.py`) |
+| R7 | non-first PP stage | device start, host launch | the upstream stage's `end`, and its host send | `GroupCoordinator.recv_tensor_dict`, from `recv_intermediate_tensors` (`atom/distributed/pp_comm.py`) in `ModelRunner.run_model`: the metadata on gloo holds the host, the tensors the device |
 | R8 | last PP stage, output batch | after launch | its own `target_end` | `tokenIDProcessor.prepare_sampled_ids`'s `tolist`, on the stage that does not defer output |
 
 The DP barriers are not wait rules: the step-seconds `all_gather` carries each
@@ -1428,11 +1429,11 @@ member's charge, and the CA's member join grants each member's step end in turn 
 KV transfer keeps its own model (D6).
 
 Stage 2 builds R1 and R4 ([#825](https://github.com/jgong5/ATOM/issues/825)). R6 and R8
-come with the stage sends ([#468](https://github.com/jgong5/ATOM/issues/468)), and so does R7
-as one wait: the stage loop receives `pp_data` before the forward, so host launch and
-device start both wait for the whole receive, where R7 holds only the device for the
-tensors. R7's host side and the PP=2 record that gates R6 to R8 are
-[#1200](https://github.com/jgong5/ATOM/issues/1200)'s; a simulated run refuses a
+come with the stage sends ([#468](https://github.com/jgong5/ATOM/issues/468)), R7 with
+[#1200](https://github.com/jgong5/ATOM/issues/1200): a simulated stage loop receives `pp_data`
+at the forward's call, its launch waits for the metadata's arrival and its device start for
+the tensors', and a non-last stage sends at its launch end (#1324).
+The gate charges a PP record's stages together. A simulated run refuses a
 speculative config until [#1090](https://github.com/jgong5/ATOM/issues/1090).
 
 **What-ifs.** The run-file key `host.skip` zeroes the named segments. Such a run is a
@@ -1440,8 +1441,10 @@ what-if: never graded, and refused by the graders.
 
 **Measured, not hooked.** The parity recorder, `RecordingModelRunner`
 (`atom/compass/parity/runner.py`), stamps host time around the staging gate, the launch
-and the R1 wait (with MTP also the draft copy wait), and records device events at
-`run_model` entry, with MTP at the target's end, and at the forward's exit, drained with `query()`, never `synchronize()`
+and the R1 wait (with MTP also the draft copy wait; on a non-first PP stage also the R7
+receive, and on the last stage its own token read), and records device events at
+`run_model` entry, with MTP at the target's end, on a non-first PP stage where the
+received tensors are in, and at the forward's exit, drained with `query()`, never `synchronize()`
 ([#824](https://github.com/jgong5/ATOM/issues/824)). It edits no ATOM file.
 
 **The recurrence's own check, provisional.** Fed each real record's measured device
@@ -2216,7 +2219,9 @@ own process with the policy code untouched. It is (owner ruling on
   waits with NER only.
 - **Policy inputs.** `determinism::enable` runs before the policies are built, with the
   run's seed (`ATOM_COMPASS_SEED`, the cell's `SEED`): the policies read the LP clock, a
-  seeded RNG and a fixed hasher. Without the endpoint nothing changes.
+  seeded RNG and a fixed hasher. Without the endpoint nothing changes. `power_of_two` is
+  refused by name when it is built: its loads come from each worker's `/get_load`,
+  polled on a wall-clock interval (`LoadMonitor`), which no channel carries (#1134).
 - **Unchanged.** Cancels stay off behind the router; a clock error ends the router
   process.
 - **Periodic tasks.** Under the LP, `PeriodicTask` (cache_aware's tree eviction) starts

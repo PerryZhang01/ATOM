@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: MIT
 #
 # The scheduling-parity test on one node: one workload (atom/compass/parity/
-# traffic.py) at one DP-attention configuration on the real engine, recording
+# traffic.py) at one configuration on the real engine, recording
 # each step, then on the simulated runner replaying the real steps' times
 # (atom/compass/parity/replay.py), and the two records compared per DP rank.
 #
 # Usage: parity_one_node.sh OUT_DIR
-#   CONFIG           tp2: -tp 2 --enable-dp-attention (default). dsv4-dpa8:
+#   CONFIG           tp2: -tp 2 --enable-dp-attention (default). tp2-plain: tp2
+#                    without --enable-dp-attention, so one DP rank. dsv4-dpa8:
 #                    DeepSeek-V4-Pro's nightly DP-attention prefill server of
 #                    recipes/mesh/DeepSeek-V4.md, aggregated, MTP and expert
 #                    parallelism off: -tp 8 --enable-dp-attention --enable-tbo with
@@ -16,8 +17,15 @@
 #   MODEL            model directory with its weights (required)
 #   REQUESTS         requests in the workload (default 64)
 #   GAP_S            seconds between sends, each also waiting for the server to
-#                    admit the one before; 0 sends them back to back (default 0.05)
-#   MACHINE          machine spec (tp2's default scripts/compass/machines/mi308x-hjbog18.json)
+#                    admit the one before; 0 sends them back to back (default
+#                    0.05, or 0.25 under ALONE=1)
+#   ALONE            1: request 0 runs alone to its end before the rest are sent,
+#                    and GAP_S counts from its end, so later requests join
+#                    running decode batches. Default 0: all sent from the start.
+#   LONG_TOKENS      output tokens request 0 asks for, to keep one request (and
+#                    under LMCACHE its server session) alive for long (default
+#                    0: its usual count)
+#   MACHINE          machine spec (tp2's and tp2-plain's default scripts/compass/machines/mi308x-hjbog18.json)
 #   STORE            artifact store holding the simulated configuration's memory
 #                    readings, taken by `compass measure memory`. Unset, the
 #                    script takes them first into OUT_DIR/store: `compass measure
@@ -37,12 +45,16 @@
 #                    recipes' --chunk-size 256 --null-block-id -1
 #                    --separate-object-groups --supported-transfer-mode
 #                    lmcache_driven --l1-size-gb 8 --eviction-policy LRU)
+#   IMAGES           images in each request, which is then a chat completion
+#                    (default 0); the simulated run prices each at IMAGE_S
+#                    seconds (default 0.01)
 # The real run uses HIP_VISIBLE_DEVICES as set, and the measurement those GPUs
 # (unset, the first -tp of them). OUT_DIR gets memory/ when it measures, real/
 # and sim/, each with its server log and step record (sim/ also has the run
 # file, step table and summary), and compare.json; the last lines are the real run's
 # admission, send to response headers, and the compare per DP rank. Under
-# LMCACHE they also give the requests whose offload loads and saves differ. A
+# LMCACHE they also give the requests whose offload loads and saves differ, and
+# each run's expired-session sweeps, from its server's log. A
 # simulated run that needs a step past the real record ends at the replay's
 # refusal, which the last lines name; the records are compared all the same.
 set -euo pipefail
@@ -53,10 +65,12 @@ compass_env "$ROOT"
 compass_require_tree "$ROOT" || exit $?
 OUT=${1:?usage: parity_one_node.sh OUT_DIR}
 MODEL=${MODEL:?MODEL names the model directory}
+DPA=--enable-dp-attention
 case ${CONFIG:=tp2} in
-tp2)
+tp2 | tp2-plain)
     TP=2 ARGS="--enforce-eager --max-model-len 8192 --no-enable_prefix_caching"
     MACHINE=${MACHINE:-$ROOT/scripts/compass/machines/mi308x-hjbog18.json}
+    [[ $CONFIG == tp2 ]] || DPA=
     ;;
 dsv4-dpa8)
     TP=8 ARGS="--trust-remote-code --no-enable_prefix_caching --kv_cache_dtype fp8
@@ -64,10 +78,12 @@ dsv4-dpa8)
     MACHINE=${MACHINE:?CONFIG=dsv4-dpa8 needs MACHINE, the MI355X machine spec}
     export AITER_BF16_FP8_MOE_BOUND=0 ATOM_MOE_GU_ITLV=1 GPU_MAX_HW_QUEUES=5 ATOM_NUMA_BIND=1
     ;;
-*) echo "parity_one_node: CONFIG is tp2 or dsv4-dpa8, not $CONFIG" >&2; exit 2 ;;
+*) echo "parity_one_node: CONFIG is tp2, tp2-plain or dsv4-dpa8, not $CONFIG" >&2; exit 2 ;;
 esac
 SERVER_ARGS=${SERVER_ARGS:-$ARGS}
 WAIT_S=${WAIT_S:-1800}
+ALONE=${ALONE:-0} GAP=0.05
+[[ $ALONE == 1 ]] && GAP=0.25
 mkdir -p "$OUT/real" "$OUT/sim"
 OUT=$(realpath "$OUT")
 if [[ -z ${STORE:-} ]]; then
@@ -77,7 +93,7 @@ if [[ -z ${STORE:-} ]]; then
         "from atom.compass.cli import main; main()" measure memory \
         --gpu "${HIP_VISIBLE_DEVICES:-$(seq -s, 0 $((TP - 1)))}" --machine "$MACHINE" \
         --store "$STORE" --out "$OUT/memory" -- --model "$MODEL" -tp "$TP" \
-        --enable-dp-attention $SERVER_ARGS
+        $DPA $SERVER_ARGS
 fi
 LMCACHE=${LMCACHE:-0} PREFIX=0 LM_FLAGS=
 if [[ $LMCACHE == 1 ]]; then
@@ -101,7 +117,7 @@ serve() {
     # shellcheck disable=SC2086 # SERVER_ARGS is a word list
     ATOM_DP_MASTER_PORT=$(compass_free_port) ATOM_COMPASS_PARITY_RECORD=$OUT/$side/record setsid \
         python3 -m atom.entrypoints.openai.api_server --model "$MODEL" --host 127.0.0.1 \
-        --server-port "$PORT" --port "$(compass_free_port)" -tp "$TP" --enable-dp-attention \
+        --server-port "$PORT" --port "$(compass_free_port)" -tp "$TP" $DPA \
         $SERVER_ARGS "$@" \
         >"$OUT/$side/server.log" 2>&1 &
     server=$!
@@ -127,7 +143,8 @@ if [[ $LMCACHE == 1 ]]; then
 fi
 serve real
 python3 -m atom.compass.parity.traffic "$PORT" "$MODEL" "$OUT/real/record" \
-    "${REQUESTS:-64}" "${GAP_S:-0.05}" "$PREFIX" >"$OUT/real/traffic.log" 2>&1
+    "${REQUESTS:-64}" "${GAP_S:-$GAP}" "$PREFIX" "${IMAGES:-0}" "$ALONE" "${LONG_TOKENS:-0}" \
+    >"$OUT/real/traffic.log" 2>&1
 # The record's last lines are written as the workers exit.
 kill -TERM -- -$server
 leave real
@@ -137,12 +154,12 @@ if [[ -n $lmcache ]]; then
 fi
 
 RUN=$OUT/sim/run.json
-python3 - "$RUN" "$OUT" "$MACHINE" "$MODEL" "$STORE" "$(compass_free_port)" "$TP" \
-    "$LM_FLAGS" <<'EOF'
+python3 - "$RUN" "$OUT" "$MACHINE" "$MODEL" "$STORE" "$(compass_free_port)" "${DPA:+$TP}" \
+    "$LM_FLAGS" "${IMAGE_S:-0.01}" "$TP" <<'EOF'
 import json, sys
 from pathlib import Path
 
-run, out, machine, model, store, port, width, lmcache = sys.argv[1:]
+run, out, machine, model, store, port, width, lmcache, image_s, tp = sys.argv[1:]
 machine = json.loads(Path(machine).read_text())
 # ponytail: a spec that measured no tokenizer for the model prices it as its
 # first entry; only arrival latency reads it. Measure the model's own to drop this.
@@ -154,13 +171,17 @@ spec = {
     "clock_endpoint": f"tcp://127.0.0.1:{port}", "bound_s": 1e7,
     "admission_path": "serving", "ipc_s": 2.0**-14, "stream_s": 2.0**-12,
     "replay": f"{out}/real/record", "machine": machine, "store": store,
-    "data_parallel_size": int(width), "out_dir": f"{out}/sim",
+    "data_parallel_size": int(width or 1), "out_dir": f"{out}/sim",
+    "image_preprocess_s": float(image_s),
 }
 if lmcache:
     # Declared, not measured: a LOOKUP 2^-13 s plus 2^-17 s a prompt chunk,
     # any other request 2^-14 s.
     laws = {"lookup_s": [2.0**-13, 2.0**-17], "request_s": 2.0**-14}
-    spec["lmcache"] = {"server": lmcache.split(), **laws}
+    # Writers per DP rank: one under DP-attention, else every TP rank, which
+    # a model whose ranks share one copy refuses by name.
+    writers = 1 if width else int(tp)
+    spec["lmcache"] = {"server": lmcache.split(), "writers": writers, **laws}
 Path(run).write_text(json.dumps(spec))
 EOF
 serve sim --compass-run "$RUN"
@@ -207,3 +228,6 @@ if any(decisions):
     print(f"parity_one_node: offload decisions of {len(real)} requests real, "
           f"{len(sim)} simulated; {len(differ)} differ: {differ}")
 EOF
+if [[ $LMCACHE == 1 ]]; then
+    grep -H "expired sessions" "$OUT/real/lmcache.log" "$OUT/sim/server.log" || true
+fi

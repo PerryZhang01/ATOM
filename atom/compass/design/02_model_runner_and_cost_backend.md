@@ -536,6 +536,14 @@ M1 already exercises real geometry and M2 is a backend swap rather than a rebuil
 **Additionally: a synthetic dial-able config as a test fixture**, for stressing the
 scheduler at shapes no real model has.
 
+**Revised 2026-10-15 ([#1076](https://github.com/jgong5/ATOM/issues/1076)):** the fake
+model is `CompassModelRunner` (its forward replaces `ModelRunner.forward`) plus
+`StepStubBackend`. A simulated run sizes its pool with ATOM's own `get_num_blocks` on the
+meta-built tree and reads its widths from ATOM's config, so no separate model class
+carries geometry and widths. The `FakeModel` / `SyntheticStack` stand-in built for this
+section had no production caller and was deleted
+([#618](https://github.com/jgong5/ATOM/issues/618)).
+
 ### Open issues
 
 - **A single global quadratic coefficient is wrong for a hybrid.** The 27B target is 48
@@ -565,4 +573,4 @@ scheduler at shapes no real model has.
 | D10 | Attach at `ModelRunner.forward`, delivered by a `--runner-qualname` subclass; no ATOM change for the injection. Revised: `flush_pp_send` keeps ATOM's own answer and the stage loop settles the pending send before calling it; the control-command refusals are recorded in [`01` D5](01_execution_and_time_model.md#decision-log) | 2026-09-18, revised 2026-09-28 and 2026-09-30 |
 | D10.1 | A model comes into existence three ways, none reading weights: HF-config geometry where only geometry is needed; a `torch.device("meta")` context where a module tree is needed without tracing (no transient, no GPU, covers buffers - ATOM already has this shape at `models/utils.py::no_init_weights`, unused); and `FakeTensorMode` for tracing, the only one with symbolic shapes and the right device branch. `--load_dummy` is reused in all three. `_init_weight_params_on_meta` is not a bug but is superseded by the meta context. The T5 fallback is the meta context plus concrete traces. | 2026-09-20 |
 | D11 | No modes on the runner. Every run simulates; the algorithm comes from a pluggable cost backend. `measure` and `trace` are orthogonal flags. A backend has a granularity and `price()`s a step, each term carrying its method. A backend's `seconds` is one forward's device busy time; host time is composed outside it (`01` D4). | 2026-09-18; revised 2026-10-11 (#815) and 2026-10-14 (#952) |
-| D12 | M1 fake model = KV/weight geometry from the HF config + a shape stub, its terms declared, including the quadratic query term; constant mode retained for bring-up | 2026-09-18 |
+| D12 | M1 fake model = KV/weight geometry from the HF config + a shape stub, its terms declared, including the quadratic query term; constant mode retained for bring-up. Revised: the fake model is `CompassModelRunner` plus `StepStubBackend`, geometry from ATOM's own pool sizing; the `FakeModel` class is deleted | 2026-09-18, revised 2026-10-15 (#1076) |

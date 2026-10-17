@@ -18,7 +18,7 @@ on, because until 2026-09-20 it was not — see "Which tree a script acts on" be
 | `regen_gpu_gate_triggers.sh` | CPU container | Re-derive `gpu_gate_triggers.txt` from the exclusion list and the tree. Run after **any** change to `cpu_gate_exclude.txt` — the two files are derived from the same tree and are wrong separately. Writes the whole file, **header counts included**; nothing in it is maintained by hand. |
 | `snapshot.sh` | either | Build the `git archive` tarball a gate runs against (never `rsync`). Stamps `.compass-commit` (so output names its tree, and a `COMPASS_GPU_GATE_DONE` attestation can be checked) and `.compass-changed` (so the blind-spot question is answerable without `.git`). Refuses a dirty tree. |
 | `pd_sim.sh` | GPU container | A simulated 1P1D run: the standalone clock authority (`python -m atom.compass.run`), a prefill and a decode API server on the simulated KV connector, and `atomesh` in PD mode between them. `tests/compass/test_pd_slice.py` drives one request through it. Its variables are in its header. |
-| `parity_one_node.sh` | GPU container, two devices (eight for `CONFIG=dsv4-dpa8`) | The scheduling-parity test: one workload (`python -m atom.compass.parity.traffic`) on a real `-tp 2 --enable-dp-attention` server (`CONFIG=dsv4-dpa8`: DeepSeek-V4-Pro's nightly `-tp 8 --enable-dp-attention --enable-tbo` server) with the step record on, then on a simulated one whose steps each end when the real one's did (`atom/compass/parity/replay.py`), and `python -m atom.compass.parity` over the two records. With `STORE` unset it first runs `compass measure memory` on the real run's GPUs, flags and environment into `OUT_DIR/store`, and the simulated run reads that store. The last lines are the real run's admission (send to response headers: minimum, median, maximum) and, per DP rank, the steps compared, the steps identical and the first divergence. Its variables are in its header. |
+| `parity_one_node.sh` | GPU container, two devices (eight for `CONFIG=dsv4-dpa8`) | The scheduling-parity test: one workload (`python -m atom.compass.parity.traffic`) on a real `-tp 2 --enable-dp-attention` server (`CONFIG=tp2-plain`: `-tp 2` alone; `CONFIG=dsv4-dpa8`: DeepSeek-V4-Pro's nightly `-tp 8 --enable-dp-attention --enable-tbo` server) with the step record on, then on a simulated one whose steps each end when the real one's did (`atom/compass/parity/replay.py`), and `python -m atom.compass.parity` over the two records. With `STORE` unset it first runs `compass measure memory` on the real run's GPUs, flags and environment into `OUT_DIR/store`, and the simulated run reads that store. The last lines are the real run's admission (send to response headers: minimum, median, maximum) and, per DP rank, the steps compared, the steps identical and the first divergence. Its variables are in its header. |
 | `python -m atom.compass.detect.scenario` | either | The acceptance checks every simulated deployment's runs are held to, over the out_dirs of one run file run under different `PYTHONHASHSEED`: each run reached its finish with no refusal, the step tables are byte-identical, and each channel's messages were released to their receiver once each and none behind its clock. With `--record LP=DIR`, an engine LP's TAR rows must equal the timeline a constant step stub implies, computed from the parity record in `DIR` (`pd_sim.sh` writes one per side when `ATOM_COMPASS_PARITY_RECORD` is set). Prints each failure and exits 1. The vertical, DP, PD and PD-DP slices in `tests/compass/` hold their runs to it, with the traffic's outputs too. |
 | `mi308x_spec.py` | GPU container, node 18 or hjbog-srdc-39; any container with `atom` under `--sweep-from` | `python3 scripts/compass/mi308x_spec.py`: rebuild `machines/mi308x-hjbog18.json`, the node-18 MI308X machine spec, by sweeping Qwen3.8-27B's tokenizer on this host and merging it with the device, capacity and stack of one real engine start recorded in the script; with `COMPASS_MACHINE=mi308x-hjbog39`, the same for hjbog-srdc-39 into `machines/mi308x-hjbog39.json`, with the HTTP intake terms one real burst probed there (`INTAKE`). `--sweep-from DOC` takes the sweep a written document carries instead. Prints `validate`'s verdict and `explain`'s fields grouped by origin; on either host a value no probe fills reads `assumed`. |
 | `mi355x_spec.py` | any container with `atom`; mi355-gpu-45 to re-sweep | `python3 scripts/compass/mi355x_spec.py --sweep-from scripts/compass/machines/mi355x-gpu45.json`: rebuild `machines/mi355x-gpu45.json`, the mi355-gpu-45 MI355X machine spec, from the tokenizer sweep that document carries and the device, capacity, datasheet peaks and assumed values recorded in the script; byte for byte while this script and `mi308x_spec.py` are unchanged. Without `--sweep-from` it re-sweeps DeepSeek-V4-Pro's tokenizer at `/models/DeepSeek-V4-Pro` on mi355-gpu-45, and the sweep refuses its fit above a host load of about 55. Prints `validate`'s verdict and `explain`'s fields grouped by origin. |
@@ -516,7 +516,8 @@ The header of the script lists its environment; `MODEL`, `TRACES` and
 `HARNESS_PYTHON` are required.
 
 - `RUN_FILE` is a run file as `atom/compass/run/__init__.py` describes it. The
-  script replaces its `out_dir` and `clock_endpoint` and adds a `workload` entry:
+  script replaces its `out_dir` and `clock_endpoint`, sets `client_runs` to 1, so
+  the server leaves at the end of aiperf's run, and adds a `workload` entry:
   the sha256 of `TRACES` and of each replayed trace, the aiperf arguments and the
   pinned benchmark id. The step table's configuration line and the run summary
   carry it.
@@ -574,10 +575,14 @@ the log of one rank.
 
 ## The step linear law from real cells — `step_linear_fit`
 
-`python -m atom.compass.backends.step_linear_fit RECORD... --out LAW --machine-spec DIGEST [--form FORM] [--dp N]`
+`python -m atom.compass.backends.step_linear_fit RECORD... --out LAW --machine-spec DIGEST [--form FORM] [--engine FILE]`
 fits the law a run file's `step_linear` key holds (`atom/compass/backends/step_linear.py`) from
 the step records of real cells, `OUT_DIR/steps/dp0.jsonl` of `REAL=1
-cctraces_sim.sh` runs. `atom/compass/backends/step_labels.py` states the label
+cctraces_sim.sh` runs, each with the `dp0.engine.json` the run wrote beside it,
+whose engine config the law states and whose `data_parallel_size` its ranks
+join at. Records that ran before a run wrote that file, or wrote it without
+`data_parallel_size`, take an engine file stated from their `server.log` as
+`--engine FILE`. `atom/compass/backends/step_labels.py` states the label
 and what is cut, and the command writes each record's labels beside it for
 reading, `dp0.cost.jsonl`; the module's docstring states how outliers are
 dropped. The written law also carries, per vector, its samples, warm and dropped
@@ -617,7 +622,8 @@ simulated run's LP clock, and runs the simulated P/D connector inside a `multi`;
 none of these changes a real run's host time. Its
 engine key also states the fields the records predate, as their `server.log`
 engine arguments and the capture's environment give them: DP width 1, no DP
-attention, expert parallelism or TBO, and `AITER_LOG_LEVEL=WARNING`. The law
+attention, expert parallelism or TBO, and `AITER_LOG_LEVEL=WARNING`; the law
+states that engine key as its `engine_config`. The law
 and its host key state `machine_spec`, the digest `machine_spec_digest` gives
 `scripts/compass/machines/mi308x-hjbog39.json`, so it refuses under any other
 spec's device or software stack.
@@ -700,6 +706,4 @@ which no cache directory above holds.
    `$R/cell/c<C>/step_linear/run.json`, `FIRST_SESSION=0 SESSIONS=256
    CONCURRENCY=<C>`, `SERVER_ARGS="--max-model-len 262144"`, `AIPERF_EXTRA_ARGS` the
    warmup arguments; then `python -m atom.compass.parity
-   $R/cell/c<C>/step_linear/steps OUT/steps`. That run file serves until stopped
-   (`client_runs` is null), so until #1337 the script reports the deployment still
-   up `WAIT_S` after aiperf and exits 1; its step record is whole by then.
+   $R/cell/c<C>/step_linear/steps OUT/steps`.

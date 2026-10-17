@@ -21,7 +21,7 @@ from test_stop_between_client_runs import CLIENT_RUN as UNREFUSED
 from atom.compass import run as compass_run
 from atom.compass.drive import run as drive_run
 from atom.compass.drive import serve
-from atom.compass.validate.runs import CLIENT_RUN, _requests, grade, main
+from atom.compass.validate.runs import CLIENT_RUN, _requests, grade, graded, main
 
 EXPORT = {
     "request_count": {"unit": "requests", "avg": 3.0},
@@ -215,31 +215,49 @@ GRADED = {
 
 #: The traces every client run here was given.
 GIVEN = ["trace-ka", "trace-kb", "trace-kc", "trace-kw"]
+#: The arguments every client run here was given, as its export names them.
+ARGUMENTS = {
+    "phases.profiling.concurrency": 4,
+    "phases.profiling.duration": 1800.0,
+    "phases.profiling.warmup_requests_per_lane": 1,
+    "datasets.main.random_seed": 20260707,
+    "benchmark_id": "000000000000",
+}
 
 
-def _recorded(cell, sent=None, warmup=("kw",), given=GIVEN, **run):
+def _recorded(
+    cell, sent=None, warmup=("kw",), given=GIVEN, held=True, args=ARGUMENTS, **run
+):
     """`cell` as `record` lays it out, or with `run`'s entries as `run` does:
     each named request also named by its response id `id-<key>`, and the
-    export naming those whose keys are in `sent` (all by default), each from
-    trace `trace-<key>`; its warmup naming those whose keys are in `warmup`,
-    by default `kw`, which `_schedule` holds no step of; and the traces its
-    client was given, `given`. With `warmup` or `given` None the export has no
-    such entry."""
+    export naming those whose keys are in `sent` (all but its warmup's by
+    default), each from trace `trace-<key>`; its warmup naming those whose
+    keys are in `warmup`, by default `kw`, each that no step holds served
+    first in a prefill step of its own unless `held` is False; and the traces
+    and arguments its client was given, `given` and `args`. With `warmup`,
+    `given` or `args` None the export has no such entry."""
     path = cell / "steps" / "dp0.jsonl"
     lines = [json.loads(x) for x in path.read_text().splitlines()]
     for line in lines:
         line["named"] = [[r, k, f"id-{k}"] for r, k, *_ in line["named"]]
-    path.write_text("".join(json.dumps(x) + "\n" for x in lines))
     keys = sorted({k for line in lines for _, k, *_ in line["named"]})
+    # Request ids 0 and up arrived before every request a cell here holds.
+    for r, k in enumerate(sorted(set(warmup or ()) - set(keys)) if held else ()):
+        warm = {"batch": [[r, 30, 30]], "named": [[r, k, f"id-{k}"]]}
+        lines.insert(r, lines[0] | warm | {"rows": [[30, 30, False]]})
+    path.write_text("".join(json.dumps(x) + "\n" for x in lines))
 
     def named(mine):
         return {f"id-{k}": {"trace": f"trace-{k}", "sampling": {}} for k in mine}
 
-    export = {"requests": named(k for k in keys if sent is None or k in sent)}
+    sent = set(keys) - set(warmup or ()) if sent is None else sent
+    export = {"requests": named(k for k in keys if k in sent)}
     if warmup is not None:
         export["warmup"] = named(warmup)
     if given is not None:
         export["traces"] = given
+    if args is not None:
+        export["arguments"] = args
     (cell / CLIENT_RUN).write_text(json.dumps(export))
     (cell / "run.json").write_text(json.dumps({"format_version": 2, **run}))
     return cell
@@ -342,12 +360,12 @@ WARMED = [[(6, 30, 30, False)], [(6, 1, 31, True)]] + _schedule()
 
 
 def test_a_client_run_s_warmup_steps_precede_its_own_and_are_not_graded(tmp_path):
-    *real, simulated = (_recorded(c) for c in _four(tmp_path / "cold"))
+    *real, simulated = (_recorded(c) for c in _four(tmp_path / "one_step"))
     report = grade(real, simulated)
     keys = {6: "kw", 7: "ka", 8: "kb"}
     *real, simulated = (
         _recorded(c, sent={"ka", "kb"}, warmup={"kw"})
-        for c in _four(tmp_path / "warm", WARMED, keys)
+        for c in _four(tmp_path / "two_steps", WARMED, keys)
     )
 
     assert grade(real, simulated) == report
@@ -378,6 +396,31 @@ def test_a_client_run_whose_export_names_no_warmup_is_refused(tmp_path, warmup):
     cold = "its export names no warmup, so its first steps may be cold"
     with pytest.raises(ValueError, match=f"r2 is not graded: {cold}$"):
         grade(real, simulated)
+
+
+#: Request `kw` warms the server up only after the client run's first step.
+LATE = [_schedule()[0], [(6, 30, 30, False)], *_schedule()[1:]]
+
+
+@pytest.mark.parametrize("schedule", [_schedule(), LATE], ids=["none", "late"])
+def test_a_client_run_whose_warmup_no_step_up_to_its_first_holds_is_refused(
+    tmp_path, schedule
+):
+    cells = _four(tmp_path, schedule, {6: "kw", 7: "ka", 8: "kb"})
+    *real, simulated = (_recorded(c, held=False) for c in cells)
+
+    unheld = "no step up to its own first holds its warmup, so its first steps"
+    with pytest.raises(ValueError, match=f"r0 is not graded: {unheld} may be cold$"):
+        grade(real, simulated)
+
+
+def test_a_warmup_held_only_in_steps_its_client_run_shares_is_graded(tmp_path):
+    keys = {6: "kw", 7: "ka", 8: "kb"}
+    first, *rest = _schedule()
+    shared = [[(6, 30, 30, False), *first], *rest]
+    cells = [_recorded(c, warmup={"kw"}) for c in _four(tmp_path, shared, keys)]
+
+    assert [graded(c)[2] for c in cells] == [{"requests": 1, "steps": 0}] * 4
 
 
 def test_the_steps_of_a_later_client_run_are_not_graded(tmp_path):
@@ -419,6 +462,44 @@ def test_a_client_run_whose_export_names_no_traces_given_is_refused(tmp_path):
 
     unknown = "its export names no traces its client was given"
     with pytest.raises(ValueError, match=f"r1 is not graded: {unknown}$"):
+        grade(real, simulated)
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        {"phases.profiling.concurrency": 16},
+        {"phases.profiling.duration": 600.0, "datasets.main.random_seed": 1},
+        {"phases.profiling.warmup_requests_per_lane": None},
+        {"endpoint.timeout": 60.0},
+        {"benchmark_id": "0f8c2b6a"},
+    ],
+)
+def test_runs_given_the_same_traces_and_other_arguments_are_not_one_cell(
+    tmp_path, other
+):
+    *real, simulated = (_recorded(c) for c in _four(tmp_path))
+    # None: the export names no such argument.
+    args = {k: v for k, v in (ARGUMENTS | other).items() if v is not None}
+    _recorded(real[1], args=args)
+
+    cells = [str(c) for c in (*real, simulated)]
+    differ = {
+        name: {c: ARGUMENTS.get(name) for c in cells} | {str(real[1]): value}
+        for name, value in sorted(other.items())
+    }
+    with pytest.raises(ValueError, match="were given different arguments") as refused:
+        grade(real, simulated)
+    assert str(refused.value).endswith(f": {differ}")
+
+
+def test_a_client_run_whose_export_names_no_arguments_given_is_refused(tmp_path):
+    *real, simulated = (_recorded(c) for c in _four(tmp_path))
+    _recorded(real[1], given=None, args=None)
+
+    unknown = "its export names no {} its client was given"
+    both = f"{unknown.format('traces')}; {unknown.format('arguments')}"
+    with pytest.raises(ValueError, match=f"r1 is not graded: {both}$"):
         grade(real, simulated)
 
 
