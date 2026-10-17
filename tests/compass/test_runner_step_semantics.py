@@ -379,7 +379,8 @@ def test_forward_keeps_inference_mode_and_drops_the_expert_load_monitor():
         "torch.inference_mode()",
     ]
     assert _decorators(OVERRIDES, "NonAllocatingRunner", "forward") == [
-        "torch.inference_mode()"
+        "_says_why",
+        "torch.inference_mode()",
     ]
 
 
