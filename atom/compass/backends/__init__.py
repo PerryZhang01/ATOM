@@ -40,11 +40,6 @@ The pieces, and the rule each exists to make structural rather than customary:
   refusals counted by number, by fraction of steps and by fraction of
   predicted seconds. A run with nothing in
   it has no fractions and says so, rather than reporting a reassuring zero.
-- `FakeModel` / `SyntheticStack` / `HfConfig` -- the stand-in itself: the
-  widths are declared once and reach the geometry and the price together, so
-  a pool sized for four ranks cannot be priced as one rank's. Its config is a
-  published one read as JSON, or a dialled stack for shapes no released model
-  has, and both are read through the same attributes.
 """
 
 from atom.compass.backends.base import CostBackend, Granularity
@@ -56,12 +51,6 @@ from atom.compass.backends.cost import (
     fold_step,
 )
 from atom.compass.backends.geometry import KvGeometry, Parallelism
-from atom.compass.backends.model import (
-    FakeModel,
-    HfConfig,
-    SyntheticStack,
-    hf_config,
-)
 from atom.compass.backends.provenance import Method, Provenance, Refusal, combine
 from atom.compass.backends.resolver import (
     CostRefused,
@@ -81,9 +70,7 @@ __all__ = [
     "CostRefused",
     "CostSource",
     "CostTerm",
-    "FakeModel",
     "Granularity",
-    "HfConfig",
     "KvGeometry",
     "Method",
     "Parallelism",
@@ -99,9 +86,7 @@ __all__ = [
     "StepLinearBackend",
     "StepLinearLaw",
     "StepStubBackend",
-    "SyntheticStack",
     "combine",
     "fold_seconds",
     "fold_step",
-    "hf_config",
 ]

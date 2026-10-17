@@ -10,6 +10,8 @@ from the launch to the exit less the recv and draft copy waits; with
 `d_target_ns`, under MTP, the rest of `d_busy_ns` is draft, `W_inputs` is the part of
 `W_pre` after the MTP status wait, and no `d_gap_ns` is fed. Each forward is called at the
 exit predicted for the one before, so only the waits and device times move it.
+A pipeline record is gated stage by stage, each charged with the predicted
+sends of the stage before (`check`).
 
 Per kind (decode, output prefill, middle chunk, and idle: sharing no request
 with the forward before), p10 and p90 of charge over measured exit-to-exit
@@ -42,26 +44,39 @@ def _kind(step, prev) -> str:
     return "decode" if all(d for *_, d in step["rows"]) else "prefill"
 
 
-def check(steps: list[dict]) -> dict:
-    """One DP rank's steps charged on their measured inputs: the gate's report."""
-    now, prev, rows = 0.0, None, []
+def check(steps: list[dict], stage=None, upstream=None) -> dict:
+    """One DP rank's steps charged on their measured inputs: the gate's report.
+
+    On pipeline stage `stage = (rank, pp)`, the launch waits for the stage
+    before's predicted send in `upstream` and the device for its end, in
+    place of the measured `t_pp_recv_ns` and `d_recv_ns`.
+    """
+    if upstream is not None and len(upstream) != len(steps):
+        raise ValueError(f"{len(steps)} steps, and {len(upstream)} upstream")
+    now, prev, rows, sends = 0.0, None, [], []
+    origin = steps[0]["t_enter_ns"]
     mtp = any("d_target_ns" in s for s in steps)
-    rec = HostDeviceRecurrence({}, (), lambda: now, mtp=mtp)
-    for s in steps:
+    rec = HostDeviceRecurrence({}, (), lambda: now, stage, mtp=mtp)
+    for n, s in enumerate(steps):
         if "d_busy_ns" not in s:
             raise ValueError(f"step {s['step']} has no device window to charge")
         (g0, g1), (l0, l1) = s["t_gate_ns"], s["t_launch_ns"]
         r0, r1 = s.get("t_recv_ns", (l1, l1))
         m0, m1 = s.get("t_mtp_ns", (l0, l0))
         d0, d1 = s.get("t_draft_recv_ns", (0, 0))
+        p0, p1 = s.get("t_pp_recv_ns", (l0, l0))
         last = prev["t_exit_ns"] if prev else s["t_enter_ns"]
         e = s["t_enter_ns"] - last
         pre = l0 - s["t_enter_ns"] - (g1 - g0) - (m1 - m0)
         post = s["t_exit_ns"] - l1 - (r1 - r0) - (d1 - d0)
-        law = {"E": e, "W_pre": pre - (l0 - m1), "W_launch": l1 - l0, "W_post": post}
+        entry = max(now + e * 1e-9, rec.ends[0])
+        if upstream:  # the stage before's send holds the launch
+            sent, ready = ((t - origin) * 1e-9 for t in upstream[n])
+            pre += max(sent - entry - pre * 1e-9, 0.0) * 1e9
+        launch = l1 - l0 - (p1 - p0)
+        law = {"E": e, "W_pre": pre - (l0 - m1), "W_launch": launch, "W_post": post}
         law = {g: (v * 1e-9, 0, 0) for g, v in {**law, "W_inputs": l0 - m1}.items()}
         rec.laws = {k: law for k in FORWARD_KINDS}
-        entry = max(now + e * 1e-9, rec.ends[0])
         queued = rec.ends[1] - entry - pre * 1e-9
         # Under MTP, the wait for the previous output's MTP status sits inside
         # W_pre: released where it starts or where that output's target ends.
@@ -71,9 +86,18 @@ def check(steps: list[dict]) -> dict:
         batch.total_seqs_num_prefill = sum(not d for *_, d in s["rows"])
         batch.produces_output = lambda out=s["produces_output"]: out
         gap = 0 if batch.total_seqs_num_prefill or mtp else s.get("d_gap_ns", 0)
+        if stage is not None:
+            # A stage's host may trail its device, so the gap may be idle: it
+            # follows the last forward's device end. The tensors' arrival holds it too.
+            start = rec.ends[-1] + gap * 1e-9
+            batch.compass_pp_release = max(ready, start) if upstream else start
+            gap = 0
         busy = s["d_busy_ns"]
         target = s.get("d_target_ns", busy)
-        charge = rec.charge(batch, (gap + target) * 1e-9, (busy - target) * 1e-9)
+        own = gap + target - s.get("d_recv_ns", 0)  # the receive is a wait, not work
+        charge = rec.charge(batch, own * 1e-9, (busy - target) * 1e-9)
+        times = (now + charge - post * 1e-9, rec.ends[-1])
+        sends.append([origin + round(t * 1e9) for t in times])
         period = (s["t_exit_ns"] - last) * 1e-9
         r1_ms = None
         if "t_mtp_ns" in s:  # released before the launch
@@ -99,16 +123,24 @@ def check(steps: list[dict]) -> dict:
         "total": total,
         "pass": abs(total) <= TOTAL_BAND and all(v[-1] for v in kinds.values()),
         "failures": [r for r in rows if not kinds[r[1]][-1] and abs(r[2]) > STEP_BAND],
+        "sends": sends,
     }
 
 
 def main(record: str) -> int:
-    """Print the gate per DP rank of `record`; 1 if any rank fails."""
-    ok = True
-    for rank, steps in read(record).items():
-        report = check(steps)
+    """Print the gate per DP rank and pipeline stage of `record`; 1 if any fails."""
+    ok, stages, sends = True, [read(record)], {}
+    while more := read(record, len(stages)):
+        stages.append(more)
+    pp = len(stages)
+    runs = [(i, r, s) for i, d in enumerate(stages) for r, s in d.items()]
+    for i, rank, steps in runs:
+        stage = (i, pp) if pp > 1 else None
+        report = check(steps, stage, sends.get((i - 1, rank)))
+        sends[i, rank] = report["sends"]
         ok &= report["pass"]
-        print(f"dp{rank} kind      n      p10      p50      p90  recv p50 ms  gate")
+        name = f"dp{rank} pp{i}" if pp > 1 else f"dp{rank}"
+        print(f"{name} kind      n      p10      p50      p90  recv p50 ms  gate")
         for k, (n, p10, p50, p90, r1, good) in report["kinds"].items():
             r1 = "-" if r1 is None else f"{r1:.3f}"
             gate = "pass" if good else "FAIL"

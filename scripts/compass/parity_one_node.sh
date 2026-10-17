@@ -22,6 +22,9 @@
 #   ALONE            1: request 0 runs alone to its end before the rest are sent,
 #                    and GAP_S counts from its end, so later requests join
 #                    running decode batches. Default 0: all sent from the start.
+#   LONG_TOKENS      output tokens request 0 asks for, to keep one request (and
+#                    under LMCACHE its server session) alive for long (default
+#                    0: its usual count)
 #   MACHINE          machine spec (tp2's and tp2-plain's default scripts/compass/machines/mi308x-hjbog18.json)
 #   STORE            artifact store holding the simulated configuration's memory
 #                    readings, taken by `compass measure memory`. Unset, the
@@ -50,7 +53,8 @@
 # and sim/, each with its server log and step record (sim/ also has the run
 # file, step table and summary), and compare.json; the last lines are the real run's
 # admission, send to response headers, and the compare per DP rank. Under
-# LMCACHE they also give the requests whose offload loads and saves differ. A
+# LMCACHE they also give the requests whose offload loads and saves differ, and
+# each run's expired-session sweeps, from its server's log. A
 # simulated run that needs a step past the real record ends at the replay's
 # refusal, which the last lines name; the records are compared all the same.
 set -euo pipefail
@@ -139,7 +143,8 @@ if [[ $LMCACHE == 1 ]]; then
 fi
 serve real
 python3 -m atom.compass.parity.traffic "$PORT" "$MODEL" "$OUT/real/record" \
-    "${REQUESTS:-64}" "${GAP_S:-$GAP}" "$PREFIX" "${IMAGES:-0}" "$ALONE" >"$OUT/real/traffic.log" 2>&1
+    "${REQUESTS:-64}" "${GAP_S:-$GAP}" "$PREFIX" "${IMAGES:-0}" "$ALONE" "${LONG_TOKENS:-0}" \
+    >"$OUT/real/traffic.log" 2>&1
 # The record's last lines are written as the workers exit.
 kill -TERM -- -$server
 leave real
@@ -150,11 +155,11 @@ fi
 
 RUN=$OUT/sim/run.json
 python3 - "$RUN" "$OUT" "$MACHINE" "$MODEL" "$STORE" "$(compass_free_port)" "${DPA:+$TP}" \
-    "$LM_FLAGS" "${IMAGE_S:-0.01}" <<'EOF'
+    "$LM_FLAGS" "${IMAGE_S:-0.01}" "$TP" <<'EOF'
 import json, sys
 from pathlib import Path
 
-run, out, machine, model, store, port, width, lmcache, image_s = sys.argv[1:]
+run, out, machine, model, store, port, width, lmcache, image_s, tp = sys.argv[1:]
 machine = json.loads(Path(machine).read_text())
 # ponytail: a spec that measured no tokenizer for the model prices it as its
 # first entry; only arrival latency reads it. Measure the model's own to drop this.
@@ -173,7 +178,10 @@ if lmcache:
     # Declared, not measured: a LOOKUP 2^-13 s plus 2^-17 s a prompt chunk,
     # any other request 2^-14 s.
     laws = {"lookup_s": [2.0**-13, 2.0**-17], "request_s": 2.0**-14}
-    spec["lmcache"] = {"server": lmcache.split(), **laws}
+    # Writers per DP rank: one under DP-attention, else every TP rank, which
+    # a model whose ranks share one copy refuses by name.
+    writers = 1 if width else int(tp)
+    spec["lmcache"] = {"server": lmcache.split(), "writers": writers, **laws}
 Path(run).write_text(json.dumps(spec))
 EOF
 serve sim --compass-run "$RUN"
@@ -220,3 +228,6 @@ if any(decisions):
     print(f"parity_one_node: offload decisions of {len(real)} requests real, "
           f"{len(sim)} simulated; {len(differ)} differ: {differ}")
 EOF
+if [[ $LMCACHE == 1 ]]; then
+    grep -H "expired sessions" "$OUT/real/lmcache.log" "$OUT/sim/server.log" || true
+fi

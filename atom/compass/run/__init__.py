@@ -1272,9 +1272,11 @@ def runner(model_runner, tree) -> None:
     from atom.compass.run import memory
 
     measured = memory.load(run["store"], config, machine, model_runner.rank)
-    model = ModelTerms.from_tree(
-        tree, activations=measured.activations(config.max_num_batched_tokens)
-    )
+    # `ModelRunner.warmup_model` sizes its batch from the scheduler bounds and
+    # the DP and PCP widths, all in the readings' key, so the tokens the
+    # reading warmed up with are the ones this deployment's warmup runs.
+    warmup = measured.values["warmup_tokens"]
+    model = ModelTerms.from_tree(tree, activations=measured.activations(warmup))
     fallback = run.get("step_roofline", False)
     if not isinstance(fallback, bool):
         raise TypeError(
@@ -1340,7 +1342,7 @@ def runner(model_runner, tree) -> None:
     install_device_readings(model_runner, readings)
     model_runner.compass_memory = record(
         readings,
-        tokens=config.max_num_batched_tokens,
+        tokens=warmup,
         pool=predicts(measured),
         assumed=measured.assumed,
     )

@@ -7,12 +7,16 @@ takes them. A part up to its carrier's eager threshold completes on the
 sender's clock at ``t_send + o + bytes x G``; a larger one is rendezvous and
 completes on both sides at ``max(t_send, r) + T``, ``r`` the time the receiver
 posts its receive and ``T = rendezvous_fixed_s + bytes x G``. The receiver
-posts each part's receive when the part before it has arrived.
+posts each part's receive when the part before it has arrived. The ``gloo``
+parts leave at ``t_send``, the sender's host send; the ``rccl`` parts at
+``t_ready``, when the sender's device work ends.
 
 `StageSends` is the stage loop's side. Before a downstream stage's forward it
-receives that forward's input on ``pp_data`` and, for a rendezvous send,
-returns the completion on ``pp_ack`` stamped at it; after a non-last stage's
-forward it waits for its previous send's completion, then sends. An idle
+receives that forward's input on ``pp_data``, the post and the metadata's arrival
+as the batch's ``compass_pp_host`` and
+the tensors' as the batch's ``compass_pp_release``, and, for a rendezvous send,
+returns the completion on ``pp_ack`` stamped at it; at a non-last stage's forward's
+launch end it waits for its previous send's completion, then sends. An idle
 flush waits for the previous send the same way. The frames move between the
 stages' TP-rank-0 workers over the PP CPU group.
 """
@@ -86,6 +90,17 @@ def recv_done(models, t_send: float, t_recv_posted: float, parts):
     return done, r
 
 
+def arrivals(models, frame, t_recv_posted: float):
+    """``(done, meta, end)`` of a ``pp_data`` frame: the send's latest
+    sender-side completion, the ``gloo`` parts' arrival, and the ``rccl``
+    parts' after it, which are posted when the metadata has arrived."""
+    gloo = [p for p in frame["parts"] if p[0] == "gloo"]
+    tensors = [p for p in frame["parts"] if p[0] != "gloo"]
+    sent, meta = recv_done(models, frame["t_send"], t_recv_posted, gloo)
+    done, end = recv_done(models, frame["t_ready"], meta, tensors)
+    return max(sent, done), meta, end
+
+
 class StageSends:
     """One stage loop's ``pp_data`` and ``pp_ack``, around its runner calls.
 
@@ -113,12 +128,14 @@ class StageSends:
             self.settle()
             return self.call(name, *args, wait_out=wait_out)
         if self.data_in:
-            self.receive()
+            args[0].compass_pp_host, args[0].compass_pp_release = self.receive()
         t0 = self.rt.now
         reply = self.call(name, *args, wait_out=wait_out)
         if self.data_out:
-            ready_s, parts = reply.pp_send
+            ready_s, post_s, parts = reply.pp_send
             self.send(t0 + ready_s, parts)
+            if post_s > 0:
+                self.rt.advance_to(self.rt.now + post_s)
         return reply
 
     def _frame(self, kind: str, ch: str, seq: int) -> dict:
@@ -129,28 +146,24 @@ class StageSends:
             raise RuntimeError(f"{ch}: read frame {frame['seq']}, released {seq}")
         return frame
 
-    def receive(self) -> None:
+    def receive(self) -> tuple:
+        """Return ``(posted, meta)`` and the tensors' arrival."""
         seq, posted = self.received, self.rt.now
         self.received += 1
         frame = self._frame("pp_data", self.data_in, seq)
-        parts = frame["parts"]
-        done, end = recv_done(self.models, frame["t_send"], posted, parts)
-        if is_rendezvous(self.models, parts):
+        done, meta, end = arrivals(self.models, frame, posted)
+        if is_rendezvous(self.models, frame["parts"]):
             self.call("send_pp_frame", "pp_ack", {"seq": seq}, wait_out=True)
             self.rt.stamp_send(self.ack_out, done)
-        # ponytail: the host waits for the whole receive, where ATOM's waits only
-        # for the metadata on gloo and its device for the tensors; split the two
-        # once host laws make launch time matter here.
-        if end > self.rt.now:
-            self.rt.advance_to(end)
+        return (posted, meta), end
 
     def send(self, ready: float, parts) -> None:
-        """Send once the forward's device work, at `ready`, and the previous
-        send are done; the loop itself waits only for the previous send."""
+        """Send once the previous send is done: the metadata now, the tensors
+        once the forward's device work, at `ready`, is done."""
         self.settle()
-        seq, t_send = self.sent, max(ready, self.rt.now)
+        seq, t_send = self.sent, self.rt.now
         self.sent += 1
-        frame = {"seq": seq, "t_send": t_send, "parts": parts}
+        frame = {"seq": seq, "t_send": t_send, "t_ready": ready, "parts": parts}
         self.call("send_pp_frame", "pp_data", frame, wait_out=True)
         self.rt.stamp_send(
             self.data_out, t_send + self.rt.table.lookahead(self.data_out)
@@ -158,7 +171,7 @@ class StageSends:
         if is_rendezvous(self.models, parts):
             self.pending = ("ack", seq)
         else:
-            self.pending = ("eager", recv_done(self.models, t_send, t_send, parts)[0])
+            self.pending = ("eager", arrivals(self.models, frame, t_send)[0])
 
     def settle(self) -> None:
         """Wait for the previous send: its ack if rendezvous, else its local end."""
