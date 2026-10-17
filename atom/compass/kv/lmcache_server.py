@@ -20,8 +20,9 @@ server's start and every `SESSION_SWEEP_INTERVAL_S` after it, and drops each
 session created more than `SESSION_TTL_S` earlier.
 
 What it does not reproduce. Every object group of a chunk is one entry, so
-`--separate-object-groups` and sliding-window groups price and hit as full
-attention, and all-null chunks are stored. The byte budget is
+under `--separate-object-groups` recurrent state is a mark on the entry that
+takes no bytes, sliding-window groups price and hit as full attention, and
+all-null attention chunks are stored. The byte budget is
 `--l1-size-gb` taken whole, so a lazy pool's growth and allocator alignment
 are not modelled. Stores and retrieves need no prior REGISTER_KV_CACHE,
 because a simulated worker registers no device memory. The session sweep's
@@ -70,11 +71,10 @@ def _flag_parser() -> argparse.ArgumentParser:
     a("--eviction-trigger-watermark", type=float, default=0.8)
     a("--eviction-ratio", type=float, default=0.2)
     a("--supported-transfer-mode", choices=["lmcache_driven"], default="lmcache_driven")
-    # Accepted, and read by nothing here: the index keeps one entry per chunk
-    # (null blocks, object groups), the budget is the configured size (lazy
-    # pool), and the rest set workers and endpoints no reply depends on.
     a("--null-block-id", type=int, default=0)
     a("--separate-object-groups", action="store_true")
+    # Accepted, and read by nothing here: the budget is the configured size
+    # (lazy pool), and the rest set workers and endpoints no reply depends on.
     a("--l1-use-lazy", action=argparse.BooleanOptionalAction, default=True)
     a("--max-workers", type=int, default=1)
     a("--max-gpu-workers", type=int)
@@ -98,6 +98,7 @@ def parse_server_flags(argv: list[str]) -> argparse.Namespace:
 class _Obj:
     readers: int = 0
     lock_until: float = float("-inf")
+    state: bool = False  # a hit may end here
 
     def locked(self, now: float) -> bool:
         return self.readers > 0 and now < self.lock_until
@@ -255,6 +256,10 @@ class LMCacheServer:
             self._okey(key, r, hashes[hit]) in self.objects for r in ranks
         ):
             hit += 1
+        while hit and not all(
+            self.objects[self._okey(key, r, hashes[hit - 1])].state for r in ranks
+        ):
+            hit -= 1
         held = [self._okey(key, r, h) for r in ranks for h in hashes[:hit]]
         self._lock(held, readers, now)
         self._touch(held)
@@ -314,14 +319,21 @@ class LMCacheServer:
         *,
         now: float,
     ) -> tuple[Any, Callable]:
-        wanted = [
+        keys = self._worker_keys(key, now)
+        wanted = [k for k in keys if k not in self.objects and k not in self._staged]
+        # Under --separate-object-groups the block-id groups after the first
+        # hold recurrent state, one block a chunk, as ATOM's native-state layout
+        # sends it: lmcache keeps it where a block is not the null block.
+        state = block_ids[1:] if self.args.separate_object_groups else []
+        null = self.args.null_block_id
+        marked = [
             k
-            for k in self._worker_keys(key, now)
-            if k not in self.objects and k not in self._staged
+            for i, k in enumerate(keys)
+            if not state or any(g[i] != null for g in state)
         ]
         used = (len(self.objects) + len(self._staged) + len(wanted)) * self.chunk_bytes
         if used > self.capacity:
-            wanted = []  # one allocation for the whole store: all or nothing
+            wanted = marked = []  # one allocation for the whole store: all or nothing
         self._staged.update(wanted)
 
         def admit(now: float) -> None:
@@ -329,6 +341,9 @@ class LMCacheServer:
             fresh = [k for k in wanted if k not in self.objects]
             for k in fresh:
                 self.objects[k] = _Obj()
+            for k in marked:
+                if k in self.objects:
+                    self.objects[k].state = True
             for k in reversed(fresh):
                 self.objects.move_to_end(k)
 
