@@ -47,7 +47,8 @@ class Bench:
     started, measured = [], []
     refuse = None
 
-    def __init__(self, config):
+    def __init__(self, config, num_blocks):
+        config.num_kvcache_blocks = num_blocks
         Bench.started.append(config)
 
     def measure(self, batch):
@@ -339,6 +340,55 @@ def test_the_planner_reads_the_engine_every_grid_input_states(run):
         SystemExit, match="state two engines, which differ on max_model_len"
     ):
         run(*grid, *run.named(rec), *run.named(other))
+
+
+def kv_blocks(line, block_size) -> int:
+    """The KV blocks `line`'s rows hold, each row its own."""
+    return sum(-(-context // block_size) for _, context, _ in line["rows"])
+
+
+def test_points_planned_at_the_inputs_pool_are_measured_where_the_budget_is_smaller(
+    run,
+):
+    """The plan puts decode c nodes at each B node's KV limit for the pool its
+    inputs state; the device's own budget, standing in the config before the
+    bench starts, gives fewer blocks than some planned points hold."""
+    steps, rec = run.record / "steps", str(run.record)
+    lines = read(steps)[0]
+    stated = json.loads((steps / "dp0.engine.json").read_text())
+    size = stated["kv_cache_block_size"]
+    stated["num_kvcache_blocks"] = pool = max(
+        kv_blocks(line, size) for line in lines if line["rows"][0][2]
+    )
+    (steps / "dp0.engine.json").write_text(json.dumps(stated))
+    named = [(str(s["step"]), s) for s in lines]
+    planned = plan(DEFINITION, named, {"r": stated})["lines"]
+    at_limit = [
+        line
+        for line in planned
+        if line["rows"][0][2]
+        and line["rows"][0][1] == size * (pool // len(line["rows"]))
+    ]
+    assert at_limit
+    run.config.num_kvcache_blocks = max(kv_blocks(line, size) for line in planned) - 1
+    definition = run.tmp / "definition.json"
+    definition.write_text(json.dumps(DEFINITION))
+    store = run("--grid", rec, "--grid-definition", str(definition), *run.named(rec))
+    assert set(by_view(store)) == views(planned)
+    engine = json.loads((run.tmp / "out/engine.json").read_text())
+    assert engine["num_kvcache_blocks"] == pool
+
+
+def test_the_bench_holds_the_largest_pool_an_input_states(run):
+    rec, other = str(run.record), run.tmp / "other"
+    shutil.copytree(run.record, other)
+    engine = other / "steps/dp0.engine.json"
+    stated = json.loads(engine.read_text())
+    pool = stated["num_kvcache_blocks"] + 1
+    engine.write_text(json.dumps(stated | {"num_kvcache_blocks": pool}))
+    run(rec, str(other), "--sample", "all", *run.named(rec), *run.named(other))
+    held = json.loads((run.tmp / "out/engine.json").read_text())
+    assert held["num_kvcache_blocks"] == run.config.num_kvcache_blocks == pool
 
 
 def trace(i) -> str:
