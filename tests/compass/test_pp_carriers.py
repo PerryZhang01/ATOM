@@ -52,6 +52,27 @@ def test_the_last_stage_waits_for_the_heads_tensors_on_the_carriers():
     assert not recurrence.check(late, (1, 2), sends)["pass"]
 
 
+def test_the_last_stage_launches_when_the_heads_metadata_arrives():
+    """gloo's metadata lands 9 ms after the head's 2 ms host send, at its
+    11 ms device end, so the tensors land at 12 ms as with gloo free, and
+    only the launch moves. A 10 ms launch from there leaves the first step
+    host-bound, exiting at 22 ms where its device ends at 20."""
+    head, last = pp2_record()
+    sends = recurrence.check(head, (0, 2))["sends"]
+    late = _late(last, 2 * MS)
+    late[0] |= {
+        "t_pp_recv_ns": [MS, 11 * MS],
+        "t_launch_ns": [MS, 21 * MS],
+        "t_recv_ns": [21 * MS, 21 * MS],
+        "d_recv_ns": 11 * MS,
+        "d_busy_ns": 19 * MS,
+    }
+    slow = MODELS | {"gloo": CarrierModel(10**9, 0.0, 9e-3, 0.0, 0.0)}
+    priced = recurrence.check(late, (1, 2), sends, (slow, 500))
+    assert priced["pass"] and priced["total"] == pytest.approx(0, abs=1e-9)
+    assert not recurrence.check(late, (1, 2), sends, (MODELS, 500))["pass"]
+
+
 def test_the_script_prices_the_send_on_a_machine_specs_carriers(tmp_path):
     """`MODELS` written in a spec, each zero as 1e-15: the schema takes only
     positive times."""

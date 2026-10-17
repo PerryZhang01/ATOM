@@ -263,14 +263,13 @@ def check(field: Field, value: object, path: str) -> object:
         if not isinstance(value, str) or not value.strip():
             _refuse(path, "a non-empty string", value)
         return value
-    if kind is Kind.COUNT or kind is Kind.BYTES:
-        least = int(kind is Kind.COUNT)
-        if isinstance(value, bool) or not isinstance(value, int) or value < least:
-            _refuse(
-                path,
-                "a positive whole number" if least else "a whole number of bytes",
-                value,
-            )
+    if kind is Kind.COUNT:
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            _refuse(path, "a positive whole number", value)
+        return value
+    if kind is Kind.BYTES:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            _refuse(path, "a whole number of bytes", value)
         return value
     if kind is Kind.QUANTITY:
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:

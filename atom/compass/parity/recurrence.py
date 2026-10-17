@@ -94,7 +94,7 @@ def check(steps: list[dict], stage=None, upstream=None, carriers=None) -> dict:
                 models, width = carriers
                 part = ("rccl", sum(r[0] for r in s["rows"]) * width)
                 frame = {"t_send": sent, "t_ready": ready, "parts": [*META, part, part]}
-                _, sent, ready = arrivals(models, frame, now)
+                _, sent, ready = arrivals(models, frame, entry)
             pre += max(sent - entry - pre * 1e-9, 0.0) * 1e9
         launch = l1 - l0 - (p1 - p0)
         law = {"E": e, "W_pre": pre - (l0 - m1), "W_launch": launch, "W_post": post}
