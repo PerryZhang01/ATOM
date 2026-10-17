@@ -663,10 +663,8 @@ def engine_config(records) -> dict:
                 f"{record} has no {engine.name}, the engine config it ran under"
             )
         held.append(keyed_of(json.loads(engine.read_text())))
-    names = {k for e in held for k in e}
-    if differ := sorted(
-        k for k in names if any(e.get(k) != held[0].get(k) for e in held)
-    ):
+    names = sorted({k for e in held for k in e})
+    if differ := [k for k in names if any(e.get(k) != held[0].get(k) for e in held)]:
         raise ValueError(
             f"the records ran under two engine configs, differing in {differ}"
         )
