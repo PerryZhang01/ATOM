@@ -14,6 +14,10 @@ then sets ``out_dir`` and ``clock_endpoint`` and hands it to the server.
   ``provenance``, with its report's as ``inputs``; a stub's is None.
 - ``--host-laws KEY``, a `host_laws` entry's params, as ``host``; without it
   the run charges no host time.
+- ``--step-linear`` and ``--host-laws`` repeat, one entry per engine config:
+  the key then holds a list, each process installing its own config's entry,
+  and ``backend``'s digest is over every law's in any order, their provenance
+  ``entries``.
 - ``--machine``, the spec; ``--store``'s root as ``store``; ``--on-refusal``;
   ``--step-roofline``, which reads ``parameter_count`` from the model
   directory's safetensors index and refuses when it states none.
@@ -47,8 +51,11 @@ def add_arguments(parser) -> None:
     backend = parser.add_mutually_exclusive_group(required=True)
     for key in (run.STEP_STUB, *KINDS):
         flag, stub = "--" + key.replace("_", "-"), key == run.STEP_STUB
-        backend.add_argument(flag, dest=key, metavar="FILE" if stub else "KEY")
-    parser.add_argument("--host-laws", metavar="KEY", help="a host_laws token")
+        many = {"action": "append"} if key == run.STEP_LINEAR else {}
+        backend.add_argument(flag, dest=key, metavar="FILE" if stub else "KEY", **many)
+    parser.add_argument(
+        "--host-laws", metavar="KEY", action="append", help="a host_laws token"
+    )
     parser.add_argument("--machine", required=True, help="the machine spec")
     parser.add_argument("--store", required=True, help="the artifact store's root")
     parser.add_argument("--on-refusal", choices=("mark", "abort"), default="mark")
@@ -83,25 +90,39 @@ def build(args, atom_args) -> dict:
         }
     else:
         name = next(k for k in KINDS if getattr(args, k))
-        key = store.key_from_token(KINDS[name], getattr(args, name))
-        entry = store.read(key)
-        if name == run.STEP_GRID:
-            out[name] = {"store": str(store.root), **key.values}
-        else:
-            engine_config = json.loads(key.values["engine_config"])
-            out[name] = {**_member(entry, "params"), "engine_config": engine_config}
-        reported = member_name("report", RANK, "json") in entry.members
-        report = _member(entry, "report") if reported else {}
-        out["backend"] = {
-            "digest": entry.digest,
-            "provenance": {
-                **entry.provenance.as_json(),
-                "inputs": report.get("provenance"),
-            },
-        }
+        tokens, laws, backends = getattr(args, name), [], []
+        for token in [tokens] if isinstance(tokens, str) else tokens:
+            key = store.key_from_token(KINDS[name], token)
+            entry = store.read(key)
+            if name == run.STEP_GRID:
+                laws.append({"store": str(store.root), **key.values})
+            else:
+                engine_config = json.loads(key.values["engine_config"])
+                laws.append(
+                    {**_member(entry, "params"), "engine_config": engine_config}
+                )
+            reported = member_name("report", RANK, "json") in entry.members
+            inputs = _member(entry, "report").get("provenance") if reported else None
+            provenance = {**entry.provenance.as_json(), "inputs": inputs}
+            backends.append({"digest": entry.digest, "provenance": provenance})
+        out[name], out["backend"] = laws[0], backends[0]
+        if len(laws) > 1:
+            digests = " ".join(sorted(b["digest"] for b in backends)).encode()
+            out[name], out["backend"] = laws, {
+                "digest": "sha256:" + hashlib.sha256(digests).hexdigest(),
+                "provenance": {
+                    "entries": [b["provenance"] for b in backends],
+                    "inputs": [
+                        i for b in backends for i in b["provenance"]["inputs"] or ()
+                    ],
+                },
+            }
     if args.host_laws:
-        host = store.read(store.key_from_token(Kind.HOST_LAWS, args.host_laws))
-        out["host"] = _member(host, "params")
+        hosts = [
+            _member(store.read(store.key_from_token(Kind.HOST_LAWS, k)), "params")
+            for k in args.host_laws
+        ]
+        out["host"] = hosts if len(hosts) > 1 else hosts[0]
     if args.step_roofline:
         out["parameter_count"] = _parameter_count(engine.model)
     return out
