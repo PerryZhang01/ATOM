@@ -40,10 +40,11 @@ deduped by storage, which needs a module tree, which needs the engine, which
 this package does not import; the simulated runner builds one and hands it in,
 and `from_config` reads the weights off that tree's parameter storages. Each term
 carries its own method: the buffers are analytical unless the rotary fraction
-is assumed, and the activations are a declared formula unless the run's
-`memory_readings` entry measured them. The capacity takes its method from the
-origin the spec records for it; an entry's readings are measured, since the
-entry is keyed by the configuration the run is.
+is assumed, and the capacity takes its method from the origin the spec records
+for it. The run's `memory_readings` entry's readings, the activations among
+them, are measured, since the entry is keyed by the configuration the run is,
+and declared when its member states `assumed`: a platform no engine has
+started on, its readings copied from another's.
 """
 
 from __future__ import annotations
@@ -72,6 +73,9 @@ ENTRY_FIELDS = (
     "cudagraph_pool_bytes",
     "record",
 )
+#: What a member published outside `compass measure memory` may also state:
+#: why its readings are assumed and where they were copied from.
+ASSUMED = "assumed"
 
 
 class MemoryRefusal(Exception):
@@ -235,7 +239,8 @@ class MemoryReadings:
     """One rank's member of a `memory_readings` entry, and the entry it is from.
 
     Each reading is a term of the run's readings, measured: the entry is keyed
-    by the model, platform, layout and engine config the run is.
+    by the model, platform, layout and engine config the run is. A member that
+    states `assumed` makes every term declared, its note naming the assumption.
     """
 
     values: Mapping[str, object]
@@ -244,12 +249,19 @@ class MemoryReadings:
     @classmethod
     def from_member(cls, member: object, source: str) -> MemoryReadings:
         """The readings of a member, or a refusal naming what it holds instead."""
-        fields = set(member) if isinstance(member, Mapping) else None
-        if fields != set(ENTRY_FIELDS):
+        fields = set(member) if isinstance(member, Mapping) else set()
+        if fields - {ASSUMED} != set(ENTRY_FIELDS):
             raise MemoryRefusal(
-                f"{source} holds {sorted(fields or ())}, not one rank's readings",
-                f"a member states exactly {', '.join(ENTRY_FIELDS)}; take the "
-                "entry again with compass measure memory",
+                f"{source} holds {sorted(fields)}, not one rank's readings",
+                f"a member states exactly {', '.join(ENTRY_FIELDS)}, and "
+                f"{ASSUMED} where they are; take the entry again with compass "
+                "measure memory",
+            )
+        assumed = member.get(ASSUMED)
+        if ASSUMED in fields and not (isinstance(assumed, str) and assumed.strip()):
+            raise MemoryRefusal(
+                f"{source} holds {ASSUMED} {assumed!r}, which names no assumption",
+                "state where its readings were copied from and why",
             )
         for name in ENTRY_FIELDS:
             value = member[name]
@@ -266,14 +278,28 @@ class MemoryReadings:
                 )
         return cls(dict(member), source)
 
+    @property
+    def assumed(self) -> str | None:
+        """The assumption the member states, or None for a measured one."""
+        return self.values.get(ASSUMED)
+
+    def _term(self, name: str, nbytes: int, method: Method, source: str) -> Term:
+        """A term of this member: of `method`, or declared when it is assumed."""
+        note = ""
+        if self.assumed:
+            method = Method.DECLARED
+            note = (
+                f"{self.assumed}; a compass measure memory start on this "
+                "platform replaces it"
+            )
+        return Term(
+            name, nbytes, method, source, note, records=(self.values["record"],)
+        )
+
     def term(self, name: str, field: str) -> Term:
         """The reading `field` as the term `name`."""
-        return Term(
-            name,
-            self.values[field],
-            Method.MEASURED,
-            f"{self.source} {field}",
-            records=(self.values["record"],),
+        return self._term(
+            name, self.values[field], Method.MEASURED, f"{self.source} {field}"
         )
 
     def activations(self, warmup_tokens: int) -> Term:
@@ -281,15 +307,13 @@ class MemoryReadings:
         tokens, or the coefficient times these, an estimate."""
         nbytes, tokens = self.values["activation_bytes"], self.values["warmup_tokens"]
         source = f"{self.source} activation_bytes over {tokens} warmup tokens"
-        records = (self.values["record"],)
         if warmup_tokens == tokens:
-            return Term("activations", nbytes, Method.MEASURED, source, records=records)
-        return Term(
+            return self._term("activations", nbytes, Method.MEASURED, source)
+        return self._term(
             "activations",
             round(nbytes * warmup_tokens / tokens),
             Method.ESTIMATED,
             f"{source}, x {warmup_tokens} warmup tokens",
-            records=records,
         )
 
 

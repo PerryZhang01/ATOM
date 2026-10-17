@@ -43,11 +43,15 @@ def test_a_cell_writes_its_client_run_s_export(tmp_path, ids, cell_rc):
         "fi\n"
         f'exec {sys.executable} "$@"\n'
     )
+    # The input config of the trace files the script gives aiperf.
+    given = str(tmp_path / "cell" / "traces")
+    dataset = {"name": "main", "path": given, "format": "weka_trace"}
     export = tmp_path / "export.json"
     export.write_text(
         json.dumps(
             {k: {"avg": 1} for k in METRICS}
             | {"benchmark_id": "000000000000", "error_summary": []}
+            | {"input_config": {"datasets": [dataset]}}
         )
     )
     records = tmp_path / "raw.jsonl"
@@ -111,4 +115,5 @@ def test_a_cell_writes_its_client_run_s_export(tmp_path, ids, cell_rc):
                 "b": {"trace": "t1", "sampling": PARAMETERS},
             },
             "warmup": {},
+            "traces": [0],
         }

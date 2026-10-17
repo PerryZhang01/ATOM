@@ -41,13 +41,9 @@ whatever their stanzas say, so a differing value is refused with both readings
 and both stanzas. Between them the arms cover the mislabelled fragment and the
 unlabelled contradiction, which are the two ways a multi-host spec is authored.
 
-Three kinds of field are combined rather than compared, because contributing
+Two kinds of field are combined rather than compared, because contributing
 part of one is what a probe does:
 
-* a **runtime constant keyed by width** is combined per width, since the widths
-  come from different probe runs -- one rank's engine start fills width 1, and
-  the multi-rank run fills the rest. Two fragments that probed the same width
-  to different values are still a conflict.
 * the **tokenizer table** is combined per entry, keyed by the identity and the
   implementation the rates were probed on. Two entries sharing an identity
   must agree about the file they probed; one name over two files is the drift
@@ -68,20 +64,6 @@ part of one is what a probe does:
   maximum of the dates as written: the field is text, ISO-shaped dates order
   correctly under it, and `'2026-9-9'` does not.
 
-Constants that were transferred from another spec are the exception to combining
-values. What was transferred is read from each field's own origin, not from the
-fragment's `provenance.origin`, and a fragment is a transfer when a field it
-supplies outside `host.` is `transferred-from:`. Such a fragment states the
-stack the *source* spec was pinned to, as pin fields of that same origin, which
-is provenance about the constants and not a claim about this machine's stack, so
-those are kept aside for checking rather than contributed. Merging them as
-though they described this host would install the source's ROCm version as this
-one's and silence the check that exists to catch exactly that. A transferred
-`host.` field, such as a tokenizer swept on another machine, is recorded as
-transferred and makes nothing a transfer: it was measured on a processor, not on
-a device stack. A fragment whose fields name two source specs is refused, since
-it has one pin block to state a source stack in.
-
 The result is a document, not a spec. A merge produces what the fragments
 happened to cover, and whether that is a complete and consistent machine is a
 separate question with its own answer.
@@ -91,11 +73,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .fields import BY_PATH, SCHEMA, TRANSFERRED, Kind, check
+from .fields import SCHEMA, check
 from .machine import TOKENIZERS, _walk, check_subject, entry_label, field_origin
 from .rules import Rule, SpecRefusal
 
-#: The block holding the stack the device constants were probed against.
+#: The block holding the stack the spec's numbers were taken on.
 PINNED_BLOCK = "device.software_pinned_to"
 #: What every fragment states, whatever else it carries.
 STATED = (
@@ -106,7 +88,7 @@ STATED = (
     "provenance.origin",
 )
 #: Which origin a field two fragments agree on takes, strongest first.
-STRENGTH = ("probed", "datasheet", TRANSFERRED, "assumed")
+STRENGTH = ("probed", "datasheet", "assumed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,21 +125,6 @@ class Fragment:
                     "themselves says which host produced them",
                 )
         check_subject(values, f"fragment {source!r}")
-        stated = [values["provenance.origin"]]
-        stated += [
-            found["origin"] for found in values.get("provenance.origins", {}).values()
-        ]
-        named = sorted(
-            {o[len(TRANSFERRED) :] for o in stated if o.startswith(TRANSFERRED)}
-        )
-        if len(named) > 1:
-            raise SpecRefusal(
-                Rule.PINNED_STACK,
-                f"fragment {source!r} carries fields transferred from "
-                f"{' and '.join(map(repr, named))}",
-                "a transfer is checked against its source's stack pin, and a "
-                "fragment states one; give each source spec its own fragment",
-            )
         return cls(source, values)
 
     @property
@@ -167,28 +134,9 @@ class Fragment:
 
     @property
     def origin(self) -> str:
-        """Where it came from: a datasheet, a probe, an assumption, another
-        spec, or several of those."""
+        """Where it came from: a datasheet, a probe, an assumption, or several
+        of those."""
         return self.values["provenance.origin"]
-
-    def carried_from(self, label: str) -> str | None:
-        """The spec the field under `label` was carried over from, if it was."""
-        stated = field_origin(self.values, label, self.stanza())["origin"]
-        return stated[len(TRANSFERRED) :] if stated.startswith(TRANSFERRED) else None
-
-    @property
-    def transferred_from(self) -> str | None:
-        """The spec this fragment's device or interconnect constants were
-        carried over from, if any were; a transferred `host.` field asks for
-        no stack pin and does not count."""
-        for path, value in self.values.items():
-            if not path.startswith(("device.", "interconnect.")):
-                continue
-            wide = BY_PATH[path].kind is Kind.WIDTH_TABLE
-            for label in [f"{path}[{w}]" for w in value] if wide else [path]:
-                if source := self.carried_from(label):
-                    return source
-        return None
 
     def stanza(self) -> str:
         """Who probed what, for which machine and when, as a refusal names it."""
@@ -205,12 +153,6 @@ class Merge:
 
     document: Mapping[str, Any]
     sources: Mapping[str, tuple[str, ...]]
-    fragments: tuple[Fragment, ...]
-
-    @property
-    def transfers(self) -> tuple[Fragment, ...]:
-        """The fragments whose constants came from another spec."""
-        return tuple(f for f in self.fragments if f.transferred_from is not None)
 
 
 def _one_machine(fragments: tuple[Fragment, ...]) -> None:
@@ -261,8 +203,7 @@ def _identity(raw: object, fragment: Fragment, index: int) -> tuple:
 
 
 def _strength(found: dict) -> int:
-    stated = found["origin"]
-    return STRENGTH.index(TRANSFERRED if stated.startswith(TRANSFERRED) else stated)
+    return STRENGTH.index(found["origin"])
 
 
 def _provenance(fragments: tuple[Fragment, ...], origins: dict) -> dict:
@@ -327,13 +268,6 @@ def merge(fragments: Sequence[Fragment]) -> Merge:
         for path, value in fragment.values.items():
             if path == "name" or path == TOKENIZERS or path.startswith("provenance."):
                 continue
-            if path.startswith(PINNED_BLOCK) and fragment.carried_from(path):
-                continue
-            if BY_PATH[path].kind is Kind.WIDTH_TABLE:
-                table = values.setdefault(path, {})
-                for width, measured in value.items():
-                    claim(f"{path}[{width}]", table, width, measured, fragment)
-                continue
             claim(path, values, path, value, fragment)
 
     entries: dict[tuple, Any] = {}
@@ -366,4 +300,4 @@ def merge(fragments: Sequence[Fragment]) -> Merge:
         for block in blocks:
             node = node.setdefault(block, {})
         node[leaf] = values[field.path]
-    return Merge(document, sources, fragments)
+    return Merge(document, sources)

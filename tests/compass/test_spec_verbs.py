@@ -3,9 +3,9 @@
 
 The fragments below are the ones the probes of each hardware probe class would emit --
 a tokenizer and an interprocess measurement that need no device, a single-card
-engine start, a multi-rank one, and a fabric measurement -- so a test that
-combines them combines the same partial documents a real run would, and a test
-that breaks one breaks exactly what it says it does.
+engine start, and a fabric measurement -- so a test that combines them combines
+the same partial documents a real run would, and a test that breaks one breaks
+exactly what it says it does.
 
 The numbers are the measured ones wherever a measurement exists, because two of
 these checks are judgements about size: the cross-rank spread accepted is the
@@ -16,29 +16,18 @@ The probe that needs no device has a section of its own. Its fragments are
 built by the probe itself against a stand-in for the per-processor topology the
 kernel publishes, so the core counts in them are read by the code a real run
 reads them with rather than typed in beside the assertion that checks them.
-
-The last two sections are the memory a probe that does start an engine reads
-off each card, and the table of which probe supplies which runtime constant.
-The readings are written as the term under test plus the rest of the card, so
-a test says what it is about while the checks over them still see the four
-numbers a rank really reports. The predictions they are judged
-against are the spec's own measured reserves, which is what makes the accepted
-readings and the refused one a judgement about size rather than about round
-numbers.
 """
 
 import copy
 import importlib.util
 import json
 import pathlib
-import sys
 
 import pytest
 
 from atom.compass import spec as spec_package
 from atom.compass.spec import (
     QUANTITIES,
-    DeviceMemory,
     Fragment,
     MachineSpec,
     Rule,
@@ -47,29 +36,17 @@ from atom.compass.spec import (
     across_ranks,
     explain,
     merge,
-    non_torch_across_ranks,
-    probe_for,
     tokenizer_fragment,
     tokenizer_sweep,
     validate,
 )
-from atom.compass.spec import fields as schema_module
-from atom.compass.spec import probes as probes_module
-from atom.compass.spec.fields import BY_PATH, Field, Kind
-from atom.compass.spec.probes import FILLED_BY, cpu_counts
+from atom.compass.spec.fields import BY_PATH, Kind
+from atom.compass.spec.probes import cpu_counts
 from atom.compass.spec.tokenizers import ENTRY_FIELDS
-from atom.compass.spec.validate import (
-    ASKABLE_OF_A_DOCUMENT,
-    CONDITIONS,
-    PROBE_TABLES,
-    WIDTH_TABLES,
-)
+from atom.compass.spec.validate import CONDITIONS
 from atom.compass.spec.validate import DERATES as DERATES_ASKED
 from atom.compass.spec.validate import MISSING as MISSING_ASKED
-from atom.compass.spec.validate import PROBES as PROBES_ASKED
 from atom.compass.spec.validate import STACK as STACK_ASKED
-from atom.compass.spec.validate import TRANSFERS as TRANSFERS_ASKED
-from atom.compass.spec.validate import WIDTHS as WIDTHS_ASKED
 
 MACHINE = "mi355x-8gpu-2node"
 #: A tokenizer entry's fields by name, to say which of its rates is a peak.
@@ -100,13 +77,7 @@ CLASS0 = {
     }
 }
 
-#: Probe class 1, one card: the five readings and the single-width graph pool, plus
-#: one entry no class-1 probe produces. `allocator_retained_after_load_bytes` at
-#: width 1 is the hole `FILLED_BY` records, so on a real machine it is measured
-#: by hand. It is carried here because these fixtures exist to make a complete
-#: document, and `provenance.origin` is one claim over a whole fragment:
-#: `probed` on this body is right about every entry but that one, which is a
-#: limit of the fixture rather than a capability of the probe.
+#: Probe class 1, one card: the device, its capacity, rates and stack.
 CLASS1 = {
     "device": {
         "name": "MI355X",
@@ -118,27 +89,7 @@ CLASS1 = {
             "derate": 0.85,
         },
         "compute": {"bf16_flops": 2.5e15, "fp8_flops": 5.0e15, "derate": 0.70},
-        "runtime_constants": {
-            "driver_and_collective_reserve_bytes": {1: 970.0e6},
-            "allocator_retained_after_load_bytes": {1: 1.1e6},
-            "persistent_forward_buffer_bytes": 124.0e6,
-            "cudagraph_pool": {
-                "w1_base_bytes": 95.5e6,
-                "w1_bytes_per_captured_token": 0.318e6,
-            },
-        },
         "software_pinned_to": dict(STACK),
-    }
-}
-
-#: Probe class 2, N cards: one engine start per width, and the flat pool above one.
-CLASS2 = {
-    "device": {
-        "runtime_constants": {
-            "driver_and_collective_reserve_bytes": {2: 7.2e9, 4: 7.6e9, 8: 11.2e9},
-            "allocator_retained_after_load_bytes": {2: 2.17e9, 4: 2.17e9, 8: 2.17e9},
-            "cudagraph_pool": {"w_gt1_flat_bytes": 109.0e6},
-        }
     }
 }
 
@@ -185,13 +136,8 @@ def fragment(
 
 
 def fragments(**edits):
-    """The five fragments a full spec is built from, with one body replaced."""
-    bodies = {
-        "class0": CLASS0,
-        "class1": CLASS1,
-        "class2": CLASS2,
-        "links": LINKS,
-    }
+    """The fragments a full spec is built from, with one body replaced."""
+    bodies = {"class0": CLASS0, "class1": CLASS1, "links": LINKS}
     bodies.update(edits)
     return [fragment(source, body) for source, body in bodies.items()]
 
@@ -285,7 +231,6 @@ def test_a_merged_document_merged_again_keeps_the_names_that_built_it():
     again = merge(
         [
             Fragment.from_mapping(first.document, "machine.yaml"),
-            fragment("class2", CLASS2),
             fragment("links", LINKS),
         ]
     )
@@ -293,7 +238,6 @@ def test_a_merged_document_merged_again_keeps_the_names_that_built_it():
         "class0",
         "class1",
         "machine.yaml",
-        "class2",
         "links",
     ]
 
@@ -316,25 +260,6 @@ def test_two_fragments_that_agree_are_not_a_conflict():
     assert combination.sources["host.cpu.cores_physical"] == ("first", "second")
 
 
-def test_a_width_table_is_combined_across_the_probes_that_measured_it():
-    reserve = resolved().value(
-        "device.runtime_constants.driver_and_collective_reserve_bytes"
-    )
-    assert sorted(reserve) == [1, 2, 4, 8]
-    assert reserve[1] == 970.0e6 and reserve[8] == 11.2e9
-
-
-def test_one_width_measured_twice_differently_is_refused():
-    disagrees = copy.deepcopy(CLASS2)
-    disagrees["device"]["runtime_constants"]["driver_and_collective_reserve_bytes"][
-        1
-    ] = 980.0e6
-    with pytest.raises(SpecRefusal) as refused:
-        merged(class2=disagrees)
-    assert refused.value.rule is Rule.ONE_MACHINE
-    assert "driver_and_collective_reserve_bytes[1]" in str(refused.value)
-
-
 def test_two_fragments_pinned_to_different_stacks_are_refused_as_a_stack_conflict():
     moved = copy.deepcopy(CLASS1)
     moved["device"]["software_pinned_to"]["rocm"] = "7.3.0"
@@ -354,12 +279,11 @@ def test_the_merged_provenance_names_every_fragment_and_its_origin():
         [
             fragment("class0", CLASS0),
             fragment("class1", CLASS1, origin="datasheet", date="2026-09-20"),
-            fragment("class2", CLASS2),
             fragment("links", LINKS, authored_by="another person"),
         ]
     )
     provenance = combination.document["provenance"]
-    assert provenance["fragments"] == ["class0", "class1", "class2", "links"]
+    assert provenance["fragments"] == ["class0", "class1", "links"]
     assert provenance["origin"] == "mixed"
     assert provenance["date"] == "2026-09-20"
     assert provenance["authored_by"] == "a person, another person"
@@ -467,7 +391,7 @@ def test_a_tokenizer_entry_with_no_id_combines_with_nothing():
 
 
 def test_a_complete_spec_validates_and_resolves():
-    checked = validate(merged(), tp_widths=(1, 2, 4, 8), observed_stack=STACK)
+    checked = validate(merged().document, observed_stack=STACK)
     assert checked.ok, [str(refusal) for refusal in checked.refusals]
     assert checked.spec.value("device.name") == "MI355X"
     assert checked.stack_differences == ()
@@ -486,38 +410,15 @@ def test_every_missing_field_is_reported_and_not_only_the_first():
     assert not checked.ok and checked.spec is None
 
 
-def test_a_missing_runtime_constant_has_no_default():
-    thin = without(
-        CLASS1, "device", "runtime_constants", "persistent_forward_buffer_bytes"
-    )
-    checked = validate(merge(fragments(class1=thin)).document)
-    rules = {refusal.rule for refusal in checked.refusals}
-    assert rules == {Rule.NO_DEFAULTS}
-    assert "persistent_forward_buffer_bytes" in str(checked.refusals[0])
-
-
 def test_a_spec_peak_with_no_derate_beside_it_is_refused():
     thin = without(CLASS1, "device", "compute", "derate")
     checked = validate(merge(fragments(class1=thin)).document)
     assert [refusal.rule for refusal in checked.refusals] == [Rule.DERATE]
 
 
-def test_a_width_the_deployment_will_use_and_nobody_measured_is_refused():
-    checked = validate(merged(), tp_widths=(1, 16))
-    assert len(checked.refusals) == 2
-    for refusal in checked.refusals:
-        assert refusal.rule is Rule.NO_DEFAULTS
-        assert "16" in refusal.what
-    assert "[1, 2, 4, 8]" in checked.refusals[0].what
-
-
-def test_the_widths_that_were_measured_are_not_refused():
-    assert validate(merged(), tp_widths=(1, 2, 4, 8)).ok
-
-
 def test_a_stack_that_has_moved_warns_and_names_both_versions():
     with pytest.warns(StackMismatch, match="7.2.4"):
-        checked = validate(merged(), observed_stack=dict(STACK, rocm="7.3.0"))
+        checked = validate(merged().document, observed_stack=dict(STACK, rocm="7.3.0"))
     assert checked.ok
     assert checked.stack_differences == (("rocm", "7.2.4", "7.3.0"),)
 
@@ -525,7 +426,7 @@ def test_a_stack_that_has_moved_warns_and_names_both_versions():
 def test_a_stack_that_has_moved_is_refused_under_the_strict_flag():
     with pytest.warns(StackMismatch):
         checked = validate(
-            merged(), observed_stack=dict(STACK, rocm="7.3.0"), strict=True
+            merged().document, observed_stack=dict(STACK, rocm="7.3.0"), strict=True
         )
     assert not checked.ok
     assert checked.refusals[0].rule is Rule.PINNED_STACK
@@ -533,7 +434,7 @@ def test_a_stack_that_has_moved_is_refused_under_the_strict_flag():
 
 
 def test_a_stack_that_matches_is_silent():
-    assert validate(merged(), observed_stack=STACK, strict=True).ok
+    assert validate(merged().document, observed_stack=STACK, strict=True).ok
 
 
 def test_a_stack_difference_is_rendered_by_the_run_that_refused_nothing():
@@ -541,11 +442,7 @@ def test_a_stack_difference_is_rendered_by_the_run_that_refused_nothing():
     # thing this check found. It is on the dataclass either way; the string is
     # where a reader of the summary looks for what the check did.
     with pytest.warns(StackMismatch):
-        checked = validate(
-            merged(),
-            tp_widths=(1, 2, 4, 8),
-            observed_stack=dict(STACK, rocm="7.3.0"),
-        )
+        checked = validate(merged().document, observed_stack=dict(STACK, rocm="7.3.0"))
     assert checked.ok
     assert str(checked) == (
         "ok: 0 refusal(s)\n"
@@ -554,267 +451,35 @@ def test_a_stack_difference_is_rendered_by_the_run_that_refused_nothing():
     )
 
 
-def test_a_transfer_keeps_the_source_stack_out_of_this_machines_pin():
-    # The constants came from another spec; the stack that spec was pinned to is
-    # provenance about them, not a claim about this host's stack.
-    carried = copy.deepcopy(CLASS2)
-    carried["device"]["software_pinned_to"] = dict(STACK, rocm="7.0.2")
-    combination = merge(
-        fragments()[:2]
-        + [
-            fragment("class2", carried, origin="transferred-from:mi300x-8gpu"),
-            fragment("links", LINKS),
-        ]
-    )
-    assert combination.document["device"]["software_pinned_to"]["rocm"] == "7.2.4"
-    checked = validate(combination)
-    assert not checked.ok
-    assert checked.refusals[0].rule is Rule.PINNED_STACK
-    assert checked.refusals[0].what == (
-        "'class2' (machine 'mi355x-8gpu-2node', transferred-from:mi300x-8gpu, "
-        "by a person on 2026-09-18) carried constants over from 'mi300x-8gpu', "
-        "probed against rocm '7.0.2', into a spec pinned to rocm '7.2.4'"
-    )
-
-
-def test_a_transfer_that_names_no_stack_at_all_is_refused():
-    combination = merge(
-        fragments()[:2]
-        + [
-            fragment("class2", CLASS2, origin="transferred-from:mi300x-8gpu"),
-            fragment("links", LINKS),
-        ]
-    )
-    checked = validate(combination)
-    assert [refusal.rule for refusal in checked.refusals] == [Rule.PINNED_STACK]
-    assert "without saying which stack" in checked.refusals[0].what
-
-
-def test_a_saved_transfer_merged_again_names_the_merge_that_dropped_its_pin():
-    # The transfer is pinned to this stack; the merge that wrote the saved
-    # document kept that pin out, so no author omitted it. The first-hand
-    # transfer with no pin is the control, and its text does not change. Saved
-    # twice, the provenance lists the pinned transfer and the first saved
-    # document, which is itself a transfer with no pin; the remedy names both.
-    carried = copy.deepcopy(CLASS2)
-    carried["device"]["software_pinned_to"] = dict(STACK)
-    transfer = fragment("class2", carried, origin="transferred-from:mi300x-8gpu")
-    saved = Fragment.from_mapping(merge([transfer]).document, "t.yaml")
-    rest = fragments()[:2] + [fragment("links", LINKS)]
-    (refused,) = validate(merge([saved] + rest)).refusals
-    assert refused.rule is Rule.PINNED_STACK
-    assert refused.what.startswith(
-        "'t.yaml' (machine 'mi355x-8gpu-2node', transferred-from:mi300x-8gpu, "
-        "by a person on 2026-09-18) carried constants over from 'mi300x-8gpu', "
-        "and its provenance names the fragments an earlier merge built it from"
-    )
-    bare = fragment("class2", CLASS2, origin="transferred-from:mi300x-8gpu")
-    first_hand = validate(merge(fragments()[:2] + [bare, fragment("links", LINKS)]))
-    assert first_hand.refusals[0].what == (
-        "'class2' (machine 'mi355x-8gpu-2node', transferred-from:mi300x-8gpu, "
-        "by a person on 2026-09-18) carried constants over from 'mi300x-8gpu' "
-        "without saying which stack they were probed against"
-    )
-    twice = Fragment.from_mapping(merge([saved]).document, "t2.yaml")
-    (refused,) = validate(merge([twice] + rest)).refusals
-    assert refused.remedy == (
-        "merge the fragments it was built from ('class2', 't.yaml') in its place, "
-        "since a transfer states its source's stack pin there and nowhere else; "
-        "any of them that is itself a saved document with no pin is refused the "
-        "same way"
-    )
-
-
-def test_a_transfer_whose_provenance_lists_no_fragments_is_refused_first_hand():
-    # `merge` never writes an empty list, so one names no earlier merge; whoever
-    # wrote this transfer left its pin out, as in the first-hand case.
-    origin = "transferred-from:mi300x-8gpu"
-    rest = fragments()[:2] + [fragment("links", LINKS)]
-    empty = fragment("class2", CLASS2, origin=origin, fragments=[])
-    bare = fragment("class2", CLASS2, origin=origin)
-    (refused,) = validate(merge(rest + [empty])).refusals
-    (control,) = validate(merge(rest + [bare])).refusals
-    assert str(refused) == str(control)
-
-
-def test_a_transfer_from_a_spec_pinned_to_this_stack_validates():
-    carried = dict(copy.deepcopy(CLASS2))
-    carried["device"]["software_pinned_to"] = dict(STACK)
-    combination = merge(
-        fragments()[:2]
-        + [
-            fragment("class2", carried, origin="transferred-from:mi300x-8gpu"),
-            fragment("links", LINKS),
-        ]
-    )
-    assert validate(combination).ok
-
-
-def _class2_origins(**stated):
-    """Each field of `CLASS2` as `probed`, with the labels in `stated` replaced."""
-    origins = merge([fragment("class2", CLASS2)]).document["provenance"]["origins"]
-    return origins | {label: {"origin": held} for label, held in stated.items()}
-
-
-RESERVE_8 = "device.runtime_constants.driver_and_collective_reserve_bytes[8]"
-
-
-def test_one_transferred_constant_makes_a_mixed_fragment_a_transfer():
-    # The fragment says `mixed`; one width of one constant is the transfer, and
-    # that alone demands the source's stack pin. Its pin fields carry the same
-    # origin, so they are kept out of the document and checked against it.
-    origins = _class2_origins(**{RESERVE_8: "transferred-from:mi300x-8gpu"})
-    mixed = fragment("class2", CLASS2, origin="mixed", origins=origins)
-    assert mixed.transferred_from == "mi300x-8gpu"
-    rest = fragments()[:2] + [fragment("links", LINKS)]
-    (refused,) = validate(merge(rest + [mixed])).refusals
-    assert refused.rule is Rule.PINNED_STACK
-    assert "without saying which stack" in refused.what
-    carried = copy.deepcopy(CLASS2)
-    carried["device"]["software_pinned_to"] = dict(STACK, rocm="7.0.2")
-    origins |= {
-        f"device.software_pinned_to.{component}": {
-            "origin": "transferred-from:mi300x-8gpu"
-        }
-        for component in STACK
-    }
-    pinned = fragment("class2", carried, origin="mixed", origins=origins)
-    combination = merge(rest + [pinned])
-    assert combination.document["device"]["software_pinned_to"]["rocm"] == "7.2.4"
-    (refused,) = validate(combination).refusals
-    assert "probed against rocm '7.0.2', into a spec pinned to rocm '7.2.4'" in (
-        refused.what
-    )
-
-
-@pytest.mark.parametrize(
-    "other",
-    [
-        "device.runtime_constants.cudagraph_pool.w_gt1_flat_bytes",
-        # A host field asks for no stack pin, but it still names a source.
-        "host.cpu.cores_physical",
-    ],
-)
-def test_a_fragment_whose_fields_name_two_source_specs_is_refused_by_name(other):
-    body = CLASS0 | CLASS2
-    origins = merge([fragment("class2", body)]).document["provenance"]["origins"]
-    origins |= {
-        RESERVE_8: {"origin": "transferred-from:mi300x-8gpu"},
-        other: {"origin": "transferred-from:mi325x-8gpu"},
-    }
-    with pytest.raises(SpecRefusal) as refused:
-        fragment("class2", body, origin="mixed", origins=origins)
-    assert refused.value.rule is Rule.PINNED_STACK
-    assert refused.value.what == (
-        "fragment 'class2' carries fields transferred from 'mi300x-8gpu' and "
-        "'mi325x-8gpu'"
-    )
-
-
 def test_a_clear_check_says_which_conditions_it_could_not_ask():
-    # Four of the six conditions are opt-in, and a check that is silent about
+    # One of the three conditions is opt-in, and a check that is silent about
     # what it declined to ask is a clear with no content behind it.
     bare = validate(merged().document)
     assert bare.ok
-    assert [condition.split(" -- ")[0] for condition in bare.not_asked] == [
-        WIDTHS_ASKED,
-        PROBES_ASKED,
-        STACK_ASKED,
-        TRANSFERS_ASKED,
-    ]
-    assert "`tp_widths=`" in bare.not_asked[0]
+    assert [condition.split(" -- ")[0] for condition in bare.not_asked] == [STACK_ASKED]
+    assert "`observed_stack=`" in bare.not_asked[0]
     assert bare.asked_in_part == ()
-    asked = validate(
-        merged(), tp_widths=(1, 2, 4, 8), observed_stack=STACK, strict=True
-    )
+    asked = validate(merged().document, observed_stack=STACK, strict=True)
     assert asked.ok and asked.not_asked == () and asked.asked_in_part == ()
 
 
-def test_the_transfer_condition_names_itself_as_unaskable_of_a_document():
-    # The same spec is refused as a `Merge` and clear as the document it makes,
-    # because the source's pin is deliberately in no field of the document. A
-    # caller holding only the document cannot ask it, so its check must say so.
-    carried = copy.deepcopy(CLASS2)
-    carried["device"]["software_pinned_to"] = dict(STACK, rocm="7.0.2")
-    combination = merge(
-        fragments()[:2]
-        + [
-            fragment("class2", carried, origin="transferred-from:mi300x-8gpu"),
-            fragment("links", LINKS),
-        ]
-    )
-    assert not validate(combination).ok
-    as_document = validate(combination.document)
-    assert as_document.ok
-    assert any(
-        condition.startswith(TRANSFERS_ASKED) for condition in as_document.not_asked
-    )
-    assert "in no field" in str(as_document)
-
-
-def test_a_saved_document_merged_again_asks_the_transfer_and_names_the_merge():
-    # Validating the first `Merge` is refused. Its document keeps the transfer's
-    # source pin out, and each field keeps its own origin, so a `Merge` of the
-    # saved document finds the transfer again and is refused for the pin that
-    # merge dropped. A re-merged all-`probed` document is the control.
-    carried = copy.deepcopy(CLASS2)
-    carried["device"]["software_pinned_to"] = dict(STACK, rocm="7.0.2")
-    transfer = fragment("class2", carried, origin="transferred-from:mi300x-8gpu")
-    combination = merge(fragments()[:2] + [transfer, fragment("links", LINKS)])
-    asked = {"tp_widths": (1, 2, 4, 8), "observed_stack": STACK}
-    first = validate(combination, **asked)
-    assert [refusal.rule for refusal in first.refusals] == [Rule.PINNED_STACK]
-    bare = validate(combination.document, **asked)
-    assert bare.ok and [c.split(" -- ")[0] for c in bare.not_asked] == [TRANSFERS_ASKED]
-    saved = Fragment.from_mapping(combination.document, "machine.yaml")
-    again = validate(merge([saved]), **asked)
-    assert [refusal.rule for refusal in again.refusals] == [Rule.PINNED_STACK]
-    assert again.refusals[0].what.startswith("'machine.yaml' (machine")
-    assert "names the fragments an earlier merge built it from" in str(again)
-    assert again.not_asked == () and again.asked_in_part == ()
-    # A transfer stated beside the saved document is asked of both.
-    beside = validate(merge([saved, transfer]), **asked)
-    assert [refusal.rule for refusal in beside.refusals] == [Rule.PINNED_STACK] * 2
-    assert beside.asked_in_part == ()
-    # With some stack pins resolved it was asked in part, and says so once.
-    thin = copy.deepcopy(combination.document)
-    del thin["device"]["software_pinned_to"]["rccl"]
-    thin = Fragment.from_mapping(thin, "machine.yaml")
-    partly = validate(merge([thin, transfer]), **asked)
-    assert sum(c.startswith(TRANSFERS_ASKED) for c in partly.asked_in_part) == 1
-    # With no stack pin resolved it was not asked at all, and says so once.
-    unpinned = copy.deepcopy(combination.document)
-    del unpinned["device"]["software_pinned_to"]
-    unpinned = Fragment.from_mapping(unpinned, "machine.yaml")
-    nowhere = validate(merge([unpinned, transfer]), **asked)
-    assert sum(c.startswith(TRANSFERS_ASKED) for c in nowhere.not_asked) == 1
-    assert nowhere.asked_in_part == ()
-    control = Fragment.from_mapping(merged().document, "machine.yaml")
-    assert validate(merge([control]), **asked).not_asked == ()
-
-
-def test_a_desk_fix_refusal_does_not_hide_the_expensive_one():
+def test_a_desk_fix_refusal_does_not_hide_the_stack():
     # The phase-one refusal here is a derate an author types in at a desk; the
-    # width table behind it is present and schema-valid, and the width nobody
-    # measured costs an eight-GPU reservation. Both are reported, and so is the
-    # stack, because each question is asked of the fields that did resolve.
+    # stack pin beside it is present and schema-valid. Both are reported,
+    # because the stack question is asked of the fields that did resolve.
     thin = without(CLASS1, "device", "memory", "derate")
     with pytest.warns(StackMismatch):
         checked = validate(
             merge(fragments(class1=thin)).document,
-            tp_widths=(1, 2, 4, 8, 16),
             observed_stack=dict(STACK, rocm="7.3.0"),
             strict=True,
         )
     rules = [refusal.rule for refusal in checked.refusals]
     assert checked.spec is None
     assert rules.count(Rule.DERATE) == 1
-    assert rules.count(Rule.NO_DEFAULTS) == len(WIDTH_TABLES)
     assert rules.count(Rule.PINNED_STACK) == 1
-    assert [condition.split(" -- ")[0] for condition in checked.not_asked] == [
-        TRANSFERS_ASKED
-    ]
-    assert "16" in str(checked) and "7.3.0" in str(checked)
+    assert checked.not_asked == ()
+    assert "7.3.0" in str(checked)
 
 
 def test_the_stack_is_asked_of_the_pins_a_partial_document_carries():
@@ -835,51 +500,15 @@ def test_the_stack_is_asked_of_the_pins_a_partial_document_carries():
     assert "`device.software_pinned_to.rccl`" in in_part
 
 
-def test_a_question_asked_of_part_of_what_it_reads_is_not_called_unasked():
-    # The width tables are what the width question reads. With one of them
-    # gone the question is still asked of the other -- width 16 is still
-    # refused -- so the table it could not be asked of is named apart from the
-    # questions that went unasked. Filing it under those would report a refusal
-    # this run did make as a question it did not, and would subtract it from
-    # the count of conditions the run reached.
-    absent = ("device", "runtime_constants", "allocator_retained_after_load_bytes")
-    checked = validate(
-        merge(
-            fragments(class1=without(CLASS1, *absent), class2=without(CLASS2, *absent))
-        ).document,
-        tp_widths=(16,),
-    )
-    assert not checked.ok
-    assert any("16" in refusal.what for refusal in checked.refusals)
-    (in_part,) = checked.asked_in_part
-    assert in_part.startswith(WIDTHS_ASKED)
-    assert "allocator_retained_after_load_bytes" in in_part
-    assert "asked of the rest" in in_part
-    assert not any(
-        condition.startswith(WIDTHS_ASKED) for condition in checked.not_asked
-    )
-    assert "asked in part" in str(checked)
-
-
 def test_a_question_none_of_whose_fields_resolved_was_not_asked_at_all():
-    # The other side of the same split: with both width tables gone there is
-    # nothing the question could have been asked of, so it is unasked and the
+    # The other side of the same split: with every pin gone there is nothing
+    # the stack question could have been asked of, so it is unasked and the
     # count of what the run reached must not include it.
-    thin1, thin2 = CLASS1, CLASS2
-    for name in (
-        "allocator_retained_after_load_bytes",
-        "driver_and_collective_reserve_bytes",
-    ):
-        thin1 = without(thin1, "device", "runtime_constants", name)
-        thin2 = without(thin2, "device", "runtime_constants", name)
-    checked = validate(
-        merge(fragments(class1=thin1, class2=thin2)).document, tp_widths=(16,)
-    )
-    (unasked,) = [
-        condition
-        for condition in checked.not_asked
-        if condition.startswith(WIDTHS_ASKED)
-    ]
+    document = merged().document
+    del document["device"]["software_pinned_to"]
+    checked = validate(document, observed_stack=STACK)
+    (unasked,) = checked.not_asked
+    assert unasked.startswith(STACK_ASKED)
     assert "could not be asked at all" in unasked
     assert checked.asked_in_part == ()
 
@@ -918,26 +547,20 @@ def test_one_mistyped_key_does_not_take_the_rest_of_the_document_with_it():
     # The refusal a mistyped key earns is about that key. A check that stopped
     # there would leave every other field unchecked and every consistency
     # question with nothing resolved to be asked of -- the desk fix hiding the
-    # eight-GPU one again, on a document edited after its merge and handed to
+    # stack again, on a document edited after its merge and handed to
     # `validate` directly, since a merge refuses the unknown key before this runs.
     document = merged().document
     memory = document["device"]["memory"]
     memory["capacity_byte"] = memory.pop("capacity_bytes")
     with pytest.warns(StackMismatch):
         checked = validate(
-            document,
-            tp_widths=(1, 2, 4, 8, 16),
-            observed_stack=dict(STACK, rocm="7.3.0"),
-            strict=True,
+            document, observed_stack=dict(STACK, rocm="7.3.0"), strict=True
         )
     rules = [refusal.rule for refusal in checked.refusals]
     assert rules.count(Rule.SEPARATION) == 1
     assert rules.count(Rule.SHAPE) == 1
-    assert rules.count(Rule.NO_DEFAULTS) == len(WIDTH_TABLES)
     assert rules.count(Rule.PINNED_STACK) == 1
-    assert [condition.split(" -- ")[0] for condition in checked.not_asked] == [
-        TRANSFERS_ASKED
-    ]
+    assert checked.not_asked == ()
 
 
 def test_a_block_holding_a_scalar_does_not_take_the_rest_with_it_either():
@@ -945,11 +568,13 @@ def test_a_block_holding_a_scalar_does_not_take_the_rest_with_it_either():
     # under it are gone, and everything beside it is still checked.
     document = merged().document
     document["device"]["memory"] = 288.0e9
-    checked = validate(document, tp_widths=(16,))
+    with pytest.warns(StackMismatch):
+        checked = validate(
+            document, observed_stack=dict(STACK, rocm="7.3.0"), strict=True
+        )
     rules = [refusal.rule for refusal in checked.refusals]
     assert rules.count(Rule.DERATE) == 1
-    assert rules.count(Rule.NO_DEFAULTS) == len(WIDTH_TABLES)
-    assert any("16" in refusal.what for refusal in checked.refusals)
+    assert rules.count(Rule.PINNED_STACK) == 1
 
 
 def test_a_value_of_the_wrong_shape_is_reported():
@@ -975,7 +600,7 @@ def test_two_tokenizer_entries_claiming_one_architecture_are_refused():
 
 
 def test_raise_first_gives_the_spec_or_the_first_refusal():
-    assert validate(merged()).raise_first().value("device.arch") == "gfx950"
+    assert validate(merged().document).raise_first().value("device.arch") == "gfx950"
     with pytest.raises(SpecRefusal):
         validate(without(merged().document, "device", "arch")).raise_first()
 
@@ -985,31 +610,14 @@ def refused_by_condition():
 
     Each subject comes with the rule and a piece of the text only that
     condition's refusal writes. A subject that is wrong in one respect is
-    usually wrong in another too -- a document missing an entry is refused for
-    the missing width as well as for the probe that could not fill it -- so a
-    rule alone can be earned by a neighbouring condition while the one named
-    here produces nothing.
+    usually wrong in another too, so a rule alone can be earned by a
+    neighbouring condition while the one named here produces nothing.
     """
     thin = without(CLASS1, "device", "arch")
-    no_constant = without(
-        CLASS1, "device", "runtime_constants", "persistent_forward_buffer_bytes"
-    )
     no_derate = without(CLASS1, "device", "memory", "derate")
-    no_probe = without(
-        CLASS1, "device", "runtime_constants", "allocator_retained_after_load_bytes"
-    )
-    carried = copy.deepcopy(CLASS2)
-    carried["device"]["software_pinned_to"] = dict(STACK, rocm="7.0.2")
-    transferred = merge(
-        fragments()[:2]
-        + [
-            fragment("class2", carried, origin="transferred-from:mi300x-8gpu"),
-            fragment("links", LINKS),
-        ]
-    )
     with pytest.warns(StackMismatch):
         moved = validate(
-            merged(), observed_stack=dict(STACK, rocm="7.3.0"), strict=True
+            merged().document, observed_stack=dict(STACK, rocm="7.3.0"), strict=True
         )
     return {
         MISSING_ASKED: [
@@ -1017,11 +625,6 @@ def refused_by_condition():
                 validate(merge(fragments(class1=thin)).document),
                 Rule.SHAPE,
                 "`device.arch` is missing",
-            ),
-            (
-                validate(merge(fragments(class1=no_constant)).document),
-                Rule.NO_DEFAULTS,
-                "`device.runtime_constants.persistent_forward_buffer_bytes` is missing",
             ),
         ],
         DERATES_ASKED: [
@@ -1031,32 +634,8 @@ def refused_by_condition():
                 "`device.memory.derate` is missing, and its block states a spec peak",
             )
         ],
-        WIDTHS_ASKED: [
-            (
-                validate(merged(), tp_widths=(16,)),
-                Rule.NO_DEFAULTS,
-                "was not probed at tensor-parallel width 16",
-            )
-        ],
-        PROBES_ASKED: [
-            (
-                validate(merge(fragments(class1=no_probe)).document, tp_widths=(1,)),
-                Rule.NO_DEFAULTS,
-                (
-                    "no probe here fills `allocator_retained_after_load_bytes` "
-                    "at tensor-parallel width 1"
-                ),
-            )
-        ],
         STACK_ASKED: [
             (moved, Rule.PINNED_STACK, "this spec's constants were probed against")
-        ],
-        TRANSFERS_ASKED: [
-            (
-                validate(transferred),
-                Rule.PINNED_STACK,
-                "probed against rocm '7.0.2', into a spec pinned to rocm '7.2.4'",
-            )
         ],
     }
 
@@ -1067,9 +646,6 @@ def test_the_check_set_names_every_condition_a_spec_can_be_refused_by():
     # condition earnable in the code and absent from the list is one no result
     # reports on; one listed and earnable by nothing is a count with no subject.
     assert set(refused_by_condition()) == set(CONDITIONS)
-    # And the package's own statement of reach is drawn from the same list, so
-    # it cannot name a condition no result reports on either.
-    assert set(ASKABLE_OF_A_DOCUMENT) <= set(CONDITIONS)
 
 
 @pytest.mark.parametrize("condition", CONDITIONS)
@@ -1082,21 +658,6 @@ def test_each_condition_in_the_check_set_is_earned_by_a_spec(condition):
             refusal.rule is rule and written in refusal.what
             for refusal in checked.refusals
         ), (condition, [str(refusal) for refusal in checked.refusals])
-
-
-def test_a_document_reaches_what_the_package_says_a_document_reaches():
-    # A document reaches less than a `Merge` does: a transfer's source pin is
-    # in no field of a document however it was built. What the package states
-    # it reaches is a value, and this holds a run's own record to that value
-    # rather than to a sentence -- so a condition becoming askable of a
-    # document, one ceasing to be, or one added to the check set moves a test
-    # instead of going stale in prose.
-    checked = validate(merged().document, tp_widths=(1, 2, 4, 8), observed_stack=STACK)
-    assert checked.ok
-    unasked = {condition.split(" -- ")[0] for condition in checked.not_asked}
-    assert set(CONDITIONS) - unasked == set(ASKABLE_OF_A_DOCUMENT)
-    assert unasked == {TRANSFERS_ASKED}
-    assert len(CONDITIONS) - len(checked.not_asked) == len(ASKABLE_OF_A_DOCUMENT)
 
 
 # --- explain: the basis of a number ------------------------------------------
@@ -1114,10 +675,6 @@ def test_every_term_a_resolved_spec_holds_can_be_explained():
         assert basis.contributions, path
         assert basis.digest == spec.digest()
         field = BY_PATH[path]
-        if field.kind is Kind.WIDTH_TABLE:
-            assert {row.path for row in basis.contributions} == {
-                f"{path}[{width}]" for width in spec.values[path]
-            }, path
         if field.kind is Kind.TOKENIZERS:
             assert {row.path.split("].")[0] + "]" for row in basis.contributions} == {
                 f"{path}[{entry['id']} {entry['backend']}]"
@@ -1128,8 +685,7 @@ def test_every_term_a_resolved_spec_holds_can_be_explained():
                 rate = ENTRY_RATES[row.path.rsplit(".", 1)[-1]]
                 assert (row.derate is not None) == rate.peak, row.path
                 continue
-            if field.kind is not Kind.WIDTH_TABLE:
-                assert row.value == spec.values[path], path
+            assert row.value == spec.values[path], path
             assert (row.derate is not None) == field.peak, path
 
 
@@ -1168,61 +724,25 @@ def test_a_block_explains_to_every_field_under_it():
 def test_a_quantity_names_the_fields_it_is_built_out_of():
     combination = merged()
     spec = MachineSpec.from_mapping(combination.document)
-    basis = explain(spec, "kv_blocks", tp_width=8, origin=combination)
+    basis = explain(spec, "collective", origin=combination)
     paths = [row.path for row in basis.contributions]
-    assert "device.memory.capacity_bytes" in paths
-    assert "device.runtime_constants.driver_and_collective_reserve_bytes[8]" in paths
+    assert "interconnect.intra_node.link_latency_s" in paths
+    assert "device.count_per_node" in paths
     assert len(paths) == len(set(paths))
-
-
-def test_a_measured_activation_entry_is_part_of_the_kv_blocks_basis():
-    entry = {
-        "id": "m",
-        "fingerprint": "sha256:f",
-        "applies_to": ["A"],
-        "bytes_per_token": {1: 180480},
-    }
-    document = copy.deepcopy(merged().document)
-    document["device"]["activations"] = [entry]
-    basis = explain(MachineSpec.from_mapping(document), "kv_blocks", tp_width=1)
-    rows = {row.path: row.value for row in basis.contributions}
-    assert list(rows["device.activations"]) == [entry]
-    without = explain(resolved(), "kv_blocks", tp_width=1)
-    assert "device.activations" not in [row.path for row in without.contributions]
 
 
 def test_a_quantity_names_the_fragment_each_field_came_from():
     combination = merged()
     spec = MachineSpec.from_mapping(combination.document)
-    basis = explain(spec, "kv_blocks", tp_width=8, origin=combination)
+    basis = explain(spec, "collective", origin=combination)
     supplied = {row.path: row.supplied_by for row in basis.contributions}
-    assert supplied["device.memory.capacity_bytes"] == ("class1",)
-    assert supplied[
-        "device.runtime_constants.driver_and_collective_reserve_bytes[8]"
-    ] == ("class2",)
+    assert supplied["device.count_per_node"] == ("class1",)
+    assert supplied["interconnect.intra_node.link_latency_s"] == ("links",)
 
 
 def test_without_a_merge_a_basis_still_reads_but_names_no_fragment():
     basis = explain(resolved(), "device.memory.capacity_bytes")
     assert basis.contributions[0].supplied_by == ()
-
-
-def test_a_width_keyed_constant_explains_at_every_measured_width():
-    basis = explain(
-        resolved(), "device.runtime_constants.driver_and_collective_reserve_bytes"
-    )
-    assert [row.path.rsplit("[", 1)[-1] for row in basis.contributions] == [
-        "1]",
-        "2]",
-        "4]",
-        "8]",
-    ]
-
-
-def test_explaining_at_a_width_nobody_measured_is_refused():
-    with pytest.raises(SpecRefusal) as refused:
-        explain(resolved(), "kv_blocks", tp_width=16)
-    assert refused.value.rule is Rule.NO_DEFAULTS
 
 
 def test_tokenizer_rates_explain_per_entry_and_per_rate():
@@ -1637,7 +1157,7 @@ def test_the_fragment_states_where_it_is_authored_for_and_how(tmp_path):
         processors=published_topology(tmp_path, cores_physical=8),
     )
     assert emitted.machine == "node-18"
-    assert emitted.origin == "mixed" and emitted.transferred_from is None
+    assert emitted.origin == "mixed"
     # The subject is what the sweep ran on; the core counts are of the host.
     stated = emitted.values["provenance.origins"]
     assert stated["host.tokenizers[qwen3-151k-bpe fast]"] == {
@@ -1661,12 +1181,10 @@ def test_how_the_rates_were_obtained_is_the_callers_claim_and_has_no_default(tmp
         "date": "2026-09-22",
         "processors": processors,
     }
-    carried = tokenizer_fragment(
-        [TOKENIZER], origin="transferred-from:mi300x-8gpu", **stated
-    )
-    label = "host.tokenizers[qwen3-151k-bpe fast]"
-    assert carried.carried_from(label) == "mi300x-8gpu"
-    assert carried.carried_from("host.cpu.cores_physical") is None
+    carried = tokenizer_fragment([TOKENIZER], origin="assumed", **stated)
+    origins = carried.values["provenance.origins"]
+    assert origins["host.tokenizers[qwen3-151k-bpe fast]"] == {"origin": "assumed"}
+    assert origins["host.cpu.cores_physical"] == {"origin": "probed"}
     with pytest.raises(TypeError):
         tokenizer_fragment([TOKENIZER], **stated)
 
@@ -1674,516 +1192,6 @@ def test_how_the_rates_were_obtained_is_the_callers_claim_and_has_no_default(tmp
 def test_the_probe_is_reachable_by_name():
     assert "tokenizer_fragment" in spec_package.__all__
     assert spec_package.tokenizer_fragment is tokenizer_fragment
-
-
-# --- the readings a probe takes off a card -----------------------------------
-
-#: The card the readings below are taken on, and the two numbers a rank reads
-#: beside the one the spec wants: what the torch allocator holds, and the
-#: budget side of the clamp the engine sizes its cache by.
-CAPACITY = 288.0e9
-RESERVED = 2.94e9
-KV_BUDGET = 92.1e9
-
-#: The reserve the collective terms predict at each measured width, and what a
-#: rank really read there: the honest readings sit just above their prediction,
-#: and the spread is the one this hardware shows with nothing else on it.
-PREDICTED = {1: 970.0e6, 2: 7.2e9, 4: 7.6e9, 8: 11.2e9}
-MEASURED = {
-    1: (926 * MIB, 0),
-    2: (6906 * MIB, 0),
-    4: (7266 * MIB, 192 * MIB),
-    8: (10704 * MIB, 640 * MIB),
-}
-
-
-def reading(non_torch, *, total=CAPACITY, reserved=RESERVED, kv_budget=KV_BUDGET):
-    """One rank's four readings, written as the term under test plus the rest."""
-    return DeviceMemory(
-        free_bytes=total - reserved - non_torch,
-        total_bytes=total,
-        reserved_bytes=reserved,
-        kv_budget_bytes=kv_budget,
-    )
-
-
-def ranks_of(tp_width, non_torch, spread=0):
-    """One engine start: every rank reading the same, and one reading higher."""
-    return [reading(non_torch)] * (tp_width - 1) + [reading(non_torch + spread)]
-
-
-def test_free_and_total_are_kept_apart_and_the_difference_is_derived():
-    # The whole point of the four fields: the reading a spec wants is a
-    # difference, and a probe that stored only the difference could not be
-    # asked either of the questions below.
-    one = reading(10704 * MIB)
-    assert one.total_bytes == CAPACITY and one.reserved_bytes == RESERVED
-    assert one.free_bytes == CAPACITY - RESERVED - 10704 * MIB
-    assert one.non_torch == 10704 * MIB
-    assert not one.free_was_binding
-    assert "free of" in str(one) and "non_torch" in str(one)
-
-
-@pytest.mark.parametrize("tp_width", sorted(PREDICTED))
-def test_the_widest_honest_reading_at_every_width_is_accepted(tp_width):
-    # Measured on a machine with nothing else on it, so a check that refused
-    # any of these would be refusing the hardware for behaving as it behaves.
-    lowest, spread = MEASURED[tp_width]
-    measured = non_torch_across_ranks(
-        tp_width, ranks_of(tp_width, lowest, spread), PREDICTED[tp_width]
-    )
-    assert measured.minimum == lowest
-    assert measured.spread == spread
-
-
-def test_the_spread_this_hardware_shows_is_reported_and_not_folded_away():
-    # Eight ranks of one group, the widest honest spread this hardware shows,
-    # kept as the smallest reading with the disagreement reported beside it
-    # rather than reduced to one number.
-    measured = non_torch_across_ranks(8, ranks_of(8, 10704 * MIB, 640 * MIB), 11.2e9)
-    assert measured.minimum == 10704 * MIB
-    assert measured.spread == 640 * MIB
-    assert "spread" in str(measured) and "6.0%" in str(measured)
-
-
-def test_a_card_every_rank_shares_with_one_neighbour_is_refused_by_name():
-    # What the cross-rank check cannot see. Every rank reads the neighbour that
-    # killed six engine starts, so they agree to the byte and the cross-rank
-    # check is silent; the absolute one names the reading and the ceiling.
-    crowded = ranks_of(8, 152.01e9)
-    agreed = across_ranks("non_torch", 8, [rank.non_torch for rank in crowded])
-    assert agreed.spread == 0
-    with pytest.raises(SpecRefusal) as refused:
-        non_torch_across_ranks(8, crowded, 11.2e9)
-    assert refused.value.rule is Rule.DEVICE_WIDE
-    assert "152010000000.0" in refused.value.what
-    assert "22400000000.0" in refused.value.what
-    assert "11200000000.0" in refused.value.what and "2x" in refused.value.what
-
-
-def test_the_limit_is_a_multiple_of_what_the_width_predicts():
-    # It is the prediction for the width that moves, not the reading: the same
-    # number is a quiet card at width 8 and eleven times its prediction at 1.
-    assert non_torch_across_ranks(8, ranks_of(8, 10704 * MIB), 11.2e9).minimum
-    with pytest.raises(SpecRefusal) as refused:
-        non_torch_across_ranks(1, ranks_of(1, 10704 * MIB), 970.0e6)
-    assert refused.value.rule is Rule.DEVICE_WIDE
-
-
-def test_how_crowded_the_card_may_be_is_the_callers_judgement():
-    # 16.0e9 is 2.1 times what width 4 predicts: inside a limit of 2.5 and
-    # outside the default of 2.0, so the judgement is the only thing moving.
-    crowded = ranks_of(4, 16.0e9)
-    assert non_torch_across_ranks(4, crowded, 7.6e9, limit=2.5).minimum == 16.0e9
-    with pytest.raises(SpecRefusal):
-        non_torch_across_ranks(4, crowded, 7.6e9)
-
-
-def test_a_rank_whose_free_memory_was_binding_is_refused_and_named():
-    # A cache sized by the gap a neighbour left is a property of the
-    # neighbour, so the rank that read it is named while it is still in hand.
-    binding = ranks_of(2, 200.0e9)
-    with pytest.raises(SpecRefusal) as refused:
-        non_torch_across_ranks(2, binding, 7.2e9)
-    assert refused.value.rule is Rule.DEVICE_WIDE
-    assert "rank 0" in refused.value.what
-    assert "92100000000.0" in refused.value.what
-
-
-def test_which_refusal_a_pair_of_readings_earns_is_not_decided_by_rank_order():
-    # One rank read numbers no card produced; the other built its cache out of
-    # the gap a neighbour left. Each fails a different one of the two per-rank
-    # checks, so the pair earns both -- and the two name different things to
-    # repair: a reading to take again, against a card to take it on. Every rank
-    # is asked the first question before any is asked the second, so the pair
-    # earns the same refusal whichever of them arrived first. Asked rank by
-    # rank instead, whichever was listed first would decide the remedy, and a
-    # run sent after the wrong one repairs it and is refused again.
-    binding = reading(200.0e9)
-    impossible = DeviceMemory(
-        free_bytes=400.0e9,
-        total_bytes=CAPACITY,
-        reserved_bytes=-120.0e9,
-        kv_budget_bytes=1.0,
-    )
-    assert binding.free_was_binding and not binding.impossible
-    assert impossible.impossible and not impossible.free_was_binding
-    for ranks, first_to_fail in (
-        ([binding, impossible], "rank 1"),
-        ([impossible, binding], "rank 0"),
-    ):
-        with pytest.raises(SpecRefusal) as refused:
-            non_torch_across_ranks(2, ranks, 7.2e9)
-        assert refused.value.rule is Rule.DEVICE_WIDE
-        assert "which is not a reading of a card" in refused.value.what
-        assert "set the cache size" not in refused.value.what
-        assert "take them again and find out" in refused.value.remedy
-        # Which check fired is the readings'; the rank it names is still the
-        # first that failed that check, which is a question about where in the
-        # sequence the reading came in and has no other answer.
-        assert first_to_fail in refused.value.what
-
-
-def test_a_reading_the_engine_would_floor_at_zero_is_refused_here():
-    # The engine floors this term at zero. A probe does not: a floor turns an
-    # impossible reading into a plausible one.
-    impossible = reading(-1.0 * MIB, kv_budget=1.0)
-    assert impossible.non_torch < 0
-    with pytest.raises(SpecRefusal) as refused:
-        non_torch_across_ranks(2, [impossible, impossible], 7.2e9)
-    assert refused.value.rule is Rule.SHAPE
-
-
-def test_a_prediction_that_is_not_a_quantity_is_refused():
-    with pytest.raises(SpecRefusal) as refused:
-        non_torch_across_ranks(8, ranks_of(8, 10704 * MIB), 0)
-    assert refused.value.rule is Rule.SHAPE
-    assert "the predicted reserve" in refused.value.what
-
-
-def test_a_rank_that_was_not_read_is_refused_before_anything_is_kept():
-    with pytest.raises(SpecRefusal) as refused:
-        non_torch_across_ranks(8, ranks_of(4, 10704 * MIB), 11.2e9)
-    assert refused.value.rule is Rule.RANK_AGREEMENT
-
-
-@pytest.mark.parametrize(
-    "overrides, named",
-    [
-        ({"total_bytes": 0.0}, "a card of 0.0 bytes"),
-        ({"free_bytes": -1.0}, "-1.0 bytes free"),
-        ({"free_bytes": 400.0e9}, "400000000000.0 bytes free of 288000000000.0"),
-        ({"reserved_bytes": -120.0e9}, "-120000000000.0 bytes reserved"),
-        (
-            {"reserved_bytes": 400.0e9},
-            "400000000000.0 bytes reserved of 288000000000.0",
-        ),
-    ],
-)
-def test_a_rank_whose_readings_cannot_be_one_card_is_refused_and_named(
-    overrides, named
-):
-    # Keeping the four apart is what makes this askable at all: each of these
-    # is a statement about one reading against another, and the difference the
-    # spec wants has already thrown the comparison away.
-    fields = {
-        "free_bytes": CAPACITY - RESERVED - 10704 * MIB,
-        "total_bytes": CAPACITY,
-        "reserved_bytes": RESERVED,
-        "kv_budget_bytes": 1.0,
-    }
-    odd = DeviceMemory(**dict(fields, **overrides))
-    assert odd.impossible == named
-    with pytest.raises(SpecRefusal) as refused:
-        non_torch_across_ranks(2, [odd, odd], 7.2e9)
-    assert refused.value.rule is Rule.DEVICE_WIDE
-    assert "rank 0" in refused.value.what
-    assert named in refused.value.what
-
-
-def test_readings_no_card_could_produce_are_refused_though_their_difference_is_not():
-    # 400e9 free on a 288e9 card with -120e9 reserved leaves a difference of
-    # 8.0e9, which is a quiet width-2 card by every check over the difference
-    # alone. The readings behind it are not a card.
-    odd = DeviceMemory(
-        free_bytes=400.0e9,
-        total_bytes=CAPACITY,
-        reserved_bytes=-120.0e9,
-        kv_budget_bytes=1.0,
-    )
-    assert odd.non_torch == 8.0e9
-    assert not odd.free_was_binding
-    assert non_torch_across_ranks(2, [reading(8.0e9)] * 2, 7.2e9).minimum == 8.0e9
-    with pytest.raises(SpecRefusal) as refused:
-        non_torch_across_ranks(2, [odd, odd], 7.2e9)
-    assert refused.value.rule is Rule.DEVICE_WIDE
-    # These readings are two impossibilities, and the negative reserve would
-    # be refused by the same rule on its own. What is named is the free memory
-    # the card cannot hold, so a check that stopped asking that is seen here
-    # rather than covered by its neighbour.
-    assert "rank 0 reports 400000000000.0 bytes free of 288000000000.0" in (
-        refused.value.what
-    )
-    assert "take them again and find out" in refused.value.remedy
-
-
-def test_a_reading_just_inside_the_limit_is_accepted_and_is_what_the_spec_takes():
-    # What the check lets through is the number a spec carries. Just inside the
-    # limit at width 8 is nearly twice the prediction, and the whole of the
-    # excess is memory this engine did not allocate.
-    inside = non_torch_across_ranks(8, ranks_of(8, 22.39e9), 11.2e9)
-    assert inside.minimum == 22.39e9
-    assert inside.minimum - 11.2e9 > 11.1e9
-    with pytest.raises(SpecRefusal):
-        non_torch_across_ranks(8, ranks_of(8, 22.41e9), 11.2e9)
-
-
-@pytest.mark.parametrize("tp_width", [0, -2])
-def test_a_width_with_no_ranks_is_refused_rather_than_reduced(tp_width):
-    # The width reaches this entry point from a caller, not from a document
-    # the schema has already refused a non-positive key in.
-    with pytest.raises(SpecRefusal) as refused:
-        non_torch_across_ranks(tp_width, [], 7.2e9)
-    assert refused.value.rule is Rule.RANK_AGREEMENT
-    # The cross-rank reduction refuses a negative width by the same rule, for
-    # having no reading per rank, and names the width too. The text below is
-    # the width's own refusal, which is asked before any reading is counted.
-    assert (
-        f"tensor-parallel width {tp_width!r} has no ranks to read a card on"
-        in refused.value.what
-    )
-
-
-def test_the_readings_are_reachable_by_name():
-    for name in ("DeviceMemory", "non_torch_across_ranks", "ABSOLUTE_LIMIT"):
-        assert name in spec_package.__all__
-        assert getattr(spec_package, name, None) is not None
-
-
-# --- which probe fills which constant, and the entry none fills ---------------
-
-
-def test_the_probe_table_names_every_constant_the_schema_keys_by_width():
-    # The table and the schema are two lists of the same constants. A width
-    # table added to one and not the other is a term with no probe named for
-    # it, or a probe named for a term the schema does not have.
-    assert set(FILLED_BY) == {path.rsplit(".", 1)[-1] for path in WIDTH_TABLES}
-
-
-@pytest.mark.parametrize("tp_width", [1, 2, 4, 8, 16])
-def test_the_reserve_is_filled_at_every_width_by_one_probe_or_the_other(tp_width):
-    filled = probe_for("driver_and_collective_reserve_bytes", tp_width)
-    assert filled == ("device-memory" if tp_width == 1 else "device-runtime-constants")
-
-
-@pytest.mark.parametrize("tp_width", [2, 4, 8, 16])
-def test_the_allocators_retained_bytes_are_filled_above_one_card(tp_width):
-    assert probe_for("allocator_retained_after_load_bytes", tp_width) == (
-        "device-runtime-constants"
-    )
-
-
-def test_the_one_entry_no_probe_fills_is_refused_and_says_what_is_missing():
-    # The hole. The single-card probe is specified to read the device's own
-    # reserve and not this term, and the multi-rank probe is specified for the
-    # widths above one, so this entry is measured by hand or it is not
-    # measured. Naming either probe here would be inventing a capability.
-    with pytest.raises(SpecRefusal) as refused:
-        probe_for("allocator_retained_after_load_bytes", 1)
-    assert refused.value.rule is Rule.NO_DEFAULTS
-    assert "no probe here fills" in refused.value.what
-    assert "allocator_retained_after_load_bytes" in refused.value.what
-    assert "width 1" in refused.value.what
-    assert "by hand" in refused.value.remedy
-    for named in ("device-memory", "device-runtime-constants"):
-        assert named in refused.value.remedy
-
-
-def test_a_term_that_is_not_keyed_by_width_has_no_probe_to_ask_for():
-    with pytest.raises(SpecRefusal) as refused:
-        probe_for("persistent_forward_buffer_bytes", 1)
-    assert refused.value.rule is Rule.NO_DEFAULTS
-    assert "not one of the constants probed per" in refused.value.what
-
-
-def test_a_missing_entry_no_probe_fills_is_two_refusals_and_not_one():
-    # A width nobody measured is always refused; this one is refused twice,
-    # because the remedy the first offers -- go and measure it -- names a probe
-    # that does not exist. The two always arrive together: the probe question
-    # is asked only where the entry is absent, which is when the first fires.
-    thin = without(
-        CLASS1, "device", "runtime_constants", "allocator_retained_after_load_bytes"
-    )
-    checked = validate(merge(fragments(class1=thin)).document, tp_widths=(1,))
-    assert not checked.ok
-    assert [refusal.rule for refusal in checked.refusals] == [
-        Rule.NO_DEFAULTS,
-        Rule.NO_DEFAULTS,
-    ]
-    measured, filled = (refusal.what for refusal in checked.refusals)
-    assert "was not probed at tensor-parallel width 1" in measured
-    assert "no probe here fills" in filled
-
-
-def test_a_width_a_probe_would_fill_is_not_reported_as_a_hole_in_the_probes():
-    # Width 16 is unmeasured and refused, and the remedy is one an author can
-    # follow: the multi-rank probe starts an engine at any width above one.
-    checked = validate(merged().document, tp_widths=(16,))
-    assert not checked.ok
-    assert all(
-        "no probe here fills" not in refusal.what for refusal in checked.refusals
-    )
-
-
-def test_a_spec_that_carries_the_hand_measured_entry_is_not_refused_for_it():
-    # The refusal is about the hole in the tools, not about how the number was
-    # obtained. A spec that states it is a good spec at width 1.
-    checked = validate(merged().document, tp_widths=(1,))
-    assert checked.ok
-
-
-def test_the_probe_question_is_asked_of_the_tables_it_says_it_reads(monkeypatch):
-    # The condition registers `PROBE_TABLES` as what it reads, and the walk that
-    # produces its refusals has to be over the same tables. Walking every width
-    # table instead changes nothing today -- the reserve table is filled at
-    # every width, so asking about it never refuses -- which is why the walk is
-    # observed here by what it asks rather than by what it answers.
-    asked = []
-
-    def recording(constant, tp_width):
-        asked.append((constant, tp_width))
-        return probe_for(constant, tp_width)
-
-    monkeypatch.setattr(
-        importlib.import_module("atom.compass.spec.validate"), "probe_for", recording
-    )
-    checked = validate(merged().document, tp_widths=(16,))
-    # Width 16 is missing from every width table, so a walk over any of them
-    # would reach the probe; the width question says so once per table.
-    unmeasured = [
-        refusal
-        for refusal in checked.refusals
-        if "was not probed at tensor-parallel width 16" in refusal.what
-    ]
-    assert len(unmeasured) == len(WIDTH_TABLES) > len(PROBE_TABLES)
-    assert asked, "the probe question asked nothing"
-    assert asked == [(path.rsplit(".", 1)[-1], 16) for path in PROBE_TABLES]
-
-
-@pytest.mark.parametrize("tp_width", [0, -3])
-def test_a_width_below_one_card_is_refused_rather_than_handed_a_probe(tp_width):
-    # Every width that was not exactly one fell to the multi-rank probe, zero
-    # and the negatives with it. No engine starts on that many cards, so this
-    # is a wrong question and not a term nobody has measured yet.
-    for constant in sorted(FILLED_BY):
-        with pytest.raises(SpecRefusal) as refused:
-            probe_for(constant, tp_width)
-        assert refused.value.rule is Rule.NO_DEFAULTS
-        assert f"width {tp_width} is not a number of cards" in refused.value.what
-
-
-def test_the_check_does_not_agree_a_probe_exists_for_a_width_below_one():
-    # Reachable from the verb, which is where a width arrives from the caller
-    # rather than from a document the schema has already refused it in.
-    checked = validate(merged().document, tp_widths=(0,))
-    assert not checked.ok
-    assert any(
-        "is not a number of cards" in refusal.what for refusal in checked.refusals
-    )
-
-
-def test_the_probe_question_reads_only_the_tables_a_probe_can_fall_short_on():
-    # The reserve table is filled at every width by one probe or the other, so
-    # the question can never say anything about it. Registering it as read
-    # would make a run that could not ask the question and a run that asked it
-    # and found nothing report the same record.
-    assert set(PROBE_TABLES) <= set(WIDTH_TABLES)
-    assert {path.rsplit(".", 1)[-1] for path in PROBE_TABLES} == {
-        name for name, probes in FILLED_BY.items() if None in probes
-    }
-
-
-#: The one width table a probe falls short on, the retained bytes at width 1.
-THE_HOLE = "device.runtime_constants.allocator_retained_after_load_bytes"
-
-
-def reimported_validate(name):
-    """`validate` imported again, the way a session imports it the first time.
-
-    The probe tables are derived once, while the module is being imported, so a
-    test about that derivation has to import the module rather than call
-    something in it. This loads a second instance out of the same file under a
-    name of its own, and does not register it, so the instance the rest of the
-    suite is holding is the one it started with.
-    """
-    location = importlib.util.find_spec("atom.compass.spec.validate").origin
-    loaded = importlib.util.spec_from_file_location(
-        f"atom.compass.spec.{name}", location
-    )
-    module = importlib.util.module_from_spec(loaded)
-    loaded.loader.exec_module(module)
-    assert module not in sys.modules.values()
-    return module
-
-
-def test_a_width_table_no_probe_is_named_for_is_refused_and_not_an_import_error(
-    monkeypatch,
-):
-    # A width-keyed constant written into the schema and not into the probe
-    # table is the ordinary shape of a half-finished change, and the two lists
-    # are held together by a test for exactly that reason. The derivation runs
-    # while the module is being imported, so a table it could not answer for
-    # would deny every caller of the package instead -- and that test would
-    # fail at collection, as an import error naming the test session rather
-    # than the term nobody entered.
-    added = Field("device.runtime_constants.graph_replay_pool_bytes", Kind.WIDTH_TABLE)
-    monkeypatch.setattr(schema_module, "SCHEMA", schema_module.SCHEMA + (added,))
-    under_test = reimported_validate("validate_with_a_table_no_probe_is_named_for")
-    assert added.path in under_test.WIDTH_TABLES
-    # A table with no entry has no hole to report, so it is not a probe table,
-    # and the table that has one still is.
-    assert under_test.PROBE_TABLES == (THE_HOLE,)
-    # The term is named where a caller asks about it, by the refusal this
-    # package exists to give.
-    with pytest.raises(SpecRefusal) as refused:
-        probe_for("graph_replay_pool_bytes", 1)
-    assert refused.value.rule is Rule.NO_DEFAULTS
-    assert "`graph_replay_pool_bytes` is not one of the constants" in refused.value.what
-    # And what the test holding the two lists together now sees is its own
-    # comparison, failing on the term that is missing from the table.
-    assert set(FILLED_BY) != {
-        path.rsplit(".", 1)[-1] for path in under_test.WIDTH_TABLES
-    }
-
-
-def test_a_probe_given_the_width_that_has_none_empties_the_probe_tables(monkeypatch):
-    # The property the derivation exists for, and the one a second list would
-    # lose: give the hole a probe and the question has nothing left to ask
-    # about, with nothing else to edit. The run still counts it as asked -- it
-    # is not a question this run could not reach -- and it finds nothing to say.
-    monkeypatch.setitem(
-        FILLED_BY,
-        "allocator_retained_after_load_bytes",
-        (probes_module.SINGLE_CARD, probes_module.MULTI_RANK),
-    )
-    under_test = reimported_validate("validate_with_every_width_filled")
-    # Emptied by the probe, and not empty before it.
-    assert (PROBE_TABLES, under_test.PROBE_TABLES) == ((THE_HOLE,), ())
-    checked = under_test.validate(merged().document, tp_widths=(16,))
-    assert not checked.ok
-    assert not any(
-        condition.startswith(PROBES_ASKED) for condition in checked.not_asked
-    )
-    assert not any(
-        condition.startswith(PROBES_ASKED) for condition in checked.asked_in_part
-    )
-
-
-def test_the_probe_question_says_it_could_not_be_asked_when_its_table_is_gone():
-    # The other width table still resolves, so the width question was asked of
-    # part of what it reads. The probe question was not asked at all, and the
-    # count of what this run reached must not include it.
-    absent = ("device", "runtime_constants", "allocator_retained_after_load_bytes")
-    checked = validate(
-        merge(
-            fragments(class1=without(CLASS1, *absent), class2=without(CLASS2, *absent))
-        ).document,
-        tp_widths=(16,),
-    )
-    (unasked,) = [
-        condition
-        for condition in checked.not_asked
-        if condition.startswith(PROBES_ASKED)
-    ]
-    assert "could not be asked at all" in unasked
-    assert not any(
-        condition.startswith(PROBES_ASKED) for condition in checked.asked_in_part
-    )
-
-
-def test_the_probe_table_is_reachable_by_name():
-    assert "probe_for" in spec_package.__all__
-    assert spec_package.probe_for is probe_for
 
 
 # --- the tokenizer sweep, and the node-18 spec built over it ------------------
@@ -2273,18 +1281,11 @@ def test_the_node_18_fragments_validate_and_explain_splits_measured_from_declare
 ):
     script = _node18_script()
     merged = merge([_swept_on(script, tmp_path, 112), *script.device_fragments()])
-    assert validate(merged, tp_widths=(1,)).ok
+    assert validate(merged.document).ok
     measured, declared = script.report(merged).split("assumed:")
-    for field in (
-        "device.memory.capacity_bytes",
-        "driver_and_collective_reserve_bytes[1]",
-        "allocator_retained_after_load_bytes[1]",
-        "device.runtime_constants.persistent_forward_buffer_bytes",
-        "device.activations",
-        "encode_tokens_per_s",
-    ):
+    for field in ("device.memory.capacity_bytes", "encode_tokens_per_s"):
         assert field in measured and field not in declared.split("kv_blocks")[0]
-    for field in ("host.ipc.zmq_roundtrip_s", "host.admission_fixed_s", "w1_base"):
+    for field in ("host.ipc.zmq_roundtrip_s", "host.admission_fixed_s", "bf16_flops"):
         assert field in declared and field not in measured
 
 
@@ -2304,60 +1305,12 @@ def test_a_tokenizer_with_no_tokenizer_json_is_refused_before_the_merge(tmp_path
         _swept_on(script, tmp_path, 112, fingerprint=None)
 
 
-def test_a_tokenizer_carried_from_another_spec_asks_the_device_for_no_stack(
-    tmp_path,
-):
-    # The entries are carried over and the core counts were read here; neither
-    # bears on a device stack, so the merge with the probed device fragments
-    # holds no transfer and asks for no pin the tokenizer fragment cannot write.
+@pytest.mark.parametrize("name", ["mi308x-hjbog18", "mi308x-hjbog39"])
+def test_the_checked_in_mi308x_specs_hold_their_start(monkeypatch, name):
+    monkeypatch.setenv("COMPASS_MACHINE", name)
     script = _node18_script()
-    carried = tokenizer_fragment(
-        [TOKENIZER],
-        machine=script.NAME,
-        authored_by="ana",
-        date="2026-10-15",
-        origin="transferred-from:mi300x-8gpu",
-        source="tokenizer",
-        processors=published_topology(tmp_path, cores_physical=112, packages=2),
-    )
-    merged = merge([carried, *script.device_fragments()])
-    assert carried.transferred_from is None and merged.transfers == ()
-    assert validate(merged, tp_widths=(1,)).ok
-    spec = MachineSpec.from_mapping(merged.document)
-    assert spec.origin("host.tokenizers[qwen3-151k-bpe fast]") == {
-        "origin": "transferred-from:mi300x-8gpu"
-    }
-    assert spec.origin("host.cpu.cores_physical")["origin"] == "probed"
-
-
-def test_the_checked_in_node_18_spec_validates_and_prices_its_activations(monkeypatch):
-    from atom.compass.run import _width_keys
-
-    monkeypatch.delenv("COMPASS_MACHINE", raising=False)
-    script = _node18_script()
-    path = SPEC_ROOT / "scripts" / "compass" / "machines" / f"{script.NAME}.json"
-    document = _width_keys(json.loads(path.read_text()))
-    spec = validate(document, tp_widths=(1, 8, "1x8")).raise_first()
-    for fragment in script.device_fragments():
-        for path, value in fragment.values.items():
-            if not path.startswith("provenance.") and path != "name":
-                # Each start fills its own widths of a width table.
-                held = spec.values[path]
-                part = {k: held[k] for k in value} if isinstance(value, dict) else held
-                assert part == value, path
-    assert spec.activations_for(
-        "Qwen3_5ForConditionalGeneration", script.CONFIG_JSON, 1
-    ) == ("qwen3.8-27b", 180480.0, (f"sha256:{script.RECORD}",))
-
-
-def test_the_checked_in_hjbog39_spec_holds_that_hosts_start(monkeypatch):
-    from atom.compass.run import _width_keys
-
-    monkeypatch.setenv("COMPASS_MACHINE", "mi308x-hjbog39")
-    script = _node18_script()
-    path = SPEC_ROOT / "scripts" / "compass" / "machines" / "mi308x-hjbog39.json"
-    spec = validate(_width_keys(json.loads(path.read_text())), tp_widths=(1,))
-    values = spec.raise_first().values
+    path = SPEC_ROOT / "scripts" / "compass" / "machines" / f"{name}.json"
+    values = validate(json.loads(path.read_text())).raise_first().values
     for fragment in script.device_fragments():
         for key, value in fragment.values.items():
             if not key.startswith("provenance."):
@@ -2365,41 +1318,22 @@ def test_the_checked_in_hjbog39_spec_holds_that_hosts_start(monkeypatch):
 
 
 def _mi355x_spec(monkeypatch):
-    """The MI355X script and its checked-in document, validated at its layout."""
-    from atom.compass.run import _width_keys
-
+    """The MI355X script and its checked-in document, validated."""
     monkeypatch.delenv("COMPASS_MACHINE", raising=False)
     path = SPEC_ROOT / "scripts" / "compass" / "mi355x_spec.py"
     loaded = importlib.util.spec_from_file_location("mi355x_spec", path)
     script = importlib.util.module_from_spec(loaded)
     loaded.loader.exec_module(script)
     document = SPEC_ROOT / "scripts" / "compass" / "machines" / f"{script.NAME}.json"
-    checked = validate(
-        _width_keys(json.loads(document.read_text())), tp_widths=("1x8",)
-    )
-    return script, checked.raise_first()
+    return script, validate(json.loads(document.read_text())).raise_first()
 
 
-def test_the_checked_in_mi355x_spec_holds_its_start_and_prices_its_activations(
-    monkeypatch,
-):
+def test_the_checked_in_mi355x_spec_holds_its_start(monkeypatch):
     script, spec = _mi355x_spec(monkeypatch)
     for fragment in script.device_fragments():
         for key, value in fragment.values.items():
             if not key.startswith("provenance."):
-                held = spec.values[key]
-                # A layout table merges one entry per start.
-                assert (held | value if isinstance(held, dict) else value) == held, key
-    read = script.READ
-    assert spec.activations_for("DeepseekV4ForCausalLM", script.CONFIG_JSON, 1) == (
-        "deepseek-v4-pro",
-        (read["peak"] - read["current"]) / read["warmup_tokens"],
-        (f"sha256:{script.RECORD}",),
-    )
-    reserve = spec.runtime_constant("driver_and_collective_reserve_bytes", "1x8")
-    assert reserve == read["non_torch"]
-    with pytest.raises(SpecRefusal):
-        spec.runtime_constant("driver_and_collective_reserve_bytes", 1)
+                assert spec.values[key] == value, key
 
 
 def test_the_mi355x_spec_explains_what_the_start_measured_apart_from_the_declared(
@@ -2411,11 +1345,8 @@ def test_the_mi355x_spec_explains_what_the_start_measured_apart_from_the_declare
         for row in explain(spec, block).contributions:
             origins.setdefault(row.origin["origin"], set()).add(row.path)
     assert set(origins) == {"probed", "datasheet", "assumed"}
-    start = {row.path for row in explain(spec, "kv_blocks").contributions} - {
-        f"device.runtime_constants.cudagraph_pool.{name}"
-        for name in ("w1_base_bytes", "w1_bytes_per_captured_token", "w_gt1_flat_bytes")
-    }
-    assert start <= origins["probed"]
+    start = {row.path for row in explain(spec, "kv_blocks").contributions}
+    assert start == {"device.memory.capacity_bytes"} <= origins["probed"]
     assert origins["datasheet"] == {
         "device.memory.bandwidth_bytes_per_s",
         "device.compute.bf16_flops",
@@ -2424,10 +1355,8 @@ def test_the_mi355x_spec_explains_what_the_start_measured_apart_from_the_declare
         "interconnect.intra_node.domain_devices",
         "interconnect.intra_node.link_bandwidth_bytes_per_s",
     }
-    assert all(
-        spec.origin(path)["record"] == f"sha256:{script.RECORD}"
-        for path in ("device.memory.capacity_bytes", "device.activations")
-    )
+    record = spec.origin("device.memory.capacity_bytes")["record"]
+    assert record == f"sha256:{script.RECORD}"
 
 
 def test_the_mi355x_spec_rebuilds_byte_for_byte_from_its_own_sweep(
@@ -2440,21 +1369,13 @@ def test_the_mi355x_spec_rebuilds_byte_for_byte_from_its_own_sweep(
     assert out.read_bytes() == document.read_bytes()
 
 
-def test_the_mi355x_spec_explains_its_ep8_start_at_the_ep8_layout(monkeypatch):
-    from atom.compass.run import _width_keys
-
-    script, _ = _mi355x_spec(monkeypatch)
-    document = SPEC_ROOT / "scripts" / "compass" / "machines" / f"{script.NAME}.json"
-    mapping = _width_keys(json.loads(document.read_text()))
-    spec = validate(mapping, tp_widths=("1x8x8",)).raise_first()
-    rows = explain(spec, "kv_blocks", tp_width="1x8x8").contributions
-    held = {row.path.rsplit(".", 1)[-1]: row for row in rows if "[1x8x8]" in row.path}
-    read = script.EP_READ
-    residue = read["loaded"] - read["parameters"] - read["buffers"]
-    assert {key: row.value for key, row in held.items()} == {
-        "driver_and_collective_reserve_bytes[1x8x8]": read["non_torch"],
-        "allocator_retained_after_load_bytes[1x8x8]": residue,
-    }
-    for row in held.values():
-        assert row.origin["origin"] == "probed"
-        assert row.origin["record"] == f"sha256:{script.EP_RECORD}"
+@pytest.mark.parametrize("name", ["mi308x-hjbog18", "mi308x-hjbog39"])
+def test_the_mi308x_specs_rebuild_from_their_own_sweeps(monkeypatch, tmp_path, name):
+    # Rebuilt with the sweep the document carries, the script writes the
+    # checked-in document's fields and origins; its key order is the script's.
+    monkeypatch.setenv("COMPASS_MACHINE", name)
+    script = _node18_script()
+    document = SPEC_ROOT / "scripts" / "compass" / "machines" / f"{name}.json"
+    out = tmp_path / "rebuilt.json"
+    assert script.main(["--sweep-from", str(document), "--out", str(out)]) == 0
+    assert json.loads(out.read_text()) == json.loads(document.read_text())

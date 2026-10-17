@@ -40,7 +40,6 @@ from atom.compass.artifacts import (
 )
 from atom.compass.artifacts.keys import platform_key
 from atom.compass.fit.samples import load
-from atom.compass.run import _width_keys
 from atom.compass.run.step_grid import readings as run_readings
 from atom.compass.spec import MachineSpec
 
@@ -95,9 +94,7 @@ def inputs(args, sources) -> tuple[list, dict]:
     store = ArtifactStore(args.store)
     measurements = [store.key_from_token(Kind.STEP_MEASUREMENT, t) for t in tokens]
     samples, config = load(runs, measurements, args.store)
-    spec = MachineSpec.from_mapping(
-        _width_keys(json.loads(Path(args.machine).read_text()))
-    )
+    spec = MachineSpec.from_mapping(json.loads(Path(args.machine).read_text()))
     torch = spec.value("device.software_pinned_to.torch")
     stated = {**machine_spec_key(spec).values, "torch": torch}
     ran = platform(config) if runs else stated

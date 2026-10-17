@@ -54,8 +54,6 @@ class Rule(enum.Enum):
     SEPARATION = "the spec describes the machine, not the deployment"
     ONE_MACHINE = "one spec describes one host"
     RANK_AGREEMENT = "ranks of one group measure one machine"
-    DEVICE_WIDE = "a device-wide reading is the whole card's, not one engine's"
-    NO_DEFAULTS = "a runtime constant has no default"
     DERATE = "a spec-peak number carries a derate"
     PINNED_STACK = "the constants are pinned to a software stack"
     TOKENIZER_IDENTITY = "a tokenizer is probed or it is refused"

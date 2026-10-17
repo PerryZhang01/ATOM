@@ -41,7 +41,7 @@ from atom.kv_transfer.offload.mp.transfer import (
 )
 from atom.kv_transfer.offload.mp.worker import LMCacheMPConnector
 from atom.model_engine.page_unit_checkpoint import CheckpointRestoreOp
-from atom.utils import envs
+from atom.utils import clock, envs
 
 logger = logging.getLogger("atom")
 NATIVE_STATE_MP_STORE_CHANNEL = "native_state_mp_store"
@@ -67,7 +67,7 @@ class _NativePending:
     restore_succeeded: bool = False
     descriptor_slot: int | None = None
     immediate_success: bool = False
-    started_at: float = field(default_factory=lambda: time.monotonic())
+    started_at: float = field(default_factory=lambda: clock.now(time.monotonic))
 
 
 class NativeStateLMCacheMPConnector(LMCacheMPConnector):

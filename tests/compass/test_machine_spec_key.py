@@ -25,7 +25,6 @@ from atom.compass.artifacts import (
     machine_spec_digest,
 )
 from atom.compass.backends import StepLinearBackend
-from atom.compass.run import _width_keys
 from atom.compass.spec import MachineSpec
 
 ROOT = Path(__file__).resolve().parents[2] / "scripts" / "compass"
@@ -37,7 +36,7 @@ N39 = json.loads((ROOT / "machines" / "mi308x-hjbog39.json").read_text())
 
 
 def digest(document: dict) -> str:
-    return machine_spec_digest(MachineSpec.from_mapping(_width_keys(document)))
+    return machine_spec_digest(MachineSpec.from_mapping(document))
 
 
 def test_the_hjbog39_law_loads_under_its_own_spec_and_refuses_under_node_18s(
@@ -163,7 +162,7 @@ def edited(path: str, value) -> dict:
     [
         ("interconnect.intra_node.link_latency_s", 3e-06),
         ("device.memory.derate", 0.8),
-        ("device.runtime_constants.persistent_forward_buffer_bytes", 1),
+        ("device.memory.capacity_bytes", 1),
         ("host.cpu.cores_physical", 96),
         ("provenance.notes", "re-probed"),
     ],

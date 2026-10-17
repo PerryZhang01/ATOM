@@ -28,7 +28,9 @@ whether `--step-roofline` was on; `skip`, the host segments the run file's
 host entry skips; `refusals`, client run 0's summary's, absent when it has
 none, as when a stop came before it ended; `coverage`, the check's report with
 the inputs it read, or None when no check ran; and `provenance`, the backend's
-digest and fit provenance as the run file states them.
+digest and fit provenance as the run file states them, and as
+`memory_readings_assumed` the assumption each assumed `memory_readings`
+member an engine read states, empty when every one was measured.
 """
 
 import argparse
@@ -172,6 +174,9 @@ def write_grading(out, report) -> None:
     run = json.loads((out / serve.RUN_FILE).read_text())
     first = out / compass_run.CLIENT_DIR.format(0) / compass_run.SUMMARY_FILE
     written = json.loads((out / serve.RUN_JSON).read_text())
+    engines = out.glob(compass_run.LP_FILE.format("engine*"))
+    memory = [json.loads(p.read_text()).get("memory") or {} for p in engines]
+    assumed = sorted({m["assumed"] for m in memory if m.get("assumed")})
     written |= {
         "run_file": run,
         "step_roofline": run["step_roofline"],
@@ -179,7 +184,7 @@ def write_grading(out, report) -> None:
             s for h in compass_run.entries(run, "host") for s in h.get("skip", [])
         ],
         "coverage": report,
-        "provenance": run["backend"],
+        "provenance": {**run["backend"], "memory_readings_assumed": assumed},
     }
     if first.is_file():
         summary = json.loads(first.read_text())

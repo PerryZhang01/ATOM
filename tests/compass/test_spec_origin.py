@@ -13,7 +13,7 @@ import pathlib
 
 import pytest
 from test_spec_schema import DOCUMENT
-from test_spec_verbs import CLASS0, CLASS1, CLASS2, LINKS, STACK, fragment
+from test_spec_verbs import CLASS0, CLASS1, LINKS, fragment
 
 from atom.compass.spec import MachineSpec, Rule, SpecRefusal, explain, merge
 from atom.compass.spec.fields import SCHEMA, Kind
@@ -24,16 +24,8 @@ CARD = {"model": "Qwen/Qwen3.8-27B", "width": 1, "source_root": "commit:983e4297
 
 
 def saved(document):
-    """A document as a file holds it: JSON, with width keys read back to ints."""
-
-    def ints(node):
-        if isinstance(node, list):
-            return [ints(v) for v in node]
-        if not isinstance(node, dict):
-            return node
-        return {int(k) if k.isdigit() else k: ints(v) for k, v in node.items()}
-
-    return ints(json.loads(json.dumps(document)))
+    """A document as a file holds it: JSON."""
+    return json.loads(json.dumps(document))
 
 
 def labels(spec):
@@ -44,39 +36,29 @@ def labels(spec):
             continue
         if path not in spec.values:
             continue
-        if field.kind is Kind.WIDTH_TABLE:
-            yield from ((path, width) for width in spec.values[path])
-        elif field.kind is Kind.TOKENIZERS:
+        if field.kind is Kind.TOKENIZERS:
             for e in spec.tokenizers.entries:
-                yield entry_label(e.key.id, e.key.backend.value), None
+                yield entry_label(e.key.id, e.key.backend.value)
         else:
-            yield path, None
+            yield path
 
 
-def four_origins():
-    """Probed, transferred and assumed fragments of one machine."""
-    carried = copy.deepcopy(CLASS2)
-    carried["device"]["software_pinned_to"] = dict(STACK)
+def three_origins():
+    """Probed and assumed fragments of one machine, the probes of two subjects."""
     return [
         fragment("class0", CLASS0, subject={"model": "Qwen/Qwen3-8B"}),
         fragment("class1", CLASS1, subject=CARD),
-        fragment("class2", carried, origin="transferred-from:mi300x-8gpu"),
         fragment("links", LINKS, origin="assumed"),
     ]
 
 
 def test_a_saved_spec_answers_origin_for_every_field():
-    spec = MachineSpec.from_mapping(saved(merge(four_origins()).document))
+    spec = MachineSpec.from_mapping(saved(merge(three_origins()).document))
     assert spec.value("provenance.origin") == "mixed"
-    answered = {label: spec.origin(*label)["origin"] for label in labels(spec)}
-    assert set(answered.values()) == {
-        "probed",
-        "transferred-from:mi300x-8gpu",
-        "assumed",
-    }
-    reserve = "device.runtime_constants.driver_and_collective_reserve_bytes"
-    assert spec.origin(reserve, 1) == {"origin": "probed", **CARD}
-    assert spec.origin(reserve, 8) == {"origin": "transferred-from:mi300x-8gpu"}
+    answered = {label: spec.origin(label)["origin"] for label in labels(spec)}
+    assert set(answered.values()) == {"probed", "assumed"}
+    capacity = "device.memory.capacity_bytes"
+    assert spec.origin(capacity) == {"origin": "probed", **CARD}
     assert spec.origin("interconnect.intra_node.derate") == {"origin": "assumed"}
     assert spec.origin(entry_label("qwen3-151k-bpe", "fast")) == {
         "origin": "probed",
@@ -87,17 +69,17 @@ def test_a_saved_spec_answers_origin_for_every_field():
 def test_a_field_two_fragments_agree_on_is_assumed_only_if_both_assumed_it():
     links = fragment("links", LINKS, origin="assumed")
     probed = fragment("probe", {"interconnect": {"router_relay_s": 1.5e-3}})
-    carried = fragment(
-        "carried",
+    sheet = fragment(
+        "datasheet",
         {"interconnect": {"inter_node": {"link_latency_s": 5.0e-6}}},
-        origin="transferred-from:mi300x-8gpu",
+        origin="datasheet",
     )
-    fragments = [*four_origins()[:3], probed, carried, links]
+    fragments = [*three_origins()[:2], probed, sheet, links]
     document = saved(merge(fragments).document)
     spec = MachineSpec.from_mapping(document)
     assert spec.origin("interconnect.router_relay_s") == {"origin": "probed"}
     assert spec.origin("interconnect.inter_node.link_latency_s") == {
-        "origin": "transferred-from:mi300x-8gpu"
+        "origin": "datasheet"
     }
     assert spec.origin("interconnect.inter_node.link_bandwidth_bytes_per_s") == {
         "origin": "assumed"
@@ -105,7 +87,7 @@ def test_a_field_two_fragments_agree_on_is_assumed_only_if_both_assumed_it():
 
 
 def test_a_saved_spec_merged_again_keeps_each_fields_origin():
-    first = saved(merge(four_origins()).document)
+    first = saved(merge(three_origins()).document)
     week_later = {"interconnect": {"inter_node": {"link_latency_s": 5.0e-6}}}
     again = merge(
         [
@@ -118,13 +100,12 @@ def test_a_saved_spec_merged_again_keeps_each_fields_origin():
     assert spec.origin("interconnect.intra_node.link_latency_s") == {
         "origin": "assumed"
     }
-    reserve = "device.runtime_constants.driver_and_collective_reserve_bytes"
-    assert spec.origin(reserve, 4) == {"origin": "transferred-from:mi300x-8gpu"}
-    assert spec.origin(reserve, 1) == {"origin": "probed", **CARD}
+    capacity = "device.memory.capacity_bytes"
+    assert spec.origin(capacity) == {"origin": "probed", **CARD}
 
 
 def test_a_mixed_document_without_its_map_is_refused_by_name():
-    document = saved(merge(four_origins()).document)
+    document = saved(merge(three_origins()).document)
     del document["provenance"]["origins"]
     spec = MachineSpec.from_mapping(document)
     with pytest.raises(SpecRefusal) as refused:
@@ -132,7 +113,7 @@ def test_a_mixed_document_without_its_map_is_refused_by_name():
     assert refused.value.rule is Rule.TOTALITY
     assert "records no origin for `device.memory.capacity_bytes`" in str(refused.value)
     with pytest.raises(SpecRefusal, match="records no origin"):
-        explain(spec, "kv_blocks", tp_width=1)
+        explain(spec, "kv_blocks")
     with pytest.raises(SpecRefusal, match="records no origin"):
         merge(
             [fragment("machine.json", {"device": document["device"]}, origin="mixed")]
@@ -150,7 +131,7 @@ def test_a_document_of_one_origin_answers_without_the_map():
 
 
 @pytest.mark.parametrize(
-    "stated", ["guessed", "transferred-from:", "transferred-from:  ", "", 7]
+    "stated", ["guessed", "transferred-from:mi300x-8gpu", "transferred-from:", "", 7]
 )
 def test_an_origin_nobody_defined_is_refused(stated):
     with pytest.raises(SpecRefusal, match="which is not an origin"):
@@ -158,7 +139,7 @@ def test_an_origin_nobody_defined_is_refused(stated):
 
 
 def test_one_field_is_never_mixed_and_only_a_probed_one_has_a_subject():
-    document = saved(merge(four_origins()).document)
+    document = saved(merge(three_origins()).document)
     origins = document["provenance"]["origins"]
     for entry, wanted in (
         ({"origin": "mixed"}, "which is not an origin"),
@@ -176,7 +157,7 @@ def test_one_field_is_never_mixed_and_only_a_probed_one_has_a_subject():
 
 
 def test_the_old_key_is_refused_naming_the_new_one():
-    document = saved(merge(four_origins()).document)
+    document = saved(merge(three_origins()).document)
     document["provenance"]["method"] = document["provenance"].pop("origin")
     with pytest.raises(
         SpecRefusal, match="`provenance.method` is now `provenance.origin`"
@@ -184,13 +165,8 @@ def test_the_old_key_is_refused_naming_the_new_one():
         MachineSpec.from_mapping(document)
 
 
-def test_origin_is_asked_at_a_measured_width_and_per_tokenizer_entry():
-    spec = MachineSpec.from_mapping(saved(merge(four_origins()).document))
-    reserve = "device.runtime_constants.driver_and_collective_reserve_bytes"
-    with pytest.raises(SpecRefusal, match="none was given"):
-        spec.origin(reserve)
-    with pytest.raises(SpecRefusal, match="was not probed at tensor-parallel width 3"):
-        spec.origin(reserve, 3)
+def test_origin_is_asked_per_tokenizer_entry():
+    spec = MachineSpec.from_mapping(saved(merge(three_origins()).document))
     for path in ("host.tokenizers", "host.tokenizers[nope fast]"):
         with pytest.raises(SpecRefusal, match="not one tokenizer entry"):
             spec.origin(path)
@@ -201,11 +177,9 @@ def test_origin_is_asked_at_a_measured_width_and_per_tokenizer_entry():
 
 
 def test_explain_names_each_contributions_origin():
-    combination = merge(four_origins())
+    combination = merge(three_origins())
     spec = MachineSpec.from_mapping(saved(combination.document))
-    rows = {
-        row.path: row for row in explain(spec, "kv_blocks", tp_width=1).contributions
-    }
+    rows = {row.path: row for row in explain(spec, "kv_blocks").contributions}
     assert rows["device.memory.capacity_bytes"].origin == {"origin": "probed", **CARD}
     assert str(rows["device.memory.capacity_bytes"]).endswith(
         "probed on model Qwen/Qwen3.8-27B, width 1, source_root commit:983e42973"
@@ -228,18 +202,13 @@ def test_the_checked_in_specs_say_where_each_field_came_from(monkeypatch, name):
     script = _script(monkeypatch, name)
     path = ROOT / "scripts" / "compass" / "machines" / f"{name}.json"
     spec = MachineSpec.from_mapping(saved(json.loads(path.read_text())))
-    answered = {label: spec.origin(*label) for label in labels(spec)}
-    runtime = [k for k in answered if k[0].startswith("device.runtime_constants.")]
-    probed = runtime + [("device.activations", None)]
-    for label in probed:
-        start = script.STARTS.get(label[1])
-        if start is not None:
-            assert answered[label]["record"] == f"sha256:{start[2]}", label
-        elif "cudagraph_pool" not in label[0]:
-            assert answered[label] == {"origin": "probed", **script.SUBJECT}, label
+    answered = {label: spec.origin(label) for label in labels(spec)}
+    for label, found in answered.items():
+        if label.startswith("device.") and found["origin"] == "probed":
+            assert found == {"origin": "probed", **script.SUBJECT}, label
     # A core count is the host's own, read with no model or width under it.
     for count in ("cores_physical", "cores_logical"):
-        assert answered[(f"host.cpu.{count}", None)] == {"origin": "probed"}
+        assert answered[f"host.cpu.{count}"] == {"origin": "probed"}
     for label, found in answered.items():
-        if found["origin"] != "probed" or label[0].endswith(".derate"):
+        if found["origin"] != "probed" or label.endswith(".derate"):
             assert found == {"origin": "assumed"}, label

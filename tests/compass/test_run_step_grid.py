@@ -419,9 +419,7 @@ def test_each_mi308x_spec_states_its_torch_and_the_runs_readings_take_it(
     tmp_path, name
 ):
     path = Path(__file__).parents[2] / "scripts/compass/machines" / f"{name}.json"
-    spec = MachineSpec.from_mapping(
-        compass_run._width_keys(json.loads(path.read_text()))
-    )
+    spec = MachineSpec.from_mapping(json.loads(path.read_text()))
     pinned = "device.software_pinned_to.torch"
 
     assert spec.origin(pinned)["origin"] == "probed"

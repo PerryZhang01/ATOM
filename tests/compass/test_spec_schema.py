@@ -109,26 +109,6 @@ DOCUMENT = {
             "derate": 0.85,
         },
         "compute": {"bf16_flops": 2.5e15, "fp8_flops": 5.0e15, "derate": 0.70},
-        "runtime_constants": {
-            "driver_and_collective_reserve_bytes": {
-                1: 970.0e6,
-                2: 7.2e9,
-                4: 7.6e9,
-                8: 11.2e9,
-            },
-            "allocator_retained_after_load_bytes": {
-                1: 1.1e6,
-                2: 2.17e9,
-                4: 2.17e9,
-                8: 2.17e9,
-            },
-            "persistent_forward_buffer_bytes": 124.0e6,
-            "cudagraph_pool": {
-                "w1_base_bytes": 95.5e6,
-                "w1_bytes_per_captured_token": 0.318e6,
-                "w_gt1_flat_bytes": 109.0e6,
-            },
-        },
         "software_pinned_to": dict(STACK),
     },
     "interconnect": {
@@ -388,21 +368,6 @@ BREAKAGES = {
     ),
     "a tokenizer entry that is not a mapping": lambda: written(
         "host.tokenizers", ["not an entry"]
-    ),
-    "an activation entry missing a field": lambda: written(
-        "device.activations", [{"id": "m", "applies_to": ["A"]}]
-    ),
-    "two activation entries for one model": lambda: written(
-        "device.activations",
-        [
-            {
-                "id": i,
-                "fingerprint": "f",
-                "applies_to": ["A"],
-                "bytes_per_token": {1: 1},
-            }
-            for i in ("m", "n")
-        ],
     ),
     "a value the schema cannot hold": lambda: written(
         "device.memory.capacity_bytes", "lots"
@@ -734,10 +699,8 @@ def test_the_spec_does_not_move_when_the_document_does():
     machine = MachineSpec.from_mapping(written)
     before = machine.digest()
     echoed = machine.echo()
-    constants = written["device"]["runtime_constants"]
     entries = written["host"]["tokenizers"]
     written["provenance"]["fragments"].append("probe-device")
-    constants["driver_and_collective_reserve_bytes"][16] = 1.0
     entries.append(dict(TOKENIZER, id="another"))
     entries[0]["encode_tokens_per_s"] = 1.0
     entries[0]["applies_to"].append("LlamaForCausalLM")
@@ -746,22 +709,16 @@ def test_the_spec_does_not_move_when_the_document_does():
 
 
 def test_no_container_the_document_owns_reaches_the_spec():
-    # A list of names copies with `tuple` and a width table with `dict`; a
-    # tokenizer entry holds mappings and lists of its own, so the same
-    # guarantee there is a walk rather than a constructor.
+    # A list of names copies with `tuple`; a tokenizer entry holds mappings and
+    # lists of its own, so the same guarantee there is a walk rather than a
+    # constructor.
     written = document()
     written["provenance"]["fragments"] = ["probe-cpu"]
     machine = MachineSpec.from_mapping(written)
-    constants = written["device"]["runtime_constants"]
     entries = written["host"]["tokenizers"]
-    table_path = "device.runtime_constants.driver_and_collective_reserve_bytes"
     held = machine.value("host.tokenizers")
     assert (
         machine.value("provenance.fragments") is not written["provenance"]["fragments"]
-    )
-    assert (
-        machine.value(table_path)
-        is not constants["driver_and_collective_reserve_bytes"]
     )
     assert held is not entries
     assert held[0] is not entries[0]
@@ -852,109 +809,17 @@ def test_the_reader_raises_the_first_refusal_the_walk_meets():
     assert "`device.zeta_knob`" in refusal.value.what
 
 
-# --- no defaults for the runtime constants -----------------------------------
+# --- an engine start's memory readings are not the spec's --------------------
 
 
-def test_a_missing_runtime_constant_refuses_and_names_itself():
-    edited = drop(
-        document(), "device", "runtime_constants", "persistent_forward_buffer_bytes"
-    )
-    with pytest.raises(SpecRefusal) as refusal:
-        MachineSpec.from_mapping(edited)
-    assert refusal.value.rule is Rule.NO_DEFAULTS
-    assert "persistent_forward_buffer_bytes" in refusal.value.what
-
-
-def test_an_unmeasured_width_refuses_and_names_the_measured_ones():
-    with pytest.raises(SpecRefusal) as refusal:
-        read().runtime_constant("driver_and_collective_reserve_bytes", tp_width=3)
-    assert refusal.value.rule is Rule.NO_DEFAULTS
-    assert "width 3" in refusal.value.what
-    assert "[1, 2, 4, 8]" in refusal.value.what
-
-
-def test_a_width_keyed_constant_will_not_answer_without_a_width():
-    with pytest.raises(SpecRefusal) as refusal:
-        read().runtime_constant("driver_and_collective_reserve_bytes")
-    assert refusal.value.rule is Rule.NO_DEFAULTS
-    # The rule alone does not say this: the sibling branch above carries it too,
-    # and "not measured at width None" would satisfy an assertion that stopped
-    # at the rule while saying something the accessor never found out.
-    assert "none was given" in refusal.value.what
-
-
-def test_a_measured_width_answers():
-    machine = read()
-    assert machine.runtime_constant("driver_and_collective_reserve_bytes", 2) == 7.2e9
-    assert machine.runtime_constant("persistent_forward_buffer_bytes") == 124.0e6
-    assert machine.runtime_constant("cudagraph_pool.w_gt1_flat_bytes") == 109.0e6
-
-
-RESERVE = "driver_and_collective_reserve_bytes"
-RESERVE_PATH = f"device.runtime_constants.{RESERVE}"
-
-
-def with_layout():
-    """The reference document with a DP-attention layout entry in both tables."""
+@pytest.mark.parametrize("key", ["runtime_constants", "activations"])
+def test_an_engine_starts_memory_readings_are_no_field_of_the_spec(key):
+    # They are a `memory_readings` entry's, taken per configuration.
     edited = document()
-    constants = edited["device"]["runtime_constants"]
-    constants[RESERVE]["1x8"] = 8.19e9
-    constants["allocator_retained_after_load_bytes"]["1x8"] = 2.17e9
-    return edited
-
-
-def test_a_layout_answers_beside_the_widths_and_names_them_when_unprobed():
-    machine = MachineSpec.from_mapping(with_layout())
-    assert machine.runtime_constant(RESERVE, "1x8") == 8.19e9
-    assert machine.runtime_constant(RESERVE, 8) == 11.2e9
-    with pytest.raises(SpecRefusal) as refusal:
-        machine.runtime_constant(RESERVE, "1x4")
-    assert "width 1x4; this spec has [1, '1x8', 2, 4, 8]" in refusal.value.what
-
-
-@pytest.mark.parametrize(
-    "key",
-    ["0x8", "1x", "x8", "1x8x2", "1X8", "01x8", "8"]
-    + ["1x8x4", "1x8x16", "2x4x4", "1x8x08", "1x8x8x8"],
-)
-def test_a_layout_key_is_tp_x_dp_with_an_ep_spanning_every_rank(key):
-    edited = document()
-    edited["device"]["runtime_constants"][RESERVE][key] = 1.0
-    with pytest.raises(SpecRefusal):
-        MachineSpec.from_mapping(edited)
-
-
-def test_a_layout_explains_in_order_and_moves_the_digest():
-    machine = MachineSpec.from_mapping(with_layout())
-    rows = explain(machine, RESERVE_PATH).contributions
-    assert [row.path for row in rows] == [
-        f"{RESERVE_PATH}[{key}]" for key in ("1", "1x8", "2", "4", "8")
-    ]
-    assert rows[1].value == 8.19e9
-    assert machine.digest() != read().digest()
-
-
-def test_a_layout_nobody_probed_is_refused_by_name_in_validation():
-    checked = validate(document(), tp_widths=(1, "1x8"))
-    assert len(checked.refusals) == 2
-    assert all("width 1x8" in refusal.what for refusal in checked.refusals)
-    assert validate(with_layout(), tp_widths=(1, "1x8")).ok
-
-
-def test_an_expert_parallel_layout_is_its_own_entry():
-    edited = with_layout()
-    constants = edited["device"]["runtime_constants"]
-    constants[RESERVE]["1x8x8"] = 9.5e9
-    machine = MachineSpec.from_mapping(edited)
-    assert machine.runtime_constant(RESERVE, "1x8x8") == 9.5e9
-    assert machine.runtime_constant(RESERVE, "1x8") == 8.19e9
-    # The residue table has no EP entry: validation names it, and only it.
-    checked = validate(edited, tp_widths=("1x8", "1x8x8"))
-    (refusal,) = checked.refusals
-    assert "allocator_retained_after_load_bytes" in refusal.what
-    assert "width 1x8x8" in refusal.what
-    constants["allocator_retained_after_load_bytes"]["1x8x8"] = 2.3e9
-    assert validate(edited, tp_widths=("1x8", "1x8x8")).ok
+    edited["device"][key] = {}
+    refusal = refusal_from(edited)
+    assert refusal.rule is Rule.SEPARATION
+    assert f"`device.{key}` is not a field of this schema" in refusal.what
 
 
 # --- a derate wherever a spec peak appears -----------------------------------
@@ -1140,15 +1005,6 @@ def test_a_value_the_schema_cannot_hold_is_refused(path, value):
         MachineSpec.from_mapping(edited)
 
 
-def test_a_width_table_is_keyed_by_a_width():
-    edited = document()
-    edited["device"]["runtime_constants"]["driver_and_collective_reserve_bytes"] = {
-        "one": 1.0
-    }
-    with pytest.raises(SpecRefusal):
-        MachineSpec.from_mapping(edited)
-
-
 def test_a_block_written_as_a_scalar_is_refused():
     edited = document()
     edited["device"]["memory"] = 288.0e9
@@ -1309,29 +1165,11 @@ def test_an_optional_field_the_document_omits_is_refused_as_optional():
 
 
 def test_the_other_accessors_decline_on_a_fragment_rather_than_raise():
-    # `runtime_constant` and `check_stack` read the same map, and a KeyError
-    # out of a fragment is a refusal nobody can act on.
-    name = "persistent_forward_buffer_bytes"
-    with pytest.raises(SpecRefusal) as constant:
-        without(f"device.runtime_constants.{name}").runtime_constant(name)
-    assert constant.value.rule is Rule.TOTALITY
+    # `check_stack` reads the same map, and a KeyError out of a fragment is a
+    # refusal nobody can act on.
     with pytest.raises(SpecRefusal) as pinned:
         without("device.software_pinned_to.rccl").check_stack(dict(STACK))
     assert pinned.value.rule is Rule.TOTALITY
-    # And a block reaches `runtime_constant` too: `cudagraph_pool` is the one
-    # name under that section a reader can plausibly ask for without its leaf.
-    with pytest.raises(SpecRefusal) as block:
-        read().runtime_constant("cudagraph_pool")
-    assert block.value.rule is Rule.ADDRESSING
-
-
-def test_a_width_table_a_fragment_lacks_is_declined_rather_than_raised():
-    # A width-keyed constant is read past the point where a single-valued one
-    # returns, so it is declined at its own read.
-    name = "driver_and_collective_reserve_bytes"
-    with pytest.raises(SpecRefusal) as refusal:
-        without(f"device.runtime_constants.{name}").runtime_constant(name, 2)
-    assert refusal.value.rule is Rule.TOTALITY
 
 
 # --- what the package reaches ------------------------------------------------

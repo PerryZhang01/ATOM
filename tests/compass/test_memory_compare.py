@@ -765,15 +765,22 @@ def test_only_declared_is_left_out_of_the_set_that_discharges():
 
 #: The measured pool at this ladder: 91.1 MiB + 0.3033 MiB per
 #: captured token at width 1, and flat 104 MiB above it. This is the recording
-#: the two functions are compared against; the spec's own fields are the
-#: authored, rounded form of the same line, which is why `predicts()` lands on
-#: top of it and `reserves()` does not.
+#: the two functions are compared against; `ENTRY_POOL` is the pool an entry's
+#: start read at each width, the authored, rounded form of the same line, which
+#: is why `predicts()` lands on top of it and `reserves()` does not.
 RECORDED_POOL_W1 = int(91.1 * MIB + 0.3033 * MIB * 1023)
 RECORDED_POOL_W_GT1 = 104 * MIB
+ENTRY_POOL = {1: 420_814_000, 2: 109_000_000}
 
 
 def recorded_pool(nbytes, where):
     return Term("recorded pool", int(nbytes), Method.MEASURED, where)
+
+
+def entry_pool(tp_width, **member):
+    """What `predicts()` reads off the entry member at `tp_width`."""
+    pool = ENTRY_POOL[tp_width]
+    return predicts(measured(tp_width, cudagraph_pool_bytes=pool, **member))
 
 
 @pytest.mark.parametrize(
@@ -796,7 +803,7 @@ def test_both_graph_pool_numbers_are_reported_against_the_recorded_pool(
     comparison = compare_graph_pool(
         recorded_pool(pool, where),
         reserves=reserved(qwen, total_bytes),
-        predicts=predicts(spec, tp_width=tp_width, captured_tokens=sum(ladder())),
+        predicts=entry_pool(tp_width),
     )
     with capsys.disabled():
         print()
@@ -815,12 +822,12 @@ def test_both_graph_pool_numbers_are_reported_against_the_recorded_pool(
 
 
 def test_each_graph_pool_row_prints_its_method(spec, qwen):
-    # An assumed pool line makes predicts() declared, which must not read like
-    # a measured row.
+    # An assumed entry member makes predicts() declared, which must not read
+    # like a measured row.
     comparison = compare_graph_pool(
         recorded_pool(RECORDED_POOL_W1, "a printout"),
         reserves=reserved(qwen, int(spec.value("device.memory.capacity_bytes"))),
-        predicts=predicts(spec_of("assumed"), tp_width=1, captured_tokens=1023),
+        predicts=entry_pool(1, assumed="copied from another platform's entry"),
     )
     rows = {line.split()[0]: line for line in comparison.table().splitlines()[2:5]}
     assert "declared" in rows["predicts()"]
@@ -830,7 +837,6 @@ def test_each_graph_pool_row_prints_its_method(spec, qwen):
 
 def test_the_disagreement_is_inside_the_recorded_four_to_nineteen_times(spec, qwen):
     total_bytes = int(spec.value("device.memory.capacity_bytes"))
-    captured = sum(ladder())
     ratios = {}
     for tp_width in (1, 2):
         comparison = compare_graph_pool(
@@ -839,7 +845,7 @@ def test_the_disagreement_is_inside_the_recorded_four_to_nineteen_times(spec, qw
                 "the measured line",
             ),
             reserves=reserved(qwen, total_bytes),
-            predicts=predicts(spec, tp_width=tp_width, captured_tokens=captured),
+            predicts=entry_pool(tp_width),
         )
         ratios[tp_width] = comparison.disagreement
     assert ratios[1] == pytest.approx(4.4609, abs=5e-5)
@@ -851,7 +857,7 @@ def test_the_two_graph_pool_readings_cannot_be_handed_in_the_wrong_way_round(
 ):
     total_bytes = int(spec.value("device.memory.capacity_bytes"))
     reserving = reserved(qwen, total_bytes)
-    predicting = predicts(spec, tp_width=1, captured_tokens=sum(ladder()))
+    predicting = entry_pool(1)
     with pytest.raises(MemoryRefusal) as refusal:
         compare_graph_pool(
             recorded_pool(RECORDED_POOL_W1, "the measured line"),
