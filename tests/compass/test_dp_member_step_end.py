@@ -27,6 +27,7 @@ from atom.compass import run as compass_run
 from atom.compass.audit import sync_scan
 from atom.compass.backends.step_stub import Coefficients, StepStubBackend
 from atom.compass.clock import NER, ClockAuthority, LpId, single_engine_table
+from atom.compass.runner.overrides import HostDeviceRecurrence
 from atom.utils import clock
 from atom.utils.clock import LPRuntime, WrappedSocket
 from atom.utils.distributed import utils
@@ -226,3 +227,32 @@ def test_a_host_collective_settles_first_and_a_device_collective_does_not(
     dist.broadcast(tensor=t, src=0)
 
     assert len(settled) == (3 if settles else 0)
+
+
+@pytest.mark.parametrize("second", ["prefill", "dummy"])
+def test_a_member_returns_at_its_own_release_after_the_groups_device_end(
+    dp2,  # noqa: F811
+    second,
+):
+    # dp0's prefill is launch-bound, 50 ms of launch over 5 ms of device; dp1's
+    # forward has no host time. The forwards' collectives hold dp1's device
+    # until dp0's launch ends, but dp1 returns at its own release, before dp0.
+    coefficients = Coefficients.constant(prefill_seconds=0.005, decode_seconds=0.001)
+    ranks = [
+        runner(StepStubBackend(coefficients), dp_size=2, dp_rank=r) for r in (0, 1)
+    ]
+    launch = {"prefill": {"W_launch": [0.05, 0, 0]}}
+    ranks[0].compass_host = HostDeviceRecurrence(
+        launch, ("E", "W_pre", "W_post"), lambda: 0.0
+    )
+    ranks[1].compass_host = HostDeviceRecurrence({}, (), lambda: 0.0)
+    step = {"prefill": lambda: ranks[1].forward(prefill(8))}
+    step["dummy"] = ranks[1].dummy_execution
+
+    busy, other = dp2(lambda: ranks[0].forward(prefill(40)), step[second])
+
+    assert [busy.predicted_s, other.predicted_s] == [0.05, 0.0]
+    assert busy.group_targets == other.group_targets == (0.05, 0.0)
+    hosts = [r.compass_host for r in ranks]
+    assert [h.ends[-1] for h in hosts] == [0.05, 0.05]
+    assert hosts[1].output_end == 0.05

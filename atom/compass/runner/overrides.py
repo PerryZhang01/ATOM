@@ -274,12 +274,16 @@ class HostDeviceRecurrence:
         self.output_end = -math.inf  # target end of the last output forward
         self.mtp = mtp
 
-    def charge(
+    def charge(self, batch: Any, *args: Any, **kwargs: Any) -> float:
+        """The forward's exit less `now`: `release` of `device_end`."""
+        return self.release(self.device_end(batch, *args, **kwargs))
+
+    def device_end(
         self, batch: Any, device_s: float, draft_s: float = 0.0, refuse: bool = True
     ) -> float:
-        """The forward's exit less `now`, for `device_s` of target device time
-        and then `draft_s` of draft, starting no earlier than the batch's
-        `compass_pp_release`; advances the device state. A batch's
+        """The end of the forward's device work, launch included, for `device_s`
+        of target device time and then `draft_s` of draft, starting no earlier
+        than the batch's `compass_pp_release`; `release` follows. A batch's
         `compass_pp_host = (called, meta)` runs the host from `called` in place
         of `now` and holds the launch until `meta`. With any
         laws and `refuse`, a forward whose kind lacks one for a segment it runs
@@ -314,7 +318,18 @@ class HostDeviceRecurrence:
         launch_end = host + launch
         release = getattr(batch, "compass_pp_release", -math.inf)
         target_end = max(self.ends[-1], host, release) + device_s
-        self.ends.append(max(target_end + draft_s, launch_end))
+        end = max(target_end + draft_s, launch_end)
+        self._held = now, launch_end, target_end, draft_s, end, output, post
+        return end
+
+    def release(self, end: float) -> float:
+        """The exit less `now` of the forward `device_end` priced, its device
+        work ending at `end`, no earlier than it said; a later `end` moves its
+        target's too."""
+        now, launch_end, target_end, draft_s, own, output, post = self._held
+        if end > own:
+            target_end = end - draft_s
+        self.ends.append(end)
         released = launch_end
         if output:
             if self.last is None:
@@ -1127,9 +1142,11 @@ def _group_step_seconds(
     it; without one it is settled here, which runs the DP collective.
 
     In a run, `compass_host` composes the price, device seconds, with host time.
-    The `all_gather` stands in for the cross-rank collectives a real forward
-    makes: a rank with output, not the DP dummy, waits for them and leaves at
-    the group's max, any other at its own seconds; `_group_targets` holds all,
+    Under DP, a `HostDeviceRecurrence`'s device end is first replaced by the
+    group's latest, an `all_reduce(MAX)` standing in for a real forward's
+    cross-rank collectives, and every rank leaves at its own charge. With no
+    `compass_host`, a rank with output, not the DP dummy, leaves at the group's
+    max, any other at its own seconds. `_group_targets` holds all,
     by rank, or None with one rank.
 
     A pipeline stage runs only its own layers, so it is refused unless its
@@ -1187,20 +1204,29 @@ def _group_step_seconds(
         mix.record(cost)
         device_s, terms = cost.seconds, cost.terms
     host = getattr(runner, "compass_host", None)
+    group = dp_group() if mode.sync is not None else None
+    charge = getattr(host, "charge", None)
+    if group is not None and isinstance(host, HostDeviceRecurrence):
+
+        def charge(batch, device_s, refuse=True):
+            end = host.device_end(batch, device_s, refuse=refuse)
+            t = torch.tensor([end], dtype=torch.float64)
+            torch.distributed.all_reduce(t, torch.distributed.ReduceOp.MAX, group)
+            return host.release(t.item())
+
     try:
-        charge_s = device_s if host is None else host.charge(batch, device_s)
+        charge_s = device_s if host is None else charge(batch, device_s)
     except CostRefused as refusal:
         if getattr(runner, "compass_abort", False):
             raise
         said = "; ".join(f"{r.source}: {r.reason}" for r in refusal.declined)
         refused = (f"{refused}; " if refused else "cost:") + said
-        charge_s = host.charge(batch, device_s, refuse=False)
+        charge_s = charge(batch, device_s, refuse=False)
     if refused:
         vars(runner).setdefault("_refused_commands", []).append(refused)
     group_s, targets = charge_s, None
-    if mode.sync is not None:
-        group = dp_group()
-        waits = batch.produces_output() and not batch.is_dummy_run
+    if group is not None:
+        waits = host is None and batch.produces_output() and not batch.is_dummy_run
         mine = torch.tensor([charge_s, waits], dtype=torch.float64)
         rows = [torch.empty_like(mine) for _ in range(group.size())]
         torch.distributed.all_gather(rows, mine, group=group)

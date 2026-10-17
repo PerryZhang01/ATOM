@@ -87,8 +87,8 @@ is wrong in direction, not just in magnitude.
 
 Owner's DP ruling, 2026-10-01
 ([#470](https://github.com/jgong5/ATOM/issues/470#issuecomment-5933154215)). The step linear law covers
-DP and EP with a **per-rank** law: it prices one rank's step, and the group's step is the
-`max` over ranks (`15` D90).
+DP and EP with a **per-rank** law: it prices one rank's step, and the group's device end is
+the `max` over ranks (`15` D90).
 
 - **Key.** The engine config, the one source of the parallel layout (owner ruling on
   [#973](https://github.com/jgong5/ATOM/issues/973#issuecomment-6210598012), 2026-10-16):
