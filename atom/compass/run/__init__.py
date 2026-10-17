@@ -989,7 +989,7 @@ def _price_images(price: float | None) -> None:
     from atom.multimodal.media import MediaLoader
     from atom.utils.compass_loop import Refused, charge
 
-    load = getattr(MediaLoader.load_image, "__wrapped__", MediaLoader.load_image)
+    load = MediaLoader.load_image
 
     @functools.wraps(load)
     def priced(self, data):
