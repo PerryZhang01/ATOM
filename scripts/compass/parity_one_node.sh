@@ -22,6 +22,9 @@
 #   ALONE            1: request 0 runs alone to its end before the rest are sent,
 #                    and GAP_S counts from its end, so later requests join
 #                    running decode batches. Default 0: all sent from the start.
+#   LONG_TOKENS      output tokens request 0 asks for, to keep one request (and
+#                    under LMCACHE its server session) alive for long (default
+#                    0: its usual count)
 #   MACHINE          machine spec (tp2's and tp2-plain's default scripts/compass/machines/mi308x-hjbog18.json)
 #   STORE            artifact store holding the simulated configuration's memory
 #                    readings, taken by `compass measure memory`. Unset, the
@@ -50,7 +53,8 @@
 # and sim/, each with its server log and step record (sim/ also has the run
 # file, step table and summary), and compare.json; the last lines are the real run's
 # admission, send to response headers, and the compare per DP rank. Under
-# LMCACHE they also give the requests whose offload loads and saves differ. A
+# LMCACHE they also give the requests whose offload loads and saves differ, and
+# each run's expired-session sweeps, from its server's log. A
 # simulated run that needs a step past the real record ends at the replay's
 # refusal, which the last lines name; the records are compared all the same.
 set -euo pipefail
@@ -139,7 +143,8 @@ if [[ $LMCACHE == 1 ]]; then
 fi
 serve real
 python3 -m atom.compass.parity.traffic "$PORT" "$MODEL" "$OUT/real/record" \
-    "${REQUESTS:-64}" "${GAP_S:-$GAP}" "$PREFIX" "${IMAGES:-0}" "$ALONE" >"$OUT/real/traffic.log" 2>&1
+    "${REQUESTS:-64}" "${GAP_S:-$GAP}" "$PREFIX" "${IMAGES:-0}" "$ALONE" "${LONG_TOKENS:-0}" \
+    >"$OUT/real/traffic.log" 2>&1
 # The record's last lines are written as the workers exit.
 kill -TERM -- -$server
 leave real
@@ -220,3 +225,6 @@ if any(decisions):
     print(f"parity_one_node: offload decisions of {len(real)} requests real, "
           f"{len(sim)} simulated; {len(differ)} differ: {differ}")
 EOF
+if [[ $LMCACHE == 1 ]]; then
+    grep -H "expired sessions" "$OUT/real/lmcache.log" "$OUT/sim/server.log" || true
+fi

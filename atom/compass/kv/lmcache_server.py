@@ -35,6 +35,7 @@ import argparse
 import heapq
 import math
 import pickle
+import sys
 from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -185,10 +186,19 @@ class LMCacheServer:
 
     def expire_sessions(self, now: float) -> None:
         """One session-cleanup tick: drop every session created more than
-        `SESSION_TTL_S` before `now`."""
-        for rid, s in list(self._sessions.items()):
-            if now - s.created > SESSION_TTL_S:
-                del self._sessions[rid]
+        `SESSION_TTL_S` before `now`, and say so on stderr as lmcache logs it."""
+        expired = [
+            r for r, s in self._sessions.items() if now - s.created > SESSION_TTL_S
+        ]
+        for rid in expired:
+            del self._sessions[rid]
+        if expired:
+            print(
+                f"lmcache stand-in at {now:.6f} s: Cleaned up {len(expired)} "
+                f"expired sessions {expired}",
+                file=sys.stderr,
+                flush=True,
+            )
 
     # Keys and LRU order, as lmcache's ObjectKey and its LRU policy.
 
