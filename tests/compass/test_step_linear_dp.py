@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
-"""The step linear law under DP-attention with EP off: one law per rank, keyed
-`(dp, ep)`, the group's step the max over its ranks.
+"""The step linear law under DP-attention with EP off: one law per rank, priced at
+the deployment's DP width, the group's step the max over its ranks.
 
 Each rank's record is written from a known per-rank law, every line labelled
 with the group's step, the max over the ranks' prices, as a real DP group's
@@ -9,13 +9,11 @@ ranks each measure it. The fitted law is read by `StepLinearLaw` and priced by
 """
 
 import json
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from test_backend_step_linear import law, view
+from test_backend_step_linear import law
 from test_backend_step_linear_fit import _fit, _record
-from test_memory_readings import META_8B
 
 from atom.compass.backends import (
     BatchView,
@@ -115,7 +113,7 @@ def test_the_alternating_fit_recovers_the_per_rank_law_and_every_row_does_not(
     mixed[0] = groups[0][0][0]
     law_ = _fit(_records(tmp_path, groups + [(mixed, 1.0)]), dp=DP)
 
-    assert law_["key"] == [DP, 1]
+    assert "key" not in law_
     assert law_["cut"]["ranks"] == 1
     assert law_["spread"] == pytest.approx([0.03, 0.03], abs=1e-6)
     fitted = [law_["prefill"], law_["decode"]["4"]]
@@ -125,7 +123,7 @@ def test_the_alternating_fit_recovers_the_per_rank_law_and_every_row_does_not(
         assert vector["fit"]["mad"] < 1e-6
         assert vector["fit"]["all_rows"]["mad"] > 0.01
 
-    backend = StepLinearBackend(StepLinearLaw(law_), (DP, 1))
+    backend = StepLinearBackend(StepLinearLaw(law_), DP)
     for views, seconds in groups:
         priced = max(backend.price(v).seconds for v in views)
         assert priced == pytest.approx(seconds, rel=1e-6)
@@ -134,25 +132,11 @@ def test_the_alternating_fit_recovers_the_per_rank_law_and_every_row_does_not(
         backend.price(without)
 
 
-def test_a_keyed_law_refuses_another_width_and_one_one_prices_as_tp1(monkeypatch):
-    from atom.compass import run
-
-    tp1 = StepLinearBackend(StepLinearLaw(law()))
-    keyed = StepLinearBackend(StepLinearLaw(dict(law(), key=[1, 1])))
-    for v in (view((40, 40, False)), view((1, 300, True), rung=2)):
-        assert keyed.price(v).terms == tp1.price(v).terms
-
-    with pytest.raises(ValueError, match=r"\(dp, ep\) \(4, 1\) .* at \(1, 1\)"):
-        StepLinearBackend(StepLinearLaw(dict(law(), key=[4, 1])))
-    monkeypatch.setattr(run, "spec", lambda: {"step_linear": law()})
-    dpa = SimpleNamespace(
-        tensor_parallel_size=1,
-        enable_dp_attention=True,
-        enable_expert_parallel=False,
-        parallel_config=SimpleNamespace(data_parallel_size=8),
-    )
-    with pytest.raises(ValueError, match=r"\(dp, ep\) \(1, 1\) .* at \(8, 1\)"):
-        run.runner(SimpleNamespace(config=dpa), META_8B)
+def test_a_law_stating_key_refuses_by_name():
+    with pytest.raises(
+        ValueError, match=r"the law states key \[8, 1\]; its engine_config"
+    ):
+        StepLinearLaw(dict(law(), key=[8, 1]))
 
 
 @pytest.mark.parametrize("cap, decode", [(20, 4), (4, 4), (3, None)])

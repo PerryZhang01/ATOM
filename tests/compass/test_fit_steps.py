@@ -41,6 +41,7 @@ ENGINE = {
     "kv_cache_dtype": "bf16",
     "quantization": "unquantized-bf16",
     "tensor_parallel_size": 1,
+    "data_parallel_size": 1,
 }
 HOST = {
     "host_cpu": "planted cpu",
@@ -104,7 +105,6 @@ def law_key(form="base") -> Key:
     return Key.of(
         Kind.STEP_LINEAR_LAW,
         model=HOST["model"],
-        parallel="tp1-dp1",
         engine_config=json.dumps(ENGINE, sort_keys=True),
         source_root="tree-67c176f0",
         form=form,
@@ -269,8 +269,19 @@ def test_sessions_refuse_off_step_grid_and_for_a_grid_input_no_client_run_names(
     assert not (tmp_path / "store").exists()
 
 
+def test_the_join_width_is_the_engine_configs_not_the_record_files(tmp_path):
+    a = record(
+        tmp_path / "a", 19, key={**HOST, "engine": {**ENGINE, "data_parallel_size": 2}}
+    )
+
+    with pytest.raises(SystemExit, match="are not runs of 2 ranks"):
+        fit(tmp_path, "fit steps", *LINEAR, a, *clients(a))
+
+
 def test_a_dp_record_a_rank_of_which_gave_no_sample_refuses_at_its_width(tmp_path):
-    a = record(tmp_path / "a", 19)
+    a = record(
+        tmp_path / "a", 19, key={**HOST, "engine": {**ENGINE, "data_parallel_size": 2}}
+    )
     idle_rank(a / "steps")
 
     with pytest.raises(SystemExit, match="are not runs of 2 ranks"):

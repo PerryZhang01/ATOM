@@ -158,7 +158,7 @@ def test_measuring_one_record_twice_publishes_each_view_once_and_then_nothing(ru
     config = load({run.record: RUNS})[1]
     for key, _ in held.values():
         stated = {f: json.loads(key.values[f]) for f in ("engine_config", "sampling")}
-        for f in ("model", "device", "parallel", "source_root"):
+        for f in ("model", "device", "source_root"):
             stated[f] = key.values[f]
         assert stated == {f: config[f] for f in stated}
     phases = json.loads((run.tmp / "out/run.json").read_text())["phases"]

@@ -7,7 +7,7 @@ identity in format `FORMAT_VERSION`, and the step record in `steps/`, with the
 client runs its server served (`parity.served`). Its steps are labelled by
 `step_labels`, and a sample's provenance gains the `traces` its step served.
 A DP rank no request reached writes a line per dummy forward it runs, and gives
-no sample; its file still counts in the run's digest and its DP width. An empty
+no sample; its file still counts in the run's digest. An empty
 rank file lost its lines, and refuses.
 
 A step measurement is a `step_measurement` entry `measure steps` published,
@@ -20,7 +20,7 @@ those `traces`.
 Every input states one configuration. A record reads it from its `run.json`,
 its `dp0.engine.json` and the requests it served: `model`, the served
 config.json's digest; `device`, each GPU's `<name> <arch>`, as a spec states
-it; `parallel`, `tp<T>-dp<D>`; `engine_config`, `keyed`'s fields;
+it; `engine_config`, `keyed`'s fields, the parallel layout among them;
 `source_root`, `<revision_kind>-<revision>`; `sampling`, the request
 parameters, null for a record serving no client run's request; its host key
 less its model and engine; and its `stack`, the software versions run.json
@@ -116,7 +116,6 @@ def _record(directory: Path, client_runs) -> tuple[list[Sample], dict]:
     host = run["host_key"]
     return samples, {
         **run_fields(run),
-        "parallel": f"tp{engine['tensor_parallel_size']}-dp{len(files)}",
         "engine_config": keyed_of(engine),
         "stack": run["stack"],
         "sampling": json.loads(sampling[0]) if sampling else None,
@@ -157,7 +156,7 @@ def _measurement(store: ArtifactStore, key) -> tuple[Sample, dict]:
         }
         values = key.values
         config = {
-            **{f: values[f] for f in ("model", "device", "parallel", "source_root")},
+            **{f: values[f] for f in ("model", "device", "source_root")},
             **{f: json.loads(values[f]) for f in ("engine_config", "sampling")},
         }
     except (KeyError, TypeError, ValueError) as error:

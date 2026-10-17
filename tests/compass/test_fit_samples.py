@@ -88,7 +88,7 @@ def measured(store, config, sampling=SAMPLING, origin="replay"):
     """A step measurement keyed by `config`, as `measure steps` publishes one."""
     key = Key.of(
         Kind.STEP_MEASUREMENT,
-        **{f: config[f] for f in ("model", "device", "parallel", "source_root")},
+        **{f: config[f] for f in ("model", "device", "source_root")},
         engine_config=json.dumps(config["engine_config"], sort_keys=True),
         sampling=json.dumps(sampling, sort_keys=True),
         step_kind="decode",
@@ -126,7 +126,7 @@ def test_two_records_differing_only_in_kv_cache_dtype_refuse_naming_both_values(
         ("model", "run.json", lambda r: r["host_key"].update(model="sha256:2")),
         ("device", "run.json", lambda r: r["device"][0].update(name="MI300X")),
         (
-            "parallel",
+            "engine_config tensor_parallel_size",
             "steps/dp0.engine.json",
             lambda e: e.update(tensor_parallel_size=2),
         ),
@@ -201,7 +201,6 @@ def test_each_sample_copies_its_input_s_provenance_and_the_traces_it_served(
     assert config == {
         "model": HOST["model"],
         "device": "MI355X gfx950",
-        "parallel": "tp1-dp1",
         "engine_config": json.loads(a.joinpath("run.json").read_text())["host_key"][
             "engine"
         ],
@@ -237,7 +236,6 @@ def test_a_measurement_loads_beside_records_of_its_configuration_only(
     [
         ("model", "model", None, "sha256:2"),
         ("device", "device", None, "AMD Instinct MI355X M3550 gfx950"),
-        ("parallel", "parallel", None, "tp2-dp1"),
         ("source_root", "source_root", None, "tree-0e724ed5"),
         ("engine_config kv_cache_dtype", "engine_config", "kv_cache_dtype", "fp8"),
         ("sampling top_p", "sampling", "top_p", 0.9),
@@ -286,7 +284,7 @@ def test_a_dp_rank_no_request_reached_adds_no_sample(tmp_path, monkeypatch):
     assert samples == [
         dataclasses.replace(s, provenance={**s.provenance, "run": run}) for s in alone
     ]
-    assert both == {**config, "parallel": "tp1-dp2"}
+    assert both == config
 
 
 def test_an_empty_rank_file_refuses_as_a_rank_whose_lines_never_reached_disk(

@@ -14,12 +14,12 @@ on its cached history, which a short chunk on a deep history pays apart from
 its attention arithmetic, and then `moe_rows`, the rows the data-parallel
 group's MoE gather carries (`BatchView.moe_rows`), which every rank's MoE runs on.
 
-A law is keyed by the `(dp, ep)` it was fitted at, `(1, 1)` when it states
-none, and prices one rank's step; the runner takes the group's step as the max
-over its ranks. A backend built for another key is refused, naming both.
-Above `dp` 1 every step it prices names `UNIFORM_ROUTING` among its
-treatments: the MoE segment is priced as if routing spread tokens evenly over
-the experts, which no feature carries. A run refuses a law whose
+A law prices one rank's step; the runner takes the group's step as the max
+over its ranks. Its parallel layout is its `engine_config`'s, which a run
+checks; a law stating `key` is refused. A backend built for a data-parallel
+width above 1 names `UNIFORM_ROUTING` among every step's treatments: the MoE
+segment is priced as if routing spread tokens evenly over the experts, which
+no feature carries. A run refuses a law whose
 `machine_spec` is not its spec's `machine_spec_digest`, naming both.
 
 A decode vector may add `rowmod`, `rowmod(k)` over its rows in scheduled
@@ -40,10 +40,9 @@ law without one prices every term unvalidated. A step the law has no vector for
 is refused: prefill when the law has no prefill vector, a decode rung with
 none, or a step mixing prefill and decode rows.
 
-The law is a mapping, as a run file holds it, `key` and `prefill` optional:
+The law is a mapping, as a run file holds it, `prefill` optional:
 
     {"provenance": "<what it was fitted on>",
-     "key": [dp, ep],
      "machine_spec": "sha256:<hex>",
      "prefill": VECTOR,
      "decode": {"eager": VECTOR, "1": VECTOR, "2": VECTOR, ...}}
@@ -132,7 +131,11 @@ class StepLinearLaw:
         self.fitted_on = str(law.get("provenance", "")).strip()
         if not self.fitted_on:
             raise ValueError("a law states what it was fitted on, under provenance")
-        self.key = tuple(law.get("key", (1, 1)))
+        if "key" in law:
+            raise ValueError(
+                f"the law states key {law['key']}; its engine_config states the "
+                "parallel layout it was fitted at"
+            )
         self.prefill = None
         if "prefill" in law:
             prefill = law["prefill"]
@@ -151,14 +154,9 @@ class StepLinearLaw:
 class StepLinearBackend(CostBackend):
     """Prices a step as its features times the law's coefficients, one term each."""
 
-    def __init__(self, law: StepLinearLaw, key: tuple[int, int] = (1, 1)) -> None:
-        if law.key != tuple(key):
-            raise ValueError(
-                f"the law was fitted at (dp, ep) {law.key} and this deployment "
-                f"runs at {tuple(key)}; a law at one width is no evidence about another"
-            )
+    def __init__(self, law: StepLinearLaw, dp: int = 1) -> None:
         self.law = law
-        self.treatments = (UNIFORM_ROUTING,) if law.key[0] > 1 else ()
+        self.treatments = (UNIFORM_ROUTING,) if dp > 1 else ()
 
     @property
     def granularity(self) -> Granularity:

@@ -107,7 +107,6 @@ def run(tmp_path):
     configuration = {
         "model": here.reading(Axis.MODEL).value,
         "device": "MI355X gfx950",
-        "parallel": "tp1-dp1",
         "source_root": "{0.kind}-{0.value}".format(here.reading(Axis.ATOM_SRC)),
     }
     return r, here, configuration
