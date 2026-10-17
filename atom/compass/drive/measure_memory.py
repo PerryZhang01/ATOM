@@ -21,9 +21,11 @@ holds `memory.ENTRY_FIELDS`, its `record` the digest of the engine's log.
 as the lmcache server an offload connector reaches, so the GPU checks hold it
 to the engine's rule.
 
-A start that missed inductor's graph cache moves its files to `<out>.cold` and
-starts once more, on the cache it warmed: the kernels a cold cache's autotuning
-loads read in `non_torch`. A second miss refuses.
+Each start takes a free `ATOM_DP_MASTER_PORT`, which keys ATOM's compiled-graph
+cache, as a parity run's server does. A start in which inductor autotuned a
+kernel moves its files to `<out>.cold` and starts once more, on the cache it
+warmed: the configs autotuning tried stay loaded and read in `non_torch`. A
+second start that autotunes refuses.
 
 ``--out`` gets the engine's log, run.json's identity from the rank-0 engine
 file, and ``memory_readings.json``, the entry's readable copy. ATOM's
@@ -119,6 +121,7 @@ def main(argv: list[str], again: bool = False) -> None:
     env = {k: v for k, v in os.environ.items() if k not in (ENV, CLOCK_ENV, parity.ENV)}
     env[OUT_ENV] = str(out / READINGS)
     env["HIP_VISIBLE_DEVICES"] = ",".join(map(str, args.gpu))
+    env["ATOM_DP_MASTER_PORT"] = str(serve._free_ports(1)[0])
     if args.beside:
         env[BESIDE_ENV] = args.beside
     code = f"import sys; from {__name__} import start; start(sys.argv[1:])"
@@ -146,11 +149,11 @@ def main(argv: list[str], again: bool = False) -> None:
     if missed := _cold(out):
         if again:
             raise ValueError(
-                f"{', '.join(missed)} missed inductor's graph cache again on a second start; "
-                "non_torch on a cold cache reads high, so nothing is published"
+                f"{', '.join(missed)} autotuned kernels again on a second start; "
+                "non_torch on a cold inductor cache reads high, so nothing is published"
             )
-        # Inductor's autotuning on a cold cache loads kernels a warm start does
-        # not, and `non_torch` reads them; the next start finds the cache warm.
+        # The configs inductor's autotuning tried stay loaded and read in
+        # `non_torch`; the next start finds their best configs cached.
         out.rename(f"{out}.cold")
         return main(argv, again=True)
     first = json.loads(min((out / READINGS).iterdir()).read_text())
@@ -161,11 +164,11 @@ def main(argv: list[str], again: bool = False) -> None:
 
 
 def _cold(out: Path) -> list[str]:
-    """The ranks' files in `out` whose start missed inductor's graph cache."""
+    """The ranks' files in `out` whose start autotuned a kernel."""
     return [
         p.name
         for p in sorted((out / READINGS).iterdir())
-        if json.loads(p.read_text()).get("fxgraph_cache_misses")
+        if json.loads(p.read_text()).get("autotuned_kernels")
     ]
 
 
