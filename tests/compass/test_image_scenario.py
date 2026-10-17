@@ -10,7 +10,8 @@ prompt.
 
 The runs need a driver, as in `test_vertical_slice`, and
 `ATOM_COMPASS_IMAGE_MODEL`, a multimodal model directory ATOM serves; its
-memory readings are measured first on the GPU ``HIP_VISIBLE_DEVICES`` names.
+memory readings are measured first on the GPU ``HIP_VISIBLE_DEVICES`` names,
+under the machine spec `test_lmcache_mp_engine` reads.
 """
 
 import json
@@ -23,6 +24,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from test_lmcache_mp_engine import MACHINE
 from test_vertical_slice import (
     CONSTANT,
     HTTP,
@@ -47,7 +49,6 @@ NEEDS_AN_IMAGE_RUN = pytest.mark.skipif(
 )
 REQUESTS = 3
 IMAGE_S = 2.0**-5
-MACHINE = TREE / "scripts" / "compass" / "machines" / "mi308x-hjbog18.json"
 ARGS = ["--model", MODEL, "--enforce-eager", "--max-model-len", "2048"]
 ARGS += ["--no-enable_prefix_caching"]
 
