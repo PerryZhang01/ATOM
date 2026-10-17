@@ -635,8 +635,9 @@ capture (calibration cells at concurrency 1, 4, 16, 64 and 256, at ATOM
 8f1d8ef6e). The records predate the engine key's parallel layout, TBO and
 environment, so each law's `--engine` file states them from the cells'
 `server.log` engine arguments and the capture script's environment for that
-side; the law's `provenance` names both. Their host keys carry the capture
-tree's `atom` digest.
+side; the law's `provenance` names both. Their host keys carry the `atom`
+digest of the tree they were last re-keyed at; `provenance` names the
+capture tree's.
 
 ## Cost accuracy on a real run's own steps — `validate.cost`
 
