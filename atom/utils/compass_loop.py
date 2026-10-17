@@ -11,7 +11,7 @@ jobs at one instant share, such as the request id each `Sequence` draws, follows
 the station's order and not the threads'.
 
 `SimExecutor` is the event loop's default executor. From `SimExecutor.start_run`
-on, `classify` sorts every job by name: ``do_preprocess`` is a service job on
+on, `classify` sorts every job by name: `SERVICE_JOBS` are service jobs on
 the station; ``Queue.get`` is a wait job passed straight through, since a
 channel event completes it and zero simulated time is right; anything else is
 refused, so a job ATOM later adds to the pool is reported, not timed as free.
@@ -148,10 +148,15 @@ class Station:
             return self.final < len(self.jobs)
 
 
+#: Service jobs by function name: a request's tokenization, and a chat
+#: request's media preparation (`atom.compass.run` prices its images).
+SERVICE_JOBS = frozenset({"do_preprocess", "_prepare_multimodal_inputs"})
+
+
 def classify(fn) -> str:
     """``service``, ``wait`` or ``refuse``: the job registry, by qualified name."""
     name = getattr(fn, "__qualname__", "")
-    if name.rpartition(".")[2] == "do_preprocess":
+    if name.rpartition(".")[2] in SERVICE_JOBS:
         return "service"
     if name == "Queue.get":
         return "wait"
@@ -234,7 +239,7 @@ class SimExecutor(ThreadPoolExecutor):
             self.placing = None
 
 
-def _charge(d: float) -> None:
+def charge(d: float) -> None:
     """Charge `d` to this thread's station job; with none open, in the run, the
     caller is the clock owner and advances the LP clock by `d` (`advance_to`
     refuses any other thread)."""
@@ -253,7 +258,7 @@ def wrap_encode(encode, entry):
 
     def charged(*args, **kwargs):
         ids = encode(*args, **kwargs)
-        _charge(entry.encode_fixed_s + len(ids) / rate)
+        charge(entry.encode_fixed_s + len(ids) / rate)
         return ids
 
     return charged
@@ -264,7 +269,7 @@ def wrap_decode(decode, entry):
     rate = entry.decode_tokens_per_s * entry.derate
 
     def charged(ids, *args, **kwargs):
-        _charge(entry.decode_fixed_s + len(ids) / rate)
+        charge(entry.decode_fixed_s + len(ids) / rate)
         return decode(ids, *args, **kwargs)
 
     return charged
@@ -604,7 +609,7 @@ class HttpChannel:
                     await loop.executor.placed()
                     fixed, per_byte = self.intake
                     nbytes = sum(len(m.get("body", b"")) for m in body)
-                    _charge(fixed + per_byte * nbytes)
+                    charge(fixed + per_byte * nbytes)
                 with rt.lock:
                     rt.count_done_locked(ch, seq)
             if relay_in is None:

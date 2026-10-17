@@ -8,7 +8,8 @@
 # GPU, aiperf as shipped, the duration on the wall clock.
 #
 # Usage: cctraces_sim.sh RUN_FILE OUT_DIR
-#   RUN_FILE        a run file; its out_dir and clock_endpoint are replaced
+#   RUN_FILE        a run file; its out_dir and clock_endpoint are replaced,
+#                   and its client_runs set to 1
 #   MODEL           model directory: config.json and the tokenizer (required;
 #                   with REAL=1, the weights too)
 #   TRACES          a cc-traces traces.jsonl (required)
@@ -17,7 +18,9 @@
 #                   compass-harness (required)
 #   REAL            1 for a real cell (default 0)
 #   RECORD          0 turns the step record off (default 1)
-#   FIRST_SESSION   skip the first FIRST_SESSION traces (default 0)
+#   FIRST_SESSION   skip the first FIRST_SESSION traces (default 0); each
+#                   trace aiperf is given is a file named by its session,
+#                   its line in TRACES counted from 0
 #   SESSIONS        replay SESSIONS traces (default 2)
 #   CONCURRENCY     aiperf --concurrency (default 1)
 #   DURATION_S      aiperf --benchmark-duration, seconds on the cell's clock
@@ -89,7 +92,7 @@ print(*(p.value for p in e(group="aiperf.plugins")))')
 fi
 
 awk -v d="$OUT/traces" -v first="${FIRST_SESSION:-0}" -v n="$SESSIONS" '
-    NR > first {f = sprintf("%s/%05d.json", d, NR - first - 1); print > f; close(f)}
+    NR > first {f = sprintf("%s/%05d.json", d, NR - 1); print > f; close(f)}
     NR >= first + n {exit}' "$TRACES"
 
 # Everything but paths, the URL and the export level, which changes what aiperf
@@ -110,15 +113,17 @@ from pathlib import Path
 run_file, out, traces, benchmark_id, *args = sys.argv[1:]
 out = Path(out)
 run = json.loads(Path(run_file).read_text())
-n = run.get("data_parallel_size", 1)
+dp = run.get("data_parallel_size", 1)
+# One write-request port per prefill rank and decode rank pair, as pd_sim.sh binds.
+n = run.get("prefill_data_parallel_size", dp) * run.get("decode_data_parallel_size", dp)
 # Held together, so no two are the same port.
 socks = [socket.socket() for _ in range(6)]
 for s in socks:
     s.bind(("127.0.0.1", 0))
 ports = [s.getsockname()[1] for s in socks]
-# The write requests take n*n ports from KV_WRITE_REQ_PORT, the fifth: re-pick
+# The write requests take n ports from KV_WRITE_REQ_PORT, the fifth: re-pick
 # it, the others still held, until none of them lies in that block.
-while {*ports[:4], ports[5]} & set(range(ports[4], ports[4] + n * n)):
+while {*ports[:4], ports[5]} & set(range(ports[4], ports[4] + n)):
     socks.append(socket.socket())
     socks[-1].bind(("127.0.0.1", 0))
     ports[4] = socks[-1].getsockname()[1]
@@ -136,6 +141,10 @@ def sha256(path):
 
 run["out_dir"] = str(out)
 run["clock_endpoint"] = f"tcp://127.0.0.1:{ports[0]}"
+# The cell is one client run, and its end the run's finish: a run file that
+# declares more, or none (null, as `compass run` keeps one), leaves the server
+# up after aiperf.
+run["client_runs"] = 1
 run["workload"] = {
     "dataset_sha256": sha256(traces),
     "traces_sha256": [sha256(p) for p in sorted((out / "traces").iterdir())],

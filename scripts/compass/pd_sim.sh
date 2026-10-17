@@ -15,7 +15,7 @@
 #   PROMETHEUS_PORT     the ports it uses, all on 127.0.0.1; prefill server k
 #                       serves on PREFILL_PORT+k, decode server k on
 #                       DECODE_PORT+k; with p prefill and d decode servers at DP
-#                       width n the write requests take p*d*n*n ports from
+#                       widths m and n the write requests take p*d*m*n ports from
 #                       KV_WRITE_REQ_PORT
 #   PREFILL_DP_PORT DECODE_DP_PORT
 #                       each side's --data-parallel-master-port, plus 16k for
@@ -26,6 +26,9 @@
 #                       failure, stopping it there is the caller's
 #   SERVER_ARGS         more API server flags (default: --enforce-eager
 #                       --max-model-len 2048)
+#   PREFILL_ARGS DECODE_ARGS
+#                       more API server flags for that side only, after
+#                       SERVER_ARGS, e.g. its DP width
 #   ATOMESH             the router binary (default: atomesh)
 #   ATOM_COMPASS_PARITY_RECORD
 #                       when set, each server records its steps
@@ -38,11 +41,11 @@
 #                       from (default 20260707, aiperf's in cctraces_sim.sh)
 #
 # The router is launched as `start_router` launches the real cell's. With
-# --enable-dp-attention in SERVER_ARGS, under BENCHMARK_KIND=aiperf_agentic or a
-# rank mapping policy other than none, that is --dp-aware: the router chooses
-# among DP ranks on load that responses move, which makes it LP `router` of the
-# run, and RUN_FILE gains `router_in_s` unless it has one already, and
-# `router`, the binary that runs it, refused unless built from this tree's
+# --enable-dp-attention in either side's flags, under
+# BENCHMARK_KIND=aiperf_agentic or a rank mapping policy other than none, that
+# is --dp-aware: the router chooses among DP ranks on load that responses
+# move, which makes it LP `router` of the run, and RUN_FILE gains `router_in_s`
+# unless it has one already, and `router`, the binary that runs it, refused unless built from this tree's
 # atom/mesh (`router_binary` in atom/compass/run). Several servers of a side
 # make it LP `router` too, as it chooses among them. Otherwise
 # the router has one worker per side, and ATOM's own DP dispatch picks the rank.
@@ -93,11 +96,13 @@ server() { # role port kv_role dp_port instance count [exec]
     # uvicorn's keep-alive timeout runs on the LP clock, the router drops idle
     # connections on the wall clock: which comes first, and with it whether the
     # timeout takes a grant, would differ between runs. Only the router closes.
-    # shellcheck disable=SC2086 # DECODE_EXEC and SERVER_ARGS are word lists
+    local extra=${DECODE_ARGS:-}
+    [[ $1 == prefill ]] && extra=${PREFILL_ARGS:-}
+    # shellcheck disable=SC2086 # DECODE_EXEC and the server flags are word lists
     ${7:-} env "${passed[@]}" ${ATOM_COMPASS_PARITY_RECORD:+"ATOM_COMPASS_PARITY_RECORD=$ATOM_COMPASS_PARITY_RECORD/$name"} python3 -m atom.entrypoints.openai_server \
         --model "$MODEL" --host 127.0.0.1 --server-port "$2" --timeout-keep-alive 1000000 \
         --data-parallel-master-port "$4" \
-        $SERVER_ARGS \
+        $SERVER_ARGS $extra \
         --compass-run "$RUN_FILE" --compass-clock-endpoint "$CLOCK" \
         --kv-transfer-config "{$kv}" \
         >"$OUT/$name.log" 2>&1 &
@@ -110,7 +115,7 @@ policy=${ROUTER_POLICY:-random}
 mapping=${ATOM_PD_RANK_MAPPING_POLICY:-none}
 mapping_args=()
 dp_aware=()
-if [[ " $SERVER_ARGS " == *" --enable-dp-attention "* ]]; then
+if [[ " $SERVER_ARGS ${PREFILL_ARGS:-} ${DECODE_ARGS:-} " == *" --enable-dp-attention "* ]]; then
     [[ $mapping == none ]] || mapping_args=(--atom-pd-rank-mapping-policy "$mapping")
     if [[ ${BENCHMARK_KIND:-random} == aiperf_agentic ]]; then
         [[ $policy == cache_aware ]] || policy=dp_sticky

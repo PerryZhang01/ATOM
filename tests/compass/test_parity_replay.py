@@ -10,6 +10,8 @@ import http.server
 import json
 import queue
 import re
+import subprocess
+import sys
 import threading
 import time
 
@@ -189,6 +191,34 @@ def test_a_real_workload_writes_when_each_request_was_admitted(tmp_path):
     arrivals = json.loads((tmp_path / ARRIVALS).read_text())
     waits = [a - s for s, a in zip(arrivals["sent_ns"], arrivals["admitted_ns"])]
     assert len(waits) == 3 and all(0.02e9 <= w < 0.2e9 for w in waits), waits
+
+
+@pytest.mark.parametrize("alone", [[], ["0", "0", "1"]], ids=["default", "alone"])
+def test_the_real_workload_runs_request_0_alone_only_when_asked(
+    tmp_path, monkeypatch, alone
+):
+    done = []  # just before each stream's end was written
+
+    class Server(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["content-length"]))
+            self.send_response(200)
+            self.end_headers()
+            time.sleep(0.3)  # the stream, longer than a gap
+            done.append(time.monotonic_ns())
+            self.wfile.write(b"data: [DONE]\n\n")
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Server)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.delenv(compass_run.ENV, raising=False)
+    argv = [str(server.server_port), "m", str(tmp_path), "3", "0.1", *alone]
+    subprocess.run([sys.executable, "-m", traffic.__name__, *argv], check=True)
+    server.shutdown()
+    sent = json.loads((tmp_path / ARRIVALS).read_text())["sent_ns"]
+    if not alone:  # the default sends request 1 during request 0's stream
+        assert sent[1] < min(done), (sent, done)
+    else:
+        assert sent[1] >= min(done) and sent[2] - sent[1] > 0.05e9, (sent, done)
 
 
 @pytest.mark.parametrize("role, side", [("kv_producer", "P"), ("kv_consumer", "D")])

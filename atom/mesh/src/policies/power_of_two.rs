@@ -23,7 +23,16 @@ pub struct PowerOfTwoPolicy {
 }
 
 impl PowerOfTwoPolicy {
+    /// Under the router LP this ends the run: the loads it compares come from
+    /// each worker's `/get_load`, polled on a wall-clock interval, which no
+    /// LP channel carries.
     pub fn new() -> Self {
+        if crate::determinism::simulated() {
+            crate::compass_router::fail(
+                "policy power_of_two is refused: its loads are polled from each worker's \
+                 /get_load on a wall-clock interval, which no LP channel carries",
+            );
+        }
         Self {
             cached_loads: RwLock::new(HashMap::new()),
         }
@@ -48,7 +57,7 @@ impl LoadBalancingPolicy for PowerOfTwoPolicy {
         }
 
         // Select two random workers - use offset to guarantee different selection in O(1)
-        let mut rng = rand::rng();
+        let mut rng = crate::determinism::rng();
         let idx1 = rng.random_range(0..healthy_indices.len());
         // Pick idx2 from remaining indices: offset by 1 + random from (len-1) to guarantee different
         let idx2 =

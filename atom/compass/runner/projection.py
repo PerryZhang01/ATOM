@@ -256,4 +256,33 @@ def batch_view(batch: Any, mode: ForwardMode, runner: Any) -> BatchView:
         moe_rows=moe_rows,
         produces_output=batch.produces_output(),
         tbo_tokens=None if mode.sync is None else mode.sync.ub_tokens_across_dp,
+        image_tokens=image_tokens(batch, runner),
     )
+
+
+def image_tokens(batch: Any, runner: Any) -> int:
+    """The image rows a step's forward handles, as `ModelRunner.run_model`
+    handles them. With embedding spans, a payload still carrying pixel values
+    encodes every span on this chunk, even one that fills none; a later chunk
+    fills the spans it overlaps. Without spans, the image's embeddings sit at
+    the model's image token."""
+    from atom.model_engine.multimodal_runtime import embedding_indices
+
+    media = getattr(batch, "multimodal_data", None) or {}
+    count, offset = 0, 0
+    for req, length, end in zip(
+        batch.req_ids, batch.num_scheduled_tokens, batch.context_lens
+    ):
+        length, data = int(length), media.get(req)
+        if data is not None and "embedding_spans" in data:
+            spans = data["embedding_spans"]
+            if "pixel_values" in data:
+                count += sum(rows for _, rows in spans)
+            else:
+                count += len(embedding_indices(spans, int(end) - length, length)[0])
+        elif data is not None:
+            image = runner.config.multimodal_config.image_token_id
+            mine = batch.scheduled_tokens[offset : offset + length]
+            count += int(np.count_nonzero(mine == image))
+        offset += length
+    return count

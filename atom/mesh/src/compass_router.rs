@@ -110,7 +110,7 @@ tokio::task_local! {
     static REQUEST: RefCell<Handling>;
 }
 
-fn fail(why: impl std::fmt::Display) -> ! {
+pub(crate) fn fail(why: impl std::fmt::Display) -> ! {
     error!("router LP: {why}; ending the run");
     eprintln!("router LP: {why}; ending the run");
     std::process::exit(1)

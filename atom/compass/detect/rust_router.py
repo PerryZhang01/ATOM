@@ -108,8 +108,9 @@ _KEPT = (
     ("core/worker.rs", "RandomState", LATENCY, "active routing keys; only the count is read", 1),
     ("core/worker_builder.rs", "RandomState", LATENCY, _LOOKUP, 4),
     ("core/worker_manager.rs", "RandomState", LATENCY, _LOOKUP, 2),
-    ("core/worker_manager.rs", "tokio::time", DECISION,
-     "polls worker loads on a wall interval into power_of_two's cached loads", 1),
+    ("core/worker_manager.rs", "tokio::time", OFF_LP, (
+        "polls worker loads on a wall interval into power_of_two's cached loads; "
+        "the router LP refuses power_of_two"), 1),
     ("core/worker_registry.rs", "RandomState", LATENCY, (
         "maps read by key; under the router LP get_all and each model's list are "
         "sorted by URL and DP rank; the other listings feed startup, status and "
@@ -134,9 +135,9 @@ _KEPT = (
      "a warn-once set, and a grouping by model where each model builds its own tree", 2),
     ("policies/dp_sticky.rs", "RandomState", LATENCY,
      "assignments read by key, and per-worker session counts", 2),
-    ("policies/power_of_two.rs", "rand::", DECISION, "draws two candidates from the thread RNG", 2),
+    ("policies/power_of_two.rs", "rand::", LATENCY, "imports the trait the routed draws call", 1),
     ("policies/power_of_two.rs", "RandomState", LATENCY, _LOOKUP, 1),
-    ("policies/random.rs", "rand::", DECISION, "draws the worker from the thread RNG", 2),
+    ("policies/random.rs", "rand::", LATENCY, "imports the trait the routed draw calls", 1),
     ("policies/registry.rs", "RandomState", LATENCY, _LOOKUP, 2),
     ("policies/tree.rs", "RandomState", LATENCY,
      "per-tenant sizes read by key, and a debug dump", 2),

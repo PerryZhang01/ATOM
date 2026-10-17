@@ -19,7 +19,15 @@ names nothing and is counted. ``traces`` names every trace aiperf was given:
 the ``id`` of each weka trace its input config's dataset holds, a file or each
 ``*.json`` of a directory, as aiperf's weka trace loader reads them. Which of
 them a run's finished requests came from moves with its schedule, since aiperf
-records nothing of a request in flight at its cutoff.
+records nothing of a request in flight at its cutoff. ``sessions`` gives each
+of them whose file is named by a number that number, its session:
+`cctraces_sim.sh` names each trace's file by its line in the traces it splits,
+counted from 0. ``arguments`` names, by its path in the input config, all else
+there that decides which requests aiperf sends, when, and what each asks for:
+every field of each phase (concurrency, duration, grace period, warmup) and of
+the dataset but its path (its seed), the endpoint's `ENDPOINT` fields, and the
+scenario; and the export's ``benchmark_id``, which marks each conversation's
+first turn, so every prompt's length moves with it.
 """
 
 import argparse
@@ -45,6 +53,11 @@ NOT_SAMPLING = frozenset(
         "stream_options",
     }
 )
+#: The endpoint's fields that shape what a request asks for, how long aiperf
+#: waits on it (ATOM aborts a request whose client leaves), or how aiperf
+#: counts its tokens. The others say where and how it connects, or shape a
+#: request as no documented client run does (`template`, `headers`).
+ENDPOINT = ("type", "streaming", "use_server_token_count", "extra", "timeout")
 
 
 def response_id(responses) -> str | None:
@@ -60,15 +73,42 @@ def response_id(responses) -> str | None:
     return None
 
 
-def given(artifacts) -> list:
-    """The traces of the one dataset aiperf was given, as its export names it."""
+def given(artifacts) -> dict:
+    """The traces of the one dataset aiperf was given, as its export names it,
+    each to its file's name when that is a number, else None."""
     config = json.loads((Path(artifacts) / AIPERF).read_text())["input_config"]
     (d,) = config["datasets"]
     if d.get("format") != "weka_trace" or not d.get("path"):
         raise ValueError(f"aiperf's dataset {d['name']} is not weka traces at a path")
     path = Path(d["path"])
     files = path.glob("*.json") if path.is_dir() else [path]
-    return sorted({json.loads(f.read_text())["id"] for f in files})
+    return {
+        json.loads(f.read_text())["id"]: int(f.stem) if f.stem.isdigit() else None
+        for f in files
+    }
+
+
+def arguments(artifacts) -> dict:
+    """The export's ``arguments``, from aiperf's export in `artifacts`."""
+    export = json.loads((Path(artifacts) / AIPERF).read_text())
+    config = export["input_config"]
+    (d,) = config["datasets"]
+    out = {
+        f"phases.{p['name']}.{k}": v
+        for p in config["phases"]
+        for k, v in p.items()
+        if k != "name"
+    }
+    out |= {
+        f"datasets.{d['name']}.{k}": v
+        for k, v in d.items()
+        if k not in ("name", "path")
+    }
+    out |= {f"endpoint.{k}": config["endpoint"].get(k) for k in ENDPOINT}
+    return out | {
+        "scenario": config.get("scenario"),
+        "benchmark_id": export["benchmark_id"],
+    }
 
 
 def write(artifacts) -> tuple[Path, dict, int]:
@@ -100,10 +140,13 @@ def write(artifacts) -> tuple[Path, dict, int]:
                 k: v for k, v in record["payload"].items() if k not in NOT_SAMPLING
             },
         }
+    traces = given(artifacts)
     export = {
         "requests": named[PROFILING],
         "warmup": named[WARMUP],
-        "traces": given(artifacts),
+        "traces": sorted(traces),
+        "sessions": {t: s for t, s in traces.items() if s is not None},
+        "arguments": arguments(artifacts),
     }
     path = artifacts / NAME
     path.write_text(json.dumps(export, sort_keys=True))

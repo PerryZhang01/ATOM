@@ -32,14 +32,14 @@ SIZE = 2.0**-12 + 8 * 2.0**-20  # the eager size part, sender side
 RDV = [("gloo", 8), ("rccl", 2048)]
 
 
-def _stage(rank, *grants, frames=(), ready=C, parts=()):
-    """Stage `rank` of two, whose forward takes `C` of host time and ends its
+def _stage(rank, *grants, frames=(), ready=C, parts=(), pp=2):
+    """Stage `rank` of `pp`, whose forward takes `C` of host time and ends its
     device work `ready` after the call; its runner calls by name and frame."""
     table = single_engine_table(
         admission_path="serving",
         ipc_s=0.5,
         stream_s=0.5,
-        pp=2,
+        pp=pp,
         pp_links=(L_DATA, L_ACK),
     )
     thread, on_owner = _owner()
@@ -54,7 +54,7 @@ def _stage(rank, *grants, frames=(), ready=C, parts=()):
             return SimpleNamespace(pp_send=(ready, 0.0, parts))
         return frames.pop(0) if name == "recv_pp_frame" else True
 
-    return rt, partial(on_owner, StageSends(rt, call, rank, 2, MODELS)), calls
+    return rt, partial(on_owner, StageSends(rt, call, rank, pp, MODELS)), calls
 
 
 def test_a_downstream_forward_is_called_at_the_arrival_its_launch_held_to_the_metadata():
@@ -92,6 +92,50 @@ def test_a_send_stamps_its_metadata_at_the_host_and_its_tensors_at_the_device_en
     # The idle flush waits for the tensor, which leaves at the device's end.
     run("flush_pp_send")
     assert [m[:2] for m in rt.conn.sent] == [("TAR", C), ("TAR", done)]
+
+
+def test_a_middle_stage_receives_then_sends_and_acks_both_ways():
+    """Stage 1 of four: its forward takes the stage before's frame, returning
+    that rendezvous send's completion, runs, then sends the stage after its
+    own frame; the idle flush settles on the stage after's completion."""
+    t_send, t_ready = 0.25, 0.5
+    frame = {"seq": 0, "t_send": t_send, "t_ready": t_ready, "parts": RDV}
+    done, meta, end = pp_send.arrivals(MODELS, frame, 0.0)
+    data_out = "engine-pp1->engine-pp2:pp_data#dp0"
+    ack_in = "engine-pp2->engine-pp1:pp_ack#dp0"
+    sent = {"seq": 0, "t_send": meta + C, "t_ready": meta + 4 * C, "parts": RDV}
+    # The stage after posts its receive when the frame arrives.
+    acked = pp_send.arrivals(MODELS, sent, meta + C + L_DATA)[0]
+    rt, run, calls = _stage(
+        1,
+        (t_send + L_DATA, {DATA: [(0, t_send + L_DATA)]}),
+        (meta, {}),
+        (meta + C, {}),
+        (acked, {ack_in: [(0, acked)]}),
+        frames=[frame, {"seq": 0}],
+        ready=4 * C,
+        parts=RDV,
+        pp=4,
+    )
+    batch = SimpleNamespace()
+    run("forward", batch)
+    assert batch.compass_pp_release == end
+    run("flush_pp_send")
+    assert [m[:3] for m in rt.conn.sent] == [
+        ("NER", math.inf, []),
+        ("TAR", meta, [(ACK, 0, done)]),
+        ("TAR", meta + C, []),
+        ("NER", math.inf, [(data_out, 0, meta + C + L_DATA)]),
+    ]
+    assert calls == [
+        ("recv_pp_frame", "pp_data"),
+        ("send_pp_frame", "pp_ack", {"seq": 0}),
+        ("forward", batch),
+        ("send_pp_frame", "pp_data", sent),
+        ("recv_pp_frame", "pp_ack"),
+        ("flush_pp_send",),
+    ]
+    assert rt.now == acked
 
 
 def _decode(release=None):
@@ -216,6 +260,79 @@ def test_the_script_gates_every_stage_of_a_pipeline_record(tmp_path, capsys):
     assert recurrence.main(str(tmp_path)) == 0
     out = capsys.readouterr().out
     assert "dp0 pp0 kind" in out and "dp0 pp1 kind" in out
+
+
+def _downstream(n, enter, entry, wait, d_recv, end=None):
+    """A downstream stage's forward `n`, 1 ms per host segment: entered at
+    `enter`, its entry released at `entry`, its launch waiting `wait` for the
+    stage before's send, its device 10 ms of work after `d_recv` waiting for
+    the input; on the last stage, its token read waits for its device `end`."""
+    l1 = entry + wait + 2
+    kw = {"t_pp_recv_ns": (entry + 1, entry + 1 + wait), "d_recv_ns": d_recv}
+    if end is not None:
+        kw["t_recv_ns"] = (l1, end)
+    exit_ = (end or l1) + 1
+    return _line(n, enter, (enter, entry), (entry + 1, l1), exit_, 10 + d_recv, **kw)
+
+
+def pp4_record():
+    """Four stages written by the wait rules, 10 ms of device work per forward.
+    Each entry waits for its stage's device four forwards back: the head's
+    sixth, the middle stages' fifth and sixth. Each downstream stage launches
+    at the stage before's send and starts its device at that stage's end;
+    the middle stages return at their launch, the last at its own end."""
+    head = [
+        _line(n, enter, (enter, entry), (entry + 1, entry + 2), entry + 3, 10)
+        for n, (enter, entry) in enumerate(
+            ((0, 0), (3, 3), (6, 6), (9, 9), (12, 12), (15, 21))
+        )
+    ]
+    rest = (
+        ((0, 0, 1, 10), (4, 4, 0, 0), (7, 7, 0, 0))
+        + ((10, 10, 0, 0), (13, 21, 0, 0), (24, 31, 0, 0)),
+        ((0, 0, 2, 20), (5, 5, 0, 0), (8, 8, 0, 0))
+        + ((11, 11, 0, 0), (14, 31, 0, 0), (34, 41, 0, 0)),
+        ((0, 0, 3, 30, 41), (42, 42, 0, 0, 53), (54, 54, 0, 0, 65))
+        + ((66, 66, 0, 0, 77), (78, 78, 0, 0, 89), (90, 90, 0, 0, 101)),
+    )
+    return [head] + [[_downstream(n, *f) for n, f in enumerate(s)] for s in rest]
+
+
+#: Each non-last stage's predicted (send, device end) per forward, in ms.
+PP4_SENDS = (
+    ((2, 11), (5, 21), (8, 31), (11, 41), (14, 51), (23, 61)),
+    ((3, 21), (6, 31), (9, 41), (12, 51), (23, 61), (33, 71)),
+    ((4, 31), (7, 41), (10, 51), (13, 61), (33, 71), (43, 81)),
+)
+
+
+def test_four_stages_are_each_charged_from_the_stage_befores_sends(tmp_path, capsys):
+    stages = pp4_record()
+    for k, steps in enumerate(stages):
+        name = f"pp{k}.dp0" if k else "dp0"
+        (tmp_path / f"{name}.jsonl").write_text(
+            "".join(json.dumps(s) + "\n" for s in steps)
+        )
+    for k, steps in enumerate(stages):
+        own = [{f: v for f, v in s.items() if f != "named"} for s in steps]
+        assert read(tmp_path, k) == {0: own}
+    assert read(tmp_path, 4) == {}
+    assert recurrence.main(str(tmp_path)) == 0
+    out = capsys.readouterr().out
+    assert all(f"dp0 pp{k} kind" in out for k in range(4))
+    sends = [None]
+    for k, steps in enumerate(stages):
+        report = recurrence.check(steps, (k, 4), sends[k])
+        assert report["pass"] and report["total"] == pytest.approx(0, abs=1e-9)
+        sends.append(report["sends"])
+        if k:  # unreleased by the stage before, its first forward runs early
+            assert not recurrence.check(steps, (k, 4))["pass"]
+    assert sends[1:4] == [[[t * MS for t in p] for p in s] for s in PP4_SENDS]
+    # Two forwards back would hold the head's third entry.
+    assert not recurrence.check(stages[0], (0, 2))["pass"]
+    # The last stage waits for its own device end, a middle stage does not.
+    assert not recurrence.check(stages[3], (2, 4), sends[3])["pass"]
+    assert not recurrence.check(stages[2], (3, 4), sends[2])["pass"]
 
 
 class _Group:

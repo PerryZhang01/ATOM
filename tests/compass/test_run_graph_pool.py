@@ -33,6 +33,7 @@ from transformers import PretrainedConfig
 
 from atom.compass import run as compass_run
 from atom.compass.artifacts import ArtifactRefusal
+from atom.compass.run.step_grid import keyed
 from atom.compass.runner.overrides import NonAllocatingRunner
 
 
@@ -53,7 +54,8 @@ def _installed(
     """A worker's runner after `run.runner` installed its readings, the entry
     holding `readings`. With `hf_overrides`, the config.json leaves out each
     key they set."""
-    monkeypatch.setenv(compass_run.ENV, str(_run_file(tmp_path, **run)))
+    path = _run_file(tmp_path, **run)
+    monkeypatch.setenv(compass_run.ENV, str(path))
     raw = json.loads(CONFIG_JSON.read_text())
     if hf_overrides is None:
         (tmp_path / "config.json").write_text(CONFIG_JSON.read_text())
@@ -87,6 +89,11 @@ def _installed(
     )
     machine = run.get("machine", DOCUMENT)
     with_readings(runner, tmp_path / "store", readings, machine)
+    # A law that states no engine config was fitted under this deployment's.
+    written = json.loads(path.read_text())
+    for law in compass_run.entries(written, compass_run.STEP_LINEAR):
+        law.setdefault("engine_config", keyed(runner.config))
+    path.write_text(json.dumps(written))
     compass_run.runner(runner, META_8B)
     return runner
 
