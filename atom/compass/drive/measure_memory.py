@@ -17,6 +17,9 @@ publishes. A `--gpu` whose device is not the spec's refuses before the
 start, so no entry measured on another card is keyed by that spec. `non_torch`
 refuses a spread across the ranks above `SPREAD_LIMIT`. One member per rank
 holds `memory.ENTRY_FIELDS`, its `record` the digest of the engine's log.
+`--beside` names a command the start runs first in the engine's session, such
+as the lmcache server an offload connector reaches, so the GPU checks hold it
+to the engine's rule.
 
 ``--out`` gets the engine's log, run.json's identity from the rank-0 engine
 file, and ``memory_readings.json``, the entry's readable copy. ATOM's
@@ -28,6 +31,7 @@ import datetime
 import hashlib
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -55,6 +59,8 @@ from atom.compass.spec.fields import PINNED
 PROG = "compass measure memory"
 #: Where each rank writes its readings: a directory this command names.
 OUT_ENV = "ATOM_COMPASS_MEMORY_OUT"
+#: The command `--beside` names, which the start runs before the engine.
+BESIDE_ENV = "ATOM_COMPASS_MEMORY_BESIDE"
 RUNNER = "atom.compass.drive.memory_runner.MemoryReadingModelRunner"
 #: ATOM's dummy weights flag; its parser reads `_` in a flag as `-`.
 LOAD_DUMMY = "--load-dummy"
@@ -65,6 +71,8 @@ LOG, READINGS = "engine.log", "readings"
 def start(argv: list[str]) -> None:
     """Start ATOM's engine from ATOM's arguments `argv` through the reading
     runner, and stop it once it has started."""
+    if beside := os.environ.get(BESIDE_ENV):
+        subprocess.Popen(shlex.split(beside))
     from atom.model_engine.arg_utils import EngineArgs
     from atom.model_engine.llm_engine import LLMEngine
     from atom.utils.arg_parser import FlexibleArgumentParser
@@ -107,6 +115,8 @@ def main(argv: list[str]) -> None:
     env = {k: v for k, v in os.environ.items() if k not in (ENV, CLOCK_ENV, parity.ENV)}
     env[OUT_ENV] = str(out / READINGS)
     env["HIP_VISIBLE_DEVICES"] = ",".join(map(str, args.gpu))
+    if args.beside:
+        env[BESIDE_ENV] = args.beside
     code = f"import sys; from {__name__} import start; start(sys.argv[1:])"
     with quiet(args.gpu, out), (out / LOG).open("w") as log:
         engine = subprocess.Popen(
@@ -196,4 +206,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--machine", required=True, help="this platform's machine spec")
     p.add_argument("--store", required=True, help="the artifact store's root")
     p.add_argument("--out", required=True, help="an empty directory for the logs")
+    p.add_argument(
+        "--beside", help="a command to run beside the engine, such as a server"
+    )
     return p

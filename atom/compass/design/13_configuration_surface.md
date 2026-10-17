@@ -177,7 +177,7 @@ compass trace ops                 (ops half)
 compass measure steps  [<batches>...] [--grid <population>... --grid-definition F] \
                        <sample> --sampling P --out D --store S -- <ATOM args> [GPU]
 compass measure ops               (ops half)                                  [GPU]
-compass measure memory           --machine M  --out D --store S -- <ATOM args> [GPU]
+compass measure memory [--beside CMD] --machine M --out D --store S -- <ATOM args> [GPU]
 compass fit steps      --backend step-linear [--form FORM] [--seed SEED] \
                        RECORD... --client-run RECORD EXPORT... --machine M \
                        --out D --store S
@@ -283,7 +283,9 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
   its traces. Its value is `07` D39's bench window.
 - **`measure memory`** starts the real engine with ATOM's arguments, reads the memory
   readings once the KV cache is allocated and the graphs are captured, publishes one
-  `memory_readings` entry, and exits (`07` D38, Phase 2).
+  `memory_readings` entry, and exits (`07` D38, Phase 2). `--beside` runs a command the
+  start needs, such as the lmcache server an offload connector reaches, between the
+  two GPU checks.
 - **`fit`**: each backend owns its fit and states the label sources it takes. The step linear
   law and `fit host` take real records only (`09` D54); the step grid takes bench points for
   its grid and real records, bench replays or both for its residual (`17` D98, D100).

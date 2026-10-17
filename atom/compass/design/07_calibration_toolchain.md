@@ -275,7 +275,8 @@ predicted; if not, that is the finding and the recipe grows.
 real engine, reads the readings below on every rank once the KV cache is allocated and
 the graphs are captured, publishes one `memory_readings` entry (D41), and exits (`13`
 D80); `record` takes none. The entry is keyed by the model, the digest of `--machine`,
-the parallel layout and the engine config (`atom/compass/run/memory.py::key_fields`), and
+the parallel layout and the engine config, its KV offload connector included
+(`atom/compass/run/memory.py::key_fields`), and
 records the stack the start ran on, which a run's spec must pin. A run reads its rank's
 member and refuses when there is no entry, so the readings leave the machine spec (doc
 `05` D25). This phase exists because these memory quantities cannot be derived from
