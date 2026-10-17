@@ -116,9 +116,9 @@ def test_the_probe_recovers_the_carriers_it_was_sampled_from():
     assert fit["gloo"]["eager_threshold_bytes"] == 0
     assert fit["gloo"]["early"] == pytest.approx([0] * 5, abs=1e-12)
     # A 1% error at every size moves the fixed part 1%, not by the large sizes' error.
-    for i, s in enumerate(samples):
+    for s in samples:
         if s["carrier"] == "rccl" and s["bytes"] > eager and not s["late"]:
-            s["end"] *= 1 + (-1) ** i * 0.01
+            s["end"] *= 1 + (-1) ** s["bytes"].bit_length() * 0.01
     fixed = truth["rccl"][4]
     assert probe.fit(samples)["rccl"]["rendezvous_fixed_s"] == pytest.approx(
         fixed, rel=0.05
