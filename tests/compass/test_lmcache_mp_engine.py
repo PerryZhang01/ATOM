@@ -281,11 +281,12 @@ def test_a_native_state_rank_saves_on_its_channel_and_loads_with_its_restore(
     tmp_path, monkeypatch, factory, caplog
 ):
     caplog.set_level(logging.INFO, logger="atom")
-    engine = Engine(tmp_path, monkeypatch, blocks=NATIVE_BLOCKS)
+    engine = Engine(tmp_path, monkeypatch, blocks=NATIVE_BLOCKS, state_bytes=80)
     shell, rt = engine.shell, engine.rt
     [rank] = shell._ranks
     assert isinstance(rank, native_state_worker.NativeStateLMCacheMPConnector)
-    copy = LATENCY_S + CHUNKS * engine.chunk_bytes / BANDWIDTH
+    # One object group: each chunk's object carries the 80-byte image too.
+    copy = LATENCY_S + CHUNKS * (engine.chunk_bytes + 80) / BANDWIDTH
     # A checkpoint image ends a chunk: its unit rides the last chunk's groups.
     tokens, end = list(TOKENS[: CHUNKS * CHUNK]), CHUNKS * CHUNK
     image = NativeStateTransfer(unit_ids=(CHUNKS,), boundary_tokens=end, prefix_hash=0)
@@ -614,3 +615,17 @@ def test_a_one_deployment_run_loads_a_stored_prefix_back(tmp_path, monkeypatch):
     table = (tmp_path / compass_run.STEP_TABLE_FILE).read_text()
     ticks = {float(r.split()[2]) for r in table.splitlines()[1:] if r[:8] == "lmcache "}
     assert {1.0, 60.0, 660.0} <= ticks, "the eviction and session ticks ran"
+
+
+def test_a_run_file_that_names_another_state_image_is_refused(tmp_path, monkeypatch):
+    from atom.kv_transfer.offload.mp.native_state_scheduler import (
+        NativeStateLMCacheMPConnectorScheduler as Native,
+    )
+
+    (tmp_path / "run.json").write_text('{"bound_s": 1, "lmcache": {"state_bytes": 79}}')
+    monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
+    shell = LMCacheMPShell.__new__(LMCacheMPShell)
+    inner = SimpleNamespace(bind_block_manager=id, _impl=Native.__new__(Native))
+    shell.__dict__.update(_inner=inner, _ranks=[], _config=None)
+    with pytest.raises(ValueError, match="state_bytes is 79; .* image of 80 bytes"):
+        shell.bind_block_manager(NATIVE_BLOCKS)

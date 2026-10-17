@@ -390,3 +390,50 @@ def test_a_hit_ends_at_a_chunk_that_keeps_its_recurrent_state(separate, hits):
     for w in (0, 1):
         _native_store(server, w, 2 * CHUNK, {1})
     assert got + [_hit(server, "c", end=3 * CHUNK)] == hits
+
+
+def _copied(server, op, *payloads):
+    """Serve one request and apply its effect; the chunks its copy is priced at."""
+    frames = [b"id", msgspec.msgpack.encode(7), encode_operation(op)]
+    frames += [msgspec.msgpack.encode(p) for p in payloads]
+    _, at_end, chunks = server.handle(frames, 0.0)
+    at_end(0.0)
+    return chunks
+
+
+@pytest.mark.parametrize(
+    "separate, state, copied, hit",
+    [(True, GIB // 8, 6, 4), (False, GIB // 8, 12, 4), (True, GIB, 4, 0)],
+    ids=["its-own-object", "in-every-chunk", "does-not-fit"],
+)
+def test_a_recurrent_state_takes_its_bytes_in_the_budget_and_the_copy(
+    separate, state, copied, hit
+):
+    flags = FLAGS + ["--null-block-id", "-1"] + ["--separate-object-groups"] * separate
+    server = LMCacheServer(flags, chunk_bytes=GIB // 16, state_bytes=state)
+    ids = [[7] * 4, [-1, -1, -1, 5]]
+    assert _copied(server, "store", _key(0, world=1), 1, ids, b"") == copied
+    assert _hit(server, "a", world=1) == hit
+    if hit:
+        key = _key(0, rid="a", world=1)
+        assert _copied(server, "retrieve", key, 1, ids, b"", 0) == copied
+
+
+def test_a_recurrent_state_is_evicted_apart_from_its_chunk_and_ends_a_hit_earlier():
+    flags = FLAGS + ["--null-block-id", "-1", "--separate-object-groups"]
+    server = LMCacheServer(
+        flags + ["--eviction-ratio", "0.2"],
+        chunk_bytes=GIB // 16,
+        state_bytes=GIB // 10,
+    )
+    for end, state_at in ((2 * CHUNK, {1}), (WHOLE, {3})):
+        for w in (0, 1):
+            _native_store(server, w, end, state_at)
+    assert _hit(server, "a") == 4
+    assert _hit(server, "b", end=2 * CHUNK) == 2  # chunk 1's state is now newer
+    for rid in ("a", "b"):
+        _do(server, "free_lookup_locks", _key(rid=rid), 2)
+    last = server._hashes(_key(), 0, WHOLE)[3]
+    states = {(*server._okey(_key(), r, last), 1) for r in (0, 1)}
+    assert set(server.evict(0.0)) == states  # 90% full: two of twelve objects
+    assert _hit(server, "c") == 2  # every attention chunk is still here

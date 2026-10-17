@@ -159,7 +159,7 @@ fi
 RUN=$OUT/sim/run.json
 python3 - "$RUN" "$OUT" "$MACHINE" "$MODEL" "$STORE" "$(compass_free_port)" "${DPA:+$TP}" \
     "$LM_FLAGS" "${IMAGE_S:-0.01}" "$TP" <<'EOF'
-import json, sys
+import json, re, sys
 from pathlib import Path
 
 run, out, machine, model, store, port, width, lmcache, image_s, tp = sys.argv[1:]
@@ -185,6 +185,10 @@ if lmcache:
     # a model whose ranks share one copy refuses by name.
     writers = 1 if width else int(tp)
     spec["lmcache"] = {"server": lmcache.split(), "writers": writers, **laws}
+    # A rank's recurrent-state image, as the real run logged it; the simulated
+    # engine refuses a run file that names another.
+    image = re.findall(r"image_bytes=(\d+)", Path(f"{out}/real/server.log").read_text())
+    spec["lmcache"]["state_bytes"] = int(image[0]) if image else 0
 Path(run).write_text(json.dumps(spec))
 EOF
 serve sim --compass-run "$RUN"
