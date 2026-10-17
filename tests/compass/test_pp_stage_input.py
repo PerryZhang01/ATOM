@@ -58,7 +58,7 @@ def _stage(rank, *grants, frames=(), ready=C, parts=(), pp=2, post=0.0):
             rt.advance_to(rt.now + C)
             return SimpleNamespace(pp_send=(ready, post, parts))
         if name == "pp_recv_posted":
-            return args[0]  # no host laws: posted at the call
+            return args[0], -math.inf  # no host laws: posted at the call
         return frames.pop(0) if name == "recv_pp_frame" else True
 
     return rt, partial(on_owner, StageSends(rt, call, rank, pp, MODELS)), calls
@@ -124,7 +124,7 @@ def test_a_middle_stage_receives_then_sends_and_acks_both_ways():
         (arrived + C, {}),
         (arrived + 2 * C, {}),
         (acked, {ack_in: [(0, acked)]}),
-        frames=[frame, {"seq": 0}],
+        frames=[frame, {"seq": 0, "tensors_done": -math.inf}],
         ready=4 * C,
         parts=ACKED,
         pp=4,
@@ -143,7 +143,7 @@ def test_a_middle_stage_receives_then_sends_and_acks_both_ways():
     assert calls == [
         ("recv_pp_frame", "pp_data"),
         ("pp_recv_posted", 0.0, "decode", (1, 1, 1)),
-        ("send_pp_frame", "pp_ack", {"seq": 0}),
+        ("send_pp_frame", "pp_ack", {"seq": 0, "tensors_done": end}),
         ("forward", batch),
         ("send_pp_frame", "pp_data", sent),
         ("recv_pp_frame", "pp_ack"),
