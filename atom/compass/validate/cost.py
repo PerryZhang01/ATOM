@@ -45,17 +45,17 @@ from atom.compass.backends import (
     step_labels,
     step_linear_fit,
 )
-from atom.compass.backends.step_linear_fit import WARM_FACTOR, _band, _features
+from atom.compass.backends.step_linear_fit import WARM_FACTOR, _band, _groups
 
 WITHIN = 0.10
 
 
 def _leading_slow(priced: list[tuple], law: dict) -> set[int]:
-    """Steps leading their vector's (vector, band, step, seconds, cost) rows, each slow."""
+    """Steps leading their vector's (vector, band, step, seconds, price) rows, each slow."""
     out = set()
     for key in sorted({p[0] for p in priced}):
         mine = [p for p in priced if p[0] == key]
-        error = np.array([p[4].seconds / p[3] - 1.0 for p in mine])
+        error = np.array([p[4] / p[3] - 1.0 for p in mine])
         centre = np.median(error)
         mad = 1.4826 * np.median(np.abs(error - centre))
         vector = law["prefill"] if key == "prefill" else law["decode"][key]
@@ -107,47 +107,61 @@ def _summary(steps: list[tuple]) -> dict:
 def cost_accuracy(record, law, steps=None) -> dict:
     """The report for `law`, a mapping `StepLinearLaw` reads, on the record
     directory `record`: on its steps whose numbers are in `steps`, every step
-    when None."""
+    when None.
+
+    The ranks' records (`dp0.jsonl` up) are joined as `step_linear_fit` joins
+    them: a step is its ranks' lines of one step index, measured as the
+    smallest rank label and priced as the most any rank's batch costs, a term
+    validated only if every rank's is. A step some rank lacks or cut, or whose
+    ranks fall to different vectors, is counted under `cut.ranks`. Ranks whose
+    records differ in length by more than the one step a stopped run leaves on
+    some ranks only are refused.
+    """
     ranks = sorted(Path(record).glob("dp*[0-9].jsonl"))
-    if len(ranks) != 1:
+    lines = {r.name: len(r.read_text().splitlines()) for r in ranks}
+    if not ranks or max(lines.values()) - min(lines.values()) > 1:
         raise ValueError(
-            f"{record} holds {len(ranks)} DP ranks' records; this prices one rank's"
+            f"{record} holds rank records of {lines} lines; one run's ranks "
+            "differ by at most the step a stopped run leaves on some"
         )
-    got = [
-        s for s in step_labels.label(ranks[0])[0] if steps is None or s.step in steps
+    run = [
+        [s for s in step_labels.label(r)[0] if steps is None or s.step in steps]
+        for r in ranks
     ]
-    labelled, cut = _features(got, "base", 1)
-    views = {s.step: s.view for s in got}
+    joined, cut, _ = _groups(run, "base")
+    views = [{s.step: s.view for s in rank} for rank in run]
     backend = StepLinearBackend(StepLinearLaw(law))
     groups = {"validated": {}, "unvalidated": {}}
     refused: dict[str, dict] = {}
     warm, priced = [], []
-    for key, counts, seconds, step, _ in labelled:
+    for group in joined:
+        key, counts, seconds, step, _ = group[0]
         band = _band(key, counts)
         try:
-            cost = backend.price(views[step])
+            costs = [backend.price(views[i][step]) for i in range(len(group))]
         except CostRefused:
             r = refused.setdefault(band, {"steps": 0, "real_s": 0.0})
             r["steps"] += 1
             r["real_s"] += seconds
             continue
-        priced.append((key, band, step, seconds, cost))
+        validated = all(t.provenance.validated for c in costs for t in c.terms)
+        price = max(c.seconds for c in costs)
+        priced.append((key, band, step, seconds, price, validated))
     leading = _leading_slow(priced, law)
-    for key, band, step, seconds, cost in priced:
-        if step in leading or seconds > WARM_FACTOR * cost.seconds:
+    for key, band, step, seconds, price, validated in priced:
+        if step in leading or seconds > WARM_FACTOR * price:
             warm.append(
                 {
                     "step": step,
                     "band": band,
                     "real_s": seconds,
-                    "priced_s": cost.seconds,
+                    "priced_s": price,
                 }
             )
             continue
-        validated = all(t.provenance.validated for t in cost.terms)
         group = "validated" if validated else "unvalidated"
         kind = "prefill" if key == "prefill" else "decode"
-        groups[group].setdefault(kind, []).append((band, step, seconds, cost.seconds))
+        groups[group].setdefault(kind, []).append((band, step, seconds, price))
     report = {"record": str(record), "law": backend.law.fitted_on, "cut": cut}
     for group, kinds in groups.items():
         report[group] = {

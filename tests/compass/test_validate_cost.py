@@ -55,19 +55,23 @@ def _steps():
     return out + [([(1, 2000 + 5000 * i, True)], 1) for i in range(10)]
 
 
-def _record(directory, steps, stretch=None, idle_after=()):
-    """Write `steps` as rank 0's record. A step in `idle_after` shares no request with the next."""
-    directory.mkdir()
+def _record(directory, steps, stretch=None, idle_after=(), rank=0, group=None):
+    """Write `steps` as rank `rank`'s record. A step in `idle_after` shares no request with the next.
+    With `group`, every rank's steps, a step runs for the most any rank's batch costs.
+    """
+    directory.mkdir(exist_ok=True)
     stretch = stretch or {}
     t, lines, owner = 0, [], 0
     for i, (rows, rung) in enumerate(steps):
         if i - 1 in idle_after:
             owner += 1
-        busy = round(_price(rows) * stretch.get(i, 1.0) * 1e9)
+        at = [g[i][0] for g in group or [steps] if i < len(g)]
+        busy = round(max(map(_price, at)) * stretch.get(i, 1.0) * 1e9)
         lines.append(
             {
                 "step": i,
-                "dp_rank": 0,
+                "dp_rank": rank,
+                "moe_rows": sum(q for r in at for q, _, _ in r),
                 "is_dummy_run": False,
                 "produces_output": True,
                 "batch": [[owner, q, n] for q, n, _ in rows],
@@ -82,7 +86,9 @@ def _record(directory, steps, stretch=None, idle_after=()):
             }
         )
         t += busy
-    (directory / "dp0.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines))
+    (directory / f"dp{rank}.jsonl").write_text(
+        "".join(json.dumps(x) + "\n" for x in lines)
+    )
     return directory
 
 
@@ -136,7 +142,7 @@ def test_unvalidated_and_refused_steps_are_reported_apart(tmp_path):
     }
 
 
-def test_the_command_prints_the_report_and_refuses_two_ranks(tmp_path, capsys):
+def test_the_command_prints_the_report(tmp_path, capsys):
     record = _record(tmp_path / "steps", _steps(), stretch={4: 0.2})
     law = tmp_path / "law.json"
     law.write_text(json.dumps(LAW))
@@ -144,9 +150,6 @@ def test_the_command_prints_the_report_and_refuses_two_ranks(tmp_path, capsys):
 
     out = capsys.readouterr().out
     assert "holding out step 4 " in out and "law planted" in out
-    (record / "dp1.jsonl").write_text((record / "dp0.jsonl").read_text())
-    with pytest.raises(ValueError, match="2 DP ranks"):
-        cost_accuracy(record, LAW)
 
 
 def test_a_one_off_slow_step_is_named_warm_mid_record_and_enters_no_total(
@@ -234,3 +237,63 @@ def test_the_report_labels_the_record_and_never_reads_the_table_beside_it(tmp_pa
 
     (record / "dp0.cost.jsonl").write_text('{"version": 1}\nnot a row\n')
     assert cost_accuracy(record, LAW) == report
+
+
+def _bigger(rows):
+    """`rows` with more to price: longer prefill chunks, longer decode contexts."""
+    return [(1, n + 1000, d) if d else (q + 50, n + 50, d) for q, n, d in rows]
+
+
+def _two_ranks():
+    """Rank 1 has the bigger batch on even steps, rank 0 on odd ones."""
+    small = _steps()
+    big = [(_bigger(rows), rung) for rows, rung in small]
+    return [
+        [(big, small)[i % 2 == 0][i] for i in range(20)],
+        [(small, big)[i % 2 == 0][i] for i in range(20)],
+    ]
+
+
+def test_a_group_step_prices_as_its_slowest_rank_against_the_group_s_time(tmp_path):
+    ranks = _two_ranks()
+    for r, steps in enumerate(ranks):
+        _record(tmp_path / "steps", steps, rank=r, group=ranks)
+    report = cost_accuracy(tmp_path / "steps", LAW)
+
+    assert report["cut"] == {"exposed": 0, "mixed": 0, "ranks": 0}
+    assert report["warm"] == [] and report["refused"] == {}
+    for kind in ("prefill", "decode"):
+        s = report["validated"][kind]
+        assert s["steps"] == 10
+        assert s["on_totals"] == pytest.approx(0.0, abs=1e-9)
+        assert s["median"] == pytest.approx(0.0, abs=1e-9)
+    # Every step ran for the slower rank's price, which neither rank alone matches.
+    slowest = sum(max(_price(a[0]), _price(b[0])) for a, b in zip(*ranks))
+    total = sum(report["validated"][k]["real_s"] for k in ("prefill", "decode"))
+    assert total == pytest.approx(slowest, rel=1e-9)
+    assert all(total > sum(_price(rows) for rows, _ in s) for s in ranks)
+
+    # Rank 1's step 10 lies outside the held-out hull, though rank 0 prices it.
+    ranks[1][10] = ([(1, 50, True)], 1)
+    for r, steps in enumerate(ranks):
+        _record(tmp_path / "outside", steps, rank=r, group=ranks)
+    report = cost_accuracy(tmp_path / "outside", LAW)
+    assert report["unvalidated"]["decode"]["steps"] == 1
+
+
+def test_ranks_differing_by_more_than_a_trailing_step_refuse_naming_their_lengths(
+    tmp_path,
+):
+    ranks = _two_ranks()
+    stopped = [ranks[0], ranks[1][:-1]]  # rank 1's last step was in flight
+    for r, steps in enumerate(stopped):
+        _record(tmp_path / "stopped", steps, rank=r, group=stopped)
+    report = cost_accuracy(tmp_path / "stopped", LAW)
+    assert report["cut"]["ranks"] == 1
+    assert report["validated"]["decode"]["steps"] == 9
+
+    apart = [ranks[0], ranks[1][:-2]]
+    for r, steps in enumerate(apart):
+        _record(tmp_path / "apart", steps, rank=r, group=apart)
+    with pytest.raises(ValueError, match=r"'dp0.jsonl': 20, 'dp1.jsonl': 18"):
+        cost_accuracy(tmp_path / "apart", LAW)
