@@ -327,7 +327,7 @@ def test_free_lookup_locks_of_a_dropped_session_releases_the_whole_range():
 def test_a_sweep_says_when_it_drops_which_sessions(capsys):
     server = LMCacheServer(FLAGS, chunk_bytes=1)
     _hit(server, "a", now=0.0)
-    _hit(server, "b", now=30.0)
+    _hit(server, "b", now=31.0)
     server.expire_sessions(600.0)
     assert capsys.readouterr().err == ""
     server.expire_sessions(630.5)
