@@ -317,13 +317,15 @@ class StepRecording:
             processor.recv_async_output = functools.partial(
                 self._stamped, "t_recv_ns", recv
             )
-        if processor is not None and not getattr(processor, "is_deferred_out", True):
-            # It reads this forward's tokens off the device: the wait is the call.
+        pp = getattr(getattr(self, "config", None), "pipeline_parallel_size", 1) > 1
+        if pp and not getattr(processor, "is_deferred_out", True):
+            # A stage reads this forward's tokens off the device: the wait is
+            # the call. Off a pipeline the gate releases that wait itself.
             sampled = processor.prepare_sampled_ids
             processor.prepare_sampled_ids = functools.partial(
                 self._stamped, "t_recv_ns", sampled
             )
-        if getattr(getattr(self, "config", None), "pipeline_parallel_size", 1) > 1:
+        if pp:
             from aiter.dist.parallel_state import get_pp_group
 
             group = get_pp_group()

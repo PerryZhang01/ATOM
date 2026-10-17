@@ -359,3 +359,24 @@ def test_a_warmed_run_is_graded_on_its_profiling_steps_and_slow_warmup_moves_not
     assert rows["cost real0", "prefill validated"][0].startswith("10 steps")
     assert rows["cost real0", "decode validated"][0].startswith("10 steps")
     assert rows["cost real0", "left out"][0].endswith("warm steps, real s {}")
+
+
+def test_a_run_file_of_a_law_per_engine_config_costs_real_runs_at_their_own(
+    capsys, tmp_path
+):
+    cell = tmp_path / "c4"
+    _rows(capsys, tmp_path)
+    _as_recorded(cell)
+    rows = _graded(capsys, cell)
+    ours, theirs = {"enable_tbo": False}, {"enable_tbo": True}
+    other = json.loads(json.dumps(LAW))
+    other["prefill"]["coefficients"]["step"] *= 2
+    run = json.loads((cell / "step_linear" / "run.json").read_text())
+    laws = [other | {"engine_config": theirs}, LAW | {"engine_config": ours}]
+    run["run_file"]["step_linear"] = laws
+    (cell / "step_linear" / "run.json").write_text(json.dumps(run))
+    for real in ("real0", "real1", "real2"):
+        engine = ours | {"num_kvcache_blocks": 8, "max_num_seqs": 4}
+        (cell / real / "steps" / "dp0.engine.json").write_text(json.dumps(engine))
+
+    assert _graded(capsys, cell) == rows

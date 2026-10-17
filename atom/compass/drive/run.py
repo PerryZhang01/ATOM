@@ -180,7 +180,9 @@ def write_grading(out, report) -> None:
     written |= {
         "run_file": run,
         "step_roofline": run["step_roofline"],
-        "skip": run.get("host", {}).get("skip", []),
+        "skip": [
+            s for h in compass_run.entries(run, "host") for s in h.get("skip", [])
+        ],
         "coverage": report,
         "provenance": {**run["backend"], "memory_readings_assumed": assumed},
     }

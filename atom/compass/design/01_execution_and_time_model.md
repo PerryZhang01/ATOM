@@ -1430,8 +1430,10 @@ what-if: never graded, and refused by the graders.
 
 **Measured, not hooked.** The parity recorder, `RecordingModelRunner`
 (`atom/compass/parity/runner.py`), stamps host time around the staging gate, the launch
-and the R1 wait (with MTP also the draft copy wait), and records device events at
-`run_model` entry, with MTP at the target's end, and at the forward's exit, drained with `query()`, never `synchronize()`
+and the R1 wait (with MTP also the draft copy wait; on a non-first PP stage also the R7
+receive, and on the last stage its own token read), and records device events at
+`run_model` entry, with MTP at the target's end, on a non-first PP stage where the
+received tensors are in, and at the forward's exit, drained with `query()`, never `synchronize()`
 ([#824](https://github.com/jgong5/ATOM/issues/824)). It edits no ATOM file.
 
 **The recurrence's own check, provisional.** Fed each real record's measured device
