@@ -18,7 +18,9 @@
 #                   compass-harness (required)
 #   REAL            1 for a real cell (default 0)
 #   RECORD          0 turns the step record off (default 1)
-#   FIRST_SESSION   skip the first FIRST_SESSION traces (default 0)
+#   FIRST_SESSION   skip the first FIRST_SESSION traces (default 0); each
+#                   trace aiperf is given is a file named by its session,
+#                   its line in TRACES counted from 0
 #   SESSIONS        replay SESSIONS traces (default 2)
 #   CONCURRENCY     aiperf --concurrency (default 1)
 #   DURATION_S      aiperf --benchmark-duration, seconds on the cell's clock
@@ -90,7 +92,7 @@ print(*(p.value for p in e(group="aiperf.plugins")))')
 fi
 
 awk -v d="$OUT/traces" -v first="${FIRST_SESSION:-0}" -v n="$SESSIONS" '
-    NR > first {f = sprintf("%s/%05d.json", d, NR - first - 1); print > f; close(f)}
+    NR > first {f = sprintf("%s/%05d.json", d, NR - 1); print > f; close(f)}
     NR >= first + n {exit}' "$TRACES"
 
 # Everything but paths, the URL and the export level, which changes what aiperf

@@ -72,8 +72,8 @@ def run(tmp_path, monkeypatch, model_dir):  # noqa: F811
     """`run(*args)`: `compass measure steps args --gpu 7 --store S --out D`,
     with `--sampling` SAMPLING unless given. `run.named(input, sampling)` is
     the `--client-run` arguments naming the record's two client runs for
-    `input`, their requests sent under `sampling`; run.json's identity is
-    `run.identity`."""
+    `input`, their requests sent under `sampling`, trace i at session i;
+    run.json's identity is `run.identity`."""
     rec = record(tmp_path, monkeypatch)
     config = _config()
     config.model, config.trust_remote_code = str(model_dir), False
@@ -101,7 +101,9 @@ def run(tmp_path, monkeypatch, model_dir):  # noqa: F811
         args = []
         for i, group in enumerate(([0, 1], [2, 3])):
             export = tmp_path / f"export{i}-{json.dumps(sampling, sort_keys=True)}"
-            export.write_text(json.dumps({"requests": client_run(group, sampling)}))
+            sessions = {f"trace-{k}": k for k in group}
+            sent = {"requests": client_run(group, sampling), "sessions": sessions}
+            export.write_text(json.dumps(sent))
             args += ["--client-run", str(name), str(export)]
         return args
 
@@ -339,19 +341,28 @@ def test_the_planner_reads_the_engine_every_grid_input_states(run):
         run(*grid, *run.named(rec), *run.named(other))
 
 
-def mixed(run, monkeypatch, name=lambda i: f"session-{256 + i}"):
+def trace(i) -> str:
+    """Request i's trace, a cc-trace id, which holds several numbers."""
+    return f"a3acb7e89fb41af79510cf1ecf36a703490f{i}"
+
+
+def mixed(run, monkeypatch, session=lambda i: 256 + i):
     """A record serving all four requests at once, so its decode steps serve
-    all four traces; and the `--client-run` naming request i's trace `name(i)`."""
+    all four traces; and the `--client-run` naming request i's trace `trace(i)`,
+    which its export gives session `session(i)`, or none when that is None."""
     rec = record(run.tmp, monkeypatch, "mixed", groups=((0, 1, 2, 3),))
     requests = client_run([0, 1, 2, 3])
     for i, sent in enumerate(requests.values()):
-        sent["trace"] = name(i)
+        sent["trace"] = trace(i)
+    sessions = {trace(i): session(i) for i in range(4) if session(i) is not None}
     export = run.tmp / "mixed.json"
-    export.write_text(json.dumps({"requests": requests}))
+    export.write_text(json.dumps({"requests": requests, "sessions": sessions}))
     return rec, requests, ["--client-run", str(rec), str(export)]
 
 
-def test_sessions_keep_the_lines_serving_only_traces_numbered_a_to_b(run, monkeypatch):
+def test_sessions_keep_the_lines_serving_only_traces_at_sessions_a_to_b(
+    run, monkeypatch
+):
     rec, requests, named = mixed(run, monkeypatch)
     # A step holding a request no client run sent serves no trace.
     steps = rec / "steps/dp0.jsonl"
@@ -361,19 +372,16 @@ def test_sessions_keep_the_lines_serving_only_traces_numbered_a_to_b(run, monkey
     store = run(str(rec), "--sample", "all", "--sessions", "257:258", *named)
 
     split = served(rec / "steps", [requests])[0]
-    chosen = {"session-257", "session-258"}
+    chosen = {trace(1), trace(2)}
     kept = [s for s in split if s["traces"] and set(s["traces"]) <= chosen]
     assert kept and set(by_view(store)) == views(kept) < views(split)
     # Both ends of the span are measured.
     assert {t for _, m in entries(store) for t in m["traces"]} == chosen
 
 
-@pytest.mark.parametrize("trace, held", [("warm-up", 0), ("v2-session-3", 2)])
-def test_a_trace_name_holding_no_number_or_two_refuses_sessions(
-    run, monkeypatch, trace, held
-):
-    rec, _, named = mixed(run, monkeypatch, lambda i: trace if i == 1 else f"s{i}")
-    with pytest.raises(SystemExit, match=f"trace '{trace}', which holds {held} num"):
+def test_a_trace_its_export_gives_no_session_refuses_sessions(run, monkeypatch):
+    rec, _, named = mixed(run, monkeypatch, lambda i: None if i == 1 else i)
+    with pytest.raises(SystemExit, match=f"served {trace(1)}, which no export gives"):
         run(str(rec), "--sample", "all", "--sessions", "0:9", *named)
 
 
