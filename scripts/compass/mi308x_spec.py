@@ -88,29 +88,29 @@ INTAKE = {
 }.get(NAME)
 
 #: A pipeline stage's send, per carrier, fitted on hjbog-srdc-39 GPUs 4 and 5
-#: by `scripts/compass/pp_carriers.py` at commit 03fe57e9c. The record is the
+#: by `scripts/compass/pp_carriers.py` at commit d91f1de8c. The record is the
 #: probe's output, its samples and source.
 PP = {
     "mi308x-hjbog39": (
         "2026-10-17",
-        "03fe57e9c",
+        "d91f1de8c",
         {
             "rccl": {
                 "eager_threshold_bytes": 33554432,
-                "latency_s": 4.930421710014343e-06,
-                "overhead_s": 7.6834230353662e-05,
-                "per_byte_s": 2.0272089471219546e-11,
-                "rendezvous_fixed_s": 0.00010065316219206269,
+                "latency_s": 1.5943078324198723e-06,
+                "overhead_s": 3.808203561532445e-05,
+                "per_byte_s": 2.006901421361917e-11,
+                "rendezvous_fixed_s": 5.704185766936967e-05,
             },
             "gloo": {
                 "eager_threshold_bytes": 0,
-                "latency_s": 1.2128206435590982e-05,
-                "overhead_s": 2.329037179401216e-05,
-                "per_byte_s": 1.308262564440539e-10,
-                "rendezvous_fixed_s": 3.444512935035571e-05,
+                "latency_s": 9.95624577626586e-06,
+                "overhead_s": 1.3529834873068723e-05,
+                "per_byte_s": 1.1616917845420316e-10,
+                "rendezvous_fixed_s": 2.3746679926390014e-05,
             },
         },
-        "3faf61ae8165bcfc3216d677ac5a957e5f63776e79b17c299a04ac068e0db2cb",
+        "1cd879ccca5e023c6e8b57995e661674be584a1c3a8cd88a5b35c097503f09e3",
     ),
 }.get(NAME)
 
