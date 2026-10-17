@@ -78,10 +78,11 @@ def priced(monkeypatch, loop):
 
 def _prepare(loop, *urls):
     ex, release = station._executor(loop, width=1)
-    job = loop.run_in_executor(
-        None, api_server._prepare_multimodal_inputs, [_message(*urls)], {}
-    )
+    messages = [_message(*urls)]
     try:
+        job = loop.run_in_executor(
+            None, api_server._prepare_multimodal_inputs, messages, {}
+        )
         return loop.run_until_complete(job), loop.time(), ex
     finally:
         release()
