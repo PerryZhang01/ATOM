@@ -366,3 +366,27 @@ def test_an_unmodelled_request_type_is_refused_by_name(op):
     server = LMCacheServer(FLAGS, chunk_bytes=1)
     with pytest.raises(LMCacheRefusal, match=op):
         _call(server, op, 1)
+
+
+def _native_store(server, worker_id, end, state_at):
+    """A store of chunks [0, `end`) as ATOM's native-state layout sends it:
+    attention blocks on every chunk, recurrent state on chunks `state_at`."""
+    n = end // CHUNK
+    ids = [[7] * n, [5 if i in state_at else -1 for i in range(n)]]
+    return _do(server, "store", _key(worker_id, 0, end), 1, ids, b"")
+
+
+@pytest.mark.parametrize(
+    "separate, hits", [(True, [4, 0, 2]), (False, [4, 3, 3])], ids=["separate", "one"]
+)
+def test_a_hit_ends_at_a_chunk_that_keeps_its_recurrent_state(separate, hits):
+    flags = FLAGS + ["--null-block-id", "-1"]
+    server = LMCacheServer(
+        flags + ["--separate-object-groups"] * separate, chunk_bytes=1
+    )
+    for w in (0, 1):
+        _native_store(server, w, WHOLE, {3})
+    got = [_hit(server, "a"), _hit(server, "b", end=3 * CHUNK)]
+    for w in (0, 1):
+        _native_store(server, w, 2 * CHUNK, {1})
+    assert got + [_hit(server, "c", end=3 * CHUNK)] == hits

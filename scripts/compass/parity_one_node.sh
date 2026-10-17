@@ -41,6 +41,8 @@
 #                    below and its copies on MACHINE's interconnect.host_link,
 #                    which it then needs. Every request starts with PREFIX_WORDS
 #                    shared words (default 600). Default 0.
+#   FAMILIES         prefix families: above 1, request k shares PREFIX_WORDS
+#                    only with the requests of family k % FAMILIES (default 1)
 #   LMCACHE_FLAGS    the server's flags besides --host and --port (default the
 #                    recipes' --chunk-size 256 --null-block-id -1
 #                    --separate-object-groups --supported-transfer-mode
@@ -144,6 +146,7 @@ fi
 serve real
 python3 -m atom.compass.parity.traffic "$PORT" "$MODEL" "$OUT/real/record" \
     "${REQUESTS:-64}" "${GAP_S:-$GAP}" "$PREFIX" "${IMAGES:-0}" "$ALONE" "${LONG_TOKENS:-0}" \
+    "${FAMILIES:-1}" \
     >"$OUT/real/traffic.log" 2>&1
 # The record's last lines are written as the workers exit.
 kill -TERM -- -$server
