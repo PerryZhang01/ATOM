@@ -252,9 +252,9 @@ def _as_recorded(cell, warmup=()):
     """Lay `cell`'s runs out as `record` and `run` write them: each request
     named at its last prefill row, by key `k<id>` and response id `id-<id>`;
     an export naming them all, from trace `t<id>`, those in `warmup` as its
-    warmup's, else request `w`, a one-step prefill after every other step so
-    that no step number a row names moves, and the same traces given to every
-    run's client; and run.json's identity,
+    warmup's, else request `w`, a one-step prefill before every other step,
+    numbered below them, and the same traces given to every run's client; and
+    run.json's identity,
     with `run`'s grading entries for `step_linear/`, its law and host laws in
     its run file and its refusals its summary's."""
     for d in sorted(cell.iterdir()):
@@ -267,9 +267,9 @@ def _as_recorded(cell, warmup=()):
         for r, i in last.items():
             lines[i]["named"].append([r, f"k{r}", f"id-{r}"])
         if not warmup:
-            r, step = max(last) + 1, lines[-1]["step"] + 1
+            r, step = max(last) + 1, lines[0]["step"] - 1
             w = {"step": step, "batch": [[r, 1, 1]], "named": [[r, "kw", "id-w"]]}
-            lines.append(lines[-1] | w | {"rows": [[1, 1, False]], "rung": None})
+            lines.insert(0, lines[0] | w | {"rows": [[1, 1, False]], "rung": None})
         path.write_text("".join(json.dumps(x) + "\n" for x in lines))
         export = {"requests": {}, "warmup": {}, "traces": ["t0", "t1", "tw"]}
         for r in last:

@@ -18,9 +18,9 @@ export names as its warmup's (`warmup`) is its warmup, and not graded. It is
 refused, naming every reason, when steps of any other request precede its own:
 it is then not its server's first client run, and meets the prefix cache an
 earlier one left; when its export names no warmup, since its first steps may
-then be cold; when its record holds no step, mixed ones included, of a request
-the export names as the warmup's, since the export alone does not show the
-warmup ran; and when its export names no traces given. A simulated run, whose
+then be cold; when no step up to its own first, that one included, holds a
+request the export names as the warmup's, since its graded steps may then
+precede it; and when its export names no traces given. A simulated run, whose
 run.json holds `run_file`, is also refused when it skips host segments, or its
 run file has no host laws and so prices no host time; when the step roofline
 was on; when its first client run refused anything, or has no summary to say;
@@ -192,8 +192,10 @@ def _client_run(cell, run) -> tuple[list[dict], list[str], dict]:
     why = [] if all(before) else ["steps of requests it did not send precede its own"]
     if not warmup_names:
         why.append("its export names no warmup, so its first steps may be cold")
-    elif not any(names & warmup_names for names in held):
-        why.append("its record holds no step of its warmup, which may not have run")
+    elif not any(names & warmup_names for names in held[: mine.index(True) + 1]):
+        why.append(
+            "no step up to its own first holds its warmup, so its first steps may be cold"
+        )
     if "traces" not in export:
         why.append("its export names no traces its client was given")
     if "run_file" in run:

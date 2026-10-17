@@ -348,12 +348,12 @@ WARMED = [[(6, 30, 30, False)], [(6, 1, 31, True)]] + _schedule()
 
 
 def test_a_client_run_s_warmup_steps_precede_its_own_and_are_not_graded(tmp_path):
-    *real, simulated = (_recorded(c) for c in _four(tmp_path / "cold"))
+    *real, simulated = (_recorded(c) for c in _four(tmp_path / "one_step"))
     report = grade(real, simulated)
     keys = {6: "kw", 7: "ka", 8: "kb"}
     *real, simulated = (
         _recorded(c, sent={"ka", "kb"}, warmup={"kw"})
-        for c in _four(tmp_path / "warm", WARMED, keys)
+        for c in _four(tmp_path / "two_steps", WARMED, keys)
     )
 
     assert grade(real, simulated) == report
@@ -386,11 +386,19 @@ def test_a_client_run_whose_export_names_no_warmup_is_refused(tmp_path, warmup):
         grade(real, simulated)
 
 
-def test_a_client_run_whose_record_holds_no_step_of_its_warmup_is_refused(tmp_path):
-    *real, simulated = (_recorded(c, held=c.name != "r2") for c in _four(tmp_path))
+#: Request `kw` warms the server up only after the client run's first step.
+LATE = [_schedule()[0], [(6, 30, 30, False)], *_schedule()[1:]]
 
-    unheld = "its record holds no step of its warmup, which may not have run"
-    with pytest.raises(ValueError, match=f"r2 is not graded: {unheld}$"):
+
+@pytest.mark.parametrize("schedule", [_schedule(), LATE], ids=["none", "late"])
+def test_a_client_run_whose_warmup_no_step_up_to_its_first_holds_is_refused(
+    tmp_path, schedule
+):
+    cells = _four(tmp_path, schedule, {6: "kw", 7: "ka", 8: "kb"})
+    *real, simulated = (_recorded(c, held=False) for c in cells)
+
+    unheld = "no step up to its own first holds its warmup, so its first steps"
+    with pytest.raises(ValueError, match=f"r0 is not graded: {unheld} may be cold$"):
         grade(real, simulated)
 
 
