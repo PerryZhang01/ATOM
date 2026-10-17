@@ -111,8 +111,9 @@ def cost_accuracy(record, law, steps=None) -> dict:
 
     The ranks' records (`dp0.jsonl` up) are joined as `step_linear_fit` joins
     them: a step is its ranks' lines of one step index, measured as the
-    smallest rank label and priced as the most any rank's batch costs, a term
-    validated only if every rank's is. A step some rank lacks or cut, or whose
+    smallest rank label and priced and banded as its costliest rank's batch, a
+    term validated only if every rank's is; a step the law refuses is banded as
+    its rank of most tokens. A step some rank lacks or cut, or whose
     ranks fall to different vectors, is counted under `cut.ranks`. Ranks whose
     records differ in length by more than the one step a stopped run leaves on
     some ranks only are refused.
@@ -135,17 +136,18 @@ def cost_accuracy(record, law, steps=None) -> dict:
     refused: dict[str, dict] = {}
     warm, priced = [], []
     for group in joined:
-        key, counts, seconds, step, _ = group[0]
-        band = _band(key, counts)
+        key, _, seconds, step, _ = group[0]
         try:
             costs = [backend.price(views[i][step]) for i in range(len(group))]
         except CostRefused:
+            band = _band(key, max((r[1] for r in group), key=lambda c: c[1]))
             r = refused.setdefault(band, {"steps": 0, "real_s": 0.0})
             r["steps"] += 1
             r["real_s"] += seconds
             continue
         validated = all(t.provenance.validated for c in costs for t in c.terms)
-        price = max(c.seconds for c in costs)
+        top = max(range(len(costs)), key=lambda i: costs[i].seconds)
+        band, price = _band(key, group[top][1]), costs[top].seconds
         priced.append((key, band, step, seconds, price, validated))
     leading = _leading_slow(priced, law)
     for key, band, step, seconds, price, validated in priced:

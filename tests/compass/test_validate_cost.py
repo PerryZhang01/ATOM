@@ -297,3 +297,23 @@ def test_ranks_differing_by_more_than_a_trailing_step_refuse_naming_their_length
         _record(tmp_path / "apart", steps, rank=r, group=apart)
     with pytest.raises(ValueError, match=r"'dp0.jsonl': 20, 'dp1.jsonl': 18"):
         cost_accuracy(tmp_path / "apart", LAW)
+
+
+def test_a_group_step_is_banded_by_its_costliest_rank_not_rank_0(tmp_path):
+    # Rank 0 runs a 100-token chunk on every prefill step; rank 1, the costlier,
+    # runs 100 to 910 tokens, half of them in band 512-2048.
+    ranks = [_steps(), _steps()]
+    ranks[0][:10] = [([(100, 100 + 900 * i, False)], None) for i in range(10)]
+    for r, steps in enumerate(ranks):
+        _record(tmp_path / "steps", steps, rank=r, group=ranks)
+    bands = {"prefill tokens 0-512": 5, "prefill tokens 512-2048": 5}
+
+    report = cost_accuracy(tmp_path / "steps", LAW)
+    prefill = report["validated"]["prefill"]["bands"]
+    assert {band: b["steps"] for band, b in prefill.items()} == bands
+
+    # A law with no prefill vector refuses them, banded by the rank of most tokens.
+    report = cost_accuracy(
+        tmp_path / "steps", {k: v for k, v in LAW.items() if k != "prefill"}
+    )
+    assert {band: r["steps"] for band, r in report["refused"].items()} == bands
