@@ -185,10 +185,10 @@ class LMCacheMPShell:
                 for c in held.connector_completions
                 if c.channel == NATIVE_STATE_MP_STORE_CHANNEL
             ]
-            saved = {*held.finished_saving}
-            saved |= {c.operation_id for c in stores if c.succeeded}
-            failed = {*held.failed_loading}
-            failed |= {c.operation_id for c in stores if not c.succeeded}
+            saved = [*held.finished_saving]
+            saved += [c.operation_id for c in stores if c.succeeded]
+            failed = [*held.failed_loading]
+            failed += [c.operation_id for c in stores if not c.succeeded]
             logger.info(
                 "compass: lmcache_mp reports at %r: saved %s, loaded %s, failed %s",
                 self._rt.now,
