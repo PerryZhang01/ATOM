@@ -70,7 +70,7 @@ def check(steps: list[dict], stage=None, upstream=None) -> dict:
         pre = l0 - s["t_enter_ns"] - (g1 - g0) - (m1 - m0)
         post = s["t_exit_ns"] - l1 - (r1 - r0) - (d1 - d0)
         entry = max(now + e * 1e-9, rec.ends[0])
-        if upstream:  # R7's host side, a wait before the launch
+        if upstream:  # the stage before's send holds the launch
             sent, ready = ((t - origin) * 1e-9 for t in upstream[n])
             pre += max(sent - entry - pre * 1e-9, 0.0) * 1e9
         launch = l1 - l0 - (p1 - p0)
@@ -88,13 +88,13 @@ def check(steps: list[dict], stage=None, upstream=None) -> dict:
         gap = 0 if batch.total_seqs_num_prefill or mtp else s.get("d_gap_ns", 0)
         if stage is not None:
             # A stage's host may trail its device, so the gap may be idle: it
-            # follows the last forward's device end. R7 holds the start too.
+            # follows the last forward's device end. The tensors' arrival holds it too.
             start = rec.ends[-1] + gap * 1e-9
             batch.compass_pp_release = max(ready, start) if upstream else start
             gap = 0
         busy = s["d_busy_ns"]
         target = s.get("d_target_ns", busy)
-        own = gap + target - s.get("d_recv_ns", 0)  # the receive is R7's wait
+        own = gap + target - s.get("d_recv_ns", 0)  # the receive is a wait, not work
         charge = rec.charge(batch, own * 1e-9, (busy - target) * 1e-9)
         times = (now + charge - post * 1e-9, rec.ends[-1])
         sends.append([origin + round(t * 1e9) for t in times])
