@@ -136,9 +136,10 @@ def pipeline_timeline(table: str) -> list[str]:
     The head's forward n starts when it sends ``meta#pp1`` seq n. A stage's
     send n leaves no earlier than its forward n starts and its send n-1
     completes, read from the ``pp_ack`` the stage after returned. The stage
-    after starts its forward n where its ``pp_data`` n is released, or, when
-    that release falls inside one of its TARs, at that TAR's end; the
-    forward's own waits for the metadata and the tensors come after.
+    after takes its batch n on ``meta#pp<k>`` and then receives its
+    ``pp_data`` n, so it starts its forward n where the later of the two is
+    released, or, when that falls inside one of its TARs, at that TAR's end;
+    the forward's own waits for the metadata and the tensors come after.
     """
     lines = table.splitlines()
     run = json.loads(lines[0].removeprefix(CONFIGURATION_PREFIX))
@@ -170,7 +171,8 @@ def pipeline_timeline(table: str) -> list[str]:
                 sent = data[n] - channels.lookahead(data_ch)
                 if sent < least and not math.isclose(sent, least):
                     failed.append(f"{lp} sent forward {n} at {sent}, before {least}")
-        starts = data
+        batch = arrived[f"engine-pp0->engine-pp{k + 1}:meta#pp{k + 1}"]
+        starts = {n: max(a, batch.get(n, a)) for n, a in data.items()}
     return failed
 
 

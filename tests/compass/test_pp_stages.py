@@ -204,10 +204,15 @@ def test_the_pipeline_check_holds_a_stage_to_the_release_of_its_input():
     assert pipeline_timeline(_two_stage_table(early)) == [
         f"engine-pp0 never sent forward 0's output on {DATA}"
     ]
+    # Input released before the batch: the forward starts at the batch.
     sent_early = ("engine-pp1", 0.5, 0.9 + L_DATA, "release", DATA, 0)
-    computes = ("engine-pp1", 0.9 + L_DATA, 1.8, "TAR")
-    failed = pipeline_timeline(_two_stage_table(sent_early, ACKED, computes))
-    assert failed == ["engine-pp0 sent forward 0 at 0.9, before 1.0"]
+    at_input = ("engine-pp1", 0.9 + L_DATA, 0.95, "TAR")
+    sent_before = "engine-pp0 sent forward 0 at 0.9, before 1.0"
+    failed = pipeline_timeline(_two_stage_table(sent_early, ACKED, at_input))
+    assert failed == [sent_before, f"engine-pp1 starts no forward 0 at {1.0 + IPC}"]
+    at_batch = ("engine-pp1", 1.0 + IPC, 1.8, "TAR")
+    failed = pipeline_timeline(_two_stage_table(sent_early, ACKED, at_batch))
+    assert failed == [sent_before]
 
 
 def test_a_run_file_stating_a_pipeline_the_deployment_does_not_run_is_refused(
