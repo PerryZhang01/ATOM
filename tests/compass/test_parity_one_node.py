@@ -175,13 +175,13 @@ def test_a_failed_measurement_starts_no_server(tmp_path):
 
 @pytest.mark.parametrize("config, writers", [("tp2", 1), ("tp2-plain", 2)])
 def test_lmcache_writes_from_each_dp_rank_under_dp_attention_else_each_tp_rank(
-    tmp_path, config, writers
+    tmp_path, monkeypatch, config, writers
 ):
     lm = tmp_path / "lm"
     lm.mkdir()
     (lm / "lmcache").write_text("#!/bin/bash\nexec sleep 60\n")
     (lm / "lmcache").chmod(0o755)
-    path = f"{tmp_path / 'bin'}:{lm}:{os.environ['PATH']}"
-    r, _, run = _parity(tmp_path, CONFIG=config, LMCACHE="1", PATH=path)
+    monkeypatch.setenv("PATH", f"{lm}:{os.environ['PATH']}")
+    r, _, run = _parity(tmp_path, CONFIG=config, LMCACHE="1")
     assert r.returncode == 0, r.stderr
     assert json.loads(run.read_text())["lmcache"]["writers"] == writers
