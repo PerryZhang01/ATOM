@@ -28,6 +28,8 @@ L_DATA, L_ACK = pp_send.lookaheads(MODELS)
 #: The size on gloo, eager, then one tensor on RCCL, rendezvous.
 RDV = [("gloo", 8), ("rccl", 2048)]
 EAGER = [("gloo", 8)]
+#: Both parts rendezvous: the sender's host waits for the ack of the size.
+ACKED = [("gloo", 2048), ("rccl", 2048)]
 C = 2.0**-6
 DATA, ACK = "engine-pp0->engine-pp1:pp_data#dp0", "engine-pp1->engine-pp0:pp_ack#dp0"
 
@@ -58,7 +60,7 @@ def test_a_lookahead_that_is_not_positive_is_refused_by_name():
         pp_send.lookaheads({"gloo": CarrierModel(1, 0.0, 0.1, 0.1, 0.1)})
 
 
-def _stage(rank, *grants, frames=(), parts=RDV):
+def _stage(rank, *grants, frames=(), parts=ACKED):
     """Stage `rank` of two, its owner thread and the names its runner was called with."""
     table = single_engine_table(
         admission_path="serving",
