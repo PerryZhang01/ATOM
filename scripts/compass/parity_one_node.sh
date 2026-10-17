@@ -19,7 +19,7 @@
 #                    to its end before the rest are sent
 #   GAP_S            seconds between the later sends, each also waiting for the
 #                    server to admit the one before; 0 sends them back to back
-#                    (default 0.05)
+#                    (default 0.25)
 #   MACHINE          machine spec (tp2's and tp2-plain's default scripts/compass/machines/mi308x-hjbog18.json)
 #   STORE            artifact store holding the simulated configuration's memory
 #                    readings, taken by `compass measure memory`. Unset, the
@@ -135,7 +135,7 @@ if [[ $LMCACHE == 1 ]]; then
 fi
 serve real
 python3 -m atom.compass.parity.traffic "$PORT" "$MODEL" "$OUT/real/record" \
-    "${REQUESTS:-64}" "${GAP_S:-0.05}" "$PREFIX" "${IMAGES:-0}" >"$OUT/real/traffic.log" 2>&1
+    "${REQUESTS:-64}" "${GAP_S:-0.25}" "$PREFIX" "${IMAGES:-0}" >"$OUT/real/traffic.log" 2>&1
 # The record's last lines are written as the workers exit.
 kill -TERM -- -$server
 leave real
