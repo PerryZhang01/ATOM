@@ -35,6 +35,9 @@
 #                    recipes' --chunk-size 256 --null-block-id -1
 #                    --separate-object-groups --supported-transfer-mode
 #                    lmcache_driven --l1-size-gb 8 --eviction-policy LRU)
+#   IMAGES           images in each request, which is then a chat completion
+#                    (default 0); the simulated run prices each at IMAGE_S
+#                    seconds (default 0.01)
 # The real run uses HIP_VISIBLE_DEVICES as set. OUT_DIR gets real/ and sim/,
 # each with its server log and step record (sim/ also has the run file, step
 # table and summary), and compare.json; the last lines are the real run's
@@ -116,7 +119,7 @@ if [[ $LMCACHE == 1 ]]; then
 fi
 serve real
 python3 -m atom.compass.parity.traffic "$PORT" "$MODEL" "$OUT/real/record" \
-    "${REQUESTS:-64}" "${GAP_S:-0.05}" "$PREFIX" >"$OUT/real/traffic.log" 2>&1
+    "${REQUESTS:-64}" "${GAP_S:-0.05}" "$PREFIX" "${IMAGES:-0}" >"$OUT/real/traffic.log" 2>&1
 # The record's last lines are written as the workers exit.
 kill -TERM -- -$server
 leave real
@@ -127,11 +130,11 @@ fi
 
 RUN=$OUT/sim/run.json
 python3 - "$RUN" "$OUT" "$MACHINE" "$MODEL" "$STORE" "$(compass_free_port)" "$TP" \
-    "$LM_FLAGS" <<'EOF'
+    "$LM_FLAGS" "${IMAGE_S:-0.01}" <<'EOF'
 import json, sys
 from pathlib import Path
 
-run, out, machine, model, store, port, width, lmcache = sys.argv[1:]
+run, out, machine, model, store, port, width, lmcache, image_s = sys.argv[1:]
 machine = json.loads(Path(machine).read_text())
 # ponytail: a spec that measured no tokenizer for the model prices it as its
 # first entry; only arrival latency reads it. Measure the model's own to drop this.
@@ -144,6 +147,7 @@ spec = {
     "admission_path": "serving", "ipc_s": 2.0**-14, "stream_s": 2.0**-12,
     "replay": f"{out}/real/record", "machine": machine, "store": store,
     "data_parallel_size": int(width), "out_dir": f"{out}/sim",
+    "image_preprocess_s": float(image_s),
 }
 if lmcache:
     # Declared, not measured: a LOOKUP 2^-13 s plus 2^-17 s a prompt chunk,

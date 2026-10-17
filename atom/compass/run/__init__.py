@@ -20,7 +20,9 @@ member, the frontend's included, connects to.
   frontend LP's runtime; leaving it, after READY from every engine, starts
   the run. It refuses an `LLMEngine` the API server is not building and the
   Atomesh entrypoints, and makes a sync utility command on the frontend's
-  clock owner refuse. On a worker node of a multi-node DP group it only
+  clock owner refuse. Each image a chat request's media preparation loads
+  charges that tokenizer-station job the run file's ``image_preprocess_s``;
+  an image named by a remote URL is refused. On a worker node of a multi-node DP group it only
   selects the simulated runner.
 - `engine(config)` wraps the engine's construction in its own process the
   same way, and maps every DP rank to the engine LP for the process-group
@@ -72,6 +74,8 @@ the run there, which still writes the summary),
 ``client_runs`` (optional: how many client runs the server serves, one traffic
 LP after another, 1 when absent and ``null`` for no limit; each ends when no
 essential work is left, and the last one's end finishes the run),
+``image_preprocess_s`` (optional: seconds the frontend takes to prepare one
+image of a chat request; without it a request with an image is refused),
 ``host`` (optional: ``laws``, per forward kind and host segment, coefficients
 on ``(1, tokens, seqs)``, refused where absent; ``key``, the `host_key` they were
 fitted under and the ``machine_spec`` digest of the spec of the platform they
@@ -242,6 +246,8 @@ COMPASS_ONLY = {
 }
 #: The run-file key of each backend a flag names (`atom.compass.drive.runfile`).
 STEP_STUB, STEP_LINEAR, STEP_GRID = "step_stub", "step_linear", "step_grid"
+#: The run-file key of the frontend's seconds to prepare one image of a chat request.
+IMAGE_PREPROCESS = "image_preprocess_s"
 #: Run-file keys that were renamed, to their names now.
 RENAMED_KEYS = {
     "coefficients": STEP_STUB,
@@ -846,6 +852,7 @@ def frontend(config):
         # A worker node of a multi-node group: engines only, each a member.
         return contextlib.nullcontext()
     _refuse_sync_utility_commands()
+    _price_images(run.get(IMAGE_PREPROCESS))
     name = _pd_name(config, run)
     lp = FRONTEND if name is None else LpId(f"{FRONTEND.name}-{name}")
     authority = None
@@ -933,6 +940,32 @@ def _refuse_sync_utility_commands() -> None:
         return sync(self, cmd, *args, **kwargs)
 
     CoreManager.broadcast_utility_command_sync = refusing
+
+
+def _price_images(price: float | None) -> None:
+    """Make `MediaLoader.load_image` charge `price` seconds to the station job
+    loading the image. Refuse an image named by an http(s) URL, which the real
+    server fetches on wall time, and any image when the run file states no
+    price."""
+    from atom.multimodal.media import MediaLoader
+    from atom.utils.compass_loop import Refused, charge
+
+    load = getattr(MediaLoader.load_image, "__wrapped__", MediaLoader.load_image)
+
+    @functools.wraps(load)
+    def priced(self, data):
+        why = None
+        if isinstance(data, str) and data.startswith(("http://", "https://")):
+            why = "an image named by a remote URL"
+        elif price is None:
+            why = f"an image with no {IMAGE_PREPROCESS} in the run file"
+        if why is not None:
+            clock.installed().refusals.append(f"media:{why}")
+            raise Refused(("media", why))
+        charge(price)
+        return load(self, data)
+
+    MediaLoader.load_image = priced
 
 
 def engine(config):

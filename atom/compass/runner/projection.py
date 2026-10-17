@@ -67,6 +67,7 @@ import numpy as np
 
 from atom.compass.backends.shape import BatchView, RequestShape
 from atom.compass.runner.overrides import RunnerRefusal
+from atom.model_engine.multimodal_runtime import embedding_indices
 from atom.model_engine.sequence import SequenceType
 from atom.utils.forward_context import ForwardMode
 
@@ -256,4 +257,26 @@ def batch_view(batch: Any, mode: ForwardMode, runner: Any) -> BatchView:
         moe_rows=moe_rows,
         produces_output=batch.produces_output(),
         tbo_tokens=None if mode.sync is None else mode.sync.ub_tokens_across_dp,
+        image_tokens=image_tokens(batch, runner),
     )
+
+
+def image_tokens(batch: Any, runner: Any) -> int:
+    """The scheduled tokens the vision encoder's output fills, found as
+    `ModelRunner.run_model` places it: by a request's embedding spans where its
+    media payload has them, otherwise at the model's image token."""
+    media = getattr(batch, "multimodal_data", None) or {}
+    count, offset = 0, 0
+    for req, length, end in zip(
+        batch.req_ids, batch.num_scheduled_tokens, batch.context_lens
+    ):
+        length, data = int(length), media.get(req)
+        if data is not None and "embedding_spans" in data:
+            spans = data["embedding_spans"]
+            count += len(embedding_indices(spans, int(end) - length, length)[0])
+        elif data is not None:
+            image = runner.config.multimodal_config.image_token_id
+            mine = batch.scheduled_tokens[offset : offset + length]
+            count += int(np.count_nonzero(mine == image))
+        offset += length
+    return count
