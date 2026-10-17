@@ -24,7 +24,9 @@ What it does not reproduce. Every object group of a chunk is one entry, so
 attention, and all-null chunks are stored. The byte budget is
 `--l1-size-gb` taken whole, so a lazy pool's growth and allocator alignment
 are not modelled. Stores and retrieves need no prior REGISTER_KV_CACHE,
-because a simulated worker registers no device memory.
+because a simulated worker registers no device memory. The session sweep's
+phase is its caller's start: a real server starts before its engine loads, so
+the same session can drop at another sweep, up to an interval apart.
 
 A flag or a request type outside these is refused by name.
 """
