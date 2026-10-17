@@ -19,7 +19,9 @@
 #                    admit the one before; 0 sends them back to back (default 0.05)
 #   MACHINE          machine spec (tp2's default scripts/compass/machines/mi308x-hjbog18.json)
 #   STORE            artifact store holding the simulated configuration's memory
-#                    readings, taken by `compass measure memory` (required)
+#                    readings, taken by `compass measure memory`. Unset, the
+#                    script takes them first into OUT_DIR/store: `compass measure
+#                    memory` on the real run's GPUs, flags and environment.
 #   SERVER_ARGS      more API server flags, on both runs (default CONFIG's; tp2's are
 #                    --enforce-eager --max-model-len 8192 --no-enable_prefix_caching)
 #   WAIT_S           seconds a server has to start, and to stop (default 1800)
@@ -35,9 +37,10 @@
 #                    recipes' --chunk-size 256 --null-block-id -1
 #                    --separate-object-groups --supported-transfer-mode
 #                    lmcache_driven --l1-size-gb 8 --eviction-policy LRU)
-# The real run uses HIP_VISIBLE_DEVICES as set. OUT_DIR gets real/ and sim/,
-# each with its server log and step record (sim/ also has the run file, step
-# table and summary), and compare.json; the last lines are the real run's
+# The real run uses HIP_VISIBLE_DEVICES as set, and the measurement those GPUs
+# (unset, the first -tp of them). OUT_DIR gets memory/ when it measures, real/
+# and sim/, each with its server log and step record (sim/ also has the run
+# file, step table and summary), and compare.json; the last lines are the real run's
 # admission, send to response headers, and the compare per DP rank. Under
 # LMCACHE they also give the requests whose offload loads and saves differ. A
 # simulated run that needs a step past the real record ends at the replay's
@@ -50,7 +53,6 @@ compass_env "$ROOT"
 compass_require_tree "$ROOT" || exit $?
 OUT=${1:?usage: parity_one_node.sh OUT_DIR}
 MODEL=${MODEL:?MODEL names the model directory}
-STORE=${STORE:?STORE names the store holding the memory readings}
 case ${CONFIG:=tp2} in
 tp2)
     TP=2 ARGS="--enforce-eager --max-model-len 8192 --no-enable_prefix_caching"
@@ -68,6 +70,15 @@ SERVER_ARGS=${SERVER_ARGS:-$ARGS}
 WAIT_S=${WAIT_S:-1800}
 mkdir -p "$OUT/real" "$OUT/sim"
 OUT=$(realpath "$OUT")
+if [[ -z ${STORE:-} ]]; then
+    STORE=$OUT/store
+    # shellcheck disable=SC2086 # SERVER_ARGS is a word list
+    ATOM_DP_MASTER_PORT=$(compass_free_port) python3 -c \
+        "from atom.compass.cli import main; main()" measure memory \
+        --gpu "${HIP_VISIBLE_DEVICES:-$(seq -s, 0 $((TP - 1)))}" --machine "$MACHINE" \
+        --store "$STORE" --out "$OUT/memory" -- --model "$MODEL" -tp "$TP" \
+        --enable-dp-attention $SERVER_ARGS
+fi
 LMCACHE=${LMCACHE:-0} PREFIX=0 LM_FLAGS=
 if [[ $LMCACHE == 1 ]]; then
     PREFIX=${PREFIX_WORDS:-600} LM_PORT=$(compass_free_port)
