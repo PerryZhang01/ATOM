@@ -175,12 +175,26 @@ class LMCacheMPShell:
         held = self._tp.aggregate([rank.get_finished() for rank in self._ranks])
         held, self._held = self._held, held
         if held is not None and not held.is_empty():
+            from atom.kv_transfer.offload.mp.native_state_worker import (
+                NATIVE_STATE_MP_STORE_CHANNEL,
+            )
+
+            # A native-state rank reports a save on its store channel.
+            stores = [
+                c
+                for c in held.connector_completions
+                if c.channel == NATIVE_STATE_MP_STORE_CHANNEL
+            ]
+            saved = {*held.finished_saving}
+            saved |= {c.operation_id for c in stores if c.succeeded}
+            failed = {*held.failed_loading}
+            failed |= {c.operation_id for c in stores if not c.succeeded}
             logger.info(
                 "compass: lmcache_mp reports at %r: saved %s, loaded %s, failed %s",
                 self._rt.now,
-                sorted(map(str, held.finished_saving)),
+                sorted(map(str, saved)),
                 sorted(map(str, held.finished_loading)),
-                sorted(map(str, held.failed_loading)),
+                sorted(map(str, failed)),
             )
         for field in dataclasses.fields(held) if held is not None else ():
             value = getattr(held, field.name)
