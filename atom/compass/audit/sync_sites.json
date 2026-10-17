@@ -4590,7 +4590,7 @@
    "shape": "thread_start",
    "peer": "none",
    "lp": "none",
-   "why": "compass measure memory's engine process starts the --beside command, such as an lmcache server, in its own session before the engine, so the engine's kill stops it",
+   "why": "compass measure memory's engine process starts the --beside command, such as an lmcache server, in the engine's session before the engine, so the engine's kill stops it",
    "mechanism": "K9",
    "mechanism_why": "starting a process cannot park; in the measuring command, which is no LP, around a real engine start it makes; a GPU command serves no simulated run, so the bound stays real"
   },

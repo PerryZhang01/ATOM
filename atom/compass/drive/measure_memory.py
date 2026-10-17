@@ -17,9 +17,9 @@ publishes. A `--gpu` whose device is not the spec's refuses before the
 start, so no entry measured on another card is keyed by that spec. `non_torch`
 refuses a spread across the ranks above `SPREAD_LIMIT`. One member per rank
 holds `memory.ENTRY_FIELDS`, its `record` the digest of the engine's log.
-`--beside` names a command the start runs first in its own session, such as the
-lmcache server an offload connector reaches, so the GPU checks hold it to the
-engine's rule.
+`--beside` names a command the start runs first in the engine's session, such
+as the lmcache server an offload connector reaches, so the GPU checks hold it
+to the engine's rule.
 
 ``--out`` gets the engine's log, run.json's identity from the rank-0 engine
 file, and ``memory_readings.json``, the entry's readable copy. ATOM's

@@ -221,13 +221,14 @@ def test_the_engine_session_starts_the_command_beside_before_the_engine(
         pass
 
     def beside(command, **kwargs):
-        raise Started(command)
+        raise Started(command, kwargs)
 
     monkeypatch.setenv(measure_memory.BESIDE_ENV, envs[0][measure_memory.BESIDE_ENV])
     monkeypatch.setattr(measure_memory.subprocess, "Popen", beside)
     with pytest.raises(Started) as started:
         measure_memory.start(["--model", r.config.model])
-    assert started.value.args == (["lmcache", "server", "-p", "1"],)
+    # No session, group or env of its own: the engine's killpg stops it.
+    assert started.value.args == (["lmcache", "server", "-p", "1"], {})
 
 
 def test_readings_taken_without_the_offload_connector_refuse_a_run_that_offloads(
@@ -244,6 +245,13 @@ def test_readings_taken_without_the_offload_connector_refuse_a_run_that_offloads
 
     publish_readings(tmp_path / "store", r.config, readings=READINGS[2])
     assert memory.load(tmp_path / "store", r.config, MACHINE, 0).values == READINGS[2]
+
+
+def test_a_pd_connector_reads_the_readings_measured_without_one(tmp_path):
+    r = deployment(tmp_path)
+    measured = memory.load(tmp_path / "store", r.config, MACHINE, 0).values
+    r.config.kv_transfer_config = {"kv_connector": "moriio", "kv_role": "kv_producer"}
+    assert memory.load(tmp_path / "store", r.config, MACHINE, 0).values == measured
 
 
 def test_ranks_whose_reserves_spread_past_the_limit_publish_nothing(tmp_path):
