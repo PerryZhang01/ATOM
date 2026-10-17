@@ -13,7 +13,7 @@ import json
 import pytest
 from test_memory_check import GIB, _log
 from test_validate_cost import LAW, _record, _steps
-from test_validate_runs import EXPORT
+from test_validate_runs import ARGUMENTS, EXPORT
 
 from atom.compass.backends.cost import GROUPS
 from atom.compass.run import LP_FILE
@@ -253,8 +253,8 @@ def _as_recorded(cell, warmup=()):
     named at its last prefill row, by key `k<id>` and response id `id-<id>`;
     an export naming them all, from trace `t<id>`, those in `warmup` as its
     warmup's, else request `w`, a one-step prefill before every other step,
-    numbered below them, and the same traces given to every run's client; and
-    run.json's identity,
+    numbered below them, and the same traces and arguments given to every run's
+    client; and run.json's identity,
     with `run`'s grading entries for `step_linear/`, its law and host laws in
     its run file and its refusals its summary's."""
     for d in sorted(cell.iterdir()):
@@ -272,6 +272,7 @@ def _as_recorded(cell, warmup=()):
             lines.insert(0, lines[0] | w | {"rows": [[1, 1, False]], "rung": None})
         path.write_text("".join(json.dumps(x) + "\n" for x in lines))
         export = {"requests": {}, "warmup": {}, "traces": ["t0", "t1", "tw"]}
+        export["arguments"] = ARGUMENTS
         for r in last:
             part = "warmup" if r in warmup else "requests"
             export[part][f"id-{r}"] = {"trace": f"t{r}", "sampling": {}}
@@ -331,6 +332,21 @@ def test_runs_record_and_run_wrote_that_were_given_other_traces_are_not_one_cell
     export.write_text(json.dumps(json.loads(export.read_text()) | other))
 
     with pytest.raises(ValueError, match=r"given different traces; .*real1': \['tx'\]"):
+        main([str(tmp_path / "c4")])
+
+
+def test_runs_record_and_run_wrote_at_another_concurrency_are_not_one_cell(
+    capsys, tmp_path
+):
+    _rows(capsys, tmp_path)
+    _as_recorded(tmp_path / "c4")
+    export = tmp_path / "c4" / "real1" / CLIENT_RUN
+    other = json.loads(export.read_text())
+    other["arguments"] = ARGUMENTS | {"phases.profiling.concurrency": 16}
+    export.write_text(json.dumps(other))
+
+    concurrency = r"\{'phases.profiling.concurrency': \{.*real1': 16, .*\}\}$"
+    with pytest.raises(ValueError, match=f"given different arguments: {concurrency}"):
         main([str(tmp_path / "c4")])
 
 

@@ -17,6 +17,7 @@ from test_vertical_slice import _run_file
 
 from atom.compass import run as compass_run
 from atom.compass.artifacts import ArtifactRefusal
+from atom.compass.run.step_grid import keyed
 
 PCP2 = {"prefill_context_parallel_size": 2}
 DCP2 = {
@@ -72,7 +73,8 @@ def test_a_measured_backend_refuses_a_context_parallel_engine_by_name(
     else:
         run = json.loads(_run_file(tmp_path).read_text())
         del run["step_stub"]
-        (tmp_path / "run.json").write_text(json.dumps(run | {backend: law()}))
+        stated = law() | {"engine_config": keyed(r.config)}
+        (tmp_path / "run.json").write_text(json.dumps(run | {backend: stated}))
         monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
 
     with pytest.raises(ValueError) as refused:

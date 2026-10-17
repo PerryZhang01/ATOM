@@ -58,18 +58,12 @@ from atom.compass.artifacts import (
 )
 from atom.compass.backends.step_grid import StepGrid, StepGridBackend
 from atom.compass.backends.step_grid_fit import VALUE
-from atom.compass.backends.step_grid_plan import BOUNDS, SCOPE
+from atom.compass.backends.step_grid_plan import BOUNDS, SCOPE, keyed_of  # noqa: F401
 from atom.compass.backends.step_grid_residual import Residual
 from atom.compass.runner.overrides import schedulable_ladder
 
 #: The bundle's member a run reads: a group's step has a single writer.
 MEMBER = ("params", Topology().ranks()[0], "json")
-
-
-def keyed_of(engine: dict) -> dict:
-    """`keyed`'s fields of an engine file's mapping `engine`, which adds the
-    scheduler's bounds and the KV block count to them."""
-    return {k: v for k, v in engine.items() if k not in (*BOUNDS, "num_kvcache_blocks")}
 
 
 def keyed(config) -> dict:

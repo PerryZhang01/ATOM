@@ -3,7 +3,7 @@
 
 """The step linear law fitted from real step records.
 
-    python -m atom.compass.backends.step_linear_fit RECORD... --out LAW --machine-spec DIGEST [--form FORM] [--dp N]
+    python -m atom.compass.backends.step_linear_fit RECORD... --out LAW --machine-spec DIGEST [--form FORM] [--engine FILE]
 
 Each RECORD is a real run's step record (`steps/dp0.jsonl`, written with
 `ATOM_COMPASS_PARITY_RECORD`), labelled by `step_labels`, whose docstring
@@ -15,8 +15,11 @@ holds the runs it was fitted on, each vector's fit figures and hull, and, once
 `mark_held_out` has run, the held-out errors per run; its `seed` fixes the
 `rowmod` shuffles, so the same samples and arguments give the same bytes.
 
-With `--dp N` (EP off) the records come in runs of N, each run's `dp0.jsonl`
-to `dp<N-1>.jsonl`; the law states no width. A step is its ranks' lines
+The law states the records' `engine_config`, read from the `.engine.json`
+beside each (`engine_config`) or from `--engine FILE` in their place, and a run
+under another engine config refuses it. At its `data_parallel_size` N above 1
+(EP off) the records come in runs of
+N, each run's `dp0.jsonl` to `dp<N-1>.jsonl`. A step is its ranks' lines
 joined on step index, labelled with the smallest rank label (the others wait
 for the last rank to enter), and a prefill row adds the line's `moe_rows`. A
 step that some rank cut, or whose ranks' rows fall to different vectors, is
@@ -29,7 +32,7 @@ vector reports, under `fit.all_rows`, the centre and scaled MAD of the fit on
 every rank's row, each step priced as its max over ranks, and under
 `fit.passes` the refits the alternation took, null when the picks still moved
 after `MAD_PASSES` refits. Held-out errors are
-printed and written at `--dp 1` only.
+printed and written at width 1 only.
 
 Records with a host key (`dp0.key.json`, from the real runner) also give the
 host laws as a run file's `host` entry: `key`, and `laws[kind][segment]`,
@@ -90,6 +93,7 @@ from atom.compass.backends.shape import (
     sum_query_square,
     sum_tokens,
 )
+from atom.compass.backends.step_grid_plan import keyed_of
 from atom.compass.backends.step_labels import CUTS, HOST_SEGMENTS, host_kind
 from atom.compass.backends.step_linear import (
     DECODE,
@@ -648,6 +652,36 @@ def _table(errors: dict) -> str:
     return "\n".join(lines)
 
 
+def engine_config(records) -> dict:
+    """The engine config `records` ran under: `keyed_of` the `.engine.json`
+    beside each. A record without one, or records under two, refuse, naming
+    the fields that differ."""
+    held = []
+    for record in records:
+        engine = Path(record).with_suffix(".engine.json")
+        if not engine.exists():
+            raise ValueError(
+                f"{record} has no {engine.name}, the engine config it ran under"
+            )
+        held.append(keyed_of(json.loads(engine.read_text())))
+    names = sorted({k for e in held for k in e})
+    if differ := [k for k in names if any(e.get(k) != held[0].get(k) for e in held)]:
+        raise ValueError(
+            f"the records ran under two engine configs, differing in {differ}"
+        )
+    return held[0]
+
+
+def join_width(engine: dict) -> int:
+    """The ranks a run's records join at: `engine`'s `data_parallel_size`."""
+    if "data_parallel_size" not in engine:
+        raise ValueError(
+            "the records' engine config states no data_parallel_size, the ranks "
+            "a step joins; it predates the field"
+        )
+    return engine["data_parallel_size"]
+
+
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(
         prog="python -m atom.compass.backends.step_linear_fit",
@@ -659,26 +693,38 @@ def main(argv=None) -> None:
     )
     parser.add_argument("--form", choices=FORMS, default="base")
     parser.add_argument(
-        "--dp", type=int, default=1, help="ranks per run, the records in rank order"
-    )
-    parser.add_argument(
         "--machine-spec",
         required=True,
         help="the machine_spec_digest of the spec of the platform the records ran "
         "on, which keys the law and its host laws",
     )
+    parser.add_argument(
+        "--engine",
+        help="the engine file the records ran under, stated in place of the "
+        ".engine.json beside each; refused where one contradicts it",
+    )
     args = parser.parse_args(argv)
-    options = {"form": args.form, "dp": args.dp}
-    samples, tables = label_records(args.records, args.dp)
+    if args.engine:
+        engine = keyed_of(json.loads(Path(args.engine).read_text()))
+        for own in (Path(r).with_suffix(".engine.json") for r in args.records):
+            held = keyed_of(json.loads(own.read_text())) if own.exists() else {}
+            if differ := [k for k, v in held.items() if engine.get(k, v) != v]:
+                raise ValueError(f"{own} contradicts {args.engine} in {differ}")
+    else:
+        engine = engine_config(args.records)
+    dp = join_width(engine)
+    options = {"form": args.form, "dp": dp}
+    samples, tables = label_records(args.records, dp)
     for record, table in tables.items():
         step_labels.write_table(record, table)
     law, report = fit(samples, options)
     if any(s.provenance["config"] for s in samples):
         law["host"], law["host_fit"] = fit_host(samples)
     law["machine_spec"] = args.machine_spec
+    law["engine_config"] = engine
     if "host" in law:
         law["host"]["key"]["machine_spec"] = args.machine_spec
-    if len(args.records) > 1 and args.dp == 1:
+    if len(args.records) > 1 and dp == 1:
         mark_held_out(law, report, samples, options)
     Path(args.out).write_text(json.dumps(law) + "\n")
     print(f"cut: {json.dumps(law['cut'])}")
@@ -689,7 +735,7 @@ def main(argv=None) -> None:
             )
     if "host" in law:
         print(f"host: {json.dumps(law['host']['laws'])} {json.dumps(law['host_fit'])}")
-    if len(args.records) > 1 and args.dp == 1:
+    if len(args.records) > 1 and dp == 1:
         for form in FORMS:
             errors = held_out(samples, {"form": form})
             print(f"\nheld out, form {form}\n{_table(errors)}")

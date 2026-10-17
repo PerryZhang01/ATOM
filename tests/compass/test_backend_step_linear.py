@@ -350,3 +350,20 @@ def test_a_run_file_step_linear_is_refused_above_tensor_parallel_width_one(monke
     tp2 = SimpleNamespace(config=SimpleNamespace(tensor_parallel_size=2))
     with pytest.raises(ValueError, match="tensor_parallel_size 2"):
         run.runner(tp2, META_8B)
+
+
+def test_a_run_file_step_linear_stating_no_engine_config_is_refused(monkeypatch):
+    from types import SimpleNamespace
+
+    from atom.compass import run
+
+    monkeypatch.setattr(run, "spec", lambda: {"step_linear": law()})
+    tp1 = SimpleNamespace(
+        config=SimpleNamespace(
+            tensor_parallel_size=1,
+            enable_dp_attention=False,
+            parallel_config=SimpleNamespace(data_parallel_size=1),
+        )
+    )
+    with pytest.raises(ValueError, match="the step linear law states no engine_config"):
+        run.runner(tp1, META_8B)

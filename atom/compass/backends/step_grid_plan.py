@@ -63,6 +63,12 @@ TARGET = (*BOUNDS, "kv_cache_block_size", "num_kvcache_blocks", "ladder")
 DEFINITION = ("prefill", "decode", "margin")
 
 
+def keyed_of(engine: dict) -> dict:
+    """`run.step_grid.keyed`'s fields of an engine file's mapping `engine`, which
+    adds the scheduler's bounds and the KV block count to them."""
+    return {k: v for k, v in engine.items() if k not in (*BOUNDS, "num_kvcache_blocks")}
+
+
 def _views(steps) -> list[tuple[str, BatchView]]:
     """Each named step-record line as the view a simulated runner prices."""
     views = [

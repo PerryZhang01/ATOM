@@ -287,3 +287,10 @@ def test_a_dp_record_a_rank_of_which_gave_no_sample_refuses_at_its_width(tmp_pat
     with pytest.raises(SystemExit, match="are not runs of 2 ranks"):
         fit(tmp_path, "fit steps", *LINEAR, a, *clients(a))
     assert not (tmp_path / "store").exists()
+
+
+def test_records_predating_the_data_parallel_width_refuse_naming_it(tmp_path):
+    engine = {k: v for k, v in ENGINE.items() if k != "data_parallel_size"}
+    a = record(tmp_path / "a", 19, key={**HOST, "engine": engine})
+    with pytest.raises(SystemExit, match="states no data_parallel_size"):
+        fit(tmp_path, "fit steps", *LINEAR, a, *clients(a))

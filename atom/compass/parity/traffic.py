@@ -1,14 +1,16 @@
 # SPDX-License-Identifier: MIT
 """The parity workload: distinct completions sent on a schedule, to a real or a simulated run.
 
-    python -m atom.compass.parity.traffic PORT MODEL RECORD [REQUESTS [GAP_S [PREFIX_WORDS [IMAGES]]]]
+    python -m atom.compass.parity.traffic PORT MODEL RECORD [REQUESTS [GAP_S [PREFIX_WORDS [IMAGES [ALONE]]]]]
 
 Request k's prompt starts with PREFIX_WORDS words every request shares (none
 by default), then k; with IMAGES it is a chat message after that many images
 (`image`). It asks for a fixed number of tokens with
 ``ignore_eos``, streamed. On a real run (`ATOM_COMPASS_RUN` unset)
 request k is sent GAP_S * k wall seconds after the first and not before the
-server has admitted request k - 1, each on its own thread; the worker clock's
+server has admitted request k - 1, each on its own thread; with ALONE 1,
+request 0 is first sent alone and read to its end, and request k is sent
+GAP_S * (k - 1) seconds after request 1. The worker clock's
 reading as each was sent, and as its response headers arrived (the server
 answers once it has handed the request to the engine), goes to `ARRIVALS` in
 RECORD, the real run's parity record directory. On a simulated run this
@@ -95,10 +97,13 @@ def real(
     wait: bool = True,
     prefix_words: int = 0,
     images: int = 0,
+    warmup: bool = False,
 ) -> None:
     """Send request k at `gap_s` * k, once k - 1 is admitted when `wait`, read
     each to its end, write `ARRIVALS` with the requests' `prefix_words` and
-    `images`.
+    `images`. With `warmup`, request 0 is read to its end alone and the gaps
+    count from then, so the rest arrive into running batches rather than all
+    during the first forward.
     Through a prefill-decode router a request is admitted only once its
     prefill returns, so `wait` keeps prefills apart."""
     sent, start = [0] * len(requests), time.monotonic()
@@ -118,8 +123,12 @@ def real(
         if DONE not in lines:
             raise RuntimeError(f"request {k} ended before {DONE}")
 
+    first = 0
+    if warmup:
+        one(0)
+        first, start = 1, time.monotonic() - gap_s
     with ThreadPoolExecutor(len(requests)) as pool:
-        list(pool.map(one, range(len(requests))))
+        list(pool.map(one, range(first, len(requests))))
     arrivals = {
         "sent_ns": sent,
         "admitted_ns": admitted_ns,
@@ -198,9 +207,17 @@ if __name__ == "__main__":
     run, record = compass_run.spec(), Path(record)
     if run is None:
         n, gap_s = int(rest[0]) if rest else 64, float(rest[1]) if rest[1:] else 0.05
-        prefix, images = (int(rest[i]) if rest[i:] else 0 for i in (2, 3))
+        prefix, images, alone = (int(rest[i]) if rest[i:] else 0 for i in (2, 3, 4))
         requests = bodies(model, n, prefix, images)
-        real(int(port), requests, gap_s, record, prefix_words=prefix, images=images)
+        real(
+            int(port),
+            requests,
+            gap_s,
+            record,
+            prefix_words=prefix,
+            images=images,
+            warmup=alone == 1,
+        )
     else:
         arrivals = json.loads((record / ARRIVALS).read_text())
         sent, prefix = arrivals["sent_ns"], arrivals.get("prefix_words", 0)
