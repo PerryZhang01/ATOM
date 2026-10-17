@@ -12,8 +12,8 @@ from atom.compass.detect.rust_router import ALLOW_LIST, check, hits
 
 MESH_SRC = os.path.join(os.path.dirname(atom.__file__), "mesh", "src")
 
-#: The three reads the determinism module replaced, put back as the host
-#: reads they were: (file, routed text, host text).
+#: The reads the determinism module replaced, put back as the host reads
+#: they were: (file, routed text, host text).
 REVERTS = {
     "dp_sticky clock": (
         "policies/dp_sticky.rs",
@@ -29,6 +29,16 @@ REVERTS = {
         "policies/tree.rs",
         "DashMap::with_hasher_and_shard_amount(determinism::hasher(), NODE_SHARD_COUNT)",
         "DashMap::with_shard_amount(NODE_SHARD_COUNT)",
+    ),
+    "random rng": (
+        "policies/random.rs",
+        "crate::determinism::rng()",
+        "rand::rng()",
+    ),
+    "power_of_two rng": (
+        "policies/power_of_two.rs",
+        "crate::determinism::rng()",
+        "rand::rng()",
     ),
 }
 
