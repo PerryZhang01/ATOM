@@ -39,7 +39,7 @@ from atom.compass.backends.step_stub import Coefficients
 from atom.compass.clock import TAR
 from atom.compass.detect.determinism import CONFIGURATION_PREFIX, compare_step_tables
 from atom.compass.parity import read
-from atom.compass.run import STEP_TABLE_FILE, SUMMARY_FILE, channel_table
+from atom.compass.run import STEP_TABLE_FILE, SUMMARY_FILE, channel_table, entries
 
 DONE = "data: [DONE]"
 
@@ -190,7 +190,7 @@ def _timeline(table: str, lp: str, record) -> list[str]:
     lines = table.splitlines()
     run = json.loads(lines[0].removeprefix(CONFIGURATION_PREFIX))
     stub = Coefficients(**run.get("step_stub", {}))
-    if not stub.shape_blind or run.get("host", {}).get("laws"):
+    if not stub.shape_blind or any(h.get("laws") for h in entries(run, "host")):
         return [
             f"{lp}: a timeline is computed for a constant step stub with no host laws"
         ]
