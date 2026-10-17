@@ -76,7 +76,7 @@ def _stage(rank, *grants, frames=(), parts=RDV):
         calls.append(name)
         if name == "forward":
             rt.advance_to(rt.now + C)
-            return SimpleNamespace(pp_send=(C, parts))
+            return SimpleNamespace(pp_send=(C, 0.0, parts))
         return frames.pop(0) if name == "recv_pp_frame" else True
 
     sends = StageSends(rt, call, rank, 2, MODELS)

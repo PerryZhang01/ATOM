@@ -293,7 +293,7 @@ lookahead is
 with `T_min` the smallest rendezvous duration on any carrier (the one at its threshold).
 The two channels' lookaheads sum to `T_min`: the ack makes the stage-to-stage cycle no
 tighter than the rendezvous itself. `L_data` is stated as the smallest carrier
-`latency_s` (`L`). It moves no modelled time, because the receiver's clock goes on to the
+`latency_s` (`L`). It moves no modelled time, because the receiver's launch waits for the
 metadata's arrival (below), which is at least `t_send + L_data`; it only decides how the
 cycle's lookahead is split. The channel table refuses, by name, either channel with a
 non-positive lookahead (README principle 6): a zero-lookahead coupling belongs inside one
@@ -312,8 +312,8 @@ rule).
 
 **The step loop keeps the forward's compute overlap.** On the device, the previous send
 runs while the next forward computes; the forward then waits for it and sends. At a
-non-last stage's forward call site, after the runner answers the compute time `c` and the
-payload of send `n`:
+non-last stage's forward call site, after the runner answers the time `c` to its launch end,
+the time `p` after it to its exit, and the payload of send `n`:
 
 1. `advance_to(t0 + c)`, the forward's charge (`01` D4), and `e` is its device work's end
    (R7). The previous send's `pp_ack`, if stamped at or before
@@ -323,14 +323,15 @@ payload of send `n`:
    was eager, `advance_to` its local completion when that is later than now.
 3. The loop issues send `n` at `t_send`, its clock, now past `done`, its tensors
    leaving at `e`, and registers `(pp_data, n)` (K4), noting whether it is eager (a local completion) or rendezvous (an ack to receive).
+4. `advance_to(now + p)`, the rest of its charge: ATOM sends after the launch.
 
-So a send still waits for its forward's compute and the previous send, but a rendezvous
+So a send still waits for its forward's launch and the previous send, but a rendezvous
 send's completion now comes from the receiver. At a downstream stage's forward
 call site, before the runner is called and with `t_recv_posted` the loop's clock there,
 the loop receives `(pp_data, n)` inline (its clock reaching `now_r`). If any part of the
-send is rendezvous it registers `(pp_ack, n)` stamped `done` (K4). Either way it then
-advances to the metadata's arrival, and the end of the receive (below) holds the
-forward's device start (`01` D4, R7).
+send is rendezvous it registers `(pp_ack, n)` stamped `done` (K4). The forward's host runs
+from `t_recv_posted`, its launch waits for the metadata's arrival and its device start for
+the end of the receive, below (`01` D4, R7).
 
 **The idle flushes are channel receives (`01` D4, K5).** At both idle call sites the loop
 first settles the pending send: an inline receive of its `pp_ack` if it was rendezvous, an

@@ -12,10 +12,11 @@ parts leave at ``t_send``, the sender's host send; the ``rccl`` parts at
 ``t_ready``, when the sender's device work ends.
 
 `StageSends` is the stage loop's side. Before a downstream stage's forward it
-receives that forward's input on ``pp_data``, up to the metadata's arrival and
+receives that forward's input on ``pp_data``, the post and the metadata's arrival
+as the batch's ``compass_pp_host`` and
 the tensors' as the batch's ``compass_pp_release``, and, for a rendezvous send,
-returns the completion on ``pp_ack`` stamped at it; after a non-last stage's
-forward it waits for its previous send's completion, then sends. An idle
+returns the completion on ``pp_ack`` stamped at it; at a non-last stage's forward's
+launch end it waits for its previous send's completion, then sends. An idle
 flush waits for the previous send the same way. The frames move between the
 stages' TP-rank-0 workers over the PP CPU group.
 """
@@ -127,12 +128,14 @@ class StageSends:
             self.settle()
             return self.call(name, *args, wait_out=wait_out)
         if self.data_in:
-            args[0].compass_pp_release = self.receive()
+            args[0].compass_pp_host, args[0].compass_pp_release = self.receive()
         t0 = self.rt.now
         reply = self.call(name, *args, wait_out=wait_out)
         if self.data_out:
-            ready_s, parts = reply.pp_send
+            ready_s, post_s, parts = reply.pp_send
             self.send(t0 + ready_s, parts)
+            if post_s > 0:
+                self.rt.advance_to(self.rt.now + post_s)
         return reply
 
     def _frame(self, kind: str, ch: str, seq: int) -> dict:
@@ -143,8 +146,8 @@ class StageSends:
             raise RuntimeError(f"{ch}: read frame {frame['seq']}, released {seq}")
         return frame
 
-    def receive(self) -> float:
-        """Advance to the metadata's arrival; return the tensors'."""
+    def receive(self) -> tuple:
+        """Return ``(posted, meta)`` and the tensors' arrival."""
         seq, posted = self.received, self.rt.now
         self.received += 1
         frame = self._frame("pp_data", self.data_in, seq)
@@ -152,9 +155,7 @@ class StageSends:
         if is_rendezvous(self.models, frame["parts"]):
             self.call("send_pp_frame", "pp_ack", {"seq": seq}, wait_out=True)
             self.rt.stamp_send(self.ack_out, done)
-        if meta > self.rt.now:
-            self.rt.advance_to(meta)
-        return end
+        return (posted, meta), end
 
     def send(self, ready: float, parts) -> None:
         """Send once the previous send is done: the metadata now, the tensors
