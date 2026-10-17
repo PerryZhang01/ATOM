@@ -155,11 +155,11 @@ fi
 
 RUN=$OUT/sim/run.json
 python3 - "$RUN" "$OUT" "$MACHINE" "$MODEL" "$STORE" "$(compass_free_port)" "${DPA:+$TP}" \
-    "$LM_FLAGS" "${IMAGE_S:-0.01}" <<'EOF'
+    "$LM_FLAGS" "${IMAGE_S:-0.01}" "$TP" <<'EOF'
 import json, sys
 from pathlib import Path
 
-run, out, machine, model, store, port, width, lmcache, image_s = sys.argv[1:]
+run, out, machine, model, store, port, width, lmcache, image_s, tp = sys.argv[1:]
 machine = json.loads(Path(machine).read_text())
 # ponytail: a spec that measured no tokenizer for the model prices it as its
 # first entry; only arrival latency reads it. Measure the model's own to drop this.
@@ -178,7 +178,10 @@ if lmcache:
     # Declared, not measured: a LOOKUP 2^-13 s plus 2^-17 s a prompt chunk,
     # any other request 2^-14 s.
     laws = {"lookup_s": [2.0**-13, 2.0**-17], "request_s": 2.0**-14}
-    spec["lmcache"] = {"server": lmcache.split(), **laws}
+    # Writers per DP rank: one under DP-attention, else every TP rank, which
+    # a model whose ranks share one copy refuses by name.
+    writers = 1 if width else int(tp)
+    spec["lmcache"] = {"server": lmcache.split(), "writers": writers, **laws}
 Path(run).write_text(json.dumps(spec))
 EOF
 serve sim --compass-run "$RUN"
