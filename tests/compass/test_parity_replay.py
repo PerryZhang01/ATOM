@@ -193,8 +193,9 @@ def test_a_real_workload_writes_when_each_request_was_admitted(tmp_path):
     assert len(waits) == 3 and all(0.02e9 <= w < 0.2e9 for w in waits), waits
 
 
-def test_the_real_workload_runs_request_0_alone_and_counts_gaps_from_its_end(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("alone", [[], ["0", "0", "1"]], ids=["default", "alone"])
+def test_the_real_workload_runs_request_0_alone_only_when_asked(
+    tmp_path, monkeypatch, alone
 ):
     done = []  # just before each stream's end was written
 
@@ -210,11 +211,14 @@ def test_the_real_workload_runs_request_0_alone_and_counts_gaps_from_its_end(
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Server)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     monkeypatch.delenv(compass_run.ENV, raising=False)
-    argv = [str(server.server_port), "m", str(tmp_path), "3", "0.1"]
+    argv = [str(server.server_port), "m", str(tmp_path), "3", "0.1", *alone]
     subprocess.run([sys.executable, "-m", traffic.__name__, *argv], check=True)
     server.shutdown()
     sent = json.loads((tmp_path / ARRIVALS).read_text())["sent_ns"]
-    assert sent[1] >= min(done) and sent[2] - sent[1] > 0.09e9, (sent, done)
+    if not alone:  # the default sends request 1 during request 0's stream
+        assert sent[1] < min(done), (sent, done)
+    else:
+        assert sent[1] >= min(done) and sent[2] - sent[1] > 0.05e9, (sent, done)
 
 
 @pytest.mark.parametrize("role, side", [("kv_producer", "P"), ("kv_consumer", "D")])

@@ -15,11 +15,13 @@
 #                    the nightly's flags and environment; it needs MACHINE.
 #                    Under DP-attention the DP width is the -tp width.
 #   MODEL            model directory with its weights (required)
-#   REQUESTS         requests in the workload (default 64); request 0 runs alone
-#                    to its end before the rest are sent
-#   GAP_S            seconds between the later sends, each also waiting for the
-#                    server to admit the one before; 0 sends them back to back
-#                    (default 0.25)
+#   REQUESTS         requests in the workload (default 64)
+#   GAP_S            seconds between sends, each also waiting for the server to
+#                    admit the one before; 0 sends them back to back (default
+#                    0.05, or 0.25 under ALONE=1)
+#   ALONE            1: request 0 runs alone to its end before the rest are sent,
+#                    and GAP_S counts from its end, so later requests join
+#                    running decode batches. Default 0: all sent from the start.
 #   MACHINE          machine spec (tp2's and tp2-plain's default scripts/compass/machines/mi308x-hjbog18.json)
 #   STORE            artifact store holding the simulated configuration's memory
 #                    readings, taken by `compass measure memory`. Unset, the
@@ -76,6 +78,8 @@ dsv4-dpa8)
 esac
 SERVER_ARGS=${SERVER_ARGS:-$ARGS}
 WAIT_S=${WAIT_S:-1800}
+ALONE=${ALONE:-0} GAP=0.05
+[[ $ALONE == 1 ]] && GAP=0.25
 mkdir -p "$OUT/real" "$OUT/sim"
 OUT=$(realpath "$OUT")
 if [[ -z ${STORE:-} ]]; then
@@ -135,7 +139,7 @@ if [[ $LMCACHE == 1 ]]; then
 fi
 serve real
 python3 -m atom.compass.parity.traffic "$PORT" "$MODEL" "$OUT/real/record" \
-    "${REQUESTS:-64}" "${GAP_S:-0.25}" "$PREFIX" "${IMAGES:-0}" >"$OUT/real/traffic.log" 2>&1
+    "${REQUESTS:-64}" "${GAP_S:-$GAP}" "$PREFIX" "${IMAGES:-0}" "$ALONE" >"$OUT/real/traffic.log" 2>&1
 # The record's last lines are written as the workers exit.
 kill -TERM -- -$server
 leave real

@@ -1,15 +1,16 @@
 # SPDX-License-Identifier: MIT
 """The parity workload: distinct completions sent on a schedule, to a real or a simulated run.
 
-    python -m atom.compass.parity.traffic PORT MODEL RECORD [REQUESTS [GAP_S [PREFIX_WORDS [IMAGES]]]]
+    python -m atom.compass.parity.traffic PORT MODEL RECORD [REQUESTS [GAP_S [PREFIX_WORDS [IMAGES [ALONE]]]]]
 
 Request k's prompt starts with PREFIX_WORDS words every request shares (none
 by default), then k; with IMAGES it is a chat message after that many images
 (`image`). It asks for a fixed number of tokens with
 ``ignore_eos``, streamed. On a real run (`ATOM_COMPASS_RUN` unset)
-request 0 is sent alone and read to its end; then request k is sent
-GAP_S * (k - 1) wall seconds after request 1 and not before the server has
-admitted request k - 1, each on its own thread; the worker clock's
+request k is sent GAP_S * k wall seconds after the first and not before the
+server has admitted request k - 1, each on its own thread; with ALONE 1,
+request 0 is first sent alone and read to its end, and request k is sent
+GAP_S * (k - 1) seconds after request 1. The worker clock's
 reading as each was sent, and as its response headers arrived (the server
 answers once it has handed the request to the engine), goes to `ARRIVALS` in
 RECORD, the real run's parity record directory. On a simulated run this
@@ -206,7 +207,7 @@ if __name__ == "__main__":
     run, record = compass_run.spec(), Path(record)
     if run is None:
         n, gap_s = int(rest[0]) if rest else 64, float(rest[1]) if rest[1:] else 0.05
-        prefix, images = (int(rest[i]) if rest[i:] else 0 for i in (2, 3))
+        prefix, images, alone = (int(rest[i]) if rest[i:] else 0 for i in (2, 3, 4))
         requests = bodies(model, n, prefix, images)
         real(
             int(port),
@@ -215,7 +216,7 @@ if __name__ == "__main__":
             record,
             prefix_words=prefix,
             images=images,
-            warmup=True,
+            warmup=alone == 1,
         )
     else:
         arrivals = json.loads((record / ARRIVALS).read_text())
