@@ -63,8 +63,9 @@ its ``engine_config``, `step_grid.keyed` as it was fitted, refuse a run under
 any other, and a law missing either refuses; a list of them is one per engine config, a process taking its own), ``step_grid`` (an artifact store's root and a
 bundle's key, priced by `StepGridBackend`; see `step_grid`) and ``replay`` (a
 real run's parity record directory, or for a prefill-decode run one holding
-each side's as ``prefill/`` and ``decode/``: each step ends when the real one
-did, by `atom.compass.parity.replay`),
+each deployment's as ``prefill/`` and ``decode/``, ``prefill<k>/`` and
+``decode<k>/`` above one of a side: each step ends when the real one did, by
+`atom.compass.parity.replay`),
 ``step_roofline`` (optional, ``true`` or ``false``: with ``true`` a
 `StepRooflineBackend` prices the steps the backend refuses, through
 `StepFallbackBackend`),
@@ -1174,12 +1175,9 @@ def runner(model_runner, tree) -> None:
         from atom.compass.parity.replay import ReplayBackend
 
         dp_rank = config.parallel_config.data_parallel_rank
-        if max(run.get(k, 1) for k in INSTANCES.values()) > 1:
-            raise ValueError(
-                "replay reads one record per side, prefill/ and decode/, and this "
-                "run has several deployments of a side"
-            )
-        side = {"P": "prefill", "D": "decode"}.get(_pd_side(config), "")
+        # This deployment's record: prefill/, or prefill1/ for engine-P1.
+        name = _pd_name(config, run) or ""
+        side = {"P": "prefill", "D": "decode"}.get(name[:1], "") + name[1:]
         backend = replay = ReplayBackend(Path(run["replay"]) / side, dp_rank)
     if STEP_LINEAR in run:
         if tp != 1:
@@ -1272,12 +1270,11 @@ def runner(model_runner, tree) -> None:
     from atom.compass.run import memory
 
     measured = memory.load(run["store"], config, machine, model_runner.rank)
-    model = ModelTerms.from_config(
-        config.hf_config,
-        activations=measured.activations(config.max_num_batched_tokens),
-        config_json=_config_json(config),
-        tree=tree,
-    )
+    # `ModelRunner.warmup_model` sizes its batch from the scheduler bounds and
+    # the DP and PCP widths, all in the readings' key, so the tokens the
+    # reading warmed up with are the ones this deployment's warmup runs.
+    warmup = measured.values["warmup_tokens"]
+    model = ModelTerms.from_tree(tree, activations=measured.activations(warmup))
     fallback = run.get("step_roofline", False)
     if not isinstance(fallback, bool):
         raise TypeError(
@@ -1343,7 +1340,7 @@ def runner(model_runner, tree) -> None:
     install_device_readings(model_runner, readings)
     model_runner.compass_memory = record(
         readings,
-        tokens=config.max_num_batched_tokens,
+        tokens=warmup,
         pool=predicts(measured),
         assumed=measured.assumed,
     )
@@ -1474,17 +1471,6 @@ def host_key_of(model: str, engine: dict) -> dict:
         "model": _file_digest(model, "config.json"),
         "engine": engine,
     }
-
-
-def _config_json(config) -> dict:
-    """The model's config.json as loading reads it, with `config.hf_overrides`
-    set over its text-level keys, as `Config` sets them over `hf_config`, so
-    an overridden field counts as stated."""
-    from transformers import PretrainedConfig
-
-    file = PretrainedConfig.get_config_dict(config.model)[0]
-    file.get("text_config", file).update(getattr(config, "hf_overrides", None) or {})
-    return file
 
 
 def _file_digest(name: str, filename: str) -> str | None:
