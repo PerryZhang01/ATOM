@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
-"""`parity_one_node.sh`: what each CONFIG starts both servers with, and the DP
-width the simulated run file names.
+"""`parity_one_node.sh`: what each CONFIG starts both servers with, the DP
+width the simulated run file names, and the memory measurement it starts first
+when STORE is unset.
 
-`python3` is stubbed for the servers, the traffic and the compare, so these run
-with no GPU and no model; the rest of the script runs as written.
+`python3` is stubbed for the measurement, the servers, the traffic and the
+compare, so these run with no GPU and no model; the rest of the script runs as written.
 """
 
 import json
@@ -27,6 +28,9 @@ case "$1 $2" in
 "-m atom.compass.parity")
     echo '{"steps": {"0": {"compared": 3, "identical": 3}}, "first_divergence": {"0": null}}'
     exit 0 ;;
+"-c from atom.compass.cli import main; main()")
+    echo "$* GPU_MAX_HW_QUEUES=${GPU_MAX_HW_QUEUES-} ATOM_NUMA_BIND=${ATOM_NUMA_BIND-}" >> "$STUB_LOG"
+    exit "${MEASURE_RC:-0}" ;;
 esac
 exec "$REAL_PYTHON" "$@"
 """
@@ -46,16 +50,17 @@ def _parity(tmp_path, **env):
         "SERVER_ARGS",
         "GPU_MAX_HW_QUEUES",
         "ATOM_NUMA_BIND",
+        "HIP_VISIBLE_DEVICES",
     )
     env = {k: v for k, v in os.environ.items() if k not in inherited} | dict(
         PATH=f"{bindir}:{os.environ['PATH']}",
         REAL_PYTHON=sys.executable,
         STUB_LOG=str(tmp_path / "servers.log"),
         MODEL=str(model),
-        STORE=str(tmp_path / "store"),
         WAIT_S="30",
-        **env,
+        **{"STORE": str(tmp_path / "store")} | env,
     )
+    env = {k: v for k, v in env.items() if v is not None}
     r = subprocess.run(
         ["bash", "scripts/compass/parity_one_node.sh", str(tmp_path / "out")],
         cwd=ROOT,
@@ -122,3 +127,35 @@ def test_a_spec_that_measured_the_models_tokenizer_names_it_once(tmp_path):
     assert r.returncode == 0, r.stderr
     tokenizers = json.loads(run.read_text())["machine"]["host"]["tokenizers"]
     assert [a for t in tokenizers for a in t["applies_to"]].count(arch) == 1
+
+
+def test_unset_store_measures_first_with_the_servers_flags_and_environment(tmp_path):
+    machine = ROOT / "scripts/compass/machines/mi308x-hjbog18.json"
+    r, servers, run = _parity(
+        tmp_path, CONFIG="dsv4-dpa8", MACHINE=str(machine), STORE=None
+    )
+    assert r.returncode == 0, r.stderr
+    out = tmp_path / "out"
+    measure, real, sim = servers
+    assert (
+        f" measure memory --gpu 0,1,2,3,4,5,6,7 --machine {machine} "
+        f"--store {out}/store --out {out}/memory -- --model {tmp_path}/model -tp 8 "
+    ) in measure
+    flags = measure.split(" -tp ", 1)[1]
+    assert real.split(" -tp ", 1)[1] == flags
+    assert sim.split(" -tp ", 1)[1].replace(f" --compass-run {run}", "") == flags
+    assert json.loads(run.read_text())["store"] == f"{out}/store"
+
+
+def test_the_measurement_takes_the_real_runs_gpus(tmp_path):
+    r, servers, _ = _parity(tmp_path, STORE=None, HIP_VISIBLE_DEVICES="4,5")
+    assert r.returncode == 0, r.stderr
+    assert " measure memory --gpu 4,5 " in servers[0]
+    assert len(servers) == 3
+
+
+def test_a_failed_measurement_starts_no_server(tmp_path):
+    r, servers, run = _parity(tmp_path, STORE=None, MEASURE_RC="3")
+    assert r.returncode != 0
+    assert len(servers) == 1 and " measure memory " in servers[0]
+    assert not run.exists()
