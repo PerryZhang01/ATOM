@@ -33,6 +33,8 @@ LAW = json.loads(
 )
 N18 = json.loads((ROOT / "machines" / "mi308x-hjbog18.json").read_text())
 N39 = json.loads((ROOT / "machines" / "mi308x-hjbog39.json").read_text())
+#: The law at the test deployment's engine config, which `_installed` states.
+HERE = {k: v for k, v in LAW.items() if k != "engine_config"}
 
 
 def digest(document: dict) -> str:
@@ -43,17 +45,18 @@ def test_the_hjbog39_law_loads_under_its_own_spec_and_refuses_under_node_18s(
     monkeypatch, tmp_path
 ):
     assert LAW["machine_spec"] == LAW["host"]["key"]["machine_spec"] == digest(N39)
-    installed = _installed(monkeypatch, tmp_path, step_linear=LAW, machine=N39)
+    assert LAW["engine_config"] == LAW["host"]["key"]["engine"]
+    installed = _installed(monkeypatch, tmp_path, step_linear=HERE, machine=N39)
     assert isinstance(installed, StepLinearBackend)
 
     with pytest.raises(ValueError) as refused:
-        _installed(monkeypatch, tmp_path, step_linear=LAW, machine=N18)
+        _installed(monkeypatch, tmp_path, step_linear=HERE, machine=N18)
     assert f"fitted on machine spec {digest(N39)}" in str(refused.value)
     assert f"this run's is {digest(N18)}" in str(refused.value)
 
 
 def test_a_law_that_states_no_machine_spec_refuses(monkeypatch, tmp_path):
-    unkeyed = {k: v for k, v in LAW.items() if k != "machine_spec"}
+    unkeyed = {k: v for k, v in HERE.items() if k != "machine_spec"}
     with pytest.raises(ValueError, match="fitted on machine spec None"):
         _installed(monkeypatch, tmp_path, step_linear=unkeyed, machine=N39)
 

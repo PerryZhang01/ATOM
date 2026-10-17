@@ -58,9 +58,9 @@ member, the frontend's included, connects to.
 Run file keys: ``clock_endpoint``, ``bound_s`` (finite), ``admission_path``,
 ``ipc_s``, ``stream_s``, one of ``step_stub`` (a `Coefficients` mapping,
 priced by `StepStubBackend`), ``step_linear`` (a `StepLinearLaw` mapping,
-priced by `StepLinearBackend`; its ``machine_spec`` digest and, when stated,
+priced by `StepLinearBackend`; its ``machine_spec`` digest and
 its ``engine_config``, `step_grid.keyed` as it was fitted, refuse a run under
-any other; a list of them is one per engine config, a process taking its own), ``step_grid`` (an artifact store's root and a
+any other, and a law missing either refuses; a list of them is one per engine config, a process taking its own), ``step_grid`` (an artifact store's root and a
 bundle's key, priced by `StepGridBackend`; see `step_grid`) and ``replay`` (a
 real run's parity record directory, or for a prefill-decode run one holding
 each side's as ``prefill/`` and ``decode/``: each step ends when the real one
@@ -1206,6 +1206,11 @@ def runner(model_runner, tree) -> None:
                     "the step linear law was fitted under another engine "
                     "config: " + "; ".join(differ)
                 )
+        else:
+            raise ValueError(
+                "the step linear law states no engine_config, the engine config "
+                "it was fitted under, so no run can check its parallel layout"
+            )
     elif STEP_STUB in run:
         # A pipeline stage is priced for its own span of the stack, the span
         # ATOM's `make_layers` builds it from.

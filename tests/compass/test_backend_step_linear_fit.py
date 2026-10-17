@@ -85,6 +85,15 @@ def _steps(seed, n=240, cached=True, history=0.0):
     return out
 
 
+#: The engine config a test record ran under: one rank.
+ENGINE = {"data_parallel_size": 1}
+
+
+def _engine_file(record, engine=ENGINE):
+    """Write `engine` as the engine file beside `record`."""
+    record.with_suffix(".engine.json").write_text(json.dumps(engine))
+
+
 def _record(path, steps, stretch=None):
     """Write `steps` as a real record whose device busy time is each step's price.
 
@@ -115,6 +124,7 @@ def _record(path, steps, stretch=None):
         )
         t += busy
     path.write_text("".join(json.dumps(line) + "\n" for line in lines))
+    _engine_file(path)
     return path
 
 
@@ -415,6 +425,7 @@ def _timed_record(path, steps, idle_after=(), key=KEY, gap=0):
     path.write_text("".join(json.dumps(line) + "\n" for line in lines))
     if key is not None:
         path.with_suffix(".key.json").write_text(json.dumps(key))
+    _engine_file(path, ENGINE | (key or {}).get("engine", {}))
     return path, exposed
 
 
@@ -899,3 +910,31 @@ def test_a_rowmod_rung_is_validated_on_its_rowmod_coordinate_too(tmp_path):
     lopsided = [(1, c, True) for c in (60000, 1000, 1000, 1000, 60000)]
     assert backend.price(_view(lopsided, 8)).terms[-1].name == "decode.rowmod"
     assert not _validated(backend, lopsided, 8)
+
+
+@pytest.mark.parametrize(
+    "engines, named",
+    [
+        (
+            [ENGINE | {"kv_cache_dtype": "bf16"}, ENGINE | {"kv_cache_dtype": "fp8"}],
+            "two engine configs:\nengine_config kv_cache_dtype: ",
+        ),
+        ([ENGINE, {"kv_cache_dtype": "bf16"}], "engine_config data_parallel_size: "),
+        ([{"kv_cache_dtype": "bf16"}] * 2, "states no data_parallel_size"),
+        ([ENGINE, None], "dp0-7.jsonl has no dp0-7.engine.json"),
+    ],
+    ids=["two configs", "one without the width", "predating the width", "no file"],
+)
+def test_the_command_refuses_records_without_one_engine_config_naming_the_field(
+    tmp_path, engines, named
+):
+    records = []
+    for seed, engine in zip((6, 7), engines):
+        records.append(_record(tmp_path / f"dp0-{seed}.jsonl", _steps(seed)))
+        if engine is None:
+            records[-1].with_suffix(".engine.json").unlink()
+        else:
+            _engine_file(records[-1], engine)
+    with pytest.raises(ValueError, match=re.escape(named)):
+        main([*map(str, records), "--out", str(tmp_path / "law.json"), *SPEC])
+    assert not (tmp_path / "law.json").exists()
