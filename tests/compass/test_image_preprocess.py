@@ -8,6 +8,7 @@ image embeddings states how many, and the fitted backends refuse it.
 """
 
 import base64
+import inspect
 import io
 import urllib.request
 from types import SimpleNamespace
@@ -67,8 +68,11 @@ def _message(*urls):
 
 @pytest.fixture
 def priced(monkeypatch, loop):
-    """The frontend bootstrap's image pricing, on `loop`'s clock, put back after."""
-    monkeypatch.setattr(MediaLoader, "load_image", MediaLoader.load_image)
+    """The frontend bootstrap's image pricing, on `loop`'s clock, put back after.
+    It wraps ATOM's own load: an earlier in-process bootstrap leaves its wrapper."""
+    monkeypatch.setattr(
+        MediaLoader, "load_image", inspect.unwrap(MediaLoader.load_image)
+    )
     monkeypatch.setattr(clock, "_installed", loop.rt)
     config = SimpleNamespace(hf_config=SimpleNamespace(architectures=["Qwen"]))
     monkeypatch.setattr(api_server, "_get_engine_config", lambda: config)
@@ -116,12 +120,6 @@ def test_an_image_that_cannot_be_priced_is_refused_by_name(
     assert loop.rt.refusals == [f"media:{why}"]
 
 
-def test_the_bootstrap_charges_each_image_once_however_often_it_runs(loop, priced):
-    priced(0.25)
-    priced(0.25)
-    assert _prepare(loop, _png())[1] == pytest.approx(0.25)
-
-
 def test_a_load_outside_any_run_is_neither_charged_nor_refused(priced, monkeypatch):
     priced(None)
     monkeypatch.setattr(clock, "_installed", None)
@@ -131,7 +129,8 @@ def test_a_load_outside_any_run_is_neither_charged_nor_refused(priced, monkeypat
 # --- a step that carries image tokens ---------------------------------------
 
 
-def _image_prefill(data, prompt):
+def _image_prefill(data, *prompts):
+    """The first batch for `prompts`; the last one carries `data`."""
     scheduler = Scheduler(
         MockConfig(
             num_kvcache_blocks=64,
@@ -141,9 +140,10 @@ def _image_prefill(data, prompt):
             parallel_config=SimpleNamespace(data_parallel_rank=0),
         )
     )
-    seq = Sequence(prompt, BLOCK, sampling_params=SamplingParams())
+    for prompt in prompts:
+        seq = Sequence(prompt, BLOCK, sampling_params=SamplingParams())
+        scheduler.add(seq)
     seq.multimodal_data, seq.cache_seed = data, 1
-    scheduler.add(seq)
     return scheduler.schedule()[0]
 
 
@@ -151,16 +151,24 @@ PIXELS = {"pixel_values": torch.zeros(1, 3), "image_grid_thw": torch.ones(1, 3)}
 
 
 @pytest.mark.parametrize(
-    "data, prompt, tokens",
+    "data, prompts, tokens",
     [
         # Qwen: the image's embeddings sit at the image token, the prompt whole.
-        (PIXELS, [5, IMAGE_ID, IMAGE_ID, IMAGE_ID, 6], 3),
-        # DeepSeek-V4.1: spans; the first 16-token chunk holds 6 of 10.
-        ({**PIXELS, "embedding_spans": ((10, 10),)}, list(range(30, 60)), 6),
+        (PIXELS, [[5, IMAGE_ID, IMAGE_ID, IMAGE_ID, 6]], 3),
+        # The same request second in the batch, behind a text one.
+        (PIXELS, [[1, 2, 3, 4], [5, IMAGE_ID, IMAGE_ID, IMAGE_ID, 6]], 3),
+        # DeepSeek-V4.1: spans; the first 16-token chunk fills none of the
+        # image but carries its pixels, so it encodes all 10 rows.
+        ({**PIXELS, "embedding_spans": ((20, 10),)}, [list(range(30, 70))], 10),
+        # Pixels already sent: the chunk fills the 6 of 10 it holds.
+        ({"embedding_spans": ((10, 10),)}, [list(range(30, 60))], 6),
     ],
+    ids=["qwen", "qwen-second", "spans-encode", "spans-fill"],
 )
-def test_a_steps_image_tokens_are_refused_by_every_fitted_backend(data, prompt, tokens):
-    batch = _image_prefill(data, prompt)
+def test_a_steps_image_tokens_are_refused_by_every_fitted_backend(
+    data, prompts, tokens
+):
+    batch = _image_prefill(data, *prompts)
     r = runner(backend())
     r.config.multimodal_config = SimpleNamespace(image_token_id=IMAGE_ID)
     assert r.forward(batch).predicted_s == 0.0

@@ -261,9 +261,11 @@ def batch_view(batch: Any, mode: ForwardMode, runner: Any) -> BatchView:
 
 
 def image_tokens(batch: Any, runner: Any) -> int:
-    """The scheduled tokens the vision encoder's output fills, found as
-    `ModelRunner.run_model` places it: by a request's embedding spans where its
-    media payload has them, otherwise at the model's image token."""
+    """The image rows a step's forward handles, as `ModelRunner.run_model`
+    handles them. With embedding spans, a payload still carrying pixel values
+    encodes every span on this chunk, even one that fills none; a later chunk
+    fills the spans it overlaps. Without spans, the image's embeddings sit at
+    the model's image token."""
     from atom.model_engine.multimodal_runtime import embedding_indices
 
     media = getattr(batch, "multimodal_data", None) or {}
@@ -274,7 +276,10 @@ def image_tokens(batch: Any, runner: Any) -> int:
         length, data = int(length), media.get(req)
         if data is not None and "embedding_spans" in data:
             spans = data["embedding_spans"]
-            count += len(embedding_indices(spans, int(end) - length, length)[0])
+            if "pixel_values" in data:
+                count += sum(rows for _, rows in spans)
+            else:
+                count += len(embedding_indices(spans, int(end) - length, length)[0])
         elif data is not None:
             image = runner.config.multimodal_config.image_token_id
             mine = batch.scheduled_tokens[offset : offset + length]
