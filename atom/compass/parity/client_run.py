@@ -19,7 +19,10 @@ names nothing and is counted. ``traces`` names every trace aiperf was given:
 the ``id`` of each weka trace its input config's dataset holds, a file or each
 ``*.json`` of a directory, as aiperf's weka trace loader reads them. Which of
 them a run's finished requests came from moves with its schedule, since aiperf
-records nothing of a request in flight at its cutoff.
+records nothing of a request in flight at its cutoff. ``sessions`` gives each
+of them whose file is named by a number that number, its session:
+`cctraces_sim.sh` names each trace's file by its line in the traces it splits,
+counted from 0.
 """
 
 import argparse
@@ -60,15 +63,19 @@ def response_id(responses) -> str | None:
     return None
 
 
-def given(artifacts) -> list:
-    """The traces of the one dataset aiperf was given, as its export names it."""
+def given(artifacts) -> dict:
+    """The traces of the one dataset aiperf was given, as its export names it,
+    each to its file's name when that is a number, else None."""
     config = json.loads((Path(artifacts) / AIPERF).read_text())["input_config"]
     (d,) = config["datasets"]
     if d.get("format") != "weka_trace" or not d.get("path"):
         raise ValueError(f"aiperf's dataset {d['name']} is not weka traces at a path")
     path = Path(d["path"])
     files = path.glob("*.json") if path.is_dir() else [path]
-    return sorted({json.loads(f.read_text())["id"] for f in files})
+    return {
+        json.loads(f.read_text())["id"]: int(f.stem) if f.stem.isdigit() else None
+        for f in files
+    }
 
 
 def write(artifacts) -> tuple[Path, dict, int]:
@@ -100,10 +107,12 @@ def write(artifacts) -> tuple[Path, dict, int]:
                 k: v for k, v in record["payload"].items() if k not in NOT_SAMPLING
             },
         }
+    traces = given(artifacts)
     export = {
         "requests": named[PROFILING],
         "warmup": named[WARMUP],
-        "traces": given(artifacts),
+        "traces": sorted(traces),
+        "sessions": {t: s for t, s in traces.items() if s is not None},
     }
     path = artifacts / NAME
     path.write_text(json.dumps(export, sort_keys=True))
