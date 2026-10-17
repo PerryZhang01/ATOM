@@ -12,8 +12,8 @@ import json
 
 import numpy as np
 import pytest
-from test_backend_step_linear import law
-from test_backend_step_linear_fit import _fit, _record
+from test_backend_step_linear import _installed, law
+from test_backend_step_linear_fit import SPEC, _engine_file, _fit, _record
 
 from atom.compass.backends import (
     BatchView,
@@ -149,3 +149,58 @@ def test_the_fit_records_whether_the_alternation_settled(
     law_ = _fit(_records(tmp_path, _groups(0)), dp=DP)
     assert law_["prefill"]["fit"]["passes"] == 1
     assert law_["decode"]["4"]["fit"]["passes"] == decode
+
+
+def test_a_law_fitted_on_dp_records_joins_at_their_width_and_refuses_at_dp_1(
+    tmp_path,
+    monkeypatch,
+):
+    from atom.compass.backends.step_linear_fit import main
+
+    records = _records(tmp_path, _groups(0))
+    engine = {"data_parallel_size": DP, "enable_dp_attention": True}
+    for path in records:
+        _engine_file(path, engine)
+    main([*map(str, records), "--out", str(tmp_path / "law.json"), *SPEC])
+    law_ = json.loads((tmp_path / "law.json").read_text())
+
+    assert law_["engine_config"] == engine
+    assert law_["prefill"]["coefficients"] == pytest.approx(PREFILL, rel=1e-6)
+    with pytest.raises(ValueError) as refused:
+        _installed(monkeypatch, tmp_path, step_linear=law_)
+    assert f"data_parallel_size {DP} in the law and 1 here" in str(refused.value)
+
+
+def test_records_predating_the_width_fit_at_the_width_an_engine_file_states(tmp_path):
+    from atom.compass.backends.step_linear_fit import main
+
+    records = _records(tmp_path, _groups(0))
+    for path in records:
+        _engine_file(path, {"enable_dp_attention": True})
+    out = ["--out", str(tmp_path / "law.json"), *SPEC]
+    with pytest.raises(ValueError, match="states no data_parallel_size"):
+        main([*map(str, records), *out])
+    stated = tmp_path / "stated.engine.json"
+    engine = {"data_parallel_size": DP, "enable_dp_attention": True}
+    stated.write_text(json.dumps(engine | {"max_num_seqs": 64}))
+    main([*map(str, records), *out, "--engine", str(stated)])
+    law_ = json.loads((tmp_path / "law.json").read_text())
+
+    assert law_["engine_config"] == engine
+    assert law_["prefill"]["coefficients"] == pytest.approx(PREFILL, rel=1e-6)
+
+
+def test_a_stated_engine_file_contradicting_the_records_own_refuses(tmp_path):
+    from atom.compass.backends.step_linear_fit import main
+
+    records = _records(tmp_path, _groups(0))
+    for path in records:
+        _engine_file(path, {"data_parallel_size": DP, "enable_dp_attention": True})
+    stated = tmp_path / "stated.engine.json"
+    stated.write_text(
+        json.dumps({"data_parallel_size": 1, "enable_dp_attention": True})
+    )
+    out = ["--out", str(tmp_path / "law.json"), *SPEC]
+    with pytest.raises(ValueError, match=r"contradicts .* in \['data_parallel_size'\]"):
+        main([*map(str, records), *out, "--engine", str(stated)])
+    assert not (tmp_path / "law.json").exists()

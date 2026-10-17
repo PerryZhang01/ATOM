@@ -19,7 +19,7 @@ takes, which `publish.inputs` loads each measurement under.
 rank that gave no sample refuses; it holds out each run on the others when
 there are two or more at width 1, as that module's command does; `--seed` fixes
 its shuffles. The law states the configuration's
-`machine_spec`, as that command's does, and the key holds it. The report's
+`machine_spec` and `engine_config`, as that command's does, and the key holds them. The report's
 provenance names each run with every trace its steps served. A step stub's
 coefficients are stated, not fitted, so `step-stub` refuses.
 
@@ -57,12 +57,13 @@ STUB = "a step stub's coefficients are stated, not fitted; a run takes their fil
 
 def _step_linear(samples, config, args) -> tuple[dict, dict, dict]:
     form = args.form or "base"
-    options = {"form": form, "dp": config["engine_config"]["data_parallel_size"]}
+    options = {"form": form, "dp": step_linear_fit.join_width(config["engine_config"])}
     law, report = step_linear_fit.fit(samples, options, args.seed)
     if options["dp"] == 1 and len({s.provenance["run"] for s in samples}) > 1:
         step_linear_fit.mark_held_out(law, report, samples, options, args.seed)
     report["provenance"] = publish.runs(samples)
     law["machine_spec"] = config["machine_spec"]
+    law["engine_config"] = config["engine_config"]
     return {"form": form, "machine_spec": law["machine_spec"]}, law, report
 
 
