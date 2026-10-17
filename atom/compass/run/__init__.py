@@ -1272,9 +1272,13 @@ def runner(model_runner, tree) -> None:
     from atom.compass.run import memory
 
     measured = memory.load(run["store"], config, machine, model_runner.rank)
+    # `ModelRunner.warmup_model` sizes its batch from the scheduler bounds and
+    # the DP and PCP widths, all in the readings' key, so the tokens the
+    # reading warmed up with are the ones this deployment's warmup runs.
+    warmup = measured.values["warmup_tokens"]
     model = ModelTerms.from_config(
         config.hf_config,
-        activations=measured.activations(config.max_num_batched_tokens),
+        activations=measured.activations(warmup),
         config_json=_config_json(config),
         tree=tree,
     )
@@ -1343,7 +1347,7 @@ def runner(model_runner, tree) -> None:
     install_device_readings(model_runner, readings)
     model_runner.compass_memory = record(
         readings,
-        tokens=config.max_num_batched_tokens,
+        tokens=warmup,
         pool=predicts(measured),
         assumed=measured.assumed,
     )
