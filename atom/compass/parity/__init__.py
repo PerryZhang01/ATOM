@@ -124,9 +124,9 @@ class StepRecord:
         (query tokens, context tokens, decode), `rung`, the graph width the
         step replays or None, and `moe_rows`, the rows the DP group's MoE
         gather carries, absent at DP width 1, and `draft_moe_rows` where the
-        view has it. The view's mode is the one `forward` settled, stamped by `run_model` under `forward_mode`;
-        without one it is `forward_mode`'s, which runs the DP collective
-        itself. Each prefill window is added to its request's
+        view has it. The view's mode is the one `forward` settled, stamped by
+        `run_model` under `forward_mode`; without one it is `forward_mode`'s,
+        which runs the DP collective itself. Each prefill window is added to its request's
         digest; the line holding a request's final chunk names it under
         `named`. A dummy batch is fabricated for DP synchronisation and names
         no request, so its `batch` is empty; its `rows` are what it runs.

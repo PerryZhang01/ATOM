@@ -69,6 +69,8 @@ def group(monkeypatch):
         dist_utils, "_get_default_timeout", lambda _: timedelta(seconds=10)
     )
     monkeypatch.setenv("GLOO_SOCKET_IFNAME", "lo")
+    # A parity recording reads its step's mode off the global context after us.
+    monkeypatch.setattr(fc, "_forward_context", fc._forward_context)
     local = threading.local()
 
     def dp_group():
