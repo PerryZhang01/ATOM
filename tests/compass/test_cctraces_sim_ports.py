@@ -1,21 +1,30 @@
 # SPDX-License-Identifier: MIT
 """``scripts/compass/cctraces_sim.sh`` keeps every other port it picks out of
-the ``data_parallel_size`` squared write-request ports from KV_WRITE_REQ_PORT.
+the write-request ports from KV_WRITE_REQ_PORT, one per prefill and decode DP
+rank pair.
 
 The script runs end to end with the stand-ins of
 ``test_cctraces_sim_no_export``, and its port pick gets planted ports first:
 PORT is one above KV_WRITE_REQ_PORT. Nothing needs a driver or aiperf.
 """
 
+import json
 import os
 import socket
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 TREE = Path(__file__).resolve().parents[2]
 SCRIPT = TREE / "scripts/compass/cctraces_sim.sh"
-DP = 2
+# A run file's DP widths and the write-request ports they take.
+WIDTHS = [
+    ({"data_parallel_size": 2}, 4),
+    ({"prefill_data_parallel_size": 2}, 2),
+    ({"data_parallel_size": 2, "prefill_data_parallel_size": 1}, 2),
+]
 
 # Binds to port 0 take the planted ports, in order, while any are left.
 SITECUSTOMIZE = """\
@@ -45,7 +54,8 @@ def _free_port():
         return s.getsockname()[1]
 
 
-def test_no_other_port_lands_in_the_write_request_block(tmp_path):
+@pytest.mark.parametrize("widths,block", WIDTHS, ids=["dp2", "P2D1", "P1D2"])
+def test_no_other_port_lands_in_the_write_request_block(tmp_path, widths, block):
     kv = _free_pair()
     # CLOCK_PORT PORT DECODE_PORT ROUTER_PORT KV_WRITE_REQ_PORT PROMETHEUS_PORT
     planted = [_free_port(), kv + 1, _free_port(), _free_port(), kv, _free_port()]
@@ -77,7 +87,7 @@ def test_no_other_port_lands_in_the_write_request_block(tmp_path):
     traces = tmp_path / "traces.jsonl"
     traces.write_text('{"id": 0}\n')
     run_file = tmp_path / "run.json"
-    run_file.write_text(f'{{"data_parallel_size": {DP}}}')
+    run_file.write_text(json.dumps(widths))
     env = dict(
         os.environ,
         PATH=f"{bin_}:{os.environ['PATH']}",
@@ -102,5 +112,5 @@ def test_no_other_port_lands_in_the_write_request_block(tmp_path):
     kv_port = ports.pop(4)
     # The planted picks held, so the block is clear because KV_WRITE_REQ_PORT moved.
     assert ports == planted[:4] + planted[5:], (planted, kv_port, ports)
-    block = range(kv_port, kv_port + DP * DP)
-    assert not [p for p in ports if p in block], (planted, kv_port, ports)
+    taken = range(kv_port, kv_port + block)
+    assert not [p for p in ports if p in taken], (planted, kv_port, ports)

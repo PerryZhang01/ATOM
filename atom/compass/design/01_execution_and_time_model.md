@@ -1159,7 +1159,7 @@ undecided**.
 
 | Class | Mechanism | PDES rule | Representative sites |
 |---|---|---|---|
-| K1 | Event cost | TAR: `advance_to(now + d)`, `d` from the cost model or a resource station; for a forward, from the runner's host and device recurrence (below) | the forward, the idle DP rank's dummy batch, KV-transfer completion, tokenization, the DP lockstep `all_reduce`, multimodal preprocessing (refused today) |
+| K1 | Event cost | TAR: `advance_to(now + d)`, `d` from the cost model or a resource station; for a forward, from the runner's host and device recurrence (below) | the forward, the idle DP rank's dummy batch, KV-transfer completion, tokenization, the DP lockstep `all_reduce`, multimodal preprocessing |
 | K2 | Clock read | returns the LP's logical time | the arrive / leave / first-token stamps, `_passed_delay`, the waiting-prefill age |
 | K3 | Idle point | NER: `next_event(t, t_daemon)` | the step loops' spin, the PP bounded polls, offline `get_output`, a step-loop wait on an lmcache reply (D6.1) |
 | K4 | Channel send | timestamped send, logged on the clock owner | PD direct sends, PP sends, output sends through the relay queue |
@@ -1240,8 +1240,8 @@ The rules that settle the boundaries #53's categories left in the wrong place:
   `setup_streaming_request` and `setup_streaming_request_fanout`
   (`atom/entrypoints/openai/api_server.py`): a multi-server resource station in the
   frontend LP whose completion times come from D33's service model. The multimodal
-  preprocessing hand-off in `chat_completions` is K1 too, and is refused today because no
-  service time is modelled for it. A tokenizer call on the event loop thread itself, such
+  preprocessing hand-off in `chat_completions` is K1 too, a service job on the same
+  station charged a run-file price per image (#1089). A tokenizer call on the event loop thread itself, such
   as the final `decode` of a non-streaming completion, is no station job: the loop is the
   LP's clock owner, so the call is a TAR on the loop, `advance_to(now + d)` with `d` from
   the same service model, and nothing else on the loop runs until it ends.

@@ -20,7 +20,9 @@ member, the frontend's included, connects to.
   frontend LP's runtime; leaving it, after READY from every engine, starts
   the run. It refuses an `LLMEngine` the API server is not building and the
   Atomesh entrypoints, and makes a sync utility command on the frontend's
-  clock owner refuse. On a worker node of a multi-node DP group it only
+  clock owner refuse. Each image a chat request's media preparation loads
+  charges that tokenizer-station job the run file's ``image_preprocess_s``;
+  an image named by a remote URL is refused. On a worker node of a multi-node DP group it only
   selects the simulated runner.
 - `engine(config)` wraps the engine's construction in its own process the
   same way, and maps every DP rank to the engine LP for the process-group
@@ -72,6 +74,8 @@ the run there, which still writes the summary),
 ``client_runs`` (optional: how many client runs the server serves, one traffic
 LP after another, 1 when absent and ``null`` for no limit; each ends when no
 essential work is left, and the last one's end finishes the run),
+``image_preprocess_s`` (optional: seconds the frontend takes to prepare one
+image of a chat request; without it a request with an image is refused),
 ``host`` (optional: ``laws``, per forward kind and host segment, coefficients
 on ``(1, tokens, seqs)``, refused where absent; ``key``, the `host_key` they were
 fitted under and the ``machine_spec`` digest of the spec of the platform they
@@ -118,7 +122,9 @@ decode side: `engine(config)` makes it the ``engine-P`` or ``engine-D`` LP and
 binds the connector's transfer model. The write-request address comes with the
 deployment's own ``kv_transfer_config``. Above DP width one each DP rank is a
 member of its side's engine LP, and ATOM's DP dispatch on each side picks the
-rank a request runs on. Optional ``prefill_instances`` and ``decode_instances``,
+rank a request runs on. Optional ``prefill_data_parallel_size`` and
+``decode_data_parallel_size``, ``data_parallel_size`` when absent, give each
+side its own DP width, and only such a run may name them. Optional ``prefill_instances`` and ``decode_instances``,
 1 when absent, run that many deployments of a side, each naming its index in
 its ``kv_transfer_config`` as ``compass_instance``; above one, its LPs carry
 the index (``engine-P1``), and the router is the ``router`` LP, which chooses
@@ -204,6 +210,8 @@ FRONTEND, ENGINE, TRAFFIC = LpId("frontend"), LpId("engine"), LpId("traffic")
 ROUTER, LMCACHE = LpId("router"), LpId("lmcache")
 #: Run-file keys for how many deployments of each prefill-decode side run.
 INSTANCES = {"P": "prefill_instances", "D": "decode_instances"}
+#: Run-file keys for each prefill-decode side's DP width.
+DP_WIDTHS = {"P": "prefill_data_parallel_size", "D": "decode_data_parallel_size"}
 #: The kv_transfer_config key a deployment names its index among them by.
 INSTANCE_KEY = "compass_instance"
 ATOM_RUNNER = "atom.model_engine.model_runner.ModelRunner"
@@ -242,6 +250,8 @@ COMPASS_ONLY = {
 }
 #: The run-file key of each backend a flag names (`atom.compass.drive.runfile`).
 STEP_STUB, STEP_LINEAR, STEP_GRID = "step_stub", "step_linear", "step_grid"
+#: The run-file key of the frontend's seconds to prepare one image of a chat request.
+IMAGE_PREPROCESS = "image_preprocess_s"
 #: Run-file keys that were renamed, to their names now.
 RENAMED_KEYS = {
     "coefficients": STEP_STUB,
@@ -351,8 +361,22 @@ def _check_host(path, host: dict) -> None:
         )
 
 
-def _dp(run: dict) -> int:
-    return run.get("data_parallel_size", 1)
+def _dp(run: dict, side: str | None = None) -> int:
+    """The DP width of `side`'s deployments, ``P`` or ``D``, else the run's."""
+    width = run.get("data_parallel_size", 1)
+    return run.get(DP_WIDTHS[side], width) if side else width
+
+
+def _widths(run: dict) -> int | tuple[int, int]:
+    """The run's DP width, or a prefill-decode run's (prefill, decode) widths."""
+    if "kv_write_req_s" in run:
+        return _dp(run, "P"), _dp(run, "D")
+    if named := [k for k in DP_WIDTHS.values() if k in run]:
+        raise ValueError(
+            f"the run file names {', '.join(named)}, and only a prefill-decode "
+            "run has a prefill and a decode side"
+        )
+    return _dp(run)
 
 
 def _pp(run: dict) -> int:
@@ -362,11 +386,12 @@ def _pp(run: dict) -> int:
 def channel_table(run: dict):
     table = _engines_table(run)
     if "lmcache" in run:
+        pd = "kv_write_req_s" in run
         add_lmcache(
             table,
-            "engine-P" if "kv_write_req_s" in run else ENGINE.name,
+            "engine-P" if pd else ENGINE.name,
             run.get("lmcache_ipc_s", run["ipc_s"]),
-            _dp(run),
+            _dp(run, "P" if pd else None),
             run["lmcache"].get("writers", 1),
         )
     return table
@@ -379,7 +404,7 @@ def _engines_table(run: dict):
             **common,
             router_s=run["router_s"],
             kv_write_req_s=run["kv_write_req_s"],
-            dp=_dp(run),
+            dp=_widths(run),
             router_in_s=run.get("router_in_s"),
             prefill=run.get(INSTANCES["P"], 1),
             decode=run.get(INSTANCES["D"], 1),
@@ -389,7 +414,7 @@ def _engines_table(run: dict):
         from atom.compass.runner.pp_send import carrier_models, lookaheads
 
         links = lookaheads(carrier_models(_machine(run)))
-    return single_engine_table(**common, dp=_dp(run), pp=_pp(run), pp_links=links)
+    return single_engine_table(**common, dp=_widths(run), pp=_pp(run), pp_links=links)
 
 
 def _machine(run: dict):
@@ -398,30 +423,35 @@ def _machine(run: dict):
     return MachineSpec.from_mapping(run["machine"])
 
 
-def _members(table, dp: int) -> dict | None:
-    """At DP width above one, each engine LP's members: rank ``dp<r>`` owns the
-    channels whose ``#`` tag names it at that LP's end, ``#dp<r>`` or, on a
+def _members(table, dp: int | tuple[int, int]) -> dict | None:
+    """Each engine LP's members at its DP width above one: rank ``dp<r>`` owns
+    the channels whose ``#`` tag names it at that LP's end, ``#dp<r>`` or, on a
     channel between two engine LPs, ``#dp<sender rank>.dp<receiver rank>``. A
-    tag's other parts, as the ``tp<k>`` of ``#dp<r>.tp<k>``, name no member."""
-    if dp == 1:
-        return None
+    tag's other parts, as the ``tp<k>`` of ``#dp<r>.tp<k>``, name no member.
+    `dp` is every engine LP's width, or ``(prefill, decode)`` by side."""
 
     def rank(c, lp):
         tags = [t for t in c.name.rpartition("#")[2].split(".") if t.startswith("dp")]
         return tags[0] if c.source == lp else tags[-1]
 
-    return {
+    def width(lp):
+        if isinstance(dp, int):
+            return dp
+        return dp[1] if lp.name.startswith(f"{ENGINE.name}-D") else dp[0]
+
+    members = {
         lp: {
             f"dp{r}": [
                 c.name
                 for c in table.channels_into(lp) + table.channels_from(lp)
                 if rank(c, lp) == f"dp{r}"
             ]
-            for r in range(dp)
+            for r in range(width(lp))
         }
         for lp in table.registry.ids()
-        if lp.name.startswith(ENGINE.name)
+        if lp.name.startswith(ENGINE.name) and width(lp) > 1
     }
+    return members or None
 
 
 def _pd_kv(config) -> dict | None:
@@ -634,7 +664,7 @@ def _servers(run: dict) -> list[str]:
 def _hand_ins(run: dict) -> list[str]:
     """The name each server LP hands its refusals in under: ``<lp>.<member>`` for
     each member of an LP declared with members, else the LP's name."""
-    members = _members(channel_table(run), _dp(run)) or {}
+    members = _members(channel_table(run), _widths(run)) or {}
     return [
         f"{lp}.{m}" if m else lp
         for lp in _servers(run)
@@ -690,7 +720,7 @@ class _RecordingAuthority(ClockAuthority):
         super().__init__(
             table,
             timeline=self,
-            members=_members(table, _dp(run)),
+            members=_members(table, _widths(run)),
             bound_s=run["bound_s"],
             client=TRAFFIC,
             client_runs=math.inf if count is None else count,
@@ -867,10 +897,11 @@ def frontend(config):
     dp = pc.data_parallel_size * (
         config.tensor_parallel_size if config.enable_dp_attention else 1
     )
-    if dp != _dp(run):
+    if dp != _dp(run, side):
+        key = DP_WIDTHS[side] if DP_WIDTHS.get(side) in run else "data_parallel_size"
         raise ValueError(
             f"the deployment runs {dp} data-parallel ranks and the run file's "
-            f"data_parallel_size is {_dp(run)}; the channel table every LP "
+            f"{key} is {_dp(run, side)}; the channel table every LP "
             "reads would declare the wrong ranks"
         )
     if pc.data_parallel_size > 1 and pc.is_multinode_dp:
@@ -885,6 +916,7 @@ def frontend(config):
         # A worker node of a multi-node group: engines only, each a member.
         return contextlib.nullcontext()
     _refuse_sync_utility_commands()
+    _price_images(run.get(IMAGE_PREPROCESS))
     name = _pd_name(config, run)
     lp = FRONTEND if name is None else LpId(f"{FRONTEND.name}-{name}")
     authority = None
@@ -972,6 +1004,34 @@ def _refuse_sync_utility_commands() -> None:
         return sync(self, cmd, *args, **kwargs)
 
     CoreManager.broadcast_utility_command_sync = refusing
+
+
+def _price_images(price: float | None) -> None:
+    """Make `MediaLoader.load_image` charge `price` seconds to the station job
+    loading the image. Refuse an image named by an http(s) URL, which the real
+    server fetches on wall time, and any image when the run file states no
+    price."""
+    from atom.multimodal.media import MediaLoader
+    from atom.utils.compass_loop import Refused, charge
+
+    load = MediaLoader.load_image
+
+    @functools.wraps(load)
+    def priced(self, data):
+        rt, why = clock.installed(), None
+        if rt is None:  # no LP clock in this process: a load outside any run
+            return load(self, data)
+        if isinstance(data, str) and data.startswith(("http://", "https://")):
+            why = "an image named by a remote URL"
+        elif price is None:
+            why = f"an image with no {IMAGE_PREPROCESS} in the run file"
+        if why is not None:
+            rt.refusals.append(f"media:{why}")
+            raise Refused(("media", why))
+        charge(price)
+        return load(self, data)
+
+    MediaLoader.load_image = priced
 
 
 def engine(config):

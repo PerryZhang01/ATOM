@@ -38,7 +38,7 @@ A vector may also carry, under `held_out`, the hull of the steps
 errors per band: a term is validated iff its step lies inside that hull, so a
 law without one prices every term unvalidated. A step the law has no vector for
 is refused: prefill when the law has no prefill vector, a decode rung with
-none, or a step mixing prefill and decode rows.
+none, a step mixing prefill and decode rows, or one with image tokens.
 
 The law is a mapping, as a run file holds it, `prefill` optional:
 
@@ -72,6 +72,7 @@ from atom.compass.backends.hull import Hull
 from atom.compass.backends.provenance import Method, Provenance, Refusal
 from atom.compass.backends.resolver import CostRefused
 from atom.compass.backends.shape import (
+    IMAGES,
     BatchView,
     sum_context,
     sum_query_cached,
@@ -171,6 +172,8 @@ class StepLinearBackend(CostBackend):
                 f"this backend prices a BatchView, not {type(batch_view).__name__}"
             )
         prefill, decode = batch_view.prefill, batch_view.decode
+        if batch_view.image_tokens:
+            raise self._refuse(batch_view, IMAGES.format(batch_view.image_tokens))
         if prefill and decode:
             raise self._refuse(
                 batch_view,

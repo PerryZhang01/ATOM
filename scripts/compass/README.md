@@ -516,7 +516,8 @@ The header of the script lists its environment; `MODEL`, `TRACES` and
 `HARNESS_PYTHON` are required.
 
 - `RUN_FILE` is a run file as `atom/compass/run/__init__.py` describes it. The
-  script replaces its `out_dir` and `clock_endpoint` and adds a `workload` entry:
+  script replaces its `out_dir` and `clock_endpoint`, sets `client_runs` to 1, so
+  the server leaves at the end of aiperf's run, and adds a `workload` entry:
   the sha256 of `TRACES` and of each replayed trace, the aiperf arguments and the
   pinned benchmark id. The step table's configuration line and the run summary
   carry it.
@@ -700,6 +701,4 @@ which no cache directory above holds.
    `$R/cell/c<C>/step_linear/run.json`, `FIRST_SESSION=0 SESSIONS=256
    CONCURRENCY=<C>`, `SERVER_ARGS="--max-model-len 262144"`, `AIPERF_EXTRA_ARGS` the
    warmup arguments; then `python -m atom.compass.parity
-   $R/cell/c<C>/step_linear/steps OUT/steps`. That run file serves until stopped
-   (`client_runs` is null), so until #1337 the script reports the deployment still
-   up `WAIT_S` after aiperf and exits 1; its step record is whole by then.
+   $R/cell/c<C>/step_linear/steps OUT/steps`.
