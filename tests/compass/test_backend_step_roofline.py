@@ -186,7 +186,6 @@ BOUNDS = {
         (_spec("datasheet"), []),
         (_spec("probed"), []),
         (_spec("assumed"), list(READS)),
-        (_spec("transferred-from:mi308x-hjbog18"), list(READS)),
         *[
             (
                 _spec(
@@ -199,8 +198,7 @@ BOUNDS = {
             for path in READS
         ],
     ],
-    ids=["datasheet", "probed", "assumed", "transferred"]
-    + [f"{path}-assumed" for path in READS],
+    ids=["datasheet", "probed", "assumed"] + [f"{path}-assumed" for path in READS],
 )
 def test_a_roofline_term_is_declared_iff_an_input_its_bound_reads_is_stated(
     spec, named, bound

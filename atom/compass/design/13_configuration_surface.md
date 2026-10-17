@@ -131,9 +131,9 @@ python -m atom.entrypoints.openai_server <ATOM arguments> \
 | `run` flag | Meaning | Default |
 |---|---|---|
 | `--machine` | the machine specification (`05` D25) | **none — refuses** |
-| `--step-linear`, `--step-stub`, `--step-grid` | the backend, exactly one, each named by its run-file key: a step linear law by store key, a step stub's stated coefficients by file (its terms declared, never fitted), a step grid bundle by store key (`17` D103). There is no granularity or method flag | **none — refuses**, as does more than one |
+| `--step-linear`, `--step-stub`, `--step-grid` | the backend, exactly one kind, each named by its run-file key: a step linear law by store key, a step stub's stated coefficients by file (its terms declared, never fitted), a step grid bundle by store key (`17` D103). There is no granularity or method flag. `--step-linear` repeats, one law per engine config: the run file then holds a list, and each process installs the law fitted under its own engine config and refuses when none or several were (the [#973 ruling](https://github.com/jgong5/ATOM/issues/973#issuecomment-6210598012)) | **none — refuses**, as do two kinds |
 | `--store` | the artifact store keys resolve in, the configuration's `memory_readings` included (`07` D41) | **none — refuses** |
-| `--host-laws` | the host laws by store key (`09` D54), composed by `01` D4's recurrence | none: the run charges no host time and records that |
+| `--host-laws` | the host laws by store key (`09` D54), composed by `01` D4's recurrence. Repeats, one entry per engine config, each process installing its own config's, as `--step-linear` does (the [#973 ruling](https://github.com/jgong5/ATOM/issues/973#issuecomment-6210598012)) | none: the run charges no host time and records that |
 | `--on-refusal` | `mark`: a refused step costs 0 s, its reason is recorded, and the run continues. `abort`: stop at the first refusal; the run summary is still written. Either way a refusal makes the run a coverage report (`08` D50.1) | `mark` (`08` D50.1) |
 | `--step-roofline` | a switch, named by its run-file key `step_roofline`, with no value: the step roofline has no host bound (the owner's ruling on [#1047](https://github.com/jgong5/ATOM/issues/1047)). On, it composes `StepFallbackBackend`: the step roofline (`10` D64) prices the device time of the steps the backend refuses, with the method its inputs give it | off; `run.json` records it when on |
 | `--coverage` | `shape_population` keys and `record` directories the backend's coverage check reads before the run starts; a failed check refuses the run (`07` D37) | off; `run.json` records the check's result, or that none ran |
@@ -189,7 +189,8 @@ compass fit host       RECORD... --client-run RECORD EXPORT... --machine M \
 compass fit ops                   (ops half)
 compass run            <backend> --machine M  --out D --store S -- <ATOM args>
 
-<backend>   exactly one of --step-linear KEY, --step-stub FILE, --step-grid KEY
+<backend>   one of --step-linear KEY, --step-stub FILE, --step-grid KEY; --step-linear
+            repeats, one KEY per engine config, as --host-laws does (#973 ruling)
 <batches>   record directories and shape_population keys, whose batches it replays
 --grid      shape_population keys, and record directories, that the step grid's planner
             places its points over, with the nodes and margin --grid-definition states
@@ -296,7 +297,8 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
   fitted on the traces it grades (`08` D50).
 - **`run`** records in `run.json` what grading reads: whether the step roofline was on,
   whether host segments were skipped (`01` D4's what-if), the refusals, the coverage check's result, and the
-  backend's provenance, its fitted traces and profiled inputs included.
+  backend's provenance, its fitted traces and profiled inputs included, with the
+  assumption of each assumed `memory_readings` member an engine read.
   `python -m atom.compass.validate` decides from them whether a client run is gradeable:
   not when the run skipped host segments, priced with a backend
   fitted on the traces it grades or on profiled inputs, ran the step grid without a passed

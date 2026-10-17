@@ -62,6 +62,14 @@ before the round is complete registers its send log and nothing else: the LP
 stays running, so its ``N`` stays at its clock. Every member gets the common
 grant, carrying the releases on its own channels only.
 
+A member may instead *park*: one call, before it dispatches a forward, that
+stands in every later round as NER with no target and no daemon deadline, so
+the members still running are joined without it. A TAR meeting a park is
+refused as a TAR meeting an NER is. A parked member gets no reply while it is
+parked; what a round releases on its channels is held for it. The call that
+parks the last member is answered at once: every member leaves at the LP's
+clock, the latest grant any of them was given, with the messages held for it.
+
 A finite grant past the simulated-time bound aborts the run with the LP table.
 A housekeeping timer nobody declared daemon keeps raising ``H`` and would
 otherwise keep the run alive forever.
@@ -76,8 +84,9 @@ from dataclasses import dataclass, field
 from .channels import ChannelTable
 from .identity import LpId
 
-TAR, NER = "TAR", "NER"
+TAR, NER, PARK = "TAR", "NER", "PARK"
 RUNNING = "running"
+_STANDING = (PARK, math.inf, math.inf)  # a parked member's place in each round
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +203,7 @@ class ClockAuthority:
         self._members = {}  # LP -> its member names, sorted
         self._owner = {}  # LP -> channel into or out of it -> the member owning it
         self._round = {}  # LP -> member -> (kind, t, daemon) of the round being joined
+        self._parked = {}  # LP -> parked member -> {channel: releases held for it}
         for lp, owned in (members or {}).items():
             channels.registry.require(lp)
             if not owned:
@@ -221,7 +231,7 @@ class ClockAuthority:
                     )
                 self._owner[lp][name] = owners[0]
             self._members[lp] = tuple(sorted(owned))
-            self._round[lp] = {}
+            self._round[lp], self._parked[lp] = {}, {}
 
     def on_request(
         self,
@@ -260,8 +270,10 @@ class ClockAuthority:
                 "running LP can produce a request",
                 self.lp_table(),
             )
-        if kind not in (TAR, NER):
-            raise ValueError(f"{kind!r} is not one of {TAR}, {NER}")
+        if kind not in (TAR, NER, PARK):
+            raise ValueError(f"{kind!r} is not one of {TAR}, {NER}, {PARK}")
+        if kind == PARK and not members:
+            raise ValueError(f"{lp} parked; only a member of an LP with members parks")
         t = _seconds(t, kind == TAR, "the {} target of {}", kind, lp)
         daemon = _seconds(t_daemon, False, "the daemon deadline of {}", lp)
         if kind == TAR and daemon != math.inf:
@@ -280,13 +292,21 @@ class ClockAuthority:
         for name, seq, arrival in log:
             self._register(lp, name, seq, arrival, member)
         if members:
-            joined = self._round[lp]
-            joined[member] = (kind, t, daemon)
+            joined, parked = self._round[lp], self._parked[lp]
+            joined[member] = _STANDING if kind == PARK else (kind, t, daemon)
+            if kind == PARK:
+                parked[member] = {
+                    c: [] for c in self._into[lp] if self._owner[lp][c] == member
+                }
             if len(joined) < len(members):
                 return []
+            if len(parked) == len(members):
+                return self._release(lp)
+            kind = NER if kind == PARK else kind
             t = min(asked for _, asked, _ in joined.values())
             daemon = min(deadline for _, _, deadline in joined.values())
             joined.clear()
+            joined.update(dict.fromkeys(parked, _STANDING))
         if t < math.inf:
             self._horizon = max(self._horizon, t)
         self._state[lp], self._target[lp], self._daemon[lp] = kind, t, daemon
@@ -310,7 +330,7 @@ class ClockAuthority:
             )
         elif joined:
             other, (other_kind, other_t, _) = next(iter(joined.items()))
-            if other_kind != kind:
+            if (other_kind == TAR) != (kind == TAR):  # a park joins as an NER
                 reason = f"{lp}: {member} asked {kind} while {other} asked {other_kind}"
             elif kind == TAR and other_t != t:
                 reason = (
@@ -320,21 +340,41 @@ class ClockAuthority:
             raise ClockAbort(reason, self.lp_table())
 
     def _address(self, replies: list) -> list:
-        """One reply per member for an LP with members, each with its own channels."""
-        return [
-            (
-                (i, g, released, *ended)
-                if m is None
-                else (
-                    (i, m),
-                    g,
-                    {c: r for c, r in released.items() if self._owner[i][c] == m},
-                    *ended,
-                )
-            )
-            for i, g, released, *ended in replies
-            for m in self._members.get(i, (None,))
-        ]
+        """One reply per member for an LP with members, each with its own
+        channels; a parked member's are held for it, unless the reply finishes
+        the run or ends a client run."""
+        out = []
+        for i, g, released, *ended in replies:
+            for m in self._members.get(i, (None,)):
+                if m is None:
+                    out.append((i, g, released, *ended))
+                    continue
+                mine = {c: r for c, r in released.items() if self._owner[i][c] == m}
+                held = self._parked[i].get(m)
+                if held is not None:
+                    self._hold(i, m, mine)
+                    if g < math.inf and not ended:
+                        continue
+                    del self._parked[i][m]
+                    self._round[i].pop(m, None)
+                    mine = held
+                out.append(((i, m), g, mine, *ended))
+        return out
+
+    def _hold(self, lp: LpId, member: str, released: dict) -> None:
+        """Keep what a grant released to parked `member` until it leaves."""
+        for c, r in released.items():
+            self._parked[lp][member][c] += r
+
+    def _release(self, lp: LpId) -> list:
+        """The last member parked: each leaves at the LP's clock with the
+        messages held for it."""
+        self._round[lp].clear()
+        held, self._parked[lp] = self._parked[lp], {}
+        g = self._now[lp]
+        return [((lp, m), g, held[m]) for m in self._members[lp]] + self._address(
+            self._grant_due()
+        )
 
     def lp_table(self) -> tuple[LpRow, ...]:
         """Every LP's row, in name order."""

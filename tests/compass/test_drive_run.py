@@ -23,9 +23,10 @@ from test_artifact_store import AITER_ROOT, ATOM_ROOT
 from test_dp_step_max import runner
 from test_drive_runfile import build
 from test_drive_trace_steps import IDENTITY
-from test_memory_readings import DOCUMENT
+from test_memory_readings import ASSUMED, DOCUMENT, READINGS
 from test_refused_step_continues import REFUSED, drive, finish, no_eager_rung
 from test_refused_step_continues import run_file as refusing_run_file
+from test_run_graph_pool import _installed
 from test_run_step_grid import KEY, deployment
 from test_step_grid_plan import (
     ENGINE,
@@ -60,11 +61,12 @@ PLANTED = (
 )
 
 
-def recorded(tmp_path, monkeypatch, lengths):
-    """A record directory, as `record` lays one out, of prompts of `lengths`."""
+def recorded(tmp_path, monkeypatch, lengths, **drive):
+    """A record directory, as `record` lays one out, of prompts of `lengths`;
+    `drive` goes to `record`."""
     directory = tmp_path / ("record-" + "-".join(map(str, lengths)))
     directory.mkdir()
-    record(tmp_path, monkeypatch, *lengths).rename(directory / serve.STEPS)
+    record(tmp_path, monkeypatch, *lengths, **drive).rename(directory / serve.STEPS)
     (directory / serve.RUN_JSON).write_text(json.dumps(IDENTITY))
     return directory
 
@@ -74,7 +76,7 @@ def bundle(tmp_path, monkeypatch, member, **config):
     deployment it was published under, changed by `config`."""
     backend = loaded(tmp_path, member)
     bounds = {k: ENGINE[k] for k in ("max_num_seqs", "max_num_batched_tokens")}
-    r = deployment(tmp_path, **bounds, capture_sizes=LADDER, **config)
+    r = deployment(tmp_path, **{**bounds, **config}, capture_sizes=LADDER)
     monkeypatch.setattr(drive_run, "_config", lambda atom_args: r.config)
     return Key.of(Kind.STEP_GRID_BUNDLE, **KEY).token(), backend
 
@@ -161,6 +163,55 @@ def test_a_bundle_measured_under_another_engine_config_refuses_before_any_server
         )
 
 
+def test_an_input_recorded_at_another_token_budget_refuses_naming_that_field(
+    tmp_path, monkeypatch
+):
+    directory = recorded(tmp_path, monkeypatch, MIXED, budget=2048)
+    # Planned for this run's 8192 tokens, the bundle covers the input's steps.
+    target = {"max_num_batched_tokens": 8192, "max_model_len": 16384}
+    planned = plan(directory / serve.STEPS, engine=target)
+    member = measured(planned, located(tmp_path, planned))
+    token, _ = bundle(tmp_path, monkeypatch, member, max_num_batched_tokens=8192)
+    monkeypatch.setattr(serve, "serve", unstarted)
+
+    with pytest.raises(ValueError) as refused:
+        drive_run.main(
+            flags(tmp_path, "--step-grid", token, "--coverage", str(directory))
+        )
+
+    assert str(refused.value) == (
+        f"--coverage: {directory} dp0 ran under another engine than ATOM's "
+        "arguments resolve: max_num_batched_tokens 2048 there, 8192 here"
+    )
+
+
+def test_a_population_on_another_ladder_and_tp_width_refuses_naming_both(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        trace_steps, "roots_for", lambda modules: (ATOM_ROOT, AITER_ROOT)
+    )
+    served = recorded(tmp_path, monkeypatch, SHORT, ladder=[1, 2, 4])
+    # A TP-2 rank's engine file, which this suite's runner does not write.
+    engine = served / serve.STEPS / "dp0.engine.json"
+    stated = json.loads(engine.read_text())
+    engine.write_text(json.dumps(stated | {"tensor_parallel_size": 2}))
+    run = build(tmp_path, "--step-stub", stub(tmp_path))
+    population = trace_steps.publish(served, run, "compass trace steps").token()
+    # Planned from the population's steps, the bundle covers them.
+    planned = plan(served / serve.STEPS)
+    member = measured(planned, located(tmp_path, planned))
+    token, _ = bundle(tmp_path, monkeypatch, member)
+    monkeypatch.setattr(serve, "serve", unstarted)
+
+    with pytest.raises(ValueError, match="arguments resolve: ladder") as refused:
+        drive_run.main(flags(tmp_path, "--step-grid", token, "--coverage", population))
+
+    assert str(refused.value).endswith(
+        f"ladder [1, 2, 4] there, {LADDER} here; tensor_parallel_size 2 there, 1 here"
+    )
+
+
 @pytest.mark.parametrize("backend", ["--step-stub", "--step-linear"])
 def test_coverage_with_a_backend_that_has_no_check_refuses_naming_it(tmp_path, backend):
     argv = flags(tmp_path, backend, "k", "--coverage", str(tmp_path))
@@ -204,7 +255,8 @@ def test_run_json_records_the_summarys_refusals_the_roofline_and_the_backend(
     assert written["run_file"] == handed and handed["out_dir"] == str(out)
     assert written["step_roofline"] is handed["step_roofline"] is True
     assert written["skip"] == [] and written["coverage"] is None
-    assert written["provenance"] == handed["backend"]
+    provenance = handed["backend"] | {"memory_readings_assumed": []}
+    assert written["provenance"] == provenance
     assert written["host_key"] == IDENTITY["host_key"]
 
 
@@ -237,5 +289,44 @@ def test_a_covered_run_starts_and_records_its_check_over_a_record_and_a_populati
     assert coverage["covered"] == coverage["steps"] == 15
     assert coverage["uncovered"] == [] and written["step_roofline"] is False
     handed = json.loads((out / serve.RUN_FILE).read_text())
-    assert written["provenance"] == handed["backend"]
+    provenance = handed["backend"] | {"memory_readings_assumed": []}
+    assert written["provenance"] == provenance
     assert handed["step_grid"]["grid"] == KEY["grid"]
+
+
+#: The planted server, which also hands in the engine's memory as
+#: `PLANTED_HAND_IN` holds it.
+HANDING_IN = (
+    "import json, os, shutil, sys\n"
+    'run = json.load(open(sys.argv[sys.argv.index("--compass-run") + 1]))\n'
+    'shutil.copy(os.environ["PLANTED_HAND_IN"], run["out_dir"])\n'
+) + PLANTED
+
+
+def test_run_json_names_the_assumed_memory_readings_its_engine_read(
+    tmp_path, monkeypatch
+):
+    # The engine's hand-in, as a worker installed from an assumed entry writes it.
+    worker = tmp_path / "worker"
+    worker.mkdir()
+    readings = dict(READINGS[1], assumed=ASSUMED)
+    memory = _installed(monkeypatch, worker, eager=True, readings=readings)
+    monkeypatch.delenv(compass_run.ENV)
+    run = {"out_dir": str(worker)}
+    compass_run._hand_in(run, "engine", [], memory=memory.compass_memory)
+    (tmp_path / "authority").mkdir()
+    summary = tmp_path / "authority" / compass_run.SUMMARY_FILE
+    summary.write_text(json.dumps({"schedule": {"refusals": RefusalTally().record()}}))
+    steps = recorded(tmp_path, monkeypatch, SHORT) / serve.STEPS
+    plant(tmp_path, monkeypatch, steps, summary)
+    (tmp_path / "planted.py").write_text(HANDING_IN)
+    hand_in = worker / compass_run.LP_FILE.format("engine")
+    monkeypatch.setenv("PLANTED_HAND_IN", str(hand_in))
+
+    drive_run.main(flags(tmp_path, "--step-stub", stub(tmp_path)))
+
+    out = tmp_path / "out"
+    written = json.loads((out / serve.RUN_JSON).read_text())
+    handed = json.loads((out / serve.RUN_FILE).read_text())
+    provenance = handed["backend"] | {"memory_readings_assumed": [ASSUMED]}
+    assert written["provenance"] == provenance

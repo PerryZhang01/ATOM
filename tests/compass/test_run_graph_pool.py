@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from test_memory_readings import (
+    ASSUMED,
     CAPTURE_SIZES,
     CONFIG_JSON,
     DOCUMENT,
@@ -129,6 +130,23 @@ def test_the_entry_s_activations_size_the_whole_graph_reservation(
     measured = dict(READINGS[1], activation_bytes=MAX_NUM_BATCHED_TOKENS * 180_480)
     reserved = _reserved(monkeypatch, tmp_path, eager=False, readings=measured)
     assert reserved == int(MAX_NUM_BATCHED_TOKENS * 180_480 * 0.2)
+
+
+def test_the_pool_a_run_predicts_is_the_one_its_entry_read(monkeypatch, tmp_path):
+    measured = dict(READINGS[1], cudagraph_pool_bytes=420_000_000)
+    runner = _installed(monkeypatch, tmp_path, eager=False, readings=measured)
+    (pool,) = runner.compass_memory["predicts"]
+    assert (pool["nbytes"], pool["method"]) == (420_000_000, "measured")
+    assert runner.compass_memory["assumed"] is None
+
+
+def test_an_assumed_entry_declares_the_readings_a_run_installs(monkeypatch, tmp_path):
+    measured = dict(READINGS[1], assumed=ASSUMED)
+    runner = _installed(monkeypatch, tmp_path, eager=True, readings=measured)
+    (non_torch,) = runner.compass_memory["readings"]["non_torch"]
+    assert non_torch["method"] == "declared"
+    assert non_torch["note"].startswith(f"{ASSUMED}; ")
+    assert runner.compass_memory["assumed"] == ASSUMED
 
 
 def test_a_field_only_hf_overrides_sets_reaches_the_installed_readings(

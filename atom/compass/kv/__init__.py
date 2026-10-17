@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Simulated KV transfer: the engine's connector contract, on the LP clock.
 
-Three pieces, split by what each one may depend on.
+The pieces are split by what each one may depend on.
 
 `transfer` is arithmetic -- a latency, a derated bandwidth and an exact byte
 count -- and imports nothing from the engine itself. Importing it through this
@@ -18,6 +18,10 @@ at all.
 `connector` implements the engine's connector interface over that price and
 that blob, and is what the connector factory builds under the name `compass`.
 It times transfers on the LP clock of the runtime installed in the engine.
+
+`lmcache_server` stands in for the lmcache MP server: its replies and the chunk
+index that decides hits. The module itself imports only the standard library;
+building one imports lmcache, and torch with it. This file does not import it.
 """
 
 from atom.compass.kv.connector import (

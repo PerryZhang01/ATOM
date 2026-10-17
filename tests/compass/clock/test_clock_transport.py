@@ -438,7 +438,7 @@ def test_a_log_behind_its_receiver_is_refused(served):
 def test_a_reply_is_not_something_a_participant_may_send(served):
     a = connect(A, served(ClockAuthority(_table())).endpoint)
     for message in [("GRANT", 1.0, {}), ("BIND", A)]:
-        with pytest.raises(MalformedMessage, match="sends only TAR, NER$"):
+        with pytest.raises(MalformedMessage, match="sends only TAR, NER, PARK$"):
             a.send(message)
     assert _ask(a, (TAR, 1.0, [], INF)) == (1.0, {})
 

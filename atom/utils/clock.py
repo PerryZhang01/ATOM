@@ -81,6 +81,16 @@ def now(real) -> float:
     return real() if runtime is None else runtime.read_clock()
 
 
+def sleep(seconds: float, real) -> None:
+    """In a run, the clock owner's idle point until `seconds` from now or its
+    next arrival, whichever is first; otherwise `real(seconds)`."""
+    runtime = _installed
+    if runtime is None or not runtime.in_run:
+        real(seconds)
+    else:
+        runtime.next_event(runtime.now + seconds)
+
+
 #: The station job this thread is serving, as ``job.cur = (station, k)``; the
 #: executor running the job sets it and clears it.
 job = threading.local()
@@ -147,6 +157,7 @@ class LPRuntime:
         self.asked = False  # a next-event request is out, its grant not taken
         self.idle_calls = 0  # `calls` when the step loop last passed its idle point
         self.owed: list[float] = []  # DP group rounds left before (`advance_group`)
+        self.parking = False  # a DP member between its state sync and its park
         # The frontend's event loop, once built: a frame a thread takes is a job on it.
         self.loop = None
         # Clock calls refused, as run-summary reasons ``clock:<call> ...``: a
@@ -236,6 +247,19 @@ class LPRuntime:
         self._ca_send("NER", t, t_daemon)
         self.asked = True
 
+    def park(self) -> None:
+        """A DP member's last clock call before it dispatches a forward: wait,
+        standing in its peers' rounds with no target, until every member has
+        parked; then walk the messages released to it meanwhile, each at its
+        arrival, and leave at the group's clock, the latest member's."""
+        self._require_open("park")
+        if self.owed:
+            self._refuse(f"park while owing group rounds {self.owed}")
+        self.parking = False
+        self._ca_send("PARK", math.inf, math.inf)
+        self.asked = True
+        self.take_grant()
+
     def take_grant(self) -> float:
         """Wait for the grant of the request `ask_next_event` sent; returns it."""
         G, released, *ended = self.conn.recv()
@@ -274,6 +298,11 @@ class LPRuntime:
             raise RuntimeError(f"{what} from {self.me} after the +inf grant")
 
     def _ca_call(self, kind: str, t: float, t_daemon: float = float("inf")):
+        if self.parking:
+            self._refuse(
+                f"{kind}({t}) between the DP state sync and the forward dispatch; "
+                "a member's park is its last clock call there"
+            )
         self._ca_send(kind, t, t_daemon)
         return self.conn.recv()
 
@@ -555,7 +584,7 @@ class RelayQueue:
 
     put_nowait = put
 
-    def get(self):
+    def get(self, block: bool = True):
         me = threading.current_thread()
         if self.consumer not in (None, me):
             raise RuntimeError(
@@ -568,8 +597,11 @@ class RelayQueue:
                 f"{self.wsock.ch}: the item stamped (arrival {self.pending[0]}, seq "
                 f"{self.pending[1]}) was taken and never sent"
             )
-        self.pending, item = self.q.get()
+        self.pending, item = self.q.get(block)
         return item
+
+    def get_nowait(self):
+        return self.get(False)
 
     def take_stamp(self) -> tuple:
         if self.pending is None:

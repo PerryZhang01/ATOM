@@ -42,6 +42,7 @@ from test_runner_control_refusals import Worker
 from test_vertical_slice import _run_file
 from transformers import PretrainedConfig
 
+from atom.benchmarks.results.metadata import PERFORMANCE_KEYS
 from atom.compass import run as compass_run
 from atom.compass.artifacts import (
     KEY_FIELDS,
@@ -110,6 +111,7 @@ def deployment(tmp_path, **config):
         torch_dtype=torch.bfloat16,
         enforce_eager=False,
         enable_tbo=False,
+        enable_tbo_decode=False,
         capture_sizes=list(LADDER),
         compilation_config=SimpleNamespace(cudagraph_capture_sizes=list(LADDER)),
         kv_cache_block_size=16,
@@ -417,9 +419,7 @@ def test_each_mi308x_spec_states_its_torch_and_the_runs_readings_take_it(
     tmp_path, name
 ):
     path = Path(__file__).parents[2] / "scripts/compass/machines" / f"{name}.json"
-    spec = MachineSpec.from_mapping(
-        compass_run._width_keys(json.loads(path.read_text()))
-    )
+    spec = MachineSpec.from_mapping(json.loads(path.read_text()))
     pinned = "device.software_pinned_to.torch"
 
     assert spec.origin(pinned)["origin"] == "probed"
@@ -592,3 +592,72 @@ def test_a_bundle_that_does_not_load_names_itself(monkeypatch, tmp_path, edit, n
     ) as refused:
         compass_run.runner(r, META_8B)
     assert named in str(refused.value)
+
+
+def test_the_engine_key_states_the_layout_tbo_and_the_performance_environment(
+    monkeypatch, tmp_path
+):
+    """Read from the resolved config and this process's environment, less the
+    client's settings and the device selection."""
+    for name in PERFORMANCE_KEYS:
+        monkeypatch.delenv(name, raising=False)
+    for name in ("GPU_MAX_HW_QUEUES", "AIPERF_MODEL", "HIP_VISIBLE_DEVICES"):
+        monkeypatch.setenv(name, "5")
+    monkeypatch.setenv("PYTHONHASHSEED", "1")
+    dp8 = SimpleNamespace(data_parallel_size=8, data_parallel_rank=0)
+    r = deployment(tmp_path, parallel_config=dp8, enable_dp_attention=True)
+    key = step_grid.keyed(r.config)
+
+    expected = {
+        "data_parallel_size": 8,
+        "enable_dp_attention": True,
+        "enable_expert_parallel": False,
+        "enable_tbo": False,
+        "enable_tbo_decode": False,
+        "env": {"GPU_MAX_HW_QUEUES": "5"},
+    }
+    assert {k: key[k] for k in expected} == expected
+
+
+@pytest.mark.parametrize(
+    "moved,named",
+    [
+        (
+            {
+                "parallel_config": SimpleNamespace(
+                    data_parallel_size=2, data_parallel_rank=0, pipeline_parallel_rank=0
+                )
+            },
+            "data_parallel_size",
+        ),
+        ({"enable_dp_attention": True}, "enable_dp_attention"),
+        ({"enable_expert_parallel": True}, "enable_expert_parallel"),
+        ({"enable_tbo": True}, "enable_tbo"),
+        ({"enable_tbo_decode": True}, "enable_tbo_decode"),
+        ({"GPU_MAX_HW_QUEUES": "5"}, "env"),
+    ],
+    ids=lambda v: v if isinstance(v, str) else None,
+)
+def test_host_laws_fitted_under_another_engine_config_refuse_naming_the_field(
+    monkeypatch, tmp_path, moved, named
+):
+    """The laws install under the config they were fitted under; one field
+    moved refuses, naming it."""
+    for name in PERFORMANCE_KEYS:
+        monkeypatch.delenv(name, raising=False)
+    key = compass_run.host_key(deployment(tmp_path).config)
+    laws = {"decode": {"E": [0.001, 0.0, 0.0]}}
+    _run_file(tmp_path, host={"laws": laws, "key": key | {"machine_spec": SPEC_DIGEST}})
+    monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
+    monkeypatch.setenv(compass_run.NOW_ENV, str(tmp_path / "now.bin"))
+    table = compass_run.channel_table(compass_run.spec())
+    compass_run._PublishedClock(compass_run.ENGINE, table, None)
+    compass_run.runner(deployment(tmp_path), META_8B)
+
+    env = {k: v for k, v in moved.items() if k.isupper()}
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    r = deployment(tmp_path, **{k: v for k, v in moved.items() if k not in env})
+    with pytest.raises(ValueError) as refused:
+        compass_run.runner(r, META_8B)
+    assert f"fitted under another ['engine.{named}']" in str(refused.value)

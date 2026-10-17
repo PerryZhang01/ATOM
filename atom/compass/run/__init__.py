@@ -58,7 +58,7 @@ Run file keys: ``clock_endpoint``, ``bound_s`` (finite), ``admission_path``,
 priced by `StepStubBackend`), ``step_linear`` (a `StepLinearLaw` mapping,
 priced by `StepLinearBackend`; its ``machine_spec`` digest and, when stated,
 its ``engine_config``, `step_grid.keyed` as it was fitted, refuse a run under
-any other), ``step_grid`` (an artifact store's root and a
+any other; a list of them is one per engine config, a process taking its own), ``step_grid`` (an artifact store's root and a
 bundle's key, priced by `StepGridBackend`; see `step_grid`) and ``replay`` (a
 real run's parity record directory, or for a prefill-decode run one holding
 each side's as ``prefill/`` and ``decode/``: each step ends when the real one
@@ -76,7 +76,7 @@ essential work is left, and the last one's end finishes the run),
 on ``(1, tokens, seqs)``, refused where absent; ``key``, the `host_key` they were
 fitted under and the ``machine_spec`` digest of the spec of the platform they
 were fitted on, which a run with laws must match; ``skip``, segments zeroed for
-a what-if run, which the graders refuse),
+a what-if run, which the graders refuse; a list of them as ``step_linear``'s),
 ``machine`` (a machine spec mapping), ``parameter_count`` (read with
 ``step_roofline``), ``store`` (the artifact store's root, where `memory` reads
 the configuration's memory readings) and ``backend`` (the backend's ``digest``
@@ -89,8 +89,10 @@ calls, a frontend's its executor's refused jobs and its refused clock calls.
 An engine's also holds what its worker's steps cost, for the summary's
 predicted seconds and their shares by method (`backends.cost.GROUPS`).
 It holds the memory the worker predicts too, for
-``python -m atom.compass.memory.check``, and under ``step_grid`` the bundle's
-key, digest and ``describe()`` line, which the summary carries. The authority
+``python -m atom.compass.memory.check``, with the assumption a
+`memory_readings` member it read states, which `compass run` records, and
+under ``step_grid`` the bundle's key, digest and ``describe()`` line, which the
+summary carries. The authority
 removes an earlier run's files there as it starts. At the end of client run
 ``k`` every server LP hands in to ``client-<k>/`` there, and the authority's
 host writes the step table and that client run's summary, its steps taken as
@@ -123,6 +125,20 @@ the index (``engine-P1``), and the router is the ``router`` LP, which chooses
 among them. `frontend(config)` refuses such a
 deployment unless the authority is standalone: a prefill-decode run spans two
 API servers that must share one.
+
+A deployment that offloads KV to an lmcache server (``lmcache_mp``), the
+prefill side of a prefill-decode run, needs an ``lmcache`` entry, and a run
+file with one needs such a deployment. `frontend(config)` then starts LP
+``lmcache`` (`lmcache`, `atom.compass.kv.lmcache_server.LMCacheLP`) in a
+process of its own. The entry holds ``server``, the ``lmcache server`` flags;
+the request loop's laws, ``lookup_s`` (``[fixed, per prompt chunk]``) and
+``request_s``; optional ``copy_width``, 1 when absent; and optional
+``writers``, the writer ranks per DP rank, 1 when absent. The copy engine
+prices on the machine's ``interconnect.host_link``. Its channels' lookahead is
+``lmcache_ipc_s``, the run's ``ipc_s`` when absent (`add_lmcache`). `engine(config)`
+has the connector factory build ``lmcache_mp`` as Compass's
+(`atom.compass.kv.lmcache_mp`), whose scheduler half sends each transfer to LP
+``lmcache`` from the step loop.
 
 The API server's ``--compass-clock-endpoint`` sets `CLOCK_ENV`: the authority
 is not co-hosted but served by `authority`, its own process started before the
@@ -174,6 +190,7 @@ from atom.compass.clock import (
     prefill_decode_table,
     single_engine_table,
 )
+from atom.compass.clock.channels import add_lmcache
 from atom.compass.clock_transport import connect, serve
 from atom.compass.detect.determinism import StepTable
 from atom.compass.runner import COMPASS_RUNNER_QUALNAME
@@ -184,7 +201,7 @@ CLOCK_ENV = "ATOM_COMPASS_CLOCK_ENDPOINT"
 #: The file an engine LP's clock is mapped from, for its model runner workers.
 NOW_ENV = "ATOM_COMPASS_NOW"
 FRONTEND, ENGINE, TRAFFIC = LpId("frontend"), LpId("engine"), LpId("traffic")
-ROUTER = LpId("router")
+ROUTER, LMCACHE = LpId("router"), LpId("lmcache")
 #: Run-file keys for how many deployments of each prefill-decode side run.
 INSTANCES = {"P": "prefill_instances", "D": "decode_instances"}
 #: The kv_transfer_config key a deployment names its index among them by.
@@ -241,6 +258,44 @@ def refuse_renamed_keys(run: dict, where) -> None:
         raise ValueError(f"{where} holds run-file keys that were renamed: {named}")
 
 
+def entries(run: dict, key: str) -> list:
+    """The run file's `key` entries: its list, or its one mapping."""
+    value = run.get(key, [])
+    return [value] if isinstance(value, dict) else value
+
+
+def _differ(*mappings) -> list[str]:
+    """The fields `mappings` differ in, a nested mapping's as `key.field`."""
+    flat = [
+        {
+            f"{k}.{s}" if s else k: w
+            for k, v in (m or {}).items()
+            for s, w in (v.items() if isinstance(v, dict) else [("", v)])
+        }
+        for m in mappings
+    ]
+    return sorted(
+        {n for f in flat for n in f if any(g.get(n) != f.get(n) for g in flat)}
+    )
+
+
+def _fitted_here(listed: list, here: dict, engine, what: str) -> dict:
+    """The entry of `listed` whose engine config, read by `engine`, is `here`;
+    a lone entry is checked as a mapping is."""
+    found = [e for e in listed if engine(e) == here]
+    if len(listed) == 1 or len(found) == 1:
+        return (found or listed)[0]
+    if found:
+        raise ValueError(
+            f"{len(found)} {what} entries were fitted under this engine config, "
+            f"and they differ in {_differ(*found)}"
+        )
+    named = "; ".join(
+        f"entry {i} in {_differ(engine(e), here)}" for i, e in enumerate(listed)
+    )
+    raise ValueError(f"no {what} entry was fitted under this engine config: {named}")
+
+
 _authority: "_RecordingAuthority | None" = None
 #: The co-hosted authority's early-end writer.
 _early_end: threading.Thread | None = None
@@ -271,25 +326,26 @@ def spec() -> dict | None:
             f"{path}: client_runs is {count!r}; a server serves a positive number "
             "of client runs, or null for no limit"
         )
-    _check_host(path, run.get("host", {}))
+    for host in entries(run, "host"):
+        _check_host(path, host)
     run["clock_endpoint"] = os.environ.get(CLOCK_ENV, run.get("clock_endpoint"))
     return run
 
 
 def _check_host(path, host: dict) -> None:
     """Refuse a ``host`` entry the runner would read as zero host time."""
-    from atom.compass.runner.overrides import FORWARD_KINDS, HOST_SEGMENTS
+    from atom.compass.runner.overrides import FORWARD_KINDS, HOST_SEGMENTS, MTP_SEGMENT
 
-    laws = host.get("laws", {})
+    laws, segments = host.get("laws", {}), (*HOST_SEGMENTS, MTP_SEGMENT)
     if (
         set(host) - {"laws", "skip", "key"}
-        or set(host.get("skip", ())) - set(HOST_SEGMENTS)
+        or set(host.get("skip", ())) - set(segments)
         or set(laws) - set(FORWARD_KINDS)
-        or {s for v in laws.values() for s in v} - set(HOST_SEGMENTS)
+        or {s for v in laws.values() for s in v} - set(segments)
         or {len(c) for v in laws.values() for c in v.values()} - {3}
     ):
         raise ValueError(
-            f"{path}: host is {host!r}; it takes skip, a list of {HOST_SEGMENTS}, "
+            f"{path}: host is {host!r}; it takes skip, a list of {segments}, "
             f"laws, mapping {FORWARD_KINDS} to segments to three coefficients, "
             "and key, the host key the laws were fitted under"
         )
@@ -304,6 +360,19 @@ def _pp(run: dict) -> int:
 
 
 def channel_table(run: dict):
+    table = _engines_table(run)
+    if "lmcache" in run:
+        add_lmcache(
+            table,
+            "engine-P" if "kv_write_req_s" in run else ENGINE.name,
+            run.get("lmcache_ipc_s", run["ipc_s"]),
+            _dp(run),
+            run["lmcache"].get("writers", 1),
+        )
+    return table
+
+
+def _engines_table(run: dict):
     common = {k: run[k] for k in ("admission_path", "ipc_s", "stream_s")}
     if "kv_write_req_s" in run:
         return prefill_decode_table(
@@ -326,18 +395,19 @@ def channel_table(run: dict):
 def _machine(run: dict):
     from atom.compass.spec import MachineSpec
 
-    return MachineSpec.from_mapping(_width_keys(run["machine"]))
+    return MachineSpec.from_mapping(run["machine"])
 
 
 def _members(table, dp: int) -> dict | None:
     """At DP width above one, each engine LP's members: rank ``dp<r>`` owns the
     channels whose ``#`` tag names it at that LP's end, ``#dp<r>`` or, on a
-    channel between two engine LPs, ``#dp<sender rank>.dp<receiver rank>``."""
+    channel between two engine LPs, ``#dp<sender rank>.dp<receiver rank>``. A
+    tag's other parts, as the ``tp<k>`` of ``#dp<r>.tp<k>``, name no member."""
     if dp == 1:
         return None
 
     def rank(c, lp):
-        tags = c.name.rpartition("#")[2].split(".")
+        tags = [t for t in c.name.rpartition("#")[2].split(".") if t.startswith("dp")]
         return tags[0] if c.source == lp else tags[-1]
 
     return {
@@ -354,14 +424,19 @@ def _members(table, dp: int) -> dict | None:
     }
 
 
-def _pd_side(config) -> str | None:
-    """``P`` or ``D`` for a deployment on the simulated KV connector, else None."""
-    kv = config.kv_transfer_config
-    if not kv:
-        return None
+def _pd_kv(config) -> dict | None:
+    """The simulated KV connector's ``kv_transfer_config``, alone or one
+    connector of a ``multi``, else None."""
     from atom.kv_transfer.disaggregation.factory import KVConnectorFactory
 
-    if KVConnectorFactory.canonical_name(kv.get("kv_connector", "moriio")) != "compass":
+    leaves = KVConnectorFactory.leaf_connectors(config) or ()
+    return next((c.kv_transfer_config for n, c in leaves if n == "compass"), None)
+
+
+def _pd_side(config) -> str | None:
+    """``P`` or ``D`` for a deployment on the simulated KV connector, else None."""
+    kv = _pd_kv(config)
+    if kv is None:
         return None
     return "P" if kv.get("kv_role", "kv_producer") == "kv_producer" else "D"
 
@@ -372,7 +447,7 @@ def _pd_name(config, run: dict) -> str | None:
     side = _pd_side(config)
     if side is None:
         return None
-    n, k = run.get(INSTANCES[side], 1), config.kv_transfer_config.get(INSTANCE_KEY)
+    n, k = run.get(INSTANCES[side], 1), _pd_kv(config).get(INSTANCE_KEY)
     if n == 1 and k is None:
         return side
     if type(k) is not int or not 0 <= k < n:
@@ -389,10 +464,9 @@ def _bind_transfer(config, run: dict) -> None:
     KV block this deployment's workers hold."""
     from atom.compass.backends import KvGeometry, Parallelism
     from atom.compass.kv import TRANSFER_KEY, Scope, TransferModel
-    from atom.compass.spec import MachineSpec
 
-    config.kv_transfer_config[TRANSFER_KEY] = TransferModel.from_spec(
-        MachineSpec.from_mapping(_width_keys(run["machine"])),
+    _pd_kv(config)[TRANSFER_KEY] = TransferModel.from_spec(
+        _machine(run),
         KvGeometry.from_hf_config(
             config.hf_config,
             block_size=config.kv_cache_block_size,
@@ -401,6 +475,106 @@ def _bind_transfer(config, run: dict) -> None:
         ),
         Scope(run["kv_link"]),
     )
+
+
+def _lmcache_stations(run: dict, chunk_bytes: int) -> dict:
+    """LP `lmcache`'s station laws, from the run file's ``lmcache`` entry and
+    the machine spec's host link, a chunk of `chunk_bytes` the copy's unit."""
+    from atom.compass.kv import TransferModel
+
+    entry = run["lmcache"]
+    if missing := {"server", "lookup_s", "request_s"} - set(entry):
+        raise ValueError(
+            f"the run file's lmcache entry states no {', '.join(sorted(missing))}: "
+            "the lmcache server flags, and its request loop's laws"
+        )
+    machine = _machine(run)
+    return {
+        "lookup_s": tuple(entry["lookup_s"]),
+        "request_s": entry["request_s"],
+        "copy": TransferModel(
+            machine.value("interconnect.host_link.latency_s"),
+            machine.value("interconnect.host_link.bandwidth_bytes_per_s"),
+            chunk_bytes,
+        ),
+        "copy_width": entry.get("copy_width", 1),
+    }
+
+
+def _launch_lmcache(config, run: dict, side: str | None) -> None:
+    """Start LP `lmcache`, the stand-in lmcache server, in a process of its own
+    when this deployment offloads KV to one; refuse a deployment and a run file
+    that disagree on whether one runs or on its writer ranks, or a decode side
+    that would start it."""
+    from atom.kv_transfer.disaggregation.factory import KVConnectorFactory
+    from atom.kv_transfer.offload.mp.deployment import _tp_replication_factor
+
+    leaves = KVConnectorFactory.leaf_connectors(config) or ()
+    lm = next((c for name, c in leaves if name == "lmcache_mp"), None)
+    offloads = lm is not None
+    if offloads != ("lmcache" in run) and (offloads or side != "D"):
+        raise ValueError(
+            f"this deployment {'offloads' if offloads else 'offloads no'} KV to an "
+            f"lmcache server and the run file {'has no' if offloads else 'has an'} "
+            "lmcache entry; LP lmcache runs exactly when the prefill or only "
+            "deployment offloads"
+        )
+    if not offloads:
+        return
+    if side == "D":
+        raise ValueError("LP lmcache serves the prefill side; this is the decode side")
+    # Under DP-attention each DP rank runs at TP 1.
+    tp = 1 if config.enable_dp_attention else config.tensor_parallel_size
+    writers = tp // min(tp, _tp_replication_factor(lm))
+    if run["lmcache"].get("writers", 1) != writers:
+        raise ValueError(
+            f"the run file's lmcache writers is {run['lmcache'].get('writers', 1)}; "
+            f"this deployment stores from {writers} rank(s) per DP rank, its TP "
+            "width per DP rank (1 under DP-attention) over its TP replication factor"
+        )
+    from atom.compass.backends import KvGeometry, Parallelism
+    from atom.compass.kv.lmcache_server import parse_server_flags
+
+    chunk_bytes = KvGeometry.from_hf_config(
+        config.hf_config,
+        block_size=parse_server_flags(run["lmcache"]["server"]).chunk_size,
+        parallelism=Parallelism(tp_size=tp),
+        kv_dtype=config.kv_cache_dtype,
+    ).bytes_per_block
+    _lmcache_stations(run, chunk_bytes)  # refused here, before the run starts
+    paths = [str(Path(atom.__file__).parents[1]), os.environ.get("PYTHONPATH")]
+    subprocess.Popen(
+        [sys.executable, "-c", LMCACHE_MAIN, str(chunk_bytes)],
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, paths))},
+    )
+
+
+#: LP `lmcache`'s process, given a chunk's bytes.
+LMCACHE_MAIN = "import sys; from atom.compass import run; run.lmcache(int(sys.argv[1]))"
+
+
+def lmcache(chunk_bytes: int) -> None:
+    """LP `lmcache`: the stand-in server at its flags' URL, on the run's clock
+    until its ``+inf`` grant, then its hand-in."""
+    import zmq
+
+    from atom.compass.kv.lmcache_server import LMCacheLP, LMCacheServer
+
+    run = spec()
+    rt = _runtime(LMCACHE, run)
+    rt.client_run_ended = lambda k: _hand_in(run, LMCACHE.name, rt.refusals, k)
+    server = LMCacheServer(run["lmcache"]["server"], chunk_bytes=chunk_bytes)
+    sock = zmq.Context.instance().socket(zmq.ROUTER)
+    sock.bind(server.url)
+    ended = []
+    try:
+        LMCacheLP(rt, sock, server, **_lmcache_stations(run, chunk_bytes)).serve()
+    except BaseException as e:
+        ended = [f"ended:{LMCACHE.name} raised {e!r}"]
+        raise
+    finally:
+        _hand_in(run, LMCACHE.name, rt.refusals + ended)
+        sock.close(linger=0)
 
 
 def configuration(run: dict) -> dict:
@@ -499,6 +673,7 @@ class _RecordingAuthority(ClockAuthority):
         self.done = threading.Event()
         self._joining = set(_hand_ins(run))
         self._clock_before = {}  # LP -> its clock before its latest grant
+        self._held_clock = {}  # (channel, seq) held for a parked member -> the same
         # A rerun into the same out_dir starts from none of the last run's files.
         out = Path(run["out_dir"])
         for name in (
@@ -524,6 +699,12 @@ class _RecordingAuthority(ClockAuthority):
     def record(self, lp, time_from, time_to, kind, recovered) -> None:
         self._clock_before[lp] = time_from
         self.steps.record(lp, time_from, time_to, kind, detail="recovered" * recovered)
+
+    def _hold(self, lp, member, released) -> None:
+        for ch, msgs in released.items():
+            for seq, _ in msgs:
+                self._held_clock[ch, seq] = self._clock_before[lp]
+        super()._hold(lp, member, released)
 
     def on_bind(self, lp):
         self.client_run_open |= lp == TRAFFIC
@@ -554,7 +735,7 @@ class _RecordingAuthority(ClockAuthority):
             for ch, msgs in released.items():
                 for seq, arrival in msgs:
                     # From the receiver's clock as the grant found it.
-                    clock = self._clock_before[lp]
+                    clock = self._held_clock.pop((ch, seq), self._clock_before[lp])
                     self.steps.record(lp, clock, arrival, "release", ch, seq)
         while len(self.ends) < len(self.ended):
             self.ends.append(time.monotonic())
@@ -716,6 +897,7 @@ def frontend(config):
             target=_write_on_early_end, args=(run, authority), name="compass early end"
         )
         _early_end.start()
+    _launch_lmcache(config, run, side)
     rt = _runtime(lp, run, cls=_StoppingClock)
     rt.client_run_ended = lambda k: _frontend_hand_in(run, rt, k)
     return _start_on_leaving(rt, authority)
@@ -812,12 +994,66 @@ def engine(config):
     if side is not None:
         lp = LpId(f"{ENGINE.name}-{_pd_name(config, run)}")
         _bind_transfer(config, run)
+    if "lmcache" in run:
+        from atom.compass.kv.lmcache_mp import substitute
+
+        substitute()
     utils.LP_OF_RANK = dict.fromkeys(range(pc.data_parallel_size), lp)
     _member = f"dp{pc.data_parallel_rank}" if pc.data_parallel_size > 1 else None
     name = lp.name if _member is None else f"{lp.name}.{_member}"
     os.environ[NOW_ENV] = str(Path(run["out_dir"]) / f"now-{name}.bin")
     clock.settle_before_collectives()
+    if _member is not None and _offloads_to_lmcache_mp(config.kv_transfer_config):
+        _park_before_dispatch()
     return _named(_start_on_leaving(_runtime(lp, run, _member, _PublishedClock)))
+
+
+def _offloads_to_lmcache_mp(kv) -> bool:
+    """Whether a KV transfer config offloads to the lmcache MP server, on its
+    own or as one connector of a ``multi``."""
+    if not kv:
+        return False
+    from atom.kv_transfer.disaggregation.factory import KVConnectorFactory
+
+    def name(c):
+        return KVConnectorFactory.canonical_name(c.get("kv_connector", "moriio"))
+
+    subs = kv.get("connectors", []) if name(kv) == "multi" else [kv]
+    return any(name(c) == "lmcache_mp" for c in subs)
+
+
+def _park_before_dispatch() -> None:
+    """A DP member parks as its last clock call before it dispatches a forward,
+    real or the DP dummy, and asks no TAR from its DP state sync to that park.
+
+    A member waiting on the lmcache MP server asks for time alone while its
+    peers, their forwards dispatched, wait on it in the predicted forward's
+    gather and make no clock call; a park stands in for each of them."""
+    from atom.model_engine.async_proc import AsyncIOProcManager
+    from atom.model_engine.engine_core import DPEngineCoreProc
+
+    call, sync = AsyncIOProcManager.call_func, DPEngineCoreProc._sync_dp_state
+
+    @functools.wraps(call)
+    def parking(self, func_name, *args, **kwargs):
+        rt = clock.installed()
+        if func_name in ("forward", "dummy_execution") and rt and rt.in_run:
+            cpu, at = time.thread_time(), rt.now
+            rt.park()
+            parks = rt.__dict__.setdefault("parks", [])
+            parks.append((at, rt.now, time.thread_time() - cpu))
+        return call(self, func_name, *args, **kwargs)
+
+    @functools.wraps(sync)
+    def synced(self, *args, **kwargs):
+        out = sync(self, *args, **kwargs)
+        rt = clock.installed()
+        if rt is not None and rt.in_run:
+            rt.parking = True
+        return out
+
+    AsyncIOProcManager.call_func = parking
+    DPEngineCoreProc._sync_dp_state = synced
 
 
 @contextlib.contextmanager
@@ -853,11 +1089,19 @@ def runner(model_runner, tree) -> None:
         install_cost_backend,
         install_device_readings,
     )
-    from atom.compass.spec import MachineSpec
 
     config = model_runner.config
     tp = config.tensor_parallel_size
     refuse_renamed_keys(run, "the run file")
+    engines = {
+        STEP_LINEAR: lambda e: e.get("engine_config"),
+        "host": lambda e: e.get("key", {}).get("engine"),
+    }
+    for name, engine in engines.items():
+        if isinstance(run.get(name), list):
+            from atom.compass.run.step_grid import keyed
+
+            run[name] = _fitted_here(run[name], keyed(config), engine, name)
     backends = (STEP_STUB, STEP_LINEAR, STEP_GRID, "replay")
     keys = [k for k in backends if k in run]
     if len(keys) != 1:
@@ -930,7 +1174,7 @@ def runner(model_runner, tree) -> None:
             stack_layers=end - start,
             stage_share=share,
         )
-    machine = MachineSpec.from_mapping(_width_keys(run["machine"]))
+    machine = _machine(run)
     platform = machine_spec_digest(machine)
     fitted_on = run.get(STEP_LINEAR, {}).get("machine_spec")
     if STEP_LINEAR in run and fitted_on != platform:
@@ -986,6 +1230,13 @@ def runner(model_runner, tree) -> None:
         theirs = host.get("key") or {}
         if ours and theirs != ours:
             differ = [k for k in ours if theirs.get(k) != ours[k]]
+            if isinstance(engine := theirs.get("engine"), dict):
+                mine = ours["engine"]
+                differ = [k for k in differ if k != "engine"] + [
+                    f"engine.{n}"
+                    for n in sorted(mine.keys() | engine.keys())
+                    if engine.get(n) != mine.get(n)
+                ]
             raise ValueError(
                 f"the run file's host laws were fitted under another {differ}; "
                 f"this run's key is {ours}, and theirs is {theirs}"
@@ -998,7 +1249,7 @@ def runner(model_runner, tree) -> None:
         if replay is not None:
             replay.now = lambda: float(slot[0])
     model_runner.compass_abort = run.get("on_refusal") == "abort"
-    reserved, captured = _graph_pool(model_runner, machine, model)
+    reserved = _graph_pool(model_runner, machine, model)
     # The readings' label: under DP-attention the layout, with the EP width
     # when the experts shard; one rank of it is a TP1 engine.
     dp = config.parallel_config.data_parallel_size
@@ -1014,13 +1265,11 @@ def runner(model_runner, tree) -> None:
         cudagraph_overhead=reserved,
     )
     install_device_readings(model_runner, readings)
-    pool = (
-        None
-        if captured is None
-        else predicts(machine, tp_width=tp, captured_tokens=captured)
-    )
     model_runner.compass_memory = record(
-        readings, tokens=config.max_num_batched_tokens, pool=pool
+        readings,
+        tokens=config.max_num_batched_tokens,
+        pool=predicts(measured),
+        assumed=measured.assumed,
     )
     if bundle is not None:
         model_runner.compass_step_grid = {**bundle, "describe": backend.describe()}
@@ -1029,10 +1278,7 @@ def runner(model_runner, tree) -> None:
 def _graph_pool(model_runner, machine, model):
     """What ATOM's `_estimate_cudagraph_overhead` reserves for this deployment:
     nothing under ``enforce_eager``, else the branch the runner's own
-    `_piecewise_cg_active` picks, over the same config fields it reads. With it,
-    the tokens `capture_cudagraph` captures, None under ``enforce_eager``. The
-    piecewise reservation caps only what it reserves; the capture takes the
-    same bounded ladder in both modes."""
+    `_piecewise_cg_active` picks, over the same config fields it reads."""
     from atom.compass.memory import (
         PiecewiseCapture,
         capture_token_shapes,
@@ -1042,15 +1288,9 @@ def _graph_pool(model_runner, machine, model):
 
     config = model_runner.config
     if config.enforce_eager:
-        return reserves(enforce_eager=True), None
-    # At one token per sequence a batch size is its token count, so the
-    # capture loop's schedulable bound applies to both.
-    bound = min(config.max_num_seqs, config.max_num_batched_tokens)
-    captured = sum(
-        capture_token_shapes(config.capture_sizes, max_num_batched_tokens=bound)
-    )
+        return reserves(enforce_eager=True)
     if not model_runner._piecewise_cg_active():
-        return reserves(activations=model.activations), captured
+        return reserves(activations=model.activations)
     hf = config.hf_config
     sizes = config.compilation_config.cudagraph_capture_sizes or [config.max_num_seqs]
     capacity = machine.value("device.memory.capacity_bytes")
@@ -1066,7 +1306,7 @@ def _graph_pool(model_runner, machine, model):
         ),
         budget_bytes=int(config.gpu_memory_utilization * capacity),
     )
-    return reserves(piecewise=capture), captured
+    return reserves(piecewise=capture)
 
 
 def tokenizer(tok, config) -> None:
@@ -1076,10 +1316,10 @@ def tokenizer(tok, config) -> None:
     run = spec()
     if run is None:
         return
-    from atom.compass.spec import Backend, MachineSpec
+    from atom.compass.spec import Backend
     from atom.utils.compass_loop import wrap_decode, wrap_encode
 
-    entry = MachineSpec.from_mapping(_width_keys(run["machine"])).tokenizer_for(
+    entry = _machine(run).tokenizer_for(
         config.hf_config.architectures[0],
         Backend.FAST if tok.is_fast else Backend.SLOW,
         _fingerprint(tok),
@@ -1183,15 +1423,6 @@ def _file_digest(name: str, filename: str) -> str | None:
     return "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def _width_keys(node):
-    """JSON writes a width table's integer keys as strings; read them back."""
-    if isinstance(node, list):
-        return [_width_keys(v) for v in node]
-    if not isinstance(node, dict):
-        return node
-    return {int(k) if k.isdigit() else k: _width_keys(v) for k, v in node.items()}
-
-
 def _write_whole(path: Path, text: str) -> None:
     """Write `path` whole or not at all, so a reader that polls for it never
     reads it part-written."""
@@ -1234,11 +1465,16 @@ def engine_done(engine_core, **sections) -> None:
 
 def _engine_hand_in(run: dict, engine_core, sections: dict, client_run=None) -> None:
     """Hand in what the worker's steps cost and the memory it predicts, with
-    `sections`, its command refusals and the engine's refused clock calls."""
+    `sections`, its command refusals and the engine's refused clock calls; a
+    DP member that parked also hands in ``parks``: their count, CPU seconds, and
+    each park's clock and the clock it left at."""
     said = _workers_say(engine_core)
     rt = clock.installed()
     lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
     reasons = said.pop("refusals") + rt.refusals
+    if parks := getattr(rt, "parks", None):
+        cpu_s, at = sum(p[2] for p in parks), [p[:2] for p in parks]
+        sections = sections | {"parks": {"count": len(parks), "cpu_s": cpu_s, "at": at}}
     _hand_in(run, lp, reasons, client_run, **said, **sections)
 
 

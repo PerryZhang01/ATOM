@@ -104,14 +104,6 @@ machine = json.loads(Path(machine).read_text())
 # as parity_one_node.sh does; only arrival latency reads it.
 arch = json.loads((Path(model) / "config.json").read_text())["architectures"][0]
 machine["host"]["tokenizers"][0]["applies_to"].append(arch)
-# ponytail: a DP rank's device constants read as TP1's, as test_dp_slice.py's
-# machine reads them, with TP1's origin; measure the 1x2 layout to drop this.
-origins = machine["provenance"]["origins"]
-for name in ("driver_and_collective_reserve_bytes", "allocator_retained_after_load_bytes"):
-    width = machine["device"]["runtime_constants"][name]
-    width.setdefault("1x2", width["1"])
-    field = f"device.runtime_constants.{name}"
-    origins.setdefault(f"{field}[1x2]", origins[f"{field}[1]"])
 Path(run).write_text(json.dumps({
     "clock_endpoint": f"tcp://127.0.0.1:{port}", "bound_s": 1e7,
     "admission_path": "serving", "ipc_s": 2.0**-14, "stream_s": 2.0**-12,

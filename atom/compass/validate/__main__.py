@@ -1,15 +1,18 @@
 # SPDX-License-Identifier: MIT
 """Grade cells from every source, in one table: `python -m atom.compass.validate CELL...`
 
-A CELL holds runs of one workload: `step_linear/` (at its run file's step linear law)
+A CELL holds runs of one workload: `step_linear/` (at its run file's step linear law, or
+of several the one fitted under the engine config each real run states)
 and two or more `real*/`. `cctraces_sim.sh` writes each run.json as the run file with
 the `workload` every run must share; `record` and `run` write their own, the run file
 as `run_file`, and `validate.runs` decides which client run of theirs is graded, and
-whether one is. Rows: `validate.runs`' grades, TTFT p50 per
-band of uncached prompt tokens graded alike, `validate.cost` (with the steps it leaves
-out) and `memory.check` per real run, and the simulated run's refusals by source,
-shares and speed. Any refusal makes a `cctraces_sim.sh` cell a coverage report; the
-shares grade nothing, and neither do the counts but preemptions and prefill tokens.
+whether one is. Rows: `validate.runs`' grades, TTFT p50 per band of uncached prompt
+tokens graded alike; per run `record` or `run` wrote, its warmup: how many requests
+its export names as such and how many steps hold only those; `validate.cost` on the
+steps graded (with the steps it leaves out) and `memory.check` per real run; and the
+simulated run's refusals by source, shares and speed. Any refusal makes a
+`cctraces_sim.sh` cell a coverage report; the shares grade nothing, and neither do the
+counts but preemptions and prefill tokens.
 """
 
 from __future__ import annotations
@@ -21,7 +24,14 @@ from statistics import median
 
 from atom.compass.backends.cost import GROUPS
 from atom.compass.memory.check import MemoryRefusal, parts
-from atom.compass.run import LP_FILE, refuse_renamed_keys
+from atom.compass.run import (
+    LP_FILE,
+    STEP_LINEAR,
+    _fitted_here,
+    entries,
+    refuse_renamed_keys,
+)
+from atom.compass.run.step_grid import keyed_of
 from atom.compass.validate import cost, runs
 
 BANDS = {0: "0-512", 512: "512-2048", 2048: "2048-8192", 8192: "8192+"}
@@ -66,8 +76,15 @@ def _runs(real: list[Path], law: Path):
             yield _graded("end to end", name, g)
 
 
-def _cost(run: Path, law: dict):
-    report, where = cost.cost_accuracy(run / "steps", law), f"cost {run.name}"
+def _warmup(run: Path, warmup: dict | None):
+    if warmup is not None:  # None: a run `cctraces_sim.sh` wrote, graded whole
+        value = f"requests {warmup['requests']}, steps {warmup['steps']}"
+        yield f"warmup {run.name}", "warmup", value, "not graded"
+
+
+def _cost(run: Path, law: dict, steps: list[dict]):
+    numbers = {s["step"] for s in steps}
+    report, where = cost.cost_accuracy(run / "steps", law, numbers), f"cost {run.name}"
     for group, (hull, gated) in HULL.items():
         for kind, s in report[group].items():
             held = "-" if s["held_out"] is None else f"{s['held_out']:+.2%}"
@@ -140,8 +157,16 @@ def rows(cell) -> list[tuple]:
     out += _runs(real, law)
     for r in real:
         law_file = run["step_linear"].get("run_file", run["step_linear"])
-        out += [*_cost(r, law_file["step_linear"]), *_memory(law, r)]
-    out += _summary(law, summary)
+        laws = entries(law_file, STEP_LINEAR)
+        if len(laws) > 1:
+            here = keyed_of(json.loads((r / "steps/dp0.engine.json").read_text()))
+            laws = [
+                _fitted_here(laws, here, lambda e: e.get("engine_config"), STEP_LINEAR)
+            ]
+        steps, _traces, warmup = runs.graded(r)
+        out += [*_warmup(r, warmup), *_cost(r, laws[0], steps)]
+        out += _memory(law, r)
+    out += [*_warmup(law, runs.graded(law)[2]), *_summary(law, summary)]
     return out
 
 
