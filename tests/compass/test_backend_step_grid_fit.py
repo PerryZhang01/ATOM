@@ -112,10 +112,10 @@ def run(tmp_path):
     return r, here, configuration
 
 
-def record(tmp_path, run, lines, name="a", trace="trace-300"):
+def record(tmp_path, run, lines, name="a", trace="trace-300", session=300):
     """`tmp_path/name`, a real run's record of `lines`, each timed at its lookup
     times `factor`, with the export `client.json` of the client run sending it
-    from `trace`."""
+    from `trace`, which the export gives `session`."""
     r, _, configuration = run
     directory = tmp_path / name
     path = directory / "steps" / "dp0.jsonl"
@@ -127,7 +127,8 @@ def record(tmp_path, run, lines, name="a", trace="trace-300"):
         line["named"] = [[q[0], f"r{q[0]}"] for q in line["batch"]]
         sent |= {n: {"trace": trace, "sampling": SAMPLING} for _, n in line["named"]}
     path.write_text("".join(json.dumps(x) + "\n" for x in written))
-    (directory / "client.json").write_text(json.dumps({"requests": sent}))
+    export = {"requests": sent, "sessions": {trace: session}}
+    (directory / "client.json").write_text(json.dumps(export))
     engine = {**step_grid.keyed(r.config), **BOUNDS, "num_kvcache_blocks": 1024}
     (path.parent / "dp0.engine.json").write_text(json.dumps(engine))
     kind, revision = configuration["source_root"].split("-", 1)
@@ -240,8 +241,9 @@ def test_a_grid_measured_under_sessions_fits_given_the_same_sessions(tmp_path, r
     --sessions 0:4` plans over `a`'s lines alone: every node but decode's at c
     1023, which only `b`'s lines reach."""
     top = [x for x in nodes() if x["rows"][0][2] and x["rows"][0][1] == 1024]
-    a = record(tmp_path, run, [x for x in nodes() if x not in top], trace="trace-3")
-    b = record(tmp_path, run, top, name="b", trace="trace-7")
+    rest = [x for x in nodes() if x not in top]
+    a = record(tmp_path, run, rest, trace="trace-3", session=3)
+    b = record(tmp_path, run, top, name="b", trace="trace-7", session=7)
     for line in nodes():
         if line not in top:
             measured(tmp_path, run, line)
