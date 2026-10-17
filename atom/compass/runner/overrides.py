@@ -99,6 +99,7 @@ import logging
 import math
 import os
 import pickle
+from functools import partial
 from typing import Any
 
 import numpy as np
@@ -483,6 +484,42 @@ class FactoriesOnMeta(TorchFunctionMode):
         return func(*args, **kwargs)
 
 
+def process_weights_after_loading(tree: torch.nn.Module) -> None:
+    """Run on a meta tree the post-load hooks `load_model` runs after a load.
+
+    The same walk, parent first: each module's own hook, then its quant
+    method's. The hooks re-lay weights (an MXFP4 MoE pads its expert scales),
+    so the storages they leave are the ones a real start holds. The loader's
+    `init_prepare_finalize` is not run: it sets up an MoE's dispatch and holds
+    no weight. A hook that fails on the meta device refuses the start by name.
+    """
+    if not isinstance(tree, torch.nn.Module):
+        return
+    from atom.model_ops.base_config import QuantizeMethodBase
+
+    for name, module in tree.named_modules():
+        hooks = []
+        if hasattr(module, "process_weights_after_loading"):
+            hooks.append((module, module.process_weights_after_loading))
+        quant_method = getattr(module, "quant_method", None)
+        if isinstance(quant_method, QuantizeMethodBase):
+            hooks.append(
+                (
+                    quant_method,
+                    partial(quant_method.process_weights_after_loading, module),
+                )
+            )
+        for owner, hook in hooks:
+            try:
+                hook()
+            except Exception as e:
+                raise RunnerRefusal(
+                    f"{type(owner).__name__}.process_weights_after_loading on "
+                    f"{name or type(tree).__name__!r} cannot run on the meta "
+                    f"device ({e!r}), so the weights it leaves are unknown."
+                ) from e
+
+
 class UnbuiltModel(torch.nn.Module):
     """Stands in for the model a non-allocating runner never loads.
 
@@ -710,6 +747,7 @@ class NonAllocatingRunner(
             )
         with FactoriesOnMeta():
             self.model.tree = model_class(self.config)
+            process_weights_after_loading(self.model.tree)
         from atom.compass import run
 
         run.runner(self, self.model.tree)
