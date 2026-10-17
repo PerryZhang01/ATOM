@@ -39,10 +39,14 @@ from atom.compass.artifacts import (
 from atom.compass.backends import StepGridBackend, StepLinearBackend, StepStubBackend
 from atom.compass.backends.step_roofline import StepFallbackBackend
 from atom.compass.backends.step_stub import Coefficients
-from atom.compass.drive import runfile
+from atom.compass.detect import scenario
+from atom.compass.detect.determinism import CONFIGURATION_PREFIX
+from atom.compass.drive import run as drive_run
+from atom.compass.drive import runfile, serve
 from atom.compass.fit.publish import RANK
 from atom.compass.run.step_grid import keyed
 from atom.compass.spec import SpecRefusal
+from atom.compass.validate import runs
 
 LAWS = {"decode": {"W_pre": [1e-4, 1e-8, 1e-7]}, "prefill": {"E": [2e-4, 0, 0]}}
 REPORT = {"provenance": [{"source": "record", "run": "r1", "traces": ["trace-a"]}]}
@@ -246,7 +250,7 @@ def test_the_step_roofline_reads_the_models_parameter_count(monkeypatch, tmp_pat
     assert isinstance(r.compass_backend, StepFallbackBackend)
 
 
-#: #971's prefill and decode sides: the fields their engine configs differ in.
+#: A prefill and a decode side: the engine-config fields they differ in.
 SIDES = {
     "P": {
         "enable_tbo": True,
@@ -255,7 +259,7 @@ SIDES = {
     },
     "D": {"enable_tbo": False, "capture_sizes": [1, 2, *range(4, 257, 4)], "env": {}},
 }
-BOUNDS_971 = {"max_num_seqs": 512, "max_num_batched_tokens": 16384}
+PD_BOUNDS = {"max_num_seqs": 512, "max_num_batched_tokens": 16384}
 
 
 def as_side(monkeypatch, env):
@@ -273,7 +277,7 @@ def planted_pair(tmp_path, monkeypatch):
     for i, (name, side) in enumerate(SIDES.items()):
         as_side(monkeypatch, side["env"])
         config = {k: v for k, v in side.items() if k != "env"}
-        r = deployment(tmp_path, **BOUNDS_971, **config)
+        r = deployment(tmp_path, **PD_BOUNDS, **config)
         engine = json.dumps(keyed(r.config), sort_keys=True)
         key = {**NEW_KINDS[Kind.STEP_LINEAR_LAW], "engine_config": engine}
         params = {**law(), "provenance": name}
@@ -304,6 +308,25 @@ def test_each_side_installs_the_law_and_host_laws_fitted_under_its_engine_config
     backend = run["backend"]["provenance"]
     assert [e["inputs"] for e in backend["entries"]] == [REPORT["provenance"]] * 2
     assert backend["inputs"] == REPORT["provenance"] * 2
+    swapped = ["--step-linear", pair["D"][1], "--step-linear", pair["P"][1]]
+    assert build(tmp_path, *swapped)["backend"]["digest"] == run["backend"]["digest"]
+
+
+def test_each_reader_of_host_reads_every_entry_of_a_list(tmp_path):
+    hosts = [{"laws": {}}, {"laws": {"prefill": {}}, "skip": ["E"]}]
+    (tmp_path / "run.json").write_text(json.dumps({"host": hosts}))
+    with pytest.raises(ValueError, match="skips host segments"):
+        runs.graded(tmp_path)
+
+    table = CONFIGURATION_PREFIX + json.dumps({"host": hosts})
+    assert scenario._timeline(table, "lp", None) == [
+        "lp: a timeline is computed for a constant step stub with no host laws"
+    ]
+
+    run = {"host": hosts, "step_roofline": False, "backend": {}}
+    (tmp_path / serve.RUN_FILE).write_text(json.dumps(run))
+    drive_run.write_grading(tmp_path, None)
+    assert json.loads((tmp_path / serve.RUN_JSON).read_text())["skip"] == ["E"]
 
 
 @pytest.mark.parametrize("key", [compass_run.STEP_LINEAR, "host"])

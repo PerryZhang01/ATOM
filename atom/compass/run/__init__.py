@@ -264,33 +264,34 @@ def entries(run: dict, key: str) -> list:
     return [value] if isinstance(value, dict) else value
 
 
+def _differ(*mappings) -> list[str]:
+    """The fields `mappings` differ in, a nested mapping's as `key.field`."""
+    flat = [
+        {
+            f"{k}.{s}" if s else k: w
+            for k, v in (m or {}).items()
+            for s, w in (v.items() if isinstance(v, dict) else [("", v)])
+        }
+        for m in mappings
+    ]
+    return sorted(
+        {n for f in flat for n in f if any(g.get(n) != f.get(n) for g in flat)}
+    )
+
+
 def _fitted_here(listed: list, here: dict, engine, what: str) -> dict:
     """The entry of `listed` whose engine config, read by `engine`, is `here`;
     a lone entry is checked as a mapping is."""
-
-    def differ(*mappings) -> list[str]:
-        flat = [
-            {
-                f"{k}.{s}" if s else k: w
-                for k, v in (m or {}).items()
-                for s, w in (v.items() if isinstance(v, dict) else [("", v)])
-            }
-            for m in mappings
-        ]
-        return sorted(
-            {n for f in flat for n in f if len({repr(g.get(n)) for g in flat}) > 1}
-        )
-
     found = [e for e in listed if engine(e) == here]
     if len(listed) == 1 or len(found) == 1:
         return (found or listed)[0]
     if found:
         raise ValueError(
             f"{len(found)} {what} entries were fitted under this engine config, "
-            f"and they differ in {differ(*found)}"
+            f"and they differ in {_differ(*found)}"
         )
     named = "; ".join(
-        f"entry {i} in {differ(engine(e), here)}" for i, e in enumerate(listed)
+        f"entry {i} in {_differ(engine(e), here)}" for i, e in enumerate(listed)
     )
     raise ValueError(f"no {what} entry was fitted under this engine config: {named}")
 
@@ -1228,16 +1229,9 @@ def runner(model_runner, tree) -> None:
         ours = host.get("laws") and {**host_key(config), "machine_spec": platform}
         theirs = host.get("key") or {}
         if ours and theirs != ours:
-            differ = [k for k in ours if theirs.get(k) != ours[k]]
-            if isinstance(engine := theirs.get("engine"), dict):
-                mine = ours["engine"]
-                differ = [k for k in differ if k != "engine"] + [
-                    f"engine.{n}"
-                    for n in sorted(mine.keys() | engine.keys())
-                    if engine.get(n) != mine.get(n)
-                ]
             raise ValueError(
-                f"the run file's host laws were fitted under another {differ}; "
+                "the run file's host laws were fitted under another "
+                f"{_differ(theirs, ours)}; "
                 f"this run's key is {ours}, and theirs is {theirs}"
             )
         pp = getattr(config, "pipeline_parallel_size", 1)

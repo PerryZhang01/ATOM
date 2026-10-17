@@ -16,7 +16,8 @@ then sets ``out_dir`` and ``clock_endpoint`` and hands it to the server.
   the run charges no host time.
 - ``--step-linear`` and ``--host-laws`` repeat, one entry per engine config:
   the key then holds a list, each process installing its own config's entry,
-  and ``backend``'s digest is over every law's, their provenance ``entries``.
+  and ``backend``'s digest is over every law's in any order, their provenance
+  ``entries``.
 - ``--machine``, the spec; ``--store``'s root as ``store``; ``--on-refusal``;
   ``--step-roofline``, which reads ``parameter_count`` from the model
   directory's safetensors index and refuses when it states none.
@@ -26,7 +27,6 @@ then sets ``out_dir`` and ``clock_endpoint`` and hands it to the server.
 
 import hashlib
 import json
-from argparse import Namespace
 from pathlib import Path
 
 from atom.compass import run
@@ -65,25 +65,6 @@ def add_arguments(parser) -> None:
 def build(args, atom_args) -> dict:
     """The run file of `args`, parsed with `add_arguments`, for a server
     started with ATOM's arguments `atom_args`."""
-    if len(laws := getattr(args, run.STEP_LINEAR) or []) > 1:
-        each = [
-            build(Namespace(**{**vars(args), run.STEP_LINEAR: [k]}), atom_args)
-            for k in laws
-        ]
-        backends = [e["backend"] for e in each]
-        digests = " ".join(b["digest"] for b in backends).encode()
-        return each[0] | {
-            run.STEP_LINEAR: [e[run.STEP_LINEAR] for e in each],
-            "backend": {
-                "digest": "sha256:" + hashlib.sha256(digests).hexdigest(),
-                "provenance": {
-                    "entries": [b["provenance"] for b in backends],
-                    "inputs": [
-                        i for b in backends for i in b["provenance"]["inputs"] or ()
-                    ],
-                },
-            },
-        }
     store = ArtifactStore(Path(args.store).resolve())
     engine = _engine_args(atom_args)
     # Under DP-attention every TP rank is a DP rank, as `run.frontend` counts.
@@ -109,25 +90,33 @@ def build(args, atom_args) -> dict:
         }
     else:
         name = next(k for k in KINDS if getattr(args, k))
-        token = getattr(args, name)
-        key = store.key_from_token(
-            KINDS[name], token[0] if name == run.STEP_LINEAR else token
-        )
-        entry = store.read(key)
-        if name == run.STEP_GRID:
-            out[name] = {"store": str(store.root), **key.values}
-        else:
-            engine_config = json.loads(key.values["engine_config"])
-            out[name] = {**_member(entry, "params"), "engine_config": engine_config}
-        reported = member_name("report", RANK, "json") in entry.members
-        report = _member(entry, "report") if reported else {}
-        out["backend"] = {
-            "digest": entry.digest,
-            "provenance": {
-                **entry.provenance.as_json(),
-                "inputs": report.get("provenance"),
-            },
-        }
+        tokens, laws, backends = getattr(args, name), [], []
+        for token in [tokens] if isinstance(tokens, str) else tokens:
+            key = store.key_from_token(KINDS[name], token)
+            entry = store.read(key)
+            if name == run.STEP_GRID:
+                laws.append({"store": str(store.root), **key.values})
+            else:
+                engine_config = json.loads(key.values["engine_config"])
+                laws.append(
+                    {**_member(entry, "params"), "engine_config": engine_config}
+                )
+            reported = member_name("report", RANK, "json") in entry.members
+            inputs = _member(entry, "report").get("provenance") if reported else None
+            provenance = {**entry.provenance.as_json(), "inputs": inputs}
+            backends.append({"digest": entry.digest, "provenance": provenance})
+        out[name], out["backend"] = laws[0], backends[0]
+        if len(laws) > 1:
+            digests = " ".join(sorted(b["digest"] for b in backends)).encode()
+            out[name], out["backend"] = laws, {
+                "digest": "sha256:" + hashlib.sha256(digests).hexdigest(),
+                "provenance": {
+                    "entries": [b["provenance"] for b in backends],
+                    "inputs": [
+                        i for b in backends for i in b["provenance"]["inputs"] or ()
+                    ],
+                },
+            }
     if args.host_laws:
         hosts = [
             _member(store.read(store.key_from_token(Kind.HOST_LAWS, k)), "params")
