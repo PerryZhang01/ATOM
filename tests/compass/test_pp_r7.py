@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""R7 on a pipeline: a stage's input from the stage before holds its host at
+"""On a pipeline, a stage's input from the stage before holds its host at
 the metadata's arrival and its device at the tensors', in a simulated run, in
 the parity record and in the recurrence's gate.
 """
@@ -57,7 +57,7 @@ def _stage(rank, *grants, frames=(), ready=C, parts=()):
     return rt, partial(on_owner, StageSends(rt, call, rank, 2, MODELS)), calls
 
 
-def test_a_downstream_forward_is_called_at_the_send_its_launch_held_to_the_metadata():
+def test_a_downstream_forward_is_called_at_the_arrival_its_launch_held_to_the_metadata():
     t_send, t_ready = 0.25, 0.5
     frame = {"seq": 0, "t_send": t_send, "t_ready": t_ready, "parts": RDV}
     done, meta, end = pp_send.arrivals(MODELS, frame, 0.0)

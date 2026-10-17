@@ -38,6 +38,24 @@ LAWS["prefill"]["W_post"] = (POST, 0, 0)
 TensorMetadata = collections.namedtuple("TensorMetadata", "device dtype size")
 
 
+def _runner(monkeypatch, rank, now):
+    """Stage `rank` of two's runner, its host recurrence reading `now`."""
+    monkeypatch.setitem(
+        sys.modules,
+        "aiter.dist.parallel_state",
+        SimpleNamespace(TensorMetadata=TensorMetadata),
+    )
+    stage = runner(StepStubBackend(stage_share=(0.5, 0.5)))
+    stage.config.pipeline_parallel_size = 2
+    stage.config.parallel_config.pipeline_parallel_rank = rank
+    stage.config.torch_dtype = torch.bfloat16
+    stage.hf_text_config = SimpleNamespace(hidden_size=8)
+    stage._pp_send_needs_sparse = False
+    stage._setup_pp_shared_indexer = lambda: None
+    stage.compass_host = HostDeviceRecurrence(LAWS, (), now, (rank, 2))
+    return stage
+
+
 def _stage(monkeypatch, rank, *grants, frames=()):
     """Stage `rank` of two: its runtime, its loop's runner calls through
     `StageSends`, and the frames it sent."""
@@ -52,19 +70,7 @@ def _stage(monkeypatch, rank, *grants, frames=()):
     rt = LPRuntime(LpId(f"engine-pp{rank}"), table, FakeConn(*grants), owner=thread)
     rt.start_run()
     monkeypatch.setattr(clock, "_installed", rt)
-    monkeypatch.setitem(
-        sys.modules,
-        "aiter.dist.parallel_state",
-        SimpleNamespace(TensorMetadata=TensorMetadata),
-    )
-    stage = runner(StepStubBackend(stage_share=(0.5, 0.5)))
-    stage.config.pipeline_parallel_size = 2
-    stage.config.parallel_config.pipeline_parallel_rank = rank
-    stage.config.torch_dtype = torch.bfloat16
-    stage.hf_text_config = SimpleNamespace(hidden_size=8)
-    stage._pp_send_needs_sparse = False
-    stage._setup_pp_shared_indexer = lambda: None
-    stage.compass_host = HostDeviceRecurrence(LAWS, (), lambda: rt.now, (rank, 2))
+    stage = _runner(monkeypatch, rank, lambda: rt.now)
     frames, sent = list(frames), []
 
     def call(name, *args, wait_out=False):
@@ -115,3 +121,15 @@ def test_a_downstream_stage_prepares_before_its_input_arrives_and_launches_at_it
         ("NER", math.inf),
         ("TAR", launch_end + POST),
     ]
+
+
+def test_a_tp_rank_above_zero_sends_at_its_device_end_and_charges_no_post(
+    monkeypatch,
+):
+    """Only TP rank 0 charges the stage's host recurrence, so another rank's
+    send keeps the seconds it was given and leaves `W_post` to rank 0."""
+    stage = _runner(monkeypatch, 0, lambda: 0.0)
+    stage.rank = 1
+    seconds, post, parts = stage._pp_send(prefill(8), 0.25)
+    assert (seconds, post) == (0.25, 0.0)
+    assert [carrier for carrier, _ in parts] == ["gloo", "gloo", "rccl", "rccl"]
