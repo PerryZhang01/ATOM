@@ -231,6 +231,65 @@ def test_the_engine_session_starts_the_command_beside_before_the_engine(
     assert started.value.args == (["lmcache", "server", "-p", "1"], {})
 
 
+def starts_missing(monkeypatch, r, out, misses):
+    """Engine starts that write each rank's file with the next count of inductor
+    graph cache misses in `misses`, and `non_torch` 12 MiB high on a miss."""
+    left = list(misses)
+
+    class Engine:
+        pid = 0
+
+        def __init__(self, *args, **kwargs):
+            missed = left.pop(0)
+            high = 12_582_912 if missed else 0
+            reserve = READINGS[2]["driver_and_collective_reserve_bytes"] + high
+            read = dict(READINGS[2], driver_and_collective_reserve_bytes=reserve)
+            ranks_wrote(out, r.config, [read] * 2)
+            for rank in (out / measure_memory.READINGS).iterdir():
+                held = json.loads(rank.read_text())
+                rank.write_text(json.dumps(held | {"fxgraph_cache_misses": missed}))
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(measure_memory.subprocess, "Popen", Engine)
+    return left
+
+
+def test_a_start_on_a_cold_inductor_cache_publishes_the_next_starts_readings(
+    tmp_path, monkeypatch
+):
+    r, argv = a_start(tmp_path, monkeypatch, STACK)
+    left = starts_missing(monkeypatch, r, tmp_path / "out", [6, 0])
+
+    measure_memory.main(argv)
+
+    assert left == []
+    read = memory.load(tmp_path / "s", r.config, MACHINE, 0).values
+    assert read["driver_and_collective_reserve_bytes"] == (
+        READINGS[2]["driver_and_collective_reserve_bytes"]
+    )
+    assert (tmp_path / "out.cold" / measure_memory.LOG).exists()
+
+
+def test_a_second_start_that_misses_inductors_cache_publishes_nothing(
+    tmp_path, monkeypatch
+):
+    r, argv = a_start(tmp_path, monkeypatch, STACK)
+    starts_missing(monkeypatch, r, tmp_path / "out", [6, 6])
+
+    with pytest.raises(ValueError) as refused:
+        measure_memory.main(argv)
+
+    assert str(refused.value) == (
+        "readings.dp0of1.pp0of1.pcp0of1.tp0of2.json, "
+        "readings.dp0of1.pp0of1.pcp0of1.tp1of2.json missed inductor's graph cache "
+        "again on a second start; non_torch on a cold cache reads high, so nothing "
+        "is published"
+    )
+    assert not (tmp_path / "s").exists()
+
+
 def test_readings_taken_without_the_offload_connector_refuse_a_run_that_offloads(
     tmp_path,
 ):

@@ -21,6 +21,10 @@ holds `memory.ENTRY_FIELDS`, its `record` the digest of the engine's log.
 as the lmcache server an offload connector reaches, so the GPU checks hold it
 to the engine's rule.
 
+A start that missed inductor's graph cache moves its files to `<out>.cold` and
+starts once more, on the cache it warmed: the kernels a cold cache's autotuning
+loads read in `non_torch`. A second miss refuses.
+
 ``--out`` gets the engine's log, run.json's identity from the rank-0 engine
 file, and ``memory_readings.json``, the entry's readable copy. ATOM's
 ``--load_dummy`` refuses until its readings are shown to match a real load's.
@@ -84,7 +88,7 @@ def start(argv: list[str]) -> None:
     LLMEngine(args.model, runner_qualname=RUNNER, **kwargs).close()
 
 
-def main(argv: list[str]) -> None:
+def main(argv: list[str], again: bool = False) -> None:
     cut = argv.index("--") if "--" in argv else len(argv)
     args = _parser().parse_args(argv[:cut])
     atom_args = argv[cut + 1 :]
@@ -139,11 +143,30 @@ def main(argv: list[str]) -> None:
             engine.wait()
     if exited != 0:
         raise ValueError(f"the engine did not start ({exited}); see {out / LOG}")
+    if missed := _cold(out):
+        if again:
+            raise ValueError(
+                f"{', '.join(missed)} missed inductor's graph cache again on a second start; "
+                "non_torch on a cold cache reads high, so nothing is published"
+            )
+        # Inductor's autotuning on a cold cache loads kernels a warm start does
+        # not, and `non_torch` reads them; the next start finds the cache warm.
+        out.rename(f"{out}.cold")
+        return main(argv, again=True)
     first = json.loads(min((out / READINGS).iterdir()).read_text())
     (out / "engine.json").write_text(json.dumps(first["engine"]))
     identified = identity(out / "engine.json", model, sys.argv, args.gpu)
     _write_whole(out / "run.json", json.dumps(identified))
     publish(out, machine, args.store, " ".join([PROG, *argv]), identified["stack"])
+
+
+def _cold(out: Path) -> list[str]:
+    """The ranks' files in `out` whose start missed inductor's graph cache."""
+    return [
+        p.name
+        for p in sorted((out / READINGS).iterdir())
+        if json.loads(p.read_text()).get("fxgraph_cache_misses")
+    ]
 
 
 def publish(out: Path, machine, store: str, command: str, stack: dict) -> None:
