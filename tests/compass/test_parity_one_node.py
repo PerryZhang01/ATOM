@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 STUB = """#!/bin/bash
 case "$1 $2" in
@@ -169,3 +171,17 @@ def test_a_failed_measurement_starts_no_server(tmp_path):
     assert r.returncode != 0
     assert len(servers) == 1 and " measure memory " in servers[0]
     assert not run.exists()
+
+
+@pytest.mark.parametrize("config, writers", [("tp2", 1), ("tp2-plain", 2)])
+def test_lmcache_writes_from_each_dp_rank_under_dp_attention_else_each_tp_rank(
+    tmp_path, monkeypatch, config, writers
+):
+    lm = tmp_path / "lm"
+    lm.mkdir()
+    (lm / "lmcache").write_text("#!/bin/bash\nexec sleep 60\n")
+    (lm / "lmcache").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{lm}:{os.environ['PATH']}")
+    r, _, run = _parity(tmp_path, CONFIG=config, LMCACHE="1")
+    assert r.returncode == 0, r.stderr
+    assert json.loads(run.read_text())["lmcache"]["writers"] == writers
