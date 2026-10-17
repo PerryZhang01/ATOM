@@ -83,24 +83,21 @@ def pipeline(stages: list[list[dict]]) -> list[dict]:
     return [next(r) for r in runs]
 
 
-def check(steps: list[dict], stage=None, upstream=None) -> dict:
-    """One DP rank's steps charged on their measured inputs: the gate's report.
-
-    On pipeline stage `stage = (rank, pp)`, the launch waits for the stage
-    before's predicted send in `upstream` and the device for its end, in
-    place of the measured `t_pp_recv_ns` and `d_recv_ns`.
-    """
-    if upstream is not None and len(upstream) != len(steps):
-        raise ValueError(f"{len(steps)} steps, and {len(upstream)} upstream")
-    *_, report = _charged(steps, stage, upstream, None)
+def check(steps: list[dict]) -> dict:
+    """One DP rank's steps charged on their measured inputs: the gate's report."""
+    *_, report = _charged(steps, None, None, None)
     return report
 
 
 def _charged(steps, stage, upstream, held):
     """`check`, yielding each step's predicted send, device end, call and exit
-    before the report; step `n` called no earlier than `held[n] = (measured,
-    predicted)`'s `predicted`, its `E` from `measured` if after the last exit."""
-    now, prev, rows, sends = 0.0, None, [], []
+    before the report. On pipeline stage `stage = (rank, pp)`, the launch
+    waits for the stage before's predicted send in `upstream[n]` and the
+    device for its end, in place of the measured `t_pp_recv_ns` and
+    `d_recv_ns`. Step `n` is called no earlier than `held[n] = (measured,
+    predicted)`'s `predicted`, its `E` from `measured` if after the last exit;
+    a step entered before `measured` is refused."""
+    now, prev, rows = 0.0, None, []
     origin = steps[0]["t_enter_ns"]
     mtp = any("d_target_ns" in s for s in steps)
     rec = HostDeviceRecurrence({}, (), lambda: now, stage, mtp=mtp)
@@ -115,7 +112,11 @@ def _charged(steps, stage, upstream, held):
         last = prev["t_exit_ns"] if prev else s["t_enter_ns"]
         e, called = s["t_enter_ns"] - last, now
         if held and held[n]:  # E runs from the release, called at its prediction
-            e = s["t_enter_ns"] - max(last, held[n][0])
+            if (e := s["t_enter_ns"] - max(last, held[n][0])) < 0:
+                raise ValueError(
+                    f"stage {stage[0]} step {s['step']} enters {-e * 1e-6:.3f} ms "
+                    "before the release it waits for"
+                )
             called = max(now, (held[n][1] - origin) * 1e-9)
         pre = l0 - s["t_enter_ns"] - (g1 - g0) - (m1 - m0)
         post = s["t_exit_ns"] - l1 - (r1 - r0) - (d1 - d0)
@@ -147,8 +148,7 @@ def _charged(steps, stage, upstream, held):
         target = s.get("d_target_ns", busy)
         own = gap + target - s.get("d_recv_ns", 0)  # the receive is a wait, not work
         charge = rec.charge(batch, own * 1e-9, (busy - target) * 1e-9)
-        times = (now + charge - post * 1e-9, rec.ends[-1])
-        sends.append([origin + round(t * 1e9) for t in times])
+        times = (now + charge - post * 1e-9, rec.ends[-1], called, now + charge)
         period = (s["t_exit_ns"] - last) * 1e-9
         r1_ms = None
         if "t_mtp_ns" in s:  # released before the launch
@@ -160,7 +160,7 @@ def _charged(steps, stage, upstream, held):
             (s["step"], _kind(s, prev), 100 * (charge / period - 1), res, queued, r1_ms)
         )
         now, prev = now + charge, s
-        yield [*sends[-1], *(origin + round(t * 1e9) for t in (called, now))]
+        yield [origin + round(t * 1e9) for t in times]
     kinds = {}
     for k in KINDS:
         if err := [r[2] for r in rows if r[1] == k]:
@@ -175,7 +175,6 @@ def _charged(steps, stage, upstream, held):
         "total": total,
         "pass": abs(total) <= TOTAL_BAND and all(v[-1] for v in kinds.values()),
         "failures": [r for r in rows if not kinds[r[1]][-1] and abs(r[2]) > STEP_BAND],
-        "sends": sends,
     }
 
 

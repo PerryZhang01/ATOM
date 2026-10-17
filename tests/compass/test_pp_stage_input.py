@@ -206,18 +206,28 @@ def _line(n, enter, gate, launch, exit_, busy, **kw):
     }
 
 
+def staged(steps, stage, upstream=None):
+    """Stage `stage = (rank, pp)` charged alone on the stage before's predicted
+    (send, device end) per forward, `upstream`: its report and its own."""
+    *times, report = recurrence._charged(steps, stage, upstream, None)
+    return report, [t[:2] for t in times]
+
+
 def pp2_record():
-    """Two stages written by the wait rules, 1 ms per host segment. The head
-    computes 10 ms per forward and its entry waits two forwards back; the last
-    stage computes 8 ms from its input's arrival, the head's end, and returns
-    at its own end. Its first launch waits 1 ms for the head's send, and its
-    first device start 8 ms for the head's end."""
+    """Two stages written by the wait rules, 1 ms per host segment, a request
+    per forward. The head computes 10 ms per forward and enters its third and
+    fourth at the last stage's exit two forwards back, which returns their
+    tokens; the last stage computes 8 ms from its input's arrival, the head's
+    end, and returns at its own end. Its first launch waits 1 ms for the
+    head's send, and its first device start 8 ms for the head's end."""
     head = [
         _line(0, 0, (0, 0), (1, 2), 3, 10),
         _line(1, 3, (3, 3), (4, 5), 6, 10),
-        _line(2, 6, (6, 11), (12, 13), 14, 10),
-        _line(3, 14, (14, 21), (22, 23), 24, 10),
+        _line(2, 20, (20, 20), (21, 22), 23, 10),
+        _line(3, 30, (30, 30), (31, 32), 33, 10),
     ]
+    for s in head:
+        s["batch"][0][0] += s["step"]
     last = [
         _line(
             0,
@@ -249,15 +259,15 @@ def pp2_record():
 
 def test_the_last_stage_is_charged_from_the_heads_predicted_sends():
     head, last = pp2_record()
-    first = recurrence.check(head, (0, 2))
+    first, sends = staged(head, (0, 2))
     assert first["pass"] and first["total"] == pytest.approx(0, abs=1e-9)
-    assert first["sends"] == [
-        [t * MS for t in p] for p in ((2, 11), (5, 21), (13, 31), (23, 41))
+    assert sends == [
+        [t * MS for t in p] for p in ((2, 11), (5, 21), (22, 31), (32, 41))
     ]
-    report = recurrence.check(last, (1, 2), first["sends"])
+    report, _ = staged(last, (1, 2), sends)
     assert report["pass"] and report["total"] == pytest.approx(0, abs=1e-9)
     # Without the head, its device start and the first launch are not held.
-    alone = recurrence.check(last, (1, 2))
+    alone, _ = staged(last, (1, 2))
     [(step, kind, err, *_)] = alone["failures"]
     assert (step, kind, err) == (0, "idle", pytest.approx(-50))
 
@@ -270,6 +280,13 @@ def test_the_script_gates_every_stage_of_a_pipeline_record(tmp_path, capsys):
     assert recurrence.main(str(tmp_path)) == 0
     out = capsys.readouterr().out
     assert "dp0 pp0 kind" in out and "dp0 pp1 kind" in out
+
+
+def test_a_stage_entered_before_its_release_is_refused_by_name():
+    head, last = pp2_record()
+    head[2]["t_enter_ns"] -= MS
+    with pytest.raises(ValueError, match="stage 0 step 2 enters 1.000 ms before"):
+        recurrence.pipeline([head, last])
 
 
 def _downstream(n, enter, entry, wait, d_recv, end=None):
@@ -286,22 +303,25 @@ def _downstream(n, enter, entry, wait, d_recv, end=None):
 
 
 def pp4_record():
-    """Four stages written by the wait rules, 10 ms of device work per forward.
-    Each entry waits for its stage's device four forwards back: the head's
-    sixth, the middle stages' fifth and sixth. Each downstream stage launches
-    at the stage before's send and starts its device at that stage's end;
-    the middle stages return at their launch, the last at its own end."""
+    """Four stages written by the wait rules, 10 ms of device work per forward,
+    a request per forward. The head's fifth and sixth entries wait for the
+    last stage's exit four forwards back, which returns their tokens, and
+    every downstream entry for the head's. Each downstream stage launches at
+    the stage before's send and starts its device at that stage's end; the
+    middle stages return at their launch, the last at its own end."""
     head = [
         _line(n, enter, (enter, entry), (entry + 1, entry + 2), entry + 3, 10)
         for n, (enter, entry) in enumerate(
-            ((0, 0), (3, 3), (6, 6), (9, 9), (12, 12), (15, 21))
+            ((0, 0), (3, 3), (6, 6), (9, 9), (42, 42), (54, 54))
         )
     ]
+    for s in head:
+        s["batch"][0][0] += s["step"]
     rest = (
         ((0, 0, 1, 10), (4, 4, 0, 0), (7, 7, 0, 0))
-        + ((10, 10, 0, 0), (13, 21, 0, 0), (24, 31, 0, 0)),
+        + ((10, 10, 0, 0), (42, 42, 1, 10), (54, 54, 1, 10)),
         ((0, 0, 2, 20), (5, 5, 0, 0), (8, 8, 0, 0))
-        + ((11, 11, 0, 0), (14, 31, 0, 0), (34, 41, 0, 0)),
+        + ((11, 11, 0, 0), (42, 42, 2, 20), (54, 54, 2, 20)),
         ((0, 0, 3, 30, 41), (42, 42, 0, 0, 53), (54, 54, 0, 0, 65))
         + ((66, 66, 0, 0, 77), (78, 78, 0, 0, 89), (90, 90, 0, 0, 101)),
     )
@@ -310,9 +330,9 @@ def pp4_record():
 
 #: Each non-last stage's predicted (send, device end) per forward, in ms.
 PP4_SENDS = (
-    ((2, 11), (5, 21), (8, 31), (11, 41), (14, 51), (23, 61)),
-    ((3, 21), (6, 31), (9, 41), (12, 51), (23, 61), (33, 71)),
-    ((4, 31), (7, 41), (10, 51), (13, 61), (33, 71), (43, 81)),
+    ((2, 11), (5, 21), (8, 31), (11, 41), (44, 53), (56, 65)),
+    ((3, 21), (6, 31), (9, 41), (12, 51), (45, 63), (57, 75)),
+    ((4, 31), (7, 41), (10, 51), (13, 61), (46, 73), (58, 85)),
 )
 
 
@@ -332,17 +352,22 @@ def test_four_stages_are_each_charged_from_the_stage_befores_sends(tmp_path, cap
     assert all(f"dp0 pp{k} kind" in out for k in range(4))
     sends = [None]
     for k, steps in enumerate(stages):
-        report = recurrence.check(steps, (k, 4), sends[k])
+        report, own = staged(steps, (k, 4), sends[k])
         assert report["pass"] and report["total"] == pytest.approx(0, abs=1e-9)
-        sends.append(report["sends"])
+        sends.append(own)
         if k:  # unreleased by the stage before, its first forward runs early
-            assert not recurrence.check(steps, (k, 4))["pass"]
+            assert not staged(steps, (k, 4))[0]["pass"]
     assert sends[1:4] == [[[t * MS for t in p] for p in s] for s in PP4_SENDS]
     # Two forwards back would hold the head's third entry.
-    assert not recurrence.check(stages[0], (0, 2))["pass"]
+    assert not staged(stages[0], (0, 2))[0]["pass"]
     # The last stage waits for its own device end, a middle stage does not.
-    assert not recurrence.check(stages[3], (2, 4), sends[3])["pass"]
-    assert not recurrence.check(stages[2], (3, 4), sends[2])["pass"]
+    assert not staged(stages[3], (2, 4), sends[3])[0]["pass"]
+    assert not staged(stages[2], (3, 4), sends[2])[0]["pass"]
+    # The last stage's first forward 2 ms late holds the head's fifth entry,
+    # four forwards on, and so every middle stage's.
+    stages[3][0]["d_busy_ns"] += 2 * MS
+    late = [[r[0] for r in rep["failures"]] for rep in recurrence.pipeline(stages)]
+    assert late == [[4], [4], [4], [0]]
 
 
 def serial_record(pp):
@@ -557,9 +582,9 @@ def test_a_stage_gap_after_an_idle_device_does_not_delay_its_device():
         _line(2, 107, (107, 107), (108, 109), 110, 1, d_gap_ns=3),
         _line(3, 111, (111, 111), (112, 113), 114, 1, d_gap_ns=3),
     ]
-    report = recurrence.check(head, (0, 2))
+    report, sends = staged(head, (0, 2))
     assert report["pass"] and report["total"] == pytest.approx(0, abs=1e-9)
-    assert [end for _, end in report["sends"]] == [t * MS for t in (2, 105, 109, 113)]
+    assert [end for _, end in sends] == [t * MS for t in (2, 105, 109, 113)]
 
 
 def test_a_stage_device_idles_its_gap_while_its_host_runs_ahead():
@@ -573,17 +598,16 @@ def test_a_stage_device_idles_its_gap_while_its_host_runs_ahead():
         _line(2, 6, (6, 11), (12, 13), 14, 10, d_gap_ns=2),
         _line(3, 14, (14, 23), (24, 25), 26, 10, d_gap_ns=2),
     ]
-    report = recurrence.check(head, (0, 2))
+    report, sends = staged(head, (0, 2))
     assert report["pass"] and report["total"] == pytest.approx(0, abs=1e-9)
-    assert [end for _, end in report["sends"]] == [t * MS for t in (11, 23, 35, 47)]
+    assert [end for _, end in sends] == [t * MS for t in (11, 23, 35, 47)]
 
 
 def test_a_middle_chunk_launches_once_the_head_has_sent():
     """The head sends at 2 ms; the last stage reaches its launch at 1 ms and
     receives until 2, so its middle chunk exits at 4, not 3."""
-    head = recurrence.check([_line(0, 0, (0, 0), (1, 2), 3, 10)], (0, 2))
+    _, sends = staged([_line(0, 0, (0, 0), (1, 2), 3, 10)], (0, 2))
     last = [_line(0, 0, (0, 0), (1, 3), 4, 18, t_pp_recv_ns=(1, 2), d_recv_ns=10)]
     last[0]["produces_output"] = False
-    report = recurrence.check(last, (1, 2), head["sends"])
-    assert report["total"] == pytest.approx(0, abs=1e-9)
-    assert recurrence.check(last, (1, 2))["total"] == pytest.approx(-25)
+    assert staged(last, (1, 2), sends)[0]["total"] == pytest.approx(0, abs=1e-9)
+    assert staged(last, (1, 2))[0]["total"] == pytest.approx(-25)
