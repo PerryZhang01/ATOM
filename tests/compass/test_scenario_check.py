@@ -181,33 +181,44 @@ def test_each_seeded_mutation_turns_its_check_red(runs, mutate, named):
     )
 
 
-# Two output ranks. Rank 0 prefills, then decodes twice. Rank 1 decodes while
-# rank 0 prefills, then runs a mixed batch or a decode, then decodes.
+# Two DP ranks, three steps each, as (rows, produces_output).
 PREFILL, DECODE = [[5, 5, False]], [[1, 6, True]]
+PREFILL_THEN_DECODES = [(PREFILL, True), (DECODE, True), (DECODE, True)]
 
 
 @pytest.mark.parametrize(
-    "rank1_step1, last",
+    "rank0, rank1, tars",
     [
-        # Rank 1's mixed batch starts at the group's device end P and costs
-        # P + D, so the last step returns at 2P + D.
-        (PREFILL + DECODE, 2 * P + D),
+        # Step 1 returns once, at the group's device end P, not first at
+        # rank 1's D. Rank 1's mixed batch then starts at P and costs P + D.
+        (
+            PREFILL_THEN_DECODES,
+            [(DECODE, True), (PREFILL + DECODE, True), (DECODE, True)],
+            [(0.0, 0.0), (0.0, P), (P, 2 * P + D)],
+        ),
         # Both decodes start at the group's device end P.
-        (DECODE, P + D),
+        (
+            PREFILL_THEN_DECODES,
+            [(DECODE, True)] * 3,
+            [(0.0, 0.0), (0.0, P), (P, P + D)],
+        ),
+        # Rank 1 runs a middle chunk on step 1, so on step 2 its output waits
+        # for its own last output end D while rank 0's waits for the group's
+        # device end D + P: step 2 returns twice.
+        (
+            [(DECODE, True)] * 3,
+            [(DECODE, True), (PREFILL, False), (DECODE, True)],
+            [(0.0, 0.0), (0.0, 0.0), (0.0, D), (D, D), (D, D + P)],
+        ),
     ],
-    ids=["mixed", "decode"],
+    ids=["mixed", "decode", "middle"],
 )
-def test_a_dp_step_returns_once_at_its_last_output_rank(rank1_step1, last):
+def test_each_dp_rank_returns_at_its_own_exit(rank0, rank1, tars):
     record = {
         r: [
-            {"rows": rows, "produces_output": True, "is_dummy_run": False}
-            for rows in steps
+            {"rows": rows, "produces_output": out, "is_dummy_run": False}
+            for rows, out in steps
         ]
-        for r, steps in (
-            (0, [PREFILL, DECODE, DECODE]),
-            (1, [DECODE, rank1_step1, DECODE]),
-        )
+        for r, steps in enumerate((rank0, rank1))
     }
-    # Step 1 returns once, at rank 0's prefill end, not first at rank 1's D.
-    tars = [(0.0, 0.0), (0.0, P), (P, last)]
     assert expected_timeline(record, P, D, tars) == tars
