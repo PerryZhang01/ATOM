@@ -1,31 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""A recorded region, and the statement of where that record is valid.
-
-A trace is a straight-line record of one path through the model. It says
-nothing about the paths not taken, so a graph that carried no statement of its
-own validity would be priced against steps it never described -- which is how a
-flat operator list came to answer for exactly one batch shape while appearing to
-answer for all of them.
-
-The statement lives outside the region rather than as branches inside it. It is
-produced from what the tracing run itself guarded on, so it cannot drift away
-from the control flow it describes, and a step that falls outside every recorded
-graph is detected rather than mispriced.
-
-`Applicability` is the slot for that statement and not the statement itself:
-deciding a step against recorded guards is the job of the module that evaluates
-them, and it chooses how it is asked. What is fixed here is that a graph cannot
-be built without one, and that one cannot be conjured -- `Applicability` is
-abstract, so an instance of it by itself, which is a graph claiming to apply
-everywhere, cannot be made. `None` is not an empty predicate either; it is the
-same claim spelled differently.
-
-A graph is also where an unresolved index is caught. A context key written in
-terms of `{layer}` is priced per instance only if some enclosing repeat binds
-`layer`; if none does, the key names something that will never be supplied. The
-region reports those as `free_indices`, composed from each region's immediate
-children, and a graph refuses to hold a region with any.
-"""
+"""A recorded region, and the statement of where that record is valid."""
 
 import abc
 from dataclasses import dataclass
@@ -34,36 +8,21 @@ from .nodes import Region
 
 
 class Applicability(abc.ABC):
-    """Where a recorded graph is valid.
+    """Where a recorded graph is valid: a discrete key plus the trace's guards.
 
-    In two parts, and both are needed: a discrete key matched by equality --
-    forward mode, whether the batch has cached context, whether the step
-    produces output, speculation width, replayed or eager, the attention backend
-    -- and a symbolic domain evaluated from the guards the tracing run
-    installed. Guards only capture branches taken on a shape, so a branch on a
-    non-shape leaves no guard behind and the key is what covers it.
-
-    Abstract on one method only, and that method is not the deciding one: how a
-    step is offered and how a refusal names its guard belong to whatever
-    evaluates the guards, and are deliberately not fixed here.
+    Abstract, so a graph that claims to hold everywhere cannot be built.
     """
 
     __slots__ = ()
 
     @abc.abstractmethod
     def describe(self) -> str:
-        """Where this graph is valid, in one line, for a record or a refusal."""
+        """Where this graph is valid, in one line."""
 
 
 @dataclass(frozen=True, slots=True)
 class Graph:
-    """One recorded region together with where it is valid.
-
-    A graph is not itself a region. Regions compose into one tree and a graph
-    puts a validity statement on the whole of it; nesting one inside another
-    would put two statements on one sequence of work, with nothing saying which
-    of them governs.
-    """
+    """One recorded region together with where it is valid."""
 
     applicability: Applicability
     region: Region
@@ -74,14 +33,8 @@ class Graph:
                 "a graph states where its record is valid; expected an "
                 f"Applicability, got {type(self.applicability).__name__}"
             )
-        if not isinstance(self.region, Region):
-            raise TypeError(
-                f"a graph holds one region, got {type(self.region).__name__}"
-            )
-        unresolved = self.region.free_indices
-        if unresolved:
+        if self.region.free_indices:
             raise ValueError(
-                f"nothing binds {sorted(unresolved)}, named by a context key in "
-                "this graph. An index no enclosing repeat supplies cannot be "
-                "given a value when a price is asked for."
+                f"nothing binds {sorted(self.region.free_indices)}, named by a "
+                "context key in this graph"
             )

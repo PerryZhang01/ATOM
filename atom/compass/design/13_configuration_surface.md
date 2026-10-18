@@ -179,7 +179,7 @@ with the `spec` package and per-machine scripts (`05` D26). A user passes one by
 ```
 compass record                                --out D -- <ATOM args>          [GPU]
 compass trace steps    <backend> --machine M  --out D --store S -- <ATOM args>
-compass trace ops                 (ops half)
+compass trace ops      --model M [--tp N] [--width W] --store S
 compass measure steps  [<batches>...] [--grid <population>... --grid-definition F] \
                        <sample> --sampling P --out D --store S -- <ATOM args> [GPU]
 compass measure ops               (ops half)                                  [GPU]

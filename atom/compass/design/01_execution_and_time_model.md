@@ -1397,9 +1397,9 @@ forward is called (the previous forward's exit, or the grant that ended an idle 
 entry      = now + E
 h          = max(entry, R4) + W_pre
 h          = max(h, R1) + W_inputs             # MTP only: R1 waits before launch
-h          = max(h, R7)                        # non-first PP stage: the metadata
-launch_end = h + W_launch
-start      = max(end[n-1], h)
+launch_end = max(h, R7 - W_recv) + W_launch    # non-first PP stage: R7, the metadata,
+                                               # holds the launch after W_recv
+start      = max(end[n-1], h, R7)
 target_end = start + D_target
 end        = max(target_end + D_draft, launch_end)
 exit       = max(launch_end, R1) + W_post      # no MTP: R1 for an output forward
@@ -1454,7 +1454,7 @@ KV transfer keeps its own model (D6).
 Stage 2 builds R1 and R4 ([#825](https://github.com/jgong5/ATOM/issues/825)). R6 and R8
 come with the stage sends ([#468](https://github.com/jgong5/ATOM/issues/468)), R7 with
 [#1200](https://github.com/jgong5/ATOM/issues/1200): a simulated stage loop receives `pp_data`
-at the forward's call, its launch waits for the metadata's arrival and its device start for
+at the forward's call, its launch after `W_recv` waits for the metadata's arrival (#1529) and its device start for
 the tensors', and a non-last stage sends at its launch end (#1324).
 The gate charges a PP record's stages together, step by step, and predicts both waits
 between them that ATOM's stage loops hold outside the recurrence: the head's
