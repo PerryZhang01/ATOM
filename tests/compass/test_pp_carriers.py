@@ -181,7 +181,8 @@ def test_a_carrier_threshold_is_no_bool():
 
 def test_the_probe_fits_how_late_a_blocked_gloo_sender_wakes():
     """A sender blocked `b` before the post completes `W (1 - exp(-b / rise))`
-    past the rendezvous price; the late order's sender, blocked `LATE`, too."""
+    past the rendezvous price; the late order's sender, blocked `LATE`, too. A
+    block sample is no late-order sample: its receive lands 10 us after it."""
     wake = (1.5e-4, 0.05)
     samples = _samples(TRUTH)
     for s in samples:
@@ -190,7 +191,7 @@ def test_the_probe_fits_how_late_a_blocked_gloo_sender_wakes():
     _, _, _, g, fixed = TRUTH["gloo"]
     for b in probe.BLOCKS:
         done = b + fixed + 8 * g + wake[0] * -math.expm1(-b / wake[1])
-        stamps = {"send": 0.0, "done": done, "post": b, "end": done}
+        stamps = {"send": 0.0, "done": done, "post": b, "end": done + 1e-5}
         samples.append(
             {"carrier": "gloo", "bytes": 8, "late": True, "block": b} | stamps
         )
