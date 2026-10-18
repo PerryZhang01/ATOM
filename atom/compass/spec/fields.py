@@ -33,7 +33,6 @@ a probed field, the subject the probe ran on (`SUBJECT`).
 import enum
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from itertools import pairwise
 
 from .rules import Rule, SpecRefusal
 
@@ -291,16 +290,16 @@ def check(field: Field, value: object, path: str) -> object:
                 _refuse(where, "a [bytes, bytes per second] point", point)
             size = check(Field(where, Kind.COUNT), point[0], f"{where}[0]")
             rate = check(Field(where, Kind.QUANTITY), point[1], f"{where}[1]")
-            points.append([size, rate])
-        for (size, rate), (more, then) in pairwise(points):
-            if more <= size or then < rate:
+            if points and (size <= points[-1][0] or rate < points[-1][1]):
                 raise SpecRefusal(
                     Rule.SHAPE,
-                    f"`{path}` goes from {rate!r} B/s at {size} B to {then!r} "
-                    f"B/s at {more} B, which is not monotone in bytes",
+                    f"`{path}` goes from {points[-1][1]!r} B/s at "
+                    f"{points[-1][0]} B to {rate!r} B/s at {size} B, which is "
+                    "not monotone in bytes",
                     "list the points by rising size, each attaining at least "
                     "the bandwidth of the smaller transfer before it",
                 )
+            points.append([size, rate])
         return tuple(points)
     if kind is Kind.QUANTITY:
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
