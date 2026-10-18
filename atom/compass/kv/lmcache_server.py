@@ -172,12 +172,14 @@ class LMCacheServer:
     def evict(self, now: float) -> list[tuple]:
         """One eviction-loop tick: above the watermark, drop the configured
         share of tracked objects, resident and staged, least recently used
-        first, skipping read-locked and staged ones."""
+        first, skipping read-locked and staged ones, and say so on stderr as
+        lmcache logs it."""
         tracked = len(self.objects) + len(self._staged)
+        mark = self.args.eviction_trigger_watermark
         if (
             not self.capacity
-            or self._size([*self.objects, *self._staged]) / self.capacity
-            < self.args.eviction_trigger_watermark
+            or (usage := self._size([*self.objects, *self._staged]) / self.capacity)
+            < mark
         ):
             return []
         ratio = min(1.0, max(0.0, self.args.eviction_ratio))
@@ -185,6 +187,12 @@ class LMCacheServer:
         victims = [k for k, o in self.objects.items() if not o.locked(now)][:target]
         for k in victims:
             del self.objects[k]
+        print(
+            f"lmcache stand-in at {now:.6f} s: L1 memory usage {usage:.2f} above "
+            f"watermark {mark:.2f}; triggering eviction of {len(victims)} objects",
+            file=sys.stderr,
+            flush=True,
+        )
         return victims
 
     def expire_sessions(self, now: float) -> None:

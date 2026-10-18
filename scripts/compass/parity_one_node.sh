@@ -57,7 +57,7 @@
 # file, step table and summary), and compare.json; the last lines are the real run's
 # admission, send to response headers, and the compare per DP rank. Under
 # LMCACHE they also give the requests whose offload loads and saves differ, and
-# each run's expired-session sweeps, from its server's log. A
+# each run's expired-session sweeps and eviction ticks, from its server's log. A
 # simulated run that needs a step past the real record ends at the replay's
 # refusal, which the last lines name; the records are compared all the same.
 set -euo pipefail
@@ -238,5 +238,6 @@ if any(decisions):
           f"{len(sim)} simulated; {len(differ)} differ: {differ}")
 EOF
 if [[ $LMCACHE == 1 ]]; then
-    grep -H "expired sessions" "$OUT/real/lmcache.log" "$OUT/sim/server.log" || true
+    grep -H -e "expired sessions" -e "triggering eviction" "$OUT/real/lmcache.log" \
+        "$OUT/sim/server.log" || true
 fi

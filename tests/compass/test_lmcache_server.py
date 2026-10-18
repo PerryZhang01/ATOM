@@ -449,3 +449,17 @@ def test_end_session_makes_its_recurrent_states_most_recent_too():
             _native_store(server, w, CHUNK, {0}, rid=rid, salt=salt)
     _do(server, "end_session", "r0")
     assert {k[4] for k in server.evict(0.0)} == {"x"}  # full: four of eight
+
+
+def test_an_eviction_says_when_and_how_many_objects(capsys):
+    server = LMCacheServer(FLAGS, chunk_bytes=GIB // 8)  # eight objects fit
+    _store(server, 0, end=2 * CHUNK)
+    _store(server, 1)
+    server.evict(1.0)
+    assert capsys.readouterr().err == ""  # six objects, below the 0.8 watermark
+    _store(server, 0)
+    server.evict(2.0)
+    assert capsys.readouterr().err == (
+        "lmcache stand-in at 2.000000 s: L1 memory usage 1.00 above watermark "
+        "0.80; triggering eviction of 1 objects\n"
+    )
