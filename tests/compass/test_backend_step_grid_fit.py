@@ -318,13 +318,13 @@ def test_a_grid_measured_under_sessions_fits_given_the_same_sessions(tmp_path, r
 def test_the_residual_is_fitted_on_records_replays_or_both_and_reported_by_source(
     tmp_path, run, sources
 ):
-    record(tmp_path, run, nodes() + mixed(seed=2), name="grid")
+    g = record(tmp_path, run, nodes() + mixed(seed=2), name="grid")
     for line in nodes():
         measured(tmp_path, run, line)
-    targets, named = [], []
+    targets, named = [], clients(g)
     if "record" in sources:
         a = record(tmp_path, run, mixed(seed=3))
-        targets, named = [a], clients(a)
+        targets, named = [a], named + clients(a)
     if "replay" in sources:
         targets += [
             measured(tmp_path, run, x, "replay", time(x) * factor(x)) for x in mixed()
@@ -345,8 +345,19 @@ def test_the_residual_is_fitted_on_records_replays_or_both_and_reported_by_sourc
             assert abs(spread["centre"]) < 1e-3 and spread["held_out_error"] < 1e-3
     *runs, planned = copy["report"]["provenance"]
     assert sorted({r["source"] for r in runs}) == sources
-    # No --client-run names the grid's record, so its lines served no trace.
-    assert (planned["source"], planned["traces"]) == ("plan", [])
+    assert (planned["source"], planned["traces"]) == ("plan", ["trace-300"])
+
+
+def test_a_grid_input_no_client_run_names_refuses_naming_it(tmp_path, run):
+    """As `measure steps` refuses to plan over it, with or without `--sessions`."""
+    g = record(tmp_path, run, nodes() + mixed(seed=2), name="grid")
+    for line in nodes():
+        measured(tmp_path, run, line)
+    a = record(tmp_path, run, mixed(seed=3))
+
+    with pytest.raises(SystemExit, match=re.escape(f"{g} is named by no --client-run")):
+        fitted(tmp_path, a, *clients(a), grid="grid")
+    assert not (tmp_path / "store" / "step_grid_bundle").exists()
 
 
 def test_a_plan_whose_points_a_replay_measured_first_names_only_its_grid_inputs(

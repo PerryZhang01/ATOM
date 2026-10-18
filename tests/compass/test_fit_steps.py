@@ -254,7 +254,7 @@ def test_a_record_no_client_run_names_refuses_naming_it(tmp_path):
     "backend, named",
     [
         ("step-linear", "--sessions is read by step-grid, not step-linear"),
-        ("step-grid", "{b} is named by no --client-run, and --sessions keeps"),
+        ("step-grid", "{b} is named by no --client-run"),
     ],
 )
 def test_sessions_refuse_off_step_grid_and_for_a_grid_input_no_client_run_names(
