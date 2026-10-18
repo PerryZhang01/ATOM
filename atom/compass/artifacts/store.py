@@ -113,18 +113,15 @@ def _legible(directory: Path):
 
 
 @dataclass(frozen=True, slots=True)
-class Entry:
-    """One published artifact, as it was read back off the disk."""
+class Recorded:
+    """An entry as its document names its files: its key as it restates it, its
+    topology, its members' digests, its own digest, and where it is."""
 
     key: Key
     topology: Topology
-    provenance: Provenance
-    notes: str
     members: Mapping[str, str]
     digest: str
     directory: Path
-    fingerprints: Mapping[Row, Fingerprint]
-    gate_state: GateState
 
     def read_member(self, stem: str, coords: RankCoords, extension: str) -> bytes:
         """One rank's file, named by the same function that wrote it."""
@@ -155,6 +152,16 @@ class Entry:
                 "was reviewed under this digest no longer exists",
             )
         return payload
+
+
+@dataclass(frozen=True, slots=True)
+class Entry(Recorded):
+    """One published artifact, as it was read back off the disk."""
+
+    provenance: Provenance
+    notes: str
+    fingerprints: Mapping[Row, Fingerprint]
+    gate_state: GateState
 
 
 class ArtifactStore:
@@ -354,13 +361,48 @@ class ArtifactStore:
         return Entry(
             key,
             topology,
-            provenance,
-            notes,
             members,
             _digest(raw),
             directory,
+            provenance,
+            notes,
             prints,
             gate_state,
+        )
+
+    def read_recorded(self, kind: Kind, key: Mapping, digest: str) -> Recorded:
+        """The `kind` entry a run recorded: the one whose document digests
+        `digest` and restates `key`, compared as data rather than through
+        `Key.of`, so an entry keyed by fields this tree's keys no longer have
+        still answers. Only its key, topology and members are read, so nothing
+        else it states is checked against this process. A publisher's staging
+        directory is not an entry; a document that does not parse or states no
+        key is passed over, and named when no entry answers."""
+        folder, found, passed = self.root / kind.value, {}, []
+        for path in sorted(folder.glob(f"[!.]*/{ENTRY_FILE}")):
+            try:
+                raw = path.read_bytes()
+                if (document := json.loads(raw))["key"] == key:
+                    found[_digest(raw)] = path.parent, document
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                passed.append(
+                    f"; {path} is not an entry document: "
+                    f"{type(error).__name__}: {error}"
+                )
+        if digest not in found:
+            raise ArtifactRefusal(
+                Rule.RESOLUTION,
+                f"{folder} holds {len(found)} entries keyed {kind} "
+                f"{json.dumps(dict(key), sort_keys=True)}, digesting "
+                f"{sorted(found)}" + "".join(passed),
+                f"the run recorded the one digesting {digest}",
+            )
+        directory, document = found[digest]
+        with _legible(directory):
+            topology = Topology.from_mapping(document["topology"])
+            members = document["members"]
+        return Recorded(
+            Key(kind, tuple(key.items())), topology, members, digest, directory
         )
 
     def _nearest(self, key: Key) -> str:
