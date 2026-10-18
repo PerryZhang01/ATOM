@@ -1,74 +1,14 @@
 # SPDX-License-Identifier: MIT
-"""What a probe that needs no device emits.
+"""The probe that needs no device: a tokenizer swept here, as a fragment.
 
-This module is probe class 0, which needs no device. The reading that makes two
-fragments comparable comes first.
-
-A probe measures part of a machine and emits a fragment: the fields it probed
-plus the stanza saying which machine they are for, by whom, when and how. What
-is here is probe class 0, which needs no device: `tokenizer_sweep` times a
-loaded tokenizer, `tokenizer_fragment` composes whatever rates it is handed -- and a
-tokenizer sweep needs no device, so it is the measurement most likely to be taken
-somewhere other than the machine it is authored for -- a laptop, a build agent,
-the login node in front of a cluster. That is not an abuse of it. Tokenization
-is single-threaded, cache-resident integer work, so the rates transfer across
-processors of comparable class, and refusing every spec not authored on its own
-target would refuse most specs that will ever be written.
-
-**So a fragment composed here writes down the processor this ran on, and that
-is the whole of its second job.** `host.cpu.cores_physical` and
-`host.cpu.cores_logical` are already required fields of the machine, so a
-fragment that fills them in is claiming that the host that composed it is the
-machine its stanza names. When it is not
--- the tokenizer probed on the laptop, the device fields probed on the node,
-both authored for the node -- the two fragments then state different numbers for
-one field of one machine, and the merge refuses the pair with both readings and
-both stanzas. Before this they shared no field at all: nothing in a fragment's
-shape says where it was probed, so nothing contradicted anything, and the pair
-combined into a document that describes neither host. Two fields that were
-already required, and nothing added to the schema, are what turn that silence
-into a refusal.
-
-This does not make the transfer illegitimate, and it does not record where the
-probe ran -- no field of a fragment does that. A tokenizer probed on a
-comparable processor is still the intended use. What changes is that an author
-who wants it now has to write the target's own core counts into the document,
-rather than have the question go unasked.
-
-**The counts come from the kernel's per-processor topology, and are refused
-rather than guessed.** The physical count is the number of distinct
-package-and-core pairs; the logical count is the number of processors. They
-differ by the simultaneous-multithreading factor, so deriving either from the
-other would be wrong by exactly the factor that makes the pair worth recording.
-A host that publishes no topology, or one that publishes a file holding nothing
-a number can be read out of, gets a refusal naming what could not be read: a
-count taken off an unreadable file is a reading with no content behind it, and
-it would travel into a spec looking exactly like a measurement.
-
-**The rates are the caller's, and so is the claim about how they were
-obtained.** This function composes a fragment and reads a topology. It does not
-encode or decode anything, so it cannot know whether the rates it was handed
-were swept on a loaded tokenizer, copied out of an older spec or typed in -- and
-a field's origin is what a run artifact carries as the number's source. An
-origin stamped here would be this function asserting a measurement it did not
-take, over data it received. So the caller states it, with no default to fall
-through to, and it goes on each entry, with the subject. The core counts are
-`probed`, because this function did read them, so the fragment is `mixed` and
-says each field's origin in `provenance.origins`.
-
-**What the entries are is checked here rather than several verbs later.** They
-are read against the closed table a tokenizer entry has, the same one a spec is
-read against, so an entry that is not a tokenizer, or one missing the derate its
-two rates oblige, is refused while the probe that produced it is still the thing
-in front of the author. Left to `validate`, the same entry is refused after a
-merge, in a document whose other fields came from elsewhere, and the fragment
-that carried it has to be worked back to.
-
-**The sweep fits `fixed + tokens / rate` on relative error and refuses a fit
-it cannot stand behind.** A rate is charged on every call, short and long, so
-a fit that is good in absolute seconds and 40% off on a one-token call is not
-a rate. The bound is the caller's, and the refusal names the length that
-broke it.
+`tokenizer_sweep` times a loaded tokenizer and fits `fixed + tokens / rate` on
+relative error, refusing a fit whose worst residual exceeds the caller's bound.
+`tokenizer_fragment` composes the entries a caller measured with the core
+counts of the processor it runs on. Those counts are required fields of the
+machine, so a tokenizer swept on another host than the one the device fragment
+describes contradicts it there, and `merge` refuses the pair. The counts come
+from the kernel's per-processor topology and are refused rather than guessed.
+How the rates were obtained is the caller's to state: `origin` has no default.
 """
 
 import pathlib
@@ -217,7 +157,7 @@ def tokenizer_sweep(
     clock,
     repeats: int = 5,
 ) -> dict[str, float]:
-    """The four rates of a tokenizer entry, swept through a loaded tokenizer.
+    """The rates of a tokenizer entry, swept through a loaded tokenizer.
 
     Each length is a prefix of `text`'s tokens, timed `repeats` times through
     `encode` and `decode` with the fastest kept. Encode is fitted against the

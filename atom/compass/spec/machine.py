@@ -1,87 +1,34 @@
 # SPDX-License-Identifier: MIT
 """The machine spec: one document read against the field table, and its readers.
 
-A spec is authored outside Compass, so the only thing that stands between a
-mistyped document and a run built on it is this reader. It holds the document as
-a flat map from dotted path to checked value. That shape is deliberate and it is
-chosen for what comes next: combining two documents, reporting on one, and
-explaining where a number came from are all per-field operations, and a nested
-mapping makes every one of them a recursive walk written again each time.
-
-Four properties are enforced here rather than described.
+The spec is held as a flat map from dotted path to checked value, so merging,
+validating and explaining are per-field operations.
 
 **The schema is closed.** A key with no row in the field table is refused where
-it sits. That, and not a list of excluded knobs, is how the spec stays a
-description of the machine: a tensor-parallel width or a block size is refused
-because it is not a machine property, with no rule needed that names it.
-
-The stated version is read before any of that, and that ordering is the point.
-A document written to a later schema states fields this reader does not
-declare, and a closed schema refuses those wherever they sit, so a version
-checked after the fields never gets to speak in the one case it exists for: the
-author of a newer document would be told their new field is illegitimate rather
-than that this reader is old.
+it sits. The stated version is read first, so a document written to a later
+schema is told this reader is old rather than that its new field is unknown.
 
 **A field has one value, however it is spelled.** A dotted key resolves to the
-nested path, so a document may write `host.cpu.cores_physical` flat -- a probe
-fragment does -- or nested, and the two are the same field. Writing it both
-ways is refused and the path is named.
-
-The rule is about the shape and not about the two values, which is the part
-worth stating because the narrower rule looks equivalent. The echo is rebuilt
-nested from the field table, so it cannot equal a document that also states
-the field flat, whatever those two keys hold -- refusing only where they
-disagree would leave a document whose echo is missing a key it carries, which
-is the honesty measure gone either way. Where they do disagree there is a
-second cost on top: keeping one of the two would keep whichever the mapping
-yielded last, silently, and differently on a document whose keys were written
-in another order.
-
-**A stack pin is checked.** `check_stack` compares the versions the spec's
-numbers were taken on with the versions now loaded and warns, naming both, for
-every component that differs.
+nested path, so `host.cpu.cores_physical` may be written flat or nested;
+writing it both ways is refused, because the nested echo could not equal the
+document.
 
 **The resolved spec is total, and it is echoed.** `echo` rebuilds the whole
-document from the checked values, and `digest` fingerprints it. A run artifact
-carries the echo, so every number it reports can be traced back to the spec that
-produced it; a partial echo would break that, so the echo is built from the
-field table rather than from whatever the reader happened to keep. Totality is
-`from_mapping`'s doing rather than the dataclass's: the checking verb builds one
-out of the fields a document did resolve, deliberately, so that it can ask its
-consistency questions of a document that is not yet a spec.
+document from the checked values and `digest` fingerprints it, so an artifact
+can name the spec that produced it.
 
-The walk over the document has two forms for the same reason. `from_mapping` is
-a reader and raises the first thing wrong; `_survey` under it yields every
-refusal and keeps walking, so a checking caller still gets the fields that sit
-beside a mistyped key. One unrecognised key would otherwise empty the whole
-document of resolved values, and the questions asked over them with it.
-
-Totality is also why `value` declines a path it cannot resolve in three
-different ways. Against a spec read from a document, a path that does not
-resolve is either a key the schema does not declare, whose reader belongs at
-the field table, or a block, whose reader is one dotted segment away from what
-they wanted. A spec assembled from parts -- a probe fragment, or an object built
-by hand in a test -- can instead lack a field the schema does declare, and
-sending that reader to the table sends them to find the field sitting in it and
-stop.
+`from_mapping` raises the first thing wrong; `_survey` under it yields every
+refusal and keeps walking, for `validate`.
 """
 
 import hashlib
 import json
-import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, NoReturn
+from typing import Any
 
-from .fields import BLOCKS, BY_PATH, PINNED, SCHEMA, SCHEMA_VERSION, Field, Kind, check
-from .rules import (
-    Rule,
-    SpecRefusal,
-    StackMismatch,
-    refuse_absent_field,
-    refuse_block,
-    refuse_unknown_key,
-)
+from .fields import BLOCKS, BY_PATH, SCHEMA, SCHEMA_VERSION, Field, Kind, check
+from .rules import Rule, SpecRefusal, refuse_unknown_key
 from .tokenizers import Backend, TokenizerEntry, TokenizerTable, table
 
 #: The tokenizer table, combined and given an origin per entry.
@@ -151,22 +98,6 @@ def _missing(field: Field) -> None:
     )
 
 
-def _holds(block: str) -> tuple[str, ...]:
-    """What a block groups, one segment down, in the order the schema declares."""
-    depth = block.count(".") + 1
-    names = dict.fromkeys(
-        path.split(".")[depth] for path in BY_PATH if path.startswith(f"{block}.")
-    )
-    return tuple(names)
-
-
-def _unresolved(path: str) -> NoReturn:
-    """The refusal a path earns when the schema declares no field at it."""
-    if path in BLOCKS:
-        refuse_block(path, _holds(path))
-    refuse_unknown_key(path)
-
-
 def _version(document: Mapping) -> None:
     """Check the version the document states, before the fields it governs.
 
@@ -191,13 +122,6 @@ def _version(document: Mapping) -> None:
 def _survey(node: Mapping, prefix: str, found: dict):
     """Every key of a document, keeping what the table declares and yielding a
     refusal for each key that it does not, or that states a field a second time.
-
-    The walk carries on past a key it refuses, because one unrecognised key
-    says nothing about the rest of the document: the block beside it holds the
-    capacity and the stack pin, and stopping here would take those out of
-    reach of every question asked further on. A reader that has to produce a
-    value wants the first refusal and `_walk` below raises it; a check wants
-    them all.
     """
     for key, value in node.items():
         path = f"{prefix}.{key}" if prefix else str(key)
@@ -208,12 +132,7 @@ def _survey(node: Mapping, prefix: str, found: dict):
                     f"`{path}` is stated twice by this document, under two "
                     "spellings that resolve to the same field",
                     "a dotted key resolves to the nested path, so `a.b` and a "
-                    "nested `b` under `a` are one field; state it once, "
-                    "because the echo every run artifact carries is rebuilt "
-                    "nested and cannot equal a document that states the field "
-                    "flat as well -- and where the two spellings disagree, "
-                    "keeping one of them would keep whichever the mapping "
-                    "yielded last",
+                    "nested `b` under `a` are one field; state it once",
                 )
                 continue
             found[path] = value
@@ -226,13 +145,6 @@ def _survey(node: Mapping, prefix: str, found: dict):
                     f"`{path}` holds {value!r}, where the schema has a block",
                     "write the block's fields there",
                 )
-        elif path == "provenance.method":
-            yield SpecRefusal(
-                Rule.SHAPE,
-                "`provenance.method` is now `provenance.origin`",
-                "rename the key; `merge` writes each field's own origin under "
-                "`provenance.origins`",
-            )
         else:
             try:
                 refuse_unknown_key(path)
@@ -276,37 +188,25 @@ class MachineSpec:
         return cls(values, table(values[TOKENIZERS]))
 
     def value(self, path: str) -> Any:
-        """One checked field by its dotted path, or the refusal that fits."""
-        if path not in self.values:
-            field = BY_PATH.get(path)
-            if field is None:
-                _unresolved(path)
-            refuse_absent_field(path, field.required)
-        return self.values[path]
+        """One checked field by its dotted path, or a refusal."""
+        if path in self.values:
+            return self.values[path]
+        if path not in BY_PATH:
+            refuse_unknown_key(path)
+        raise SpecRefusal(
+            Rule.TOTALITY,
+            f"`{path}` is declared by this schema as optional, and this spec "
+            "states no value for it",
+            "write it in the document if a reader needs it",
+        )
 
     def origin(self, path: str) -> dict:
         """Where one field came from: its origin and, when probed, the subject
         the probe ran on. A tokenizer entry is asked by its label,
         `host.tokenizers[<id> <backend>]`."""
-        if path in ("name", "schema_version") or path.startswith("provenance."):
-            raise SpecRefusal(
-                Rule.ADDRESSING,
-                f"`{path}` describes the document, so it has no origin",
-                "ask for a field of host, device or interconnect",
-            )
         labels = [
             entry_label(e.key.id, e.key.backend.value) for e in self.tokenizers.entries
         ]
-        if (
-            path == TOKENIZERS
-            or path.startswith(f"{TOKENIZERS}[")
-            and path not in labels
-        ):
-            raise SpecRefusal(
-                Rule.ADDRESSING,
-                f"`{path}` is not one tokenizer entry of this spec",
-                f"a tokenizer entry has its own origin; ask for one of {labels}",
-            )
         if path not in labels:
             self.value(path)
         return field_origin(self.values, path, "this spec")
@@ -335,37 +235,3 @@ class MachineSpec:
     ) -> TokenizerEntry:
         """The probed tokenizer for a model architecture, or a refusal."""
         return self.tokenizers.resolve(architecture, backend, fingerprint)
-
-    def check_stack(
-        self, observed: Mapping[str, str], *, carried_only: bool = False
-    ) -> tuple:
-        """Compare the pinned stack with the loaded one; warn on every difference.
-
-        Each pin is read through `value`, so one this spec holds no value for is
-        declined the way any absent field is. With `carried_only`, a component
-        this document does not carry is not compared instead, so a partial one
-        can still be asked this much of the question; the checking verb asks it
-        that way.
-        """
-        found = []
-        for component in PINNED:
-            path = f"device.software_pinned_to.{component}"
-            if carried_only and path not in self.values:
-                continue
-            pinned = self.value(path)
-            seen = observed.get(component)
-            if seen != pinned:
-                found.append((component, pinned, seen))
-        differences = tuple(found)
-        if differences:
-            warnings.warn(
-                "this spec's constants were probed against "
-                + ", ".join(
-                    f"{component} {pinned} (now {seen!r})"
-                    for component, pinned, seen in differences
-                )
-                + "; they track the compute stack as much as the die",
-                StackMismatch,
-                stacklevel=2,
-            )
-        return differences
