@@ -7,6 +7,10 @@
             `start + step * i`. The body is any region, nested to any depth.
 * `Par`     regions that overlap on the device, combined by a `JoinPolicy`.
 
+An `Op` holds its arguments by schema slot, which is what calling it again
+needs: a tensor as a `Tensor` (shape, dtype, stride, role), a module as a
+`ModuleRef`, anything else as its value.
+
 An operator's cost-deciding per-step state (block tables, context lengths) is
 ambient, not an argument, so an `Op` names where to find it again
 (`context_ref`) instead of holding a copy. A context key written as
@@ -21,7 +25,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .shapes import as_shapes
+from .shapes import as_shape, as_shapes
 
 
 class NodeKind(enum.Enum):
@@ -37,6 +41,30 @@ class JoinPolicy(enum.Enum):
 
     MAX = "max"  # the shorter branch hides inside the longer
     RESOURCE_BOUND = "resource_bound"  # branches contend for the same device
+
+
+class Role(enum.Enum):
+    """Where a tensor argument's storage came from."""
+
+    ACTIVATION = "activation"  # allocated by the model's forward or after it
+    WEIGHT = "weight"  # a parameter, buffer or tensor attribute of the model
+    KV = "kv"  # the KV cache and per-request state
+    METADATA = "metadata"  # the runner's buffers and its input preparation
+
+
+@dataclass(frozen=True, slots=True)
+class Tensor:
+    """A tensor argument: enough to make one like it, and where it came from."""
+
+    shape: tuple
+    dtype: str
+    stride: tuple
+    role: Role
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "shape", as_shape(self.shape))
+        object.__setattr__(self, "stride", as_shape(self.stride))
+        object.__setattr__(self, "role", Role(self.role))
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +115,7 @@ class ContextRef:
                 f"cannot bind {self.key!r}: it is written in terms of "
                 f"{list(self.index_names)}, got {sorted(values)}"
             )
-        return ContextRef(
+        return type(self)(
             "".join(
                 text
                 + (
@@ -118,28 +146,32 @@ class Region:
 
 
 @dataclass(frozen=True, slots=True)
-class Op(Region):
-    """One operator: what ran, on what shapes, on which stream.
+class ModuleRef(ContextRef):
+    """A module argument, by its path in the model, with `{index}` holes as a
+    context key has."""
 
-    `attrs` holds what the operator is (a dtype, a flag), sorted by name so two
-    recordings compare equal. A value is a number, str, bytes, enum member,
-    `None` or a tuple of those: a tensor or a live symbolic value is refused by
-    its type, without being asked anything.
+
+@dataclass(frozen=True, slots=True)
+class Op(Region):
+    """One operator: what ran, with which arguments, on which stream.
+
+    `args` holds each argument by its slot, in the order the operator takes
+    them: a `Tensor`, a `ModuleRef`, a `ContextRef`, a number, str, bytes, enum
+    member, `None` or a tuple of those. Anything else, a live symbolic value
+    among it, is refused by its type, without being asked anything.
     """
 
     name: str
     kind: NodeKind
-    in_shapes: tuple[tuple, ...]
+    args: tuple[tuple[str, Any], ...]
     out_shapes: tuple[tuple, ...]
-    attrs: tuple[tuple[str, Any], ...] = ()
     stream_id: int = 0
     context_ref: ContextRef | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "kind", NodeKind(self.kind))
-        object.__setattr__(self, "in_shapes", as_shapes(self.in_shapes))
+        object.__setattr__(self, "args", _as_args(self.args))
         object.__setattr__(self, "out_shapes", as_shapes(self.out_shapes))
-        object.__setattr__(self, "attrs", _as_attrs(self.attrs))
 
     @property
     def bound_indices(self) -> frozenset[str]:
@@ -147,31 +179,43 @@ class Op(Region):
 
     @property
     def free_indices(self) -> frozenset[str]:
-        return frozenset(self.context_ref.index_names if self.context_ref else ())
+        refs = [self.context_ref, *_refs(self.args)]
+        return frozenset(name for ref in refs if ref for name in ref.index_names)
 
 
-def _as_attrs(attrs: Any) -> tuple[tuple[str, Any], ...]:
-    items = tuple(attrs.items() if isinstance(attrs, Mapping) else attrs)
+def _as_args(args: Any) -> tuple[tuple[str, Any], ...]:
+    items = tuple(args.items() if isinstance(args, Mapping) else args)
     if not all(
         isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str)
         for item in items
     ):
-        raise TypeError(f"attributes are (name, value) pairs, got {items!r}")
-    names = [name for name, _ in items]
-    if len(set(names)) != len(names):
-        raise ValueError(f"an attribute name is given twice in {names}")
-    return tuple(sorted((name, _as_attr_value(name, value)) for name, value in items))
+        raise TypeError(f"arguments are (slot, value) pairs, got {items!r}")
+    slots = [slot for slot, _ in items]
+    if len(set(slots)) != len(slots):
+        raise ValueError(f"a slot is given twice in {slots}")
+    return tuple((slot, _as_value(slot, value)) for slot, value in items)
 
 
-def _as_attr_value(name: str, value: Any) -> Any:
-    if value is None or isinstance(value, (bool, int, float, str, bytes, enum.Enum)):
+def _as_value(slot: str, value: Any) -> Any:
+    if value is None or isinstance(
+        value, (bool, int, float, str, bytes, enum.Enum, Tensor, ContextRef)
+    ):
         return value
     if isinstance(value, tuple):
-        return tuple(_as_attr_value(name, item) for item in value)
+        return tuple(_as_value(slot, item) for item in value)
     raise TypeError(
-        f"attribute {name!r} is a {type(value).__name__}. An attribute is a "
-        "number, str, bytes, enum member, None, or a tuple of those."
+        f"argument {slot!r} is a {type(value).__name__}. An argument is a Tensor, "
+        "ModuleRef, ContextRef, number, str, bytes, enum member, None, or a tuple "
+        "of those."
     )
+
+
+def _refs(value: Any):
+    if isinstance(value, ContextRef):
+        yield value
+    elif isinstance(value, tuple):
+        for item in value:
+            yield from _refs(item)
 
 
 @dataclass(frozen=True, slots=True)

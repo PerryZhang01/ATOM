@@ -11,34 +11,31 @@ from atom.compass.ir import (
     ContextRef,
     Graph,
     JoinPolicy,
+    ModuleRef,
     NodeKind,
     Op,
     Par,
     Region,
     Repeat,
+    Role,
     Seq,
-    SymDim,
+    Tensor,
 )
 from atom.compass.ir.shapes import as_dim, as_shape
 
 IR_PACKAGE = Path(__file__).resolve().parents[2] / "atom" / "compass" / "ir"
-CAPTURE = "qwen3-27b/decode"
+ACTIVATION = Tensor((4, 8), "torch.bfloat16", (8, 1), Role.ACTIVATION)
 
 
 def _op(name="aiter::gemm_a16w16", **kwargs):
     kwargs.setdefault("kind", NodeKind.CAPTURED)
-    kwargs.setdefault("in_shapes", ((4, 8),))
+    kwargs.setdefault("args", (("A", ACTIVATION),))
     kwargs.setdefault("out_shapes", ((4, 16),))
     return Op(name=name, **kwargs)
 
 
 class _Unrenderable:
     """An object with no rendering of its own, as most objects have none."""
-
-
-class _Compound:
-    def __str__(self):
-        return "2*s26 + 1"
 
 
 class _Tensor:
@@ -202,55 +199,13 @@ def test_a_sequence_with_nothing_in_it_is_refused():
         Seq(())
 
 
-# --- a size that is not known yet --------------------------------------------
+# --- dimensions --------------------------------------------------------------
 
 
-def test_a_live_symbolic_size_is_not_rendered_on_anybody_s_behalf():
-    with pytest.raises(TypeError, match="SymDim.of"):
-        as_dim(_Compound())
-    assert as_dim(SymDim.of(_Compound(), CAPTURE)) == SymDim("2*s26 + 1", CAPTURE)
-
-
-def test_a_node_holding_a_symbolic_size_is_hashable_and_comparable():
-    first = _op(in_shapes=((SymDim.of(_Compound(), CAPTURE), 4096),))
-    second = _op(in_shapes=((SymDim("2*s26 + 1", CAPTURE), 4096),))
-    third = _op(in_shapes=((SymDim("s99", CAPTURE), 4096),))
-    assert first == second != third
-    assert len({first, second, third}) == 2
-
-
-def test_two_captures_that_spell_a_symbol_the_same_are_not_the_same_size():
-    here, there = SymDim("s26", "capture-a"), SymDim("s26", "capture-b")
-    assert here != there
-    assert _op(in_shapes=((here, 8),)) != _op(in_shapes=((there, 8),))
-
-
-@pytest.mark.parametrize(
-    "text, scope", [("", CAPTURE), ("   ", CAPTURE), ("s52\ns53", CAPTURE), ("s26", "")]
-)
-def test_a_symbolic_size_needs_a_rendering_and_a_scope(text, scope):
-    with pytest.raises(ValueError, match="one-line rendering"):
-        SymDim(text, scope)
-
-
-@pytest.mark.parametrize("bad", ["4096", " 17 ", "-3", "1.5", "inf"])
-def test_a_size_that_renders_as_a_number_is_a_known_size(bad):
-    # Held as a symbol it would compare unequal to the int it is.
-    with pytest.raises(ValueError, match="belongs in the shape as an int"):
-        SymDim(bad, CAPTURE)
-
-
-def test_an_object_with_no_rendering_of_its_own_is_refused():
-    with pytest.raises(ValueError, match="no rendering of its own"):
-        SymDim.of(_Unrenderable(), CAPTURE)
-
-
-def test_a_width_from_another_library_is_converted_not_rendered():
+def test_a_width_from_another_library_is_refused_not_converted():
     numpy = pytest.importorskip("numpy")
-    with pytest.raises(TypeError, match="SymDim.of"):
+    with pytest.raises(TypeError, match="a dimension is a concrete int"):
         as_dim(numpy.int64(4096))
-    with pytest.raises(ValueError, match="belongs in the shape as an int"):
-        SymDim.of(numpy.int64(4096), CAPTURE)
 
 
 def test_a_concrete_dimension_is_bounded():
@@ -268,14 +223,14 @@ def test_a_dimension_that_only_arrives_by_mistake_is_refused(bad):
 
 
 def test_shapes_are_one_per_operand():
-    op = _op(in_shapes=[[4, 8], [8, 16]], out_shapes=[[4, 16]])
-    assert op.in_shapes == ((4, 8), (8, 16))
+    op = _op(out_shapes=[[4, 8], [8, 16]])
+    assert op.out_shapes == ((4, 8), (8, 16))
 
 
 @pytest.mark.parametrize("shapes", [{(4, 8): "x"}, {"a": 1}, "48"])
 def test_a_mapping_or_str_is_not_a_shape(shapes):
     with pytest.raises(TypeError, match="expected a sequence"):
-        _op(in_shapes=shapes)
+        _op(out_shapes=shapes)
     with pytest.raises(TypeError, match="expected a sequence"):
         as_shape(shapes)
 
@@ -310,31 +265,38 @@ def test_a_live_symbolic_value_reaches_no_field_of_a_node():
             ("nested in a tuple", (tokens, 4)),
         ):
             before = len(shape_env.guards)
-            with pytest.raises(TypeError, match="An attribute is a number"):
-                _op(attrs=(("whatever", value),))
+            with pytest.raises(TypeError, match="An argument is a Tensor"):
+                _op(args=(("whatever", value),))
             assert len(shape_env.guards) == before, label
 
         before = len(shape_env.guards)
-        with pytest.raises(TypeError, match="SymDim.of"):
-            _op(in_shapes=((tokens, 4096),))
-        rendered = SymDim.of(tokens, "one-capture")
-        op = _op(in_shapes=((rendered, 4096),), out_shapes=((rendered, 11008),))
+        with pytest.raises(TypeError, match="a dimension is a concrete int"):
+            _op(out_shapes=((tokens, 4096),))
         assert len(shape_env.guards) == before
 
-    assert rendered.text == str(tokens)
-    assert hash(op) == hash(op)
 
-
-# --- attributes --------------------------------------------------------------
+# --- arguments ---------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "value",
-    [4, 1.5, "bf16", True, None, b"raw", NodeKind.CAPTURED, (4, ("a", 1.5), None)],
+    [
+        4,
+        1.5,
+        "bf16",
+        True,
+        None,
+        b"raw",
+        NodeKind.CAPTURED,
+        (4, ("a", 1.5), None),
+        ACTIVATION,
+        ModuleRef("model.layers.3.rotary_emb"),
+        (ACTIVATION, ContextRef("model.layers.3.attn")),
+    ],
     ids=lambda v: type(v).__name__,
 )
-def test_an_attribute_holds_what_the_operator_is(value):
-    assert _op(attrs={"a": value}).attrs == (("a", value),)
+def test_an_argument_holds_its_value(value):
+    assert _op(args={"a": value}).args == (("a", value),)
 
 
 @pytest.mark.parametrize(
@@ -342,27 +304,45 @@ def test_an_attribute_holds_what_the_operator_is(value):
     [[1, 2], {"a": 1}, {1, 2}, _Unrenderable(), (1, [2]), _Tensor()],
     ids=["list", "dict", "set", "object", "list nested in a tuple", "tensor"],
 )
-def test_an_attribute_that_is_not_what_the_operator_is_is_refused(value):
-    with pytest.raises(TypeError, match="An attribute is a number"):
-        _op(attrs={"a": value})
+def test_an_argument_a_contract_cannot_hold_is_refused(value):
+    with pytest.raises(TypeError, match="An argument is a Tensor"):
+        _op(args={"a": value})
 
 
-def test_attributes_do_not_depend_on_the_order_they_were_recorded_in():
-    forwards = _op(attrs={"dtype": "bf16", "transpose_b": True})
-    backwards = _op(attrs=(("transpose_b", True), ("dtype", "bf16")))
-    assert forwards == backwards
-    assert forwards.attrs == (("dtype", "bf16"), ("transpose_b", True))
+def test_arguments_keep_the_order_the_operator_takes_them_in():
+    op = _op(args={"transpose_b": True, "dtype": "bf16"})
+    assert op.args == (("transpose_b", True), ("dtype", "bf16"))
+    assert op != _op(args={"dtype": "bf16", "transpose_b": True})
 
 
-def test_a_name_given_twice_is_refused_rather_than_silently_resolved():
+def test_a_slot_given_twice_is_refused_rather_than_silently_resolved():
     with pytest.raises(ValueError, match="given twice"):
-        _op(attrs=(("dtype", "bf16"), ("dtype", "fp8")))
+        _op(args=(("dtype", "bf16"), ("dtype", "fp8")))
 
 
-@pytest.mark.parametrize("attrs", [["ab"], [3], [("dtype",)], [("a", 1, 2)], [(1, 2)]])
-def test_an_item_that_is_not_a_name_value_pair_is_refused(attrs):
-    with pytest.raises(TypeError, match=r"\(name, value\) pairs"):
-        _op(attrs=attrs)
+@pytest.mark.parametrize("args", [["ab"], [3], [("dtype",)], [("a", 1, 2)], [(1, 2)]])
+def test_an_item_that_is_not_a_slot_value_pair_is_refused(args):
+    with pytest.raises(TypeError, match=r"\(slot, value\) pairs"):
+        _op(args=args)
+
+
+@pytest.mark.parametrize(
+    "role, shape", [("cache", (4, 8)), (Role.WEIGHT, (4, -1)), (Role.KV, "48")]
+)
+def test_a_tensor_argument_states_a_role_and_a_concrete_shape(role, shape):
+    with pytest.raises((TypeError, ValueError)):
+        Tensor(shape, "torch.bfloat16", (8, 1), role)
+
+
+def test_a_module_argument_s_layer_is_an_index_a_repeat_binds():
+    rope = ModuleRef("model.layers.{layer}.rotary_emb")
+    body = _op("mrope", args={"x": ACTIVATION, "rotary_emb": rope})
+    assert body.free_indices == frozenset({"layer"})
+    assert rope.bind(layer=5) == ModuleRef("model.layers.5.rotary_emb")
+    assert rope != ContextRef(rope.key)
+    with pytest.raises(ValueError, match=r"nothing binds \['layer'\]"):
+        Graph(_Everywhere(), body)
+    assert Graph(_Everywhere(), Repeat(body, 4, "layer")).region.free_indices == set()
 
 
 # --- a graph states where it is valid ----------------------------------------

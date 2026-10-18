@@ -9,7 +9,7 @@ result again, until a pass groups nothing, so `AAAB AAAB ...` nests as
 and what runs outside every layer sits around them. Each `Repeat` binds its
 own index to its instances' first
 layer, and a key names its layer as the sum of the indices around it and an
-offset (`{l0+l1}`, `{l0+3}`).
+offset (`{l0+l1}`, `{l0+3}`). A module argument's path names its layer alike.
 
 A side stream that waits on the main one forks; the main one waiting on it
 joins. What both ran in between is a `Par` of one branch per stream, joined
@@ -42,13 +42,13 @@ class Join(NamedTuple):
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class Traced(ir.Applicability):
-    """Where a traced step applies: its discrete key, and the trace's guards."""
+    """Where a traced step applies: its discrete key, and the shape it ran at."""
 
     structure: str
-    guards: tuple[str, ...]
+    shape: str
 
     def describe(self) -> str:
-        return " and ".join([self.structure, *self.guards])
+        return f"{self.structure} at {self.shape}"
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -180,13 +180,22 @@ def _place(tokens, names, offset):
 
 def _rekey(region, number):
     if isinstance(region, ir.Op):
-        if region.context_ref is None or LAYER not in region.context_ref.index_names:
+        if LAYER not in region.free_indices:
             return region
-        key = region.context_ref.key.replace("{" + LAYER + "}", number)
-        return dataclasses.replace(region, context_ref=ir.ContextRef(key))
+        args = tuple((slot, _renumber(v, number)) for slot, v in region.args)
+        ref = _renumber(region.context_ref, number)
+        return dataclasses.replace(region, args=args, context_ref=ref)
     if isinstance(region, ir.Par):
         return ir.Par(tuple(_rekey(b, number) for b in region.branches), region.join)
     return ir.Seq(tuple(_rekey(item, number) for item in region.items))
+
+
+def _renumber(value, number):
+    if isinstance(value, ir.ContextRef):
+        return type(value)(value.key.replace("{" + LAYER + "}", number))
+    if isinstance(value, tuple):
+        return tuple(_renumber(item, number) for item in value)
+    return value
 
 
 def _seq(regions):
@@ -194,15 +203,32 @@ def _seq(regions):
 
 
 def to_json(graph: ir.Graph) -> str:
-    """The graph as JSON: a str dimension is symbolic, an int concrete."""
+    """The graph as JSON."""
     applicability = graph.applicability
     return json.dumps(
         {
             "structure": applicability.structure,
-            "guards": list(applicability.guards),
+            "shape": applicability.shape,
             "region": _json(graph.region),
         }
     )
+
+
+def _arg(value):
+    """An argument as JSON: a tensor, module or context key as an object."""
+    if isinstance(value, ir.Tensor):
+        return {
+            "shape": list(value.shape),
+            "dtype": value.dtype,
+            "stride": list(value.stride),
+            "role": value.role.value,
+        }
+    if isinstance(value, ir.ContextRef):
+        kind = "module" if isinstance(value, ir.ModuleRef) else "context"
+        return {kind: value.key}
+    if isinstance(value, tuple):
+        return [_arg(item) for item in value]
+    return value
 
 
 def _json(region):
@@ -210,9 +236,8 @@ def _json(region):
         return {
             "op": region.name,
             "kind": region.kind.value,
-            "in": [[_dim(d) for d in s] for s in region.in_shapes],
-            "out": [[_dim(d) for d in s] for s in region.out_shapes],
-            "attrs": dict(region.attrs),
+            "args": {slot: _arg(value) for slot, value in region.args},
+            "out": [list(s) for s in region.out_shapes],
             "stream": region.stream_id,
             "context": region.context_ref and region.context_ref.key,
         }
@@ -227,7 +252,3 @@ def _json(region):
         "start": region.start,
         "step": region.step,
     }
-
-
-def _dim(dim):
-    return dim.text if isinstance(dim, ir.SymDim) else dim

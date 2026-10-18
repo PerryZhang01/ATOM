@@ -177,14 +177,24 @@ DEVICE = {
 
 #: No probe here fills these. The peaks are MI300X's datasheet scaled by
 #: 80/304 compute units, each derate is the haircut this spec's author chose on
-#: its peak, and the rest are the schema's example values.
+#: its peak, the bandwidth curve ends at the derated bandwidth, and the rest are
+#: the schema's example values.
 DECLARED = {
     "host": {
         "ipc": {"zmq_roundtrip_s": 5.0e-5, "shm_broadcast_s": 2.0e-5},
     },
     "device": {
-        "memory": {"bandwidth_bytes_per_s": 5.3e12, "derate": 0.85},
-        "compute": {"bf16_flops": 3.44e14, "fp8_flops": 6.88e14, "derate": 0.70},
+        "memory": {
+            "bandwidth_bytes_per_s": 5.3e12,
+            "bandwidth_curve": [[4096, 1.1e11], [4294967296, 4.505e12]],
+            "derate": 0.85,
+        },
+        "compute": {
+            "bf16_flops": 3.44e14,
+            "fp8_flops": 6.88e14,
+            "derate": {"bf16": 0.70, "fp8": 0.70},
+        },
+        "kernel_floor_s": 2.0e-6,
     },
     "interconnect": {
         "intra_node": {
