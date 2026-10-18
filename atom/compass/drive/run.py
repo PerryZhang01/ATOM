@@ -4,7 +4,7 @@ reach it until it is stopped, with run.json recording what grading reads.
 
     compass run <backend> --machine M --store S [--host-laws KEY]
         [--coverage INPUT...] [--on-refusal mark|abort] [--step-roofline]
-        --out D -- <ATOM args>
+        [--acceptance-record RECORD] --out D -- <ATOM args>
 
 `runfile` builds the run file from the flags, the backend exactly one with no
 default, and `serve` starts the server simulated from it with the step record
@@ -23,6 +23,13 @@ both values. The check refuses no step: it counts those the grid extrapolates
 and those that fall to the step roofline below it, naming each with the grid's
 reasons. Another backend has no check, and refuses `--coverage`.
 
+`--acceptance-record` names a speculative `compass record` directory: the
+accepted-draft histograms of its DP ranks, summed, give the per-position rates
+(`measured`) the run hands ATOM as ``--spec-decode-acceptance-rates``, and the
+run file names the record, so the summary states the input as ``measured``.
+A record with no histogram or of another draft width than ATOM's arguments
+refuses, as do ATOM's arguments stating an acceptance of their own.
+
 Once the server stops, run.json gains, beside `serve`'s identity: `run_file`,
 the run file the server was handed; `step_roofline`, the run file's key,
 whether `--step-roofline` was on; `skip`, the host segments the run file's
@@ -37,6 +44,7 @@ member an engine read states, empty when every one was measured.
 import argparse
 import dataclasses
 import json
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -73,7 +81,12 @@ def main(argv: list[str]) -> None:
             f"{'prefill' if side == 'P' else 'decode'} instance, which shares a "
             "clock with its peer; run starts one aggregated instance"
         )
+    if record := args.acceptance_record:
+        rates = ",".join(map(str, measured(record, atom_args)))
+        atom_args = [*atom_args, "--spec-decode-acceptance-rates", rates]
     run = runfile.build(args, atom_args)
+    if record:
+        run[compass_run.ACCEPTANCE_RECORD] = str(Path(record).resolve())
     report = check(args.coverage, run, atom_args) if args.coverage else None
     serve.serve(atom_args, args.out, run=run)
     write_grading(args.out, report)
@@ -89,9 +102,47 @@ def _parser() -> argparse.ArgumentParser:
         help="record directories and shape_population tokens the check reads",
     )
     p.add_argument(
+        "--acceptance-record",
+        metavar="RECORD",
+        help="a speculative record directory whose acceptance the run draws from",
+    )
+    p.add_argument(
         "--out", required=True, help="an empty directory for the run's files and logs"
     )
     return p
+
+
+def measured(record, atom_args) -> list[float]:
+    """The per-position rates the accepted-draft histograms of `record`, a
+    `compass record` directory, give over its DP ranks: entry ``i`` the share
+    of drafting rows that accepted more than ``i`` drafts. Refuses a record
+    with no histogram or of another draft width than ATOM's arguments, and
+    ATOM's arguments stating an acceptance of their own."""
+    engine = runfile._engine_args(atom_args)
+    for knob in ("rate", "length", "rates"):
+        if getattr(engine, f"spec_decode_acceptance_{knob}") is not None:
+            raise ValueError(
+                f"--acceptance-record states the acceptance, and ATOM's arguments "
+                f"state --spec-decode-acceptance-{knob} too"
+            )
+    width = engine.num_speculative_tokens if engine.method else 0
+    files = (Path(record) / serve.STEPS).glob(compass_run.ACCEPTANCE_FILE.format("*"))
+    counts = Counter()
+    for path in sorted(files):
+        held = json.loads(path.read_text())
+        if held["draft_tokens"] != width:
+            raise ValueError(
+                f"--acceptance-record: {path} drafted {held['draft_tokens']} "
+                f"tokens a step, and ATOM's arguments draft {width}"
+            )
+        counts.update({int(a): n for a, n in held["distribution"].items()})
+    rows = counts.total()
+    if not rows:
+        raise ValueError(
+            f"--acceptance-record: {record} holds no accepted-draft histogram; "
+            "a speculative record writes one per DP rank in its steps"
+        )
+    return [sum(n for a, n in counts.items() if a > i) / rows for i in range(width)]
 
 
 def check(inputs, run: dict, atom_args) -> dict:
