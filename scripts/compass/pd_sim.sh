@@ -29,7 +29,10 @@
 #   PREFILL_ARGS DECODE_ARGS
 #                       more API server flags for that side only, after
 #                       SERVER_ARGS, e.g. its DP width
-#   ATOMESH             the router binary (default: atomesh)
+#   PREFILL_ENV DECODE_ENV
+#                       NAME=VALUE words set in that side's servers only, e.g.
+#                       `ATOM_NUMA_BIND=1 GPU_MAX_HW_QUEUES=5`
+#   ATOMESH            the router binary (default: atomesh)
 #   ATOM_COMPASS_PARITY_RECORD
 #                       when set, each server records its steps
 #                       (atom/compass/parity) under it, in prefill/ and decode/,
@@ -97,10 +100,10 @@ server() { # role port kv_role dp_port instance count [exec]
     # uvicorn's keep-alive timeout runs on the LP clock, the router drops idle
     # connections on the wall clock: which comes first, and with it whether the
     # timeout takes a grant, would differ between runs. Only the router closes.
-    local extra=${DECODE_ARGS:-}
-    [[ $1 == prefill ]] && extra=${PREFILL_ARGS:-}
-    # shellcheck disable=SC2086 # DECODE_EXEC and the server flags are word lists
-    ${7:-} env "${passed[@]}" ${ATOM_COMPASS_PARITY_RECORD:+"ATOM_COMPASS_PARITY_RECORD=$ATOM_COMPASS_PARITY_RECORD/$name"} python3 -m atom.entrypoints.openai_server \
+    local extra=${DECODE_ARGS:-} vars=${DECODE_ENV:-}
+    [[ $1 == prefill ]] && extra=${PREFILL_ARGS:-} vars=${PREFILL_ENV:-}
+    # shellcheck disable=SC2086 # DECODE_EXEC, the side's variables and the server flags are word lists
+    ${7:-} env "${passed[@]}" $vars ${ATOM_COMPASS_PARITY_RECORD:+"ATOM_COMPASS_PARITY_RECORD=$ATOM_COMPASS_PARITY_RECORD/$name"} python3 -m atom.entrypoints.openai_server \
         --model "$MODEL" --host 127.0.0.1 --server-port "$2" --timeout-keep-alive 1000000 \
         --data-parallel-master-port "$4" \
         $SERVER_ARGS $extra \
