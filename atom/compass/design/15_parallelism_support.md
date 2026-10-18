@@ -534,7 +534,12 @@ work.
 
 ---
 
-## D92. EP — invisible communication and an exclusive-occupancy kernel
+## D92. EP — invisible communication, overlapped under TBO
+
+**Revised 2026-10-18 by the owner's
+[ruling on #531](https://github.com/jgong5/ATOM/issues/531#issuecomment-6244543796):** MORI
+dispatch and combine do not occupy the whole device; under TBO they ride the comm stream
+beside the other micro-batch's compute (Q3).
 
 ### The EP group, per supported configuration
 
@@ -704,18 +709,14 @@ From `07` D40 class (c): MoE all-to-all is **MORI, called inside `moe_forward`, 
 at any degree**. Zero dispatcher events, so it needs `04` D21's *stated node* plus the
 stated-entry-point benchmark of `07` D40.1 — the same tool class (b) uses.
 
-And the property no generic cost model would capture:
-
-> `_get_dispatch_config` caps `block_num` at `get_cu_num()` because dispatch and combine
-> use a **grid-wide spin barrier requiring all blocks co-resident**, so the kernel occupies
-> the entire device. On an 80-CU MI308X, launching 128 blocks **deadlocks**.
-
-That is `04` D19's `exclusive` join policy, and it is a **measured fact rather than a
-modelling choice** — an EP all-to-all cannot overlap with anything, so the IR must not
-place it in a `Par`. The cap is two numbers and not one —
-`min(128, CU)` blocks at 16 warps for prefill against `min(64, CU)` at 4 for decode
-(`fused_moe/mori_prepare_finalize.py::MoriPrepareAndFinalize._get_dispatch_config`), which on the 80-CU MI308X is 80 and 64 —
-recorded as **T87**, since `07`'s price-list table states it as a single cell.
+Its block count is two numbers: `min(128, CU)` blocks at 16 warps for prefill against
+`min(64, CU)` at 4 for decode
+(`fused_moe/mori_prepare_finalize.py::MoriPrepareAndFinalize._get_dispatch_config`), which
+on the 80-CU MI308X is 80 and 64 and on the 256-CU MI355X 128 and 64. The cap at the CU
+count exists because dispatch and combine spin on a grid-wide barrier that needs all their
+blocks co-resident (on an 80-CU MI308X, 128 blocks **deadlock**); it does not make the
+kernel hold the device. Under TBO the all-to-all runs on the comm stream beside the other
+micro-batch's compute, priced by `04` D19's two-stream layout.
 
 ### Q4: memory — experts shard contiguously, and an indivisible count is refused
 
@@ -770,7 +771,7 @@ milestones are `16` D95's:
 |---|---|---|
 | **TP** | LP collapse; the parallel layout as an artifact key | priced collectives at the widths the nightly configurations run; width transfer (T21) comes after v1 |
 | **DP** | both collectives run for real; `max`-over-ranks step duration; dummy-batch pricing for idle ranks | the collectives' own cost, including the gather sized by the peers' token counts |
-| **EP** | none: EP's plumbing moved into M2's EP8 step | in the EP8 step, group membership established — it is `dp × pcp × tp` within one PP stage, built in aiter (D92); `exclusive` occupancy honoured in the IR; then the MORI all-to-all within a node priced as a stated node by a routing model |
+| **EP** | none: EP's plumbing moved into M2's EP8 step | in the EP8 step, group membership established — it is `dp × pcp × tp` within one PP stage, built in aiter (D92); MORI dispatch and combine on the comm stream under TBO; then the MORI all-to-all within a node priced as a stated node by a routing model |
 
 **PP is in neither column.** Its plumbing (one LP per stage, transfer as a size from the
 spec, layer split via `get_pp_indices`, memory keyed by PP degree) and its accuracy
@@ -832,7 +833,7 @@ CPU-only path (`08` D43.1).
 | D89 | TP is the settled instance and supplies the per-width discipline: width is a key, not a parameter. | 2026-09-19 |
 | D90 | DP's two collectives **run for real** — both reduce over scheduling metadata, never over model outputs, so the real reduction is more faithful than a model and free. The DP group stays one LP, with one member process per rank. With host time the group's device end is the `max` over ranks of each rank's own device end, computed not rank-0-sourced by one `all_reduce(MAX)`, and each rank leaves at its own charge; with no host time an output rank leaves at the `max` of the step seconds. The step targets are exchanged by one `all_gather` inside the predicted forward (#988); both collectives are K6 waits that carry no cost; the lockstep `all_reduce` keeps its payload. With EP off the MoE segment reads `T_moe`, the rows the group's MoE gather carries (`dp x running_bs x max_seqlen_q` when every rank decodes, `sum(num_tokens_across_dp)` otherwise), and is rank-invariant by construction, which makes `max` the per-layer critical path. With EP on its row count is not settled, `max` rests on uniform routing, and non-uniform routing is a stated limit. Idle ranks are priced through `dummy_execution`'s own `forward`. Q4's replicated weights and DP-independent width key hold for plain DP only; under DP-attention the routed experts shard over the DP group and the width key is open. | 2026-09-19, revised 2026-09-28, 2026-10-01 (owner's DP ruling, [#470](https://github.com/jgong5/ATOM/issues/470#issuecomment-5933154215)), 2026-10-09 (`T_moe`, [#502](https://github.com/jgong5/ATOM/issues/502#issuecomment-6081138199)), 2026-10-10 (Q4, [#702](https://github.com/jgong5/ATOM/issues/702)), 2026-10-15 (the `all_gather` and each member's own step end, [#988](https://github.com/jgong5/ATOM/issues/988#issuecomment-6183664946)) and 2026-10-16 (the device end, [#1267](https://github.com/jgong5/ATOM/issues/1267#issuecomment-6215701399)) |
 | D91 | PP is one LP per stage at microsecond lookahead, and PP boundaries are never a hierarchical-CA cut point. The inter-stage transfer is a **size from the machine spec**, like KV transfer. Layer split comes from `get_pp_indices`, never re-derived; weights shard by that range but **KV shards by the paged-layer count inside it**, which on a hybrid is not proportional to it. Memory readings gain a PP-degree key. Revised: a send part completes on the sender's clock when eager and at `max(t_send, r_i) + T` when rendezvous, `r_i` the time its receive is posted, a per-carrier size threshold deciding which, and a send's `done` is the latest over its gloo parts, the only ones its host waits for, its RCCL parts holding the next send's (#1383) and, carried by the ack, the device start of the stage's later forwards, and posted no earlier than the receiving stage's device end (#1444), and a receive is posted at the receiving forward's prepare end (#1443); the receiver returns that completion, when a gloo part is rendezvous, on `stage(k+1)->stage(k):pp_ack#dp0`, lookahead `T_min - L_data`, and both waits receive it (K5). Confirmed by the owner on 2026-10-02: the send reaches the next stage on `stage(k)->stage(k+1):pp_data#dp0`, and the TP-rank-0 workers carry both channels' frames over the PP CPU group. | 2026-09-19, revised 2026-09-28 and 2026-09-30, confirmed 2026-10-02, revised 2026-10-18 |
-| D92 | EP adds no LPs (inherits the TP group) but its all-to-all is invisible and must be a stated node, and its `exclusive` occupancy forbids placing it in a `Par`. Expert sharding is Class A, remainder included. | 2026-09-19 |
+| D92 | EP adds no LPs (inherits the TP group) but its all-to-all is invisible and must be a stated node; under TBO it rides the comm stream beside the other micro-batch's compute. Expert sharding is Class A, remainder included. | 2026-09-19, revised 2026-10-18 ([#531](https://github.com/jgong5/ATOM/issues/531#issuecomment-6244543796)) |
 | D93 | LP count = 1 traffic LP + per deployment (1 frontend LP + one engine LP per PP stage): 3 aggregated, 5 for 1P1D, independent of GPU count. The clock protocol's cost tracks PP degree and PD roles, not width. | 2026-09-19, revised 2026-09-28 |
 | D94 | Parallelism splits across `16` D95's milestones: TP and DP plumbing (LP structure, couplings, memory shape) at **M1**, with no parity test; at **M2**, scheduling parity and then cost accuracy. The parity test needs no cost model and runs TP2/DP2 as `-tp 2 --enable-dp-attention`, then DeepSeek-V4-Pro 1P+1D in the nightly DP-attention configuration with expert parallelism off; M2's EP8 step, which also carries EP's plumbing, repeats both with expert parallelism on, EP2 as `-tp 2 --enable-dp-attention --enable-expert-parallel`, then EP8. PP, its accuracy, and EP beyond one node come after v1. | 2026-09-19, revised 2026-10-10 (`16` D95) |
 
