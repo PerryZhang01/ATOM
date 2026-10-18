@@ -100,7 +100,9 @@ It holds the memory the worker predicts too, for
 ``python -m atom.compass.memory.check``, with the assumption a
 `memory_readings` member it read states, which `compass run` records, and
 under ``step_grid`` the bundle's key, digest and ``describe()`` line, which the
-summary carries. The authority
+summary carries. A speculative engine's holds its acceptance input and its
+scheduler's accepted-draft histogram (`_acceptance`), which the summary carries
+by LP over its steps, with their mean acceptance length. The authority
 removes an earlier run's files there as it starts. At the end of client run
 ``k`` every server LP hands in to ``client-<k>/`` there, and the authority's
 host writes the step table and that client run's summary, its steps taken as
@@ -243,7 +245,7 @@ AUTHORITY_FILE = "authority_endpoint.txt"
 HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field is added, changes
 #: meaning or goes.
-SUMMARY_SCHEMA_VERSION = 6
+SUMMARY_SCHEMA_VERSION = 7
 #: Compass source the host-law key leaves out, by path under the package: all
 #: of it (None), or the top-level names (def, class or assigned) only a simulated
 #: run reaches, with the comments above each and the module docstring.
@@ -1598,7 +1600,7 @@ def _engine_hand_in(run: dict, engine_core, sections: dict, client_run=None) -> 
     each park's clock and the clock it left at. An engine whose offload
     scheduler keeps lookup counters hands in ``lookups``: its tier lookups,
     the prefetches among them, and the deferred prefetches it stopped
-    waiting for."""
+    waiting for. A speculative engine hands in ``speculative``, `_acceptance`."""
     said = _workers_say(engine_core)
     rt = clock.installed()
     lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
@@ -1610,7 +1612,32 @@ def _engine_hand_in(run: dict, engine_core, sections: dict, client_run=None) -> 
     if (counts := getattr(kv, "_perf_counters", None)) is not None:
         keys = ("lookup_n", "lookup_prefetched", "lookup_defer_expired")
         sections = sections | {"lookups": {k: counts[k] for k in keys}}
+    scheduler = getattr(engine_core, "scheduler", None)
+    if getattr(getattr(scheduler, "engine_stats", None), "spec_enabled", False):
+        sections = sections | {"speculative": _acceptance(scheduler)}
     _hand_in(run, lp, reasons, client_run, **said, **sections)
+
+
+def _acceptance(scheduler) -> dict:
+    """A speculative engine's drafter, its draft width, the acceptance input
+    ATOM's flag stated with its method, the per-position rates it resolved to,
+    and the scheduler's accepted-draft histogram (`EngineStats.distribution`)."""
+    spec = scheduler.config.speculative_config
+    # A stated rate also resolves a length, so it is read first.
+    stated = (
+        ("--spec-decode-acceptance-rate", spec.synthetic_acceptance_rate),
+        ("--spec-decode-acceptance-length", spec.synthetic_acceptance_length),
+        ("--spec-decode-acceptance-rates", spec.synthetic_acceptance_rates),
+    )
+    flag, value = next((f, v) for f, v in stated if v is not None)
+    return {
+        "drafter": spec.method,
+        "draft_tokens": spec.num_speculative_tokens,
+        # ATOM's flags are the only acceptance input, and a flag is a statement.
+        "input": {"flag": flag, "value": value, "method": "declared"},
+        "rates": spec.synthetic_acceptance_rates,
+        "distribution": dict(scheduler.engine_stats.distribution),
+    }
 
 
 def _raised_file(now: Path, rank) -> Path:
@@ -1827,6 +1854,23 @@ def _summary(run: dict, a, record, wall: float, hand_ins: dict, since: dict) -> 
     summary["coverage_report"] = bool(reasons)
     if grids := {n: h["step_grid"] for n, h in hand_ins.items() if "step_grid" in h}:
         summary["step_grid"] = grids
+    # Each speculative engine's acceptance input, and what it accepted over these steps.
+    speculative = {}
+    for n, h in hand_ins.items():
+        if "speculative" in h:
+            gone = since.get(n, {}).get("speculative", {}).get("distribution", {})
+            seen = {
+                a: c - gone.get(a, 0)
+                for a, c in h["speculative"]["distribution"].items()
+            }
+            rows = sum(seen.values())
+            mean = 1 + sum(int(a) * c for a, c in seen.items()) / rows if rows else None
+            speculative[n] = h["speculative"] | {
+                "distribution": seen,
+                "mean_acceptance_length": mean,
+            }
+    if speculative:
+        summary["speculative"] = speculative
     return summary
 
 
