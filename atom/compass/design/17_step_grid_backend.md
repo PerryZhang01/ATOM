@@ -20,9 +20,11 @@ from `run.json` (D99).
 **Revised 2026-10-14 by the naming record in
 [#952](https://github.com/jgong5/ATOM/issues/952):** the backend is the step grid,
 `StepGridBackend` under the run-file key `step_grid` and the flag `--step-grid`, a
-step-level backend whose one term is `estimated` and unvalidated, answering only inside
-its support domain, the complete cells (D96, D99, D103); a step it declines falls back
-only along method inside the step level (D102).
+step-level backend whose one term is `estimated`, answering only inside its support
+domain, the complete cells (D96, D99, D103); a step it declines falls back only along
+method inside the step level (D102). The term was unvalidated then; since
+[#962](https://github.com/jgong5/ATOM/issues/962) it is validated inside its kind's
+held-out hull and unvalidated elsewhere ("Method and support domain").
 
 **Revised 2026-10-16 by the owner's
 [ruling on #1035](https://github.com/jgong5/ATOM/issues/1035#issuecomment-6205714588):**
@@ -338,10 +340,11 @@ is the residual's job (D100).
 ### Method and support domain, per `02` D11
 
 A step's one term is `estimated`: a lookup and a residual derived from measurements of
-the subject, none of which timed this batch. It is unvalidated: `validated` waits for the
-residual to record its held-out region
-([#962](https://github.com/jgong5/ATOM/issues/962)), so every step grid answer is reported
-among the unvalidated seconds (`08` D50.1). The detail says whether the lookup was an exact
+the subject, none of which timed this batch. It is validated iff the batch's coordinates in
+its grid lie inside the hull of those of the batches its kind's residual was held out on,
+which the fit records per kind ([#962](https://github.com/jgong5/ATOM/issues/962)); a
+bundle that records none, or a kind whose held-out batches span no hull, reports its
+answers among the unvalidated seconds (`08` D50.1). The detail says whether the lookup was an exact
 hit on a measured node by a homogeneous batch or an interpolation inside a cell; an exact
 hit on a heterogeneous batch's equivalent shape counts as an interpolation, since the
 batch itself was never timed.

@@ -63,8 +63,9 @@ its ``engine_config``, `step_grid.keyed` as it was fitted, refuse a run under
 any other, and a law missing either refuses; a list of them is one per engine config, a process taking its own), ``step_grid`` (an artifact store's root and a
 bundle's key, priced by `StepGridBackend`; see `step_grid`) and ``replay`` (a
 real run's parity record directory, or for a prefill-decode run one holding
-each side's as ``prefill/`` and ``decode/``: each step ends when the real one
-did, by `atom.compass.parity.replay`),
+each deployment's as ``prefill/`` and ``decode/``, ``prefill<k>/`` and
+``decode<k>/`` above one of a side: each step ends when the real one did, by
+`atom.compass.parity.replay`),
 ``step_roofline`` (optional, ``true`` or ``false``: with ``true`` a
 `StepRooflineBackend` prices the steps the backend refuses, through
 `StepFallbackBackend`),
@@ -128,7 +129,10 @@ side its own DP width, and only such a run may name them. Optional ``prefill_ins
 1 when absent, run that many deployments of a side, each naming its index in
 its ``kv_transfer_config`` as ``compass_instance``; above one, its LPs carry
 the index (``engine-P1``), and the router is the ``router`` LP, which chooses
-among them. `frontend(config)` refuses such a
+among them. An optional ``worker_order`` gives, by side (``P`` or ``D``), the
+(instance, DP rank) pairs in the order that LP's policies list the side's
+workers, each once (`worker_order`); a side it does not name is sorted by URL
+and rank. `frontend(config)` refuses such a
 deployment unless the authority is standalone: a prefill-decode run spans two
 API servers that must share one.
 
@@ -215,11 +219,13 @@ INSTANCES = {"P": "prefill_instances", "D": "decode_instances"}
 DP_WIDTHS = {"P": "prefill_data_parallel_size", "D": "decode_data_parallel_size"}
 #: The kv_transfer_config key a deployment names its index among them by.
 INSTANCE_KEY = "compass_instance"
+#: The run-file key of each side's worker order in the router, a per-run outcome.
+WORKER_ORDER = "worker_order"
 ATOM_RUNNER = "atom.model_engine.model_runner.ModelRunner"
 #: Keys that differ between two runs of one configuration, kept out of its name.
 #: The store is a place: the memory readings a run reads from it are keyed by
 #: the configuration and the machine spec, which the name holds.
-PER_RUN = ("clock_endpoint", "out_dir", "client_runs", "router", "store")
+PER_RUN = ("clock_endpoint", "out_dir", "client_runs", "router", "store", WORKER_ORDER)
 LP_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
     "lp-{}.json",  # by LP name, or <lp>.<member> for a member
     "step_table.txt",
@@ -366,6 +372,22 @@ def _dp(run: dict, side: str | None = None) -> int:
     """The DP width of `side`'s deployments, ``P`` or ``D``, else the run's."""
     width = run.get("data_parallel_size", 1)
     return run.get(DP_WIDTHS[side], width) if side else width
+
+
+def worker_order(run: dict) -> dict:
+    """The run file's ``worker_order``, ``{}`` when absent. Refuses a side
+    other than ``P`` and ``D``, and a list that is not each of the side's
+    (instance, DP rank) pairs once."""
+    order = run.get(WORKER_ORDER, {})
+    for side, pairs in order.items():
+        known = side in INSTANCES
+        n, dp = (run.get(INSTANCES[side], 1), _dp(run, side)) if known else (0, 0)
+        if not n or sorted(pairs) != [[k, r] for k in range(n) for r in range(dp)]:
+            raise ValueError(
+                f"{WORKER_ORDER}[{side!r}] is {pairs}: name side P or D, and list "
+                "each of its deployments' (instance, DP rank) pairs once"
+            )
+    return order
 
 
 def _widths(run: dict) -> int | tuple[int, int]:
@@ -1178,12 +1200,9 @@ def runner(model_runner, tree) -> None:
         from atom.compass.parity.replay import ReplayBackend
 
         dp_rank = config.parallel_config.data_parallel_rank
-        if max(run.get(k, 1) for k in INSTANCES.values()) > 1:
-            raise ValueError(
-                "replay reads one record per side, prefill/ and decode/, and this "
-                "run has several deployments of a side"
-            )
-        side = {"P": "prefill", "D": "decode"}.get(_pd_side(config), "")
+        # This deployment's record: prefill/, or prefill1/ for engine-P1.
+        name = _pd_name(config, run) or ""
+        side = {"P": "prefill", "D": "decode"}.get(name[:1], "") + name[1:]
         backend = replay = ReplayBackend(Path(run["replay"]) / side, dp_rank)
     if STEP_LINEAR in run:
         if tp != 1:
@@ -1280,12 +1299,7 @@ def runner(model_runner, tree) -> None:
     # the DP and PCP widths, all in the readings' key, so the tokens the
     # reading warmed up with are the ones this deployment's warmup runs.
     warmup = measured.values["warmup_tokens"]
-    model = ModelTerms.from_config(
-        config.hf_config,
-        activations=measured.activations(warmup),
-        config_json=_config_json(config),
-        tree=tree,
-    )
+    model = ModelTerms.from_tree(tree, activations=measured.activations(warmup))
     fallback = run.get("step_roofline", False)
     if not isinstance(fallback, bool):
         raise TypeError(
@@ -1484,17 +1498,6 @@ def host_key_of(model: str, engine: dict) -> dict:
     }
 
 
-def _config_json(config) -> dict:
-    """The model's config.json as loading reads it, with `config.hf_overrides`
-    set over its text-level keys, as `Config` sets them over `hf_config`, so
-    an overridden field counts as stated."""
-    from transformers import PretrainedConfig
-
-    file = PretrainedConfig.get_config_dict(config.model)[0]
-    file.get("text_config", file).update(getattr(config, "hf_overrides", None) or {})
-    return file
-
-
 def _file_digest(name: str, filename: str) -> str | None:
     """``sha256:<hex>`` of a model's `filename`, resolved from `name` as loading
     does; None when it is not there."""
@@ -1551,7 +1554,10 @@ def _engine_hand_in(run: dict, engine_core, sections: dict, client_run=None) -> 
     """Hand in what the worker's steps cost and the memory it predicts, with
     `sections`, its command refusals and the engine's refused clock calls; a
     DP member that parked also hands in ``parks``: their count, CPU seconds, and
-    each park's clock and the clock it left at."""
+    each park's clock and the clock it left at. An engine whose offload
+    scheduler keeps lookup counters hands in ``lookups``: its tier lookups,
+    the prefetches among them, and the deferred prefetches it stopped
+    waiting for."""
     said = _workers_say(engine_core)
     rt = clock.installed()
     lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
@@ -1559,6 +1565,10 @@ def _engine_hand_in(run: dict, engine_core, sections: dict, client_run=None) -> 
     if parks := getattr(rt, "parks", None):
         cpu_s, at = sum(p[2] for p in parks), [p[:2] for p in parks]
         sections = sections | {"parks": {"count": len(parks), "cpu_s": cpu_s, "at": at}}
+    kv = getattr(getattr(engine_core, "scheduler", None), "kv_connector", None)
+    if (counts := getattr(kv, "_perf_counters", None)) is not None:
+        keys = ("lookup_n", "lookup_prefetched", "lookup_defer_expired")
+        sections = sections | {"lookups": {k: counts[k] for k in keys}}
     _hand_in(run, lp, reasons, client_run, **said, **sections)
 
 

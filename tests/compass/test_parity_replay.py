@@ -198,13 +198,20 @@ def test_the_real_workload_runs_request_0_alone_only_when_asked(
     tmp_path, monkeypatch, alone
 ):
     done = []  # just before each stream's end was written
+    second = threading.Event()  # request 1 reached the server
 
     class Server(http.server.BaseHTTPRequestHandler):
         def do_POST(self):
-            self.rfile.read(int(self.headers["content-length"]))
+            body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+            k = int(body["prompt"].split()[0])
+            if k == 1:
+                second.set()
             self.send_response(200)
             self.end_headers()
-            time.sleep(0.3)  # the stream, longer than a gap
+            if k == 0 and not alone:  # open until request 1 arrives, or 10 s
+                second.wait(10)
+            else:
+                time.sleep(0.3)  # the stream, longer than a gap
             done.append(time.monotonic_ns())
             self.wfile.write(b"data: [DONE]\n\n")
 
@@ -217,8 +224,8 @@ def test_the_real_workload_runs_request_0_alone_only_when_asked(
     sent = json.loads((tmp_path / ARRIVALS).read_text())["sent_ns"]
     if not alone:  # the default sends request 1 during request 0's stream
         assert sent[1] < min(done), (sent, done)
-    else:
-        assert sent[1] >= min(done) and sent[2] - sent[1] > 0.05e9, (sent, done)
+    else:  # request 1 after request 0's end, request 2 a gap after that end
+        assert min(done) <= sent[1] and min(done) + 0.1e9 <= sent[2], (sent, done)
 
 
 @pytest.mark.parametrize("role, side", [("kv_producer", "P"), ("kv_consumer", "D")])

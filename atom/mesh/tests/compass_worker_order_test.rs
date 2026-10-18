@@ -1,7 +1,8 @@
 //! Under `determinism::enable`, the ATOM PD router running dp_sticky over
 //! DP-aware workers picks the same ranks from one seed whatever order the
 //! workers were registered or hashed in: a request naming its model reads the
-//! model's list, one naming none reads every worker.
+//! model's list, one naming none reads every worker. A set worker order
+//! (`determinism::set_worker_order`) lists them in it instead.
 
 use std::sync::{Arc, Mutex};
 
@@ -17,7 +18,7 @@ use http_body_util::BodyExt;
 use mesh::{
     app_context::AppContext,
     config::{types::BackendType, PolicyConfig, RouterConfig, RoutingMode},
-    core::{DPAwareWorkerBuilder, Worker, WorkerType},
+    core::{DPAwareWorkerBuilder, Worker, WorkerRegistry, WorkerType},
     determinism,
     routers::RouterFactory,
     server::{build_app, AppState},
@@ -140,5 +141,50 @@ async fn a_request_naming_no_model_picks_the_same_ranks_from_one_seed() {
     assert_eq!(
         picks(20260707, [0, 1, 2], "/generate", generate.clone()).await,
         picks(20260707, [0, 1, 2], "/generate", generate).await
+    );
+}
+
+/// Each worker's (base URL, DP rank), in the order `listed` gives them.
+fn named(listed: &[Arc<dyn Worker>]) -> Vec<(String, usize)> {
+    listed
+        .iter()
+        .map(|w| (w.base_url().to_string(), w.dp_rank().unwrap()))
+        .collect()
+}
+
+#[test]
+#[serial]
+fn a_set_worker_order_lists_the_workers_in_it_and_the_rest_after_them_sorted() {
+    determinism::enable(20260707);
+    let at = |url: &str, rank| (url.to_string(), rank);
+    let order = vec![at("http://b", 1), at("http://a", 0), at("http://b", 0)];
+    determinism::set_worker_order(order.clone());
+    let registry = WorkerRegistry::new();
+    for (url, rank) in [
+        ("http://a", 1),
+        ("http://b", 0),
+        ("http://a", 0),
+        ("http://b", 1),
+    ] {
+        registry.register(Arc::new(
+            DPAwareWorkerBuilder::new(url, rank, 2)
+                .model_id("m")
+                .worker_type(WorkerType::Decode)
+                .build(),
+        ));
+    }
+    let mut expected = order;
+    expected.push(at("http://a", 1));
+    assert_eq!(named(&registry.get_by_model("m")), expected);
+    assert_eq!(named(&registry.get_all()), expected);
+    determinism::enable(20260707);
+    assert_eq!(
+        named(&registry.get_all()),
+        [
+            at("http://a", 0),
+            at("http://a", 1),
+            at("http://b", 0),
+            at("http://b", 1)
+        ]
     );
 }
