@@ -392,6 +392,14 @@ def test_a_hit_ends_at_a_chunk_that_keeps_its_recurrent_state(separate, hits):
     assert got + [_hit(server, "c", end=3 * CHUNK)] == hits
 
 
+def test_a_hit_ends_below_a_chunk_whose_state_only_one_rank_lost():
+    flags = FLAGS + ["--null-block-id", "-1", "--separate-object-groups"]
+    server = LMCacheServer(flags, chunk_bytes=1)
+    _native_store(server, 0, WHOLE, {1, 3})
+    _native_store(server, 1, WHOLE, {1})  # rank 1's chunk-3 state evicted alone
+    assert _hit(server, "a") == 2
+
+
 def _copied(server, op, *payloads):
     """Serve one request and apply its effect; the chunks its copy is priced at."""
     frames = [b"id", msgspec.msgpack.encode(7), encode_operation(op)]
