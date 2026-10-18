@@ -212,8 +212,8 @@ priced it, so populations from two backends coexist and a planner names the one 
 
 ### Phase 1a — trace capture
 
-**Device-free.** Captures one concrete IR graph per decode width and per prefill (T, B)
-of the shape population, using the `TorchDispatchMode` + `FakeTensorMode` mechanism of
+**Device-free.** `trace ops` captures one concrete IR graph per decode width and per
+prefill (T, B) it is given or that a record directory's steps hold (`13` D80), using the `TorchDispatchMode` + `FakeTensorMode` mechanism of
 doc `04` D18, each leaf with its contract (`04` D20). Revised 2026-10-18 by the owner's
 ruling on [#1489](https://github.com/jgong5/ATOM/issues/1489): capture is concrete, not
 one symbolic graph per structure. Nothing is allocated on a GPU and no kernel runs, which
