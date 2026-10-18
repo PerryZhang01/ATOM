@@ -1464,9 +1464,10 @@ or of a later output forward holding a request it schedules, and a downstream st
 On a machine spec's carriers it prices each send as `StageSends` does (`15` D91): the
 receive posted at the prepare end plus `W_recv`, the RCCL parts behind the previous
 frame's, the receiver's device end and its own send's hold, and a sender's device start
-behind the send it last settled. The record does not stamp idle flushes, so the gate
-infers them: the head flushes whenever it waits for tokens, a later stage once
-`recv_metadata`'s 100 ms poll times out (#1449, #1450, #1457).
+behind the send it last settled. The gate infers idle flushes: the head flushes whenever
+it waits for tokens, a later stage once `recv_metadata`'s 100 ms poll times out (#1449,
+#1450, #1457). The record stamps each idle `flush_pp_send` that settles a send, and the
+gate names, per sending stage, the steps where the two disagree (#1532).
 A simulated run prices a speculative step with `D_target` and `D_draft` from the cost
 backend, its terms tagged `draft` making the latter, and R1 holds its launch with MTP
 ([#1090](https://github.com/jgong5/ATOM/issues/1090)). Under DP, each forward's
@@ -1479,7 +1480,8 @@ what-if: never graded, and refused by the graders.
 **Measured, not hooked.** The parity recorder, `RecordingModelRunner`
 (`atom/compass/parity/runner.py`), stamps host time around the staging gate, the launch
 and the R1 wait (with MTP also the draft copy wait; on a non-first PP stage also the R7
-receive, and on the last stage its own token read), and records device events at
+receive, and on the last stage its own token read; on a sending stage an idle
+`flush_pp_send` that settles a send), and records device events at
 `run_model` entry, with MTP at the target's end, on a non-first PP stage where the
 received tensors are in, and at the forward's exit, drained with `query()`, never `synchronize()`
 ([#824](https://github.com/jgong5/ATOM/issues/824)). It edits no ATOM file. The
