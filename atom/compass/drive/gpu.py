@@ -18,11 +18,8 @@ container. The run's own processes are told apart by when the checks run: before
 the run none has started, and after it every one has exited, so any other
 process listed on a named GPU at either check is not this run's.
 
-`--gpu` and the listing number GPUs as rocm-smi does, in PCI bus order; HIP and
-KFD's per-process memory number them by KFD topology node, and on some nodes
-the two orders differ. `rocm-smi --showhw` names each GPU's KFD node: a command
-hands its server or engine `hip_visible`'s translation, and the memory check
-reads the GPU's own node.
+`--gpu` and the listing use rocm-smi's GPU indexes; HIP and KFD's memory number
+GPUs by KFD node, the one `rocm-smi --showhw` lists for each (`_nodes`).
 """
 
 import argparse
@@ -84,8 +81,7 @@ def smi(*args: str) -> str:
 
 
 def _nodes(gpus: tuple[int, ...]) -> dict[int, int]:
-    """Each rocm-smi GPU's KFD node, as `rocm-smi --showhw` lists them. A GPU of
-    `gpus` it does not list, or two GPUs on one node, refuses."""
+    """Each rocm-smi GPU's KFD node; refuses a GPU of `gpus` it lacks, or a shared node."""
     node = {int(g): int(n) for g, n in _NODE.findall(smi("--showhw"))}
     if missing := [gpu for gpu in gpus if gpu not in node]:
         raise GpuRefusal(f"rocm-smi --showhw lists no GPU {missing}")
@@ -151,11 +147,10 @@ def _check(gpus: tuple[int, ...], out: Path, when: str) -> str:
 
 
 def _vram(pid: str, nodes, gpu: int) -> int:
-    """Bytes of rocm-smi GPU `gpu`'s memory KFD charges to `pid`; 0 once it has
-    exited. KFD names the GPU by the `gpu_id` of its topology node, which
-    `nodes()` (`_nodes`) gives. Topology and `rocm-smi --showhw` are read only
-    for a process KFD lists: a container without the GPU devices may not read
-    them."""
+    """Bytes of GPU `gpu`'s memory KFD charges to `pid`; 0 once it has exited.
+    KFD names the GPU by its node's `gpu_id`; `nodes()` gives that node.
+    The topology is read only for a process KFD lists: a container without the
+    GPU devices may not read it."""
     proc = KFD / "proc" / pid
     if not proc.is_dir():
         return 0

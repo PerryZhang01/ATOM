@@ -320,21 +320,16 @@ compass_wait_up() {
 
 # compass_gpus hip|smi LIST: the comma-separated GPUs LIST names, as HIP's
 # ordinals (`hip`, LIST in rocm-smi's indexes) or as rocm-smi's indexes (`smi`,
-# LIST in HIP's ordinals). rocm-smi numbers GPUs in PCI bus order and HIP in
-# KFD topology node order, which differ on some nodes; a GPU's HIP ordinal is
-# its KFD node's rank among the nodes `rocm-smi --showhw` lists, as in
-# `atom/compass/drive/gpu.py::hip_visible`. A GPU it does not list, or two
-# GPUs on one node, fails.
+# LIST in HIP's ordinals), mapped as `atom/compass/drive/gpu.py::hip_visible`
+# maps them. A GPU it cannot map fails.
 compass_gpus() {
-    rocm-smi --showhw | awk '/^[0-9]+ +[0-9]+ / { print $2, $1 }' | sort -n |
-        awk -v to="$1" -v list="$2" '
-        NR > 1 && $1 == last { dup = 1 }
-        { last = $1; hip[$2] = NR - 1; smi[NR - 1] = $2 }
+    rocm-smi --showhw | awk '/^[0-9]+ +[0-9]+ /' | sort -k2,2n | awk -v to="$1" -v list="$2" '
+        NR > 1 && $2 == last { dup = 1 }
+        { last = $2; hip[$1] = NR - 1; smi[NR - 1] = $1 }
         END {
-            if (dup) exit 1
             k = split(list, want, ",")
             for (i = 1; i <= k; i++) {
-                if (to == "hip" ? !(want[i] in hip) : !(want[i] in smi)) exit 1
+                if (dup || (to == "hip" ? !(want[i] in hip) : !(want[i] in smi))) exit 1
                 out = out (i > 1 ? "," : "") (to == "hip" ? hip[want[i]] : smi[want[i]])
             }
             print out
