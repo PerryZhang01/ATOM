@@ -300,7 +300,7 @@ fragment supplied each field. `validate` refuses an incomplete or inconsistent o
 a probe                  -> a fragment
 merge(fragments)         -> the machine spec, recording which fragment supplied each field
 validate(spec or merge)  -> the refusals below
-explain(spec, term)      -> the fields behind one quantity, and how much each contributed
+explain(spec, term)      -> each field under a field or block path, with its value and origin
 ```
 
 Each is a function of the `spec` package, and a per-machine script runs them:
@@ -374,8 +374,8 @@ with them.
 
 ### `explain`
 
-Given a spec and a predicted quantity, print which spec fields contributed and by how
-much. This is not a nicety: the KV gate is 5%, memory validation is **per term and never
+Given a spec and the dotted path of a field or a block of fields, print each field under it
+with its value and origin, one row per field and never a sum. This is not a nicety: the KV gate is 5%, memory validation is **per term and never
 as a sum**, and a prior summed check read **+13.8%** while hiding three errors two of
 which cancelled — the largest being 25% of a single term.
 
