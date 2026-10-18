@@ -69,7 +69,8 @@ bundle's key, priced by `StepGridBackend`; see `step_grid`),
 `StepRooflineBackend` prices the steps the backend refuses, through
 `StepFallbackBackend`, as it always does under ``step_grid``, from the
 modules `run.modules.walk` reads off the meta build), ``padding`` (optional:
-``none`` prices a replayed graph's real rows in place of the rows it pads to),
+``none`` prices a replayed graph's real rows in place of the rows it pads to,
+which ``executed``, the default, prices),
 ``on_refusal`` (optional: ``mark``, the default, prices a step no cost source
 answers at 0 s, hands in its ``cost:`` reason and continues; ``abort`` ends
 the run there, which still writes the summary),
@@ -1385,7 +1386,8 @@ def runner(model_runner, tree) -> None:
     if padding not in ("executed", "none"):
         raise ValueError(
             f"the run file's padding is {padding!r}; it is none, which prices a "
-            "replayed graph's real rows, or absent, which prices the rows it pads to"
+            "replayed graph's real rows, or executed or absent, which prices the "
+            "rows it pads to"
         )
     if fallback or STEP_GRID in run:
         from atom.compass.run.modules import walk

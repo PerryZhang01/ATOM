@@ -56,6 +56,7 @@ from atom.compass.backends.work import (
     bounds,
     elementwise,
     gemm,
+    price,
 )
 
 SOURCE = "step-roofline"
@@ -152,6 +153,7 @@ class StepRooflineBackend(CostBackend):
         )
         self.count = len(modules)
         self.name = machine.values.get("name", "")
+        self.domain = machine.values.get("interconnect.intra_node.domain_devices")
         self._stated_as: dict[str, str] = {}
 
     @property
@@ -199,17 +201,16 @@ class StepRooflineBackend(CostBackend):
                     "which the machine spec does not state"
                 )
                 continue
-            domain = self.machine.value("interconnect.intra_node.domain_devices")
-            if m.ranks > domain:
+            if work.comm and m.ranks > self.domain:
                 refuse.append(
                     f"a {m.kind} collective over {m.ranks} ranks leaves the "
-                    f"scale-up domain of {domain} devices"
+                    f"scale-up domain of {self.domain} devices"
                 )
                 continue
             b = bounds(work, self.machine)
             kernel = max(("floor", "compute", "memory"), key=b.get)
             won = [kernel, "comm"] if b["comm"] else [kernel]
-            seconds = max(b[kernel], b["comm"]) if m.fused else b[kernel] + b["comm"]
+            seconds = price(work, self.machine) if m.fused else b[kernel] + b["comm"]
             priced.setdefault(m.kind, []).append(seconds * count)
             notes = stated.setdefault(m.kind, [])
             notes += [s for w in won for p in reads[w] if (s := self._stated(p))]

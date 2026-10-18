@@ -124,6 +124,34 @@ def test_the_lm_head_runs_on_each_prefill_rows_last_token_and_each_decode_token(
     assert [t.seconds for t in terms if t.name == "roofline.lm_head"] == priced
 
 
+@pytest.mark.parametrize("bf16", [2.5e15, 1e9], ids=["memory-bound", "compute-bound"])
+def test_linear_attention_and_act_on_a_padded_two_token_decode_step_by_hand(bf16):
+    document = copy.deepcopy(ROOFLINE)
+    document["device"]["kernel_floor_s"] = 1e-12
+    document["device"]["memory"]["bandwidth_curve"] = [[1, 1e12], [2**40, 1e12]]
+    document["device"]["compute"]["bf16_flops"] = bf16
+    modules = [
+        Module("gdn", "linear_attention", (4, 2, 8, 16)),
+        Module("act", "act", (64,)),
+    ]
+    # A fresh prefill row, and two two-token decode rows in a rung-4 graph.
+    step = view((5, 5, False), (2, 50, True), (2, 90, True), rung=4)
+    backend = StepRooflineBackend(MachineSpec.from_mapping(document), modules)
+    by_name = {t.name: t.seconds for t in backend.price(step).terms}
+    # 9 real tokens read q and k (2 heads of 8), v (4 heads of 16), gate and
+    # beta (4 heads) and write o (4 heads of 16); the 3 rows write their 4x8x16
+    # state and the 2 with history read it; two products a token and head.
+    moved = 9 * (2 * 2 * 8 + 2 * 4 * 16 + 2 * 4) * 2 + (3 + 2) * 4 * 8 * 16 * 2
+    flops = 9 * 4 * 2 * (2 * 8 * 16)
+    # 9 real tokens and 2 pad rows of 2: two 64-wide inputs read, one written.
+    act = (9 + 2 * 2) * 64 * 3 * 2
+
+    assert by_name["roofline.linear_attention"] == pytest.approx(
+        max(moved / 1e12, flops / (bf16 * 0.70))
+    )
+    assert by_name["roofline.act"] == pytest.approx(act / 1e12)
+
+
 def test_an_unclassified_module_refuses_every_step_by_name():
     tree = torch.nn.Sequential(
         torch.nn.Linear(16, 32, dtype=torch.bfloat16, device="meta"),
