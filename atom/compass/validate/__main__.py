@@ -11,9 +11,9 @@ as `run_file`, and `validate.runs` decides which client run of theirs is graded,
 whether one is. Rows: `validate.runs`' grades, TTFT p50 per band of uncached prompt
 tokens graded alike; per run `record` or `run` wrote, its warmup: how many requests
 its export names as such and how many steps hold only those; `validate.cost` on the
-steps graded (with the steps it leaves out) and `memory.check` per real run; and the
-simulated run's refusals by source, its steps extrapolated and priced by a
-fallback, shares and speed. Any refusal makes a
+steps graded (with the steps it leaves out, refuses or extrapolates) and
+`memory.check` per real run; and the simulated run's refusals by source, its steps
+extrapolated and priced by a fallback, shares and speed. Any refusal makes a
 `cctraces_sim.sh` cell a coverage report; the shares grade nothing, and neither do the
 counts but preemptions and prefill tokens.
 """
@@ -107,6 +107,7 @@ def _cost(run: Path, backend, steps: list[dict]):
     yield where, "left out", f"not labelled {json.dumps(report['cut'])}; warm steps, real s { {w['step']: round(w['real_s'], 2) for w in report['warm']} }", "-"
     for band, r in report["refused"].items():
         yield where, f"refused {band}", f"{r['steps']} steps, real {r['real_s']:.2f} s", "-"
+    yield where, "extrapolated", f"{report['extrapolated']} steps", "-"
 
 
 def _memory(law: Path, real: Path):
