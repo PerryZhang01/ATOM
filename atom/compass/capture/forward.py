@@ -18,6 +18,10 @@ that function by its module and name, its parameters as the arguments, with
 what else the function dispatched folded in. A function that reassigned a
 parameter before the launch, or that dispatched a leaf of its own other than a
 host query (`HOST_QUERIES`), is refused by name.
+
+The engine is ATOM's own `Config` for ATOM's engine arguments, on a declared
+device of one arch. Under DP the capture runs one rank and every peer runs its
+shape (`peers`).
 """
 
 import ast
@@ -32,6 +36,7 @@ from unittest.mock import patch
 
 import numpy
 import torch
+from torch._subclasses.fake_tensor import FakeTensor
 from torch.multiprocessing.reductions import StorageWeakRef
 from torch.utils import _pytree
 from torch.utils._python_dispatch import TorchDispatchMode
@@ -39,7 +44,7 @@ from torch.utils._python_dispatch import TorchDispatchMode
 import atom
 from atom.compass import ir
 
-from . import driverless
+from . import driverless, peers
 from .graph import LAYER, Fork, Join, Traced, _json, build
 
 #: The fewest KV blocks a capture allocates; a shape that needs more gets more.
@@ -135,18 +140,39 @@ class _Recorder(TorchDispatchMode):
     role given so far.
     """
 
-    def __init__(self, contexts):
+    def __init__(self, contexts, fake_mode=None):
         super().__init__()
         self.contexts, self.modules, self.roles = contexts, {}, {}
-        self.creating, self.on = None, False
+        self.creating, self.on, self.fake_mode = None, False, fake_mode
         self.start()
 
     def start(self):
         self.layer, self.items, self.stacks, self.left_out = None, [], [], []
         self.lifting = None  # the frame the last item lifted to
 
+    @contextlib.contextmanager
+    def quiet(self):
+        """Record nothing inside: a stand-in's own work is not ATOM's."""
+        on, self.on = self.on, False
+        try:
+            yield
+        finally:
+            self.on = on
+
+    def _fake(self, tensor):
+        if not isinstance(tensor, FakeTensor):
+            return self.fake_mode.from_tensor(tensor)
+        tensor.constant = None
+        return tensor
+
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         kwargs = kwargs or {}
+        device = kwargs.get("device")
+        if device is not None and torch.device(device).type != "cpu":
+            # A host array headed for the device, real or a fake holding its
+            # values, is faked without them first, or the fake mode would copy
+            # the values onto a device that is not there.
+            args = _pytree.tree_map_only(torch.Tensor, self._fake, args)
         out = func(*args, **kwargs)
         leaves = _pytree.tree_leaves((args, kwargs))
         ins = [t for t in leaves if isinstance(t, torch.Tensor)]
@@ -265,6 +291,12 @@ class _Recorder(TorchDispatchMode):
             return str(value)
         if isinstance(value, numpy.generic):
             return value.item()
+        if isinstance(value, dict):
+            return tuple((k, self._arg(v)) for k, v in value.items())
+        if hasattr(value, "__dict__") and not callable(value):
+            # A host object the engine built from its configuration, which the
+            # graph's key names: its type stands for it.
+            return f"<{type(value).__qualname__}>"
         return value
 
     def _layered(self, path):
@@ -283,11 +315,15 @@ def _patches(recorder):
       allocation); its device side is ATOM's `zeros_like`, faked.
     * GDN's causal-conv1d metadata is host arithmetic over the staged
       `cu_seqlens`, and it runs outside the fake mode too.
+    * A real host tensor's values are read on the host, `tolist` as `numpy`.
+    * ATOM's MoE wrappers run their bodies, not their fakes: inside are the
+      collectives, the streams and the expert kernels.
     """
     import flydsl.compiler
     from torch._subclasses.fake_tensor import unset_fake_temporarily
     from triton.runtime.jit import JITFunction
 
+    from atom.model_ops import module_dispatch_ops, moe
     from atom.model_ops.attentions import gdn_attn
     from atom.utils import CpuGpuBuffer
 
@@ -298,7 +334,13 @@ def _patches(recorder):
         recorder.launch(f"flydsl.{getattr(kernel, 'func', kernel).__name__}")
 
     init, zeros, numpy = CpuGpuBuffer.__init__, torch.zeros, torch.Tensor.numpy
-    conv1d = gdn_attn.compute_causal_conv1d_metadata
+    conv1d, tolist = gdn_attn.compute_causal_conv1d_metadata, torch.Tensor.tolist
+
+    def host_tolist(tensor):
+        if isinstance(tensor, FakeTensor):
+            return tolist(tensor)
+        with unset_fake_temporarily():
+            return tolist(tensor)
 
     def host_zeros(*size, pin_memory=False, **kwargs):
         if torch.device(kwargs.get("device") or "cpu").type != "cpu":
@@ -327,6 +369,13 @@ def _patches(recorder):
         (flydsl.compiler, "compile", launch),
         (CpuGpuBuffer, "__init__", staged_init),
         (gdn_attn, "compute_causal_conv1d_metadata", host_conv1d),
+        (torch.Tensor, "tolist", host_tolist),
+        (torch.ops.aiter, "moe_forward", moe.moe_forward),
+        (
+            torch.ops.aiter,
+            "maybe_dual_stream_forward",
+            module_dispatch_ops.maybe_dual_stream_forward,
+        ),
     ):
         stack.enter_context(patch.object(owner, name, value))
     return stack
@@ -337,21 +386,22 @@ def _build_runner(config, fake_mode):
     leaves torch's default for the steps, as ATOM's runner does.
 
     The group already exists at its width, warmup would run a forward of its
-    own, and no checkpoint is read.
+    own, the checkpoint is ATOM's empty dummy (built and post-processed, no
+    bytes read), and the declared device's memory is all free.
     """
-    from atom.model_engine.model_runner import ModelRunner
+    from atom.model_engine.model_runner import DeviceMemoryReadings, ModelRunner
     from atom.utils import h2d
 
     class _CapturedRunner(ModelRunner):
         def _setup_device_and_distributed(self, rank, config):
             self.device = torch.device("cuda:0")
 
-        def _build_and_load_model(self, built_class):
-            self.model = built_class(config)
-            torch.set_default_device(None)
-
         def _maybe_warmup(self):
             return
+
+        def _read_device_memory(self):
+            total = torch.cuda.get_device_properties(0).total_memory
+            return DeviceMemoryReadings(total, total, 0, 0)
 
     # A fake tensor has no address: the alias check sees each buffer empty.
     with fake_mode, patch.object(h2d, "_range", lambda t: (0, 0)):
@@ -397,30 +447,69 @@ def _batch(shape, block_size):
     return batch, blocks
 
 
-def capture(model: str, tp: int, shapes, tmpdir: str):
-    """Trace one step of `model` at TP `tp` at each of `shapes`, in this process.
+def _config(model, tp, atom_args):
+    """ATOM's `Config` for its engine arguments `atom_args`, eager, at level 0,
+    the checkpoint an empty dummy.
+
+    Under `--enable-dp-attention` each TP rank is a DP rank of TP 1, as
+    `CoreManager` rewrites it.
+    """
+    import argparse
+    import dataclasses
+
+    from atom.config import Config
+    from atom.model_engine.arg_utils import EngineArgs
+
+    parser = EngineArgs.add_cli_args(argparse.ArgumentParser(prog="trace ops --"))
+    forced = ["--enforce-eager", "--level", "0", "--load_dummy", "empty"]
+    args = parser.parse_args(["--model", model, "-tp", str(tp), *atom_args, *forced])
+    engine = EngineArgs.from_cli_args(args)
+    names = {field.name for field in dataclasses.fields(Config)}
+    kwargs = engine._get_engine_kwargs().items()
+    config = Config(engine.model, **{k: v for k, v in kwargs if k in names})
+    if config.enable_dp_attention:
+        parallel = config.parallel_config
+        parallel.data_parallel_size *= config.tensor_parallel_size
+        parallel.data_parallel_size_local = parallel.data_parallel_size
+        config.tensor_parallel_size = 1
+    return config
+
+
+def capture(model: str, tp: int, shapes, tmpdir: str, atom_args=(), arch="gfx942"):
+    """Trace one step of `model` at TP `tp` at each of `shapes`, in this process,
+    under ATOM's engine arguments `atom_args` on a declared `arch`.
 
     Yields, per shape, the graph, the model's config digest, what the capture
     declared, the operators it left out of the graph among it.
     """
-    declared = driverless.install(tp, tmpdir)
+    declared = driverless.install(tmpdir, arch)
 
     from torch.fx.experimental.symbolic_shapes import ShapeEnv
 
     from atom.compass.run import _file_digest
-    from atom.config import Config, set_current_atom_config
+    from atom.config import set_current_atom_config
 
-    config = Config(
-        model=model, tensor_parallel_size=tp, load_dummy="empty", enforce_eager=True
-    )
+    config = _config(model, tp, atom_args)
+    tp, dp = config.tensor_parallel_size, config.parallel_config.data_parallel_size
+    ep = int(config.enable_expert_parallel)
+    declared["group"] = driverless.group(tp, dp)
     set_current_atom_config(config)
     digest = _file_digest(config.model, "config.json")
-    structure = f"{config.hf_config.architectures[0]} {digest} tp={tp} {{}} eager"
+    structure = (
+        f"{config.hf_config.architectures[0]} {digest} tp={tp} dp={dp} ep={ep} "
+        f"{{}} eager {arch}"
+    )
     fake_mode = driverless.driverless_mode(ShapeEnv())
     contexts = config.compilation_config.static_forward_context
-    recorder, block_size = _Recorder(contexts), config.kv_cache_block_size
+    recorder, block_size = _Recorder(contexts, fake_mode), config.kv_cache_block_size
     driverless.on_wait = recorder.wait
-    with _patches(recorder):
+    stack = _patches(recorder)
+    if dp > 1:
+        for owner, name, value in peers.patches(recorder):
+            stack.enter_context(patch.object(owner, name, value))
+        if ep:
+            peers.install_mori(recorder)
+    with stack:
         runner = _build_runner(config, fake_mode)
         stacks = [
             module
@@ -444,6 +533,10 @@ def capture(model: str, tp: int, shapes, tmpdir: str):
         recorder.roles = dict.fromkeys(weights, ir.Role.WEIGHT)
         recorder.creating = ir.Role.KV
         blocks = max(_batch(shape, block_size)[1] for shape in shapes)
+        with fake_mode:
+            runner.get_num_blocks()  # sizes the pools, as `EngineCore` does
+        # A warmup copy whose bytes nobody reads, like `_maybe_warmup`.
+        runner.attn_metadata_builder.warmup_per_req_cache = lambda: None
         with fake_mode, recorder:
             runner.allocate_kv_cache(max(KV_BLOCKS, blocks))
         for shape in shapes:

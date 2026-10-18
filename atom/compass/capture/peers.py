@@ -4,18 +4,21 @@
 A capture runs one rank. Where ATOM reads its peers, two rules answer:
 
 * Every peer scheduled what this rank did. The step's one DP all-gather
-  (`sync_dp_metadata`) and the per-rank counts built from it
-  (`DPMetadata.make`) run on the host with this rank's row in every slot.
+  (`sync_dp_metadata`), the per-rank counts built from it
+  and the sizes read off them (`DPMetadata.make`, `get_sizes_across_dp`)
+  run on the host with this rank's row in every slot.
 * What the DP group gathers for the MoE, or MORI dispatches to this rank, is
-  `moe_rows` rows, the group's width times this rank's; what comes back is
+  every rank's rows, the group's width times this rank's; what comes back is
   this rank's rows.
 
 Each exchange is one `declared` op named for ATOM's call (`dp.all_gatherv`,
-`mori.dispatch`), its tensors the ones ATOM passed and got back.
+`mori.dispatch`), its arguments the ones ATOM passed, the group aside.
 """
 
+import inspect
 import types
 
+import torch
 from torch.utils import _pytree
 
 from atom.compass import ir
@@ -23,20 +26,28 @@ from atom.compass import ir
 
 def _declared(recorder, name, fn):
     """`fn` as one declared op `name`; what it dispatches inside is not ATOM's."""
+    from .forward import _atom_frames
+
+    signature = inspect.signature(fn)
 
     def call(*args, **kwargs):
         with recorder.quiet():
             out = fn(*args, **kwargs)
-        ins, outs = _pytree.tree_leaves((args, kwargs)), _pytree.tree_leaves(out)
-        recorder.add(name, ir.NodeKind.DECLARED, ins, outs)
+        if recorder.on:
+            slots = signature.bind(*args, **kwargs).arguments
+            slots.update(slots.pop("kwargs", {}))
+            slots.pop("group", None)
+            outs = [t for t in _pytree.tree_leaves(out) if isinstance(t, torch.Tensor)]
+            recorder.add(name, ir.NodeKind.DECLARED, slots, outs, None, _atom_frames())
         return out
 
     return call
 
 
-def patches(recorder, own, moe_rows):
+def patches(recorder):
     """`(owner, name, value)` for each patch that answers for the DP peers."""
     import torch.distributed as dist
+    from aiter.dist.parallel_state import get_dp_group
     from torch._subclasses.fake_tensor import unset_fake_temporarily
 
     from atom.model_ops import moe
@@ -44,6 +55,8 @@ def patches(recorder, own, moe_rows):
     from atom.utils.tbo import ubatching
 
     sync, make = ubatching.sync_dp_metadata, DPMetadata.make
+    sizes = DPMetadata.get_sizes_across_dp
+    dp = get_dp_group().world_size
 
     def on_host(fn, *args, **kwargs):
         with unset_fake_temporarily():
@@ -63,20 +76,37 @@ def patches(recorder, own, moe_rows):
     def rows(x, height):
         return x.new_empty((height, *x.shape[1:]))
 
-    gathers = {
-        "all_gatherv": lambda x, sizes, group: rows(x, moe_rows),
-        "reduce_scatterv": lambda x, sizes, group: rows(x, own),
-        "all_gather_with_padding": lambda x, use_cag=True: (rows(x, moe_rows), own),
-        "reduce_scatter_with_unpadding": lambda x, local_tokens: rows(x, own),
-    }
+    # `sizes` holds this rank's count in every slot.
+    def all_gatherv(x, sizes, group):
+        return rows(x, sum(sizes))
+
+    def reduce_scatterv(x, sizes, group):
+        return rows(x, sizes[0])
+
+    def all_gather_with_padding(x, use_cag=True):
+        return rows(x, dp * x.shape[0]), x.shape[0]
+
+    def reduce_scatter_with_unpadding(x, local_tokens):
+        return rows(x, local_tokens)
+
+    gathers = (
+        all_gatherv,
+        reduce_scatterv,
+        all_gather_with_padding,
+        reduce_scatter_with_unpadding,
+    )
     return [
         (ubatching, "sync_dp_metadata", sync_dp_metadata),
         (DPMetadata, "make", staticmethod(lambda *a, **k: on_host(make, *a, **k))),
-        *((moe, n, _declared(recorder, f"dp.{n}", f)) for n, f in gathers.items()),
+        (DPMetadata, "get_sizes_across_dp", lambda self: on_host(sizes, self)),
+        *(
+            (moe, f.__name__, _declared(recorder, f"dp.{f.__name__}", f))
+            for f in gathers
+        ),
     ]
 
 
-def install_mori(recorder, moe_rows):
+def install_mori(recorder):
     """Give the EP group an all-to-all manager whose MORI handles are declared."""
     from aiter.dist.parallel_state import get_ep_group
 
@@ -93,7 +123,7 @@ def install_mori(recorder, moe_rows):
             self.combine = _declared(recorder, "mori.combine", self._combine)
 
         def _dispatch(self, x, weights, scales, ids, **kwargs):
-            n, k = moe_rows, ids.shape[1]
+            n, k = group.world_size * x.shape[0], ids.shape[1]
             return (
                 x.new_empty((n, x.shape[1])),
                 weights.new_empty((n, k)),

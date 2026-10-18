@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
-"""`compass trace ops` on DeepSeek-V4-Pro at one rank of the nightly DPA-TP8
-deployment, EP off and EP8, prefill and decode, with no device.
+"""`compass trace ops` on DeepSeek-V4-Pro with no device: one rank of the
+nightly DPA-TP8 deployment at EP off and EP8, and TP8 without DP attention,
+decode and prefill.
 
-A step under DP is traced at its concrete width and keyed by it; every peer
-runs this rank's width, so what the MoE sees is eight ranks' rows.
+Under DP every peer runs this rank's shape, so what the MoE sees is eight
+ranks' rows.
 """
 
 import hashlib
@@ -25,15 +26,17 @@ TREE = pathlib.Path(__file__).resolve().parents[2]
 CONFIG = pathlib.Path(__file__).with_name("deepseek_v4_pro_config.json")
 CONFIG_SHA256 = "5fe4568daee51c208cb8a79538eaeda090ae011ade1dee2c386aa95f569c810e"
 LAYERS = json.loads(CONFIG.read_text())["num_hidden_layers"]
-DPA_TP8 = ["--kv_cache_dtype", "fp8", "--enable-dp-attention"]
-EP8 = ["--enable-expert-parallel"]
+SHAPES = "--width 1 --width 2 --prefill 512 1 --prefill 512 2"
+DPA_TP8 = " -- --kv_cache_dtype fp8 --enable-dp-attention"
+EP8 = " --enable-expert-parallel"
 DP = 8
 
 _CAPTURES: dict = {}
 
 
-def capture(tmp_path_factory, *argv):
-    """The structure, graph and declarations `trace ops` published for `argv`."""
+def capture(tmp_path_factory, argv):
+    """`trace ops --tp 8 --arch gfx950` over `argv` in one process: each
+    shape's published graph and declarations, by shape."""
     if argv in _CAPTURES:
         return _CAPTURES[argv]
     assert hashlib.sha256(CONFIG.read_bytes()).hexdigest() == CONFIG_SHA256
@@ -41,7 +44,7 @@ def capture(tmp_path_factory, *argv):
     (root / "model").mkdir()
     (root / "model" / "config.json").write_bytes(CONFIG.read_bytes())
     command = ["trace", "ops", "--model", str(root / "model"), "--tp", "8"]
-    command += ["--arch", "gfx950", "--store", str(root / "store"), *argv]
+    command += ["--arch", "gfx950", "--store", str(root / "store"), *argv.split()]
     done = subprocess.run(
         [
             sys.executable,
@@ -56,17 +59,20 @@ def capture(tmp_path_factory, *argv):
         cwd=TREE,
         env={**os.environ, "PYTHONPATH": str(TREE)},
     )
-    published = re.search(r"^published .*'(.*)'\) as (\w+)$", done.stdout, re.MULTILINE)
-    assert published, f"rc {done.returncode}\n{done.stderr[-4000:]}"
+    tokens = re.findall(r"^published .* as (\w+)$", done.stdout, re.MULTILINE)
+    assert tokens, f"rc {done.returncode}\n{done.stderr[-4000:]}"
     store = ArtifactStore(str(root / "store"))
-    entry = store.read(store.key_from_token(Kind.OP_GRAPH, published.group(2)))
     rank = next(iter(Topology().ranks()))
-    graph, declared = (
-        json.loads(entry.read_member(stem, rank, "json"))
-        for stem in ("graph", "declared")
-    )
-    _CAPTURES[argv] = published.group(1), graph, declared
-    return _CAPTURES[argv]
+    graphs = {}
+    for token in tokens:
+        entry = store.read(store.key_from_token(Kind.OP_GRAPH, token))
+        graph, declared = (
+            json.loads(entry.read_member(stem, rank, "json"))
+            for stem in ("graph", "declared")
+        )
+        graphs[graph["shape"]] = graph, declared
+    _CAPTURES[argv] = graphs
+    return graphs
 
 
 def _pars(region):
@@ -78,26 +84,25 @@ def _pars(region):
     return [par for item in region.get("seq", []) for par in _pars(item)]
 
 
-STEPS = {
-    "decode": (["--width", "2"], "decode B=2", 2),
-    "prefill": (["--width", "512", "--prefill"], "prefill T=512 B=1", 512),
-}
+def _rows(op):
+    """The rows an exchange takes in and gives back."""
+    sent = next(v for v in op["args"].values() if isinstance(v, dict) and "shape" in v)
+    return sent["shape"][0], op["out"][0][0]
 
 
 @pytest.mark.parametrize("ep", [False, True], ids=["ep_off", "ep8"])
-@pytest.mark.parametrize("step", STEPS)
-def test_each_layer_traces_concrete_with_the_shared_expert_beside_the_moe(
-    step, ep, tmp_path_factory
+@pytest.mark.parametrize(
+    "shape, tokens",
+    [("decode B=2", 2), ("prefill T=512 B=1", 512), ("prefill T=512 B=2", 512)],
+)
+def test_each_layer_runs_its_shared_expert_beside_the_moe_on_every_rank_s_rows(
+    shape, tokens, ep, tmp_path_factory
 ):
-    argv, shape, rows = STEPS[step]
-    structure, graph, declared = capture(
-        tmp_path_factory, *argv, "--", *DPA_TP8, *(EP8 if ep else [])
-    )
+    graph, _ = capture(tmp_path_factory, SHAPES + DPA_TP8 + (EP8 if ep else ""))[shape]
 
-    assert f" tp=1 dp={DP} ep={int(ep)} {shape} eager gfx950" in structure
-    assert graph["guards"] == [] and declared["host_resolutions"] == []
-    every = [d for op in _ops(graph["region"]) for s in op["in"] + op["out"] for d in s]
-    assert all(isinstance(d, int) for d in every)
+    assert f" tp=1 dp={DP} ep={int(ep)} {shape.split()[0]} eager gfx950" in (
+        graph["structure"]
+    )
     # Every layer's shared expert runs on a side stream beside its routed MoE.
     pars = _pars(graph["region"])
     assert len(pars) == LAYERS
@@ -116,20 +121,64 @@ def test_each_layer_traces_concrete_with_the_shared_expert_beside_the_moe(
         else:
             assert {op["op"].split(".")[0] for op in exchanged} == {"dp"}
         # In: this rank's rows. Out of the dispatch or gather: every rank's.
-        assert exchanged[0]["in"][0][0] == rows
-        assert exchanged[0]["out"][0][0] == DP * rows
+        assert _rows(exchanged[0]) == (tokens, DP * tokens)
 
 
-def test_a_dp_decode_traces_at_width_1_which_a_symbol_cannot(tmp_path_factory):
-    structure, graph, _ = capture(tmp_path_factory, "--width", "1", "--", *DPA_TP8)
+def test_a_dp_decode_at_width_1_gathers_one_row_from_each_rank(tmp_path_factory):
+    graph, _ = capture(tmp_path_factory, SHAPES + DPA_TP8)["decode B=1"]
 
-    assert " decode B=1 eager " in structure
     rows = {
-        (op["op"], op["out"][0][0])
-        for op in _ops(graph["region"])
-        if op["op"].startswith("dp.")
+        (op["op"], *_rows(op))
+        for layer in _decoder(graph)
+        for op in layer
+        if op["kind"] == "declared"
     }
     assert rows == {
-        ("dp.all_gather_with_padding", DP),
-        ("dp.reduce_scatter_with_unpadding", 1),
+        ("dp.all_gather_with_padding", 1, DP),
+        ("dp.reduce_scatter_with_unpadding", DP, 1),
     }
+
+
+def test_a_prefill_s_head_takes_each_sequence_s_last_token(tmp_path_factory):
+    graphs = capture(tmp_path_factory, SHAPES + DPA_TP8)
+    for seqs in (1, 2):
+        graph, _ = graphs[f"prefill T=512 B={seqs}"]
+        gemms = [
+            op
+            for op in _ops(graph["region"])
+            if op["op"] == "aiter.gemm_a16w16.default"
+        ]
+        # Each layer's router takes every token; the head, after them, one per sequence.
+        assert [op["args"]["A"]["shape"][0] for op in gemms] == [512] * LAYERS + [seqs]
+
+
+def test_a_lifted_function_holds_a_mapping_and_a_host_object(tmp_path_factory):
+    graph, _ = capture(tmp_path_factory, SHAPES + DPA_TP8)["decode B=2"]
+
+    [write] = [
+        op
+        for op in _ops(graph["region"])
+        if op["op"].endswith("paged_decode_indices:write_v4_paged_decode_indices")
+    ]
+    assert write["kind"] == "opaque_leaf"
+    assert write["args"]["geometry"] == "<UnifiedPoolGeometry>"
+    rows = write["args"]["dest_rows"]
+    assert rows and all(isinstance(k, int) and "shape" in t for k, t in rows)
+
+
+def test_tp8_without_dp_attention_reduces_in_each_layer_and_declares_nothing(
+    tmp_path_factory,
+):
+    graphs = capture(
+        tmp_path_factory, "--width 2 --prefill 512 1 -- --kv_cache_dtype fp8"
+    )
+
+    for shape in ("decode B=2", "prefill T=512 B=1"):
+        graph, _ = graphs[shape]
+        assert f" tp=8 dp=1 ep=0 {shape.split()[0]} " in graph["structure"]
+        layers = _decoder(graph)
+        assert len(layers) == LAYERS
+        for layer in layers:
+            names = [op["op"] for op in layer]
+            assert names.count("aiter.all_reduce_.default") == 1
+            assert not [op for op in layer if op["kind"] == "declared"]
