@@ -98,6 +98,23 @@ def _missing(field: Field) -> None:
     )
 
 
+def _stated(field: Field, found: Mapping) -> bool:
+    """Whether the document states `field`, refusing a field it owes and leaves
+    out, and the derate of an optional peak stated without that peak."""
+    if field.of and field.path in found and field.of not in found:
+        raise SpecRefusal(
+            Rule.DERATE,
+            f"`{field.path}` is stated and `{field.of}`, the peak it derates, "
+            "is not",
+            "state that peak, or drop its derate",
+        )
+    if field.path in found:
+        return True
+    if field.required or field.of in found:
+        _missing(field)
+    return False
+
+
 def _version(document: Mapping) -> None:
     """Check the version the document states, before the fields it governs.
 
@@ -178,11 +195,8 @@ class MachineSpec:
         _walk(document, "", found)
         values = {}
         for field in SCHEMA:
-            if field.path not in found:
-                if field.required:
-                    _missing(field)
-                continue
-            values[field.path] = check(field, found[field.path], field.path)
+            if _stated(field, found):
+                values[field.path] = check(field, found[field.path], field.path)
         check_subject(values, "this spec")
         _check_domain(values)
         return cls(values, table(values[TOKENIZERS]))

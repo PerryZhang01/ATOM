@@ -145,7 +145,11 @@ DOCUMENT = {
             "bandwidth_bytes_per_s": 8.0e12,
             "derate": 0.85,
         },
-        "compute": {"bf16_flops": 2.5e15, "fp8_flops": 5.0e15, "derate": 0.70},
+        "compute": {
+            "bf16_flops": 2.5e15,
+            "fp8_flops": 5.0e15,
+            "derate": {"bf16": 0.70, "fp8": 0.70},
+        },
         "software_pinned_to": dict(STACK),
     },
     "interconnect": {

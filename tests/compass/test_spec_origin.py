@@ -205,5 +205,5 @@ def test_the_checked_in_specs_say_where_each_field_came_from(monkeypatch, name):
     for label in ("host.cpu.cores_physical", "host.cpu.cores_logical", "device.ptl"):
         assert answered[label] == {"origin": "probed"}
     for label, found in answered.items():
-        if found["origin"] != "probed" or label.endswith(".derate"):
+        if found["origin"] != "probed" or "derate" in label.split("."):
             assert found == {"origin": "assumed"}, label

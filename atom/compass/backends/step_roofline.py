@@ -46,7 +46,7 @@ SOURCE = "step-roofline"
 #: The machine spec fields a roofline reads; `device.<bound>` counts in that bound.
 FIELDS = (
     "device.compute.bf16_flops",
-    "device.compute.derate",
+    "device.compute.derate.bf16",
     "device.memory.bandwidth_bytes_per_s",
     "device.memory.derate",
 )
@@ -73,7 +73,7 @@ class StepRooflineBackend(CostBackend):
         # quantized model's rate and TP collectives are left out until a
         # step that needs them falls to the roofline.
         self.flops = machine.value("device.compute.bf16_flops") * machine.value(
-            "device.compute.derate"
+            "device.compute.derate.bf16"
         )
         self.bandwidth = machine.value(
             "device.memory.bandwidth_bytes_per_s"
