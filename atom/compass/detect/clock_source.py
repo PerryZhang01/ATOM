@@ -113,8 +113,9 @@ DEFAULT_ALLOW_LIST: dict[str, str] = {
         "bench runs on a GPU and never inside a simulated run"
     ),
     "atom/compass/capture/__init__.py": (
-        "when trace ops published its graph, for the entry's provenance; a "
-        "capture runs no device and never inside a simulated run"
+        "when trace ops published each graph, for the entry's provenance, and how "
+        "long each shape took; a capture runs no device and never inside a "
+        "simulated run"
     ),
     "atom/compass/drive/measure_memory.py": (
         "when measure memory published its entry, for the entry's provenance; it "

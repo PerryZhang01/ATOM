@@ -27,7 +27,6 @@ import pathlib
 import re
 import sys
 import textwrap
-import time
 from typing import NamedTuple
 from unittest.mock import patch
 
@@ -410,7 +409,7 @@ def capture(model: str, tp: int, shapes, tmpdir: str):
     """Trace one step of `model` at TP `tp` at each of `shapes`, in this process.
 
     Yields, per shape, the graph, the model's config digest, what the capture
-    declared (the operators it left out of the graph among it) and its seconds.
+    declared, the operators it left out of the graph among it.
     """
     declared = driverless.install(tp, tmpdir)
 
@@ -456,7 +455,7 @@ def capture(model: str, tp: int, shapes, tmpdir: str):
         with fake_mode, recorder:
             runner.allocate_kv_cache(max(KV_BLOCKS, blocks))
         for shape in shapes:
-            began, recorder.creating = time.perf_counter(), ir.Role.METADATA
+            recorder.creating = ir.Role.METADATA
             with fake_mode, torch._C._EnablePythonDispatcher(), recorder:
                 # A runner's first step takes its own path, so the traced step
                 # follows one of its own shape: no graph depends on another's.
@@ -469,4 +468,4 @@ def capture(model: str, tp: int, shapes, tmpdir: str):
             graph = build(recorder.items, traced, crossing)
             left_out = [*recorder.left_out, *(("step-crossing", op) for op in crossing)]
             declared["left_out"] = [{"why": why, **_json(op)} for why, op in left_out]
-            yield graph, digest, dict(declared), time.perf_counter() - began
+            yield graph, digest, dict(declared)

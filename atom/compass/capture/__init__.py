@@ -25,6 +25,7 @@ import datetime
 import json
 import pathlib
 import tempfile
+import time
 
 
 def main(argv: list[str]) -> None:
@@ -64,11 +65,13 @@ def main(argv: list[str]) -> None:
     shapes = list(dict.fromkeys(shapes))
     command = " ".join(["compass", "trace", "ops", *argv])
     with tempfile.TemporaryDirectory(prefix="compass-capture-") as tmpdir:
-        traced = capture(args.model, args.tp, shapes, tmpdir)
-        for graph, model, declared, seconds in traced:
+        began = time.perf_counter()  # the first shape's seconds include the build
+        for graph, model, declared in capture(args.model, args.tp, shapes, tmpdir):
+            seconds = time.perf_counter() - began
             key = publish(store, graph, model, declared, args.tp, command)
             print(f"captured {graph.applicability.shape} in {seconds:.1f} s")
             print(f"published {key} as {key.token()}")
+            began = time.perf_counter()
 
 
 def population_shapes(names, store):
