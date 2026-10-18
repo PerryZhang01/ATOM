@@ -120,6 +120,8 @@ def test_each_machine_file_reads_the_new_fields_with_their_origins(machine):
         "device.memory.bandwidth_curve",
         "device.kernel_floor_s",
     ]
+    # Node 18's are probe_device.py's readings; the others are still assumed.
+    origin = "probed" if machine == "mi308x-hjbog18" else "assumed"
     for path in paths:
         assert spec.value(path)
-        assert spec.origin(path) == {"origin": "assumed"}
+        assert spec.origin(path)["origin"] == origin
