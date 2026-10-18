@@ -1062,10 +1062,21 @@ def engine(config):
     At DP width above one, the process joins the engine LP as the member of its
     DP rank, and its host collectives first join the group rounds it owes. A
     pipeline stage is the engine LP ``engine-pp<stage>``.
+
+    A real run recording its steps (`parity.ENV`) outside a pipeline stamps the
+    engine's input pulls and output puts into ``dp<rank>.pulls.jsonl`` beside
+    the record (`clock.stamp_pulls`).
     """
     global _member
     run = spec()
     if run is None:
+        from atom.compass import parity
+
+        record = os.environ.get(parity.ENV)
+        if record and getattr(config, "pipeline_parallel_size", 1) == 1:
+            Path(record).mkdir(parents=True, exist_ok=True)
+            rank = config.parallel_config.data_parallel_rank
+            clock.stamp_pulls(Path(record) / f"dp{rank}.pulls.jsonl")
         return contextlib.nullcontext()
     from atom.utils.distributed import utils
 

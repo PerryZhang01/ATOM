@@ -44,6 +44,7 @@ import os
 import pickle
 import queue
 import threading
+import time
 
 import zmq
 
@@ -689,7 +690,7 @@ def relay_queue(dp: int):
     """
     rt = _installed
     if rt is None:
-        return queue.Queue()
+        return queue.Queue() if _stamps is None else _StampedQueue()
     outs = [c.name for c in rt.table.channels_from(rt.me) if ":output#" in c.name]
     ch = outs[0] if len(outs) == 1 else channel_of(rt, f"output#dp{dp}")
     rt.relays[ch] = RelayQueue(rt, WrappedSocket(rt, None, ch))
@@ -720,19 +721,71 @@ def reply_queue() -> queue.Queue:
     return queue.Queue() if _installed is None else _WaitingReplyQueue()
 
 
+class PullStamps:
+    """A real recording's engine loop: the first input pull and the first
+    output put after each worker reply, one ``{"t_pull_ns" | "t_put_ns": ns}``
+    line each in `path`, on the host's monotonic clock."""
+
+    KEYS = ("t_pull_ns", "t_put_ns")
+
+    def __init__(self, path) -> None:
+        self.file = open(path, "w", buffering=1)  # noqa: SIM115
+        self.lock = threading.Lock()
+        self.armed: set[str] = set()
+
+    def arm(self) -> None:
+        with self.lock:
+            self.armed = set(self.KEYS)
+
+    def stamp(self, key: str) -> None:
+        with self.lock:
+            if key in self.armed:
+                self.armed.discard(key)
+                self.file.write(f'{{"{key}": {time.monotonic_ns()}}}\n')
+
+
+#: The engine's `PullStamps` on a real recording, else None.
+_stamps: PullStamps | None = None
+
+
+def stamp_pulls(path) -> None:
+    """Stamp this engine's pulls and puts into `path`; a real recording's only."""
+    global _stamps
+    _stamps = PullStamps(path)
+
+
+class _StampedQueue(queue.Queue):
+    """A real recording's output queue: each put is offered as a ``t_put_ns`` stamp."""
+
+    def put(self, item, block: bool = True, timeout=None) -> None:
+        _stamps.stamp("t_put_ns")
+        super().put(item, block, timeout)
+
+
 # ---- the engine step loop: hooks ATOM calls, each a no-op on a real run ----
 
 
 def charge(reply):
-    """A reply whose ``ScheduledBatchOutput.predicted_s`` is set advances the clock by it.
+    """A reply whose ``ScheduledBatchOutput.predicted_s`` is set advances the clock by it,
+    then by its ``out_s``, the engine loop's seconds from the forward's return to its
+    next input pull, where the reply has one.
 
     The reply is what says the call cost time, not the call's name. A real
-    forward leaves the field None, and no other reply has it.
+    forward leaves the field None, and no other reply has it. Under DP, the
+    reply's `group_targets` are every member's return and its `group_out` every
+    member's pull that has an ``out_s``; this member asks each as a group round
+    and returns at its own pull. On a real recording every reply arms the next
+    pull and put stamp.
     """
     rt = _installed
-    if rt is not None and getattr(reply, "predicted_s", None) is not None:
+    if rt is None:
+        if _stamps is not None:
+            _stamps.arm()
+    elif getattr(reply, "predicted_s", None) is not None:
         targets = getattr(reply, "group_targets", None) or (reply.predicted_s,)
-        rt.advance_group([rt.now + t for t in targets], rt.now + reply.predicted_s)
+        mine = reply.predicted_s + (getattr(reply, "out_s", None) or 0.0)
+        pulls = getattr(reply, "group_out", None) or (mine,)
+        rt.advance_group([rt.now + t for t in (*targets, *pulls)], rt.now + mine)
     return reply
 
 
@@ -785,10 +838,13 @@ def idle(deadline, t_daemon: float = math.inf) -> bool:
     A pass through the loop that made no clock call ran nothing, so this one
     first waits for the LP's next event: an arrival, or ``deadline()``, the time
     the loop next acts on its own. `t_daemon` is a deadline that does not keep
-    the run alive. The loop takes True as its shutdown.
+    the run alive. The loop takes True as its shutdown. It runs just before
+    the loop's input pull, so on a real recording it offers a ``t_pull_ns`` stamp.
     """
     rt = _installed
     if rt is None:
+        if _stamps is not None:
+            _stamps.stamp("t_pull_ns")
         return False
     if rt.in_run and rt.calls == rt.idle_calls:
         rt.next_event(deadline(), t_daemon)
