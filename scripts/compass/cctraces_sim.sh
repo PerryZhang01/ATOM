@@ -1,5 +1,3 @@
-    main=(-m atom.entrypoints.openai.api_server)
-    [[ -z ${HTTP_INTAKE:-} ]] || main=("$ROOT/scripts/compass/http_intake.py" serve "$HTTP_INTAKE")
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 #

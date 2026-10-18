@@ -66,6 +66,47 @@ def test_serve_stamps_a_body_read_off_the_socket_once_and_each_template(tmp_path
     assert all(int(r[0]) >= int(r[3]) for r in rows)
 
 
+def test_a_cell_with_http_intake_runs_its_server_under_the_probe(tmp_path):
+    # The script is executed as a program, as a user runs it, with a python3
+    # stand-in that records the server's arguments and exits before it is ready.
+    bin_, args = tmp_path / "bin", tmp_path / "args"
+    bin_.mkdir()
+    (bin_ / "python3").write_text(
+        "#!/bin/sh\n"
+        f'case "$1" in *http_intake.py) printf "%s\\n" "$@" >{args}; exit 1;; esac\n'
+        f'exec {sys.executable} "$@"\n'
+    )
+    (bin_ / "harness-python").write_text(
+        '#!/bin/sh\nexec echo "${PYTHONPATH%%:*}/compass_harness/x.py"\n'
+    )
+    for f in bin_.iterdir():
+        f.chmod(0o755)
+    traces, run_file = tmp_path / "traces.jsonl", tmp_path / "run.json"
+    traces.write_text('{"id": 0}\n')
+    run_file.write_text("{}")
+    stamps = tmp_path / "stamps"
+    done = subprocess.run(
+        [TREE / "scripts/compass/cctraces_sim.sh", run_file, tmp_path / "cell"],
+        cwd="/",
+        env=dict(
+            os.environ,
+            PATH=f"{bin_}:{os.environ['PATH']}",
+            MODEL=str(tmp_path),
+            TRACES=str(traces),
+            HARNESS_PYTHON=str(bin_ / "harness-python"),
+            HTTP_INTAKE=str(stamps),
+        ),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert "the deployment exited before it started" in done.stderr, done.stderr
+    probe_path, *rest = args.read_text().splitlines()
+    assert Path(probe_path).resolve() == PROBE
+    assert rest[:4] == ["serve", str(stamps), "--model", str(tmp_path)]
+
+
 def _burst(fixed, per_byte, sizes, stall=0.0, t0=10**12):
     """Stamp lines for a loop that takes `sizes` in from `t0` one request at a
     time, each template starting once its own request is taken in, the largest
