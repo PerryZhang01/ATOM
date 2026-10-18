@@ -3,6 +3,7 @@
 pricing a stage's input in the recurrence gate."""
 
 import copy
+import hashlib
 import importlib.util
 import json
 import math
@@ -200,3 +201,26 @@ def test_the_probe_fits_how_late_a_blocked_gloo_sender_wakes():
     assert gloo["late"] == pytest.approx([0] * 5, abs=1e-9)
     assert gloo["rendezvous_fixed_s"] == pytest.approx(fixed, rel=1e-6)
     assert "wake_s" not in probe.fit(_samples(TRUTH))["gloo"]
+
+
+def test_the_probe_pools_the_records_it_wrote(tmp_path):
+    """Two runs' wakes differ; their pooled fit takes every block's median
+    over both, and names each run's record by its digest."""
+    runs = []
+    for k, level in enumerate((1e-4, 2e-4)):
+        samples = _samples(TRUTH)
+        for b in probe.BLOCKS:
+            done = b + level * -math.expm1(-b / 0.5)
+            stamps = {"send": 0.0, "done": done, "post": b, "end": done}
+            samples.append(
+                {"carrier": "gloo", "bytes": 8, "late": True, "block": b} | stamps
+            )
+        runs.append(tmp_path / f"run{k}.json")
+        runs[-1].write_text(json.dumps({"samples": samples}) + "\n")
+    probe.main(str(tmp_path / "pooled.json"), *map(str, runs))
+    pooled = json.loads((tmp_path / "pooled.json").read_text())
+    both = [s for r in runs for s in json.loads(r.read_text())["samples"]]
+    assert pooled["carriers"] == probe.fit(both)
+    assert pooled["records"] == [
+        hashlib.sha256(r.read_bytes()).hexdigest() for r in runs
+    ]

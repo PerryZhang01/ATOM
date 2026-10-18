@@ -2,6 +2,7 @@
 """Fit the two carriers of a PP send, RCCL and gloo, on two GPUs of one node.
 
     HIP_VISIBLE_DEVICES=a,b torchrun --nproc-per-node 2 scripts/compass/pp_carriers.py OUT
+    python3 scripts/compass/pp_carriers.py OUT RECORD...
 
 Rank 0 sends one message per size to rank 1 with `torch.distributed.isend`, a
 device tensor on an RCCL group and a CPU tensor on a gloo group, as ATOM's PP
@@ -24,9 +25,12 @@ runs its own forward while the stage before waits on the send's size. The
 sender's completion past the rendezvous price fits ``wake_s x (1 - exp(-b /
 wake_rise_s))`` at block ``b``. OUT is JSON: each
 carrier's fields, the model's error on the arrival in seconds per posting order (min, p10,
-p50, p90, max), every sample, and this file's text.
+p50, p90, max), every sample, and this file's text. Given RECORDs this script
+wrote, it fits their samples pooled instead of probing, and OUT names their
+sha256 in place of the samples: one probe's wake moves with the run.
 """
 
+import hashlib
 import json
 import os
 import sys
@@ -222,25 +226,29 @@ def probe() -> list[dict]:
     ]
 
 
-def main(out: str) -> int:
-    samples = probe()
-    if not samples:
-        return 0
-    import torch
+def main(out: str, *records: str) -> int:
+    if records:
+        read = [Path(p).read_bytes() for p in records]
+        samples = [s for b in read for s in json.loads(b)["samples"]]
+        about = {"records": [hashlib.sha256(b).hexdigest() for b in read]}
+    else:
+        samples = probe()
+        if not samples:
+            return 0
+        import torch
 
+        about = {
+            "gpus": os.environ.get("HIP_VISIBLE_DEVICES"),
+            "torch": torch.__version__,
+            "rccl": ".".join(map(str, torch.cuda.nccl.version())),
+            "samples": samples,
+        }
     carriers = fit(samples)
     print(json.dumps(carriers, indent=2))
-    record = {
-        "carriers": carriers,
-        "gpus": os.environ.get("HIP_VISIBLE_DEVICES"),
-        "torch": torch.__version__,
-        "rccl": ".".join(map(str, torch.cuda.nccl.version())),
-        "samples": samples,
-        "source": Path(__file__).read_text(),
-    }
+    record = {"carriers": carriers, **about, "source": Path(__file__).read_text()}
     Path(out).write_text(json.dumps(record) + "\n")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1]))
+    sys.exit(main(*sys.argv[1:]))
