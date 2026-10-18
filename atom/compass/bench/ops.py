@@ -44,31 +44,19 @@ gets each measured point as an `op_measurement`, keyed by the model, the
 parallel layout, the digest of the machine spec of the device, stack and PTL
 state run.json reads, the source root and the point.
 
-`--plan` places the points itself, in rounds, from the steps of the record
-directories it names (`record`'s or `trace steps`' output), and captures each
-`op_graph` S lacks as `trace ops` does. A decode leaf's points lie at its
-width over the rows' context; a prefill leaf's over its tokens, its family the
-leaf with its token count abstracted and, when its kind depends on context,
-its rows. First every leaf at every rung of ATOM's decode ladder, at the
-steps' lowest mean and highest max row context. A kind depends on context when
-a leaf of it, at one width, launched other kernels or timed more than
-`CONTEXT_MOVES` apart across contexts, or was never timed at two. Then each
-such decode leaf at every rung over a ladder of the steps' mean and max row
-contexts, and each prefill family over a ladder of the token counts its steps
-hold, chunk remainders among them: a ladder keeps a value `LADDER_STEP` past
-the last it kept, and the largest. Then, while two neighbouring points of a
-family launched different kernels and lie more than one apart, the point
-halfway. DIR gets each round's ops.jsonl in `round<n>`, and plan.jsonl, every
-point the plan holds, measured now or read from S.
+`--plan` measures, in rounds, the points the steps of record directories call
+for (`record`'s or `trace steps`' output), capturing each `op_graph` S lacks:
+every leaf at every rung of ATOM's decode ladder at the steps' lowest mean and
+highest max row context; then each leaf of a kind those show depends on
+context (`_dependent`) over a ladder (`_ladder`) of the steps' row contexts,
+and each prefill family (`_family`) over a ladder of their token counts, chunk
+remainders among them; then the point halfway between two neighbours of a
+family that launched different kernels, until they are adjacent. DIR gets each
+round's ops.jsonl in `round<n>`, and every point held in plan.jsonl.
 
-`--coverage` reads DIR's plan.jsonl and counts a step of the record
-directories it names as measured when every leaf of its `op_graph` lies on a
-point or between two, with every point from the one to the other of the same
-kernels: a decode leaf of a kind that depends on context over its step's mean
-to max row context, any other decode leaf at its width, and a prefill leaf at
-its tokens, unless its kind depends on context and a row of its step was
-cached, since the bench's prefill rows are fresh. It prints the counts by
-phase and, per leaf kind, the steps it left out by why.
+`--coverage` counts the steps of record directories that DIR's plan.jsonl
+covers (`coverage`), and prints the count by phase and why each leaf kind
+left the rest out.
 """
 
 import argparse
@@ -827,7 +815,12 @@ def _coverage_main(argv: list[str], atom_args: list[str]) -> dict:
 def coverage(store, root, config, names, records) -> dict:
     """How the measured points among `records` cover the steps of the record
     directories `names`: the steps and those covered by phase, and per leaf
-    kind the steps it left out by why."""
+    kind the steps it left out by why. A step is covered when each leaf of its
+    `op_graph` lies on a point or between two of one kernel (`_bracket`): a
+    decode leaf of a kind that depends on context over its rows' mean to max
+    context, any other decode leaf at its width, and a prefill leaf at its
+    tokens, unless its kind depends on context and a row was cached: the
+    bench's prefill rows are fresh."""
     from atom.compass.capture import population_steps
 
     steps = list(population_steps(names))
@@ -878,6 +871,8 @@ def _rows(line) -> tuple[int, int]:
 
 
 def _ladder(values) -> list:
+    """`values` in order, each kept only `LADDER_STEP` past the last kept,
+    and the largest."""
     kept = []
     for v in sorted(set(values)):
         if not kept or v >= kept[-1] * LADDER_STEP:
