@@ -91,7 +91,11 @@ def test_a_run_given_its_record_draws_from_the_rates_its_histograms_give_as_meas
     rows = sum(counts)
 
     atom_args, run = started(
-        monkeypatch, tmp_path, "--acceptance-record", str(record), atom=mtp(2)
+        monkeypatch,
+        tmp_path,
+        "--acceptance-record",
+        str(record),
+        atom=[*mtp(2), "--data-parallel-size", "2"],
     )
 
     rates = runfile._engine_args(atom_args).spec_decode_acceptance_rates
@@ -123,6 +127,16 @@ def test_a_run_given_its_record_draws_from_the_rates_its_histograms_give_as_meas
             [*mtp(1), "--spec-decode-acceptance-rate", "0.5"],
             "ATOM's arguments state --spec-decode-acceptance-rate too",
         ),
+        (
+            [0.7],
+            [*mtp(1), "--spec-decode-acceptance-length", "1.5"],
+            "ATOM's arguments state --spec-decode-acceptance-length too",
+        ),
+        (
+            [0.7],
+            [*mtp(1), "--spec-decode-acceptance-rates", "0.5"],
+            "ATOM's arguments state --spec-decode-acceptance-rates too",
+        ),
     ],
 )
 def test_a_record_with_no_histogram_or_of_another_width_refuses_by_name(
@@ -147,3 +161,41 @@ def test_a_record_with_no_histogram_or_of_another_width_refuses_by_name(
             )
         )
     assert not (tmp_path / "out").exists()
+
+
+def test_a_dp_record_missing_a_rank_s_histogram_refuses_by_name(monkeypatch, tmp_path):
+    record, *_ = recorded(monkeypatch, tmp_path, [0.7], rank=1)
+    monkeypatch.setattr(serve, "serve", unstarted)
+
+    with pytest.raises(ValueError, match="holds no dp0.acceptance.json, and ATOM's"):
+        drive_run.main(
+            flags(
+                tmp_path,
+                "--step-stub",
+                stub(tmp_path),
+                "--acceptance-record",
+                str(record),
+                atom=[*mtp(1), "--data-parallel-size", "2"],
+            )
+        )
+
+
+def test_a_histogram_write_that_raises_still_hands_sigterm_to_atom(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv(parity.ENV, str(tmp_path / "gone"))
+    config = SimpleNamespace(
+        speculative_config=SimpleNamespace(num_speculative_tokens=1),
+        parallel_config=SimpleNamespace(data_parallel_rank=0),
+    )
+    stats = SimpleNamespace(spec_enabled=True, distribution={0: 1})
+    engine = SimpleNamespace(
+        scheduler=SimpleNamespace(config=config, engine_stats=stats)
+    )
+    took = []
+
+    with pytest.raises(FileNotFoundError):
+        compass_run._stop_recording(
+            engine, lambda signum, frame: took.append(signum), signal.SIGTERM, None
+        )
+    assert took == [signal.SIGTERM]

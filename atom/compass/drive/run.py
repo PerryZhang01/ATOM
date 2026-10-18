@@ -78,11 +78,14 @@ def main(argv: list[str]) -> None:
             f"{'prefill' if side == 'P' else 'decode'} instance, which shares a "
             "clock with its peer; run starts one aggregated instance"
         )
-    if record := args.acceptance_record:
-        rates = ",".join(map(str, measured(record, atom_args)))
-        atom_args = [*atom_args, "--spec-decode-acceptance-rates", rates]
     run = runfile.build(args, atom_args)
-    if record:
+    if record := args.acceptance_record:
+        rates = measured(record, atom_args, run["data_parallel_size"])
+        atom_args = [
+            *atom_args,
+            "--spec-decode-acceptance-rates",
+            ",".join(map(str, rates)),
+        ]
         run[compass_run.ACCEPTANCE_RECORD] = str(Path(record).resolve())
     report = check(args.coverage, run, atom_args) if args.coverage else None
     serve.serve(atom_args, args.out, run=run)
@@ -109,10 +112,11 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
-def measured(record, atom_args) -> list[float]:
-    """The rates the accepted-draft histograms of `record` give over its DP
-    ranks: entry ``i`` the share of rows that accepted more than ``i`` drafts.
-    Refuses no histogram, another draft width, and a stated acceptance."""
+def measured(record, atom_args, ranks: int) -> list[float]:
+    """The rates the accepted-draft histograms of `record` give over DP ranks
+    ``0..ranks-1``: entry ``i`` the share of rows that accepted more than ``i``
+    drafts. Refuses no histogram, a missing rank's, another draft width, and a
+    stated acceptance."""
     engine = runfile._engine_args(atom_args)
     for knob in ("rate", "length", "rates"):
         if getattr(engine, f"spec_decode_acceptance_{knob}") is not None:
@@ -121,9 +125,11 @@ def measured(record, atom_args) -> list[float]:
                 f"state --spec-decode-acceptance-{knob} too"
             )
     width = engine.num_speculative_tokens if engine.method else 0
-    files = (Path(record) / serve.STEPS).glob(compass_run.ACCEPTANCE_FILE.format("*"))
+    files = sorted(
+        (Path(record) / serve.STEPS).glob(compass_run.ACCEPTANCE_FILE.format("*"))
+    )
     counts = Counter()
-    for path in sorted(files):
+    for path in files:
         held = json.loads(path.read_text())
         if held["draft_tokens"] != width:
             raise ValueError(
@@ -136,6 +142,12 @@ def measured(record, atom_args) -> list[float]:
         raise ValueError(
             f"--acceptance-record: {record} holds no accepted-draft histogram; "
             "a speculative record writes one per DP rank in its steps"
+        )
+    names = {compass_run.ACCEPTANCE_FILE.format(r) for r in range(ranks)}
+    if missing := sorted(names - {p.name for p in files}):
+        raise ValueError(
+            f"--acceptance-record: {record} holds no {', '.join(missing)}, and "
+            f"ATOM's arguments run {ranks} DP ranks"
         )
     return [sum(n for a, n in counts.items() if a > i) / rows for i in range(width)]
 

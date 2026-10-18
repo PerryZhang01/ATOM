@@ -1719,27 +1719,23 @@ def engine_loop(engine_core):
 
 def _stop_recording(engine_core, previous, signum, frame) -> None:
     """A recorded real run's SIGTERM, where its engine stops: a speculative
-    engine outside a pipeline writes its draft width and accepted-draft
-    histogram beside the record (`ACCEPTANCE_FILE`), then `previous` takes it."""
+    engine writes its draft width and accepted-draft histogram beside the
+    record (`ACCEPTANCE_FILE`), then ATOM's handler, `previous`, takes it,
+    whether or not the write succeeded."""
     from atom.compass import parity
 
     scheduler = getattr(engine_core, "scheduler", None)
     config, stats = getattr(scheduler, "config", None), getattr(
         scheduler, "engine_stats", None
     )
-    if (
-        getattr(stats, "spec_enabled", False)
-        and getattr(config, "pipeline_parallel_size", 1) == 1
-    ):
-        width = config.speculative_config.num_speculative_tokens
-        held = {"draft_tokens": width, "distribution": dict(stats.distribution)}
-        name = ACCEPTANCE_FILE.format(config.parallel_config.data_parallel_rank)
-        _write_whole(Path(os.environ[parity.ENV]) / name, json.dumps(held))
-    if callable(previous):
+    try:
+        if getattr(stats, "spec_enabled", False):
+            width = config.speculative_config.num_speculative_tokens
+            held = {"draft_tokens": width, "distribution": dict(stats.distribution)}
+            name = ACCEPTANCE_FILE.format(config.parallel_config.data_parallel_rank)
+            _write_whole(Path(os.environ[parity.ENV]) / name, json.dumps(held))
+    finally:
         previous(signum, frame)
-    else:
-        signal.signal(signum, previous or signal.SIG_DFL)
-        os.kill(os.getpid(), signum)
 
 
 def _until_end(run: dict, a: "_RecordingAuthority") -> bool:
