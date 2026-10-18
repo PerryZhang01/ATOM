@@ -1424,17 +1424,13 @@ def tokenizer(tok, config) -> None:
 
 def http_intake() -> tuple[float, float] | None:
     """``(fixed_s, per_byte_s)``, the frontend loop's time to take in one HTTP
-    request, from the run's machine spec; None on a real run, a run file with no
-    machine spec, or a spec that states neither. A spec that states one of them
-    is refused naming the other."""
+    request, from the run's machine spec; None on a real run or a run file with
+    no machine spec."""
     run = spec()
     if run is None or "machine" not in run:
         return None
-    machine = _machine(run)
-    paths = ("host.http_intake.fixed_s", "host.http_intake.per_byte_s")
-    if not any(p in machine.values for p in paths):
-        return None
-    return tuple(machine.value(p) for p in paths)
+    machine, terms = _machine(run), ("fixed_s", "per_byte_s")
+    return tuple(machine.value(f"host.http_intake.{k}") for k in terms)
 
 
 def _fingerprint(tok) -> str | None:

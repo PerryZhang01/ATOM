@@ -74,6 +74,7 @@ CLASS0 = {
         "tokenizers": [TOKENIZER],
         "ipc": {"zmq_roundtrip_s": 5.0e-5, "shm_broadcast_s": 2.0e-5},
         "admission_fixed_s": 9.0e-3,
+        "http_intake": {"fixed_s": 2.0e-3, "per_byte_s": 2.0e-8},
     }
 }
 
@@ -814,14 +815,14 @@ def test_an_empty_tokenizer_table_explains_to_no_rows_rather_than_refusing():
 
 
 def test_an_empty_tokenizer_table_is_printed_as_empty_under_a_quantity():
-    # Three rows from the other fields and none from the table. Without its own
+    # Five rows from the other fields and none from the table. Without its own
     # line the table reads as a field the quantity does not use.
     document = copy.deepcopy(merged().document)
     document["host"]["tokenizers"] = []
     basis = explain(MachineSpec.from_mapping(document), "admission")
-    assert len(basis.contributions) == 3
+    assert len(basis.contributions) == 5
     printed = str(basis).splitlines()
-    assert len(printed) == 5
+    assert len(printed) == 7
     assert printed[-1] == "  host.tokenizers = ()"
 
 

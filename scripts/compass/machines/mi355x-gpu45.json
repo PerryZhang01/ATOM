@@ -3,7 +3,7 @@
   "name": "mi355x-gpu45",
   "provenance": {
     "authored_by": "compass agent for jgong5",
-    "date": "2026-10-16",
+    "date": "2026-10-18",
     "origin": "mixed",
     "origins": {
       "host.cpu.cores_physical": {
@@ -72,6 +72,18 @@
         "source_root": "commit:409bedc98",
         "record": "sha256:02618dade3d07bcaac510da11cf8a279a1fe3ef2fce72d41e88a76f2df7c32c6"
       },
+      "host.http_intake.fixed_s": {
+        "origin": "probed",
+        "model": "/models/DeepSeek-V4-Pro",
+        "source_root": "commit:19c5ab09e",
+        "record": "sha256:2397696f6df3a280660cbc95e7c8db0d61b77fba9986c3d388ccde75f2d5f574"
+      },
+      "host.http_intake.per_byte_s": {
+        "origin": "probed",
+        "model": "/models/DeepSeek-V4-Pro",
+        "source_root": "commit:19c5ab09e",
+        "record": "sha256:2397696f6df3a280660cbc95e7c8db0d61b77fba9986c3d388ccde75f2d5f574"
+      },
       "device.memory.bandwidth_bytes_per_s": {
         "origin": "datasheet"
       },
@@ -135,10 +147,11 @@
     "fragments": [
       "tokenizer",
       "device",
+      "intake",
       "datasheet",
       "assumed"
     ],
-    "notes": "one DeepSeek-V4-Pro -tp 8 --enable-dp-attention --enable-tbo start at 409bedc98 | MI355X datasheet | no probe fills these"
+    "notes": "one DeepSeek-V4-Pro -tp 8 --enable-dp-attention --enable-tbo start at 409bedc98 | one real c=256 first-turn cc-traces burst at 19c5ab09e | MI355X datasheet | no probe fills these"
   },
   "host": {
     "cpu": {
@@ -165,7 +178,11 @@
       "zmq_roundtrip_s": 5e-05,
       "shm_broadcast_s": 2e-05
     },
-    "admission_fixed_s": 0.009
+    "admission_fixed_s": 0.009,
+    "http_intake": {
+      "fixed_s": 0.001966482509138914,
+      "per_byte_s": 5.288974015662166e-09
+    }
   },
   "device": {
     "name": "MI355X",
