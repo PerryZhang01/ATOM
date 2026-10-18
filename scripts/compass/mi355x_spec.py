@@ -104,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
     print(verdict)
     if not verdict.ok:
         return 1
-    base.refuse_unbanded(verdict.spec)
+    base.refuse_unbanded(base.MachineSpec.from_mapping(merged.document))
     args.out.write_text(json.dumps(merged.document, indent=2) + "\n")
     print(base.report(merged))
     return 0

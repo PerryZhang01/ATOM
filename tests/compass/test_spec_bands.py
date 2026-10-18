@@ -14,13 +14,13 @@ from test_spec_verbs import TOKENIZER, fragment, published_topology
 from atom.compass.artifacts import machine_spec_digest
 from atom.compass.spec import (
     MachineSpec,
-    Rule,
     SpecRefusal,
     merge,
     tokenizer_fragment,
 )
 from atom.compass.spec.bands import refuse_unbanded
 from atom.compass.spec.machine import entry_label
+from atom.compass.spec.rules import Rule
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 ENTRY = entry_label("qwen3-151k-bpe", "fast")
