@@ -29,7 +29,8 @@
 #   STORE            artifact store holding the simulated configuration's memory
 #                    readings, taken by `compass measure memory`. Unset, the
 #                    script takes them first into OUT_DIR/store: `compass measure
-#                    memory` on the real run's GPUs, flags and environment.
+#                    memory` on the real run's GPUs, flags and environment,
+#                    under LMCACHE with an lmcache server of its own beside it.
 #   SERVER_ARGS      more API server flags, on both runs (default CONFIG's; tp2's are
 #                    --enforce-eager --max-model-len 8192 --no-enable_prefix_caching)
 #   WAIT_S           seconds a server has to start, and to stop (default 1800)
@@ -41,6 +42,8 @@
 #                    below and its copies on MACHINE's interconnect.host_link,
 #                    which it then needs. Every request starts with PREFIX_WORDS
 #                    shared words (default 600). Default 0.
+#   FAMILIES         prefix families: above 1, request k shares PREFIX_WORDS
+#                    only with the requests of family k % FAMILIES (default 1)
 #   LMCACHE_FLAGS    the server's flags besides --host and --port (default the
 #                    recipes' --chunk-size 256 --null-block-id -1
 #                    --separate-object-groups --supported-transfer-mode
@@ -86,17 +89,6 @@ ALONE=${ALONE:-0} GAP=0.05
 [[ $ALONE == 1 ]] && GAP=0.25
 mkdir -p "$OUT/real" "$OUT/sim"
 OUT=$(realpath "$OUT")
-if [[ -z ${STORE:-} ]]; then
-    STORE=$OUT/store
-    # measure memory takes rocm-smi's indexes of the real run's HIP devices.
-    gpus=$(compass_gpus smi "${HIP_VISIBLE_DEVICES:-$(seq -s, 0 $((TP - 1)))}")
-    # shellcheck disable=SC2086 # SERVER_ARGS is a word list
-    ATOM_DP_MASTER_PORT=$(compass_free_port) python3 -c \
-        "from atom.compass.cli import main; main()" measure memory \
-        --gpu "$gpus" --machine "$MACHINE" \
-        --store "$STORE" --out "$OUT/memory" -- --model "$MODEL" -tp "$TP" \
-        $DPA $SERVER_ARGS
-fi
 LMCACHE=${LMCACHE:-0} PREFIX=0 LM_FLAGS=
 if [[ $LMCACHE == 1 ]]; then
     PREFIX=${PREFIX_WORDS:-600} LM_PORT=$(compass_free_port)
@@ -106,6 +98,18 @@ if [[ $LMCACHE == 1 ]]; then
     export ATOM_KV_OFFLOAD=lmcache_mp OFFLOAD_MIN_LOAD_TOKENS=256 OFFLOAD_MIN_SAVE_TOKENS=256
     export ATOM_KV_OFFLOAD_EXTRA_CONFIG="{\"lmcache.mp.host\": \"tcp://127.0.0.1\",
         \"lmcache.mp.port\": $LM_PORT}"
+fi
+if [[ -z ${STORE:-} ]]; then
+    STORE=$OUT/store
+    # measure memory takes rocm-smi's indexes of the real run's HIP devices.
+    gpus=$(compass_gpus smi "${HIP_VISIBLE_DEVICES:-$(seq -s, 0 $((TP - 1)))}")
+    # shellcheck disable=SC2086 # SERVER_ARGS is a word list
+    ATOM_DP_MASTER_PORT=$(compass_free_port) python3 -c \
+        "from atom.compass.cli import main; main()" measure memory \
+        --gpu "$gpus" --machine "$MACHINE" \
+        ${LM_FLAGS:+--beside "lmcache server $LM_FLAGS"} \
+        --store "$STORE" --out "$OUT/memory" -- --model "$MODEL" -tp "$TP" \
+        $DPA $SERVER_ARGS
 fi
 
 server= lmcache=
@@ -146,6 +150,7 @@ fi
 serve real
 python3 -m atom.compass.parity.traffic "$PORT" "$MODEL" "$OUT/real/record" \
     "${REQUESTS:-64}" "${GAP_S:-$GAP}" "$PREFIX" "${IMAGES:-0}" "$ALONE" "${LONG_TOKENS:-0}" \
+    "${FAMILIES:-1}" \
     >"$OUT/real/traffic.log" 2>&1
 # The record's last lines are written as the workers exit.
 kill -TERM -- -$server

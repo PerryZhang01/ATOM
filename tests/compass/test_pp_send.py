@@ -28,6 +28,8 @@ L_DATA, L_ACK = pp_send.lookaheads(MODELS)
 #: The size on gloo, eager, then one tensor on RCCL, rendezvous.
 RDV = [("gloo", 8), ("rccl", 2048)]
 EAGER = [("gloo", 8)]
+#: Both parts rendezvous: the sender's host waits for the ack of the size.
+ACKED = [("gloo", 2048), ("rccl", 2048)]
 C = 2.0**-6
 DATA, ACK = "engine-pp0->engine-pp1:pp_data#dp0", "engine-pp1->engine-pp0:pp_ack#dp0"
 
@@ -58,7 +60,7 @@ def test_a_lookahead_that_is_not_positive_is_refused_by_name():
         pp_send.lookaheads({"gloo": CarrierModel(1, 0.0, 0.1, 0.1, 0.1)})
 
 
-def _stage(rank, *grants, frames=(), parts=RDV):
+def _stage(rank, *grants, frames=(), parts=ACKED):
     """Stage `rank` of two, its owner thread and the names its runner was called with."""
     table = single_engine_table(
         admission_path="serving",
@@ -96,7 +98,10 @@ def test_an_ack_released_during_the_compute_sends_at_its_end_and_a_later_one_at_
         (2 * C, {ACK: [(0, done)]}),
         (3 * C, {}),
         (4.0, {ACK: [(1, 4.0)]}),
-        frames=[{"seq": 0}, {"seq": 1}],
+        frames=[
+            {"seq": 0, "tensors_done": -math.inf},
+            {"seq": 1, "tensors_done": -math.inf},
+        ],
     )
     for _ in range(3):
         run("forward")
@@ -112,7 +117,10 @@ def test_an_ack_released_during_the_compute_sends_at_its_end_and_a_later_one_at_
 
 def test_an_idle_flush_ends_at_the_ack_or_the_local_completion_or_where_it_was():
     rt, run, sends, _ = _stage(
-        0, (C, {}), (0.75, {ACK: [(0, 0.75)]}), frames=[{"seq": 0}]
+        0,
+        (C, {}),
+        (0.75, {ACK: [(0, 0.75)]}),
+        frames=[{"seq": 0, "tensors_done": -math.inf}],
     )
     run("forward")
     run("flush_pp_send")

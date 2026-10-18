@@ -167,6 +167,7 @@ class TestPerRequestSums:
             "requests",
             "capture_rung",
             "moe_rows",
+            "draft_moe_rows",
             "produces_output",
             "tbo_tokens",
             "image_tokens",

@@ -4315,11 +4315,11 @@
    "mechanism_why": "startup, before any batch; the bench measures real forwards on a real runner for a measuring command, and no simulated run starts one"
   },
   {
-   "id": "atom/compass/bench/engine.py::Bench.__init__::self.runner_mgr.call_func( \"allocate_kv_cache\", blocks, wait_out=True )::worker_rpc#0",
+   "id": "atom/compass/bench/engine.py::Bench.__init__::self.runner_mgr.call_func( \"allocate_kv_cache\", num_blocks, wait_out=True )::worker_rpc#0",
    "file": "atom/compass/bench/engine.py",
    "symbol": "Bench.__init__",
    "call": "self.runner_mgr.call_func",
-   "expr": "self.runner_mgr.call_func( \"allocate_kv_cache\", blocks, wait_out=True )",
+   "expr": "self.runner_mgr.call_func( \"allocate_kv_cache\", num_blocks, wait_out=True )",
    "shape": "worker_rpc",
    "peer": "process",
    "why": "the bench's startup calls to its workers, in EngineCore's order, before it measures any batch",
@@ -4580,6 +4580,19 @@
    "why": "the worker connector submits a STORE to the lmcache server",
    "mechanism": "K9",
    "mechanism_why": "in a simulated run the lmcache_mp shell's rank adapter takes the call on the step loop and sends the request inline (the K4 row in atom/compass/kv/lmcache_mp.py); nothing parks"
+  },
+  {
+   "id": "atom/compass/drive/measure_memory.py::start::subprocess.Popen(shlex.split(beside))::thread_start#0",
+   "file": "atom/compass/drive/measure_memory.py",
+   "symbol": "start",
+   "call": "subprocess.Popen",
+   "expr": "subprocess.Popen(shlex.split(beside))",
+   "shape": "thread_start",
+   "peer": "none",
+   "lp": "none",
+   "why": "compass measure memory's engine process starts the --beside command, such as an lmcache server, in the engine's session before the engine, so the engine's kill stops it",
+   "mechanism": "K9",
+   "mechanism_why": "starting a process cannot park; in the measuring command, which is no LP, around a real engine start it makes; a GPU command serves no simulated run, so the bound stays real"
   },
   {
    "id": "atom/compass/drive/measure_memory.py::main::subprocess.Popen( [sys.executable, \"-c\", code, *atom_args], stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True, )::thread_start#0",

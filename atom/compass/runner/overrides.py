@@ -250,6 +250,13 @@ FORWARD_KINDS = ("decode", "prefill", "middle")
 COST_TABLE_VERSION = 1
 
 
+def forward_shape(batch: Any) -> tuple[str, tuple]:
+    """A forward's kind in `FORWARD_KINDS` and its law features ``(1, tokens, seqs)``."""
+    kind = "decode" if batch.total_seqs_num_prefill == 0 else "prefill"
+    kind = kind if batch.produces_output() else "middle"
+    return kind, (1, batch.total_tokens_num, batch.total_seqs_num)
+
+
 class HostDeviceRecurrence:
     """One runner's host and device timelines, composed into each forward's charge.
 
@@ -291,8 +298,7 @@ class HostDeviceRecurrence:
         without `refuse` that segment is 0. A segment in `skip` needs none, a
         middle chunk runs no `W_post`, and only an output forward under `mtp`
         runs `MTP_SEGMENT`."""
-        kind = "decode" if batch.total_seqs_num_prefill == 0 else "prefill"
-        kind = kind if batch.produces_output() else "middle"
+        kind, x = forward_shape(batch)
         law = self.laws.get(kind, {})
         ran = HOST_SEGMENTS[: 3 if kind == "middle" else 4]
         ran += (MTP_SEGMENT,) if self.mtp and kind != "middle" else ()
@@ -302,25 +308,30 @@ class HostDeviceRecurrence:
 
             named = ", ".join(f"{kind}.{s}" for s in missing)
             raise CostRefused(kind, [Refusal("host", f"no law for {named}")])
-        x = (1, batch.total_tokens_num, batch.total_seqs_num)
-        self.segments = {
-            s: float(np.dot(law.get(s, (0, 0, 0)), x)) * (s not in self.skip)
-            for s in (*HOST_SEGMENTS, MTP_SEGMENT)
-        }
-        e, pre, launch, post, inputs = self.segments.values()
         now = self.now()
         called, meta = getattr(batch, "compass_pp_host", (now, -math.inf))
-        host = max(called + e, self.ends[0]) + pre
+        prepared, self.segments = self.prepare_end(called, kind, x)
+        launch, post = self.segments["W_launch"], self.segments["W_post"]
+        host = max(prepared, meta)
         output = batch.produces_output()
-        if self.mtp and output:  # output_end stays -inf on a PP stage
-            host = max(host, self.output_end)
-        host = max(host + inputs, meta)
         launch_end = host + launch
         release = getattr(batch, "compass_pp_release", -math.inf)
         target_end = max(self.ends[-1], host, release) + device_s
         end = max(target_end + draft_s, launch_end)
         self._held = now, launch_end, target_end, draft_s, end, output, post
         return end
+
+    def prepare_end(self, called: float, kind: str, x: tuple) -> tuple[float, dict]:
+        """A forward's prepare end, with `MTP_SEGMENT`, and each segment's seconds."""
+        law = self.laws.get(kind, {})
+        seg = {
+            s: float(np.dot(law.get(s, (0, 0, 0)), x)) * (s not in self.skip)
+            for s in (*HOST_SEGMENTS, MTP_SEGMENT)
+        }
+        host = max(called + seg["E"], self.ends[0]) + seg["W_pre"]
+        if self.mtp and kind != "middle":  # output_end stays -inf on a PP stage
+            host = max(host, self.output_end)
+        return host + seg[MTP_SEGMENT], seg
 
     def release(self, end: float) -> float:
         """The exit less `now` of the forward `device_end` priced, its device
@@ -677,6 +688,14 @@ class PipelineFrames:
         if isinstance(host, HostDeviceRecurrence) and self.rank == 0:
             seconds, post = host.ends[-1] - host.now(), host.segments["W_post"]
         return seconds, post, [("gloo", 8), ("gloo", len(pickle.dumps(meta))), *tensors]
+
+    def pp_recv_posted(self, called: float, kind: str, x: tuple) -> tuple:
+        """Where this stage posts its ``pp_data`` receive, its forward's prepare
+        end, and its device end; the call and -inf with no host recurrence."""
+        host = getattr(self, "compass_host", None)
+        if not isinstance(host, HostDeviceRecurrence):
+            return called, -math.inf
+        return host.prepare_end(called, kind, x)[0], host.ends[-1]
 
     def send_pp_frame(self, kind: str, frame: dict) -> bool:
         """Post one stage-loop frame to the next stage (``pp_data``) or the one

@@ -11,6 +11,7 @@ import subprocess
 
 import pytest
 
+from atom.compass.drive import gpu as drive_gpu
 from atom.compass.drive.gpu import (
     PREFLIGHT,
     GpuRefusal,
@@ -72,6 +73,8 @@ GPU  NODE  DID     GUID   GFX VER  GFX RAS  SDMA RAS  UMC RAS  VBIOS            
 ==================================================================================================================
 =============================================== End of ROCm SMI Log ===============================================
 """
+#: A ten-GPU `rocm-smi --showhw` row set: rocm-smi GPU g on KFD node g + 2.
+TEN = "".join(f"{g}    {g + 2}     0x74a2  gfx942\n" for g in range(10))
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 
@@ -200,3 +203,86 @@ def test_preflight_exports_the_hip_devices_of_the_free_rocm_smi_gpus(
         ["bash", str(PREFLIGHT)], capture_output=True, text=True, check=True
     )
     assert "idle and empty: 0 1\nexport HIP_VISIBLE_DEVICES=1,3\n" in flight.stdout
+
+
+def _kfd(tmp_path, monkeypatch, gpu, vram, table=TEN):
+    """A KFD tree of two CPU nodes and ten GPU nodes, in which PID 3362894,
+    on no DRM device in LISTING, holds `vram` bytes of the `gpu`-th GPU node
+    (KFD node `gpu` + 2) alone; `rocm-smi --showhw` prints `table`."""
+    (tmp_path / "bin" / "showhw").write_text(table)
+    kfd = tmp_path / "kfd"
+    proc = kfd / "proc/3362894"
+    proc.mkdir(parents=True)
+    for node in range(12):
+        (kfd / f"topology/nodes/{node}").mkdir(parents=True)
+        gpu_id = 100 + node if node > 1 else 0
+        (kfd / f"topology/nodes/{node}/gpu_id").write_text(f"{gpu_id}\n")
+        if gpu_id:
+            (proc / f"vram_{gpu_id}").write_text(f"{vram if node - 2 == gpu else 0}\n")
+    monkeypatch.setattr(drive_gpu, "KFD", kfd)
+
+
+@pytest.mark.parametrize(
+    "listings, when",
+    [
+        ((LISTING,), "before the run, so it was not started"),
+        ((FREE, LISTING), "after the run, so it fails"),
+    ],
+)
+def test_memory_held_on_a_named_gpu_without_its_drm_device_fails_the_check(
+    tmp_path, monkeypatch, listings, when
+):
+    out = _plant(tmp_path, monkeypatch, *listings)
+    _kfd(tmp_path, monkeypatch, gpu=9, vram=2 << 20)
+    with pytest.raises(GpuRefusal) as refused, quiet((8, 9), out):
+        pass
+    assert str(refused.value) == f"GPU 9 has PID 3362894 on it {when}"
+
+
+def test_memory_held_only_on_unnamed_gpus_leaves_the_run_alone(tmp_path, monkeypatch):
+    out = _plant(tmp_path, monkeypatch, LISTING)
+    _kfd(tmp_path, monkeypatch, gpu=2, vram=2 << 20)
+    with quiet((8, 9), out):
+        pass
+
+
+def test_the_caller_holding_a_named_gpu_is_left_out_and_others_are_not(
+    tmp_path, monkeypatch
+):
+    out = _plant(tmp_path, monkeypatch, LISTING)
+    _kfd(tmp_path, monkeypatch, gpu=9, vram=2 << 20)
+    sched = tmp_path / "sched"
+    sched.write_text("python3 (3362894, #threads: 66)\n-------\n")
+    monkeypatch.setattr(drive_gpu, "SCHED", sched)
+    with quiet((8, 9), out):
+        pass
+    refused = "^GPU 7 has PID 4242 on it before the run, so it was not started$"
+    with pytest.raises(GpuRefusal, match=refused), quiet((7, 9), out):
+        pass
+
+
+def test_memory_is_read_on_the_kfd_node_of_the_named_rocm_smi_gpu(
+    tmp_path, monkeypatch
+):
+    # On gpu-45 rocm-smi GPU 0 is KFD node 3, the second GPU node.
+    out = _plant(tmp_path, monkeypatch, LISTING)
+    _kfd(tmp_path, monkeypatch, gpu=1, vram=2 << 20, table=GPU45)
+    refused = "^GPU 0 has PID 3362894 on it before the run, so it was not started$"
+    with pytest.raises(GpuRefusal, match=refused), quiet((0, 1), out):
+        pass
+
+
+def test_two_gpus_on_one_kfd_node_refuse(tmp_path, monkeypatch):
+    _plant(tmp_path, monkeypatch, FREE)
+    (tmp_path / "bin" / "showhw").write_text("0    2     0x74a2\n1    2     0x74a2\n")
+    with pytest.raises(GpuRefusal, match="two GPUs on one KFD node"):
+        hip_visible((0,))
+    lib = PREFLIGHT.parent / "_lib.sh"
+    shell = subprocess.run(
+        ["bash", "-c", f"source {lib}; compass_gpus hip 0"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert shell.returncode == 1
+    assert "to its own KFD node" in shell.stderr

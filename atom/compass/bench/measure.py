@@ -42,6 +42,10 @@ served. A batch the rule or the bench refuses is not published; the command
 measures the rest, then fails naming each. `<out>` also holds run.json, with
 the warm-up's and the measuring's boundaries, the engine file and the GPU
 checks.
+
+The bench holds the largest KV pool its inputs' engines state, whatever this
+device's own budget gives, so every batch they ran, and every point planned
+for that pool, fits it.
 """
 
 import argparse
@@ -96,7 +100,7 @@ def main(argv: list[str]) -> None:
     engine = keyed(config)
     store, out = ArtifactStore(args.store), Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    points = _points(args, store, engine, sampling, out)
+    points, num_blocks = _points(args, store, engine, sampling, out)
     if not points:
         raise ValueError("the inputs hold no batch to measure once filtered")
     engine_file = out / "engine.json"
@@ -117,7 +121,7 @@ def main(argv: list[str]) -> None:
         if todo:
             with quiet(args.gpu, out):
                 with phase(phases, "warm-up"):
-                    bench = start_bench(config)
+                    bench = start_bench(config, num_blocks)
                 try:
                     blocks = {"num_kvcache_blocks": config.num_kvcache_blocks}
                     engine_file.write_text(json.dumps(resolved | blocks))
@@ -285,16 +289,18 @@ def atom_config(atom_args):
     return config
 
 
-def start_bench(config):
-    """The bench, started on `config`; imported here, since it needs a driver."""
+def start_bench(config, num_blocks: int):
+    """The bench, started on `config` with a pool of `num_blocks` KV blocks;
+    imported here, since it needs a driver."""
     from atom.compass.bench.engine import Bench
 
-    return Bench(config)
+    return Bench(config, num_blocks)
 
 
-def _points(args, store, engine: dict, sampling: dict, out: Path) -> dict[str, dict]:
+def _points(args, store, engine: dict, sampling: dict, out: Path) -> tuple[dict, int]:
     """Each distinct view to measure, by its digest: replayed views drawn as
-    `--sample` says, then planned points."""
+    `--sample` says, then planned points; and the largest KV pool an input's
+    engine states."""
     runs = {}
     for name, export in args.client_run:
         runs.setdefault(name, []).append(export)
@@ -327,7 +333,7 @@ def _points(args, store, engine: dict, sampling: dict, out: Path) -> dict[str, d
         traces = {t for _, line in steps for t in line["traces"]}
         for line in planned["lines"]:
             _add(points, line, "plan", [read[n][0] for n in args.grid], traces, digest)
-    return points
+    return points, max(r[2]["num_kvcache_blocks"] for r in read.values())
 
 
 def _read(name: str, store, client_runs, sessions, engine: dict, sampling: dict):

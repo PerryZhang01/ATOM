@@ -26,10 +26,21 @@ stated inputs (D64); the analytical-to-measured ratio is implementation efficien
 self-check that ranks no law above a measurement (D65, D68, D70); D67 gives each memory
 term its method; D67.1's goals attach to the backend and are graded against real runs.
 
+**Revised 2026-10-17 by the owner's ruling on
+[#1392](https://github.com/jgong5/ATOM/issues/1392):** the analytical method is a
+reasonable theoretical bound, priced at attainable peaks probed on the device, at both
+granularities: op level from the captured IR, step level from module extractors (D64).
+Collectives take an algorithm-free alpha-beta lower bound (D66). The bound is the gate;
+the step and end-to-end latency goals are withdrawn and ranking is reported (D67.1).
+Implementation efficiency is a diagnostic, never a projection input (D68), and MI455's
+peaks are its datasheet times the ratios probed on MI355X (D69).
+
 **Scope.** Cost and memory derived from device parameters and model geometry, with **no
-observation of the subject**. Serves three purposes: the step roofline, usable on day zero;
-the analytical fallback, for an op-level leaf no measurement prices; and the only route to
-a device that has never been run.
+observation of the subject**. Serves three purposes: M2's projection of DeepSeek-V4-Pro
+onto MI455, a device never run, at step and op level; the analytical fallback, for what an
+empirical source declines; and the step roofline, usable on day zero. The method gives a
+reasonable theoretical bound: possibly unreachable, but not far from it. It is neither the
+datasheet at derate 1 nor an efficiency measured on ATOM's own kernels (#1392).
 
 ---
 
@@ -42,7 +53,8 @@ geometry, deployment config, or a device parameter from a datasheet or a model-i
 probe on this platform** (#952, `02` D11). The prior PoC had no analytical term; the
 meta-build weight count is one now (`03` D16). A value read back from a file is `measured`;
 a fitted coefficient is `estimated`; a law that reads an assumed parameter, such as an
-assumed derate, is `declared`, its note naming the assumption.
+attainable peak carried from another device (D69), is `declared`, its note naming the
+assumption. A peak probed on the device makes a term analytical (#1392).
 
 ### The organising principle, from what worked and what didn't
 
@@ -67,7 +79,7 @@ at TP=1/2/4/8 on the 0.6B, and 0.00% at TP=2 and TP=4 on the 27B.
 | Class | Derivable from | Examples | Analytical treatment |
 |---|---|---|---|
 | **A — exact** | model geometry + dtype | weight bytes, KV bytes/token, FLOPs per operator, bytes moved per operator, collective message sizes | computed |
-| **B — device-parameterised** | A + device spec | GEMM time, norm/elementwise time, attention time | roofline with derates |
+| **B — device-parameterised** | A + device spec | GEMM time, norm/elementwise time, attention time | roofline at attainable peaks probed on the device (D64) |
 | **C — policy-determined** | nothing | which tuned kernel a shape dispatches to, `non_torch`, load residue, launch overhead, the in-situ gap, fabric scaling | **stated constants**, so declared (doc 05), or accepted error |
 
 Class A comes free from the symbolic IR: doc 04's shapes are sympy expressions, so FLOPs
@@ -77,48 +89,82 @@ exact against a fresh concrete trace at T = 2 / 17 / 64 / 512 / 4096.
 
 ---
 
-## D64. The roofline leaf model
+## D64. The attainable-peak roofline, at step and op level
 
-For a leaf with `F` flops and `M` bytes moved, both Class-A expressions over the IR's
-symbols:
+**Revised 2026-10-17 by the owner's ruling on
+[#1392](https://github.com/jgong5/ATOM/issues/1392).** This replaces the derated leaf model
+first written here.
+
+### Work
+
+Work comes from the contract only. `F`, flops per operand format, and `C`, communication,
+come from work primitives (GEMM, grouped GEMM, attention, elementwise, the collectives of
+D66). `M` is compulsory traffic: each input read once, each output written once, no
+intermediates. All three are Class A.
+
+### One price per pricing unit
 
 ```
-  t_compute = F / (peak_flops  × derate_compute)
-  t_memory  = M / (bandwidth   × derate_memory)
-  t_leaf    = max(t_compute, t_memory)
+  t_unit = max( t0,  F / peak_c,  M / BW(M),  t_comm )
 ```
 
-and at step level, the host floor that the prior work established as a **`max`, not an
-addend**:
+The peaks are **attainable peaks probed on the device** (`05` D26): `peak_c`, one compute
+rate per format (BF16, FP8, FP4); `BW(bytes)`, a STREAM bandwidth curve; `t0`, an
+empty-kernel floor; and the link latency and bandwidth `t_comm` reads (D66). Probed values
+make a term analytical. MI455, with no hardware, takes its datasheet times the ratio
+probed on MI355X, declared (D69). A mixed-format operand pair takes the rate of the wider
+format.
 
-```
-  t_step = max( Σ t_leaf ,  launches × h )
-```
+**MoE** work takes the expectation under independent uniform routing: `E(1-(1-k/E)^B)`
+activated experts for `B` rows, each routed to `k` of `E`, and under EP the expected
+maximum rank load.
 
-All four parameters come from the machine spec (doc 05 D25): `compute.*_flops` at the
-leaf's operand precision,
-`memory.bandwidth_bytes_per_s`, their `derate`s, and — for `h` — `host.*`.
+**Graph padding** is priced as executed, at the rows `capture_rung` pads to; a run option
+prices the real rows instead.
+
+### Op level
+
+- The op list comes from capture into the IR (`04`).
+- A leaf's interface is everything needed to execute it: tensor specs and values plus the
+  ambient values it reads. The same arguments run a benchmark or give an estimate. Kernel
+  selection and environment belong to the benchmark.
+- An extractor registry maps an op kind to work primitives. `F` and `C` sum over the
+  primitives; `M` is the leaf's own boundary. A fused op is one leaf priced once, so fusion
+  is priced as fusion. Aten ops share one generic extractor that reuses
+  `torch.utils.flop_counter`. An op kind with no extractor is refused by name.
+- Leaves compose by the IR's own joins: `Seq` sums, `Par` joins, TBO overlaps, a DP group
+  takes the max. The `resource_bound` join sums the branches' work and takes one roofline.
+
+### Step level
+
+A second projection, independent of capture, as hedge and cross-check.
+
+- Module extractors walk the meta build by ATOM module class, read per-rank parameter
+  shapes and the batch view, and emit work primitives. An unclassified module is refused
+  by name.
+- One `max` and one `t0` per module, summed over modules. Communication inside a module
+  adds to its compute, unless a module attribute states fusion (`fused_allreduce`).
+- The same probed peaks as op level; nothing is fitted.
+
+**The step roofline.** `backends/step_roofline.py::StepRooflineBackend` is the step-level
+projection. A run reaches it as the step-level fallback its run file composes
+(`StepFallbackBackend`, `07` D36), turned on by the run-file key `step_roofline`. Its
+method counts the inputs it reads (owner ruling on
+[#1011](https://github.com/jgong5/ATOM/issues/1011), 2026-10-15): spec fields by their
+origin, analytical from a datasheet or a probe, declared if assumed; the run file's stated
+inputs declared unless they carry an origin.
+
+### Device time only
 
 **Revised 2026-10-11 by the owner's ruling on
 [#815](https://github.com/jgong5/ATOM/issues/815): an analytical law prices device time
-only, `Σ t_leaf` at op level and the larger of compute and memory in the step roofline.**
-Every backend prices one forward's device busy time (`02` D11) and host time is composed
-per runner, so the host floor leaves both. The
-`max` it states survives in `01` D4's recurrence, `end = max(target_end + D_draft,
-launch_end)`, where `launch_end` plays the part of `launches × h`. The launch time comes
-from the measured `W_launch` host law (`09` D54), not from `host.*`. The evidence below is why that `max` is kept.
-
-**The step roofline.** `backends/step_roofline.py::StepRooflineBackend` is this law at
-step level, without the IR: compute `2 · P · Σ N_Q / flops`, memory `(weight bytes + KV
-bytes per token · (Σ N_KV + Σ N_Q)) / bandwidth`. A run reaches it only as
-the step-level fallback its run file composes (`StepFallbackBackend`, `07` D36), turned on
-by the run-file key `step_roofline`. Its one
-term is named by the bound that won, and its method counts the inputs that bound reads
-(owner ruling on [#1011](https://github.com/jgong5/ATOM/issues/1011), 2026-10-15): spec
-fields by their origin, analytical from a datasheet or a probe, declared if assumed; the
-run file's stated inputs declared unless they carry an origin. Every derate is assumed
-today and the run file gives `parameter_count` no origin, so no roofline term is
-analytical yet.
+only.** Every backend prices one forward's device busy time (`02` D11) and host time is
+composed per runner, so the host floor the prior work established, `t_step = max(Σ t_leaf,
+launches × h)`, leaves both granularities. The `max` it states survives in `01` D4's
+recurrence, `end = max(target_end + D_draft, launch_end)`, where `launch_end` plays the
+part of `launches × h`. The launch time comes from the measured `W_launch` host law (`09`
+D54), not from `host.*`. The evidence below is why that `max` is kept. `t0` is the
+device's own floor on one kernel, not this host floor.
 
 The step roofline has no host bound (owner ruling on
 [#1047](https://github.com/jgong5/ATOM/issues/1047), 2026-10-15): it prices device time
@@ -178,24 +224,24 @@ where 4×200 at 4,376 tokens costs **63.16 ms** — fewer tokens, more time, rep
 
 ### Decision
 
-**An analytical law is a smooth model and is allowed to be.** It must not pretend otherwise:
+**An analytical law is a smooth bound and is allowed to be.** It does not model these
+places: they are where the measured time sits furthest above it, and the
+measured-over-analytical report per op kind and per phase (D68) is where they show.
 
-- **It reports a band, not a point**, wherever a known discontinuity lies inside its input
-  range. The dispatch-band boundaries are already recorded in the price list (doc 09 D60)
-  when one exists; when it doesn't, the band comes from the geometry (tile size, chunk
-  size) rather than from measurement.
-- **It answers a leaf whose known discontinuities fall inside the queried range with a
-  band**, as the analytical fallback too (#952). Tracking a measured price closely earns a
-  law nothing: a measured price answers where one exists.
+**Revised 2026-10-17 by the owner's ruling on
+[#1392](https://github.com/jgong5/ATOM/issues/1392):** a pricing unit has one price (D64),
+so the band this decision first required wherever a known discontinuity lay in range is
+withdrawn, and with it T39's dispatch-band table. A measured price answers where one
+exists; tracking it closely earns a law nothing.
 
 ---
 
 ## D66. Collectives
 
-The textbook models are refuted on this fabric. Ring all-reduce predicts `2(N−1)/N · n/BW`,
-i.e. roughly +75% from TP2 to TP8; linear-in-group predicts +300%; linear-in-log₂ +200%.
-**Measured: `cross_device_reduce_1stage` 9.08 → 10.40 → 10.95 µs at TP 2/4/8 (+20.6%), and
-`allgather_lastdim` 29.00 → 23.73 → 16.39 µs (−43.5%).**
+The textbook models are refuted on this fabric as *predictions*. Ring all-reduce predicts
+`2(N−1)/N · n/BW`, i.e. roughly +75% from TP2 to TP8; linear-in-group predicts +300%;
+linear-in-log₂ +200%. **Measured: `cross_device_reduce_1stage` 9.08 → 10.40 → 10.95 µs at
+TP 2/4/8 (+20.6%), and `allgather_lastdim` 29.00 → 23.73 → 16.39 µs (−43.5%).**
 
 The explanation on record: *"a one-stage reduce on a fully-connected fabric is latency-bound
 at these sizes ... which is a claim about this interconnect, not about collectives, and
@@ -203,23 +249,27 @@ should be re-measured on a multi-node deployment before being relied on there."*
 
 ### Decision
 
-A two-regime model keyed off the spec's `interconnect` section:
+**Revised 2026-10-17 by the owner's ruling on
+[#1392](https://github.com/jgong5/ATOM/issues/1392):** a collective takes an
+**algorithm-free alpha-beta lower bound**: one hop of link latency plus the minimum bytes
+any algorithm must send, over the link bandwidth.
 
 ```
-  t = max( link_latency_s × hops(topology, N),
-           message_bytes(N, algorithm) / (link_bandwidth × derate) )
+  t_comm = link_latency_s + min_bytes(collective, N, n) / link_bandwidth
 ```
 
-with the **algorithm named in the spec**, not assumed — because AITER's one-stage reduce,
-its quick-reduce, the custom all-gather and RCCL all have different `message_bytes(N)`, and
-the default path is `ATOM_USE_CUSTOM_ALL_GATHER=1`, which is **entirely invisible to a
-dispatch trace** (doc 07 D40). A group rides `intra_node` while it fits in
-`intra_node.domain_devices` (doc 05 D25), whatever `count_per_node` is.
+Both link terms are probed (`05` D26). The spec names no algorithm, so AITER's one-stage
+reduce, its quick-reduce, the custom all-gather behind the default
+`ATOM_USE_CUSTOM_ALL_GATHER=1` and RCCL are all priced by the same bound, which none of
+them can beat. Open item T36, which asked the spec to name the algorithm per code path, is
+withdrawn. This replaces the two-regime `max` form, with an algorithm-dependent message
+size, first written here. A group rides `intra_node` while it fits in
+`intra_node.domain_devices` (`05` D25), whatever `count_per_node` is.
 
-Expected accuracy: poor at the sizes ATOM actually uses, because those are latency-bound
-and the latency term is the one least constrained by a datasheet. Collectives are ~6.6% of
-kernel time at TP=2, 10.4% at TP=4, 13.4% at TP=8 — so a 2× error here is 7–27% of a step
-at TP=8.
+A bound sits below every algorithm, so its distance from the measured time is the
+diagnostic of D68, per op kind. Collectives are ~6.6% of kernel time at TP=2, 10.4% at
+TP=4, 13.4% at TP=8, and at the sizes ATOM uses they are latency-bound, so the latency term
+carries most of the bound there.
 
 ---
 
@@ -259,42 +309,46 @@ included (`07` D38).
 
 ---
 
-## D67.1. The accuracy goal for the roofline
+## D67.1. The accuracy goal for the analytical method
 
 ### Problem
 
 The empirical backends carry gates on throughput, TPOT, TTFT, each non-KV memory
 term and KV block count, at the [acceptance targets](README.md#acceptance-targets).
-A roofline backend, the step roofline today, has had none, which makes "the roofline is
-available on day zero" an unfalsifiable claim. A number with no gate cannot be reported
-as a result.
+The analytical method needs its own, stated in advance, or "the projection is available on
+day zero" is an unfalsifiable claim. A number with no gate cannot be reported as a result.
 
-### Why the roofline's gate cannot be the empirical gate
+### Why its gate cannot be the empirical gate
 
-Not a matter of ambition. Three structural reasons the empirical gates are the wrong target:
-
-1. **The derate absorbs everything the roofline does not model.** A single scalar stands in for
-   occupancy, tail effects, launch gaps, cache behaviour and kernel quality. Its own
-   authoring error is comparable to the accuracy being demanded.
-2. **Roofline is measurably wrong in four named places** (D65 above), and the corrections
-   are exactly what the empirical campaign supplies. A roofline that hit those gates would
-   mean the empirical campaign was unnecessary.
-3. **The roofline's job is different.** It is asked *which configuration wins* and *does this
-   fit*, on a device nobody has measured. Ranking and feasibility are its outputs.
-   Latency to the empirical gates is not.
+1. **It is a bound, not an estimate** (D64). A reasonable theoretical bound may be
+   unreachable; a latency error against it measures the kernels, not the method.
+2. **It is measurably smooth where reality is not** (D65), and the corrections are exactly
+   what the empirical campaign supplies.
+3. **Its job is different.** It is asked what a device never run could do, and which
+   configuration wins there.
 
 ### The goal
 
-Stated in advance, per quantity, because they are not equally hard:
+**Revised 2026-10-17 by the owner's ruling on
+[#1392](https://github.com/jgong5/ATOM/issues/1392).**
 
-| Quantity | Roofline goal | Why this number |
+**Gate: on every measured step, at both granularities, analytical is at most measured.**
+A step whose analytical price exceeds its measured time is a defect in an extractor, a
+join or the spec, named by its op kind or module. It is a bound, so no violation is
+tolerated. `08` D50.2 applies it.
+
+**Reported, not gated:** configuration ranking (top-1, top-3) over M2's four P/D cells;
+measured over analytical per op kind and per phase, with no threshold yet (D68); and the
+method's error from MI308X to MI355X (`08` D50.2).
+
+The step-time goal of 30% and the end-to-end goal of 40% first stated here are withdrawn,
+and ranking is no longer the primary gate. The memory goals stand:
+
+| Quantity | Goal | Why this number |
 |---|---|---|
 | **Memory: KV capacity, block count** | **≤5%**, same as empirical | Class A — exact from geometry. There is no modelling here to be wrong about; a miss is a bug. |
 | **Memory: weights** | **≤5%**, *tighter* than empirical's ≤10% | Class A — exact from geometry, so a miss is a bug rather than modelling error. Weights is a non-KV memory term, and the acceptance table gates those at ≤10%; the roofline keeps its own goal at that level anyway, because a looser bound on an exact quantity would not catch the bug the row exists to catch. Tighter than the empirical gate, not the same as it. |
 | **Memory: each non-KV term except weights** | **≤25%** | activations are approximate (`k_model` derived from geometry where no run measured it) and invisible scratch is Class C. The spread that sets the number: scratch is 0.1 KB/token on the 0.6B and **39.6 KB/token** on the 27B. |
-| **Step time (prefill and decode, separately)** | **≤30%** | roofline plus a stated derate, against the four known wrongnesses of D65. Anything tighter would be claiming the corrections are unnecessary. |
-| **End-to-end TTFT / TPOT / throughput** | **≤40%** | step error compounds through a scheduler with discontinuities (doc `08` D44). Reported, not gated on tighter. |
-| **Configuration ranking** | **top-1 must survive; top-3 set must survive** | **this is the primary gate.** The others are diagnostics for it. |
 | **Feasibility (does it fit)** | **no false "fits"** | a configuration the roofline says fits and then OOMs is a hard failure regardless of byte error. One-sided on purpose. |
 
 **On the weights row.** The empirical acceptance table has two memory buckets —
@@ -308,136 +362,113 @@ in one cell and called the number "same as empirical", which is true of KV capac
 and block count and false of weights, and was read in review as evidence that the
 empirical weights gate is ≤5%.
 
-### Why ranking is the primary gate and the others are not
-
-The roofline exists for the day-zero and never-measured-this-device cases. In both, the
-decision being made is *choose a configuration*, and a model that is uniformly 25% slow
-ranks identically to a perfect one. A model that is 10% fast on one configuration and
-10% slow on another can invert the ranking while looking better by every latency
-statistic. So the gate that matters is ordinal, and the percentage goals above exist to
-make a ranking failure diagnosable rather than to be reported on their own.
-
-This is the same argument doc `08` D48 makes for memory and it is adopted here
-deliberately — one gate philosophy across both, not two.
-
 ### How it is graded
 
-The goals attach to the backend and are graded against real runs (#952): a run the
-roofline prices is a cell like any other, compared with its configuration's real runs by
-`08` D44's results, ranking first. Implementation efficiency (D68) is a self-check beside
-it, not the grade.
+The gate attaches to the backend and is checked against real runs' step records (#952):
+the stage-2 MI308X record and the stage-3 MI355X records, at step level and at op level.
 
-What that cannot check is the roofline on a device with no real run, which is its whole
-purpose. That gap is irreducible: the goals above are graded *where real runs exist* and
-**assumed to transfer**, with the derate carrying the assumption, so such a prediction is
-declared. Recorded as **T56**: state the roofline's error observed on each measured device
-in the artifact, so a user on an unmeasured device sees the range rather than a promise.
-
-### Open issue
-
-- These numbers are **stated, not derived**. 30% for step time is a judgement informed
-  by D65's four measured wrongnesses; one campaign will say whether it was generous or
-  harsh, and it should be revised then rather than defended.
+What that cannot check is MI455, which has no real run. That gap is irreducible: the
+bound is checked *where real runs exist*, and MI455's peaks are carried from MI355X, so
+its terms are declared (D69). The method's error from MI308X to MI355X is quoted with
+the projection, so a user of an unmeasured device sees a range rather than a promise
+(T56).
 
 ---
 
-## D68. Implementation efficiency: the empirical campaign checks the laws
+## D68. Implementation efficiency is a diagnostic
 
-### The structural argument
+**Revised 2026-10-17 by the owner's ruling on
+[#1392](https://github.com/jgong5/ATOM/issues/1392).**
 
-For every leaf where **both** a measured price and an analytical law exist, the law's time
-over the measured time is that leaf family's **implementation efficiency**: how close the
-kernel library comes to the roofline on this device. It reflects the implementation, not
-whether the law is right, and it is a self-check in the calibration report, off the
-critical path (#952). Author the laws after the empirical campaign and there is no way to
-read it except by measuring again.
-
-**So the analytical laws are authored during the empirical campaign, not after it.**
+Implementation efficiency, **measured over analytical**, says how far the kernels ATOM
+runs sit from the bound on this device. It reflects the implementation, not whether the
+law is right. It is reported per op kind and per phase as a distribution, never as a mean
+alone, with no threshold yet. It is **never a projection input**: no measured efficiency
+is carried onto another device to scale a price (D69).
 
 ### On M2's critical path
 
-`16` D95 makes the laws needed during the campaign as well. M2's MI455 roofline projection
-is built from them, so they are an M2 deliverable rather than a side wave, and that is the
-only reason they are on it. `16` W5.2
-authors the laws for DeepSeek-V4-Pro's operator families below, per precision, alongside
-`16` W4.4's MI355X calibration of the same families, which supplies each law's measured
-counterpart:
+`16` D95 puts the analytical method on M2's critical path, for the MI455 projection of
+DeepSeek-V4-Pro. Its families, each priced at both granularities:
 
 | Family | Law | Spec fields read (`05` D25) |
 |---|---|---|
-| MoE expert GEMMs | D64 | `compute.fp4_flops` for the FP4 routed experts, the operand precision's rate for the rest; `memory.bandwidth_bytes_per_s` |
-| attention, with its compressors | D64, with D65's band where a plateau lies in range | `compute.*_flops` at each leaf's operand precision; `memory.bandwidth_bytes_per_s` |
+| MoE expert GEMMs | D64, routing in expectation | each operand pair's wider format (FP4 only where the activations are MXFP4 too); `BW(bytes)`; `t0` |
+| attention, with its compressors | D64 | the rate at each leaf's operand format; `BW(bytes)`; `t0` |
 | the CSA indexer | D64 | the same |
 | mHC | D64 | the same |
-| the DP group's variable-size gather | D66 | `interconnect.intra_node.*` |
+| the DP group's gather and reduce-scatter over `T_moe`, EP off | D66 | `interconnect.intra_node.*` |
 | MORI dispatch and combine, for the EP8 step | D66 | `interconnect.intra_node.*` |
 
 Mooncake's KV transfer needs no law here: it is charged `latency + bytes/bandwidth` from
-`interconnect.inter_node` (`05` D25). Most of these families are opaque leaves, so their FLOPs
-and bytes come from the hand-written extractors of T35, which W5.2 owes for these families
-first. The roofline is graded by D67.1.
+`interconnect.inter_node` (`05` D25). Most of these families are opaque leaves, so their
+work comes from the extractors of T35: module extractors at step level, op-kind
+extractors at op level (`16` *Wave 5*).
 
 ### The analytical fallback
 
 An op-level backend answers a leaf no measurement prices by its analytical law, always
-(#952); at step level the step roofline is the fallback a run file composes (D64). Either
-answers with the method its inputs give it, declared while it reads an assumed parameter,
-and its share of seconds is always reported (`08` D50.1). A law never moves ahead of a
-measurement: one that tracks its measured price within the instrument's repeatability (doc
-07 D41) still answers only where no measured price does.
-
-Carried onto another device, as onto MI455 from MI355X, an implementation efficiency is
-declared: it was observed on another subject (`08` D50.2).
+(#952); at step level the step roofline is the fallback a run file composes (D64). As the
+fallback of an empirical backend, the analytical method answers its own price, reported
+apart (#1392), with the method its inputs give it, declared while it reads an assumed
+parameter, and its share of seconds is always reported (`08` D50.1). A law never moves
+ahead of a measurement: one that tracks its measured price within the instrument's
+repeatability (doc 07 D41) still answers only where no measured price does.
 
 ### What is reported
 
-Per leaf family: the implementation-efficiency distribution, in the calibration report. A
-run whose terms are all analytical reports 100% `analytical` in its seconds by method; an
+Measured over analytical per op kind and per phase, beside the bound gate (D67.1). A run
+whose terms are all analytical reports 100% `analytical` in its seconds by method; an
 op-level run with gaps reports the mixture, beside the cell's verdict and not gated (doc 08
 D50.1).
 
 ---
 
-## D69. Device transfer, and the derate problem
+## D69. Device transfer
 
-Analytical laws are the only route to a device never measured. They have a specific weakness that must
-be stated rather than discovered.
+**Revised 2026-10-17 by the owner's ruling on
+[#1392](https://github.com/jgong5/ATOM/issues/1392).** Analytical laws are the only route to
+a device never measured, and the route has one stated weakness.
 
-**Peak FLOPs and bandwidth are datasheet numbers. Achieved performance is
-`peak × derate`, and the derate is a property of the kernel library's maturity on that
-architecture — not of the silicon.** For a device you have never run, the derate is a
-guess, and it is the dominant term.
+**Peaks are attainable peaks probed on the device** (D64). A device with no hardware, as
+MI455 in M2, takes **its datasheet times the ratio probed on MI355X**, per peak. The ratio
+is observed on another device, so the field is assumed and every term that reads it is
+declared (`05` D25, rule 5). The ratio is a property of the probe on the silicon and the
+vendor library, not of ATOM's kernels: no implementation efficiency enters it (D68).
 
-> **A roofline on an unmeasured device is as good as its assumed derate, and nothing in the
-> procedure validates that assumption: its terms are declared.**
+> **A projection onto an unmeasured device is as good as its carried ratios, and nothing in
+> the procedure validates them there: its terms are declared.**
 
-Two honest mitigations, neither of which removes the caveat:
+Mitigations, none of which removes the caveat:
 
-1. **Report sensitivity.** Every roofline prediction on an unmeasured device is reported with
-   its derate, and with the prediction recomputed at ±20% derate. A ranking that survives
-   that band is more trustworthy than one that doesn't.
-2. **Rank, don't predict.** The gate that matters is whether the top-1 configuration choice
-   survives (doc 08 D48). A derate error that applies uniformly across configurations may
-   leave the ranking intact while moving every absolute number.
+1. **Report sensitivity.** Every projection onto an unmeasured device is reported with its
+   carried ratios, and recomputed at ±20% of each, capped at 1, the datasheet
+   ([#1466](https://github.com/jgong5/ATOM/issues/1466)). A ranking that survives that band is
+   more trustworthy than one that doesn't.
+2. **Rank, don't predict.** Configuration ranking is reported beside the projection
+   (D67.1). A ratio error that applies uniformly across configurations may leave the
+   ranking intact while moving every absolute number.
+3. **Measure the method where both sides exist.** The same carrying, MI308X to MI355X on
+   Qwen3.8-27B, is reported against real MI355X runs (`08` D50.2).
 
 ---
 
 ## D70. Expected accuracy, stated in advance
 
-**D67.1 sets the goals — what the roofline is graded against.** This decision is the separate
-and weaker statement: what we *expect* to observe, per use, so that a result cannot be
-graded against an expectation invented after seeing it. Where a use has a goal in D67.1,
-that goal governs; the rows below cover the uses D67.1 does not gate.
+**D67.1 sets the gate.** This decision is the separate and weaker statement: what we
+*expect* to observe, per use, so that a result cannot be graded against an expectation
+invented after seeing it.
 
 | Use | Expected error | Why |
 |---|---|---|
-| the roofline, unmeasured device | **unbounded, derate-dominated** | D69. This is why D67.1's goals are graded only where real runs exist. |
-| the analytical fallback for a leaf | **unknown per leaf** — that is why its share is reported apart | the calibration report's implementation efficiency for its family says how far it sits from the measured price (D68) |
+| the projection, a measured device | **below the measured time on every step**; how far is reported per op kind and phase | D67.1's gate; D68's report |
+| the projection, MI455 | **declared**; its distance from a real run is estimated by the MI308X-to-MI355X method error | D69 |
+| the analytical fallback for a leaf | **below the measured price, by an amount unknown per leaf** — that is why its share is reported apart | D68 |
 | analytical memory: weights, KV | **exact** | Class A; D67.1 gates both at ≤5% purely to catch bugs — for KV that is the empirical gate, for weights it is tighter than empirical's ≤10% |
 | analytical memory: block count end to end | **unknown** | depends on activations and the Class-C constants |
 
-Single digits on latency are not a target for the roofline and should not be claimed. That is
-what the op-level backend exists for.
+Single digits on latency are not a target for the analytical method and should not be
+claimed. That is what the empirical op-level backend exists for.
 
 ---
 
@@ -445,15 +476,15 @@ what the op-level backend exists for.
 
 | # | Decision | Date |
 |---|---|---|
-| D63 | Three classes: A exact from geometry, B device-parameterised, C policy-determined. An analytical law works where the quantity is a pure function of stated geometry and fails where a runtime or library policy decides it. `analytical` is #952's method: a form from first principles over geometry, deployment config and datasheet or probed device parameters; an assumed parameter makes a term declared. | 2026-09-19; revised 2026-10-14 (#952) |
-| D64 | Roofline leaf `max(F/flops, M/bandwidth)` with derates, plus the host floor as a step-level `max`, not an addend. Revised: every analytical law, the step roofline included, prices device time only; the `max` moves to `01` D4's recurrence, with the launch time from the measured `W_launch` law. Revised: the step roofline's method counts the inputs the winning bound reads. Revised: the step roofline has no host bound; the run-file key `step_roofline` turns it on. | 2026-09-19; revised 2026-10-11 (#815), 2026-10-15 (#1011) and 2026-10-15 (#1047) |
-| D65 | An analytical law is a smooth model and says so: it answers a leaf with a known discontinuity in range with a band, as the analytical fallback too. | 2026-09-19; revised 2026-10-14 (#952) |
-| D66 | Two-regime collective model with the algorithm named in the spec. Textbook ring/log models are refuted on this fabric. | 2026-09-19 |
-| D67.1 | Roofline accuracy goals stated per quantity: ≤5% on weights and on KV capacity/block count (the empirical gate for KV, tighter than it for weights), ≤25% each other non-KV memory term, ≤30% step time, ≤40% end-to-end. **Configuration ranking (top-1 and top-3 set) is the primary gate**; no false "fits". The goals attach to the backend and are graded against real runs. | 2026-09-19; revised 2026-10-14 (#952) |
+| D63 | Three classes: A exact from geometry, B device-parameterised, C policy-determined. An analytical law works where the quantity is a pure function of stated geometry and fails where a runtime or library policy decides it. `analytical` is #952's method: a form from first principles over geometry, deployment config and datasheet or probed device parameters; an assumed parameter makes a term declared. Class B prices at attainable peaks probed on the device. | 2026-09-19; revised 2026-10-14 (#952) and 2026-10-17 (#1392) |
+| D64 | One pricing unit costs `max(t0, F/peak_c, M/BW(M), t_comm)` at attainable peaks probed on the device: one rate per format, the wider format's for a mixed pair, a bandwidth curve, an empty-kernel floor and link alpha-beta. Work comes from the contract only; MoE in expectation under uniform routing; graph padding as executed. Op level: the captured IR, an extractor registry by op kind, refused by name without one, composed by the IR's joins. Step level: module extractors over the meta build, one `max` and one `t0` per module, summed; refused by name for an unclassified module. Every analytical law prices device time only; the host floor's `max` lives in `01` D4's recurrence, with the launch time from the measured `W_launch` law. The step roofline's method counts the inputs it reads; it has no host bound; the run-file key `step_roofline` turns it on. Replaces the derated leaf model first stated here. | 2026-09-19; revised 2026-10-11 (#815), 2026-10-15 (#1011), 2026-10-15 (#1047) and 2026-10-17 (#1392) |
+| D65 | An analytical law is a smooth bound and says so: the known discontinuities are where the measured time sits furthest above it, shown by the measured-over-analytical report. A pricing unit has one price; the band first required here is withdrawn. | 2026-09-19; revised 2026-10-14 (#952) and 2026-10-17 (#1392) |
+| D66 | A collective takes an algorithm-free alpha-beta lower bound: one hop of link latency plus the minimum bytes any algorithm must send, over the link bandwidth. The spec names no algorithm (T36 withdrawn). Textbook ring/log models are refuted on this fabric as predictions. Replaces the two-regime form first stated here. | 2026-09-19; revised 2026-10-17 (#1392) |
+| D67.1 | The gate is the bound: on every measured step, at both granularities, analytical is at most measured. Reported, not gated: configuration ranking (top-1, top-3) over the four P/D cells, measured over analytical per op kind and per phase, and the MI308X-to-MI355X method error. Memory goals: ≤5% on weights and on KV capacity/block count (the empirical gate for KV, tighter than it for weights), ≤25% each other non-KV memory term, no false "fits". The step and end-to-end latency goals and ranking as the primary gate, first stated here, are withdrawn. | 2026-09-19; revised 2026-10-14 (#952) and 2026-10-17 (#1392) |
 | D67 | Analytical memory is the existing memory model with the activation coefficient derived rather than walked. Weights and KV exact; scratch stays a stated constant, and `non_torch` and load residue come from a `memory_readings` entry, marked assumed for a device never run. Revised: the coefficient is measured on one real run per model and width, with the scratch inside it rather than a stated constant; no geometry form stands in for it (T34, 2026-10-16, #965). Each term carries a method, and a declared one cannot pass its gate. | 2026-09-19; revised 2026-10-10, 2026-10-14 (#937) and 2026-10-14 (#952) |
-| D68 | The analytical laws are authored **during** the empirical campaign, because that campaign is their only check. A leaf family's law-over-measured time is its implementation efficiency, a self-check in the calibration report, off the critical path, and declared when carried to another device. An op-level backend answers an unpriced leaf by its analytical law; no law moves ahead of a measurement. Revised for `16` D95: the laws for DeepSeek-V4-Pro's operator families are on M2's critical path, for the MI455 projection. | 2026-09-19; revised 2026-10-10 and 2026-10-14 (#952) |
-| D69 | On an unmeasured device, the roofline is derate-dominated and declared. Report the derate and a ±20% sensitivity band; prefer ranking claims to absolute ones. | 2026-09-19 |
-| D70 | Expected accuracy is stated in advance, per use. Single-digit latency error is not a roofline target. | 2026-09-19 |
+| D68 | Implementation efficiency, measured over analytical, is a diagnostic reported per op kind and per phase as a distribution, with no threshold yet; it is never a projection input. The analytical method is on M2's critical path for the MI455 projection of DeepSeek-V4-Pro's families (`16` D95). An op-level backend answers an unpriced leaf by its analytical law, and as an empirical backend's fallback the method answers its own price, reported apart; no law moves ahead of a measurement. Replaces the efficiency first stated here as a calibration self-check, carried declared to another device. | 2026-09-19; revised 2026-10-10, 2026-10-14 (#952) and 2026-10-17 (#1392) |
+| D69 | Peaks are probed on the device; a device with no hardware takes its datasheet times the ratio probed on MI355X, so its terms are declared. Report each carried ratio with a ±20% sensitivity band; prefer ranking claims to absolute ones; measure the method from MI308X to MI355X. Replaces the assumed derate first stated here. | 2026-09-19; revised 2026-10-17 (#1392) |
+| D70 | Expected accuracy is stated in advance, per use: below the measured time on a measured device, declared on MI455. Single-digit latency error is not a target for the analytical method. | 2026-09-19; revised 2026-10-17 (#1392) |
 
 ---
 
@@ -465,8 +496,9 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 | # | Item | Why deferred |
 |---|---|---|
 | ~~T34~~ | ~~Test whether the activation coefficient `k_model` is derivable from geometry~~ — closed 2026-10-16 by [#965](https://github.com/jgong5/ATOM/issues/965): not within 25% ([#705](https://github.com/jgong5/ATOM/issues/705)) | — |
-| T35 | Derive FLOPs and bytes-moved expressions for the ~20 opaque leaves | Class A is free from the IR for aten ops, but an opaque leaf's internal work must be described by hand (doc 04 D20's parameter extractor, extended) |
-| T36 | Name the collective algorithm per code path in the machine spec schema | doc 05 D25 has no field for it yet |
+| T35 | Derive the work of the opaque leaves: op-kind extractors at op level ([#1402](https://github.com/jgong5/ATOM/issues/1402), [#1403](https://github.com/jgong5/ATOM/issues/1403)) and module extractors at step level ([#1398](https://github.com/jgong5/ATOM/issues/1398), [#1399](https://github.com/jgong5/ATOM/issues/1399)) | Class A is free from the IR for aten ops, but an opaque leaf's internal work must be described by hand (doc 04 D20's parameter extractor, extended) |
+| ~~T36~~ | ~~Name the collective algorithm per code path in the machine spec schema~~ — **withdrawn 2026-10-17 by [#1392](https://github.com/jgong5/ATOM/issues/1392)**: collectives take an algorithm-free lower bound (D66) | — |
 | ~~T37~~ | ~~Decide whether `h` (the host floor) is derivable or stays a per-model measured constant~~ — **ruled 2026-10-11 on #815**: host time is measured, as host laws keyed by host CPU, `atom` digest, model and engine config, with no transfer (`09` D54) | 40% apart between two models; it is the largest single Class-C term |
-| T38 | Build the implementation-efficiency report (analytical over measured time per leaf family) as part of the empirical campaign | it must exist before the campaign, not after |
-| T39 | Establish a dispatch-band table from geometry for leaves with no measured bands | tile sizes and chunk sizes are knowable; whether the *selection rule* is, is not |
+| T38 | Build the measured-over-analytical report per op kind and per phase, beside the bound gate ([#1405](https://github.com/jgong5/ATOM/issues/1405)) | needs both granularities' prices and a real run's step records |
+| ~~T39~~ | ~~Establish a dispatch-band table from geometry for leaves with no measured bands~~ — **withdrawn 2026-10-17 with D65's band (#1392)** | — |
+| T56 | Quote the method's error from MI308X to MI355X with the MI455 projection, so a user of an unmeasured device sees a range rather than a promise ([#1406](https://github.com/jgong5/ATOM/issues/1406)) | needs real MI355X runs and both machines' probes |

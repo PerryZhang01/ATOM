@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: MIT
 """The parity workload: distinct completions sent on a schedule, to a real or a simulated run.
 
-    python -m atom.compass.parity.traffic PORT MODEL RECORD [REQUESTS [GAP_S [PREFIX_WORDS [IMAGES [ALONE [LONG]]]]]]
+    python -m atom.compass.parity.traffic PORT MODEL RECORD [REQUESTS [GAP_S [PREFIX_WORDS [IMAGES [ALONE [LONG [FAMILIES]]]]]]]
 
 Request k's prompt starts with PREFIX_WORDS words every request shares (none
-by default), then k; with IMAGES it is a chat message after that many images
-(`image`). It asks for a fixed number of tokens with
+by default), then k; with FAMILIES above 1 it shares them only with family
+k % FAMILIES, whose words start with its number. With IMAGES it is a chat
+message after that many images (`image`). It asks for a fixed number of tokens with
 ``ignore_eos``, streamed; request 0 for LONG tokens when LONG is above 0. On a real run (`ATOM_COMPASS_RUN` unset)
 request k is sent GAP_S * k wall seconds after the first and not before the
 server has admitted request k - 1, each on its own thread; with ALONE 1,
@@ -53,18 +54,26 @@ def image(k: int) -> str:
 
 
 def bodies(
-    model: str, n: int, prefix_words: int = 0, images: int = 0, long: int = 0
+    model: str,
+    n: int,
+    prefix_words: int = 0,
+    images: int = 0,
+    long: int = 0,
+    families: int = 1,
 ) -> list[dict]:
     """Request k: `prefix_words` words every request shares, then about
     48 + 31k words starting with k; 16 to 96 output tokens, or `long` for
     request 0 when `long` is above 0. With `images`, a chat message whose text
-    follows that many copies of `image(k)`."""
+    follows that many copies of `image(k)`. With `families` above 1, request k
+    shares the words only with family k % `families`, whose words start with
+    its number."""
     prefix = "".join(f"{WORDS[i % len(WORDS)]} " for i in range(prefix_words))
     out = []
     for k in range(n):
         body = {
             "model": model,
-            "prompt": f"{prefix}{k} "
+            "prompt": (f"{k % families} " if families > 1 else "")
+            + f"{prefix}{k} "
             + " ".join(WORDS[(k + i) % len(WORDS)] for i in range(48 + 31 * k)),
             "max_tokens": long if long > 0 and k == 0 else 16 + 16 * (k % 6),
             "ignore_eos": True,
@@ -102,10 +111,11 @@ def real(
     images: int = 0,
     warmup: bool = False,
     long: int = 0,
+    families: int = 1,
 ) -> None:
     """Send request k at `gap_s` * k, once k - 1 is admitted when `wait`, read
     each to its end, write `ARRIVALS` with the requests' `prefix_words`,
-    `images` and `long`. With `warmup`, request 0 is read to its end alone and the gaps
+    `images`, `long` and `families`. With `warmup`, request 0 is read to its end alone and the gaps
     count from then, so the rest arrive into running batches rather than all
     during the first forward.
     Through a prefill-decode router a request is admitted only once its
@@ -139,6 +149,7 @@ def real(
         "prefix_words": prefix_words,
         "images": images,
         "long": long,
+        "families": families,
     }
     (record / ARRIVALS).write_text(json.dumps(arrivals))
 
@@ -212,10 +223,10 @@ if __name__ == "__main__":
     run, record = compass_run.spec(), Path(record)
     if run is None:
         n, gap_s = int(rest[0]) if rest else 64, float(rest[1]) if rest[1:] else 0.05
-        prefix, images, alone, long = (
-            int(rest[i]) if rest[i:] else 0 for i in (2, 3, 4, 5)
+        prefix, images, alone, long, families = (
+            int(rest[i]) if rest[i:] else 0 for i in (2, 3, 4, 5, 6)
         )
-        requests = bodies(model, n, prefix, images, long)
+        requests = bodies(model, n, prefix, images, long, families)
         real(
             int(port),
             requests,
@@ -225,11 +236,13 @@ if __name__ == "__main__":
             images=images,
             warmup=alone == 1,
             long=long,
+            families=families,
         )
     else:
         arrivals = json.loads((record / ARRIVALS).read_text())
         sent, prefix = arrivals["sent_ns"], arrivals.get("prefix_words", 0)
         images, long = arrivals.get("images", 0), arrivals.get("long", 0)
-        requests = bodies(model, len(sent), prefix, images, long)
+        families = arrivals.get("families", 1)
+        requests = bodies(model, len(sent), prefix, images, long, families)
         offsets = [(t - min(sent)) / 1e9 for t in sent]
         Traffic(run, int(port), requests, offsets).run()

@@ -146,12 +146,12 @@ M-f `14`; M-g `01` D3.5.
 | # | Item |
 |---|---|
 | ~~T34~~ | ~~Test whether the activation coefficient is derivable from geometry~~ — closed 2026-10-16 by [#965](https://github.com/jgong5/ATOM/issues/965): it is not, within 25% ([#705](https://github.com/jgong5/ATOM/issues/705)); a configuration's `memory_readings` entry is its source |
-| T35 | Derive FLOPs and bytes-moved expressions for the ~20 opaque leaves |
-| T36 | Name the collective algorithm per code path in the machine spec schema |
+| T35 | Derive the work of the opaque leaves: op-kind extractors at op level ([#1402](https://github.com/jgong5/ATOM/issues/1402), [#1403](https://github.com/jgong5/ATOM/issues/1403)), module extractors at step level ([#1398](https://github.com/jgong5/ATOM/issues/1398), [#1399](https://github.com/jgong5/ATOM/issues/1399)) |
+| ~~T36~~ | ~~Name the collective algorithm per code path in the machine spec schema~~ — withdrawn 2026-10-17 by [#1392](https://github.com/jgong5/ATOM/issues/1392): collectives take an algorithm-free lower bound (`10` D66) |
 | ~~T37~~ | ~~Decide whether the host floor is derivable or stays a per-model constant~~ — ruled 2026-10-11 on #815: measured host laws, keyed by host CPU, `atom` digest, model and engine config, with no transfer (`09` D54, `10` D64) |
-| T38 | Build the implementation-efficiency report (analytical over measured time per leaf family) as part of the empirical campaign |
-| T39 | Establish a dispatch-band table from geometry where no measured bands exist |
-| **T56** | Record the observed roofline error per measured device in the artifact, so an unmeasured-device user sees a range rather than a promise |
+| T38 | Build the measured-over-analytical report per op kind and per phase, beside the bound gate ([#1405](https://github.com/jgong5/ATOM/issues/1405)) |
+| ~~T39~~ | ~~Establish a dispatch-band table from geometry where no measured bands exist~~ — withdrawn 2026-10-17 with `10` D65's band ([#1392](https://github.com/jgong5/ATOM/issues/1392)) |
+| **T56** | Quote the method's error from MI308X to MI355X with the MI455 projection, so a user of an unmeasured device sees a range rather than a promise ([#1406](https://github.com/jgong5/ATOM/issues/1406)) |
 
 ### Topic 11 — metrics support
 
