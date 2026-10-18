@@ -208,13 +208,16 @@ def test_tp8_without_dp_attention_reduces_in_each_layer_and_declares_nothing(
             assert not [op for op in layer if op["kind"] == "declared"]
 
 
-def test_a_tbo_step_is_refused_by_name(tmp_path):
+def test_a_step_split_into_two_micro_batches_is_refused_by_name(tmp_path):
+    # ATOM splits a prefill under --enable-tbo from 8192 tokens on, its default.
     done = trace(
-        tmp_path,
-        "--width 2 --prefill 512 1" + DPA_TP8 + EP8 + " --enable-tbo",
+        tmp_path, "--prefill 512 1 --prefill 8192 1" + DPA_TP8 + EP8 + " --enable-tbo"
     )
 
+    captured = re.findall(r"^captured (.*) in ", done.stdout, re.MULTILINE)
+    assert captured == ["prefill T=512 B=1"], done.stderr[-4000:]
     assert done.returncode != 0
-    assert "prefill T=512 B=1 under --enable-tbo" in done.stderr
-    assert "decode B=2" not in done.stderr.splitlines()[-1]
-    assert "published" not in done.stdout
+    assert (
+        "prefill T=8192 B=1 runs two micro-batches under --enable-tbo"
+        in done.stderr.splitlines()[-1]
+    )

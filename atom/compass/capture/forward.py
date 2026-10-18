@@ -320,6 +320,8 @@ def _patches(recorder):
       collectives, the streams and the expert kernels.
     * The checkpoint's weights iterator yields nothing: ATOM's dummy load still
       runs it, which would open every shard, or download them for a hub name.
+    * A step ATOM splits into two micro-batches (`--enable-tbo`) is refused by
+      name before its threads start: one graph cannot hold the two.
     """
     import flydsl.compiler
     from torch._subclasses.fake_tensor import unset_fake_temporarily
@@ -329,6 +331,7 @@ def _patches(recorder):
     from atom.model_ops import module_dispatch_ops, moe
     from atom.model_ops.attentions import gdn_attn
     from atom.utils import CpuGpuBuffer
+    from atom.utils.tbo.ubatch_wrapper import UBatchWrapper
 
     def run(kernel, *args, **kwargs):
         recorder.launch(f"triton.{kernel.__name__}")
@@ -362,6 +365,12 @@ def _patches(recorder):
         ):
             init(self, *args, **kwargs)
 
+    def micro_batches(*args, **kwargs):
+        raise ValueError(
+            f"{recorder.shape} runs two micro-batches under --enable-tbo, which "
+            "one op_graph cannot hold"
+        )
+
     def host_conv1d(*args, **kwargs):
         with unset_fake_temporarily():
             return conv1d(*args, **kwargs)
@@ -374,6 +383,7 @@ def _patches(recorder):
         (gdn_attn, "compute_causal_conv1d_metadata", host_conv1d),
         (torch.Tensor, "tolist", host_tolist),
         (loader, "safetensors_weights_iterator", lambda *a, **k: iter(())),
+        (UBatchWrapper, "_run_ubatches", micro_batches),
         (torch.ops.aiter, "moe_forward", moe.moe_forward),
         (
             torch.ops.aiter,
@@ -495,12 +505,6 @@ def capture(model: str, tp: int, shapes, tmpdir: str, atom_args=(), arch="gfx942
     from atom.config import set_current_atom_config
 
     config = _config(model, tp, atom_args)
-    tbo = {"prefill": config.enable_tbo, "decode": config.enable_tbo_decode}
-    if refused := [str(shape) for shape in shapes if tbo[shape.phase]]:
-        raise ValueError(
-            f"{', '.join(refused)} under --enable-tbo: a TBO step runs two "
-            "micro-batches interleaved, which one op_graph cannot hold"
-        )
     tp, dp = config.tensor_parallel_size, config.parallel_config.data_parallel_size
     ep = int(config.enable_expert_parallel)
     declared["group"] = driverless.group(tp, dp)
@@ -551,6 +555,7 @@ def capture(model: str, tp: int, shapes, tmpdir: str, atom_args=(), arch="gfx942
         with fake_mode, recorder:
             runner.allocate_kv_cache(max(KV_BLOCKS, blocks))
         for shape in shapes:
+            recorder.shape = shape
             recorder.creating = ir.Role.METADATA
             with fake_mode, torch._C._EnablePythonDispatcher(), recorder:
                 # A runner's first step takes its own path, so the traced step
