@@ -56,7 +56,7 @@ from atom.compass.artifacts import (
     roots_for,
 )
 from atom.compass.drive import serve
-from atom.compass.drive.gpu import add_gpu_flag, quiet
+from atom.compass.drive.gpu import add_gpu_flag, hip_visible, quiet
 from atom.compass.drive.identity import _device, identity
 from atom.compass.run import CLOCK_ENV, ENV, _write_whole, memory
 from atom.compass.spec import MachineSpec, across_ranks
@@ -120,7 +120,7 @@ def main(argv: list[str], again: bool = False) -> None:
     (out / READINGS).mkdir(parents=True)
     env = {k: v for k, v in os.environ.items() if k not in (ENV, CLOCK_ENV, parity.ENV)}
     env[OUT_ENV] = str(out / READINGS)
-    env["HIP_VISIBLE_DEVICES"] = ",".join(map(str, args.gpu))
+    env["HIP_VISIBLE_DEVICES"] = hip_visible(args.gpu)
     env["ATOM_DP_MASTER_PORT"] = str(serve._free_ports(1)[0])
     if args.beside:
         env[BESIDE_ENV] = args.beside

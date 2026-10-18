@@ -17,7 +17,7 @@ import shutil
 import sys
 
 import pytest
-from test_drive_gpu import FREE
+from test_drive_gpu import FREE, SHOWHW
 from test_drive_identity import CARD, GIT, _checkout, _git
 from test_fit_samples import HOST, RUNS, edit
 from test_fit_samples import record as planted_out
@@ -184,9 +184,11 @@ def planted_gpu(tmp_path, monkeypatch):
     bindir.mkdir()
     (bindir / "listing").write_text(FREE)
     (bindir / "cards.json").write_text(json.dumps({"card7": CARD}))
+    (bindir / "showhw").write_text(SHOWHW)
     (bindir / "rocm-smi").write_text(
         f'#!/bin/sh\ncase "$*" in *--showproductname*) cat {bindir}/cards.json;;\n'
-        f"*--showpids*) cat {bindir}/listing;;\nesac\n"
+        f"*--showpids*) cat {bindir}/listing;;\n"
+        f"*--showhw*) cat {bindir}/showhw;;\nesac\n"
     )
     (bindir / "rocminfo").write_text("#!/bin/sh\nexit 0\n")
     for tool in ("rocm-smi", "rocminfo"):

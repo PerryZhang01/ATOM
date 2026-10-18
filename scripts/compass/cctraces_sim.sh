@@ -54,7 +54,8 @@
 # A TP1 cell also writes its step record to steps/. A real cell writes no step
 # table or summary; it saves rocm-smi's process listing before and after it in
 # gpu_before.txt and gpu_after.txt, and its result names the processes on its
-# GPUs (each in HIP_VISIBLE_DEVICES, default 0), with their VRAM bytes.
+# GPUs (HIP_VISIBLE_DEVICES, default 0, as rocm-smi indexes them), with their
+# VRAM bytes.
 # It keeps Triton's autotune results in TRITON_CACHE_DIR (Triton's default
 # ~/.triton/cache), so a kernel tuned by one real run of that directory loads
 # its choice in the next instead of tuning inside it.
@@ -161,6 +162,7 @@ gpu=${HIP_VISIBLE_DEVICES:-0}
 gpu_processes() { rocm-smi --showpids --showpidgpus >"$OUT/gpu_$1.txt"; }
 if ((REAL)); then
     [[ $MODE == tp1 ]] || { echo "cctraces_sim: a real cell is TP1, and the run file is 1P1D" >&2; exit 2; }
+    gpu=$(compass_gpus smi "$gpu")
     gpu_processes before
 fi
 if [[ $MODE == 1p1d ]]; then
