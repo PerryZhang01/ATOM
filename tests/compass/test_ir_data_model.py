@@ -163,10 +163,11 @@ def test_a_repeat_resolves_the_index_its_body_names():
     assert Graph(_Everywhere(), repeat).region is repeat
 
 
-def test_a_graph_refuses_an_index_nothing_binds():
+@pytest.mark.parametrize("wrap", [Seq, lambda items: Par(items, JoinPolicy.MAX)])
+def test_a_graph_refuses_an_index_nothing_binds(wrap):
     stray = _op("attn", context_ref=ContextRef("model.layers.{layer}.self_attn"))
     with pytest.raises(ValueError, match=r"nothing binds \['layer'\]"):
-        Graph(_Everywhere(), Seq((_op("embed"), stray)))
+        Graph(_Everywhere(), wrap((_op("embed"), stray)))
 
 
 def test_two_nodes_differing_only_in_where_they_read_state_are_different_nodes():
@@ -184,10 +185,16 @@ def test_overlap_needs_two_branches():
         Par((_op(),), JoinPolicy.MAX)
 
 
-@pytest.mark.parametrize("join", ["sum", None, 0])
+@pytest.mark.parametrize("join", ["sum", "exclusive", None, 0])
 def test_a_parallel_region_states_how_its_branches_combine(join):
     with pytest.raises(ValueError, match="JoinPolicy"):
         Par((_op("a"), _op("b")), join)
+
+
+def test_an_operator_kind_is_one_of_the_node_kinds():
+    assert _op(kind="declared").kind is NodeKind.DECLARED
+    with pytest.raises(ValueError, match="NodeKind"):
+        _op(kind="sum")
 
 
 def test_a_sequence_with_nothing_in_it_is_refused():

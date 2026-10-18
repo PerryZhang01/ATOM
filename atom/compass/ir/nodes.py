@@ -37,7 +37,6 @@ class JoinPolicy(enum.Enum):
 
     MAX = "max"  # the shorter branch hides inside the longer
     RESOURCE_BOUND = "resource_bound"  # branches contend for the same device
-    EXCLUSIVE = "exclusive"  # a branch holds the whole device, costs add
 
 
 @dataclass(frozen=True, slots=True)
