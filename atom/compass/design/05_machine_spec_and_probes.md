@@ -133,7 +133,6 @@ host:
   ipc:
     zmq_roundtrip_s:           5.0e-5
     shm_broadcast_s:           2.0e-5
-  admission_fixed_s:           9.0e-3   # HTTP arrival -> `waiting`, EXCLUDING tokenize
   http_intake:                 # optional: the event loop's time to take in one HTTP request
     fixed_s:                   2.1e-3
     per_byte_s:                1.9e-8   # per body byte
@@ -232,8 +231,8 @@ Mooncake's KV transfer between the prefill and the decode node (`01` D6).
    use a datasheet FLOP as an achievable one. `memory.derate` is derived, not probed: the
    bandwidth curve's largest point over `bandwidth_bytes_per_s`.
 3. **`software_pinned_to` is checked, not decorative.** Device numbers track the
-   ROCm/RCCL/AITER build as well as the die (`07` D43). A stack mismatch warns loudly by
-   default and refuses under `validate(strict=True)`; constants moved across stacks by a
+   ROCm/RCCL/AITER build as well as the die (`07` D43). `compass measure memory` refuses a
+   start under a stack the spec does not pin, and constants moved across stacks by a
    merge always refuse. It is the target's stack: a step grid bundle's
    stack, torch included, is checked against it, never against the stack of the process
    that simulates (`17` D101).
@@ -318,7 +317,7 @@ fragment supplied each field. `validate` refuses an incomplete or inconsistent o
 a probe                  -> a fragment
 merge(fragments)         -> the machine spec, recording which fragment supplied each field
 validate(spec or merge)  -> the refusals below
-explain(spec, term)      -> the fields behind one quantity, and how much each contributed
+explain(spec, term)      -> each field under a field or block path, with its value and origin
 ```
 
 Each is a function of the `spec` package, and a per-machine script runs them:
@@ -391,14 +390,14 @@ with them.
 
 - a missing required field
 - a `derate` missing beside a spec-peak number
-- `software_pinned_to` not matching the running stack (warn, or refuse under a strict flag)
 
 ### `explain`
 
-Given a spec and a predicted quantity, print which spec fields contributed and by how
-much. This is not a nicety: the KV gate is 5%, memory validation is **per term and never
-as a sum**, and a prior summed check read **+13.8%** while hiding three errors two of
-which cancelled — the largest being 25% of a single term.
+Given a spec and the dotted path of a field or a block of fields, print each field under it
+with its value and origin, one row per field and never a sum. This is not a nicety: the KV
+gate is 5%, memory validation is **per term and never as a sum**, and a prior summed check
+read **+13.8%** while hiding three errors two of which cancelled — the largest being 25% of
+a single term.
 
 ### Open issues
 
@@ -429,6 +428,6 @@ which cancelled — the largest being 25% of a single term.
 | # | Decision | Date |
 |---|---|---|
 | D24 | The spec describes the machine; ATOM's config describes the deployment. Thread-pool width becomes an ATOM config option, not a Compass one. | 2026-09-18 |
-| D25 | Four-section schema: `provenance`, `host`, `device`, `interconnect`. Mandatory derates, no memory readings (`measure memory`'s entries, 2026-10-14), activations included (2026-10-16), `software_pinned_to` checked, torch included, as the target's stack, whole spec echoed into every artifact. Revised for the MI455 projection: an optional dense `fp4_flops`, `intra_node.domain_devices` for a scale-up fabric wider than a node, and every field given an origin, `datasheet`, `probed` or `assumed`, `provenance.origin` and per field `provenance.origins` with a probe's subject, kept across a save. Revised: an optional `host.http_intake` pair, the event loop's charge per HTTP request taken in. An optional per-link `link_setup_s`, charged once on a rank pair's first KV write. Revised for the attainable-peak roofline: a `derate` is attainable over datasheet, probed, one per compute format; `memory.bandwidth_curve` and `kernel_floor_s` added; a device never run carries a probed device's derates, assumed. | 2026-09-18; revised 2026-10-10; torch 2026-10-13 (#851); origin 2026-10-14 (#952); intake 2026-10-16 (#1103); link setup 2026-10-16 (#1172); activations and the transfer origin dropped 2026-10-16 (#1226); attainable peaks 2026-10-17 (#1392) |
+| D25 | Four-section schema: `provenance`, `host`, `device`, `interconnect`. Mandatory derates, no memory readings (`measure memory`'s entries, 2026-10-14), activations included (2026-10-16), `software_pinned_to` checked, torch included, as the target's stack, whole spec echoed into every artifact. Revised for the MI455 projection: an optional dense `fp4_flops`, `intra_node.domain_devices` for a scale-up fabric wider than a node, and every field given an origin, `datasheet`, `probed` or `assumed`, `provenance.origin` and per field `provenance.origins` with a probe's subject, kept across a save. Revised: an optional `host.http_intake` pair, the event loop's charge per HTTP request taken in. An optional per-link `link_setup_s`, charged once on a rank pair's first KV write. Revised for the attainable-peak roofline: a `derate` is attainable over datasheet, probed, one per compute format; `memory.bandwidth_curve` and `kernel_floor_s` added; a device never run carries a probed device's derates, assumed. | 2026-09-18; revised 2026-10-10; torch 2026-10-13 (#851); origin 2026-10-14 (#952); intake 2026-10-16 (#1103); link setup 2026-10-16 (#1172); activations and the transfer origin dropped 2026-10-16 (#1226); attainable peaks 2026-10-17 (#1392); `host.admission_fixed_s` dropped 2026-10-17 (#1000) |
 | D26 | Probes emit fragments; `merge` / `validate` / `explain` combine and check them. Four hardware probe classes plus a datasheet path; the transfer path dropped 2026-10-14 (#937). Every hardware probe implements the contamination refusals. All are the `spec` package's functions, run by per-machine scripts, with no `compass` command. Machine specs are developers', one per supported machine, passed by `--machine`; an engine start's memory readings are `measure memory`'s, not the spec's. Revised: class 1 probes the per-format GEMM rate, the bandwidth curve and the kernel floor; class 2 the link latency and bandwidth. | 2026-09-18; revised 2026-10-13 and 2026-10-14 (#851); 2026-10-17 (#1392) |
 | D25.1 | Runtime-constant fields renamed to say what they are; ATOM's own term recorded as a mapping column. `host.tokenizer` becomes `host.tokenizers[]`, keyed by tokenizer identity (id + backend + fingerprint) with `applies_to` model architectures. | 2026-09-19 |

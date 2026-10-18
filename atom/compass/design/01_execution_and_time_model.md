@@ -1461,6 +1461,12 @@ between them that ATOM's stage loops hold outside the recurrence: the head's
 `recv_tokens` before it schedules, released at the last stage's exit of forward `n - pp`
 or of a later output forward holding a request it schedules, and a downstream stage's
 `recv_metadata`, released at the head's call ([#1325](https://github.com/jgong5/ATOM/issues/1325)).
+On a machine spec's carriers it prices each send as `StageSends` does (`15` D91): the
+receive posted at the prepare end plus `W_recv`, the RCCL parts behind the previous
+frame's, the receiver's device end and its own send's hold, and a sender's device start
+behind the send it last settled. The record does not stamp idle flushes, so the gate
+infers them: the head flushes whenever it waits for tokens, a later stage once
+`recv_metadata`'s 100 ms poll times out (#1449, #1450, #1457).
 A simulated run prices a speculative step with `D_target` and `D_draft` from the cost
 backend, its terms tagged `draft` making the latter, and R1 holds its launch with MTP
 ([#1090](https://github.com/jgong5/ATOM/issues/1090)). Under DP, each forward's

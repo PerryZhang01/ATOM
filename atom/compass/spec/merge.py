@@ -1,72 +1,23 @@
 # SPDX-License-Identifier: MIT
-"""Fragments combined into one spec, and the check that is the point of it.
+"""Fragments combined into one spec document, refusing what one host cannot be.
 
 A probe measures part of a machine and emits a **fragment**: a partial document
-plus the stanza that says which machine it is for, by whom, when and how.
-Combining fragments is arithmetic over dotted paths and would need very little
-said about it. The conflict check is why this module exists.
+plus the stanza saying which machine it is for, by whom, when and how.
 
-**One spec describes one host, and nothing about a fragment's shape says which
-host it came from.** Two tokenizers probed on two different CPUs contradict
-nothing: they have different identities, they occupy different entries, no field
-of one overlaps a field of the other, and a merge that only compared values
-would combine them into a single document that describes no machine at all. The
-error is then invisible for as long as the spec lives, and every number derived
-from it is wrong by however far the two hosts differ. So a fragment states the
-machine it claims to be for, the merge refuses two fragments that name different
-machines, and the refusal prints both stanzas rather than the bare names -- what
-a reader needs is which two measurements are being combined, not that a string
-comparison failed.
+Nothing in a fragment's shape says which host it came from, so fragments that
+name different machines are refused, and so are fragments that name one machine
+and disagree about a field, with both readings and both stanzas. The tokenizer
+probe writes the core counts of the processor it ran on, so a tokenizer swept
+on another host disagrees there.
 
-**What that arm compares is the declared name, not the host.** `name` is the
-machine the spec is being *authored for* -- `mi355x-8gpu-2node` is a class, not
-a host -- and no field of a fragment records where a probe actually ran. So a
-tokenizer fragment probed on a laptop and a device fragment probed on the
-node, both authored `name: node-18`, pass this arm: it compares what they claim
-and a claim is not evidence. The claim it can carry is therefore narrower than
-the one above -- the fragments agree about which machine they are *for*,
-corroborated by nothing except their overlap. The overlap is where that pair is
-caught, and it is the second arm's business: the tokenizer probe writes the core
-counts of the processor it ran on into two fields the schema already required,
-so the laptop and the node now disagree about `host.cpu.cores_physical`, 8
-against 96, and are refused with both readings. Until the probe emitted them the
-pair shared no field at all, so the second arm had nothing to contradict and the
-exact pair this module opens by naming merged into a document describing neither
-host. Closing that residue took no schema field, and it is closed from the
-probe's side rather than here.
+The tokenizer table is combined per entry, keyed by id and backend; one id over
+two fingerprints is refused. The provenance block is rebuilt: it names every
+fragment, those a saved merge names included, carries the latest date, and
+records each field's origin in `provenance.origins`, a field two fragments
+agree on taking the stronger origin. The document states one origin only when
+every field has it, else `mixed`.
 
-The second arm catches the same hazard from the other side. Two fragments that
-name one machine and disagree about one of its fields cannot both be true of it,
-whatever their stanzas say, so a differing value is refused with both readings
-and both stanzas. Between them the arms cover the mislabelled fragment and the
-unlabelled contradiction, which are the two ways a multi-host spec is authored.
-
-Two kinds of field are combined rather than compared, because contributing
-part of one is what a probe does:
-
-* the **tokenizer table** is combined per entry, keyed by the identity and the
-  implementation the rates were probed on. Two entries sharing an identity
-  must agree about the file they probed; one name over two files is the drift
-  that keying by tokenizer exists to prevent.
-* the **provenance** block is rebuilt rather than merged. It names every
-  fragment that went in, carries the latest date, and records each field's
-  origin in `provenance.origins`: the supplying fragment's, or the entry a saved
-  merge recorded for it, with a probe's subject on a probed field. A field two
-  fragments agree on takes the stronger origin, so it is assumed only when every
-  supplier assumed it. The document states one origin only when every field
-  has it -- a spec built from a datasheet and an engine run is honestly `mixed`
-  and not either of them. Because a merged document is
-  itself a legal fragment, incremental authoring -- merge, save, merge next
-  week's probe into it -- would otherwise drop the names of the fragments that
-  built the saved document, in the one block whose job is to say where the
-  numbers came from. So any `provenance.fragments` a fragment already states is
-  carried forward ahead of its own source name. "Latest" is the lexicographic
-  maximum of the dates as written: the field is text, ISO-shaped dates order
-  correctly under it, and `'2026-9-9'` does not.
-
-The result is a document, not a spec. A merge produces what the fragments
-happened to cover, and whether that is a complete and consistent machine is a
-separate question with its own answer.
+The result is a document, not a spec; `validate` says whether it is complete.
 """
 
 from collections.abc import Mapping, Sequence

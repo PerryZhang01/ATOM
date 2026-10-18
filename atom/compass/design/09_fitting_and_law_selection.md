@@ -13,6 +13,12 @@ linear law (`backends/step_linear.py::StepLinearBackend`), its terms `estimated`
 validated only inside the hull of its held-out steps, with its support domain stated
 (D54, D58); a treatment Compass assumes is an assumed treatment (D61).
 
+**Revised 2026-10-18 by the owner's
+[band ruling on #1489](https://github.com/jgong5/ATOM/issues/1489#issuecomment-6249950252):**
+at the op level, `measure ops` records each point's kernel identity, and a leaf query with
+no same-kernel bracket is declined by the price list and answered by the leaf's analytical
+law, counted (D60).
+
 **Scope.** How measurements become a model: objective, feature construction, outlier
 handling, guards, and how a functional form is chosen and shown to be right. This is a
 separate concern from the toolchain that produces the data and from the protocol that
@@ -387,6 +393,15 @@ Prefill steps do not interpolate either, even averaged over hundreds of kernels:
 recorded kernel identity, not inferred from a residual. A query between bands with no
 bracket **refuses** rather than interpolating.
 
+**At the op level**, revised 2026-10-18 by the owner's
+[band ruling on #1489](https://github.com/jgong5/ATOM/issues/1489#issuecomment-6249950252):
+`measure ops` records the kernels each leaf launched at each point, and `fit ops`
+interpolates a leaf only between two neighbours that launched the same kernel (`07`
+D38). The refusal is the price list's: the leaf falls to its analytical law, and that
+share of priced seconds is counted (`08` D50.3). The cost is the larger analytical share
+the measurements above predict, 8 of 10 held-out GEMM shapes with no same-kernel bracket,
+and it is reported rather than hidden.
+
 ---
 
 ## D61. Assumed treatments
@@ -501,7 +516,7 @@ choice that must be visible.
 | D57 | Every fit reports provenance, sample count, dropped count, condition number and validity hull. Report an interval or report nothing. | 2026-09-18 |
 | D58 | Refuse rather than fall back on a step kind with no samples. The extrapolation guard is a convex hull or k-NN distance, never a per-feature bounding box; an out-of-hull step is priced `estimated` and unvalidated, its source naming the extrapolation, and reported apart, not refused. The step linear law refuses a discrete value it has no vector for, extrapolates outside its fitted hull, and is validated only inside the hull of its held-out steps. | 2026-09-18; revised 2026-10-11 (#765) and 2026-10-14 (#952) |
 | D59 | A family is validated on independently gathered data, never by LOO. Rank at least three candidates and report all held-out errors. A law that fits one axis is tested on a second before it ships. | 2026-09-18 |
-| D60 | Laws are piecewise over dispatch bands read from recorded kernel identity. A query with no same-band bracket refuses. | 2026-09-18 |
+| D60 | Laws are piecewise over dispatch bands read from recorded kernel identity. A query with no same-band bracket refuses. At the op level `measure ops` records each point's kernels and `fit ops` interpolates only between same-kernel neighbours; a declined leaf falls to its analytical law, counted. | 2026-09-18; op level 2026-10-18 (#1489) |
 | D61 | Treatments are stated and the calibration population matched; an assumed treatment is a property of the query, recorded in the run summary. Decode row order, worth 1.77× at a fixed multiset, is a decode feature, `rowmod(k)` in scheduled order, adopted per rung by a four-condition rule. Uniform routing of the MoE segment under DP and EP is an assumed treatment, at every granularity. | 2026-09-18; revised 2026-10-01, 2026-10-14 (#941, #952) |
 | D62 | Leading warmth is measured and reported, never charged. Error is reported stratified by the axes the law is linear in. | 2026-09-18 |
 
@@ -517,5 +532,5 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 | T29 | Choose the hull implementation (convex hull vs k-NN distance threshold) and its threshold | needs one calibration corpus to tune against |
 | T30 | Enumerate candidate laws per leaf family, with their held-out validation shapes | needs the leaf list frozen (`04` T3) |
 | T31 | Test raggedness, cached fraction and chunk-position for treatment status | each needs a controlled experiment like the row-order one |
-| T32 | Decide whether the step linear law is derived from the op level's symbolic expression or fitted independently | `04` T8; if derived, most of this document applies only to leaves |
+| T32 | Decide whether the step linear law is derived from the op level's composed prices or fitted independently | `04` T8; if derived, most of this document applies only to leaves |
 | T33 | Establish `warmup_seconds` for Qwen3.8-27B under the current stack | per-deployment constant, currently defaulting to 0 |

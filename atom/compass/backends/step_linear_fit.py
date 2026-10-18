@@ -31,8 +31,8 @@ prices highest and refit on those rows, until no step changes rank. Each
 vector reports, under `fit.all_rows`, the centre and scaled MAD of the fit on
 every rank's row, each step priced as its max over ranks, and under
 `fit.passes` the refits the alternation took, null when the picks still moved
-after `MAD_PASSES` refits. Held-out errors are
-printed and written at width 1 only.
+after `MAD_PASSES` refits. A held-out step is
+priced and banded as its costliest rank.
 
 Records with a host key (`dp0.key.json`, from the real runner) also give the
 host laws as a run file's `host` entry: `key`, and `laws[kind][segment]`,
@@ -70,11 +70,11 @@ vector then names `k` and records, under `fit.rowmod`, the MAD without the
 column, the mean MAD with each step's rows shuffled, and per held-out record
 the p50 error without and with it.
 
-With two or more records it also prints, per form, the error on each record of
-a law fitted on the others, warm steps left out: per kind and rung, or prefill
+With two or more runs it also prints, per form, the error on each run of a
+law fitted on the others, warm steps left out: per kind and rung, or prefill
 token band, the p10, p50 and p90 of `predicted / measured - 1`; and the same
 per host law. The law's own form's errors are written into it: under each
-vector's `held_out`, the convex hull of the steps they were measured on and
+vector's `held_out`, the convex hull of every rank's steps they were measured on and
 their percentiles per band, which `StepLinearLaw` reads to mark a term
 validated. A vector whose held-out steps span no hull gets none.
 """
@@ -559,26 +559,31 @@ def _band(key: str, counts) -> str:
 
 
 def _held_out(samples, options, seed, warm=None):
-    """Each step of each run, warm steps left out, priced by the law fitted on
-    the other runs: (run, vector, band, counts, context, relative error), the
-    error nan where that law has no vector for the step."""
-    form = _options(options)[0]
-    runs = _runs(samples, 1)
+    """Each step of each run, warm steps left out, priced as its costliest rank
+    by the law fitted on the other runs: (run, vector, band, each rank's (counts,
+    context), relative error), the error nan where that law has no vector."""
+    form, dp = _options(options)
+    runs = _runs(samples, dp)
     if warm is None:
         warm = fit(samples, options, seed)[0]["warm_steps"]
-    for i, (run, (mine,)) in enumerate(runs.items()):
+    for i, (run, ranks) in enumerate(runs.items()):
         others = [s for s in samples if s.provenance["run"] != run]
         law = fit(others, options, seed)[0]
-        for key, counts, seconds, step, context in _features(mine, form, 1)[0]:
+        for group in _groups(ranks, form)[0]:
+            key, _, seconds, step, _ = group[0]
             if step in warm[i]:
                 continue
             vector = law["decode"].get(key) if key != "prefill" else law.get(key)
-            error = float("nan")
+            mine = [(r[1], r[4]) for r in group]
+            price, error = [c[1] for c, _ in mine], float("nan")
             if vector is not None:
-                x = counts + _rowmod_count(vector, context)
-                price = np.dot(list(vector["coefficients"].values()), x)
-                error = float(price) / seconds - 1.0
-            yield run, key, _band(key, counts), counts, context, error
+                c = list(vector["coefficients"].values())
+                price = [
+                    float(np.dot(c, x + _rowmod_count(vector, n))) for x, n in mine
+                ]
+                error = max(price) / seconds - 1.0
+            top = mine[int(np.argmax(price))][0]
+            yield run, key, _band(key, top), mine, error
 
 
 def _rowmod_count(vector: dict, context) -> tuple:
@@ -588,7 +593,7 @@ def _rowmod_count(vector: dict, context) -> tuple:
 def held_out(samples, options=None, seed: int = 0) -> dict:
     """Per band, the relative errors on each run of the law fitted on the others."""
     errors: dict[str, list[float]] = {}
-    for _, _, band, _, _, error in _held_out(samples, options, seed):
+    for _, _, band, _, error in _held_out(samples, options, seed):
         band = band if not math.isnan(error) else f"{band} (no vector)"
         errors.setdefault(band, []).append(error)
     return errors
@@ -598,7 +603,7 @@ def _bands(rows) -> dict:
     """Per band of `_held_out`'s rows, their steps and error percentiles."""
     bands = {}
     for band in sorted({r[2] for r in rows}):
-        e = [r[5] for r in rows if r[2] == band]
+        e = [r[4] for r in rows if r[2] == band]
         p10, p50, p90 = np.percentile(e, (10, 50, 90)).tolist()
         bands[band] = {"steps": len(e), "p10": p10, "p50": p50, "p90": p90}
     return bands
@@ -606,14 +611,14 @@ def _bands(rows) -> dict:
 
 def mark_held_out(law: dict, report: dict, samples, options=None, seed: int = 0):
     """Write the held-out errors: under each of `law`'s vectors, as `held_out`,
-    the hull of its steps `_held_out` priced and their errors per band; under
+    the hull of every rank's step `_held_out` priced, their errors per band; under
     `report`'s `held_out`, each run's errors per band."""
     from scipy.spatial import QhullError
 
     rows = [
         r
         for r in _held_out(samples, options, seed, law["warm_steps"])
-        if not math.isnan(r[5])
+        if not math.isnan(r[4])
     ]
     for run in dict.fromkeys(r[0] for r in rows):
         report["held_out"][run] = _bands([r for r in rows if r[0] == run])
@@ -621,7 +626,7 @@ def mark_held_out(law: dict, report: dict, samples, options=None, seed: int = 0)
         mine = [r for r in rows if r[1] == key]
         if vector is None or not mine:
             continue
-        points = [c + _rowmod_count(vector, x) for _, _, _, c, x, _ in mine]
+        points = [c + _rowmod_count(vector, x) for r in mine for c, x in r[3]]
         try:
             hull = _hull(
                 np.array(points, dtype=np.float64)[:, 1:],
@@ -731,7 +736,7 @@ def main(argv=None) -> None:
     law["engine_config"] = engine
     if "host" in law:
         law["host"]["key"] |= {"machine_spec": args.machine_spec, "engine": engine}
-    if len(args.records) > 1 and dp == 1:
+    if len(args.records) > dp:
         mark_held_out(law, report, samples, options)
     Path(args.out).write_text(json.dumps(law) + "\n")
     print(f"cut: {json.dumps(law['cut'])}")
@@ -742,9 +747,9 @@ def main(argv=None) -> None:
             )
     if "host" in law:
         print(f"host: {json.dumps(law['host']['laws'])} {json.dumps(law['host_fit'])}")
-    if len(args.records) > 1 and dp == 1:
+    if len(args.records) > dp:
         for form in FORMS:
-            errors = held_out(samples, {"form": form})
+            errors = held_out(samples, {"form": form, "dp": dp})
             print(f"\nheld out, form {form}\n{_table(errors)}")
         if "host" in law:
             print(f"\nheld out, host laws\n{_table(host_held_out(samples))}")

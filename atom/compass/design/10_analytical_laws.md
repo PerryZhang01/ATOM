@@ -82,10 +82,9 @@ at TP=1/2/4/8 on the 0.6B, and 0.00% at TP=2 and TP=4 on the 27B.
 | **B — device-parameterised** | A + device spec | GEMM time, norm/elementwise time, attention time | roofline at attainable peaks probed on the device (D64) |
 | **C — policy-determined** | nothing | which tuned kernel a shape dispatches to, `non_torch`, load residue, launch overhead, the in-situ gap, fabric scaling | **stated constants**, so declared (doc 05), or accepted error |
 
-Class A comes free from the symbolic IR: doc 04's shapes are sympy expressions, so FLOPs
-and bytes-moved are closed-form expressions in `T`, `B`, `Ctx`, `TP` without any extra
-machinery. The experiment already demonstrated this — `FLOPs(T) = 256·T² + 98304·T`,
-exact against a fresh concrete trace at T = 2 / 17 / 64 / 512 / 4096.
+Class A comes free from the IR: doc 04's graph is captured at the step's shape (`04` D18),
+so each node's FLOPs and bytes moved follow from its argument shapes without any extra
+machinery.
 
 ---
 
@@ -126,7 +125,9 @@ prices the real rows instead.
 
 - The op list comes from capture into the IR (`04`).
 - A leaf's interface is everything needed to execute it: tensor specs and values plus the
-  ambient values it reads. The same arguments run a benchmark or give an estimate. Kernel
+  ambient values it reads. An estimate reads the leaf's contract (`04` D20); the benchmark
+  times the same call inside ATOM's own forward, which supplies its weights, KV and
+  metadata (`07` D39). Kernel
   selection and environment belong to the benchmark.
 - An extractor registry maps an op kind to work primitives. `F` and `C` sum over the
   primitives; `M` is the leaf's own boundary. A fused op is one leaf priced once, so fusion
