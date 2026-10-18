@@ -1156,7 +1156,7 @@ def runner(model_runner, tree) -> None:
     run = spec()
     if run is None:
         return
-    from atom.compass.artifacts import machine_spec_digest
+    from atom.compass.artifacts import machine_spec_digest, machine_spec_key
     from atom.compass.backends.geometry import KvGeometry, Parallelism
     from atom.compass.backends.step_linear import StepLinearBackend, StepLinearLaw
     from atom.compass.backends.step_roofline import (
@@ -1275,8 +1275,8 @@ def runner(model_runner, tree) -> None:
     if STEP_LINEAR in run and fitted_on != platform:
         raise ValueError(
             f"the step linear law was fitted on machine spec {fitted_on} and this "
-            f"run's is {platform}; a law measured on one platform is no evidence "
-            "about another"
+            f"run's is {platform}, {machine_spec_key(machine)}; a law measured "
+            "on one platform is no evidence about another"
         )
     bundle = None
     if STEP_GRID in run:

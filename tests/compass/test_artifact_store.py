@@ -72,6 +72,7 @@ CONDITIONS = Conditions.of(
     atom_src=Reading.of_source_root(ATOM_ROOT),
     model="Qwen/Qwen3-32B",
     device="MI308X-80CU",
+    ptl="disabled",
     host_cpu="Intel(R) Xeon(R) Platinum 8480C",
     engine_config="cudagraph=piecewise,level=3",
 )

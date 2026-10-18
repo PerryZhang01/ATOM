@@ -86,6 +86,7 @@ def record(directory, seed, key=HOST, keyed=True, stack=STACK, trace="trace"):
         "host_key": key,
         "device": [DEVICE],
         "stack": stack,
+        "ptl": "disabled",
         "profiled": False,
     }
     (directory / "run.json").write_text(json.dumps(run))
@@ -196,6 +197,7 @@ def test_the_entry_s_readings_are_the_ones_its_records_state(tmp_path):
         Axis.ATOM_SRC: Reading("tree", "67c176f0"),
         Axis.MODEL: Reading("stated", HOST["model"]),
         Axis.DEVICE: Reading("stated", "MI355X gfx950"),
+        Axis.PTL: Reading("stated", "disabled"),
         Axis.ENGINE_CONFIG: Reading("stated", json.dumps(ENGINE, sort_keys=True)),
     }
     assert entry.provenance.source_roots == (ATOM_ROOT, AITER_ROOT)

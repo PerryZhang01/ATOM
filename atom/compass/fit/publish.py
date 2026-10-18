@@ -7,8 +7,8 @@ fit taking replayed batches reads step measurements too, each named by the
 token `Key.token` prints; it loads their samples under one configuration
 (`samples.load`). A record no `--client-run` names refuses: its steps would
 name no trace they served. `--machine M` names the spec of the platform the
-inputs ran on: records whose device, software stack or torch is not the one it
-states refuse, naming each and both values. The configuration gains its
+inputs ran on: records whose device, software stack, PTL state or torch is not
+the one it states refuse, naming each and both values. The configuration gains its
 `machine_spec_digest`, which a fit's key and params state, and `readings`,
 those a run on the spec takes with the inputs' source root, model and engine,
 under which each measurement is loaded.
@@ -130,10 +130,11 @@ def runs(samples) -> list[dict]:
 
 
 def platform(config) -> dict:
-    """The device, software-stack and torch readings `config`, the inputs'
-    configuration, states, the first two joined as a machine spec's key."""
+    """The device, software-stack, PTL and torch readings `config`, the inputs'
+    configuration, states, the first three joined as a machine spec's key."""
     stack = config["stack"]
-    return {**platform_key(config["device"], stack).values, "torch": stack["torch"]}
+    key = platform_key(config["device"], stack, config["ptl"])
+    return {**key.values, "torch": stack["torch"]}
 
 
 def conditions(config) -> Conditions:

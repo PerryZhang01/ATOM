@@ -603,7 +603,7 @@ lists its environment.
 Given two or more records, the command also prints each form's error on every
 record under a law fitted on the others, per decode rung and prefill token band.
 
-`scripts/compass/laws/qwen3.8-27b-tp1-mi308x-hjbog39-661ef7661.json` is the
+`scripts/compass/laws/qwen3.8-27b-tp1-mi308x-ptl-disabled-661ef7661.json` is the
 `history` form with the host laws (`host`), labelled by device time, fitted on
 records captured on hjbog-srdc-39 at ce625ddd9 (ROCm/ATOM 661ef7661) in the
 nightly-20261013 image, in this order: concurrency 1, 4, 16, 64 and 256 as
@@ -627,7 +627,8 @@ attention, expert parallelism or TBO, and `AITER_LOG_LEVEL=WARNING`; the law
 states that engine key as its `engine_config`. The law
 and its host key state `machine_spec`, the digest `machine_spec_digest` gives
 `scripts/compass/machines/mi308x-hjbog39.json`, so it refuses under any other
-spec's device or software stack.
+spec's device, software stack or PTL state. Its name states that PTL state
+rather than the host it was captured on.
 
 `scripts/compass/laws/deepseek-v4-pro-dpa8-mi355x-gpu45-{prefill,decode}.json`
 are DeepSeek-V4-Pro's DPA-TP8 laws on mi355-gpu-45, one per side of a 1P1D

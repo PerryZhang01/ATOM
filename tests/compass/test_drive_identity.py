@@ -26,6 +26,7 @@ CARD = {
     "Card SKU": "M3080202",
     "Node ID": "9",
     "GFX Version": "gfx942",
+    "PCI Bus": "0000:0A:00.0",
 }
 ARGV = ["compass", "record", "--gpu", "7", "--out", "d", "--", "--model", "m"]
 MACHINES = Path(__file__).parents[2] / "scripts/compass/machines"
@@ -59,6 +60,7 @@ def planted(tmp_path, monkeypatch):
         "aiter": _checkout(tmp_path / "aiter", "v0"),
     }
     monkeypatch.setattr(drive, "module_root", lambda module: str(trees[module]))
+    monkeypatch.setattr(drive, "PCI", str(tmp_path / "pci"))
     (tmp_path / "rocm" / ".info").mkdir(parents=True)
     (tmp_path / "rocm" / ".info" / "version").write_text("7.2.4\n")
     monkeypatch.setenv("ROCM_PATH", str(tmp_path / "rocm"))
@@ -99,6 +101,7 @@ def test_the_identity_holds_its_entries_and_no_workload(planted):
         "source": run["source"],
         "host_key": host_key(config),
         "device": [],
+        "ptl": "disabled",
         "stack": {
             "rocm": "7.2.4",
             "aiter": _git(trees["aiter"], "rev-parse", "--short=9", "HEAD"),
