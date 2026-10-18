@@ -36,9 +36,9 @@ the refusal happens while a person is authoring the document rather than in the
 middle of a simulated run. The exceptions are the provenance fields `merge`
 fills in later, `fp4_flops`, which a device with no FP4 matrix core omits, the
 pipeline send terms, which only a pipeline run reads, and a link's
-`link_setup_s`, a one-off cost that is zero when absent. An engine start's
-memory readings are no field here: `compass measure memory` publishes them per
-configuration, as a `memory_readings` entry.
+`link_setup_s`, a one-off cost that is zero when absent. An engine
+start's memory readings are no field here: `compass measure memory` publishes
+them per configuration, as a `memory_readings` entry.
 
 **Every field says where it came from.** `provenance.origin` is one of
 `ORIGINS`, and anything else is refused. A document built from several

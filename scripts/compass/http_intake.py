@@ -4,32 +4,17 @@
     python3 scripts/compass/http_intake.py serve STAMPS API_SERVER_ARGS...
     python3 scripts/compass/http_intake.py fit STAMPS [N]
 
-`serve` runs `atom.entrypoints.openai.api_server` in this process, as
-``python3 -m`` does, and appends one line to STAMPS for each request body read
-off the socket (starlette's `Request.body`; a later read of the cached body is
-not stamped) and each chat template rendered (`apply_chat_template`), on the
-monotonic clock:
+`serve` runs `atom.entrypoints.openai.api_server` as ``python3 -m`` does and
+appends ``<end ns> <thread id> body|tmpl <start ns> <size>`` to STAMPS for each
+request body first read (`Request.body`) and chat template rendered
+(`apply_chat_template`); `cctraces_sim.sh` runs it when HTTP_INTAKE is set.
 
-    <end ns> <thread id> body <start ns> <bytes>
-    <end ns> <thread id> tmpl <start ns> <length>
-
-`cctraces_sim.sh` runs a real server this way when HTTP_INTAKE names STAMPS.
-The burst is N first-turn requests sent at once: concurrency N, every
-trajectory at its first turn.
-
-`fit` reads the burst from STAMPS: from the first body read's start, the first
-N template starts, and the first N bodies in the order their reads ended,
-which is the order their templates start in. The loop takes the burst in one
-request at a time, so the gap from one template start to the next is the next
-request's intake, ``fixed_s + (its body bytes) x per_byte_s``. A few gaps also
-hold the loop's other work, tens of milliseconds whatever the request's size,
-so `per_byte_s` is the median slope over every pair of gaps (Theil-Sen), and
-`fixed_s` makes the fitted gaps sum to the measured ones, so the burst is taken
-in over its real span. A least-squares fit of each start to the running sums of
-both terms leaves the per-byte term free to swing sign from burst to burst, as
-the two sums rise together. Prints both terms as JSON, with the rms residual of
-a gap in seconds, N, the burst's body bytes and STAMPS's sha256. N defaults to
-256.
+`fit` reads a burst of N first-turn requests (default 256), which the loop takes
+in one at a time: each gap between template starts is the next request's
+``fixed_s + body bytes x per_byte_s``. Some gaps also hold tens of milliseconds
+of other loop work, so `per_byte_s` is the Theil-Sen slope and `fixed_s` keeps
+the burst's span; least squares on the starts swings the slope's sign between
+bursts. Prints the terms, a gap's rms residual, N, bytes and sha256 as JSON.
 """
 
 import hashlib
@@ -47,12 +32,9 @@ import numpy as np
 
 
 def serve(stamps: str, args: list[str]) -> None:
-    lock = threading.Lock()
-
     def stamp(kind: str, start: int, size: int) -> None:
-        line = f"{time.monotonic_ns()} {threading.get_ident()} {kind} {start} {size}\n"
-        with lock:
-            out.write(line)
+        now, thread = time.monotonic_ns(), threading.get_ident()
+        out.write(f"{now} {thread} {kind} {start} {size}\n")
 
     def requests(module) -> None:
         read = module.Request.body
@@ -89,24 +71,17 @@ def serve(stamps: str, args: list[str]) -> None:
                 return None
             spec = importlib.machinery.PathFinder.find_spec(name, path)
             run = spec.loader.exec_module
-
-            def exec_module(module):
-                run(module)
-                patches[name](module)
-
-            spec.loader.exec_module = exec_module
+            spec.loader.exec_module = lambda m: (run(m), patches[name](m))
             return spec
 
     sys.meta_path.insert(0, Patcher())
     sys.argv[1:], sys.path[0] = args, os.getcwd()
     with open(stamps, "a", buffering=1) as out:
-        runpy.run_module(
-            "atom.entrypoints.openai.api_server", run_name="__main__", alter_sys=True
-        )
+        main = "atom.entrypoints.openai.api_server"
+        runpy.run_module(main, run_name="__main__", alter_sys=True)
 
 
 def fit(stamps: str, n: int = 256) -> dict:
-    """`host.http_intake` from the burst in STAMPS, as the docstring says."""
     data = Path(stamps).read_bytes()
     rows = [line.split() for line in data.decode().splitlines()]
     reads = sorted((int(r[0]), int(r[3]), int(r[4])) for r in rows if r[2] == "body")

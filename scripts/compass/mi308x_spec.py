@@ -74,10 +74,9 @@ SUBJECT = {"model": "Qwen/Qwen3.8-27B", "width": 1, "source_root": f"commit:{COM
 SUBJECT["record"] = f"sha256:{RECORD}"
 
 #: The API server's event loop taking in one HTTP request: `http_intake.py`'s
-#: fit over one real c=256 first-turn cc-traces burst on Qwen3.8-27B TP1, run at
-#: the commit named. The record is the probe's stamp file, the run's server log
-#: beside it. hjbog-srdc-39's burst was stamped by the probe's forerunner, which
-#: also stamped each request's second, cached body read; those are dropped.
+#: fit over one real c=256 first-turn cc-traces burst on Qwen3.8-27B TP1 at the
+#: commit named, the record its stamp file (hjbog-srdc-39's, from the probe's
+#: forerunner, less each request's second, cached body read).
 INTAKE = {
     "mi308x-hjbog18": (
         "2026-10-18",
