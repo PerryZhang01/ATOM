@@ -101,10 +101,12 @@ if [[ $LMCACHE == 1 ]]; then
 fi
 if [[ -z ${STORE:-} ]]; then
     STORE=$OUT/store
+    # measure memory takes rocm-smi's indexes of the real run's HIP devices.
+    gpus=$(compass_gpus smi "${HIP_VISIBLE_DEVICES:-$(seq -s, 0 $((TP - 1)))}")
     # shellcheck disable=SC2086 # SERVER_ARGS is a word list
     ATOM_DP_MASTER_PORT=$(compass_free_port) python3 -c \
         "from atom.compass.cli import main; main()" measure memory \
-        --gpu "${HIP_VISIBLE_DEVICES:-$(seq -s, 0 $((TP - 1)))}" --machine "$MACHINE" \
+        --gpu "$gpus" --machine "$MACHINE" \
         ${LM_FLAGS:+--beside "lmcache server $LM_FLAGS"} \
         --store "$STORE" --out "$OUT/memory" -- --model "$MODEL" -tp "$TP" \
         $DPA $SERVER_ARGS

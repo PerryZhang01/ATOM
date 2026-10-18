@@ -14,6 +14,7 @@ import math
 import sys
 from functools import partial
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 import torch
@@ -35,17 +36,34 @@ DATA = "engine-pp0->engine-pp1:pp_data#dp0"
 E, PRE, LAUNCH, POST = 2.0**-6, 2.0**-7, 2.0**-1, 2.0**-5
 LAWS = {"prefill": {"E": (E, 0, 0), "W_pre": (PRE, 0, 0), "W_launch": (LAUNCH, 0, 0)}}
 LAWS["prefill"]["W_post"] = (POST, 0, 0)
-#: Stands in for aiter's, which `_pp_send` pickles into the metadata part.
+#: Stands in for aiter's, whose import needs a driver.
 TensorMetadata = collections.namedtuple("TensorMetadata", "device dtype size")
+
+
+def split_tensor_dict(tensors):
+    """aiter's `_split_tensor_dict`, for a dict of tensors."""
+    meta = [
+        (k, TensorMetadata(t.device.type, t.dtype, t.size()))
+        for k, t in tensors.items()
+    ]
+    return meta, list(tensors.values())
+
+
+def pp_comm(monkeypatch):
+    """ATOM's `pp_comm`, splitting by aiter's rule, imported over a stand-in
+    aiter when no earlier import has bound it."""
+    for name in ("aiter.dist.parallel_state", "aiter.ops.communication"):
+        if "atom.distributed.pp_comm" not in sys.modules and name not in sys.modules:
+            monkeypatch.setitem(sys.modules, name, MagicMock())
+    from atom.distributed import pp_comm
+
+    monkeypatch.setattr(pp_comm, "_split_tensor_dict", split_tensor_dict)
+    return pp_comm
 
 
 def _runner(monkeypatch, rank, now, pp=2):
     """Stage `rank` of `pp`'s runner, its host recurrence reading `now`."""
-    monkeypatch.setitem(
-        sys.modules,
-        "aiter.dist.parallel_state",
-        SimpleNamespace(TensorMetadata=TensorMetadata),
-    )
+    pp_comm(monkeypatch)
     stage = runner(StepStubBackend(stage_share=(0.5, 0.5)))
     stage.config.pipeline_parallel_size = pp
     stage.config.parallel_config.pipeline_parallel_rank = rank

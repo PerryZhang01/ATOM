@@ -691,28 +691,34 @@ class PipelineFrames:
         when its device work ends, in seconds from the call; the `W_post` the
         stage loop charges after its send, left out of `predicted_s`; and its parts as
         ``(carrier, bytes)`` in the order the next receives them, the size and
-        the pickled metadata on gloo, then each tensor on RCCL."""
+        the pickled metadata on gloo, then each tensor on RCCL, as ATOM splits
+        `_pp_output`'s `_PP_PROXY_KEYS`; a key it does not size is refused."""
         pp = int(_config_field(self, "pipeline_parallel_size") or 1)
         if pp == 1 or self.config.parallel_config.pipeline_parallel_rank == pp - 1:
             return None
-        from aiter.dist.parallel_state import TensorMetadata
+        from atom.distributed import pp_comm
 
-        self._setup_pp_shared_indexer()
-        n, width = batch.total_tokens_num, self.hf_text_config.hidden_size
-        sizes = dict.fromkeys(
-            ("hidden_states", "residual"), ((n, width), self.config.torch_dtype)
-        )
-        if self._pp_send_needs_sparse:
-            sizes["sparse_kv_indices"] = ((n * self._pp_index_topk,), torch.int32)
-        meta = [
-            (k, TensorMetadata("cuda", d, torch.Size(s))) for k, (s, d) in sizes.items()
-        ]
-        tensors = [("rccl", math.prod(s) * d.itemsize) for s, d in sizes.values()]
+        out = self._pp_output(batch.total_tokens_num)
+        if unsized := set(pp_comm._PP_PROXY_KEYS) - out.keys():
+            raise RuntimeError(f"Compass cannot size ATOM's PP keys {sorted(unsized)}")
+        sent = {k: out[k] for k in pp_comm._PP_PROXY_KEYS if out[k] is not None}
+        # A "meta" device pickles to the length of ATOM's "cuda".
+        meta, device_tensors = pp_comm._split_tensor_dict(sent)
+        tensors = [("rccl", t.nbytes) for t in device_tensors]
         host = getattr(self, "compass_host", None)
         post = 0.0
         if isinstance(host, HostDeviceRecurrence) and self.rank == 0:
             seconds, post = host.ends[-1] - host.now(), host.segments["W_post"]
         return seconds, post, [("gloo", 8), ("gloo", len(pickle.dumps(meta))), *tensors]
+
+    def _pp_output(self, n: int) -> dict:
+        """Each key a non-last stage's output can carry to ATOM's PP send, a
+        meta tensor for `n` tokens, or None where this stage does not carry it."""
+        self._setup_pp_shared_indexer()
+        meta, on = partial(torch.empty, device="meta"), self._pp_send_needs_sparse
+        x = meta(n, self.hf_text_config.hidden_size, dtype=self.config.torch_dtype)
+        sparse = meta(n * self._pp_index_topk, dtype=torch.int32) if on else None
+        return {"hidden_states": x, "residual": x, "sparse_kv_indices": sparse}
 
     def pp_recv_posted(self, called: float, kind: str, x: tuple) -> tuple:
         """Where this stage posts its ``pp_data`` receive, its forward's prepare
@@ -1100,6 +1106,8 @@ class NonAllocatingRunner(
         The reply's `predicted_s` is the step's duration: this rank's batch
         priced by the installed cost backend, then its DP group target, on TP
         rank 0; the engine reads no other rank's reply, and it reports 0 s.
+        Its `out_s` and `group_out` are `_group_step_seconds`'s `_out_s` and
+        `_group_out`, which `clock.charge` advances after the return.
         A runner with no backend refuses the step rather than report one that
         took no time. ATOM's `dummy_execution` answers with this reply too, so
         an idle DP rank's dummy batch is priced and joins the group's targets.
@@ -1170,6 +1178,8 @@ class NonAllocatingRunner(
             predicted_s=seconds,
             group_targets=getattr(self, "_group_targets", None),
         )
+        out.out_s = getattr(self, "_out_s", None)
+        out.group_out = getattr(self, "_group_out", None)
         out.pp_send = self._pp_send(batch, seconds)
         if out.pp_send is not None:
             out.predicted_s -= out.pp_send[1]
@@ -1192,7 +1202,10 @@ def _group_step_seconds(
     cross-rank collectives, and every rank leaves at its own charge. With no
     `compass_host`, a rank with output, not the DP dummy, leaves at the group's
     max, any other at its own seconds. `_group_targets` holds all,
-    by rank, or None with one rank.
+    by rank, or None with one rank. `_out_s` is the host's ``out_s`` for this
+    step, the seconds from its return to the engine's next input pull, or
+    None; `_group_out` holds each rank's target plus its ``out_s``, for the
+    ranks with one, or None.
 
     A pipeline stage runs only its own layers, so it is refused unless its
     backend states the `stage_share` it prices; any other backend prices the
@@ -1269,16 +1282,22 @@ def _group_step_seconds(
         charge_s = charge(batch, device_s, refuse=False)
     if refused:
         vars(runner).setdefault("_refused_commands", []).append(refused)
-    group_s, targets = charge_s, None
+    group_s, targets, pulls = charge_s, None, None
+    out_s = getattr(host, "out_s", None)
     if group is not None:
         waits = host is None and batch.produces_output() and not batch.is_dummy_run
-        mine = torch.tensor([charge_s, waits], dtype=torch.float64)
+        out = math.nan if out_s is None else out_s
+        mine = torch.tensor([charge_s, waits, out], dtype=torch.float64)
         rows = [torch.empty_like(mine) for _ in range(group.size())]
         torch.distributed.all_gather(rows, mine, group=group)
         top = max(r[0].item() for r in rows)
-        targets = tuple(top if w else s for s, w in (r.tolist() for r in rows))
+        rows = [r.tolist() for r in rows]
+        targets = tuple(top if w else s for s, w, _ in rows)
+        ends = zip(targets, (o for *_, o in rows))
+        pulls = tuple(t + o for t, o in ends if not math.isnan(o)) or None
         group_s = targets[group.rank()]
     vars(runner)["_group_targets"] = targets
+    vars(runner)["_out_s"], vars(runner)["_group_out"] = out_s, pulls
     record = getattr(runner, "_parity_record", None)
     if record is None:
         return group_s

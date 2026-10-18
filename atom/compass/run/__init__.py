@@ -241,7 +241,7 @@ AUTHORITY_FILE = "authority_endpoint.txt"
 HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field is added, changes
 #: meaning or goes.
-SUMMARY_SCHEMA_VERSION = 5
+SUMMARY_SCHEMA_VERSION = 6
 #: Compass source the host-law key leaves out, by path under the package: all
 #: of it (None), or the top-level names (def, class or assigned) only a simulated
 #: run reaches, with the comments above each and the module docstring.
@@ -1066,10 +1066,23 @@ def engine(config):
     At DP width above one, the process joins the engine LP as the member of its
     DP rank, and its host collectives first join the group rounds it owes. A
     pipeline stage is the engine LP ``engine-pp<stage>``.
+
+    A real run recording its steps (`parity.ENV`) outside a pipeline stamps the
+    engine's input pulls and output puts into ``dp<rank>.pulls.jsonl`` beside
+    the record (`clock.stamp_pulls`).
     """
     global _member
     run = spec()
     if run is None:
+        from atom.compass import parity
+
+        record = os.environ.get(parity.ENV)
+        if record and getattr(config, "pipeline_parallel_size", 1) == 1:
+            Path(record).mkdir(parents=True, exist_ok=True)
+            rank = config.parallel_config.data_parallel_rank
+            # The worker's step timestamps read the same host clock.
+            pulls = Path(record) / f"dp{rank}.pulls.jsonl"
+            clock.stamp_pulls(pulls, time.monotonic_ns)
         return contextlib.nullcontext()
     from atom.utils.distributed import utils
 

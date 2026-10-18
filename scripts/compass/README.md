@@ -539,13 +539,14 @@ ITL and request throughput in simulated time, and the run's refusals. A
 `coverage_report=True` cell is a coverage report, not a result.
 
 A run file with `router_s` and `kv_write_req_s` makes the cell 1P1D: `pd_sim.sh`
-deploys it, taking `DECODE_EXEC` and `ATOMESH` from the environment, and aiperf
-drives the atomesh router. The traffic LP sends to `frontend-P` and reads the
-stream from `frontend-D`, as the run file's channel table names them; with
-`--enable-dp-attention` in `SERVER_ARGS` the cell is agentic, its router is
-`--dp-aware` and LP `router`, and the traffic LP talks to `router`. The result
-line adds `kv_transfers` and `kv_transfer_mean_s`, from the line the prefill
-engine logs per KV transfer.
+deploys it, taking `DECODE_EXEC`, `ATOMESH` and each side's `PREFILL_ARGS` /
+`DECODE_ARGS` flags and `PREFILL_ENV` / `DECODE_ENV` variables from the
+environment, and aiperf drives the atomesh router. The traffic LP sends to
+`frontend-P` and reads the stream from `frontend-D`, as the run file's channel
+table names them; with `--enable-dp-attention` in either side's flags the cell
+is agentic, its router is `--dp-aware` and LP `router`, and the traffic LP
+talks to `router`. The result line adds `kv_transfers` and
+`kv_transfer_mean_s`, from the line the prefill engine logs per KV transfer.
 
 `REAL=1` runs the same TP1 cell on a real server, on the GPU and the wall clock,
 so a real and a simulated cell at one seed, concurrency and traces hash send the
@@ -619,8 +620,9 @@ stage's channels by its stage, has a downstream stage's loop leave on
 the `+inf` grant, moves the lmcache_mp lookup defer, lookup timeout,
 transfer deadlines and deferred-save restamp to the LP clock, and gives
 lmcache_mp's lookup poll sleep, transfer start stamps and scheduler adapter a
-simulated run's LP clock, and runs the simulated P/D connector inside a `multi`;
-none of these changes a real run's host time. Its
+simulated run's LP clock, runs the simulated P/D connector inside a `multi`,
+and has `clock.charge` advance a reply's `out_s` and stamp a recording's
+input pulls and output puts; none of these changes a real run's host time. Its
 engine key also states the fields the records predate, as their `server.log`
 engine arguments and the capture's environment give them: DP width 1, no DP
 attention, expert parallelism or TBO, and `AITER_LOG_LEVEL=WARNING`; the law

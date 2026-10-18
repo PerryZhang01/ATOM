@@ -6,8 +6,7 @@ its configuration's `memory_readings` entry.
 
 ATOM's engine starts from ATOM's arguments (`EngineArgs`) on the GPUs `--gpu`
 names, through `MemoryReadingModelRunner`, and stops once it has started: its
-weights loaded, its warmup run a second time on a warm compile cache, its KV
-cache sized and its graphs captured. `gpu.quiet` checks those GPUs before the
+weights loaded, its one warmup run, its KV cache sized and its graphs captured. `gpu.quiet` checks those GPUs before the
 start and after it. Each rank writes its readings and the key it read off its
 resolved config, and the ranks must agree on the key. The entry's key is that
 one with the digest of the machine spec `--machine` names; its conditions are
@@ -56,7 +55,7 @@ from atom.compass.artifacts import (
     roots_for,
 )
 from atom.compass.drive import serve
-from atom.compass.drive.gpu import add_gpu_flag, quiet
+from atom.compass.drive.gpu import add_gpu_flag, hip_visible, quiet
 from atom.compass.drive.identity import _device, _ptl, identity
 from atom.compass.run import CLOCK_ENV, ENV, _write_whole, memory
 from atom.compass.spec import MachineSpec, across_ranks
@@ -125,7 +124,7 @@ def main(argv: list[str], again: bool = False) -> None:
     (out / READINGS).mkdir(parents=True)
     env = {k: v for k, v in os.environ.items() if k not in (ENV, CLOCK_ENV, parity.ENV)}
     env[OUT_ENV] = str(out / READINGS)
-    env["HIP_VISIBLE_DEVICES"] = ",".join(map(str, args.gpu))
+    env["HIP_VISIBLE_DEVICES"] = hip_visible(args.gpu)
     env["ATOM_DP_MASTER_PORT"] = str(serve._free_ports(1)[0])
     if args.beside:
         env[BESIDE_ENV] = args.beside

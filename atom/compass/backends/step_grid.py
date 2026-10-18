@@ -23,7 +23,8 @@ tokens, is extrapolated instead: each B side of the cell is read along c from
 its two highest c nodes inside the pool, extended past them. Any other step
 whose cell misses a corner is refused naming the missing corners, as is one
 outside the nodes: no clamp or fallback. A missing point does not fail
-loading; it refuses the steps that need it.
+loading; it refuses the steps that need it. A step whose extension past the
+pool is not positive on either B side is refused too, naming the falling edge.
 
 Also refused: a step mixing prefill and decode rows, a decode row computing
 more than one token, a count that is not an int, a prefill step that does not
@@ -217,9 +218,11 @@ class _Cells:
         its cell is past a pool of `blocks` KV blocks of `size` tokens, with the
         cell and how far past the pool's measured edge; else None. Each B side
         whose corners were measured is interpolated, and any other is read on
-        its two highest c nodes at which B rows fit the pool, extended to c."""
+        its two highest c nodes at which B rows fit the pool, extended to c; a
+        refusal naming the falling edge when a side so extended is not
+        positive."""
         sides = self._sides(view, at)
-        value, past = Fraction(0), []
+        value, past, falls = Fraction(0), [], []
         for b, weight in sides[0]:
             limit, column = size * (blocks // b) - 1, sides[1]
             if any((b, c) not in self.points for c, _ in column):
@@ -231,10 +234,19 @@ class _Cells:
                 low, high = edge
                 w = (at[1] - low) / (high - low)
                 column = [(low, 1 - w), (high, w)]
+                if sum(self.points[b, c] * x for c, x in column) <= 0:
+                    falls.append(f"B={b}'s in-pool edge falls from c={low} to {high}")
                 past.append(
                     f"c {float(at[1] - high):g} past {high}, the pool's edge at B={b}"
                 )
             value += weight * sum(self.points[b, c] * w for c, w in column)
+        if falls:
+            raise _refused(
+                view,
+                f"the {self.name} cell holding {_named(self.axes, at)} is past "
+                f"the KV pool, and {'; '.join(falls)}, reaching no positive time "
+                f"at c={at[1]}",
+            )
         return value, self._cell(sides), "; ".join(past)
 
 

@@ -7,7 +7,10 @@ simulated run sends each request at its offset from the first send, and
 `ReplayBackend` ends its rank's step i at the time, on the same offset, that
 the real rank's step i returned from its forward, counting steps as `read`
 does: the engine loop takes in arrivals and schedules once the forward
-returns. A step the record has no line for ends the run: every step after it
+returns. Where the record stamps the engine's next input pull after that
+return, the step's `out_s` is the real seconds from the return to the pull,
+which the engine LP advances before it takes in arrivals; without one it is
+None. A step the record has no line for ends the run: every step after it
 would be refused too, so pricing it at 0 s and going on stops the clock.
 """
 
@@ -33,6 +36,11 @@ class ReplayBackend(CostBackend):
         steps = read(directory)[dp_rank]
         self.ends = [(s["t_exit_ns"] - origin) / 1e9 for s in steps]
         self.seconds = [(s["t_exit_ns"] - s["t_enter_ns"]) / 1e9 for s in steps]
+        self.outs = [
+            (s["t_pull_ns"] - s["t_exit_ns"]) / 1e9 if "t_pull_ns" in s else None
+            for s in steps
+        ]
+        self.out_s = None  # the step `charge` last charged
         self.step = 0
         self.now = None  # the engine LP's clock, set where the run installs it
 
@@ -50,8 +58,10 @@ class ReplayBackend(CostBackend):
         return StepCost([CostTerm("forward", self.seconds[i], measured)])
 
     def charge(self, batch, device_s: float) -> float:
-        """Seconds from now to the real return of the step `price` just priced."""
+        """Seconds from now to the real return of the step `price` just priced;
+        `out_s` becomes that step's."""
         i = min(self.step, len(self.ends)) - 1
+        self.out_s = self.outs[i]
         return max(0.0, self.ends[i] - self.now())
 
     def describe(self) -> str:
