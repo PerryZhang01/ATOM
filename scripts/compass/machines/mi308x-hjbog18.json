@@ -16,57 +16,57 @@
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "width": 1,
-        "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87",
-        "source_root": "commit:983e42973"
+        "source_root": "commit:983e42973",
+        "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87"
       },
       "device.arch": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "width": 1,
-        "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87",
-        "source_root": "commit:983e42973"
+        "source_root": "commit:983e42973",
+        "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87"
       },
       "device.count_per_node": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "width": 1,
-        "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87",
-        "source_root": "commit:983e42973"
+        "source_root": "commit:983e42973",
+        "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87"
       },
       "device.memory.capacity_bytes": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "width": 1,
-        "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87",
-        "source_root": "commit:983e42973"
+        "source_root": "commit:983e42973",
+        "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87"
       },
       "device.software_pinned_to.rocm": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "width": 1,
-        "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87",
-        "source_root": "commit:983e42973"
+        "source_root": "commit:983e42973",
+        "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87"
       },
       "device.software_pinned_to.aiter": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "width": 1,
-        "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87",
-        "source_root": "commit:983e42973"
+        "source_root": "commit:983e42973",
+        "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87"
       },
       "device.software_pinned_to.rccl": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "width": 1,
-        "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87",
-        "source_root": "commit:983e42973"
+        "source_root": "commit:983e42973",
+        "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87"
       },
       "device.software_pinned_to.torch": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "width": 1,
-        "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87",
-        "source_root": "commit:983e42973"
+        "source_root": "commit:983e42973",
+        "record": "sha256:f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87"
       },
       "host.ipc.zmq_roundtrip_s": {
         "origin": "assumed"
@@ -124,7 +124,20 @@
       },
       "host.tokenizers[qwen3.8-27b fast]": {
         "origin": "probed",
-        "model": "Qwen/Qwen3.8-27B"
+        "model": "Qwen/Qwen3.8-27B",
+        "source_root": "commit:a48f7b084f1e7c6117f4ddb9857028ea95018a36",
+        "p10": {
+          "encode_fixed_s": 1.3520250281911647e-05,
+          "encode_tokens_per_s": 623947.628046476,
+          "decode_fixed_s": 1.7984054666452046e-06,
+          "decode_tokens_per_s": 4087543.4524344867
+        },
+        "p90": {
+          "encode_fixed_s": 1.5740973254677478e-05,
+          "encode_tokens_per_s": 646192.8128125852,
+          "decode_fixed_s": 1.9340936708995337e-06,
+          "decode_tokens_per_s": 4214493.0078329975
+        }
       }
     },
     "fragments": [
@@ -149,10 +162,10 @@
         "applies_to": [
           "Qwen3_5ForConditionalGeneration"
         ],
-        "encode_fixed_s": 1.689333055611554e-05,
-        "encode_tokens_per_s": 639202.9754772106,
-        "decode_fixed_s": 2.0346084907035295e-06,
-        "decode_tokens_per_s": 4240022.748591989,
+        "encode_fixed_s": 1.409176542136414e-05,
+        "encode_tokens_per_s": 636817.1671289918,
+        "decode_fixed_s": 1.8340489314873881e-06,
+        "decode_tokens_per_s": 4156658.937770821,
         "derate": 1.0
       }
     ],
