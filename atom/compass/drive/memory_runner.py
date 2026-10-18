@@ -10,12 +10,16 @@ import os
 from pathlib import Path
 
 import torch
+from torch._dynamo.utils import compilation_time_metrics
 
 from atom.compass.artifacts import member_name
 from atom.compass.drive.measure_memory import OUT_ENV
 from atom.compass.run import memory
 from atom.compass.run.step_grid import BOUNDS, keyed
 from atom.model_engine.model_runner import ModelRunner
+
+#: What inductor times each kernel's autotuning under.
+AUTOTUNE = "CachingAutotuner.benchmark_all_configs"
 
 
 def _allocated(which: str) -> int:
@@ -38,7 +42,9 @@ class MemoryReadingModelRunner(ModelRunner):
     `OUT_ENV` names: allocated bytes once the weights load, less their
     storages; allocated bytes where the KV budget reads the device, less
     those; that warmup's peak above them over its tokens; the budget's
-    `non_torch` and total; and the reserved bytes graph capture adds."""
+    `non_torch` and total; the reserved bytes graph capture adds; and the
+    kernels inductor autotuned, which `compass measure memory` starts again
+    for."""
 
     def _build_and_load_model(self, model_class):
         super()._build_and_load_model(model_class)
@@ -108,6 +114,7 @@ class MemoryReadingModelRunner(ModelRunner):
                     "key": memory.key_fields(config),
                     "engine": engine,
                     "readings": readings,
+                    "autotuned_kernels": len(compilation_time_metrics.get(AUTOTUNE, ())),
                 }
             )
         )

@@ -11,7 +11,13 @@ from the launch to the exit less the recv and draft copy waits; with
 `W_pre` after the MTP status wait, and no `d_gap_ns` is fed. Each forward is called at the
 exit predicted for the one before, so only the waits and device times move it.
 A pipeline record is gated step by step, each stage charged with the predicted
-times of the others (`pipeline`).
+times of the others (`pipeline`), its sends priced on a machine spec's PP
+carriers when one is given:
+
+    python -m atom.compass.parity.recurrence RECORD_DIR MACHINE_JSON ROW_BYTES
+
+`ROW_BYTES` is one token's `hidden_states` in bytes, the hidden size times
+the model's dtype size.
 
 Per kind (decode, output prefill, middle chunk, and idle: sharing no request
 with the forward before), p10 and p90 of charge over measured exit-to-exit
@@ -21,17 +27,26 @@ A failing kind's steps outside the band are named with their residual, the
 device work queued at their launch, and their recv release less the measured.
 """
 
+import json
 import math
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 
 from atom.compass.parity import read
 from atom.compass.runner.overrides import FORWARD_KINDS, HostDeviceRecurrence
+from atom.compass.runner.pp_send import arrivals, carrier_models
+from atom.compass.spec import MachineSpec
 
 STEP_BAND, TOTAL_BAND, SHOWN = 2, 0.5, 10  # bands in percent
 KINDS = ("decode", "prefill", "middle", "idle")
+#: A send's gloo parts: the size, and aiter's metadata of `hidden_states` and
+#: `residual` pickled, 179 bytes at bf16 from 256 to 65535 tokens.
+# ponytail: one length for every batch; it moves by a few bytes, about a
+# nanosecond on gloo, so pickle aiter's metadata here only if that changes.
+META = [("gloo", 8), ("gloo", 179)]
 
 
 def _kind(step, prev) -> str:
@@ -59,16 +74,18 @@ def _waited(steps: list[dict], n: int, pp: int):
     return None
 
 
-def pipeline(stages: list[list[dict]]) -> list[dict]:
+def pipeline(stages: list[list[dict]], carriers=None) -> list[dict]:
     """One DP rank's stages charged step by step, `check`'s report for each:
     the head's entry released at the last stage's exit of the forward whose
-    tokens it waits for, each downstream entry at the head's call."""
+    tokens it waits for, each downstream entry at the head's call. With
+    `carriers`, ``(models, row_bytes)``, each send rides the carriers
+    (`_charged`)."""
     if len({len(s) for s in stages}) > 1:
         raise ValueError(f"stages of {[len(s) for s in stages]} steps")
     pp, head, tail = len(stages), stages[0], stages[-1]
     out, held = [[] for _ in stages], [[] for _ in stages]
     runs = [
-        _charged(s, (i, pp), out[i - 1] if i else None, held[i])
+        _charged(s, (i, pp), out[i - 1] if i else None, held[i], carriers)
         for i, s in enumerate(stages)
     ]
     for n in range(len(head)):
@@ -89,14 +106,17 @@ def check(steps: list[dict]) -> dict:
     return report
 
 
-def _charged(steps, stage, upstream, held):
+def _charged(steps, stage, upstream, held, carriers=None):
     """`check`, yielding each step's predicted send, device end, call and exit
     before the report. On pipeline stage `stage = (rank, pp)`, the launch
     waits for the stage before's predicted send in `upstream[n]` and the
     device for its end, in place of the measured `t_pp_recv_ns` and
-    `d_recv_ns`. Step `n` is called no earlier than `held[n] = (measured,
-    predicted)`'s `predicted`, its `E` from `measured` if after the last exit;
-    a step entered before `measured` is refused."""
+    `d_recv_ns`. With `carriers`, ``(models, row_bytes)``, the send's
+    `hidden_states` and `residual` ride the carriers from the entry: the
+    launch waits for the metadata's arrival and the device for the tensors'.
+    Step `n` is called no earlier than `held[n] = (measured, predicted)`'s
+    `predicted`, its `E` from `measured` if after the last exit; a step
+    entered before `measured` is refused."""
     now, prev, rows = 0.0, None, []
     origin = steps[0]["t_enter_ns"]
     mtp = any("d_target_ns" in s for s in steps)
@@ -123,6 +143,11 @@ def _charged(steps, stage, upstream, held):
         entry = max(called + e * 1e-9, rec.ends[0])
         if upstream:  # the stage before's send holds the launch
             sent, ready = ((t - origin) * 1e-9 for t in upstream[n][:2])
+            if carriers:
+                models, width = carriers
+                part = ("rccl", sum(r[0] for r in s["rows"]) * width)
+                frame = {"t_send": sent, "t_ready": ready, "parts": [*META, part, part]}
+                _, sent, ready = arrivals(models, frame, entry)
             pre += max(sent - entry - pre * 1e-9, 0.0) * 1e9
         launch = l1 - l0 - (p1 - p0)
         law = {"E": e, "W_pre": pre - (l0 - m1), "W_launch": launch, "W_post": post}
@@ -178,14 +203,20 @@ def _charged(steps, stage, upstream, held):
     }
 
 
-def main(record: str) -> int:
+def main(record: str, machine=None, row_bytes=None) -> int:
     """Print the gate per DP rank and pipeline stage of `record`; 1 if any fails."""
+    carriers = None
+    if machine:
+        spec = MachineSpec.from_mapping(json.loads(Path(machine).read_text()))
+        carriers = carrier_models(spec), int(row_bytes)
     ok, stages = True, [read(record)]
     while more := read(record, len(stages)):
         stages.append(more)
     pp, runs = len(stages), []
     for rank, steps in stages[0].items():
-        reports = pipeline([d[rank] for d in stages]) if pp > 1 else [check(steps)]
+        reports = (
+            pipeline([d[rank] for d in stages], carriers) if pp > 1 else [check(steps)]
+        )
         runs += [(i, rank, report) for i, report in enumerate(reports)]
     for i, rank, report in runs:
         ok &= report["pass"]
@@ -213,4 +244,4 @@ def main(record: str) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1]) if len(sys.argv) == 2 else __doc__)
+    sys.exit(main(*sys.argv[1:]) if len(sys.argv) in (2, 4) else __doc__)

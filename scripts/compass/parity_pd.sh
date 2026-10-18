@@ -6,7 +6,9 @@
 # the agentic cell's router, first to real prefill and decode servers, each at
 # `-tp <its DP width> --enable-dp-attention` with its KV over Mooncake's TCP
 # transport and its steps recorded, then to pd_sim.sh's simulated servers
-# replaying those steps (the run file's `replay`). Each request's server and
+# replaying those steps (the run file's `replay`), its router listing each
+# side's workers in the order the real one registered them, read from the
+# real router's debug log (`worker_order`). Each request's server and
 # DP rank on each side is read from both runs' records and compared.
 #
 # Usage: parity_pd.sh OUT_DIR
@@ -84,7 +86,7 @@ done
 setsid "$ATOMESH" launch --host 127.0.0.1 --port "$ROUTER_PORT" \
     --pd-disaggregation "${urls[@]}" --policy dp_sticky --dp-aware \
     --backend atom --disable-health-check --disable-circuit-breaker --disable-retries \
-    --prometheus-port "$(compass_free_port)" --log-level info >"$OUT/real/router.log" 2>&1 &
+    --prometheus-port "$(compass_free_port)" --log-level debug >"$OUT/real/router.log" 2>&1 &
 pids+=($!)
 compass_wait_up router "${pids[-1]}" "http://127.0.0.1:$ROUTER_PORT/v1/models"
 python3 -c 'import sys; from pathlib import Path; from atom.compass.parity.traffic import bodies, real
@@ -109,16 +111,27 @@ RUN=$OUT/sim/run.json
 CLOCK_PORT=$(compass_free_port)
 python3 - "$RUN" "$OUT" "${MACHINE:-$ROOT/scripts/compass/machines/mi308x-hjbog18.json}" \
     "$MODEL" "$STORE" "$CLOCK_PORT" "${#prefill_gpus[@]}" "${#decode_gpus[@]}" \
-    "$PREFILL_DP" "$DECODE_DP" <<'EOF'
-import json, sys
+    "$PREFILL_DP" "$DECODE_DP" "${urls[@]}" <<'EOF'
+import json, re, sys
 from pathlib import Path
 
-run, out, machine, model, store, port, prefills, decodes, dp_p, dp_d = sys.argv[1:]
+run, out, machine, model, store, port, prefills, decodes, dp_p, dp_d, *urls = sys.argv[1:]
 machine = json.loads(Path(machine).read_text())
 # ponytail: prices the model's tokenizer as the spec's first entry measured it,
 # as parity_one_node.sh does; only arrival latency reads it.
 arch = json.loads((Path(model) / "config.json").read_text())["architectures"][0]
 machine["host"]["tokenizers"][0]["applies_to"].append(arch)
+# Each side's (instance, DP rank) pairs in the order the real router logged
+# registering them.
+deployment, count = {}, {"--prefill": 0, "--decode": 0}
+for flag, url in zip(urls[::2], urls[1::2]):
+    deployment[url] = flag[2].upper(), count[flag]
+    count[flag] += 1
+order = {}
+log = Path(f"{out}/real/router.log").read_text()
+for url, rank in re.findall(r"Registered worker (\S+)@(\d+) ", log):
+    side, k = deployment[url]
+    order.setdefault(side, []).append([k, int(rank)])
 Path(run).write_text(json.dumps({
     "clock_endpoint": f"tcp://127.0.0.1:{port}", "bound_s": 1e7,
     "admission_path": "serving", "ipc_s": 2.0**-14, "stream_s": 2.0**-12,
@@ -127,6 +140,7 @@ Path(run).write_text(json.dumps({
     "prefill_data_parallel_size": int(dp_p), "decode_data_parallel_size": int(dp_d),
     "out_dir": f"{out}/sim",
     "prefill_instances": int(prefills), "decode_instances": int(decodes),
+    "worker_order": order,
 }))
 EOF
 ports=("CLOCK_PORT=$CLOCK_PORT")

@@ -30,6 +30,10 @@ DATA, ACK = "engine-pp0->engine-pp1:pp_data#dp0", "engine-pp1->engine-pp0:pp_ack
 SIZE = 2.0**-12 + 8 * 2.0**-20  # the eager size part, sender side
 #: The size on gloo, eager, then one tensor on RCCL, rendezvous.
 RDV = [("gloo", 8), ("rccl", 2048)]
+#: Both parts rendezvous: the size is acked.
+ACKED = [("gloo", 2048), ("rccl", 2048)]
+#: One rendezvous part's duration.
+T = 2.0**-8 + 2048 * 2.0**-20
 
 
 def _stage(rank, *grants, frames=(), ready=C, parts=(), pp=2, post=0.0):
@@ -53,6 +57,8 @@ def _stage(rank, *grants, frames=(), ready=C, parts=(), pp=2, post=0.0):
         if name == "forward":
             rt.advance_to(rt.now + C)
             return SimpleNamespace(pp_send=(ready, post, parts))
+        if name == "pp_recv_posted":
+            return args[0], -math.inf  # no host laws: posted at the call
         return frames.pop(0) if name == "recv_pp_frame" else True
 
     return rt, partial(on_owner, StageSends(rt, call, rank, pp, MODELS)), calls
@@ -61,48 +67,45 @@ def _stage(rank, *grants, frames=(), ready=C, parts=(), pp=2, post=0.0):
 def test_a_downstream_forward_is_called_at_the_arrival_its_launch_held_to_the_metadata():
     t_send, t_ready = 0.25, 0.5
     frame = {"seq": 0, "t_send": t_send, "t_ready": t_ready, "parts": RDV}
-    done, meta, end = pp_send.arrivals(MODELS, frame, 0.0)
+    _, meta, end = pp_send.arrivals(MODELS, frame, 0.0)
     assert meta == t_send + SIZE + L_DATA
     # The tensor is posted at the metadata's arrival and sent at the device's end.
-    assert done == end == t_ready + 2.0**-8 + 2048 * 2.0**-20
+    assert end == t_ready + T
     rt, run, calls = _stage(
         1,
         (t_send + L_DATA, {DATA: [(0, t_send + L_DATA)]}),
         (t_send + L_DATA + C, {}),
         frames=[frame],
     )
-    batch = SimpleNamespace()
+    batch = _decode()
     run("forward", batch)
     assert [m[:3] for m in rt.conn.sent] == [
         ("NER", math.inf, []),
-        ("TAR", t_send + L_DATA + C, [(ACK, 0, done)]),
+        ("TAR", t_send + L_DATA + C, []),  # an eager size needs no ack
     ]
     assert (batch.compass_pp_host, batch.compass_pp_release) == ((0.0, meta), end)
-    assert done - (t_send + L_DATA) >= L_ACK
-    assert [c[0] for c in calls] == ["recv_pp_frame", "send_pp_frame", "forward"]
+    assert [c[0] for c in calls] == ["recv_pp_frame", "pp_recv_posted", "forward"]
 
 
 def test_a_send_stamps_its_metadata_at_the_host_and_its_tensors_at_the_device_end():
     parts = [("gloo", 8), ("rccl", 512)]  # both eager
-    done = 4 * C + 2.0**-12 + 512 * 2.0**-20
-    rt, run, calls = _stage(0, (C, {}), (done, {}), ready=4 * C, parts=parts)
+    rt, run, calls = _stage(0, (C, {}), (C + SIZE, {}), ready=4 * C, parts=parts)
     run("forward", SimpleNamespace())
     [(_, kind, frame)] = [c for c in calls if c[0] == "send_pp_frame"]
     assert (kind, frame["t_send"], frame["t_ready"]) == ("pp_data", C, 4 * C)
     assert rt.send_log == [(DATA, 0, C + L_DATA)]
-    # The idle flush waits for the tensor, which leaves at the device's end.
+    # The idle flush waits for the size, not the tensor.
     run("flush_pp_send")
-    assert [m[:2] for m in rt.conn.sent] == [("TAR", C), ("TAR", done)]
+    assert [m[:2] for m in rt.conn.sent] == [("TAR", C), ("TAR", C + SIZE)]
 
 
 def test_a_middle_stage_receives_then_sends_and_acks_both_ways():
     """Stage 1 of four: its forward is called at the stage before's frame,
-    returning that rendezvous send's completion, its launch held to the
-    metadata; it sends the stage after its own frame at the launch end and
-    then runs its `W_post`; the idle flush settles on the stage after's
-    completion."""
+    acking that send's size, its launch held to the metadata; it sends the
+    stage after its own frame at the launch end and then runs its `W_post`;
+    the idle flush settles on the stage after's ack of its size."""
     t_send, t_ready = 0.25, 0.5
-    frame = {"seq": 0, "t_send": t_send, "t_ready": t_ready, "parts": RDV}
+    frame = {"seq": 0, "t_send": t_send, "t_ready": t_ready, "parts": ACKED}
     done, meta, end = pp_send.arrivals(MODELS, frame, 0.0)
     arrived = t_send + L_DATA
     data_out = "engine-pp1->engine-pp2:pp_data#dp0"
@@ -111,7 +114,7 @@ def test_a_middle_stage_receives_then_sends_and_acks_both_ways():
         "seq": 0,
         "t_send": arrived + C,
         "t_ready": arrived + 4 * C,
-        "parts": RDV,
+        "parts": ACKED,
     }
     # The stage after posts its receive when the frame arrives.
     acked = pp_send.arrivals(MODELS, sent, arrived + C + L_DATA)[0]
@@ -121,13 +124,13 @@ def test_a_middle_stage_receives_then_sends_and_acks_both_ways():
         (arrived + C, {}),
         (arrived + 2 * C, {}),
         (acked, {ack_in: [(0, acked)]}),
-        frames=[frame, {"seq": 0}],
+        frames=[frame, {"seq": 0, "tensors_done": -math.inf}],
         ready=4 * C,
-        parts=RDV,
+        parts=ACKED,
         pp=4,
         post=C,
     )
-    batch = SimpleNamespace()
+    batch = _decode()
     run("forward", batch)
     assert (batch.compass_pp_host, batch.compass_pp_release) == ((0.0, meta), end)
     run("flush_pp_send")
@@ -139,13 +142,68 @@ def test_a_middle_stage_receives_then_sends_and_acks_both_ways():
     ]
     assert calls == [
         ("recv_pp_frame", "pp_data"),
-        ("send_pp_frame", "pp_ack", {"seq": 0}),
+        ("pp_recv_posted", 0.0, "decode", (1, 1, 1)),
+        ("send_pp_frame", "pp_ack", {"seq": 0, "tensors_done": end}),
         ("forward", batch),
         ("send_pp_frame", "pp_data", sent),
         ("recv_pp_frame", "pp_ack"),
         ("flush_pp_send",),
     ]
     assert rt.now == acked
+
+
+@pytest.mark.parametrize("pp", [2, 4])
+def test_a_sending_stage_waits_for_its_previous_sends_size_and_not_its_tensor(pp):
+    """The tensor is rendezvous, and the stage after has not acked it: the
+    idle flush still ends at the size's local end, as ATOM's host waits on
+    gloo while the RCCL wait only holds its stream."""
+    parts = [("gloo", 8), ("rccl", 2048)]
+    rt, run, calls = _stage(0, (C, {}), (C + SIZE, {}), ready=4 * C, parts=parts, pp=pp)
+    run("forward", SimpleNamespace())
+    run("flush_pp_send")
+    assert [m[:2] for m in rt.conn.sent] == [("TAR", C), ("TAR", C + SIZE)]
+    assert ("recv_pp_frame", "pp_ack") not in calls
+
+
+@pytest.mark.parametrize("pp", [2, 4])
+# A rendezvous tensor is done where it arrives; an eager one is done when it
+# leaves the sender, a latency before it arrives.
+@pytest.mark.parametrize(
+    "tensor, step, latency", [(2048, T, 0.0), (512, 3 * 2.0**-12, L_DATA)]
+)
+def test_the_last_stage_acks_each_size_and_holds_each_tensor_behind_the_last(
+    pp, tensor, step, latency
+):
+    """Two sends whose device work ends at the same time: each ack is stamped
+    where the size's receive ends, and the second tensor leaves once the
+    first is done, one stream sending both."""
+    data = f"engine-pp{pp - 2}->engine-pp{pp - 1}:pp_data#dp0"
+    ack = f"engine-pp{pp - 1}->engine-pp{pp - 2}:pp_ack#dp0"
+    parts = [ACKED[0], ("rccl", tensor)]
+    frames = [
+        {"seq": i, "t_send": t, "t_ready": 0.5, "parts": parts}
+        for i, t in enumerate((0.0, 0.25))
+    ]
+    rt, run, _ = _stage(
+        pp - 1,
+        (L_DATA, {data: [(0, L_DATA)]}),
+        (L_DATA + C, {}),
+        (0.25 + L_DATA, {data: [(1, 0.25 + L_DATA)]}),
+        (0.25 + L_DATA + C, {}),
+        frames=frames,
+        pp=pp,
+    )
+    batches = [_decode(), _decode()]
+    for batch in batches:
+        run("forward", batch)
+    assert [m[:3] for m in rt.conn.sent] == [
+        ("NER", math.inf, []),
+        ("TAR", L_DATA + C, [(ack, 0, T)]),
+        ("NER", math.inf, []),
+        ("TAR", 0.25 + L_DATA + C, [(ack, 1, 0.25 + T)]),
+    ]
+    releases = [b.compass_pp_release for b in batches]
+    assert releases == [0.5 + step + latency, 0.5 + 2 * step + latency]
 
 
 def _decode(release=None):
@@ -206,10 +264,10 @@ def _line(n, enter, gate, launch, exit_, busy, **kw):
     }
 
 
-def staged(steps, stage, upstream=None):
+def staged(steps, stage, upstream=None, carriers=None):
     """Stage `stage = (rank, pp)` charged alone on the stage before's predicted
     (send, device end) per forward, `upstream`: its report and its own."""
-    *times, report = recurrence._charged(steps, stage, upstream, None)
+    *times, report = recurrence._charged(steps, stage, upstream, None, carriers)
     return report, [t[:2] for t in times]
 
 

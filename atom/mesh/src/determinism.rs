@@ -27,6 +27,7 @@ static ORIGIN: OnceLock<Instant> = OnceLock::new();
 /// Logical-process clock in seconds, stored as `f64` bits.
 static CLOCK: AtomicU64 = AtomicU64::new(0);
 static RUN_RNG: Mutex<Option<StdRng>> = Mutex::new(None);
+static WORKER_ORDER: Mutex<Vec<(String, usize)>> = Mutex::new(Vec::new());
 
 /// Whether [`enable`] has run.
 pub fn simulated() -> bool {
@@ -36,11 +37,23 @@ pub fn simulated() -> bool {
 /// Switch the policies to the simulated clock, an RNG seeded with `seed`
 /// and fixed hasher keys, with the clock at zero. Call it before the
 /// policies are built: a map built earlier keeps its random keys. Calling it
-/// again restarts the RNG and the clock.
+/// again restarts the RNG and the clock and clears the worker order.
 pub fn enable(seed: u64) {
     *run_rng() = Some(StdRng::seed_from_u64(seed));
+    set_worker_order(Vec::new());
     set_now(0.0);
     ORIGIN.get_or_init(Instant::now);
+}
+
+/// List workers in this order of (base URL, DP rank) under [`enable`], a
+/// worker with no DP rank as rank 0; the ones it leaves out follow, sorted.
+pub fn set_worker_order(order: Vec<(String, usize)>) {
+    *worker_order() = order;
+}
+
+/// The order [`set_worker_order`] set, empty when none was.
+pub fn worker_order() -> MutexGuard<'static, Vec<(String, usize)>> {
+    WORKER_ORDER.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Advance the simulated clock to `seconds` of simulated time.
