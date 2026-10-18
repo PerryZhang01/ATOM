@@ -23,9 +23,10 @@ keys, `--step-stub`, `--step-linear` and `--step-grid`, and precedence has level
 D80).
 
 **Revised 2026-10-18 by the owner's ruling on
-[#1489](https://github.com/jgong5/ATOM/issues/1489):** `measure ops` plans its points from
-a `shape_population` and measures every rank of the layout, and `fit ops` publishes a
-`price_list` only (D80).
+[#1489](https://github.com/jgong5/ATOM/issues/1489):** `trace ops` captures one
+`op_graph` per shape a `shape_population` names; `measure ops` plans its points from it,
+measures every rank of the layout and writes an `op_measurement` per point; `fit ops`
+publishes a `price_list` only (D80).
 
 **Depends on:** `05_machine_spec_and_probes.md` D24 (the separation rule this extends),
 and every other topic, each of which contributed a flag.
@@ -156,7 +157,7 @@ run file selects the simulated runner through `Config.runner_qualname`, the seam
 D10).
 
 Two settings of the op-level backend are settled with the toolchain's ops half (`16`
-Stage 3d): refusing an unknown structure rather than tracing it in-run (`02`), and
+Stage 3d): refusing an uncaptured shape rather than tracing it in-run (`02`), and
 `--measure`, which additionally runs on a real GPU and records, and is **never valid in an
 acceptance run** (`07` D42).
 
@@ -208,13 +209,13 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
 |---|---|---|---|---|
 | `record` | 1c's real runs | GPU | ATOM's arguments; the requests clients send | `--out`: the step record with its cost lines; `run.json` with the engine's bounds as ATOM resolved them; logs |
 | `trace steps` | 0 | none | `run`'s inputs | `--store`: one `shape_population`, keyed by the backend that priced it; `--out`: what `run` writes |
-| `trace ops` | 1a | none | the structures Phase 0 found | `--store`: one `op_graph` per structure |
+| `trace ops` | 1a | none | with `--population`, the decode widths and prefill (T, B) a `shape_population` names | `--store`: one `op_graph` per shape (`07` D38, Phase 1a) |
 | `measure steps` | 1c, on the bench | GPU | its `<batches>`, and `--grid`'s inputs | `--store`: one `step_measurement` per distinct batch |
-| `measure ops` | 1b, collectives included | GPU, every rank of the layout | an `op_graph`; with `--plan`, the `shape_population` its planner places each leaf's points over (`07` D37); the stated collective entry points (`07` D40) | one cold measurement per point, with its warm-over-cold ratio |
+| `measure ops` | 1b, collectives included | GPU, every rank of the layout | an `op_graph`; with `--plan`, the `shape_population` its planner places each leaf's points over (`07` D37); the stated collective entry points (`07` D40) | `--store`: one `op_measurement` per point, cold, with the kernels each leaf launched and its warm-over-cold ratio (`07` D41) |
 | `measure memory` | 2 | GPU | ATOM's arguments; the machine spec | `--store`: one `memory_readings` for the configuration; `--out`: `run.json`, logs, a readable copy |
 | `fit steps` | from 1c's measurements | none | the machine spec; `record` directories, each with the exports of the client runs its server served, and `step_measurement` entries, as the backend accepts | `--store`: a `step_linear_law` or a step grid bundle, with its report; `--out`: a readable copy |
 | `fit host` | from real runs | none | the machine spec; `record` directories only, each with the exports of the client runs its server served | `--store`: `host_laws`, with its report |
-| `fit ops` | from 1b's measurements | none | `measure ops`'s measurements | `--store`: a `price_list`, interpolating inside each leaf's hull |
+| `fit ops` | from 1b's measurements | none | `measure ops`'s `op_measurement` entries | `--store`: a `price_list`, interpolating only between same-kernel neighbours |
 | `run` | a simulated serve | none | a backend, the machine spec, the configuration's `memory_readings`, ATOM's arguments; the requests clients send | `--out`: the step record with its cost lines, the step table, the run summary, `run.json` with the run file and what grading reads (below), logs |
 
 **Shared by every command:**
@@ -375,7 +376,7 @@ have changed.
 |---|---|---|
 | D78 | Three homes. A setting is Compass's only if it would be meaningless in a real ATOM run — which keeps the surface small by construction. | 2026-09-19 |
 | D79 | Precedence is CLI > artifact > **refuse**, with no environment level. No silent default for anything that changes a predicted number. The resolved configuration is echoed into every artifact. The run file `compass run` writes is its transport to ATOM, not a config file. | 2026-09-19; run file 2026-10-13 (#851); no environment level 2026-10-14 (#851) |
-| D80 | A simulated serve is configured by `compass run`'s flags, handed to ATOM's server in a run file by `--compass-run`. One `compass` entry, the only way users reach Compass, with the toolchain's commands: `record`, `trace steps\|ops`, `measure steps\|ops\|memory`, `fit steps\|ops\|host` and `run`, sharing ATOM's arguments after `--`, `--out` and `--store`, one step-record format, `run.json` and the GPU refusals; no command starts the client or takes a workload. One `record` or `run` serves one instance to any number of client runs, and a record splits per client run by its requests. `run` records what grading reads, and grading decides whether a run is gradeable. The commands first listed are deprecated and removable, each with where its work went; developers' quality tooling stays outside the CLI. Non-flags audited and recorded. | 2026-09-19; revised 2026-10-13 and 2026-10-14 (#851); backend flags named 2026-10-14 (#952); the step roofline setting made a switch 2026-10-15 (#1047); `fit ops` publishes a `price_list` only 2026-10-18 (#1489) |
+| D80 | A simulated serve is configured by `compass run`'s flags, handed to ATOM's server in a run file by `--compass-run`. One `compass` entry, the only way users reach Compass, with the toolchain's commands: `record`, `trace steps\|ops`, `measure steps\|ops\|memory`, `fit steps\|ops\|host` and `run`, sharing ATOM's arguments after `--`, `--out` and `--store`, one step-record format, `run.json` and the GPU refusals; no command starts the client or takes a workload. One `record` or `run` serves one instance to any number of client runs, and a record splits per client run by its requests. `run` records what grading reads, and grading decides whether a run is gradeable. The commands first listed are deprecated and removable, each with where its work went; developers' quality tooling stays outside the CLI. Non-flags audited and recorded. | 2026-09-19; revised 2026-10-13 and 2026-10-14 (#851); backend flags named 2026-10-14 (#952); the step roofline setting made a switch 2026-10-15 (#1047); `trace ops` per shape, `op_measurement`, `fit ops` publishes a `price_list` only 2026-10-18 (#1489) |
 | D81 | The resolved configuration is part of every artifact, by value and never by reference. | 2026-09-19 |
 
 ---

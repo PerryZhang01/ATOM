@@ -298,8 +298,9 @@ rather than answering from stale data.
 ```
   GRANULARITY, a property of the backend
   +--------------------------------------------------------------+
-  |  op-level     symbolic IR; each leaf priced from a price_list|
-  |               or else by its analytical law; no residual     |
+  |  op-level     concrete IR per shape; each leaf priced from a |
+  |               price_list or else by its analytical law;      |
+  |               no residual                                    |
   |               needs: a calibration campaign                  |
   |               used for: acceptance cells                     |
   +--------------------------------------------------------------+
@@ -473,7 +474,7 @@ The documents use these precisely; a reader will bounce off without them.
 | Term | Meaning |
 |---|---|
 | **granularity** | what a backend prices as one unit: a whole step (step-level) or the ops in it (op-level), `backends/base.py::Granularity`. A property of the backend, which has no method of its own; no fallback crosses it. |
-| **method** | how one term was produced, `backends/provenance.py::Method`: `analytical`, `declared`, or empirical, which is `measured` or `estimated`. *Analytical*: a form from first principles whose every parameter is model geometry, deployment config, or a device parameter from a datasheet or a model-independent probe on this platform. *Measured*: the query equals an observation of the subject in every variable that affects the value, with no projection. *Estimated*: anything else derived from observations of the subject. One input can give two methods: a probed value used as a parameter is analytical, used as the answer it is measured; its `origin` says where it came from and the term decides the method. A term built from several is declared if any part is, analytical if all are, measured if all are, and estimated otherwise. A price is `measured`; a real run's reading is `measured`, and the prose calls it *real*. |
+| **method** | how one term was produced, `backends/provenance.py::Method`: `analytical`, `declared`, or empirical, which is `measured` or `estimated`. *Analytical*: a form from first principles whose every parameter is model geometry, deployment config, or a device parameter from a datasheet or a model-independent probe on this platform. *Measured*: the query equals an observation of the subject in every variable that affects the value, with no projection. *Estimated*: anything else derived from observations of the subject. One input can give two methods: a probed value used as a parameter is analytical, used as the answer it is measured; its `origin` says where it came from and the term decides the method. A term built from several is declared if any part is, analytical if all are, measured if all are, and estimated otherwise. A price at a measured point is `measured`, and one interpolated between points `estimated`; a real run's reading is `measured`, and the prose calls it *real*. |
 | **validated** | on an estimated term only: true when the query lies inside the region where its algorithm's held-out error was measured, false by default. Extrapolation is one algorithm, named in `source`. Each algorithm states its support domain: an unseen discrete value refuses; outside the continuous domain it answers if it extrapolates and refuses otherwise. |
 | **declared** | the method of a term some input of which is assumed, or was observed on another subject (another platform, width, model or engine config). Its note states the origin, and the successor or why there is none. A declared memory term can fail its gate but cannot pass it; declared cost seconds are reported apart and not gated. The word is reserved for the method; for anything else these documents say *stated*. |
 | **subject** | what an empirical term observes: the model, the deployment config, the source root, and the platform the run's machine spec describes, device and software stack, host driver, firmware and power settings included. There is no machine-identity mechanism. |
@@ -481,7 +482,7 @@ The documents use these precisely; a reader will bounce off without them.
 | **analytical fallback** | the analytical law that answers what an empirical source declines, inside one granularity: an op-level backend's law for an unpriced leaf, always on, or the step roofline a run file composes with `StepFallbackBackend`, as every step grid run does (`17` D102). Its terms carry their own method, declared while an input is assumed, and its share of seconds is always reported. |
 | **opaque leaf** | an operator the tracer records as one node whose internal kernels are invisible, because ATOM deliberately registers a whole subsystem as a single dispatcher op. ~20 of them hold 60–75% of step time. |
 | **logical process (LP)** | the unit the Clock Authority coordinates. *Not* an OS process — a TP group is one LP, a DP group is one LP, because both already have a hardware barrier. |
-| **structure** | a distinct operator list, independent of shape. Prefill has two (chunked, unchunked); decode has one across all CUDA-graph rungs. Traces are cached per structure, not per shape. |
+| **structure** | a distinct operator list, independent of shape: the discrete part of a graph's applicability key (`04` D19). Prefill has two (chunked, unchunked). Graphs are captured per shape, one per decode width and prefill (T, B) (`04` D18). |
 | **treatment** | a factor that moves cost and is invisible to every feature in the model. Uniform MoE routing under DP is one. Decode **row order** is one to the op-level IR. The step linear law prices it with `rowmod(k)` (`09` D61); the step grid's residual reads it (`17` D100). |
 | **refusal** | a declined answer with a named reason. Refusals are results, not errors, and are preferred to guesses everywhere. A **refused step** is one with some term still unanswered after method fallback, its reasons listed per term: it costs 0 s, the run continues, and any refusal makes the run a coverage report (`08` D50.1). A source that declines while a later one answers is a fall-through, and an answer of any method, unvalidated included, is reported by its method; neither is a refusal. |
 | **step grid** | the step-level backend of `17`, run-file key `step_grid`: a grid of step measurements looked up per batch, plus a residual, fitted on real-run step times, bench replays or both, for what the grid's coordinates cannot see (row order, raggedness). |
@@ -533,7 +534,7 @@ The documents use these precisely; a reader will bounce off without them.
 |---|---|---|
 | [`05`](05_machine_spec_and_probes.md) | Machine Specification and its Probes | The one input artifact describing device, host, interconnect and the software stack it is pinned to. Read this before `03` and `04`, both of which consume it. Probe tools and their contamination refusals. |
 | [`03`](03_memory_and_kv_model.md) | Memory Model and the KV Pool | **Do not simulate the KV pool** — ATOM's real one is pure arithmetic. Substitute the five device readings, never the arithmetic. How a prefix-cache hit reaches the cost model. Validate per term, never as a sum. |
-| [`04`](04_model_capture_and_cost_ir.md) | Model Capture and the Cost IR | Capture with `TorchDispatchMode` + `FakeTensorMode` + `ShapeEnv`. A hierarchical, symbolic, stream-annotated IR whose `Repeat` nests and tolerates non-contiguous layer patterns. **Opaque leaves** are priced, not decomposed. |
+| [`04`](04_model_capture_and_cost_ir.md) | Model Capture and the Cost IR | Capture with `TorchDispatchMode` + `FakeTensorMode`, concrete, one graph per decode width and prefill (T, B). A hierarchical, stream-annotated IR whose leaves carry their call contract and whose `Repeat` nests and tolerates non-contiguous layer patterns. **Opaque leaves** are priced, not decomposed. |
 | [`10`](10_analytical_laws.md) | Analytical Laws | Cost and memory from device parameters and model geometry, with no observation of the subject. Three classes: exact from geometry, device-parameterised, policy-determined. The analytical fallback, the step roofline and the MI455 projection. Its gate is a **bound**, at most the measured time on every measured step; ranking is reported. **The most speculative document here.** |
 | [`17`](17_step_grid_backend.md) | Step Grid Backend | A measured grid of whole forwards, answered only from complete cells, plus a residual fitted on real-run step times, bench replays or both. A stage-2 candidate, graded by stage 2's protocol and off the stage-2 path for now (#627). |
 
@@ -541,7 +542,7 @@ The documents use these precisely; a reader will bounce off without them.
 
 | Doc | Title | What it settles |
 |---|---|---|
-| [`07`](07_calibration_toolchain.md) | Calibration and Benchmarking Toolchain | The phases and the commands that run them; the backend that needs a measurement plans it; the step bench is `EngineCore` without its scheduler, with one window for every step; the op bench times each leaf alone, cold, and `fit ops` interpolates inside its hull. One recommended flow per half, steps and ops. The minimal recipe: one full-engine run at TP1, plus one TP2 transfer test, plus an engine start per configuration (`measure memory`). Four classes of communication pricing. The artifact store, its keys and its invalidation matrix. |
+| [`07`](07_calibration_toolchain.md) | Calibration and Benchmarking Toolchain | The phases and the commands that run them; the backend that needs a measurement plans it; the step bench is `EngineCore` without its scheduler, with one window for every step; the op bench times each leaf from its contract inside ATOM's forward with a stub model, cold, and `fit ops` interpolates only between same-kernel neighbours. One recommended flow per half, steps and ops. The minimal recipe: one full-engine run at TP1, plus one TP2 transfer test, plus an engine start per configuration (`measure memory`). Four classes of communication pricing. The artifact store, its keys and its invalidation matrix. |
 | [`09`](09_fitting_and_law_selection.md) | Fitting and Law Selection | How measurements become a model: fit relative error, per-rung decode, hull guards not bounding boxes, and why leave-one-out cannot choose a family. Owns coverage geometry for every other document. |
 
 ### Part IV — How it is driven and judged
@@ -605,8 +606,8 @@ The documents use these precisely; a reader will bounce off without them.
 | D10 | Attach at `ModelRunner.forward` via `--runner-qualname`; no ATOM change for the injection |
 | D13 | Do not simulate the KV pool; run ATOM's real one |
 | D14 | Substitute the five device readings, never the arithmetic |
-| D18 | Capture with dispatch mode + FakeTensor + ShapeEnv; `_EnablePythonDispatcher()` is mandatory |
-| D19 | Hierarchical, symbolic, stream-annotated IR; no branches in the IR — applicability is a discrete key plus an evaluated guard domain |
+| D18 | Capture with dispatch mode + FakeTensor at concrete shapes, one graph per decode width and prefill (T, B) |
+| D19 | Hierarchical, concrete, stream-annotated IR; no branches in the IR — applicability is a discrete key and the captured shape |
 | D20 | Opaque leaves are priced, not decomposed; each carries a stated parameter extractor |
 | D28 | Stamps on the **real** endpoint, both directions, in carriers a real server ignores: a `tracestate` entry in, SSE comment lines out |
 | D30 | Ride the simulated timeline on carriers Atomesh already forwards, `kv_transfer_params` on the prefill-to-decode hop among them; Atomesh needs zero changes |

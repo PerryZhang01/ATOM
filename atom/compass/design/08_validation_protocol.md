@@ -439,7 +439,9 @@ Each of these voided real percentages before.
    functional form are fitting questions and are argued there, with the measurements.
    Named here because a validation run applies both: a step outside the hull is priced
    `estimated`, unvalidated, and reported apart (D50.1), not refused, and a law whose family was
-   chosen by LOO alone is not admissible evidence.
+   chosen by LOO alone is not admissible evidence. An op-level leaf is not extrapolated:
+   with no same-kernel bracket it is priced by its analytical law, counted in D50.3's
+   fallback share (`09` D60; revised 2026-10-18, #1489).
 7. **A speculative acceptance cell run at an assumed acceptance is not acceptance
    evidence.** It is exploration. Acceptance cells use the *measured* per-position
    distribution from the paired real run (`14` D84); the run summary reports the acceptance input's method.
@@ -748,7 +750,7 @@ claims there are not.
 | D46 | Three metric families ordered by robustness, as an extensible registry: counting invariants (exact; prefill tokens over the requests both runs issued, within the real spread), distributional (weighted most), event timing (most diagnostic). Policy agreement is a regression guard, not a discriminator. | 2026-09-18; revised 2026-10-13 (#897) |
 | D47 | Cost accuracy on the real run's own step sequence; report totals, held-out-worst, and median per step together. | 2026-09-18 |
 | D48 | Memory per term, never as a sum. The gate is whether the top-1 configuration choice survives, not the byte error. | 2026-09-18 |
-| D49 | Seven hygiene refusals, each with a prior incident behind it. | 2026-09-18 |
+| D49 | Seven hygiene refusals, each with a prior incident behind it. An op-level leaf is not extrapolated: with no same-kernel bracket it falls to its analytical law. | 2026-09-18; op-level leaf 2026-10-18 (#1489) |
 | D50.1 | A step is refused only when some term is still unanswered after method fallback, its reasons listed per term; a fall-through and an answer of any method are not refusals, and the priced seconds are reported by method (analytical, declared, measured, estimated, unvalidated) with their steps and share of predicted seconds. A refused step costs 0 s and the run continues; `--on-refusal abort` stops at the first, and the summary is written either way. Any refusal, of any source, makes the run a coverage report: no refused-seconds fraction, no threshold, and no answered step invalidates a run, whatever its method or share. | 2026-09-19; revised 2026-10-11 (#765, and again to drop the analytical cap); 2026-10-14 (#952) |
 | D50 | Everything registered and hashed before evaluation; the case set never shrinks. One simulated run plus a reproducibility assertion; N≥3 spaced real runs. The cells are stage 2's Qwen3.8-27B TP1 on MI308X and M2's four nightly P/D configurations of DeepSeek-V4-Pro on MI355X at their concurrencies, then the DPA two at EP8. M2's ranking gate: the same best configuration as hardware at each concurrency, and rank correlation across all cells, per end-to-end metric, each inside its real-vs-real spread, with Spearman's ρ also at least 0.9. DP mechanism tests run on a CPU fake-model DP2. | 2026-09-18; revised 2026-10-01, 2026-10-09, 2026-10-10 |
 | D50.2 | The MI455 projection is sound, not graded: on every measured step, at both granularities, the analytical price at attainable peaks probed on the device, composed by the IR's own joins, is at most the measured time, with measured over analytical per op kind and phase reported beside it; every MI455 input is sourced or marked assumed, its peaks the datasheet times MI355X's probed ratios; the method's error, MI308X to MI355X on Qwen3.8-27B, and the configuration ranking are reported, not gated. Replaces the bound first stated at the spec's peaks with derates at 1, and the method that carried implementation efficiencies onto the target. | 2026-10-09; revised 2026-10-17 (#1392) |

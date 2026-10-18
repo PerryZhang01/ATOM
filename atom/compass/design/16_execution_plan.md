@@ -36,7 +36,8 @@ projection's first check is the analytical bound on every measured step (D95).
 **Revised 2026-10-18 by the owner's ruling on
 [#1489](https://github.com/jgong5/ATOM/issues/1489):** *Stage 3d* is #627's empirical op
 level on measured devices, its tasks the issues #1489 tracks; it carries W4.1's ops half
-and the op-level parts of W4.4, W4.5 and W4.12.
+and the op-level parts of W4.4, W4.5 and W4.12, and its S3d.12 makes stage 3c's capture
+concrete.
 
 **Scope.** How the work is organised, allocated and gated; what happens first; and what
 each stage must produce. It is **detailed through M2**. Work after v1 is listed, not
@@ -547,7 +548,7 @@ it.
 
 | ID | Task | Module | Effort | Depends on |
 |---|---|---|---|---|
-| **W4.1** | The toolchain's ops half (`13` D80): `trace ops` (Phase 1a), `measure ops` with collectives (`07` D40), `fit ops`, and the ops-half settings of `run`, on S2.7's bench and entry | `capture/`, `bench/`, `backends/` | 400–700 | W2.4, W2.5, S2.7 |
+| **W4.1** | The toolchain's ops half (`13` D80): `trace ops` (Phase 1a), `measure ops` with collectives (`07` D40), `fit ops`, and the ops-half settings of `run`. **Carried by Stage 3d** since 2026-10-18 (#1489): `trace ops` by S3c.8 and S3d.12, the rest by S3d.2 to S3d.5 and S3d.7, on the op bench rather than S2.7's | `capture/`, `bench/`, `backends/` | 400–700 | W2.4, W2.5, S2.7 |
 | **W4.2** | DeepSeek-V4-Pro capture: a fake or meta implementation for every operator P0b.1 names — shape and dtype rules, no math — plus #501's launch interceptor for Triton, FlyDSL and MORI and its two host-query rules, with no ATOM change; carried by S3c.9 ([#1401](https://github.com/jgong5/ATOM/issues/1401)) | `capture/`, `ir/` | 600–1000 | **P0b.1** |
 | **W4.3** | The real side: the nightly P/D configurations of `recipes/mesh/DeepSeek-V4.md` (TP; DP-attention + TBO; TP + MTP3; DP-attention + MTP1) on the MI355X pair, driven by cc-traces, with per-request records and a real-vs-real repeat per cell for the noise floor (`08` D45) | `scripts/compass/` | 200–350 | **P0b.3**, GPU queue |
 | **W4.4** | Calibration Phases 1b / 1c on MI355X for DeepSeek-V4-Pro's operator families: FP4 MoE GEMMs, attention with its compressors, the CSA indexer, mHC, the DP group's variable-size gather | `backends/`, calibration | 400–700 | W4.1, W4.2, GPU queue |
@@ -601,15 +602,15 @@ EP8 step), and S3c.3's probes run on it, so its peaks are probed rather than car
 #627's stage 3d, tracked on [#1489](https://github.com/jgong5/ATOM/issues/1489) and ruled
 there on 2026-10-18: each IR leaf priced from measurements on the device (`07` D38–D40),
 composed by the IR's joins with no residual, and graded through the `compass` CLI by `08`
-D50.3. Built on stage 3c's capture, IR and `OpGraphBackend`. Every issue carries
-`e2e-stage3d`.
+D50.3. Built on stage 3c's capture, made concrete with leaf contracts by S3d.12, its
+IR and `OpGraphBackend`. Every issue carries `e2e-stage3d`.
 
 | ID | Task | Module | Effort | Depends on |
 |---|---|---|---|---|
 | **S3d.1** | The design text, and the region-term artifact retired from the store ([#1490](https://github.com/jgong5/ATOM/issues/1490)) | design, `artifacts/` | 20–40 removed | — |
-| **S3d.2** | `measure ops` on one device: each leaf alone from its interface, cold, with warm-over-cold and the PTL state (`07` D38; [#1491](https://github.com/jgong5/ATOM/issues/1491)) | `bench/`, `cli.py` | 300–400 | S3c.8, GPU queue |
+| **S3d.2** | `measure ops` on one device: ATOM's forward with a stub model timing each leaf from its contract, cold, with its kernels, warm-over-cold and the PTL state (`07` D38, D39; [#1491](https://github.com/jgong5/ATOM/issues/1491)) | `bench/`, `cli.py` | 300–400 | S3c.8, S3d.12, GPU queue |
 | **S3d.3** | The point planner inside `measure ops`, and its coverage check (`07` D37; [#1492](https://github.com/jgong5/ATOM/issues/1492)) | `bench/` | 150–200 | S3d.2 |
-| **S3d.4** | `fit ops`: a `price_list` interpolating inside each leaf's hull (`07` D38; [#1493](https://github.com/jgong5/ATOM/issues/1493)) | `fit/`, `cli.py` | 200–250 | S3d.2 |
+| **S3d.4** | `fit ops`: a `price_list` interpolating only between same-kernel neighbours (`07` D38, `09` D60; [#1493](https://github.com/jgong5/ATOM/issues/1493)) | `fit/`, `cli.py` | 200–250 | S3d.2 |
 | **S3d.5** | `OpGraphBackend` resolves each leaf from the `price_list`, then analytically (`07` D36; [#1494](https://github.com/jgong5/ATOM/issues/1494)) | `backends/`, `run/` | 100–150 | S3d.4, S3c.12 |
 | **S3d.6** | Qwen3.8-27B TP1 on MI308X through the CLI, graded on #974's real runs (`08` D50.3; [#1495](https://github.com/jgong5/ATOM/issues/1495)) | `scripts/compass/` | 40–80, README | S3d.3, S3d.5, GPU queue |
 | **S3d.7** | `measure ops` across every rank of the layout, collectives included (`07` D40; [#1496](https://github.com/jgong5/ATOM/issues/1496)) | `bench/` | 250–350 | S3d.3, S3c.9, GPU queue |
@@ -617,11 +618,12 @@ D50.3. Built on stage 3c's capture, IR and `OpGraphBackend`. Every issue carries
 | **S3d.9** | DeepSeek-V4-Pro's DPA and TP cells under the op-level backend, graded ([#1498](https://github.com/jgong5/ATOM/issues/1498)) | `scripts/compass/` | 40–80, README and a run file | S3d.5, S3d.7, S3d.8 |
 | **S3d.10** | The MTP cells, and the four-configuration ranking ([#1499](https://github.com/jgong5/ATOM/issues/1499)) | `scripts/compass/` | 30–60, README and two run files | S3d.9, #1270, #1090 |
 | **S3d.11** | MORI dispatch and combine measured, and the EP8 cells graded ([#1500](https://github.com/jgong5/ATOM/issues/1500)) | `bench/`, `scripts/compass/` | 150–250 | S3d.9, #1111 |
+| **S3d.12** | Concrete capture per decode width and prefill (T, B), with each leaf's contract (`04` D18, D20; [#1539](https://github.com/jgong5/ATOM/issues/1539)) | `capture/`, `ir/`, `cli.py` | 300–400, about 100 removed | S3c.8, S3c.9 |
 
-**Wave 4 rows it carries**, so an older citation resolves here: W4.1's `measure ops` and
-`fit ops` are S3d.2 to S3d.4, its run settings S3d.5; W4.4's Phase 1b is S3d.7 and S3d.8,
-and its Phase 1c feeds the op level nothing (`07` D38); W4.5's fit is S3d.4's
-interpolation; W4.12, deferred, is S3d.11.
+**Wave 4 rows it carries**, so an older citation resolves here: W4.1's `trace ops` is S3c.8
+and S3d.12, its `measure ops` and `fit ops` S3d.2 to S3d.4, its run settings S3d.5; W4.4's
+Phase 1b is S3d.7 and S3d.8, and its Phase 1c feeds the op level nothing (`07` D38); W4.5's
+fit is S3d.4's same-kernel interpolation; W4.12, deferred, is S3d.11.
 
 ### Wave 6 — M2 acceptance
 

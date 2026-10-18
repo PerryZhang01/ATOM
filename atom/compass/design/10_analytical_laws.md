@@ -82,10 +82,9 @@ at TP=1/2/4/8 on the 0.6B, and 0.00% at TP=2 and TP=4 on the 27B.
 | **B — device-parameterised** | A + device spec | GEMM time, norm/elementwise time, attention time | roofline at attainable peaks probed on the device (D64) |
 | **C — policy-determined** | nothing | which tuned kernel a shape dispatches to, `non_torch`, load residue, launch overhead, the in-situ gap, fabric scaling | **stated constants**, so declared (doc 05), or accepted error |
 
-Class A comes free from the symbolic IR: doc 04's shapes are sympy expressions, so FLOPs
-and bytes-moved are closed-form expressions in `T`, `B`, `Ctx`, `TP` without any extra
-machinery. The experiment already demonstrated this — `FLOPs(T) = 256·T² + 98304·T`,
-exact against a fresh concrete trace at T = 2 / 17 / 64 / 512 / 4096.
+Class A comes free from the IR: doc 04's graph is captured at the step's shape (`04` D18),
+so each node's FLOPs and bytes moved follow from its argument shapes without any extra
+machinery.
 
 ---
 
