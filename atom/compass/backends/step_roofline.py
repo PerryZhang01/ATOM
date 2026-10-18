@@ -147,7 +147,9 @@ class StepRooflineBackend(CostBackend):
         modules = tuple(modules)
         self.unclassified = [m.name for m in modules if m.kind == UNCLASSIFIED]
         # Modules of one shape price alike: count them, price each shape once.
-        self.shapes = Counter(dataclasses.replace(m, name="") for m in modules)
+        self.shapes = Counter(
+            dataclasses.replace(m, name="") for m in modules if m.kind != UNCLASSIFIED
+        )
         self.count = len(modules)
         self.name = machine.values.get("name", "")
         self._stated_as: dict[str, str] = {}
@@ -170,6 +172,8 @@ class StepRooflineBackend(CostBackend):
             refuse.append(IMAGES.format(batch_view.image_tokens))
         if self.unclassified:
             refuse.append("unclassified modules: " + ", ".join(self.unclassified))
+        if refuse:
+            raise CostRefused(batch_view, [Refusal(SOURCE, r) for r in refuse])
         rows = batch_view.requests
         tokens = sum_tokens(rows)
         decode = batch_view.decode
@@ -183,7 +187,7 @@ class StepRooflineBackend(CostBackend):
         stated: dict[str, list[str]] = {}
         for m, count in self.shapes.items():
             work = _work(m, batch_view, tokens, sampled)
-            if work is None or refuse:
+            if work is None:
                 continue
             reads = _reads(work)
             missing = [

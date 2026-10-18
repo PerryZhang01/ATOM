@@ -68,7 +68,7 @@ comes from. The op-level row revised 2026-10-18 by the owner's ruling on
 
 | Granularity | Backends | Needs | Used for |
 |---|---|---|---|
-| **step-level** | the step stub, linear law and grid (run-file keys `step_stub`, `step_linear`, `step_grid`); the step roofline | measured steps, fitted over features `ScheduledBatch` already carries; the roofline only the machine spec, the model geometry and the run file's `parameter_count` | structure discovery, plumbing, sweeps; day zero, a device never measured, fast configuration sweeps |
+| **step-level** | the step stub, linear law and grid (run-file keys `step_stub`, `step_linear`, `step_grid`); the step roofline | measured steps, fitted over features `ScheduledBatch` already carries; the roofline only the machine spec and the modules of the meta build | structure discovery, plumbing, sweeps; day zero, a device never measured, fast configuration sweeps |
 | **op-level** | the op graph (`OpGraphBackend`, not built) | a concrete IR graph per decode width and prefill (T, B); each leaf priced from a `price_list`, else by its analytical law; no residual | acceptance cells; on a measured device, a new engine config, layout or shape by measuring only the leaf signatures the price list lacks, with no step recapture |
 
 Two orthogonal axes: **the granularity of the backend asked**, and **the method of each
