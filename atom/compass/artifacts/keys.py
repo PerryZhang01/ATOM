@@ -59,6 +59,7 @@ class Kind(enum.Enum):
     MACHINE_SPEC = "machine_spec"
     SHAPE_POPULATION = "shape_population"
     OP_GRAPH = "op_graph"
+    OP_MEASUREMENT = "op_measurement"
     PRICE_LIST = "price_list"
     MEMORY_READINGS = "memory_readings"
     COVERAGE_HULL = "coverage_hull"
@@ -84,6 +85,8 @@ KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
     # pricing backend's digest, so another backend addresses another entry.
     Kind.SHAPE_POPULATION: ("model", "workload", "engine_config", "backend"),
     Kind.OP_GRAPH: ("structure", "shape"),
+    # `point` is the digest of the shape, context and leaf one measurement took.
+    Kind.OP_MEASUREMENT: ("model", *LAYOUT, "machine_spec", "source_root", "point"),
     Kind.PRICE_LIST: ("model", *LAYOUT, "machine_spec", "source_root"),
     # The engine config as `run.memory.key_fields` reads it, as sorted JSON.
     Kind.MEMORY_READINGS: ("model", "machine_spec", *LAYOUT, "engine_config"),
