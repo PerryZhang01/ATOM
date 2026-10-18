@@ -92,11 +92,15 @@ def device_fragments() -> list[Fragment]:
     """The start's readings, the burst's intake terms, the datasheet's peaks
     and the assumed rest."""
     notes = f"one DeepSeek-V4-Pro {FLAGS} start at {COMMIT}"
+    ptl = {"device": {"ptl": "disabled"}}
     return [
         fragment("device", DEVICE, "probed", notes, SUBJECT, DATE),
         base.intake(MODEL, *INTAKE),
         fragment("datasheet", DATASHEET, "datasheet", "MI355X datasheet", date=DATE),
         fragment("assumed", DECLARED, "assumed", "no probe fills these", date=DATE),
+        fragment(
+            "ptl", ptl, "probed", "no card has a ptl directory", date="2026-10-18"
+        ),
     ]
 
 

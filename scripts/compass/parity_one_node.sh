@@ -57,7 +57,7 @@
 # file, step table and summary), and compare.json; the last lines are the real run's
 # admission, send to response headers, and the compare per DP rank. Under
 # LMCACHE they also give the requests whose offload loads and saves differ, and
-# each run's expired-session sweeps, from its server's log. A
+# each run's expired-session sweeps and eviction ticks, from its server's log. A
 # simulated run that needs a step past the real record ends at the replay's
 # refusal, which the last lines name; the records are compared all the same.
 set -euo pipefail
@@ -101,10 +101,12 @@ if [[ $LMCACHE == 1 ]]; then
 fi
 if [[ -z ${STORE:-} ]]; then
     STORE=$OUT/store
+    # measure memory takes rocm-smi's indexes of the real run's HIP devices.
+    gpus=$(compass_gpus smi "${HIP_VISIBLE_DEVICES:-$(seq -s, 0 $((TP - 1)))}")
     # shellcheck disable=SC2086 # SERVER_ARGS is a word list
     ATOM_DP_MASTER_PORT=$(compass_free_port) python3 -c \
         "from atom.compass.cli import main; main()" measure memory \
-        --gpu "${HIP_VISIBLE_DEVICES:-$(seq -s, 0 $((TP - 1)))}" --machine "$MACHINE" \
+        --gpu "$gpus" --machine "$MACHINE" \
         ${LM_FLAGS:+--beside "lmcache server $LM_FLAGS"} \
         --store "$STORE" --out "$OUT/memory" -- --model "$MODEL" -tp "$TP" \
         $DPA $SERVER_ARGS
@@ -161,7 +163,7 @@ fi
 RUN=$OUT/sim/run.json
 python3 - "$RUN" "$OUT" "$MACHINE" "$MODEL" "$STORE" "$(compass_free_port)" "${DPA:+$TP}" \
     "$LM_FLAGS" "${IMAGE_S:-0.01}" "$TP" <<'EOF'
-import json, sys
+import json, re, sys
 from pathlib import Path
 
 run, out, machine, model, store, port, width, lmcache, image_s, tp = sys.argv[1:]
@@ -187,6 +189,10 @@ if lmcache:
     # a model whose ranks share one copy refuses by name.
     writers = 1 if width else int(tp)
     spec["lmcache"] = {"server": lmcache.split(), "writers": writers, **laws}
+    # A rank's recurrent-state image, as the real run logged it; the simulated
+    # engine refuses a run file that names another.
+    image = re.findall(r"image_bytes=(\d+)", Path(f"{out}/real/server.log").read_text())
+    spec["lmcache"]["state_bytes"] = int(image[0]) if image else 0
 Path(run).write_text(json.dumps(spec))
 EOF
 serve sim --compass-run "$RUN"
@@ -234,5 +240,6 @@ if any(decisions):
           f"{len(sim)} simulated; {len(differ)} differ: {differ}")
 EOF
 if [[ $LMCACHE == 1 ]]; then
-    grep -H "expired sessions" "$OUT/real/lmcache.log" "$OUT/sim/server.log" || true
+    grep -H -e "expired sessions" -e "triggering eviction" "$OUT/real/lmcache.log" \
+        "$OUT/sim/server.log" || true
 fi

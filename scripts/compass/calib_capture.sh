@@ -14,8 +14,8 @@
 #   STEPS_S      wall seconds recorded per cell (default 1800)
 #   SERVER_ARGS  API server flags (default: --max-model-len 262144, so decode
 #                runs on captured graphs)
-#   HIP_VISIBLE_DEVICES  the GPUs (default 0); a cell refuses to start while
-#                `rocm-smi` lists a process on any of them
+#   HIP_VISIBLE_DEVICES  the GPUs as HIP numbers them (default 0); a cell refuses
+#                to start while `rocm-smi` lists a process on any of them
 #
 # OUT_DIR/c<C>/ is the cell's cctraces_sim.sh directory, its step record in
 # steps/; OUT_DIR/c<C>.log holds the tree's commit, the host load (`uptime`),
@@ -37,6 +37,8 @@ export REAL=1 RECORD=1 FIRST_SESSION=256 SESSIONS=137 WAIT_S=${WAIT_S:-1800}
 export SERVER_ARGS=${SERVER_ARGS:---max-model-len 262144}
 export HIP_VISIBLE_DEVICES=${HIP_VISIBLE_DEVICES:-0}
 unset ATOM_COMPASS_RUN
+# The same GPUs as rocm-smi indexes them, which its listings use.
+SMI_GPUS=$(compass_gpus smi "$HIP_VISIBLE_DEVICES") || exit 2
 # The GPUs `rocm-smi` lists a process on.
 busy() { rocm-smi --showpids --showpidgpus | awk '/is using [1-9]/ {getline; print}' | tr ' ' '\n'; }
 state() {
@@ -48,9 +50,9 @@ for c in ${CELLS:-1 4 16 64 256}; do
     o=$OUT/c$c log=$OUT/c$c.log
     [[ -e $o ]] && { echo "calib_capture: $o exists" >&2; exit 4; }
     { cat "$ROOT/.compass-commit" 2>/dev/null || git -C "$ROOT" rev-parse HEAD
-      echo "CONCURRENCY=$c GPU=$HIP_VISIBLE_DEVICES STEPS_S=${STEPS_S:-1800} SERVER_ARGS=$SERVER_ARGS"
+      echo "CONCURRENCY=$c GPU=$HIP_VISIBLE_DEVICES ROCM_SMI_GPU=$SMI_GPUS STEPS_S=${STEPS_S:-1800} SERVER_ARGS=$SERVER_ARGS"
       state start; } >"$log"
-    gpu=$(busy | grep -xFm1 -f <(tr , '\n' <<<"$HIP_VISIBLE_DEVICES")) && { echo "calib_capture: GPU $gpu is in use" | tee -a "$log" >&2; exit 3; }
+    gpu=$(busy | grep -xFm1 -f <(tr , '\n' <<<"$SMI_GPUS")) && { echo "calib_capture: rocm-smi GPU $gpu is in use" | tee -a "$log" >&2; exit 3; }
     CONCURRENCY=$c timeout 7200 bash "$ROOT/scripts/compass/cctraces_sim.sh" "$RUN_FILE" "$o" >"$o.out" 2>&1 &
     sim=$!
     until [[ -s $o/steps/dp0.jsonl ]] || ! kill -0 $sim 2>/dev/null; do sleep 10; done

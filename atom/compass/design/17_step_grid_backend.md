@@ -32,6 +32,13 @@ the residual is one per grid kind, decode, prefill with output and prefill witho
 each with its own features, hull and family ranking; decode's features drop `Σ N_Q²`
 (D100).
 
+**Revised 2026-10-18 by the owner's rulings on [#1464](https://github.com/jgong5/ATOM/issues/1464#issuecomment-6245030358) and
+[#1465](https://github.com/jgong5/ATOM/issues/1465#issuecomment-6245030942):** the residual extrapolates past its hull (D100) and a decode cell
+past the KV pool extrapolates from its measured boundary nodes (D99), each such step
+`estimated`, unvalidated, its distance named in `source` and counted apart; the step
+roofline sits under every step grid run, so a step the grid still declines falls to it
+before any refusal (D102); the coverage check refuses neither (D99). T95 is decided.
+
 **Depends on:** `02` (the backend interface, the forward's interval, the method
 vocabulary), `07` (the two granularities, the bench, artifact identity and invalidation), `08` (stage 2's
 protocol and the refusal rule), `09` (the hull and law
@@ -229,7 +236,7 @@ raggedness are covered before grading.
   `max_model_len` (D101 checks them), and the block size and KV block count the grid was
   planned for. A planned corner past a limit is reported, never measured, not even with
   the limit raised or the KV pool enlarged, which measures shapes the target never runs;
-  its cell stays incomplete and refuses (D99).
+  a decode cell missing only such corners extrapolates (D99), and any other declines.
   The measurement this rests on ([#830](https://github.com/jgong5/ATOM/issues/830)):
   on #740's Qwen3.8-27B records of traces 256 to 392, nodes `2^(k/2)` alone leave up to
   43.5% of a record's steps in a cell with a corner past a limit, and with these boundary
@@ -318,19 +325,27 @@ is the residual's job (D100).
 
 ### Decision
 
-- **An answer is an exact hit, or an interpolation inside a cell, only when every corner
-  of the enclosing cell was measured.** Otherwise the step refuses, naming the missing
-  corners. A cell is the box between adjacent nodes of the bundle's grid definition on
-  every axis (D98).
-- **Nothing else answers.** No extrapolation, clamp, missing-point recovery, completion
-  from another axis, calibrated model or constant fallback (`09` D58; principle 6).
+- **An answer is an exact hit, or an interpolation inside a cell, when every corner
+  of the enclosing cell was measured.** A cell is the box between adjacent nodes of the
+  bundle's grid definition on every axis (D98).
+- **Past the KV pool, an extrapolation** (#1465's ruling). The bundle records the pool
+  the grid was planned for. A decode cell whose every unmeasured corner holds more
+  blocks than that pool at `B` rows of `c + 1` tokens is read on each B side along c:
+  between its measured corners, or, where a corner is past the pool, from its two highest
+  c nodes inside the pool, its measured boundary nodes, extended past them. A B side
+  whose extension comes out not positive, as a falling edge can give, declines the step.
+- **Otherwise the grid declines**, naming the missing corners, and the step falls to the
+  step roofline (D102). No clamp, missing-point recovery, completion from another axis,
+  calibrated model or constant fallback (`09` D58; principle 6).
 - **A hole does not fail loading.** The bundle records which cells are complete; a hole
   refuses the step that needs it.
-- **A pre-run coverage check** covers the grid cells and the hull of each step's kind's
-  residual (D100) for every real step and every Phase 0 step of the registered case set:
-  `compass run --coverage` reads `record` directories and `shape_population` entries and
-  calls it before the run starts, refuses a run that fails it, and records the result in
-  `run.json` (`13` D80). Grading takes a step grid run only when its check passed (D102).
+- **A pre-run coverage check** prices every real step and every Phase 0 step of the
+  registered case set with the grid and its residual, and counts apart those it
+  extrapolates and those it declines to the roofline, naming each declined step with
+  its reasons; it refuses neither (#1464, #1465). `compass run --coverage` reads `record`
+  directories and `shape_population` entries, calls it before the run starts, and
+  records the result in `run.json` (`13` D80). Grading takes a step grid run only when
+  its check ran (D102).
 - **Lookups are deterministic**: one batch and one bundle give one bit-identical answer
   (`08` D50's reproducibility assertion, `01` D3.4).
 
@@ -347,10 +362,13 @@ hit on a heterogeneous batch's equivalent shape counts as an interpolation, sinc
 batch itself was never timed.
 
 **The support domain is the complete cells** (#952). A discrete value the bundle has no
-grid for refuses: a decode rung it did not measure, or, under a replay bundle, a decode
-step that replays no graph. Outside the continuous domain, a cell with a missing corner or
-a coordinate past the outermost node, the step refuses, because the grid does not
-extrapolate.
+grid for declines: a decode rung it did not measure, or, under a replay bundle, a decode
+step that replays no graph. Outside the continuous domain, a decode cell past the KV pool
+(Decision) and a step past its kind's residual hull (D100) are extrapolated, one
+algorithm each: the term is unvalidated and its `source`, `step-grid-extrapolated`,
+names how far past, the context past the pool's measured edge and the hull's largest
+facet excess. Any other cell with a missing corner, or a coordinate past the outermost
+node, declines.
 
 ### How this sits with `09` D60
 
@@ -408,9 +426,10 @@ By the owner's ruling on
   grid cannot see. Model, dtype and width select and check the bundle (D101); they never
   enter a feature. The lookup stays split by graph mode (D98): eager and replay are two
   measurements, not two forms.
-- **Hull refusal.** Each kind's residual answers only inside its own fitted hull (`09`
-  D58); outside, the step refuses, where the step linear law would extrapolate (`08` D49
-  item 6; D102).
+- **Past the hull.** Each kind's residual answers past its own fitted hull (`09` D58) by
+  the same members, as the step linear law extrapolates under #627's ruling 3 (`08` D49
+  item 6), by #1464's ruling; the step is unvalidated, its distance named in `source`
+  (D99). A member output that is not finite and positive still declines.
 
 ### Families and members
 
@@ -523,23 +542,24 @@ terms of [#952](https://github.com/jgong5/ATOM/issues/952), with no departure an
 default of its own:
 
 - **When the step grid cannot answer a step** (D97, D99, D100), it declines: the step
-  falls back along method inside the step level, to the step roofline only where the run
-  file composes `StepFallbackBackend` (`10` D64), and is refused only when no source
-  answers.
+  falls back along method inside the step level, to the step roofline, which every step
+  grid run composes below the grid with `StepFallbackBackend` (`10` D64), and is refused
+  only when the roofline refuses too (#1464, #1465). Those steps are counted apart in the
+  run summary. #1392's projection replaces the roofline when it lands.
 - **A refused step costs 0 s and the run continues** under `13` D80's default `mark`;
   `abort` stops the run at the first one. `mark` needs no fallback, since a refused step
   is not priced.
-- **Any refusal makes the run a coverage report**, with no 5% gate. That is why a graded
-  run is checked for coverage before it starts (D99).
+- **Any refusal makes the run a coverage report**, with no 5% gate. A run whose steps
+  were extrapolated or fell to the roofline is graded, each count stated beside its
+  table; grading's refusal of `--step-roofline` applies to a run of another backend.
 
-### Against the step linear law's rule
+### With the step linear law's rule
 
 #627's [ruling 3](https://github.com/jgong5/ATOM/issues/627#issuecomment-6096543740)
-has the step linear law that stage 2 prices with extrapolate an out-of-hull step rather
-than refuse it, reported apart. The step grid answers only inside complete cells (D99), so
-it declines a step the law would extrapolate: the two differ in what answers, not in what
-a refusal does to the run. T95 records a later trial of the law's rule for the step grid,
-decided only once its stage-2 evaluation shows how often steps fall outside complete cells.
+has the step linear law extrapolate an out-of-hull step rather than refuse it, reported
+apart. Since #1464 and #1465 the step grid does the same past its residual's hull and
+past the KV pool (D99, D100), which decides T95; any other out-of-cell step falls to the
+roofline.
 
 ---
 
@@ -616,14 +636,16 @@ After stage 2, the step grid gets one evaluation on DeepSeek-V4-Pro (`16` W4.13)
 - ~~**Whether the scheduler's CPU segments add serially to the forward or overlap it**~~ —
   ruled 2026-10-11 on #815: serial on the host timeline, inside `01` D4's `E` (D104).
   **T93** is closed.
-- **Whether the step grid should extrapolate out-of-cell steps** as the step linear law does under
-  #627's ruling 3 is untried; today it declines them (D102). Recorded as **T95**, which
-  includes extrapolation within rounding distance.
+- ~~**Whether the step grid should extrapolate out-of-cell steps** as the step linear law
+  does under #627's ruling 3~~ — ruled 2026-10-18 on #1464 and #1465: past the residual's
+  hull and past the KV pool it does, and other out-of-cell steps fall to the roofline
+  (D99, D102). **T95** is closed.
 - ~~**`13` does not describe the run file** that selects a backend (D103)~~ — settled
   2026-10-13 on #851: `13` D80 describes it as `compass run`'s transport. **T96** is
   closed.
 - **A step whose cell crosses the feasible boundary despite the boundary nodes** (D98) has
-  an unmeasured corner and refuses, as does a prefill step cached past the top c node.
+  an unmeasured corner: a decode one extrapolates past the KV pool (D99), and a prefill
+  one, or a prefill step cached past the top c node, falls to the roofline (D102).
   Interpolating them over points measured on the boundary waits until the pre-run coverage
   check finds such steps, the prefill ones counted on a run with prefix caching. Recorded
   as **T98**.
@@ -637,10 +659,10 @@ After stage 2, the step grid gets one evaluation on DeepSeek-V4-Pro (`16` W4.13)
 | D96 | The step grid (`StepGridBackend`, `step_grid`) is a step-level `CostBackend`: grid lookup plus a residual. A candidate for #627's stage 2, graded by stage 2's protocol after `09` D59's validation, a use beyond `07` D36 by ruling; which backend passes stage 2 is #627's ruling, which chose `09` D54's law and keeps the step grid off the stage-2 path for now, so its evaluation runs off that critical path. Grading reads #743's registered real runs, or the step grid's own named apart; the residual, validation and grid comparisons use traces 256 to 392, grading traces 0 to 255. Not a stage-3 backend; Kimi-K3 and DCP after v1. | 2026-10-10 (#696); #627's rulings applied 2026-10-11 (#626); named 2026-10-14 (#952) |
 | D97 | One term per step, the forward's device busy time over its whole interval, priced once per logical forward by the backend; the runner composes it with the host laws by `01` D4's recurrence and the engine charges the result. Rows in order; mixed phases and speculative decode refuse; a DP run refuses by key and a PP stage refuses. The backend imports nothing from ATOM. | 2026-10-10 (#696); revised 2026-10-11 (#815) |
 | D98 | A synthetic homogeneous grid, departing from `07` D39 for the baseline only. Its definition (a node list per axis and the planning margin) is a calibration input recorded in the bundle's identity; a cell is the box between adjacent nodes; warm-up, repeats and statistic are fixed in code; measurements are stored per point. Nodes are placed from shapes, and only the cells the planned shapes fall in, plus the margin, are measured; the planner adds boundary nodes from the bounds the bundle records, and a corner past a limit or at a non-integer `N_Q` is reported, never measured. Decode in replay on the target's own ladder, per rung at `B = R`, `B = previous rung + 1` and each `B` between them that shapes reach past `c_max(R)`, over c nodes per rung that add each B node's KV limit `c_max(B)` and `max_model_len - 1`; prefill eager on `(B, T, c)`, `T = B·N_Q`, by whether a chunk produces output, with the token budget a T node, `max_num_seqs` B's top node and `max_model_len - max_num_batched_tokens` c's. `02` D10's interval, `07` D42's timing, `07` D39's bench window, a point left with no counted repeat refusing its cell; a bundle states that value kind, and a narrower stated scope or another value kind refuses. The planner and coverage check are the step grid's own, beside the backend, and the planner runs inside `measure steps`. | 2026-10-10 (#696); grid definition 2026-10-11 (#626); device time 2026-10-11 (#815); boundary nodes and prefill on `(B, T, c)` 2026-10-13 (#830); bench window and planner 2026-10-13 and 2026-10-14 (#851) |
-| D99 | An answer only from a complete cell, by exact hit or interpolation; otherwise refuse, naming the missing corners. No extrapolation, clamp, recovery or fallback. A pre-run coverage check over cells and each kind's residual hull, which `compass run --coverage` calls on `record` directories and `shape_population` entries; deterministic lookups. Its one term is `estimated`, unvalidated until the residual records its held-out region (#962); a discrete value the bundle lacks refuses. | 2026-10-10 (#696); prefill coordinates `(B, T, c)` 2026-10-13 (#830); `run --coverage` 2026-10-13 (#851); method 2026-10-14 (#952) |
-| D100 | The residual is in the first version, one per grid kind (decode, prefill with output, prefill without), each with its own features, hull and family ranking, fitted on traces 256 to 392 in `14` D85's form plus order and raggedness, decode without `Σ N_Q²`, graded on traces 0 to 255, refusing outside its kind's hull. Its targets are real-run step times labelled as the step linear law labels them, replayed bench measurements, or both, pooled with no source term; the grid stays bench points only; the fit report breaks counts, residual centre and spread, and held-out error down by source, and the bundle records its sources; grid definitions compared on traces 256 to 392 only, each one tried recorded. Members are bundle data; each output checked. Recipes are fixed functions with injected geometry and hardware constants, versioned only when a function changes; optional recipes, DCP's first. | 2026-10-10 (#696); grid comparison 2026-10-11 (#626); targets 2026-10-13 (#882); per grid kind 2026-10-16 (#1035) |
+| D99 | An answer from a complete cell, by exact hit or interpolation, or from a decode cell past the KV pool the bundle records, extrapolated from its measured boundary nodes; otherwise the grid declines, naming the missing corners. No clamp, recovery or other fallback. A pre-run coverage check, which `compass run --coverage` calls on `record` directories and `shape_population` entries, counts the steps extrapolated and those declined to the roofline and refuses neither; deterministic lookups. Its one term is `estimated`, unvalidated outside the residual's held-out region (#962) and when extrapolated, the distance named in `source`; a discrete value the bundle lacks declines. | 2026-10-10 (#696); prefill coordinates `(B, T, c)` 2026-10-13 (#830); `run --coverage` 2026-10-13 (#851); method 2026-10-14 (#952); KV pool and coverage 2026-10-18 (#1465, #1464) |
+| D100 | The residual is in the first version, one per grid kind (decode, prefill with output, prefill without), each with its own features, hull and family ranking, fitted on traces 256 to 392 in `14` D85's form plus order and raggedness, decode without `Σ N_Q²`, graded on traces 0 to 255, extrapolating past its kind's hull by the same members. Its targets are real-run step times labelled as the step linear law labels them, replayed bench measurements, or both, pooled with no source term; the grid stays bench points only; the fit report breaks counts, residual centre and spread, and held-out error down by source, and the bundle records its sources; grid definitions compared on traces 256 to 392 only, each one tried recorded. Members are bundle data; each output checked. Recipes are fixed functions with injected geometry and hardware constants, versioned only when a function changes; optional recipes, DCP's first. | 2026-10-10 (#696); grid comparison 2026-10-11 (#626); targets 2026-10-13 (#882); per grid kind 2026-10-16 (#1035); past the hull 2026-10-18 (#1464) |
 | D101 | A bundle is a `07` D41 key plus a digest, immutable, with a row in `07` D43 invalidated by every column. Keyed conditions refuse; derived values go to provenance; #626's asserted and record-only grades are dropped. Conditions come from the resolved ATOM config; the stack, torch included, is checked against the target's as the machine spec records it. At startup, unmeasured rungs and bounds beyond the planned grid refuse. | 2026-10-10 (#696); target stack 2026-10-13 (#851) |
-| D102 | Refusal follows `08` D50.1 as ruled on #765, with no departure: when the step grid cannot answer a step, the step falls back along method inside the step level, to the step roofline where the run file composes `StepFallbackBackend`, and is refused only when no source answers; a refused step costs 0 s and the run continues under `13` D80's default `mark`; any refusal makes the run a coverage report. Where the step linear law extrapolates under #627's ruling 3, the step grid declines; T95 records trying that rule later. | 2026-10-10 (#696); ruling 3 contrast 2026-10-11 (#626); revised 2026-10-11 (#765) and 2026-10-14 (#952) |
+| D102 | Refusal follows `08` D50.1 as ruled on #765, with no departure: when the step grid cannot answer a step, the step falls back along method inside the step level, to the step roofline every step grid run composes below the grid with `StepFallbackBackend`, counted apart, and is refused only when the roofline refuses too; a refused step costs 0 s and the run continues under `13` D80's default `mark`; any refusal makes the run a coverage report. A run with extrapolated or roofline-priced steps is graded, the counts beside its table. Like the step linear law under #627's ruling 3, the step grid extrapolates past its residual's hull and the KV pool. | 2026-10-10 (#696); ruling 3 contrast 2026-10-11 (#626); revised 2026-10-11 (#765), 2026-10-14 (#952) and 2026-10-18 (#1464, #1465) |
 | D103 | Selected by `compass run`'s `--step-grid KEY`, exclusive with `--step-linear` and `--step-stub`, which the tool writes as the run file's `step_grid` key, read as the code reads every backend; the run file is the tool's internal transport (T96 closed). The bundle is found by its key in the artifact store. | 2026-10-10 (#696); revised 2026-10-11 (#626); flags 2026-10-13 (#851); named 2026-10-14 (#952) |
 | D104 | The run record lives inside `01` D3.5's outputs with no `off` level, written incrementally and flushed before the run ends, per step from each `price()` return. The scheduler's CPU segments are inside `01` D4's `E`, priced by the host laws for every backend: no `measured` mode, and no CPU-segment modes of its own; `host.skip` is the what-if. | 2026-10-10 (#696); revised 2026-10-11 (#815) |
 | D105 | One non-graded evaluation on DeepSeek-V4-Pro's nightly TP cell on MI355X, against W4.3's step tables and the op-level backend, reported per `08` D47; not a stage-3 backend. | 2026-10-10 (#696) |
@@ -656,6 +678,6 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 |---|---|---|
 | ~~T93~~ | ~~Measure in ATOM whether the scheduler's CPU segments add serially to the forward or overlap it, before `fitted` is usable~~ — ruled 2026-10-11 on #815: serial, inside `01` D4's `E` | needs a real run with per-segment timing |
 | T94 | Record the kernels each grid point ran, and treat a cell whose corners ran different kernels as crossing a dispatch band (`09` D60): refused or split | needs the grid measurement (`16` S2.2) to record kernel identity |
-| T95 | Trial, not this design: extrapolate an out-of-cell step as #627's ruling 3 has the step linear law do, by one algorithm only, extending the nearest complete cell's interpolation, named in `source` with the distance, `estimated` and unvalidated, and reported apart, which is not a refusal. It includes extrapolation within rounding distance: a step outside every complete cell, and every T98 simplex, only by integer or block rounding (an equivalent shape's mean context can sit past `c_max(B)` while its ragged batch fits) is answered that far out, and a farther one declined. It would answer out-of-cell steps, which the step grid now declines (D102) | decide after the step grid's stage-2 evaluation shows how often steps fall outside complete cells |
+| ~~T95~~ | ~~Trial, not this design: extrapolate an out-of-cell step as #627's ruling 3 has the step linear law do, by one algorithm only, extending the nearest complete cell's interpolation, named in `source` with the distance, `estimated` and unvalidated, and reported apart, which is not a refusal. It includes extrapolation within rounding distance: a step outside every complete cell, and every T98 simplex, only by integer or block rounding (an equivalent shape's mean context can sit past `c_max(B)` while its ragged batch fits) is answered that far out, and a farther one declined. It would answer out-of-cell steps, which the step grid now declines (D102)~~ — ruled 2026-10-18 on #1464 and #1465: the residual extrapolates past its hull and a decode cell past the KV pool (D99, D100); other out-of-cell steps fall to the roofline (D102) | decide after the step grid's stage-2 evaluation shows how often steps fall outside complete cells |
 | ~~T96~~ | ~~Reconcile `13` D79 and D80 with the run file the code selects a backend by (`--compass-run`, `atom/compass/run/__init__.py::runner`): `13` rejects a Compass config file, the code reads one~~ — settled 2026-10-13 on #851: `compass run` takes flags only, and the run file is its internal transport (`13` D79, D80) | needs an owner choice between describing the run file in `13` and moving selection to flags |
-| T98 | Interpolate a step whose cell has a corner past a limit, or a prefill step cached past the top c node, in the simplex of measured points holding it, those points measured where the cell's edges cross the feasible boundary (D98) | taken up when the pre-run coverage check (D99) finds steps the boundary nodes miss, the prefill steps past the top c node counted on a run with prefix caching; #830's counts find none on #740's records, which hold neither kind |
+| T98 | Interpolate a step whose cell has a corner past a limit, or a prefill step cached past the top c node, in the simplex of measured points holding it, those points measured where the cell's edges cross the feasible boundary (D98); until then a decode one extrapolates past the KV pool (D99) and a prefill one falls to the roofline (D102) | taken up when the pre-run coverage check (D99) finds steps the boundary nodes miss, the prefill steps past the top c node counted on a run with prefix caching; #830's counts find none on #740's records, which hold neither kind |

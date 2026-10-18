@@ -17,9 +17,14 @@ gives the same work. That shape is read in one grid:
 A cell is the box between adjacent nodes on every axis; a coordinate on a node
 reads that node alone, so an exact hit needs one point. The answer is the
 multilinear interpolation over the cell's corners when every corner was
-measured, and otherwise the step is refused naming the missing corners. Nothing
-outside a cell answers: no extrapolation, clamp or fallback. A missing point
-does not fail loading; it refuses the steps that need it.
+measured. A decode cell whose every unmeasured corner is past the KV pool the
+grid was planned for (`pool`), more blocks than it holds at B rows of c + 1
+tokens, is extrapolated instead: each B side of the cell is read along c from
+its two highest c nodes inside the pool, extended past them. Any other step
+whose cell misses a corner is refused naming the missing corners, as is one
+outside the nodes: no clamp or fallback. A missing point does not fail
+loading; it refuses the steps that need it. A step whose extension past the
+pool is not positive on either B side is refused too, naming the falling edge.
 
 Also refused: a step mixing prefill and decode rows, a decode row computing
 more than one token, a count that is not an int, a prefill step that does not
@@ -28,13 +33,15 @@ replays no graph, being wider than the widest rung or eager, and a step with
 image tokens.
 
 The answer is the lookup times the residual's factor for the batch's ordered
-rows (`step_grid_residual.py`), which the residual may refuse. It is one
-`estimated` term for the whole forward, validated iff its coordinates in its
-grid lie inside the hull of those of the batches its kind's residual was held
-out on (`Residual.validated`), and never multiplied by the TP width, since the
-measurement already holds the collectives. Its detail calls
-the lookup `measured` for a homogeneous batch on a node and `interpolated`
-otherwise, and gives each member's output.
+rows (`step_grid_residual.py`), which the residual may refuse, and which
+answers past its hull too. It is one `estimated` term for the whole forward,
+validated iff its coordinates in its grid lie inside the hull of those of the
+batches its kind's residual was held out on (`Residual.validated`), and never
+multiplied by the TP width, since the measurement already holds the
+collectives. A step extrapolated past the KV pool or the residual's hull is
+unvalidated, its source `EXTRAPOLATED` naming how far past each. Its detail
+calls the lookup `measured` for a homogeneous batch on a node, `extrapolated`
+past the pool and `interpolated` otherwise, and gives each member's output.
 
 The grid is a mapping, as a bundle holds it:
 
@@ -42,7 +49,10 @@ The grid is a mapping, as a bundle holds it:
      "unit": "s" | "ms" | "us",
      "prefill": {"nodes": {"B": [...], "T": [...], "c": [...]},
                  "output": [POINT, ...], "no_output": [POINT, ...]},
-     "decode": {"nodes": {"B": NODES, "c": NODES}, "points": [POINT, ...]}}
+     "decode": {"nodes": {"B": NODES, "c": NODES}, "points": [POINT, ...],
+                "pool": {"block_size": n, "blocks": n}}}  # pool optional
+
+A grid without `pool` extrapolates no decode corner.
 
     replay: NODES = {"<rung>": [...], ...}, a POINT at [rung, B, c]
     eager:  NODES = [...],                  a POINT at [B, c]
@@ -58,6 +68,7 @@ from collections.abc import Mapping, Sequence
 from fractions import Fraction
 from typing import TYPE_CHECKING
 
+from atom.compass.backends import provenance
 from atom.compass.backends.base import CostBackend, Granularity
 from atom.compass.backends.cost import CostTerm, StepCost
 from atom.compass.backends.provenance import Method, Provenance, Refusal
@@ -75,6 +86,7 @@ if TYPE_CHECKING:
     from atom.compass.backends.step_grid_residual import Residual
 
 SOURCE = "step-grid"
+EXTRAPOLATED = f"{SOURCE}{provenance.EXTRAPOLATED}"
 UNITS = {"s": Fraction(1), "ms": Fraction(1, 10**3), "us": Fraction(1, 10**6)}
 
 
@@ -144,11 +156,9 @@ class _Cells:
                 )
             self.points[at] = Fraction(time)
 
-    def corners(
-        self, view: BatchView, at: tuple[Fraction, ...]
-    ) -> list[tuple[tuple[Fraction, ...], Fraction]]:
-        """The corners of the cell holding `at`, each with its weight, one when
-        `at` is on a node; or a refusal outside the nodes."""
+    def _sides(self, view: BatchView, at: tuple[Fraction, ...]) -> list[tuple]:
+        """Per axis, the cell's nodes holding `at`, each with its weight, one
+        when `at` is on a node; or a refusal outside the nodes."""
         sides = []
         for axis, nodes, x in zip(self.axes, self.nodes, at):
             if x in nodes:
@@ -164,10 +174,27 @@ class _Cells:
             low, high = nodes[i - 1], nodes[i]
             weight = (x - low) / (high - low)
             sides.append(((low, 1 - weight), (high, weight)))
+        return sides
+
+    def corners(
+        self, view: BatchView, at: tuple[Fraction, ...]
+    ) -> list[tuple[tuple[Fraction, ...], Fraction]]:
+        """The corners of the cell holding `at`, each with its weight, one when
+        `at` is on a node; or a refusal outside the nodes."""
         return [
             (tuple(n for n, _ in c), math.prod(w for _, w in c))
-            for c in itertools.product(*sides)
+            for c in itertools.product(*self._sides(view, at))
         ]
+
+    def _cell(self, sides) -> str:
+        return ", ".join(
+            (
+                f"{axis}={side[0][0]}"
+                if len(side) == 1
+                else f"{axis} {side[0][0]}..{side[1][0]}"
+            )
+            for axis, side in zip(self.axes, sides)
+        )
 
     def lookup(
         self, view: BatchView, at: tuple[Fraction, ...]
@@ -182,11 +209,45 @@ class _Cells:
                 f"measurement at {'; '.join(_named(self.axes, m) for m in missing)}",
             )
         value = sum(self.points[corner] * weight for corner, weight in corners)
-        cell = ", ".join(
-            f"{axis}={low}" if low == high else f"{axis} {low}..{high}"
-            for axis, low, high in zip(self.axes, corners[0][0], corners[-1][0])
-        )
-        return value, len(corners) == 1, cell
+        return value, len(corners) == 1, self._cell(self._sides(view, at))
+
+    def past_pool(
+        self, view: BatchView, at: tuple[Fraction, ...], size: int, blocks: int
+    ) -> tuple[Fraction, str, str] | None:
+        """A decode step's value at (B, c) `at` when every unmeasured corner of
+        its cell is past a pool of `blocks` KV blocks of `size` tokens, with the
+        cell and how far past the pool's measured edge; else None. Each B side
+        whose corners were measured is interpolated, and any other is read on
+        its two highest c nodes at which B rows fit the pool, extended to c; a
+        refusal naming the falling edge when a side so extended is not
+        positive."""
+        sides = self._sides(view, at)
+        value, past, falls = Fraction(0), [], []
+        for b, weight in sides[0]:
+            limit, column = size * (blocks // b) - 1, sides[1]
+            if any((b, c) not in self.points for c, _ in column):
+                if any(c <= limit and (b, c) not in self.points for c, _ in column):
+                    return None
+                edge = [c for c in self.nodes[1] if c <= limit][-2:]
+                if len(edge) < 2 or any((b, c) not in self.points for c in edge):
+                    return None
+                low, high = edge
+                w = (at[1] - low) / (high - low)
+                column = [(low, 1 - w), (high, w)]
+                if sum(self.points[b, c] * x for c, x in column) <= 0:
+                    falls.append(f"B={b}'s in-pool edge falls from c={low} to {high}")
+                past.append(
+                    f"c {float(at[1] - high):g} past {high}, the pool's edge at B={b}"
+                )
+            value += weight * sum(self.points[b, c] * w for c, w in column)
+        if falls:
+            raise _refused(
+                view,
+                f"the {self.name} cell holding {_named(self.axes, at)} is past "
+                f"the KV pool, and {'; '.join(falls)}, reaching no positive time "
+                f"at c={at[1]}",
+            )
+        return value, self._cell(sides), "; ".join(past)
 
 
 class StepGrid:
@@ -202,6 +263,10 @@ class StepGrid:
             raise ValueError(f"unit {bundle['unit']!r} is not one of {list(UNITS)}")
         self.unit = UNITS[bundle["unit"]]
         self.scope = bundle["scope"]
+        pool = bundle["decode"].get("pool")
+        self.pool = pool and (pool["block_size"], pool["blocks"])
+        if pool and not all(type(n) is int and n > 0 for n in self.pool):
+            raise ValueError(f"the decode KV pool {pool} is not two positive counts")
         prefill = bundle["prefill"]
         axes = ("B", "T", "c")
         nodes = [prefill["nodes"][axis] for axis in axes]
@@ -313,17 +378,27 @@ class StepGridBackend(CostBackend):
         if view.image_tokens:
             raise _refused(view, IMAGES.format(view.image_tokens))
         cells, at = self.grid.locate(view)
-        value, on_node, cell = cells.lookup(view, at)
+        try:
+            value, on_node, cell = cells.lookup(view, at)
+            beyond = ""
+        except CostRefused:
+            pool = self.grid.pool
+            extended = pool and not view.prefill and cells.past_pool(view, at, *pool)
+            if not extended:
+                raise
+            (value, cell, beyond), on_node = extended, False
         homogeneous = len({(r.query_tokens, r.context_tokens) for r in rows}) == 1
         looked_up = "measured" if on_node and homogeneous else "interpolated"
         lookup = float(value * self.grid.unit)
-        factor, summed = self.residual.factor(view)
+        factor, summed, outside = self.residual.factor(view)
         detail = (
-            f"lookup {lookup!r} s, {looked_up}; {cells.name} cell {cell}; "
-            f"residual {factor!r} = {summed}"
+            f"lookup {lookup!r} s, {'extrapolated' if beyond else looked_up}; "
+            f"{cells.name} cell {cell}; residual {factor!r} = {summed}"
         )
-        validated = self.residual.validated(view, at)
-        estimated = Provenance(Method.ESTIMATED, detail, SOURCE, validated=validated)
+        past = "; ".join(p for p in (beyond, outside) if p)
+        source = f"{EXTRAPOLATED}: {past}" if past else SOURCE
+        validated = not past and self.residual.validated(view, at)
+        estimated = Provenance(Method.ESTIMATED, detail, source, validated=validated)
         return StepCost([CostTerm("forward", lookup * factor, estimated)])
 
     def describe(self) -> str:

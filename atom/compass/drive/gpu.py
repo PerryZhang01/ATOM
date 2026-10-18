@@ -17,12 +17,16 @@ the kernel PID `/proc/self/sched` prints, which differs from `os.getpid()` in a
 container. The run's own processes are told apart by when the checks run: before
 the run none has started, and after it every one has exited, so any other
 process listed on a named GPU at either check is not this run's.
+
+`--gpu` and the listing use rocm-smi's GPU indexes; HIP and KFD's memory number
+GPUs by KFD node, the one `rocm-smi --showhw` lists for each (`_nodes`).
 """
 
 import argparse
 import re
 import subprocess
 from contextlib import contextmanager
+from functools import cache, partial
 from pathlib import Path
 
 PREFLIGHT = Path(__file__).resolve().parents[3] / "scripts/compass/preflight.sh"
@@ -30,6 +34,8 @@ PREFLIGHT = Path(__file__).resolve().parents[3] / "scripts/compass/preflight.sh"
 PREFLIGHT_TIMEOUT_S = 300
 SMI_TIMEOUT_S = 60
 _ON = re.compile(r"PID (\d+) is using \d+ DRM device\(s\):\n([\d ]*)")
+#: A `rocm-smi --showhw` row: the GPU's index, then its KFD node.
+_NODE = re.compile(r"^(\d+) +(\d+) ", re.MULTILINE)
 _PID = re.compile(r"PID (\d+) is using")
 KFD = Path("/sys/class/kfd/kfd")
 SCHED = Path("/proc/self/sched")
@@ -74,6 +80,24 @@ def smi(*args: str) -> str:
     return done.stdout
 
 
+def _nodes(gpus: tuple[int, ...]) -> dict[int, int]:
+    """Each rocm-smi GPU's KFD node; refuses a GPU of `gpus` it lacks, or a shared node."""
+    node = {int(g): int(n) for g, n in _NODE.findall(smi("--showhw"))}
+    if missing := [gpu for gpu in gpus if gpu not in node]:
+        raise GpuRefusal(f"rocm-smi --showhw lists no GPU {missing}")
+    if len(set(node.values())) != len(node):
+        raise GpuRefusal(f"rocm-smi --showhw puts two GPUs on one KFD node: {node}")
+    return node
+
+
+def hip_visible(gpus: tuple[int, ...]) -> str:
+    """`HIP_VISIBLE_DEVICES` for the rocm-smi GPUs `gpus`: each one's HIP
+    ordinal is its KFD node's rank among the nodes `rocm-smi --showhw` lists."""
+    node = _nodes(gpus)
+    order = sorted(node.values())
+    return ",".join(str(order.index(node[gpu])) for gpu in gpus)
+
+
 @contextmanager
 def quiet(gpus: tuple[int, ...], out: Path):
     """Refuse to start the run unless the node passes preflight.sh and no
@@ -111,27 +135,27 @@ def _check(gpus: tuple[int, ...], out: Path, when: str) -> str:
     listing = smi("--showpids", "--showpidgpus")
     (out / f"gpu_{when}.txt").write_text(listing)
     on = {pid: drm.split() for pid, drm in _ON.findall(listing)}
+    nodes = cache(partial(_nodes, gpus))
     me = re.search(r"\((\d+), #threads", SCHED.read_text()).group(1)
     return ", ".join(
         f"GPU {gpu} has PID {pid} on it"
         for pid in _PID.findall(listing)
         if pid != me
         for gpu in gpus
-        if str(gpu) in on.get(pid, ()) or _vram(pid, gpu)
+        if str(gpu) in on.get(pid, ()) or _vram(pid, nodes, gpu)
     )
 
 
-def _vram(pid: str, gpu: int) -> int:
+def _vram(pid: str, nodes, gpu: int) -> int:
     """Bytes of GPU `gpu`'s memory KFD charges to `pid`; 0 once it has exited.
-    GPU indices follow KFD's GPU nodes in order, as rocm-smi's and HIP's do.
+    KFD names the GPU by its node's `gpu_id`; `nodes()` gives that node.
     The topology is read only for a process KFD lists: a container without the
     GPU devices may not read it."""
     proc = KFD / "proc" / pid
     if not proc.is_dir():
         return 0
     try:
-        nodes = sorted((KFD / "topology/nodes").iterdir(), key=lambda n: int(n.name))
-        ids = [i for n in nodes if (i := (n / "gpu_id").read_text().strip()) != "0"]
-        return int((proc / f"vram_{ids[gpu]}").read_text())
+        gpu_id = (KFD / f"topology/nodes/{nodes()[gpu]}/gpu_id").read_text().strip()
+        return int((proc / f"vram_{gpu_id}").read_text())
     except FileNotFoundError:
         return 0

@@ -138,6 +138,9 @@
       "interconnect.inter_node.derate": {
         "origin": "assumed"
       },
+      "device.ptl": {
+        "origin": "probed"
+      },
       "host.tokenizers[deepseek-v4-pro fast]": {
         "origin": "probed",
         "model": "/models/DeepSeek-V4-Pro",
@@ -149,9 +152,10 @@
       "device",
       "intake",
       "datasheet",
-      "assumed"
+      "assumed",
+      "ptl"
     ],
-    "notes": "one DeepSeek-V4-Pro -tp 8 --enable-dp-attention --enable-tbo start at 409bedc98 | one real c=256 first-turn cc-traces burst at 19c5ab09e | MI355X datasheet | no probe fills these"
+    "notes": "one DeepSeek-V4-Pro -tp 8 --enable-dp-attention --enable-tbo start at 409bedc98 | one real c=256 first-turn cc-traces burst at 19c5ab09e | MI355X datasheet | no probe fills these | no card has a ptl directory"
   },
   "host": {
     "cpu": {
@@ -188,6 +192,7 @@
     "name": "MI355X",
     "arch": "gfx950",
     "count_per_node": 8,
+    "ptl": "disabled",
     "memory": {
       "capacity_bytes": 309220868096,
       "bandwidth_bytes_per_s": 8000000000000.0,

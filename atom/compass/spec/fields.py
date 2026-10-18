@@ -35,8 +35,9 @@ not a particular run drives it, and the value of refusing a missing term is that
 the refusal happens while a person is authoring the document rather than in the
 middle of a simulated run. The exceptions are the provenance fields `merge`
 fills in later, `fp4_flops`, which a device with no FP4 matrix core omits, the
-pipeline send terms, which only a pipeline run reads, and a link's
-`link_setup_s`, a one-off cost that is zero when absent. An engine
+pipeline send terms, which only a pipeline run reads, a link's
+`link_setup_s`, a one-off cost that is zero when absent, and `device.ptl`, the
+cards' PTL state, `disabled` when absent. An engine
 start's memory readings are no field here: `compass measure memory` publishes
 them per configuration, as a `memory_readings` entry.
 
@@ -130,6 +131,7 @@ FIELDS = (
     Field("device.name", Kind.TEXT),
     Field("device.arch", Kind.TEXT),
     Field("device.count_per_node", Kind.COUNT),
+    Field("device.ptl", Kind.TEXT, required=False),
     Field("device.memory.capacity_bytes", Kind.QUANTITY),
     Field("device.memory.bandwidth_bytes_per_s", Kind.QUANTITY, peak=True),
     Field("device.compute.bf16_flops", Kind.QUANTITY, peak=True),

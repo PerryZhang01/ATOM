@@ -23,9 +23,14 @@ request the export names as the warmup's, since its graded steps may then
 precede it; and when its export lacks traces or arguments. A simulated run, whose
 run.json holds `run_file`, is also refused when it skips host segments, or its
 run file has no host laws and so prices no host time; when the step roofline
-was on; when its first client run refused anything, or has no summary to say;
-when it ran the step grid without a passed coverage check; and when its
-backend's fit inputs were profiled or served a trace it served.
+was on in a run of another backend than the step grid, which always prices
+below it; when its first client run refused anything, or has no summary to
+say; when it ran the step grid without a coverage check; and when its
+backend's fit inputs were profiled or served a trace it served. The step
+grid's plan, an input of `source` `plan`, is not one: it placed the points
+from shapes alone, so it may have read any trace, a graded one included.
+Beside the table, the command states how many of that client run's steps its
+backend extrapolated and a fallback below it priced.
 
 The tolerance of a metric is the real runs' own spread: its distance between
 every ordered pair of real runs, at most. A metric's result is its distance
@@ -69,7 +74,7 @@ from pathlib import Path
 from scipy.stats import ks_2samp
 
 from atom.compass.parity.served import served
-from atom.compass.run import STEP_GRID, entries
+from atom.compass.run import CLIENT_DIR, STEP_GRID, SUMMARY_FILE, entries
 
 EXPORT = "artifacts/profile_export_aiperf.json"
 #: The export of the client run a `record` or `run` directory grades.
@@ -216,15 +221,16 @@ def _not_graded(run, traces) -> list[str]:
         why.append(f"it skips host segments {run['skip']}, a what-if run")
     if "host" not in run["run_file"]:
         why.append("its run file has no host laws, so it prices no host time")
-    if run["step_roofline"]:
+    if run["step_roofline"] and STEP_GRID not in run["run_file"]:
         why.append("the step roofline was on")
     if refused is None:
         why.append("its first client run has no summary, so its refusals are unknown")
     elif refused["count"]:
         why.append(f"it refused {refused['count']}: {refused['reasons']}")
-    if STEP_GRID in run["run_file"] and not (coverage and not coverage["uncovered"]):
-        why.append("it ran the step grid without a passed coverage check")
-    inputs = (run["provenance"]["provenance"] or {}).get("inputs") or []
+    if STEP_GRID in run["run_file"] and not coverage:
+        why.append("it ran the step grid without a coverage check")
+    provenance = run["provenance"]["provenance"] or {}
+    inputs = [i for i in provenance.get("inputs") or () if i.get("source") != "plan"]
     if fitted := sorted({t for i in inputs for t in i["traces"]} & set(traces)):
         why.append(f"its backend was fitted on traces it served: {fitted}")
     if profiled := [i["run"] for i in inputs if i.get("profiled")]:
@@ -342,6 +348,19 @@ def _text(report: dict) -> str:
     return "\n".join(out)
 
 
+def priced_apart(cell) -> str | None:
+    """How many steps of the simulated `cell`'s graded client run, or of the
+    whole run, its backend extrapolated and a fallback below it priced, as that
+    run's summary counts them; None for a cell with no summary."""
+    for path in (Path(cell) / CLIENT_DIR.format(0), Path(cell)):
+        if (path / SUMMARY_FILE).is_file():
+            schedule = json.loads((path / SUMMARY_FILE).read_text())["schedule"]
+            n = [schedule.get(f"{k}_steps") for k in ("extrapolated", "fallback")]
+            total = schedule["refusals"]["steps"]
+            return f"of {total} steps priced: extrapolated {n[0]}, fallback {n[1]}"
+    return None
+
+
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(
         prog="python -m atom.compass.validate.runs",
@@ -351,6 +370,8 @@ def main(argv=None) -> None:
     parser.add_argument("real", nargs="+", help="two or more real runs of the cell")
     args = parser.parse_args(argv)
     print(_text(grade(args.real, args.simulated)))
+    if apart := priced_apart(args.simulated):
+        print(apart)
 
 
 if __name__ == "__main__":
