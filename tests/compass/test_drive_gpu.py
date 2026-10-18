@@ -149,3 +149,18 @@ def test_memory_held_only_on_unnamed_gpus_leaves_the_run_alone(tmp_path, monkeyp
     _kfd(tmp_path, monkeypatch, gpu=2, vram=2 << 20)
     with quiet((8, 9), out):
         pass
+
+
+def test_the_caller_holding_a_named_gpu_is_left_out_and_others_are_not(
+    tmp_path, monkeypatch
+):
+    out = _plant(tmp_path, monkeypatch, LISTING)
+    _kfd(tmp_path, monkeypatch, gpu=9, vram=2 << 20)
+    sched = tmp_path / "sched"
+    sched.write_text("python3 (3362894, #threads: 66)\n-------\n")
+    monkeypatch.setattr(drive_gpu, "SCHED", sched)
+    with quiet((8, 9), out):
+        pass
+    refused = "^GPU 7 has PID 4242 on it before the run, so it was not started$"
+    with pytest.raises(GpuRefusal, match=refused), quiet((7, 9), out):
+        pass

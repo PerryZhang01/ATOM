@@ -11,11 +11,12 @@ that GPU's index, or when KFD charges it memory of that GPU
 (`/sys/class/kfd/kfd/proc/<n>/vram_<gpu_id>`), which also counts a process that
 holds memory there without having opened the GPU's DRM device.
 
-The listing's PIDs are the kernel's, which a process in a container cannot
-match against its own, so this run's processes are told apart by when the
-checks run rather than by PID: before the run none has started, and after it
-every one has exited, so a process listed on a named GPU at either check is not
-this run's.
+The listing's PIDs are the kernel's. The calling process, which may itself hold
+a named GPU's memory (importing LMCache opens a HIP context), is left out by
+the kernel PID `/proc/self/sched` prints, which differs from `os.getpid()` in a
+container. The run's own processes are told apart by when the checks run: before
+the run none has started, and after it every one has exited, so any other
+process listed on a named GPU at either check is not this run's.
 """
 
 import argparse
@@ -31,6 +32,7 @@ SMI_TIMEOUT_S = 60
 _ON = re.compile(r"PID (\d+) is using \d+ DRM device\(s\):\n([\d ]*)")
 _PID = re.compile(r"PID (\d+) is using")
 KFD = Path("/sys/class/kfd/kfd")
+SCHED = Path("/proc/self/sched")
 
 
 class GpuRefusal(Exception):
@@ -109,9 +111,11 @@ def _check(gpus: tuple[int, ...], out: Path, when: str) -> str:
     listing = smi("--showpids", "--showpidgpus")
     (out / f"gpu_{when}.txt").write_text(listing)
     on = {pid: drm.split() for pid, drm in _ON.findall(listing)}
+    me = re.search(r"\((\d+), #threads", SCHED.read_text()).group(1)
     return ", ".join(
         f"GPU {gpu} has PID {pid} on it"
         for pid in _PID.findall(listing)
+        if pid != me
         for gpu in gpus
         if str(gpu) in on.get(pid, ()) or _vram(pid, gpu)
     )
