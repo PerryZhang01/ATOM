@@ -47,7 +47,8 @@ STAMPS = ("send", "done", "post", "end")
 
 def fit_wake(samples: list[dict], price: float) -> tuple[float, float]:
     """``(wake_s, wake_rise_s)`` from `samples` with a ``block``, each sender's
-    completion less the post and `price`, the median per block."""
+    completion less the post and `price`, the median per block, fitted in
+    microseconds: in seconds the rise barely moves from its first guess."""
     from scipy.optimize import curve_fit
 
     by = {}
@@ -55,15 +56,16 @@ def fit_wake(samples: list[dict], price: float) -> tuple[float, float]:
         if s.get("block") is not None:
             by.setdefault(s["block"], []).append(s["done"] - s["post"] - price)
     b = np.array(sorted(by))
-    y = np.array([np.median(by[k]) for k in b])
+    y = np.array([np.median(by[k]) for k in b]) * 1e6
     (w, rise), _ = curve_fit(
         lambda b, w, r: w * -np.expm1(-b / r),
         b,
         y,
-        p0=(max(y[-1], 1e-6), np.median(b)),
+        p0=(max(y[-1], 1.0), np.median(b)),
         bounds=(1e-12, np.inf),
+        x_scale="jac",
     )
-    return float(w), float(rise)
+    return float(w) * 1e-6, float(rise)
 
 
 def fit(samples: list[dict]) -> dict:
