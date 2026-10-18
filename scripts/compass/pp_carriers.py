@@ -38,7 +38,7 @@ import numpy as np
 from atom.compass.runner.pp_send import woken
 
 LATE, WARM, REPS = 0.05, 3, 20
-BLOCKS = (0.002, 0.01, 0.05, 0.2, 1.0)
+BLOCKS = (0.002, 0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0, 5.0)
 SPIN = 10**6  # device cycles the RCCL send waits behind, well past its host call
 SIZES = {"rccl": [2**k for k in range(3, 30)], "gloo": [2**k for k in range(3, 25)]}
 #: The stamps of one sample: rank 0's send and completion, rank 1's post and end.
@@ -187,8 +187,8 @@ def probe() -> list[dict]:
                     if i >= WARM:
                         stamps.append((c, n, late, None, t0, t1))
     x = torch.ones(8, dtype=torch.uint8)
-    for block in BLOCKS:
-        for i in range(WARM + REPS):
+    for i in range(WARM + REPS):  # round robin, so a drift reaches every block
+        for block in BLOCKS:
             dist.barrier(groups["gloo"])
             if rank == 0:
                 t0 = time.monotonic()
