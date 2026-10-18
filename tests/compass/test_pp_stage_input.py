@@ -218,10 +218,11 @@ def _decode(release=None):
 
 def test_a_stage_device_starts_at_its_input_and_the_last_returns_at_its_end():
     host = HostDeviceRecurrence({}, (), lambda: 0.0, (1, 2))
-    assert host.charge(_decode(5.0), 1.0) == 6.0
-    assert host.charge(_decode(), 1.0) == 7.0  # after the one before
+    assert host.charge(_decode(5.0), 1.0, 0.0) == 6.0
+    assert host.charge(_decode(), 1.0, 0.0) == 7.0  # after the one before
     assert (
-        HostDeviceRecurrence({}, (), lambda: 0.0, (1, 2)).charge(_decode(), 1.0) == 1.0
+        HostDeviceRecurrence({}, (), lambda: 0.0, (1, 2)).charge(_decode(), 1.0, 0.0)
+        == 1.0
     )
 
 
@@ -233,7 +234,7 @@ def test_a_stage_prepares_its_inputs_before_it_waits_for_the_metadata():
     host = HostDeviceRecurrence({"decode": law}, (), lambda: 0.0, (1, 2), mtp=True)
     batch = _decode()
     batch.compass_pp_host = (0.0, 5.0)
-    assert host.charge(batch, 1.0) == 6.0
+    assert host.charge(batch, 1.0, 0.0) == 6.0
 
 
 # --- the record and its gate -------------------------------------------------

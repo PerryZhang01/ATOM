@@ -3,13 +3,16 @@
 never on a GPU that holds a process.
 
 `cctraces_sim.sh` and `rocm-smi` are stubbed, so these run with no GPU: the stub
-cell writes a step and then runs a process named as aiperf's controller is,
-which only the script's stop ends.
+cell runs a process named as aiperf's controller is, which writes a step and
+waits; as aiperf does, SIGINT ends it with status 0, and SIGTERM with 143. The
+cell exits with its status, as cctraces_sim.sh exits with aiperf's.
 """
 
+import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -19,16 +22,32 @@ COMPASS = Path(__file__).resolve().parents[2] / "scripts" / "compass"
 BASH = shutil.which("bash")
 FREE = "No KFD PIDs currently running\n"
 BUSY = "PID 1 is using 1 DRM device(s):\n6\n"
-CELL = """#!/bin/bash
-mkdir -p "$2/steps" && echo '{}' > "$2/steps/dp0.jsonl"
-bash -c 'exec -a "aiperf system_controller" sleep 60'
+AIPERF = """import signal, sys, time
+signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+open(sys.argv[1], "w").write("{}")
+time.sleep(60)"""
+CELL = f"""#!/bin/bash
+mkdir -p "$2/steps" && echo '{{"workload": 1}}' > "$2/run.json"
+(exec -a "aiperf system_controller" {sys.executable} -c '{AIPERF}' "$2/steps/dp0.jsonl")
+rc=$?
 echo "c=$CONCURRENCY done" >> "$2/../order"
+exit $rc
+"""
+#: `identity` as a stub returns what it was given.
+IDENTITY = """def identity(engine_file, model, argv, gpus):
+    return {"format_version": 2, "engine": str(engine_file), "model": model,
+            "argv": argv, "gpus": list(gpus)}
 """
 
 
-def _capture(tmp_path, smi, cells, gpus="6", showhw=SHOWHW):
+def _capture(tmp_path, smi, cells, gpus="6", showhw=SHOWHW, **env):
     tree = tmp_path / "ATOM"
     (tree / "scripts" / "compass").mkdir(parents=True)
+    drive = tree / "atom" / "compass" / "drive"
+    drive.mkdir(parents=True)
+    for d in (drive, drive.parent, drive.parent.parent):
+        (d / "__init__.py").write_text("")
+    (drive / "identity.py").write_text(IDENTITY)
     for name in ("calib_capture.sh", "_lib.sh"):
         shutil.copy(COMPASS / name, tree / "scripts" / "compass" / name)
     (tree / "scripts" / "compass" / "cctraces_sim.sh").write_text(CELL)
@@ -48,6 +67,7 @@ def _capture(tmp_path, smi, cells, gpus="6", showhw=SHOWHW):
         CELLS=cells,
         STEPS_S="0",
         HIP_VISIBLE_DEVICES=gpus,
+        **env,
     )
     script = "scripts/compass/calib_capture.sh"
     r = subprocess.run(
@@ -110,3 +130,25 @@ def test_the_guard_reads_hip_devices_0_and_1_as_rocm_smi_gpus_3_and_0(
     log = (cap / "c1.log").read_text()
     assert log.startswith("cafe\nCONCURRENCY=1 GPU=0,1 ROCM_SMI_GPU=3,0 ")
     assert ("rocm-smi GPU 3 is in use" in log) == (rc == 3)
+
+
+@pytest.mark.skipif(BASH is None, reason="no bash on PATH")
+def test_a_stopped_cell_ends_with_aiperf_s_exit_and_a_record_s_identity(tmp_path):
+    r, cap = _capture(tmp_path, FREE, "1", "0,1", GPU45, MODEL="/models/m")
+    assert r.returncode == 0, r.stderr
+    log = (cap / "c1.log").read_text()
+    assert "stopped aiperf" in log and "CELL_RC=0" in log, log
+    run = json.loads((cap / "c1" / "run.json").read_text())
+    tree = tmp_path / "ATOM"
+    assert run == {
+        "workload": 1,
+        "format_version": 2,
+        "engine": f"{cap}/c1/steps/dp0.engine.json",
+        "model": "/models/m",
+        "argv": [
+            f"{tree}/scripts/compass/cctraces_sim.sh",
+            str(tmp_path / "run.json"),
+            f"{cap}/c1",
+        ],
+        "gpus": [3, 0],
+    }

@@ -23,6 +23,19 @@ command starts the client, and grading decides whether a run is gradeable (D38.1
 op-level, and a method per term replace the earlier three-way split of cost models (D36);
 the backends, artifacts and flags carry the step stub, step linear and step grid names.
 
+**Revised 2026-10-18 by the owner's ruling on
+[#1489](https://github.com/jgong5/ATOM/issues/1489), amended the same day by its
+[bench, band and capture ruling](https://github.com/jgong5/ATOM/issues/1489#issuecomment-6249950252):**
+the op-level backend is empirical on a measured device. Capture is concrete, one graph
+per decode width and prefill (T, B) (Phase 1a). `measure ops` times each IR leaf cold
+from its contract inside ATOM's own forward, a stub model in place of the model, at
+points planned from a `shape_population`, recording the kernels each point launched (D38,
+D39); collectives are leaves measured across every rank of the layout (D40); `fit ops`
+publishes a `price_list` that interpolates only between same-kernel neighbours, as `09`
+D60 requires, and nothing else, so region terms and the op-level residual are retired
+(D38.1, D41, D43); a leaf the price list declines falls to its analytical law, counted
+(D36, D42).
+
 **Depends on:** `04_model_capture_and_cost_ir.md` (what is traced and priced),
 `05_machine_spec_and_probes.md` (the machine artifact and its probes).
 
@@ -35,12 +48,11 @@ design topic (`10`).
 
 | Term | Unit | Produced by |
 |---|---|---|
-| **op price** | one operator signature | microbenchmark, CUDA-graph replay |
+| **op price** | one IR leaf at one point | `measure ops`: the leaf from its contract inside ATOM's forward, CUDA-graph replay over cold copies (D38) |
 | **step measurement** | one whole forward | CUDA events in situ |
-| **region term** | one runner-side region (`prepare_*`, sampler, logprobs) | in situ, upper median over warm rows |
-| **calibration** | the *act* of deriving model terms from any of the above | — |
+| **calibration** | the *act* of deriving model terms from either of the above | — |
 
-"Calibration" must not swallow the other three. A prior conflation applied a 2% kernel
+"Calibration" must not swallow the other two. A prior conflation applied a 2% kernel
 stability gate to a prefill region whose published value carries a **59.5% relative range**
 as its stated uncertainty, and concluded the region was unmeasurable.
 
@@ -51,12 +63,13 @@ as its stated uncertainty, and concluded the region was unmeasurable.
 Revised 2026-10-14 by the naming record in
 [#952](https://github.com/jgong5/ATOM/issues/952), which retires the earlier three-way
 split of cost models: it mixed what a backend prices as one unit with where each number
-comes from.
+comes from. The op-level row revised 2026-10-18 by the owner's ruling on
+[#1489](https://github.com/jgong5/ATOM/issues/1489).
 
 | Granularity | Backends | Needs | Used for |
 |---|---|---|---|
 | **step-level** | the step stub, linear law and grid (run-file keys `step_stub`, `step_linear`, `step_grid`); the step roofline | measured steps, fitted over features `ScheduledBatch` already carries; the roofline only the machine spec, the model geometry and the run file's `parameter_count` | structure discovery, plumbing, sweeps; day zero, a device never measured, fast configuration sweeps |
-| **op-level** | the op graph (`OpGraphBackend`, not built) | symbolic IR + priced leaves + region terms; an analytical law per leaf | acceptance cells |
+| **op-level** | the op graph (`OpGraphBackend`, not built) | a concrete IR graph per decode width and prefill (T, B); each leaf priced from a `price_list`, else by its analytical law; no residual | acceptance cells; on a measured device, a new engine config, layout or shape by measuring only the leaf signatures the price list lacks, with no step recapture |
 
 Two orthogonal axes: **the granularity of the backend asked**, and **the method of each
 term it returns** (doc 02 D11): analytical, declared, measured or estimated. Fallback runs
@@ -98,6 +111,13 @@ over a `shape_population`, and `compass run --coverage` calls the check before t
 starts, refuses a run that fails it, and records the result for grading; a backend with
 no check refuses `--coverage`. The commands, with their inputs and outputs, are `13`
 D80's.
+
+**Revised 2026-10-18 by the owner's ruling on
+[#1489](https://github.com/jgong5/ATOM/issues/1489):** the op-level backend's planner is
+the second. `measure ops --plan` reads each step of a `shape_population` against the
+`op_graph` captured at its shape and places each leaf's points over them (D38, Phase 1b),
+and its coverage check answers which steps have every leaf at a measured point or between
+two same-kernel neighbours.
 
 ### The cases the commands cover
 
@@ -145,9 +165,9 @@ a **(sweep, workload) pair**.
 
 ```
  Phase 0   discovery            device-free   shapes ONLY, never timings
- Phase 1a  trace                device-free   one per structure, JIT-able
- Phase 1b  price ops            GPU, TP1      compute leaves, shape-parametric
-           price collectives    GPU, each W   real process groups, minutes
+ Phase 1a  trace                device-free   one per decode width / prefill (T, B), JIT-able
+ Phase 1b  price ops            GPU, each     every leaf from its contract, cold, at planned points
+           price collectives    layout        every rank of the layout, the union of signatures
  Phase 1c  in-situ calibrate    GPU, TP1      full-engine steps
            ...plus ONCE         GPU, TP2      not to calibrate, but to TEST transfer
  Phase 2   memory readings      GPU, each cfg one engine start, no workload
@@ -192,17 +212,19 @@ priced it, so populations from two backends coexist and a planner names the one 
 
 ### Phase 1a — trace capture
 
-**Device-free.** Captures one symbolic IR graph per *structure* — not per shape — using
-the `TorchDispatchMode` + `FakeTensorMode(ShapeEnv)` mechanism of doc `04` D18. Nothing
-is allocated on a GPU and no kernel runs, which is what makes this phase schedulable
-anywhere, and what makes it the one phase that may also run lazily inside a simulated
-run (doc `02`).
+**Device-free.** Captures one concrete IR graph per decode width and per prefill (T, B)
+of the shape population, using the `TorchDispatchMode` + `FakeTensorMode` mechanism of
+doc `04` D18, each leaf with its contract (`04` D20). Revised 2026-10-18 by the owner's
+ruling on [#1489](https://github.com/jgong5/ATOM/issues/1489): capture is concrete, not
+one symbolic graph per structure. Nothing is allocated on a GPU and no kernel runs, which
+is what makes this phase schedulable anywhere, and what makes it the one phase that may
+also run lazily inside a simulated run (doc `02`).
 
 | | |
 |---|---|
-| **Input** | the structure set Phase 0 discovered; the model config; the engine config |
-| **Output** | one `op_graph` artifact per structure, keyed by **structure**, carrying the guard domain that says when it applies |
-| **Cost** | seconds per structure; ~5 structures expected for a dense model, more for a hybrid |
+| **Input** | the decode widths and prefill (T, B) of a `shape_population`; the model config; the engine config |
+| **Output** | one `op_graph` artifact per shape, keyed by the structure's discrete key and the shape (`04` D19) |
+| **Cost** | 7.6 s per shape on Qwen3.8-27B TP1, 2.2 s of it the traced forward ([#1489](https://github.com/jgong5/ATOM/issues/1489#issuecomment-6249950252)'s PoC) |
 | **Needs a GPU** | **no** — but see the caveat below |
 
 **The caveat that makes this phase less free than it looks.** "Device-free" means no GPU
@@ -227,18 +249,31 @@ measured leaf: the op-level backend answers every leaf by its analytical law, an
 reports those seconds by method (`08` D50.1). That is the intended behaviour and a useful
 diagnostic rather than a failure.
 
-### Phase 1b — op pricing, and why it cannot leave the worker
+### Phase 1b — op pricing: each leaf from its contract, cold
 
-Two hard placement constraints:
+**Revised 2026-10-18 by the owner's ruling on
+[#1489](https://github.com/jgong5/ATOM/issues/1489) and its
+[bench, band and capture ruling](https://github.com/jgong5/ATOM/issues/1489#issuecomment-6249950252).**
+`measure ops` times each IR leaf alone, from its contract (`04` D20), inside ATOM's own
+forward: the op bench (D39) runs the full model on dummy weights after ATOM's warmup,
+with a stub model in place of the model. For each planned point ATOM builds the metadata
+and forward context; the stub calls each leaf with activations random by its contract's
+spec and stride, and weights, KV and metadata from the live runner. Attribution from
+profiled steps is not built.
 
-- **AITER registers kernels lazily on first call *in the worker process*.** Importing the
+Two placement constraints put pricing inside the runner process, and the op bench is
+that process:
+
+- **AITER registers kernels lazily on first call *in the calling process*.** Importing the
   defining module does not put `gemm_a16w16` in `torch.ops.aiter`; even a process that
   built an engine and generated tokens still reports it missing, because ATOM runs the
-  model in a worker subprocess.
-- **An operator that walks paged KV cannot be called before the KV cache exists.**
+  model in a worker subprocess. The stub calls each leaf in the worker that runs ATOM's
+  forward; a leaf whose operator cannot run from its contract refuses by name.
+- **An operator that walks paged KV needs a KV cache.** The live runner's, with the block
+  table ATOM builds for the point's batch.
 
-So pricing is a mode inside the runner process, **after CUDA-graph capture**. That is a
-feature: the kernels priced are the deployment's own, already autotuned for its shapes.
+Weights are ambient rather than random by spec, measured: random GEMM weights read one
+signature 5% high, where the layer's own weights match.
 
 Method, settled by elimination:
 
@@ -249,18 +284,46 @@ Method, settled by elimination:
 | one event pair per call | **worst** — the device idles through the host dispatch; 52.20 µs at M=4 against ~9 µs of kernel |
 | **capture N calls into a CUDA graph and replay** | **the method.** Falls to B=8 and is flat after; `kernel + overhead/B` with a graph-replay overhead of ~5.2-5.7 µs independent of kernel size |
 
+**Cold, by rotating copies.** The replay rotates over copies of the leaf's inputs and
+ambient state whose total exceeds the device's last-level cache, so each repeat reads cold
+data. The copies include tensors the leaf reads through module attributes: the mrope
+leaf's cos/sin caches are `rotary_emb` attributes, and copies that left them warm read
+that leaf 3.3% to 11.5% low against the same call timed where ATOM's decode step makes
+it. The warm-over-cold ratio, the same point replayed on one copy, is reported per point
+as a diagnostic and prices nothing. The card's PTL state is read and keyed as
+[#1434](https://github.com/jgong5/ATOM/issues/1434) rules.
+
+**Points, planned from the population (D37).** Per leaf: every decode rung; prefill rows on
+a ladder of chunk remainders; attention's context features chosen per kind by data, under
+[#941](https://github.com/jgong5/ATOM/issues/941)'s rule. MoE leaves run on independent
+uniform routing. Each point records the kernels the leaf launched there, its kernel
+identity.
+
+**The price.** `fit ops` publishes a `price_list`: per leaf, piecewise-linear
+interpolation between same-kernel neighbours only, as `09` D60 requires. A query at a
+measured point takes that point's price; one between two points that launched the same
+kernel is interpolated; any other query, outside the measured range or between two
+kernels, is declined with its reason (the leaf, the dimension, the neighbours and their
+kernels), and the leaf falls to its analytical law, its share counted (D42, `08` D50.3).
+
 ### Phase 1c — and the one extra run
 
-Full-engine steps, TP1. Produces region terms, the host floor, and the residual correction
-that makes op prices usable — because **an operator priced alone is not the same operator
-in a step**: priced kernels at 98.8% coverage summed to **0.749 of the step**; per kernel
-the ratio clusters 0.83-0.93, across all kernels it runs **0.434 to 0.989**.
+Full-engine steps, TP1. Produces the step-level backends' measurements and the real runs
+the host laws are fitted on.
+
+**Revised 2026-10-18 by the owner's ruling on
+[#1489](https://github.com/jgong5/ATOM/issues/1489):** Phase 1c produces nothing the
+op-level backend reads. That backend has no region terms and no residual correction: it
+composes its leaves by the IR's joins, and the gap between a composed step and the
+measured one is reported per phase and op kind (`08` D50.3), never fitted away. That
+**an operator priced alone is not the same operator in a step** is why the gap is
+reported: priced kernels at 98.8% coverage summed to **0.749 of the step**; per kernel the ratio clusters 0.83-0.93,
+across all kernels it runs **0.434 to 0.989**.
 
 **Revised 2026-10-11 by the owner's ruling on
 [#815](https://github.com/jgong5/ATOM/issues/815):** every backend prices device time only
-(`02` D11), so the region terms and the residual are fitted to device busy time, and the
-host floor is no op-level term. Host time is `09` D54's host laws, composed by `01` D4's
-recurrence.
+(`02` D11), so a step measurement is device busy time, and the host floor is no op-level
+term. Host time is `09` D54's host laws, composed by `01` D4's recurrence.
 
 **Plus one full-engine run at TP2**, not to calibrate but to **test whether 1c transfers**.
 It is the cheapest possible test of the one term with no transfer evidence: between TP=1
@@ -340,8 +403,9 @@ validation (doc `08`), not calibration.
 ### Open issues
 
 - Under the old flat-graph design the per-launch constant was absorbing pricing error
-  multiplied by launch count — which is why it worked and why it did not transfer. Whether
-  the symbolic parametric-leaf design shrinks that residual is a **hope, not evidence**.
+  multiplied by launch count — which is why it worked and why it did not transfer. With no
+  residual now, the composed-over-measured gap (`08` D50.3) shows that error; whether
+  pricing each leaf at its own points shrinks it is a **hope, not evidence**.
 - Phase 1c's sensitivity: prefill priced against a real run's own steps was **+0.10%**
   overall but **+3.06% excluding step 0** — a single cold-start error of **-6.75 s** almost
   exactly offsetting **+6.99 s** spread over 105 chunks. The scheduler never sees the
@@ -366,8 +430,27 @@ forward context only the runner establishes, and building it by hand means reimp
 [#851](https://github.com/jgong5/ATOM/issues/851#issuecomment-6140384791), which draws
 the boundary this decision first left open (T17).
 
-The constraints point at the *runner*, not the server — a `ModelRunner` **is** the worker,
-so Phase 1b's placement requirement is satisfied. ATOM already shows how to drive one
+**Revised 2026-10-18 by the owner's ruling on
+[#1489](https://github.com/jgong5/ATOM/issues/1489#issuecomment-6249950252): this is
+the step bench, and the op bench is ATOM's own forward with a stub model.** The op bench
+starts the full model on dummy weights as `EngineCore` starts its runner, through ATOM's
+warmup, and puts a stub in place of the model's forward. Each point its planner placed
+reaches the runner as a batch, so ATOM builds the metadata and forward context as for any
+step; the stub then times each leaf of the point's `op_graph` from its contract, cold
+(D38, Phase 1b). Nothing of ATOM's input preparation is copied. At width it starts every
+rank of the layout through ATOM's own group initialisation (D40). The step bench is not
+reused for ops: it times whole forwards, and it refuses DP.
+
+Measured on [#1489](https://github.com/jgong5/ATOM/issues/1489#issuecomment-6249950252)'s
+PoC, Qwen3.8-27B TP1: a leaf timed from its contract, with ambient state from ATOM's input
+preparation, came within 1.6% of the same call timed in ATOM's decode step for attention,
+GDN, six GEMM signatures and `silu_and_mul` at B = 2 and 16, and within 1.1% for nine
+prefill leaves at two points. The full model is the one that runs: a 4-layer runner read
+GDN 12.6% low at B = 16, its state staying in the last-level cache, and without ATOM's
+warmup GDN read about 5% low.
+
+The constraints point at the *runner*, not the server — a `ModelRunner` **is** the worker.
+ATOM already shows how to drive one
 without a scheduler: `model_runner.py::ModelRunner.dummy_execution` and
 `model_runner.py::ModelRunner.warmup_model` both fabricate `ScheduledBatch`es by hand.
 
@@ -396,14 +479,13 @@ without a scheduler: `model_runner.py::ModelRunner.dummy_execution` and
   version. Whether that reproduces the recorded step's forward context is T18.
 
 ```
-  record, trace steps;              the bench (GPU): EngineCore's runner
-  step grid's planner, in measure   manager, every TP rank, no scheduler
+  record, trace steps;              the step bench (GPU): EngineCore's
+  step grid's planner, in measure   runner manager, every TP rank, no scheduler
   +-------------------+  step-     +--------------------------------+
   | batch: its rows   |  record    | RecordingModelRunner, per rank |
   | in order, their   |  lines     |  .forward(replayed by rule)    |--> step measurement
-  | tokens, its rung  |----------->|  .prepare_model/postprocess    |--> region terms
-  +-------------------+            |  microbench(graph)             |--> op prices
-                                   +--------------------------------+
+  | tokens, its rung  |----------->|                                |
+  +-------------------+            +--------------------------------+
 ```
 
 **Batches must be replayed, not synthesised.** Hand-built batches get the composition
@@ -420,11 +502,10 @@ wrong in ways that matter:
 
 ### What each measurement may use
 
-| Measurement | Bench with replayed batches | Synthetic shapes |
+| Measurement | Step bench with replayed batches | Synthetic shapes |
 |---|---|---|
-| op price | yes | **yes** — arguments come from the graph, so the signature is self-contained |
+| op price | no: the op bench | **yes** — a planned point is a batch ATOM prepares; activations come from the leaf's contract, the rest from the live runner |
 | step measurement | **required** | no |
-| region term | **required** | no |
 
 Op pricing on synthetic shapes is what keeps cc-traces off a GPU during calibration.
 
@@ -434,21 +515,21 @@ fitted to real-run step times, to replayed bench measurements, or to both (`17` 
 [#882](https://github.com/jgong5/ATOM/issues/882#issuecomment-6140285611)). The rule
 above holds for every other step measurement.
 
-### The bench does not change D38's phases — it is where three of them run
+### The benches do not change D38's phases — they are where two of them run
 
-The bench is a **host**, not a phase. D38's phase list is unchanged; what the bench
-settles is *which process* each phase runs in, which was previously implicit.
+A bench is a **host**, not a phase. D38's phase list is unchanged; what the benches
+settle is *which process* each phase runs in, which was previously implicit.
 
 | Phase | Command (`13` D80) | Runs in | Why there |
 |---|---|---|---|
 | 0 discovery | `trace steps` | a simulated serve, device-free | drives ATOM's real `Scheduler`, priced by the backend it names |
 | 1a trace | `trace ops` | any CPU process, **or** lazily inside a sim run | device-free (with the ROCm caveat above) |
-| 1b price ops | `measure ops` | **the bench** | AITER registers kernels lazily *in the worker process*; paged-KV ops need a live KV cache |
-| 1c in-situ | `measure steps`; `record` for real runs | **the bench**; a real serve | needs whole real steps; the bench replays recorded and planned batches into them |
-| 2 memory | `measure memory` | **a plain engine startup**, not the bench | it measures startup, so a bench that skips parts of startup would measure the wrong thing |
+| 1b price ops | `measure ops` | **the op bench**: ATOM's forward with a stub model | ATOM builds each point's metadata and forward context, and the stub times each leaf from its contract; at width every rank of the layout (D40) |
+| 1c in-situ | `measure steps`; `record` for real runs | **the step bench**; a real serve | needs whole real steps; the step bench replays recorded and planned batches into them |
+| 2 memory | `measure memory` | **a plain engine startup**, not a bench | it measures startup, so a bench that skips parts of startup would measure the wrong thing |
 
-So: one bench covers 1b and 1c; Phase 2 is an ordinary startup `measure memory` runs;
-Phases 0 and 1a need neither.
+So: the op bench covers 1b and the step bench 1c; Phase 2 is an ordinary startup
+`measure memory` runs; Phases 0 and 1a need neither.
 
 ### The recommended flow
 
@@ -476,14 +557,21 @@ each server in steps 2, 3 and 6 serves the client runs a client started apart se
        -> whether each client run is gradeable, the separable results (08 D44);
           the memory terms, one at a time
 
- Ops half: the op-level backend (16 W4.1)
- 1.  compass trace ops ...                                 [CPU, seconds]
-       -> op_graph per structure
- 2.  compass measure ops ..., at each width                [GPU each W]
-       -> per-signature measurements, collectives included (D40)
+ Ops half: the op-level backend (16 Stage 3d), after the steps half's 1, 2, 3 and 5
+ 1.  compass trace ops --population <populations> ...      [CPU, seconds per shape]
+       -> op_graph per decode width and prefill (T, B) of the steps half's 3
+ 2.  compass measure ops --plan <populations> ...          [GPU, every rank]
+       -> the op-level planner over the steps half's 3 (D37); one cold
+          measurement per planned point, with the kernels each leaf launched,
+          collectives included (D40)
  3.  compass fit ops ...                                   [CPU]
-       -> price_list, region_terms
+       -> price_list
+ then the steps half's 6 and 7 with the op-level backend
 ```
+
+The ops half is not self-contained. `run` with the op-level backend reads the steps half's
+step 1 (`memory_readings`) and step 5 (`host_laws`, which `01` D4 composes with the device
+time the backend returns), and grading reads step 2's records.
 
 Only `record` and `measure` need a card. One `record` at TP2 is the whole transfer claim:
 it does not calibrate anything, it tests whether Phase 1c generalises across width (T21).
@@ -515,11 +603,18 @@ step measurement by its batch, so only new batches and signatures are measured.
 
 Comms split four ways, and only one is straightforward.
 
+**Revised 2026-10-18 by the owner's ruling on
+[#1489](https://github.com/jgong5/ATOM/issues/1489):** collectives are leaves like any
+other, interpolated over message bytes. They are measured on a multi-rank op bench that
+starts every rank of the deployed layout through ATOM's own group initialisation, takes a
+barrier before each timed replay, and measures the union of all ranks' signatures (rule 1
+below). The step bench, which refuses DP, is not reused.
+
 **(a) Dispatcher-visible collectives** — `aiter::all_reduce_` and the fused
-`fused_allreduce_rmsnorm_*` family, `qr_all_reduce`. Priced like any operator, **in the
-worker where the process group is live**. Measured: `[4,1024]` decode **10.38 µs**,
-`[1256,1024]` prefill **71.33 µs**; a TP=2 decode graph holds 58 grouped operators, 57 of
-them `all_reduce_`, coverage **98.3%**. One known failure: `c10d::broadcast_` takes a
+`fused_allreduce_rmsnorm_*` family, `qr_all_reduce`. Priced like any leaf, **on the
+multi-rank op bench, where the process group is live**. Measured: `[4,1024]` decode
+**10.38 µs**, `[1256,1024]` prefill **71.33 µs**; a TP=2 decode graph holds 58 grouped
+operators, 57 of them `all_reduce_`, coverage **98.3%**. One known failure: `c10d::broadcast_` takes a
 `ProcessGroup` object no JSON artifact can hold — one operator per step.
 
 **(b) Invisible collectives, and the default path is the invisible one.**
@@ -574,17 +669,17 @@ dedicated flow has to be built: **one new tool, shared by (b) and (c); nothing n
 
 | Class | Command (`13` D80) | Reuses | New work |
 |---|---|---|---|
-| **(a)** dispatcher-visible | `measure ops` at each width — the same bench, the same graph-capture-and-replay method as any operator | **everything**, including the CUDA-graph replay method and the artifact schema | none; it is an op with a process group |
-| **(b)** invisible collectives | `measure ops` at each width, driven from the **stated-node list** rather than from the captured graph | the bench, the timing method, the artifact schema | a **stated-entry-point benchmark**: call `all_gather_reg`/`all_gather_unreg` directly at the shapes the graphs imply |
+| **(a)** dispatcher-visible | `measure ops` at each layout — the multi-rank op bench, the same graph-capture-and-replay method as any leaf | **everything**, including the CUDA-graph replay method and the artifact schema | none; it is an op with a process group |
+| **(b)** invisible collectives | `measure ops` at each width, driven from the **stated-node list** rather than from the captured graph | the op bench, the timing method, the artifact schema | a **stated-entry-point benchmark**: call `all_gather_reg`/`all_gather_unreg` directly at the shapes the graphs imply |
 | **(c)** MoE all-to-all | `measure ops` at each width and EP degree | the same stated-entry-point benchmark as (b) | the block count per phase: `min(128, CU)` in prefill, `min(64, CU)` in decode |
 | **(d)** p2p / PP | `measure ops` at each width and PP degree | same as (a) — `isend`/`recv` are dispatcher-visible | none |
 | **(d)** KV transfer | **not priced** | — | nothing: doc `01` D6 computes it from the machine spec, which is what keeps interconnect configurable |
 
 **So the recommended flow is:** classes (a) and (d)-p2p ride `measure ops` and need no
 separate step at all — they appear in the captured graph and are priced with everything
-else. Classes (b) and (c) ride `measure ops` too, in the **same bench in the same worker
-process**, differing only in where their work list comes from: a stated list of entry
-points beside the captured graph. That is why it is one command and not two.
+else. Classes (b) and (c) ride `measure ops` too, in the **same multi-rank op bench, in
+the same processes**, differing only in where their work list comes from: a stated list of
+entry points beside the captured graph. That is why it is one command and not two.
 
 Three constraints carry over into the flow and are not optional:
 
@@ -636,15 +731,18 @@ Every entry carries a **key**, a content **digest**, a validity **fingerprint**,
 **provenance** stanza naming the executed source root. Revised 2026-10-13 on
 [#851](https://github.com/jgong5/ATOM/issues/851#issuecomment-6140384791): `measure`
 writes measurements per point and `fit` makes laws and bundles from them, each a kind of
-its own, and a population is keyed by the backend that priced it.
+its own, and a population is keyed by the backend that priced it. Revised 2026-10-18 on
+[#1489](https://github.com/jgong5/ATOM/issues/1489): the region-term artifact is retired,
+`measure ops` writes an `op_measurement` per point, `fit ops` publishes a `price_list`
+only, and an `op_graph` is keyed by its shape.
 
 | Artifact | Produced by | Keyed by |
 |---|---|---|
 | `machine_spec` | doc 05 probes | (device, software stack, PTL state) |
 | `shape_population` | Phase 0, `trace steps` | (model, workload, engine config, the pricing backend's digest) |
-| `op_graph` | Phase 1a, `trace ops` | **structure** — not shape |
+| `op_graph` | Phase 1a, `trace ops` | (**structure**, shape): the structure's discrete key and a decode width or a prefill (T, B) |
+| `op_measurement` | Phase 1b, `measure ops` | (model, parallel layout, machine-spec digest, source-root digest, the point's digest) |
 | `price_list` | Phase 1b, `fit ops` | **(model, parallel layout, machine-spec digest, source-root digest)** — a tuple, never a path |
-| `region_terms` | Phase 1c, `fit ops` | (model, parallel layout, machine-spec digest) |
 | `memory_readings` | Phase 2, `measure memory`; published with every reading assumed for a device never measured | (model, machine-spec digest, parallel layout, engine config) |
 | `coverage_hull` | derived | the price list it was built from |
 | `step_measurement` | Phase 1c, `measure steps` | (model, device, engine config, source-root digest, sampling, step kind, the batch's digest) |
@@ -652,7 +750,7 @@ its own, and a population is keyed by the backend that priced it.
 | `host_laws` | `fit host` | (host CPU, ATOM source, model, engine config, machine-spec digest), as the run reads its host key |
 | step grid bundle (`step_grid_bundle`) | `fit steps --backend step-grid` | `17` D101 |
 
-The **parallel layout** of a `price_list`, `region_terms` and `memory_readings` key is
+The **parallel layout** of an `op_measurement`, `price_list` and `memory_readings` key is
 `dp`, `pp`, `pcp`, `tp`, `enable_expert_parallel`, `enable_dp_attention` and
 `decode_context_parallel_size` (owner ruling on
 [#165](https://github.com/jgong5/ATOM/issues/165)), held in
@@ -762,7 +860,7 @@ High-occupancy signatures repeat to ~1-3%.
 |---|---|---|
 | machine spec probes | once per (device, software stack) | probe classes 1-3 yes |
 | Phase 0 discovery | every run | **no** |
-| Phase 1a trace | **JIT on first use of a structure**, then cached | **no** |
+| Phase 1a trace | **JIT on first use of a shape**, then cached | **no** |
 | Phase 1b op pricing | offline campaign, or opt-in `--measure` | yes |
 | Phase 1c in-situ | offline campaign | yes |
 | Phase 2 memory readings | offline, `measure memory`, one start per configuration | yes |
@@ -771,10 +869,16 @@ This follows the project's own note: the runner has no modes, every run simulate
 happens on demand at first use and is cached, and `--measure` is a separate flag that does
 a real GPU run and caches the result.
 
-**New shape is fine; a new operator kind falls to its analytical law.** Because leaves are
-shape-parametric, a shape never traced is priced from the existing fitted law. An operator
-*kind* with no samples is answered by its analytical law (D36), and refuses only without
-one. Under the prior flat design a new shape meant a new graph meant a refusal, which
+**A new shape is priced between same-kernel neighbours; anywhere else, and for a new
+operator kind, the leaf falls to its analytical law.** Revised 2026-10-18 by the owner's
+ruling on [#1489](https://github.com/jgong5/ATOM/issues/1489) and its
+[band ruling](https://github.com/jgong5/ATOM/issues/1489#issuecomment-6249950252). A shape
+never measured is captured (Phase 1a) and each leaf in it priced by interpolating the
+leaf's measured points when its two neighbours launched the same kernel (`09` D60). A
+query outside the measured range or between two kernels, or an operator *kind* with no
+measurement, is answered by its analytical law (D36), stating that source, and refuses
+only without one; the analytical share of priced seconds is counted and reported (`08`
+D50.3). Under the prior flat design a new shape meant a new graph meant a refusal, which
 is why a fixed-shape oracle cost **+47.9% TTFT** the moment serving varied shapes (3
 prefill steps of 16 / 256 / 16,128 tokens costing 38.6 / 151.0 / 177.6 ms, all answered as
 ~47 ms).
@@ -817,8 +921,7 @@ mismatch **refuses** (warn only under an explicit flag).
 |---|---|---|---|---|---|---|---|---|
 | `shape_population` | - | - | **X** | **X** | - | - | - | **X** |
 | `op_graph` | - | **X** | **X** | **X** | - | - | - | X (level, cudagraph mode) |
-| `price_list` | **X** | **X** | X | - *(shape-parametric)* | **X** | X | - | - |
-| `region_terms` | X | X | **X** | X | X | X | - | X |
+| `op_measurement`, `price_list` | **X** | **X** | X | - *(shape-parametric)* | **X** | X | - | - |
 | `step_measurement`, `step_linear_law` | X | X | X | X | X | X | - | X |
 | step grid bundle (`17` D101) | X | X | X | X | X | X | - | X |
 | `host_laws` | - | - | **X** | **X** | - | - | **X** | **X** |
@@ -842,6 +945,10 @@ Consequences worth noting:
   why ROCm, AITER and RCCL invalidate them. The +5980 MiB appearing the moment width
   exceeds one is collective buffer sizing; the 926 MiB at TP1 is HIP context plus
   libraries.
+- The region-term artifact's row is retired with its kind, 2026-10-18 on
+  [#1489](https://github.com/jgong5/ATOM/issues/1489). An entry that still records a
+  fingerprint for it refuses at load, as any row the matrix no longer names does.
+  `op_measurement` shares `price_list`'s row, since a price list is fitted from them.
 
 ### The gate must be verifiable from the artifact, not from the flag
 
@@ -862,16 +969,16 @@ So: every gate's state is written into the artifact and checked there.
 
 | # | Decision | Date |
 |---|---|---|
-| D36 | Two granularities, step-level and op-level, and a method per term (analytical, declared, measured, estimated) replace the three-way split of cost models; fallback runs only along method inside one granularity. Compass models a device it has been measured on; an input observed on another subject makes a term declared, and doc 05 D26 has no `transfer` probe. | 2026-09-18; probe dropped 2026-10-14 (#937); two granularities 2026-10-14 (#952) |
-| D37 | The tool tells the user what to measure: a backend that needs measurements plans them beside its own code and owns the coverage check that `compass run --coverage` calls before the run starts; the step grid's planner runs inside `measure steps`; no single command plans the campaign. Coverage checks use a convex hull or k-NN distance, never a bounding box. | 2026-09-18; revised 2026-10-13 and 2026-10-14 (#851) |
-| D38 | Phase 0 discovery (shapes only) -> 1a trace -> 1b price -> 1c in-situ (+ one TP2 transfer test) -> Phase 2 memory. Client count and workload are not calibration axes. `13` D80's commands run them: `trace steps`, `trace ops`, `measure ops` and `fit ops`, `record` and `measure steps` then `fit steps\|host`, and `measure memory` for Phase 2, one engine start per configuration whose `memory_readings` a run reads and refuses without; `measure` writes per point, `fit` makes laws, bundles and leaves. | 2026-09-18; commands 2026-10-13 (#851); Phase 2 2026-10-14 (#851) |
-| D39 | The bench is `EngineCore` without its scheduler: every TP rank's `RecordingModelRunner` started through its runner manager in its order, at any TP width, a step charged to its slowest rank, fed **replayed** batches rebuilt from step records by a versioned rule. One window for both step kinds: device time from an event at the forward's entry to one at its exit, with device work queued ahead, a repeat counting only if the entry event is still pending when the forward returns; whatever is fitted on it states that value kind. Op prices may use synthetic shapes; step and region measurements may not, the step grid's excepted (`17` D98). | 2026-09-18; revised 2026-10-13 (#851) |
-| D40 | Four classes of communication, priced separately. Scaling is measured per width, never modelled. A collective's measured duration is an upper bound on device work. | 2026-09-18 |
-| D41 | Artifacts, each with key, digest, fingerprint and provenance. Keys are tuples; source roots are `git archive` digests; resolution names its answer; handed-off artifacts are immutable. `step_measurement`, `step_linear_law` and `host_laws` added, and `shape_population` keyed by its pricing backend. `memory_readings` from `measure memory`, keyed as `step_linear_law` is, or published with every reading assumed for a device never measured. `price_list`, `region_terms` and `memory_readings` keyed by the parallel layout, not a scalar width. | 2026-09-18; kinds 2026-10-13 (#851); `memory_readings` 2026-10-14 (#851); parallel layout 2026-10-15 (#165, #537) |
-| D42 | Trace is JIT and cached; pricing is offline or opt-in `--measure`. A `--measure` run is never an acceptance run. New shape is fine; a new operator kind falls to its analytical law, and refuses without one. | 2026-09-18 |
-| D43 | Per-artifact invalidation matrix, not a global fingerprint. Every gate's state is written into the artifact and checked there. Rows for `shape_population`, `step_measurement`, `step_linear_law` and `host_laws`, and a host-CPU axis. | 2026-09-18; rows 2026-10-13 (#851) |
-| D38.1 | One recommended flow per half: steps (`measure memory`, `record`, `trace steps`, `measure steps` with the step grid's planner, `fit host` and `fit steps`, `run --coverage`, then grading outside the CLI), each server driven by a client started apart, and ops (`trace ops`, `measure ops`, `fit ops`). Phases unchanged; the bench hosts 1b and 1c, Phase 2 is a plain startup `measure memory` runs. | 2026-09-19; revised 2026-10-13 and 2026-10-14 (#851) |
-| D40.1 | Classes (a) and p2p ride `measure ops` unchanged. Classes (b) and (c) share one new stated-entry-point benchmark inside the same bench, also run by `measure ops`. KV transfer is never priced. Collective prices are labelled upper bounds. | 2026-09-19; one command 2026-10-13 (#851) |
+| D36 | Two granularities, step-level and op-level, and a method per term (analytical, declared, measured, estimated) replace the three-way split of cost models; fallback runs only along method inside one granularity. Compass models a device it has been measured on; an input observed on another subject makes a term declared, and doc 05 D26 has no `transfer` probe. The op-level backend is empirical on a measured device, over a concrete IR graph per decode width and prefill (T, B): each leaf priced from a `price_list`, else by its analytical law, with no residual, so a new engine config, layout or shape needs only its missing leaf signatures measured. | 2026-09-18; probe dropped 2026-10-14 (#937); two granularities 2026-10-14 (#952); op level empirical 2026-10-18 (#1489) |
+| D37 | The tool tells the user what to measure: a backend that needs measurements plans them beside its own code and owns the coverage check that `compass run --coverage` calls before the run starts; the step grid's planner runs inside `measure steps`, and the op-level backend's inside `measure ops --plan`, over a `shape_population`; no single command plans the campaign. Coverage checks use a convex hull or k-NN distance, never a bounding box. | 2026-09-18; revised 2026-10-13 and 2026-10-14 (#851); op-level planner 2026-10-18 (#1489) |
+| D38 | Phase 0 discovery (shapes only) -> 1a trace -> 1b price -> 1c in-situ (+ one TP2 transfer test) -> Phase 2 memory. Client count and workload are not calibration axes. `13` D80's commands run them: `trace steps`, `trace ops`, `measure ops` and `fit ops`, `record` and `measure steps` then `fit steps\|host`, and `measure memory` for Phase 2, one engine start per configuration whose `memory_readings` a run reads and refuses without; `measure` writes per point, `fit` makes laws, bundles and leaves. Phase 1a captures one concrete graph per decode width and prefill (T, B). Phase 1b times each IR leaf alone from its contract inside ATOM's own forward with a stub model, activations random by spec and weights, KV and metadata from the live runner, by CUDA-graph replay over rotating copies, module-attribute tensors included, whose total exceeds the last-level cache, at points planned from a `shape_population`, each point recording the kernels its leaf launched, with the warm-over-cold ratio reported and the card's PTL state keyed; MoE leaves on uniform routing; `fit ops` interpolates only between same-kernel neighbours (`09` D60) and declines any other query, which the leaf's analytical law answers, counted. Phase 1c feeds the op-level backend nothing. | 2026-09-18; commands 2026-10-13 (#851); Phase 2 2026-10-14 (#851); Phases 1b and 1c 2026-10-18 (#1489) |
+| D39 | The step bench is `EngineCore` without its scheduler: every TP rank's `RecordingModelRunner` started through its runner manager in its order, at any TP width, a step charged to its slowest rank, fed **replayed** batches rebuilt from step records by a versioned rule. One window for both step kinds: device time from an event at the forward's entry to one at its exit, with device work queued ahead, a repeat counting only if the entry event is still pending when the forward returns; whatever is fitted on it states that value kind. Step measurements may not use synthetic shapes, the step grid's excepted (`17` D98). The op bench is ATOM's own forward with a stub model, apart from the step bench: the full model on dummy weights after ATOM's warmup, ATOM building each point's metadata and forward context, and the stub timing each leaf from its contract. | 2026-09-18; revised 2026-10-13 (#851); op bench 2026-10-18 (#1489) |
+| D40 | Four classes of communication, priced separately. Scaling is measured per width, never modelled. A collective's measured duration is an upper bound on device work. Collectives are leaves, interpolated over message bytes, measured on a multi-rank op bench that starts every rank of the layout through ATOM's own group initialisation, takes a barrier before each timed replay and measures the union of all ranks' signatures; the step bench is not reused. | 2026-09-18; collectives as leaves 2026-10-18 (#1489) |
+| D41 | Artifacts, each with key, digest, fingerprint and provenance. Keys are tuples; source roots are `git archive` digests; resolution names its answer; handed-off artifacts are immutable. `step_measurement`, `step_linear_law` and `host_laws` added, and `shape_population` keyed by its pricing backend. `memory_readings` from `measure memory`, keyed as `step_linear_law` is, or published with every reading assumed for a device never measured. `price_list` and `memory_readings` keyed by the parallel layout, not a scalar width. The region-term artifact retired; `op_measurement` added, one per `measure ops` point, keyed as `price_list` is plus the point; `op_graph` keyed by structure and shape. | 2026-09-18; kinds 2026-10-13 (#851); `memory_readings` 2026-10-14 (#851); parallel layout 2026-10-15 (#165, #537); region terms retired, `op_measurement`, `op_graph` per shape 2026-10-18 (#1489) |
+| D42 | Trace is JIT and cached; pricing is offline or opt-in `--measure`. A `--measure` run is never an acceptance run. A new shape is captured, and each leaf in it interpolated between same-kernel neighbours; anywhere else, and for a new operator kind, the leaf falls to its analytical law, counted, and refuses without one. | 2026-09-18; same-kernel interpolation 2026-10-18 (#1489) |
+| D43 | Per-artifact invalidation matrix, not a global fingerprint. Every gate's state is written into the artifact and checked there. Rows for `shape_population`, `step_measurement`, `step_linear_law` and `host_laws`, and a host-CPU axis. The region-term row retired; `op_measurement` on `price_list`'s row. | 2026-09-18; rows 2026-10-13 (#851); region-term row retired, `op_measurement` 2026-10-18 (#1489) |
+| D38.1 | One recommended flow per half: steps (`measure memory`, `record`, `trace steps`, `measure steps` with the step grid's planner, `fit host` and `fit steps`, `run --coverage`, then grading outside the CLI), each server driven by a client started apart, and ops, after the steps half's `measure memory`, `record`, `trace steps` and `fit host` (`trace ops --population`, `measure ops --plan` over a `shape_population`, `fit ops` publishing a `price_list` only, then `run` and grading). Phases unchanged; the op bench, ATOM's forward with a stub model, hosts 1b and the step bench 1c, Phase 2 is a plain startup `measure memory` runs. | 2026-09-19; revised 2026-10-13 and 2026-10-14 (#851); ops half 2026-10-18 (#1489) |
+| D40.1 | Classes (a) and p2p ride `measure ops` unchanged. Classes (b) and (c) share one new stated-entry-point benchmark inside the same multi-rank op bench, also run by `measure ops`. KV transfer is never priced. Collective prices are labelled upper bounds. | 2026-09-19; one command 2026-10-13 (#851); the multi-rank op bench 2026-10-18 (#1489) |
 
 ---
 

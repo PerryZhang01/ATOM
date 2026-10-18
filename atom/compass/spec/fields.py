@@ -63,16 +63,21 @@ SUBJECT = {
     "source_root": Kind.TEXT,
     "record": Kind.TEXT,
 }
+#: A probed number's spread over its probe's records: the p10 and the p90, two
+#: numbers, or for a tokenizer entry two mappings from each rate to one.
+BAND = ("p10", "p90")
 
 
 @dataclass(frozen=True, slots=True)
 class Field:
-    """One field of the schema: where it sits, what it holds, and its role."""
+    """One field of the schema: where it sits, what it holds, and its role.
+    An `exact` field is a reading that does not vary, so it states no band."""
 
     path: str
     kind: Kind
     peak: bool = False
     required: bool = True
+    exact: bool = False
     #: On the derate of an optional peak, that peak's path.
     of: str = ""
 
@@ -131,7 +136,7 @@ FIELDS = (
     Field("device.arch", Kind.TEXT),
     Field("device.count_per_node", Kind.COUNT),
     Field("device.ptl", Kind.TEXT, required=False),
-    Field("device.memory.capacity_bytes", Kind.QUANTITY),
+    Field("device.memory.capacity_bytes", Kind.QUANTITY, exact=True),
     Field("device.memory.bandwidth_bytes_per_s", Kind.QUANTITY, peak=True),
     # Attainable bytes per second by bytes moved, a STREAM copy sweep.
     Field("device.memory.bandwidth_curve", Kind.CURVE, required=False),
@@ -247,14 +252,36 @@ def _origins(value: object, path: str) -> dict:
         if not isinstance(entry, Mapping) or "origin" not in entry:
             _refuse(where, "a mapping holding an `origin`", entry)
         stated = origin(entry["origin"], f"{where}.origin", of_a_field=True)
-        subject = {key: held for key, held in entry.items() if key != "origin"}
-        if subject and stated != "probed":
+        subject = {k: held for k, held in entry.items() if k not in ("origin", *BAND)}
+        if (subject or set(BAND) & set(entry)) and stated != "probed":
             _refuse(where, "a probed field, the only kind with a subject", entry)
         origins[label] = {
             "origin": stated,
             **(_subject(subject, where) if subject else {}),
+            **_band(entry, where),
         }
     return origins
+
+
+def _band(entry: Mapping, where: str) -> dict:
+    """An entry's `BAND`, both ends or neither, each `p10` at most its `p90`."""
+    if not set(BAND) & set(entry):
+        return {}
+    low, high = entry.get("p10"), entry.get("p90")
+    pairs = [(low, high)]
+    if (
+        isinstance(low, Mapping)
+        and isinstance(high, Mapping)
+        and low.keys() == high.keys()
+    ):
+        pairs = [(low[rate], high[rate]) for rate in low]
+    for pair in pairs:
+        number = all(
+            isinstance(e, int | float) and not isinstance(e, bool) for e in pair
+        )
+        if not number or pair[0] > pair[1]:
+            _refuse(where, "a band, a `p10` at most its `p90`", entry)
+    return {end: _detached(entry[end]) for end in BAND}
 
 
 def check(field: Field, value: object, path: str) -> object:
