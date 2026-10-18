@@ -273,10 +273,8 @@ class _Recorder(TorchDispatchMode):
         return re.sub(rf"\blayers\.{self.layer}\b", f"layers.{{{LAYER}}}", path)
 
 
-def _patches(recorder, dtype):
+def _patches(recorder):
     """What the step runs under besides the modes, as one stack of patches.
-
-    * The model's `dtype` is the default, as in ATOM's runner.
 
     * A raw Triton or FlyDSL launch goes to the driver below the dispatcher: it
       is lifted to its ATOM function and not launched.
@@ -324,8 +322,6 @@ def _patches(recorder, dtype):
             return conv1d(*args, **kwargs)
 
     stack = contextlib.ExitStack()
-    stack.callback(torch.set_default_dtype, torch.get_default_dtype())
-    torch.set_default_dtype(dtype)
     for owner, name, value in (
         (JITFunction, "run", run),
         (flydsl.compiler, "compile", launch),
@@ -337,7 +333,8 @@ def _patches(recorder, dtype):
 
 
 def _build_runner(config, fake_mode):
-    """ATOM's `ModelRunner`, built in the mode in the model's dtype.
+    """ATOM's `ModelRunner`, built in the mode in the model's dtype, which it
+    leaves torch's default for the steps, as ATOM's runner does.
 
     The group already exists at its width, warmup would run a forward of its
     own, and no checkpoint is read.
@@ -423,7 +420,7 @@ def capture(model: str, tp: int, shapes, tmpdir: str):
     contexts = config.compilation_config.static_forward_context
     recorder, block_size = _Recorder(contexts), config.kv_cache_block_size
     driverless.on_wait = recorder.wait
-    with _patches(recorder, config.torch_dtype):
+    with _patches(recorder):
         runner = _build_runner(config, fake_mode)
         stacks = [
             module
