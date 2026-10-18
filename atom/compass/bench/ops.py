@@ -21,13 +21,14 @@ that call and times it alone. A leaf the step does not reach so, a FlyDSL
 launch among them, refuses by name, as does a call reading host memory or one
 a graph cannot capture.
 
-A call is timed by CUDA-graph replay: one graph runs it on N copies of its
-tensors, N the least whose total passes the last-level cache (at most
-`MAX_COPIES`), so each call reads data the previous ones evicted; a call that
-names its layer's ambient state by key rotates the key over every layer the
-graph binds it to. A second graph runs it N times on one copy, warm. Each graph
-is replayed `WARMUPS` times, then `REPEATS` times timed, and a repeat's value is
-the replay's device time over N. A graph that captured no kernel times 0.
+A call is timed by CUDA-graph replay: one graph runs it K times, cycling over
+N copies of its tensors, N the least whose total passes the last-level cache
+(at most `MAX_COPIES`) and K at least `MIN_CALLS`, so each call reads data the
+previous ones evicted; a call that names its layer's ambient state by key
+rotates the key over every layer the graph binds it to. A second graph runs it
+K times on one copy, warm. Each graph is replayed `WARMUPS` times, then
+`REPEATS` times timed, and a repeat's value is the replay's device time over
+K. A graph that captured no kernel times 0.
 
 DIR gets ``run.json``, the run's identity and the card's PTL state, and
 ``ops.jsonl``, one line per point: the point, its cold and warm medians and
@@ -62,6 +63,8 @@ REPEATS = 20
 #: Calls one graph holds at most; a leaf whose copies would need more falls
 #: short of the cache, and its footprint says by how much.
 MAX_COPIES = 256
+#: Calls one graph holds at least, so a replay outlasts the timer's jitter.
+MIN_CALLS = 32
 #: The symbol a decode capture writes the step's width as.
 WIDTH = "B"
 
@@ -329,7 +332,8 @@ def _time(fn, args, kwargs, point, *, instances, llc) -> dict:
     keys = instances[point["leaf"]]
     try:
         cold = copies(args, kwargs, n, keys)
-        cold_ns, warm_ns = _replay(fn, cold), _replay(fn, cold[:1] * n)
+        calls = [cold[i % n] for i in range(max(n, MIN_CALLS))]
+        cold_ns, warm_ns = _replay(fn, calls), _replay(fn, cold[:1] * len(calls))
     except Exception as error:  # noqa: BLE001 - a refusal names whatever stopped it
         return {"refused": f"{type(error).__name__}: {error}"}
     medians = statistics.median(cold_ns), statistics.median(warm_ns)
@@ -340,6 +344,7 @@ def _time(fn, args, kwargs, point, *, instances, llc) -> dict:
         "cold_repeats": cold_ns,
         "warm_repeats": warm_ns,
         "copies": n,
+        "calls": len(calls),
         "footprint_bytes": n * size,
         "llc_bytes": llc,
         "instances": len(keys),
