@@ -385,6 +385,60 @@ def test_a_replay_bundle_refuses_a_rung_it_has_no_grid_for():
         replay().price(view(*INSIDE))
 
 
+# A pool of 2304 16-token blocks holds 48 rows to c = 767, 40 to 911 and 32 to
+# 1151; each B is measured at every c node it fits, so (40, 1024), (48, 911)
+# and (48, 1024) are past the pool. f is linear in c, so a B side read along c
+# from its two highest nodes inside the pool extends to f exactly.
+POOL = {"block_size": 16, "blocks": 2304}
+POOLED = {
+    (b, c) for b in EAGER_B for c in (512, 767, 911, 1024) if c <= 16 * (2304 // b) - 1
+}
+
+
+def pooled(pool=POOL, gone=()):
+    grid = bundle(
+        "eager", [point(*at, time=f(*at)) for at in sorted(POOLED - set(gone))]
+    )
+    grid["decode"]["nodes"]["c"] = [512, 767, 911, 1024]
+    if pool:
+        grid["decode"]["pool"] = pool
+    return StepGridBackend(StepGrid(grid), UNIT, "pooled")
+
+
+@pytest.mark.parametrize(
+    "b,c,past",
+    [
+        (48, 800, "c 33 past 767, the pool's edge at B=48"),
+        (44, 850, "c 83 past 767, the pool's edge at B=48"),
+        (40, 1000, "c 89 past 911, the pool's edge at B=40"),
+    ],
+)
+def test_a_decode_cell_past_the_kv_pool_is_extended_from_its_edge_naming_how_far(
+    b, c, past
+):
+    (term,) = pooled().price(view(*[(1, c + 1, True)] * b)).terms
+
+    assert term.seconds == pytest.approx(f(b, c) * 1e-6, rel=1e-12)
+    assert term.provenance.source == f"step-grid-extrapolated: {past}"
+    assert (term.provenance.validated, term.provenance.extrapolated) == (False, True)
+    assert ", extrapolated;" in term.provenance.detail
+
+
+@pytest.mark.parametrize(
+    "backend,missing",
+    [
+        (pooled(gone=[(40, 767)]), "B=40, c=767"),
+        (pooled(pool=None), "B=48, c=911"),
+    ],
+    ids=["hole-inside-the-pool", "no-pool"],
+)
+def test_a_cell_missing_a_corner_inside_the_pool_or_with_no_pool_still_refuses(
+    backend, missing
+):
+    with pytest.raises(CostRefused, match=f"has no measurement at .*{missing}"):
+        backend.price(view(*[(1, 851, True)] * 44))
+
+
 def test_a_negative_count_never_reaches_the_backend():
     with pytest.raises(ValueError, match="at least one token"):
         view((-1, 3, False))

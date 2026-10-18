@@ -29,7 +29,8 @@ the steps that lead a vector's priced steps, each slower than its price by more
 than `step_linear_fit.MAD_K` scaled MADs of the errors the law's vector was fitted
 on, as the fit names them; of that vector's errors here if the law records no
 `fit.mad`, as the grid never does. A step the law or the grid refuses is
-counted with its real seconds.
+counted with its real seconds, as one the grid declines to the step roofline
+below it in a run; one it extrapolated, past its support domain, is counted too.
 """
 
 from __future__ import annotations
@@ -144,7 +145,7 @@ def cost_accuracy(record, backend, steps=None) -> dict:
         backend = StepLinearBackend(StepLinearLaw(law))
     groups = {"validated": {}, "unvalidated": {}}
     refused: dict[str, dict] = {}
-    warm, priced = [], []
+    warm, priced, extrapolated = [], [], 0
     for group in joined:
         key, _, seconds, step, _ = group[0]
         try:
@@ -156,6 +157,7 @@ def cost_accuracy(record, backend, steps=None) -> dict:
             r["real_s"] += seconds
             continue
         validated = all(t.provenance.validated for c in costs for t in c.terms)
+        extrapolated += any(t.provenance.extrapolated for c in costs for t in c.terms)
         top = max(range(len(costs)), key=lambda i: costs[i].seconds)
         band, price = _band(key, group[top][1]), costs[top].seconds
         priced.append((key, band, step, seconds, price, validated))
@@ -182,6 +184,7 @@ def cost_accuracy(record, backend, steps=None) -> dict:
         }
     report["warm"] = warm
     report["refused"] = refused
+    report["extrapolated"] = extrapolated
     return report
 
 

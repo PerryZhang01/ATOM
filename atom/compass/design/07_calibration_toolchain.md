@@ -469,8 +469,8 @@ each server in steps 2, 3 and 6 serves the client runs a client started apart se
  5.  compass fit host <records>; compass fit steps --backend step-linear|step-grid ... [CPU]
        -> host_laws; a step_linear_law or a step grid bundle
  6.  compass run <backend> --machine M [--coverage <populations, records>] ...  [CPU, a server]
-       -> with a backend that has a coverage check, refuses before it starts
-          if coverage fails; run.json records what grading reads
+       -> the step grid's coverage check reports before it starts, refusing
+          no step (17 D99); run.json records what grading reads
  7.  python -m atom.compass.validate; python -m atom.compass.memory.check,
      outside the CLI                                       [CPU]
        -> whether each client run is gradeable, the separable results (08 D44);
@@ -531,11 +531,7 @@ doc 04 D21's **stated node** plus a dedicated standalone benchmark calling the s
 point.
 
 **(c) MoE all-to-all (EP)** — MORI, called inside `moe_forward`, invisible at any degree.
-It also has a property no generic model captures: `_get_dispatch_config` caps `block_num`
-at `get_cu_num()` because dispatch and combine use a **grid-wide spin barrier requiring all
-blocks co-resident**, so the kernel occupies the entire device. That is doc 04 D19's
-`exclusive` join policy, and it is a measured fact rather than a modelling choice. (On an
-80-CU MI308X, launching 128 blocks deadlocks.)
+Its block counts, ATOM's two TBO paths and the overlap are doc 04 D19's.
 
 **(d) p2p.** PP is `isend`/`recv` on NCCL (`atom/distributed/pp_comm.py::async_send_intermediate_tensors`, `commit_pp_send_work`),
 priceable like (a). **KV transfer is not priced at all** — doc 01 D6 simulates it as
@@ -580,7 +576,7 @@ dedicated flow has to be built: **one new tool, shared by (b) and (c); nothing n
 |---|---|---|---|
 | **(a)** dispatcher-visible | `measure ops` at each width — the same bench, the same graph-capture-and-replay method as any operator | **everything**, including the CUDA-graph replay method and the artifact schema | none; it is an op with a process group |
 | **(b)** invisible collectives | `measure ops` at each width, driven from the **stated-node list** rather than from the captured graph | the bench, the timing method, the artifact schema | a **stated-entry-point benchmark**: call `all_gather_reg`/`all_gather_unreg` directly at the shapes the graphs imply |
-| **(c)** MoE all-to-all | `measure ops` at each width and EP degree | the same stated-entry-point benchmark as (b) | the `exclusive` occupancy annotation, and a block-count cap at `get_cu_num()` |
+| **(c)** MoE all-to-all | `measure ops` at each width and EP degree | the same stated-entry-point benchmark as (b) | the block count per phase: `min(128, CU)` in prefill, `min(64, CU)` in decode |
 | **(d)** p2p / PP | `measure ops` at each width and PP degree | same as (a) — `isend`/`recv` are dispatcher-visible | none |
 | **(d)** KV transfer | **not priced** | — | nothing: doc `01` D6 computes it from the machine spec, which is what keeps interconnect configurable |
 

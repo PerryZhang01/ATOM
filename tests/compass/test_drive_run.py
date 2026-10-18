@@ -122,7 +122,7 @@ def unstarted(*args, **kwargs):
     raise AssertionError("a server started")
 
 
-def test_a_step_grid_run_whose_coverage_fails_refuses_naming_each_uncovered_step(
+def test_steps_the_grid_cannot_answer_start_the_run_and_are_counted_by_name(
     tmp_path, monkeypatch
 ):
     directory = recorded(tmp_path, monkeypatch, MIXED)
@@ -130,22 +130,21 @@ def test_a_step_grid_run_whose_coverage_fails_refuses_naming_each_uncovered_step
     points = located(tmp_path, planned)
     member = measured(planned, points, drop=("decode", points["decode"][0]))
     token, backend = bundle(tmp_path, monkeypatch, member)
-    monkeypatch.setattr(serve, "serve", unstarted)
+    (tmp_path / "authority").mkdir()
+    summary = tmp_path / "authority" / compass_run.SUMMARY_FILE
+    summary.write_text(json.dumps({"schedule": {"refusals": RefusalTally().record()}}))
+    plant(tmp_path, monkeypatch, directory / serve.STEPS, summary)
 
-    with pytest.raises(ValueError, match="so no server starts") as refused:
-        drive_run.main(
-            flags(tmp_path, "--step-grid", token, "--coverage", str(directory))
-        )
+    drive_run.main(flags(tmp_path, "--step-grid", token, "--coverage", str(directory)))
 
     lines = [json.loads(x) for x in (directory / "steps/dp0.jsonl").open()]
     named = [(f"{directory} dp0 step {line['step']}", line) for line in lines]
-    uncovered = refusing(backend, named)
-    assert 0 < len(uncovered) < len(named)
-    assert ", ".join(uncovered) in str(refused.value)
-    assert f"{len(uncovered)} of {len(named)} steps are not covered" in str(
-        refused.value
-    )
-    assert not (tmp_path / "out").exists()
+    declined = refusing(backend, named)
+    assert 0 < len(declined) < len(named)
+    coverage = json.loads((tmp_path / "out" / serve.RUN_JSON).read_text())["coverage"]
+    assert [d["step"] for d in coverage["declined"]] == declined
+    assert coverage["fallback"] == len(declined)
+    assert coverage["covered"] == len(named) - len(declined)
 
 
 def test_a_bundle_measured_under_another_engine_config_refuses_before_any_server(
@@ -287,7 +286,7 @@ def test_a_covered_run_starts_and_records_its_check_over_a_record_and_a_populati
     coverage = written["coverage"]
     assert coverage["inputs"] == inputs
     assert coverage["covered"] == coverage["steps"] == 15
-    assert coverage["uncovered"] == [] and written["step_roofline"] is False
+    assert coverage["declined"] == [] and written["step_roofline"] is False
     handed = json.loads((out / serve.RUN_FILE).read_text())
     provenance = handed["backend"] | {"memory_readings_assumed": []}
     assert written["provenance"] == provenance

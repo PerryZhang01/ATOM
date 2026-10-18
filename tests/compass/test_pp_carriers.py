@@ -10,7 +10,7 @@ import math
 from pathlib import Path
 
 import pytest
-from test_pp_stage_input import MS, pp2_record
+from test_pp_stage_input import MS, pp2_record, staged
 
 from atom.compass.parity import recurrence
 from atom.compass.runner.pp_send import CarrierModel, carrier_models
@@ -31,27 +31,33 @@ MODELS = {
 }
 
 
-def _late(steps, x):
-    """The last stage of `pp2_record` with its input arriving `x` ns after
-    the head's device end: its first device wait, and everything after, later."""
-    first, *rest = (copy.deepcopy(s) for s in steps)
-    first["t_recv_ns"][1] += x
-    for k in ("t_exit_ns", "d_busy_ns", "d_recv_ns"):
-        first[k] += x
-    for s in rest:
+def _shift(steps, x):
+    """`steps` copied, every host stamp `x` ns later."""
+    steps = copy.deepcopy(steps)
+    for s in steps:
         for k, v in s.items():
             if k.startswith("t_"):
                 s[k] = [t + x for t in v] if isinstance(v, list) else v + x
-    return [first, *rest]
+    return steps
+
+
+def _late(steps, x):
+    """The last stage of `pp2_record` with its input arriving `x` ns after
+    the head's device end: its first device wait, and everything after, later."""
+    first = copy.deepcopy(steps[0])
+    first["t_recv_ns"][1] += x
+    for k in ("t_exit_ns", "d_busy_ns", "d_recv_ns"):
+        first[k] += x
+    return [first, *_shift(steps[1:], x)]
 
 
 def test_the_last_stage_waits_for_the_heads_tensors_on_the_carriers():
     head, last = pp2_record()
-    sends = recurrence.check(head, (0, 2))["sends"]
+    _, sends = staged(head, (0, 2))
     late = _late(last, MS)
-    priced = recurrence.check(late, (1, 2), sends, (MODELS, 500))
+    priced = staged(late, (1, 2), sends, (MODELS, 500))[0]
     assert priced["pass"] and priced["total"] == pytest.approx(0, abs=1e-9)
-    assert not recurrence.check(late, (1, 2), sends)["pass"]
+    assert not staged(late, (1, 2), sends)[0]["pass"]
 
 
 def test_the_last_stage_launches_when_the_heads_metadata_arrives():
@@ -60,7 +66,7 @@ def test_the_last_stage_launches_when_the_heads_metadata_arrives():
     only the launch moves. A 10 ms launch from there leaves the first step
     host-bound, exiting at 22 ms where its device ends at 20."""
     head, last = pp2_record()
-    sends = recurrence.check(head, (0, 2))["sends"]
+    _, sends = staged(head, (0, 2))
     late = _late(last, 2 * MS)
     late[0] |= {
         "t_pp_recv_ns": [MS, 11 * MS],
@@ -70,16 +76,21 @@ def test_the_last_stage_launches_when_the_heads_metadata_arrives():
         "d_busy_ns": 19 * MS,
     }
     slow = MODELS | {"gloo": CarrierModel(10**9, 0.0, 9e-3, 0.0, 0.0)}
-    priced = recurrence.check(late, (1, 2), sends, (slow, 500))
+    priced = staged(late, (1, 2), sends, (slow, 500))[0]
     assert priced["pass"] and priced["total"] == pytest.approx(0, abs=1e-9)
-    assert not recurrence.check(late, (1, 2), sends, (MODELS, 500))["pass"]
+    assert not staged(late, (1, 2), sends, (MODELS, 500))[0]["pass"]
 
 
 def test_the_script_prices_the_send_on_a_machine_specs_carriers(tmp_path):
     """`MODELS` written in a spec, each zero as 1e-15: the schema takes only
-    positive times."""
+    positive times. The head's third and fourth forwards enter at the late
+    stage's exits, which return their tokens, so the last stage's input
+    arrives a further 1 ms later."""
     head, last = pp2_record()
-    for name, steps in (("dp0", head), ("pp1.dp0", _late(last, MS))):
+    head[2:] = _shift(head[2:], MS)
+    last = _late(last, MS)
+    last[2:] = _shift(last[2:], MS)
+    for name, steps in (("dp0", head), ("pp1.dp0", last)):
         (tmp_path / f"{name}.jsonl").write_text(
             "".join(json.dumps(s) + "\n" for s in steps)
         )
