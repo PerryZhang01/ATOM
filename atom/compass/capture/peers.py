@@ -8,11 +8,15 @@ A capture runs one rank. Where ATOM reads its peers, two rules answer:
   and the sizes read off them (`DPMetadata.make`, `get_sizes_across_dp`)
   run on the host with this rank's row in every slot.
 * What the DP group gathers for the MoE, or MORI dispatches to this rank, is
-  every rank's rows, the group's width times this rank's; what comes back is
-  this rank's rows.
+  every rank's rows, the group's width times this rank's: for MORI, the height
+  ATOM trims its buffer to, `T_moe`. The DP reduce-scatter gives back this
+  rank's rows; MORI's combine gives back its buffer of
+  `max_num_tokens_per_dp_rank` rows, which ATOM's finalize slices.
 
-Each exchange is one `declared` op named for ATOM's call (`dp.all_gatherv`,
-`mori.dispatch`), its arguments the ones ATOM passed, the group aside.
+Each exchange is one `declared` op named `module:qualname` for the function
+ATOM calls (`atom.model_ops.moe:all_gatherv`,
+`mori.ops.dispatch_combine:EpDispatchCombineOp.dispatch`), its arguments the
+ones ATOM passed by that function's parameter names, the group aside.
 """
 
 import inspect
@@ -22,6 +26,9 @@ import torch
 from torch.utils import _pytree
 
 from atom.compass import ir
+
+#: MORI's dispatch-and-combine handle, whose two calls the EP exchanges are.
+MORI = "mori.ops.dispatch_combine:EpDispatchCombineOp"
 
 
 def _declared(recorder, name, fn):
@@ -100,7 +107,7 @@ def patches(recorder):
         (DPMetadata, "make", staticmethod(lambda *a, **k: on_host(make, *a, **k))),
         (DPMetadata, "get_sizes_across_dp", lambda self: on_host(sizes, self)),
         *(
-            (moe, f.__name__, _declared(recorder, f"dp.{f.__name__}", f))
+            (moe, f.__name__, _declared(recorder, f"{moe.__name__}:{f.__name__}", f))
             for f in gathers
         ),
     ]
@@ -113,27 +120,29 @@ def install_mori(recorder):
     group = get_ep_group()
 
     class Handle:
+        """MORI's `EpDispatchCombineOp`, its two calls by its parameter names."""
+
         config = types.SimpleNamespace(
             kernel_type=types.SimpleNamespace(name="IntraNode")
         )
 
         def __init__(self, args):
             self.capacity = args["max_num_tokens_per_dp_rank"]
-            self.dispatch = _declared(recorder, "mori.dispatch", self._dispatch)
-            self.combine = _declared(recorder, "mori.combine", self._combine)
+            self.dispatch = _declared(recorder, f"{MORI}.dispatch", self._dispatch)
+            self.combine = _declared(recorder, f"{MORI}.combine", self._combine)
 
-        def _dispatch(self, x, weights, scales, ids, **kwargs):
-            n, k = group.world_size * x.shape[0], ids.shape[1]
+        def _dispatch(self, input, weights, scales, indices, **kwargs):
+            n, k = group.world_size * input.shape[0], indices.shape[1]
             return (
-                x.new_empty((n, x.shape[1])),
+                input.new_empty((n, input.shape[1])),
                 weights.new_empty((n, k)),
                 None if scales is None else scales.new_empty((n, scales.shape[1])),
-                ids.new_empty((n, k)),
-                ids.new_empty((1,)),
+                indices.new_empty((n, k)),
+                indices.new_empty((1,)),
             )
 
-        def _combine(self, x, weights, ids, **kwargs):
-            return x.new_empty((self.capacity, x.shape[-1])), None
+        def _combine(self, input, weights, indices, **kwargs):
+            return input.new_empty((self.capacity, input.shape[-1])), None
 
     manager = types.SimpleNamespace(
         rank=group.rank_in_group,

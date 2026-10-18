@@ -21,6 +21,9 @@ given or that a record directory's steps hold (D17, D18, D19); each leaf carries
 slot with each tensor's stride and role, and a raw Triton or FlyDSL launch lifts to its
 innermost ATOM function (D20).
 
+**Revised 2026-10-19 by #1401's capture of DeepSeek-V4-Pro:** capture runs ATOM's two MoE
+wrappers, and the DP gathers and MORI dispatch and combine are declared nodes (D20, D21).
+
 **Depends on:** `02_model_runner_and_cost_backend.md` (the backend plug point this fills),
 `03_memory_and_kv_model.md` (the activation term this supplies).
 
@@ -336,7 +339,8 @@ ATOM-registered opaque op already carries a `fake_impl`** — `moe_forward`,
 `v4_qk_norm_rope`, `indexer_score_topk`, `tbo_all_reduce`, both `topK` ops, both
 `kimi_k3` ops. ATOM had to write them for Dynamo; Compass inherits them.
 
-That composes with D20: **the trace stops at the opaque leaf**, which is where 60-75% of
+That composes with D20: **the trace stops at the opaque leaf** (the two MoE wrappers
+aside, D20), which is where 60-75% of
 the step time lives and exactly where a parameterized price is wanted anyway. The ~231
 fake-less aiter ops sit *inside* those leaves and are never reached.
 
@@ -856,7 +860,8 @@ Owner's [ruling on #1489](https://github.com/jgong5/ATOM/issues/1489#issuecommen
   allowed inside the lifted frame. A kernel switch inside the frame, mrope's tiled kernel
   at B >= 128, disappears into the leaf.
 
-Under capture an opaque leaf runs only its fake implementation, so its ambient reads stay
+Under capture an opaque leaf runs only its fake implementation (the two MoE wrappers
+aside, below), so its ambient reads stay
 invisible to the trace; the bench does not need them, because the leaf is timed inside
 ATOM's own forward, where ATOM has built the forward context for that point (`07` D39).
 That is also what the two failures below needed by hand.
@@ -895,12 +900,27 @@ analytical roofline. **Its shapes feed it; they do not replace it.** And the bou
 the right one, because a leaf is also where ATOM's own autotuning happens — one leaf is
 one tuned kernel family.
 
-### FlyDSL and MORI resolve here
+### The MoE wrappers run; their exchanges are declared
 
-Both are opaque leaves *below* an opaque leaf — they live inside `moe_forward`. They add
-**no IR nodes**, and **FlyDSL never needs intercepting** unless one wanted to decompose
-`moe_forward`, which this design does not. A FlyDSL launch outside an opaque leaf, the
-sampler's argmax, lifts to its innermost ATOM function (the leaf contract above).
+`moe_forward` and `maybe_dual_stream_forward` are the two opaque leaves capture opens: it
+runs their Python bodies in place of their fakes, because the step's MoE exchanges, the
+shared expert's side stream and the expert kernels are inside. What the bodies dispatch is
+recorded like the rest of the step: the expert kernels as leaves (`fused_moe_`), the side
+stream as a `Par` (D19), a FlyDSL launch lifted to its innermost ATOM function.
+
+Their exchanges with other ranks are **declared nodes** (D21), as #1401 and the
+[ruling on #531](https://github.com/jgong5/ATOM/issues/531#issuecomment-6244543796) ask,
+since a TBO step lays MORI's dispatch and combine on the comm stream as ops of their own.
+Each is named `module:qualname` for the function ATOM calls, its arguments by that
+function's parameter names: the DP gather and reduce-scatter as `atom.model_ops.moe`'s
+functions, MORI's dispatch and combine as `EpDispatchCombineOp`'s methods. A capture runs
+one rank, so each exchange's rows are stated, every peer at this rank's shape
+(`capture/peers.py`). A TBO step, two micro-batches interleaved, is refused by name until
+its graphs exist (#1581).
+
+FlyDSL never needs intercepting below a leaf. A FlyDSL launch outside an opaque leaf,
+the sampler's argmax or one in the MoE wrappers' bodies, lifts to its innermost ATOM
+function (the leaf contract above).
 
 Recorded for completeness, since it would otherwise look like an unexamined hole: FlyDSL
 is a standalone Python-embedded **MLIR DSL and JIT compiler** (`flydsl` 0.3.1), not part
@@ -965,7 +985,7 @@ recording them took chunked prefill from 365/366 to **364/364**.
 |---|---|
 | inductor-generated graph regions, decode | **~4.8% of a step** (112 kernels, 0.465 ms) |
 | inductor-generated graph regions, prefill | ~0.6% |
-| EP dispatch/combine at any degree | not separable — inside `moe_forward` |
+| EP dispatch/combine and the DP gathers | declared nodes, their rows stated (D20); their kernels are not seen |
 | CUDA-graph replay internals | unobservable in principle |
 
 The 8x prefill/decode spread is structural: the per-layer generated-kernel count is fixed
@@ -984,7 +1004,7 @@ and a decode step is ~30x shorter.
 
 ### Open issues
 
-- The stated-node mechanism has no consumers yet; EP is its first customer.
+- The first stated nodes are the MoE exchanges (D20); no op-level backend prices one yet.
 - At `ep_size == tp_size` EP is close to a no-op — without EP each rank holds all experts
   sharded along the intermediate dimension, with EP each rank holds half the experts
   whole. Same FLOPs, graphs structurally identical (488 operators, 23 kinds either way),
@@ -1244,8 +1264,8 @@ Deferred to future work by decision on 2026-09-18.
 | D18 | Capture with `TorchDispatchMode` + `FakeTensorMode`, on FakeTensor rather than bare meta, at concrete shapes: one graph per decode width and prefill (T, B) that `trace ops` is given or that a record directory's steps hold. The symbolic route A and its four disciplines (the fourth: the engine's host arithmetic asks a symbol for a number, so a symbolic capture keeps the conversion, logs it with its line, and asserts that log against a stated set) are recorded, not built | 2026-09-18, fourth discipline 2026-09-22; concrete 2026-10-18 (#1489) |
 | D18.1 | `torch.export` recorded as an unverified alternative; rejected now on decomposition fidelity and on capturing a model call rather than an engine step | 2026-09-18 |
 | D19 | Hierarchical, concrete, stream-annotated IR: `Seq` / `Repeat` / `Par`, a node's arguments its leaf contract. No branches in the IR — applicability is a discrete key and the captured shape, matched by equality | 2026-09-18; revised 2026-10-18 (#531); concrete 2026-10-18 (#1489) |
-| D20 | Opaque leaves are priced, not decomposed. Each carries a stated parameter extractor and a contract: arguments by schema slot, each tensor's stride and role by provenance (activation, weight, KV, metadata), non-tensor arguments and module references kept; a raw Triton or FlyDSL launch lifts to its innermost ATOM function. FlyDSL and MORI inside `moe_forward` need no IR node. | 2026-09-18; contract 2026-10-18 (#1489) |
-| D21 | Stated nodes over chased coverage, their terms declared; refuse and record `unpriced` reasons; a failed forward writes no graph | 2026-09-18; revised 2026-10-14 (#952) |
+| D20 | Opaque leaves are priced, not decomposed. Each carries a stated parameter extractor and a contract: arguments by schema slot, each tensor's stride and role by provenance (activation, weight, KV, metadata), non-tensor arguments and module references kept; a raw Triton or FlyDSL launch lifts to its innermost ATOM function. Capture runs the two MoE wrappers' bodies; their DP and MORI exchanges are declared nodes named for the function ATOM calls, and a TBO step is refused. | 2026-09-18; contract 2026-10-18 (#1489); MoE exchanges 2026-10-19 (#1401) |
+| D21 | Stated nodes over chased coverage, their terms declared; refuse and record `unpriced` reasons; a failed forward writes no graph. The MoE exchanges are the first stated nodes | 2026-09-18; revised 2026-10-14 (#952); MoE exchanges 2026-10-19 (#1401) |
 | D22 | Liveness stays observational under fake tensors; internal scratch of an opaque leaf is a stated per-leaf constant. Revised: until capture lands the activation term is a coefficient measured on a real run, scratch inside it, and the walk replaces it after | 2026-09-18; revised 2026-10-10 |
 | D23 | Trace eager, price with the regime constant of the real step. The inductor fusion gap (~4.8% decode) is a documented **TODO**, not a decision. | 2026-09-18 |
 

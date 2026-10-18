@@ -318,11 +318,14 @@ def _patches(recorder):
     * A real host tensor's values are read on the host, `tolist` as `numpy`.
     * ATOM's MoE wrappers run their bodies, not their fakes: inside are the
       collectives, the streams and the expert kernels.
+    * The checkpoint's weights iterator yields nothing: ATOM's dummy load still
+      runs it, which would open every shard, or download them for a hub name.
     """
     import flydsl.compiler
     from torch._subclasses.fake_tensor import unset_fake_temporarily
     from triton.runtime.jit import JITFunction
 
+    from atom.model_loader import loader
     from atom.model_ops import module_dispatch_ops, moe
     from atom.model_ops.attentions import gdn_attn
     from atom.utils import CpuGpuBuffer
@@ -370,6 +373,7 @@ def _patches(recorder):
         (CpuGpuBuffer, "__init__", staged_init),
         (gdn_attn, "compute_causal_conv1d_metadata", host_conv1d),
         (torch.Tensor, "tolist", host_tolist),
+        (loader, "safetensors_weights_iterator", lambda *a, **k: iter(())),
         (torch.ops.aiter, "moe_forward", moe.moe_forward),
         (
             torch.ops.aiter,
@@ -387,7 +391,8 @@ def _build_runner(config, fake_mode):
 
     The group already exists at its width, warmup would run a forward of its
     own, the checkpoint is ATOM's empty dummy (built and post-processed, no
-    bytes read), and the declared device's memory is all free.
+    shard opened, under `_patches`), and the declared device's memory is all
+    free.
     """
     from atom.model_engine.model_runner import DeviceMemoryReadings, ModelRunner
     from atom.utils import h2d
@@ -490,6 +495,12 @@ def capture(model: str, tp: int, shapes, tmpdir: str, atom_args=(), arch="gfx942
     from atom.config import set_current_atom_config
 
     config = _config(model, tp, atom_args)
+    tbo = {"prefill": config.enable_tbo, "decode": config.enable_tbo_decode}
+    if refused := [str(shape) for shape in shapes if tbo[shape.phase]]:
+        raise ValueError(
+            f"{', '.join(refused)} under --enable-tbo: a TBO step runs two "
+            "micro-batches interleaved, which one op_graph cannot hold"
+        )
     tp, dp = config.tensor_parallel_size, config.parallel_config.data_parallel_size
     ep = int(config.enable_expert_parallel)
     declared["group"] = driverless.group(tp, dp)

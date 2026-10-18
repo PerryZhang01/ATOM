@@ -7,7 +7,10 @@ Under DP every peer runs this rank's shape, so what the MoE sees is eight
 ranks' rows.
 """
 
+import functools
 import hashlib
+import importlib
+import inspect
 import json
 import os
 import pathlib
@@ -30,22 +33,24 @@ SHAPES = "--width 1 --width 2 --prefill 512 1 --prefill 512 2"
 DPA_TP8 = " -- --kv_cache_dtype fp8 --enable-dp-attention"
 EP8 = " --enable-expert-parallel"
 DP = 8
+MOE = "atom.model_ops.moe"
+MORI = "mori.ops.dispatch_combine:EpDispatchCombineOp"
 
 _CAPTURES: dict = {}
 
 
-def capture(tmp_path_factory, argv):
-    """`trace ops --tp 8 --arch gfx950` over `argv` in one process: each
-    shape's published graph and declarations, by shape."""
-    if argv in _CAPTURES:
-        return _CAPTURES[argv]
+def trace(root, argv):
+    """`trace ops --tp 8 --arch gfx950` over `argv`, run in a process of its own
+    on a model directory holding V4-Pro's config.json and a shard of junk:
+    nothing may open the checkpoint."""
     assert hashlib.sha256(CONFIG.read_bytes()).hexdigest() == CONFIG_SHA256
-    root = tmp_path_factory.mktemp("v4pro")
     (root / "model").mkdir()
     (root / "model" / "config.json").write_bytes(CONFIG.read_bytes())
+    junk = root / "model" / "model-00001-of-00001.safetensors"
+    junk.write_bytes(b"not a safetensors shard")
     command = ["trace", "ops", "--model", str(root / "model"), "--tp", "8"]
     command += ["--arch", "gfx950", "--store", str(root / "store"), *argv.split()]
-    done = subprocess.run(
+    return subprocess.run(
         [
             sys.executable,
             "-c",
@@ -59,6 +64,15 @@ def capture(tmp_path_factory, argv):
         cwd=TREE,
         env={**os.environ, "PYTHONPATH": str(TREE)},
     )
+
+
+def capture(tmp_path_factory, argv):
+    """`trace` over `argv`: each shape's published graph and declarations, by
+    shape."""
+    if argv in _CAPTURES:
+        return _CAPTURES[argv]
+    root = tmp_path_factory.mktemp("v4pro")
+    done = trace(root, argv)
     tokens = re.findall(r"^published .* as (\w+)$", done.stdout, re.MULTILINE)
     assert tokens, f"rc {done.returncode}\n{done.stderr[-4000:]}"
     store = ArtifactStore(str(root / "store"))
@@ -117,11 +131,21 @@ def test_each_layer_runs_its_shared_expert_beside_the_moe_on_every_rank_s_rows(
         assert names.count("aiter.fused_moe_.default") == 1
         exchanged = [op for op in layer if op["kind"] == "declared"]
         if ep:
-            assert [op["op"] for op in exchanged] == ["mori.dispatch", "mori.combine"]
+            assert [op["op"] for op in exchanged] == [
+                f"{MORI}.dispatch",
+                f"{MORI}.combine",
+            ]
         else:
-            assert {op["op"].split(".")[0] for op in exchanged} == {"dp"}
+            assert {op["op"].split(":")[0] for op in exchanged} == {MOE}
         # In: this rank's rows. Out of the dispatch or gather: every rank's.
         assert _rows(exchanged[0]) == (tokens, DP * tokens)
+        # Each names the function ATOM calls, and its slots are that function's.
+        for op in exchanged:
+            module, _, qualname = op["op"].partition(":")
+            fn = functools.reduce(
+                getattr, qualname.split("."), importlib.import_module(module)
+            )
+            assert set(op["args"]) <= set(inspect.signature(fn).parameters)
 
 
 def test_a_dp_decode_at_width_1_gathers_one_row_from_each_rank(tmp_path_factory):
@@ -134,8 +158,8 @@ def test_a_dp_decode_at_width_1_gathers_one_row_from_each_rank(tmp_path_factory)
         if op["kind"] == "declared"
     }
     assert rows == {
-        ("dp.all_gather_with_padding", 1, DP),
-        ("dp.reduce_scatter_with_unpadding", DP, 1),
+        (f"{MOE}:all_gather_with_padding", 1, DP),
+        (f"{MOE}:reduce_scatter_with_unpadding", DP, 1),
     }
 
 
@@ -182,3 +206,15 @@ def test_tp8_without_dp_attention_reduces_in_each_layer_and_declares_nothing(
             names = [op["op"] for op in layer]
             assert names.count("aiter.all_reduce_.default") == 1
             assert not [op for op in layer if op["kind"] == "declared"]
+
+
+def test_a_tbo_step_is_refused_by_name(tmp_path):
+    done = trace(
+        tmp_path,
+        "--width 2 --prefill 512 1" + DPA_TP8 + EP8 + " --enable-tbo",
+    )
+
+    assert done.returncode != 0
+    assert "prefill T=512 B=1 under --enable-tbo" in done.stderr
+    assert "decode B=2" not in done.stderr.splitlines()[-1]
+    assert "published" not in done.stdout
