@@ -35,6 +35,7 @@ DATA = "engine-pp0->engine-pp1:pp_data#dp0"
 E, PRE, LAUNCH, POST = 2.0**-6, 2.0**-7, 2.0**-1, 2.0**-5
 LAWS = {"prefill": {"E": (E, 0, 0), "W_pre": (PRE, 0, 0), "W_launch": (LAUNCH, 0, 0)}}
 LAWS["prefill"]["W_post"] = (POST, 0, 0)
+LAWS["prefill"]["W_recv"] = (0, 0, 0)  # a later stage receives at its launch start
 #: Stands in for aiter's, which `_pp_send` pickles into the metadata part.
 TensorMetadata = collections.namedtuple("TensorMetadata", "device dtype size")
 
@@ -181,9 +182,7 @@ def test_a_stage_posts_its_receive_after_its_ring_wait_and_its_input_prepare(
     `E + PRE + INPUTS + 1`, and under MTP it prepares its inputs before the
     receive too."""
     stage = _runner(monkeypatch, pp - 1, lambda: 0.0, pp)
-    laws = {
-        "prefill": {**LAWS["prefill"], "W_inputs": (INPUTS, 0, 0), "W_recv": (0, 0, 0)}
-    }
+    laws = {"prefill": {**LAWS["prefill"], "W_inputs": (INPUTS, 0, 0)}}
     host = HostDeviceRecurrence(laws, (), lambda: 0.0, (pp - 1, pp), mtp=True)
     stage.compass_host = host
     batch = prefill(8)
