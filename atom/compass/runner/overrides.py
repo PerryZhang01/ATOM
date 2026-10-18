@@ -73,7 +73,9 @@ of which a single-process test can show:
   caller and a silence
   never does, but "reaches" means the fact of it and not the reason for it: a
   successor that wants its refusal diagnosable in the engine's own log has to
-  put it there itself, on the worker side, before it raises.
+  put it there itself, on the worker side, before it raises. `forward` does:
+  it writes what it raises to the file `compass_raised_file` names, which the
+  engine reads into its ``ended:`` reason when the `SystemExit` reaches it.
 
 The worker control commands are refused the third way: by a reply. A raise
 would end the engine for a command a client sent while serving, and a None
@@ -94,12 +96,13 @@ source and compare it with this table.
 from __future__ import annotations
 
 import collections
+import contextlib
 import json
 import logging
 import math
 import os
 import pickle
-from functools import partial
+from functools import partial, wraps
 from typing import Any
 
 import numpy as np
@@ -187,6 +190,24 @@ def unanswered_rpc_names(runner: Any) -> tuple[str, ...]:
 
 class RunnerRefusal(RuntimeError):
     """Raised where this runner has no answer and will not invent one."""
+
+
+def _says_why(forward):
+    """`forward`, writing what it raises to the file `compass_raised_file`
+    names, when set, before it raises: past the worker boundary the engine
+    gets a bare `SystemExit`, and reads the reason there."""
+
+    @wraps(forward)
+    def said(self, batch):
+        try:
+            return forward(self, batch)
+        except BaseException as e:
+            if path := getattr(self, "compass_raised_file", None):
+                with contextlib.suppress(OSError):  # raise `e`, not a failed write
+                    path.write_text(f"rank {self.rank} raised {e!r}")
+            raise
+
+    return said
 
 
 def install_device_readings(runner: Any, readings: DeviceReadings) -> None:
@@ -1015,6 +1036,7 @@ class NonAllocatingRunner(
         )
         return 0.0, [], 0
 
+    @_says_why
     @torch.inference_mode()
     def forward(self, batch: Any) -> Any:
         """Report what a step produced, without running one.

@@ -660,7 +660,7 @@ docstring lists the metrics, their distances and the verdicts.
 ## A cell graded from every source — `python -m atom.compass.validate`
 
 `python -m atom.compass.validate CELL...` joins the commands above and the run
-summaries into one table per cell directory: `step_linear/` and two or more
+summaries into one table per cell directory: `step_linear/` or `step_grid/`, and two or more
 `real*/` runs of one workload. Its docstring lists the rows.
 
 ## The stage-2 cell through the `compass` CLI, from an empty store
