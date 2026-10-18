@@ -221,6 +221,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
 ROWS_OF: Mapping[Kind, tuple[Row, ...]] = {
     Kind.OP_GRAPH: (Row.OP_GRAPH,),
     Kind.PRICE_LIST: (Row.PRICE_LIST,),
+    Kind.OP_MEASUREMENT: (Row.PRICE_LIST,),
     Kind.MEMORY_READINGS: (Row.MEMORY_READINGS,),
     Kind.MACHINE_SPEC: (Row.MACHINE_SPEC_CAPACITY, Row.MACHINE_SPEC_TOKENIZER_TERMS),
     Kind.STEP_MEASUREMENT: (Row.STEP_MEASUREMENT,),
