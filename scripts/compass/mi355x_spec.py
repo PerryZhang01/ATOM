@@ -70,12 +70,16 @@ DATASHEET = {
 }
 
 #: No probe fills these: mi308x_spec's assumed values less what the datasheet
-#: states. Its inter-node link is one 400 Gb/s NIC's line rate here too.
+#: states, the FP4 rate taking the others' derate and the bandwidth curve
+#: ending at this bandwidth derated. Its inter-node link is one 400 Gb/s NIC's
+#: line rate here too.
 DECLARED = copy.deepcopy(base.DECLARED)
 for block, groups in DATASHEET.items():
     for group, values in groups.items():
         for key in values:
             DECLARED[block][group].pop(key, None)
+DECLARED["device"]["compute"]["derate"]["fp4"] = 0.70
+DECLARED["device"]["memory"]["bandwidth_curve"] = [[4096, 1.1e11], [4294967296, 6.8e12]]
 
 
 def device_fragments() -> list[Fragment]:

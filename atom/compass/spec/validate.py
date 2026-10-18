@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from .fields import SCHEMA, check
-from .machine import MachineSpec, _missing, _survey
+from .machine import MachineSpec, _stated, _survey
 from .rules import SpecRefusal
 
 
@@ -37,10 +37,7 @@ def validate(document: Mapping) -> Validation:
     refusals = list(_survey(document, "", found))
     for field in SCHEMA:
         try:
-            if field.path not in found:
-                if field.required:
-                    _missing(field)
-            else:
+            if _stated(field, found):
                 check(field, found[field.path], field.path)
         except SpecRefusal as refusal:
             refusals.append(refusal)

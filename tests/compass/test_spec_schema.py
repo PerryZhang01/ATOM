@@ -100,7 +100,11 @@ DOCUMENT = {
             "bandwidth_bytes_per_s": 8.0e12,
             "derate": 0.85,
         },
-        "compute": {"bf16_flops": 2.5e15, "fp8_flops": 5.0e15, "derate": 0.70},
+        "compute": {
+            "bf16_flops": 2.5e15,
+            "fp8_flops": 5.0e15,
+            "derate": {"bf16": 0.70, "fp8": 0.70},
+        },
         "software_pinned_to": dict(STACK),
     },
     "interconnect": {
@@ -367,6 +371,9 @@ BREAKAGES = {
     "one field written under two spellings": lambda: both_spellings(True),
     "a fabric joining fewer devices than the node holds": lambda: written(
         "interconnect.intra_node.domain_devices", 4
+    ),
+    "a bandwidth curve that falls as transfers grow": lambda: written(
+        "device.memory.bandwidth_curve", [[4096, 2.0e11], [8192, 1.0e11]]
     ),
     "an origin nobody defined": lambda: written("provenance.origin", "guessed"),
     "a subject on a document nobody probed": lambda: dict(
@@ -814,9 +821,9 @@ def test_no_derate_is_declared_by_hand():
     # Each one is derived from a field marked as a spec peak, so a peak number
     # added later cannot arrive without one.
     assert not [f for f in FIELDS if f.kind is Kind.DERATE]
-    derated = {f.block for f in SCHEMA if f.kind is Kind.DERATE}
-    assert derated == {f.block for f in SCHEMA if f.peak}
-    assert len(derated) == 4
+    derated = {f.path for f in SCHEMA if f.kind is Kind.DERATE}
+    assert derated == {f.derate for f in SCHEMA if f.peak}
+    assert len(derated) == 6
 
 
 @pytest.mark.parametrize("block", ["memory", "compute"])
@@ -831,7 +838,7 @@ def test_a_spec_peak_without_its_derate_is_refused(block):
 @pytest.mark.parametrize("value", [1.2, 0.0, -0.5])
 def test_a_derate_may_shrink_a_peak_and_never_grow_it(value):
     edited = document()
-    edited["device"]["compute"]["derate"] = value
+    edited["device"]["compute"]["derate"]["bf16"] = value
     with pytest.raises(SpecRefusal) as refusal:
         MachineSpec.from_mapping(edited)
     assert refusal.value.rule is Rule.DERATE

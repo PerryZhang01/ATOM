@@ -34,7 +34,7 @@ from atom.compass.spec import MachineSpec
 
 MACHINE = MachineSpec.from_mapping(DOCUMENT)
 FLOPS = MACHINE.value("device.compute.bf16_flops") * MACHINE.value(
-    "device.compute.derate"
+    "device.compute.derate.bf16"
 )
 BANDWIDTH = MACHINE.value("device.memory.bandwidth_bytes_per_s") * MACHINE.value(
     "device.memory.derate"
@@ -166,7 +166,7 @@ def _spec(origin, origins=None):
 # The spec fields the roofline's constructor reads.
 READS = (
     "device.compute.bf16_flops",
-    "device.compute.derate",
+    "device.compute.derate.bf16",
     "device.memory.bandwidth_bytes_per_s",
     "device.memory.derate",
 )

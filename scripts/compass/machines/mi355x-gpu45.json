@@ -96,6 +96,12 @@
       "host.ipc.shm_broadcast_s": {
         "origin": "assumed"
       },
+      "device.memory.bandwidth_curve": {
+        "origin": "assumed"
+      },
+      "device.kernel_floor_s": {
+        "origin": "assumed"
+      },
       "interconnect.intra_node.topology": {
         "origin": "assumed"
       },
@@ -114,7 +120,13 @@
       "device.memory.derate": {
         "origin": "assumed"
       },
-      "device.compute.derate": {
+      "device.compute.derate.bf16": {
+        "origin": "assumed"
+      },
+      "device.compute.derate.fp8": {
+        "origin": "assumed"
+      },
+      "device.compute.derate.fp4": {
         "origin": "assumed"
       },
       "interconnect.intra_node.derate": {
@@ -175,14 +187,29 @@
     "memory": {
       "capacity_bytes": 309220868096,
       "bandwidth_bytes_per_s": 8000000000000.0,
+      "bandwidth_curve": [
+        [
+          4096,
+          110000000000.0
+        ],
+        [
+          4294967296,
+          6800000000000.0
+        ]
+      ],
       "derate": 0.85
     },
     "compute": {
       "bf16_flops": 2516600000000000.0,
       "fp8_flops": 5033200000000000.0,
       "fp4_flops": 1.00663e+16,
-      "derate": 0.7
+      "derate": {
+        "bf16": 0.7,
+        "fp8": 0.7,
+        "fp4": 0.7
+      }
     },
+    "kernel_floor_s": 2e-06,
     "software_pinned_to": {
       "rocm": "7.2.4",
       "aiter": "9205e1059",
