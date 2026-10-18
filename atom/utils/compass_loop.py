@@ -29,7 +29,8 @@ final decode of a non-streaming completion, advances the LP clock instead.
 
 `CompassEventLoop` is the frontend's event loop in a simulated run: its
 ``time()`` is the installed `LPRuntime`'s clock, so every timer is on LP time,
-and its selector is the frontend's idle point. Idle with nothing to read, it
+timers due at one instant fire in the order they were set, and its selector is
+the frontend's idle point. Idle with nothing to read, it
 asks for time with `next_event`: its earliest essential timer as ``t``, its
 earliest daemon timer (`DAEMON_TIMERS`) as ``t_daemon``. While a released
 request is unread or a station job is open it only waits on its sockets, and
@@ -60,6 +61,7 @@ found.
 import asyncio
 import collections
 import heapq
+import itertools
 import logging
 import math
 import select
@@ -298,6 +300,25 @@ def _is_daemon(callback) -> bool:
     return f is not None
 
 
+class _Timer(asyncio.TimerHandle):
+    """A timer that fires after every timer set before it for the same instant.
+
+    asyncio's heap orders timers by deadline alone, so on a clock where many
+    share one, two would fire in whatever order the rest of the heap left them,
+    a cancelled timer it still holds included.
+    """
+
+    __slots__ = ("order",)
+    _orders = itertools.count()
+
+    def __init__(self, *args) -> None:
+        super().__init__(*args)
+        self.order = next(_Timer._orders)
+
+    def __lt__(self, other) -> bool:
+        return (self._when, self.order) < (other._when, other.order)
+
+
 #: The signals that stop a simulated server, as they stop a real one.
 STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM)
 
@@ -383,8 +404,8 @@ class CompassEventLoop(asyncio.SelectorEventLoop):
         super().call_soon_threadsafe(self.call_at, c, self._post, d.due)
 
     def _post(self, due) -> None:
-        # Timers that share a deadline fire in any order; each takes the oldest
-        # job's callbacks, so a thread's jobs post theirs in completion order.
+        # Each timer takes the oldest job's callbacks, so a thread's jobs post
+        # theirs in completion order.
         for callback, args in due.popleft():
             self.call_soon(callback, *args)
 
@@ -395,7 +416,13 @@ class CompassEventLoop(asyncio.SelectorEventLoop):
         posted.append((callback, args))
 
     def call_at(self, when, callback, *args, context=None):
-        handle = super().call_at(when, callback, *args, context=context)
+        # asyncio's own, with a `_Timer`: `call_later` and `asyncio.sleep` come here.
+        if when is None:
+            raise TypeError("when cannot be None")
+        self._check_closed()
+        handle = _Timer(when, callback, args, self, context)
+        heapq.heappush(self._scheduled, handle)
+        handle._scheduled = True
         if _is_daemon(callback):
             self.daemon.add(handle)
         return handle
