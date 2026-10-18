@@ -564,10 +564,14 @@ overlap the other micro-batch's compute:
   micro-batch's thread issues the matching `dispatch_recv` or `combine_recv` at its next
   MoE prepare or finalize, or as it exits. No comm stream and no `_get_dispatch_config`.
 
-Either way a TBO step is priced by laying both micro-batches' operators on the streams
-ATOM issues them to, in ATOM's order, and taking the finish time, the DP group's `max`
-kept (owner's
+On the comm-stream path a TBO step is priced by laying both micro-batches' operators on
+the compute and comm streams in ATOM's order and taking the finish time, the DP group's
+`max` kept (owner's
 [ruling on #531](https://github.com/jgong5/ATOM/issues/531#issuecomment-6244543796)).
+That price cannot see the split path's overlap: `UBatchWrapper` hands both micro-batches
+one compute stream, so each send and the partner's matching receive lie in order on it,
+and the overlap is the transfer in flight between them, which no stream carries. A TBO
+step on the split path is refused by name (`08` D50.1) until that transfer has a price.
 
 **The tracer has to earn a `Par`.** `torch.cuda.stream()` and `wait_stream()` are not
 dispatcher events — a dispatch trace records a *serial* operator list for work the device
