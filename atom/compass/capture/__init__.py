@@ -35,6 +35,7 @@ def main(argv: list[str]) -> None:
     command = " ".join(["compass", "trace", "ops", *argv])
     key = publish(args.store, graph, model, declared, args.tp, command)
     print(f"published {key} as {key.token()}")
+    print(f"it applies where {graph.applicability.describe()}")
 
 
 def publish(store, graph, model, declared, tp, command):
