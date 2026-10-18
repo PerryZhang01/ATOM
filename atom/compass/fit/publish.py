@@ -8,7 +8,9 @@ token `Key.token` prints; it loads their samples under one configuration
 (`samples.load`). A record no `--client-run` names refuses: its steps would
 name no trace they served. `--machine M` names the spec of the platform the
 inputs ran on: records whose device, software stack, PTL state or torch is not
-the one it states refuse, naming each and both values. The configuration gains its
+the one it states refuse, naming each and both values. `--ptl` states the PTL
+state of records that carry none, and refuses for records that carry one; the
+report records it as `stated_ptl`. The configuration gains its
 `machine_spec_digest`, which a fit's key and params state, and `readings`,
 those a run on the spec takes with the inputs' source root, model and engine,
 under which each measurement is loaded.
@@ -39,7 +41,7 @@ from atom.compass.artifacts import (
     roots_for,
 )
 from atom.compass.artifacts.keys import platform_key
-from atom.compass.fit.samples import load
+from atom.compass.fit.samples import UNRECORDED, load
 from atom.compass.run.step_grid import readings as run_readings
 from atom.compass.spec import MachineSpec
 
@@ -65,6 +67,11 @@ def parser(prog: str, description: str) -> argparse.ArgumentParser:
         help="a client run RECORD's server served, by its export; every RECORD has one",
     )
     p.add_argument("--machine", required=True, help="the records' machine spec")
+    p.add_argument(
+        "--ptl",
+        choices=("enabled", "disabled"),
+        help="the PTL state of records that carry none",
+    )
     p.add_argument("--store", required=True, help="the artifact store's root")
     p.add_argument("--out", required=True, help="where the readable copy goes")
     return p
@@ -94,6 +101,13 @@ def inputs(args, sources) -> tuple[list, dict]:
     store = ArtifactStore(args.store)
     measurements = [store.key_from_token(Kind.STEP_MEASUREMENT, t) for t in tokens]
     samples, config = load(runs, measurements, args.store)
+    if args.ptl:
+        if config.get("ptl") != UNRECORDED:
+            raise ValueError(
+                f"--ptl {args.ptl} states the PTL state of records that carry "
+                f"none, and these carry {config.get('ptl')!r}"
+            )
+        config["ptl"] = args.ptl
     spec = MachineSpec.from_mapping(json.loads(Path(args.machine).read_text()))
     torch = spec.value("device.software_pinned_to.torch")
     stated = {**machine_spec_key(spec).values, "torch": torch}
@@ -162,6 +176,8 @@ def spec_readings(spec, config) -> Conditions:
 def publish(args, command: str, key, readings: Conditions, params, report):
     """Hand `params` and `report` off at `key` in `args.store` under `readings`,
     and write their readable copy in `args.out`."""
+    if args.ptl:
+        report = {**report, "stated_ptl": args.ptl}
     members = {"params": params, "report": report}
     ArtifactStore(args.store).publish(
         key,

@@ -95,9 +95,9 @@ def with_ptl(tmp_path, ptl: str) -> Path:
     return path
 
 
-def fit(tmp_path, a, spec: Path):
+def fit(tmp_path, a, spec: Path, *flags):
     store, out = tmp_path / "store", tmp_path / "out"
-    tail = ["--machine", spec, "--store", store, "--out", out]
+    tail = ["--machine", spec, "--store", store, "--out", out, *flags]
     argv = ["fit", "steps", "--backend", "step-linear", a, *clients(a), *tail]
     cli.main(list(map(str, argv)))
     return json.loads((out / "step_linear_law.json").read_text())
@@ -120,6 +120,30 @@ def test_records_fit_only_under_a_spec_of_their_cards_ptl(tmp_path, ran, stated)
         law = fit(tmp_path, a, with_ptl(tmp_path, ran))
         spec = json.loads(with_ptl(tmp_path, ran).read_text())
         assert law["key"]["machine_spec"] == digest(spec)
+
+
+def test_ptl_states_the_state_of_records_that_carry_none_and_the_report_says_so(
+    tmp_path,
+):
+    a = record(tmp_path / "a", 19)
+    edit(a / "run.json", lambda r: r.pop("ptl"))
+    law = fit(tmp_path, a, with_ptl(tmp_path, "enabled"), "--ptl", "enabled")
+    assert law["report"]["stated_ptl"] == "enabled"
+    spec = json.loads(with_ptl(tmp_path, "enabled").read_text())
+    assert law["key"]["machine_spec"] == digest(spec)
+
+
+@pytest.mark.parametrize("carried", ["enabled", "disabled"])
+def test_ptl_refuses_for_records_that_carry_a_ptl_state(tmp_path, carried):
+    a = record(tmp_path / "a", 19)
+    edit(a / "run.json", lambda r: r.update(ptl=carried))
+    told = (
+        "--ptl enabled states the PTL state of records that carry none, "
+        f"and these carry {carried!r}"
+    )
+    with pytest.raises(SystemExit, match=re.escape(told)):
+        fit(tmp_path, a, with_ptl(tmp_path, "enabled"), "--ptl", "enabled")
+    assert not (tmp_path / "store").exists()
 
 
 def test_a_bundle_measured_with_ptl_on_refuses_where_it_is_off(tmp_path):
