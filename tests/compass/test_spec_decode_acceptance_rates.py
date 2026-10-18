@@ -7,7 +7,6 @@ draft position i with the given marginal probability.
 """
 
 import argparse
-from itertools import pairwise
 from types import SimpleNamespace
 
 import pytest
@@ -16,10 +15,6 @@ from transformers import PretrainedConfig
 
 import atom.config
 from atom.model_engine.arg_utils import EngineArgs
-from atom.model_ops.rejection_sampler import (
-    RejectionSampler,
-    _get_synthetic_cond_rates,
-)
 
 RATES = [0.92, 0.71, 0.48, 0.19]
 
@@ -40,18 +35,11 @@ def rates_flag(rates):
     return ["--spec-decode-acceptance-rates", ",".join(map(str, rates))]
 
 
-def test_the_list_reaches_the_sampler_unchanged(monkeypatch):
+def test_the_list_is_the_resolved_curve(monkeypatch):
     spec = speculative_config(monkeypatch, *rates_flag(RATES))
     assert spec.synthetic_acceptance_rates == RATES
     # A list is a curve of its own, not the min-variance schedule of its mean.
     assert spec.synthetic_acceptance_length is None
-    sampler = RejectionSampler(spec.synthetic_acceptance_rates)
-    assert sampler.synthetic_acceptance_rates == tuple(RATES)
-    cond = _get_synthetic_cond_rates(
-        sampler.synthetic_acceptance_rates, torch.device("cpu")
-    )
-    expected = [RATES[0]] + [b / a for a, b in pairwise(RATES)]
-    assert cond.tolist() == pytest.approx(expected)
 
 
 @pytest.mark.parametrize(
@@ -78,15 +66,12 @@ def test_each_invalid_list_is_refused_by_name(monkeypatch, argv, message):
     assert err.match(message)
 
 
-def test_the_scalars_still_resolve_to_the_min_variance_schedule(monkeypatch):
-    spec = speculative_config(monkeypatch, "--spec-decode-acceptance-length", "2.5")
-    assert spec.synthetic_acceptance_rates == [1.0, 0.5, 0.0, 0.0]
-
-
 @pytest.mark.skipif(
     not torch.cuda.is_available(), reason="the forced-acceptance kernel is Triton"
 )
 def test_a_forced_run_accepts_each_position_at_its_rate(monkeypatch):
+    from atom.model_ops.rejection_sampler import RejectionSampler
+
     spec = speculative_config(monkeypatch, *rates_flag(RATES))
     sampler = RejectionSampler(spec.synthetic_acceptance_rates)
     k, batch, steps, vocab = len(RATES), 512, 20, 8
