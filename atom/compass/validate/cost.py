@@ -193,7 +193,7 @@ def cost_accuracy(record, backend, steps=None) -> dict:
 
 
 def _text(report: dict) -> str:
-    out = [f"record {report['record']}", f"backend {report['backend']}"]
+    out = [f"record {report['record']}", f"law {report['backend']}"]
     out.append(f"not labelled: {json.dumps(report['cut'])}")
     for group, title in (
         ("validated", "validated: inside the held-out hull"),

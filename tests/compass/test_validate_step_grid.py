@@ -172,6 +172,25 @@ def test_a_real_step_the_grid_declines_is_counted_apart_as_a_fallback(
         assert rows[f"cost {real}", "decode validated"][0].startswith("9 steps")
 
 
+def test_a_step_the_grid_declines_is_a_fallback_and_one_a_law_declines_refused(
+    tmp_path,
+):
+    """A run prices a step the grid declines by the step roofline below it; a
+    graded run has nothing below a law."""
+    member = _bundle(_steps(), missing={15})
+    grid = StepGridBackend(StepGrid(member["grid"]), Residual(member["residual"]), "b")
+    record = _record(tmp_path / "steps", _steps())
+
+    by_grid = cost_accuracy(record, grid)
+    by_law = cost_accuracy(record, {**LAW, "decode": {}})
+
+    assert by_grid["backend"] == grid.describe()
+    assert by_law["backend"] == "planted"
+    assert by_grid["refused"] == by_law["fallback"] == {}
+    assert by_grid["fallback"]["decode rung 1"]["steps"] == 1
+    assert by_law["refused"]["decode rung 1"]["steps"] == 10
+
+
 def test_a_cell_cctraces_sim_wrote_grades_with_no_argv_as_its_step_linear_cell(
     capsys, tmp_path, monkeypatch
 ):
