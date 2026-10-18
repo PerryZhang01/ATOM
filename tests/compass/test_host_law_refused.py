@@ -102,14 +102,14 @@ def test_a_forward_needs_a_law_for_each_segment_it_runs_and_does_not_skip(
     )
     recurrence = HostDeviceRecurrence(laws, skip, lambda: 0.0)
     if named is None:
-        assert recurrence.charge(batch, 1.0) >= 0
+        assert recurrence.charge(batch, 1.0, 0.0) >= 0
         return
     with pytest.raises(CostRefused, match=re.escape(f"(host: no law for {named})")):
-        recurrence.charge(batch, 1.0)
+        recurrence.charge(batch, 1.0, 0.0)
     assert list(recurrence.ends) == [-float("inf")] * 2
     filled = {kind: {**dict.fromkeys(HOST_SEGMENTS, (0, 0, 0)), **laws.get(kind, {})}}
-    zero = HostDeviceRecurrence(filled, skip, lambda: 0.0).charge(batch, 1.0)
-    assert recurrence.charge(batch, 1.0, refuse=False) == zero
+    zero = HostDeviceRecurrence(filled, skip, lambda: 0.0).charge(batch, 1.0, 0.0)
+    assert recurrence.charge(batch, 1.0, 0.0, refuse=False) == zero
 
 
 def test_a_step_both_refuse_hands_in_one_reason(monkeypatch, tmp_path):
