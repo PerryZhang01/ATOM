@@ -91,6 +91,21 @@ def prefill(tokens: int, seqs: int) -> Shape:
     return Shape("prefill", tokens, seqs)
 
 
+def structure(config, phase: str) -> str:
+    """The structure an `op_graph` of `config` at a `phase` step is keyed by: the
+    architecture, the config.json digest, the TP width, the DP width and the EP
+    group's when they are set, the phase and the mode."""
+    from atom.compass.run import _file_digest
+
+    digest = _file_digest(config.model, "config.json")
+    mode = "eager" if config.enforce_eager else "graph"
+    arch = config.hf_config.architectures[0]
+    tp, dp = config.tensor_parallel_size, config.parallel_config.data_parallel_size
+    widths = f"tp={tp}" + (f" dp={dp}" if dp > 1 else "")
+    widths += f" ep={tp * dp}" if config.enable_expert_parallel else ""
+    return f"{arch} {digest} {widths} {phase} {mode}"
+
+
 def _atom_frames():
     """The ATOM frames on the stack, innermost first, Compass's own excluded."""
     frames, frame = [], sys._getframe(1)
@@ -510,10 +525,6 @@ def capture(model: str, tp: int, shapes, tmpdir: str, atom_args=(), arch="gfx942
     declared["group"] = driverless.group(tp, dp)
     set_current_atom_config(config)
     digest = _file_digest(config.model, "config.json")
-    structure = (
-        f"{config.hf_config.architectures[0]} {digest} tp={tp} dp={dp} ep={ep} "
-        f"{{}} eager {arch}"
-    )
     fake_mode = driverless.driverless_mode(ShapeEnv())
     contexts = config.compilation_config.static_forward_context
     recorder, block_size = _Recorder(contexts, fake_mode), config.kv_cache_block_size
@@ -565,7 +576,7 @@ def capture(model: str, tp: int, shapes, tmpdir: str, atom_args=(), arch="gfx942
                 recorder.creating, recorder.on = ir.Role.METADATA, True
                 runner.forward(_batch(shape, block_size)[0])
             recorder.creating, recorder.on = None, False
-            crossing, traced = [], Traced(structure.format(shape.phase), str(shape))
+            crossing, traced = [], Traced(structure(config, shape.phase), str(shape))
             graph = build(recorder.items, traced, crossing)
             left_out = [*recorder.left_out, *(("step-crossing", op) for op in crossing)]
             declared["left_out"] = [{"why": why, **_json(op)} for why, op in left_out]

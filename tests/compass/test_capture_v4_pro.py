@@ -114,9 +114,8 @@ def test_each_layer_runs_its_shared_expert_beside_the_moe_on_every_rank_s_rows(
 ):
     graph, _ = capture(tmp_path_factory, SHAPES + DPA_TP8 + (EP8 if ep else ""))[shape]
 
-    assert f" tp=1 dp={DP} ep={int(ep)} {shape.split()[0]} eager gfx950" in (
-        graph["structure"]
-    )
+    widths = f"tp=1 dp={DP}" + (f" ep={DP}" if ep else "")
+    assert graph["structure"].endswith(f" {widths} {shape.split()[0]} eager")
     # Every layer's shared expert runs on a side stream beside its routed MoE.
     pars = _pars(graph["region"])
     assert len(pars) == LAYERS
@@ -199,7 +198,7 @@ def test_tp8_without_dp_attention_reduces_in_each_layer_and_declares_nothing(
 
     for shape in ("decode B=2", "prefill T=512 B=1"):
         graph, _ = graphs[shape]
-        assert f" tp=8 dp=1 ep=0 {shape.split()[0]} " in graph["structure"]
+        assert graph["structure"].endswith(f" tp=8 {shape.split()[0]} eager")
         layers = _decoder(graph)
         assert len(layers) == LAYERS
         for layer in layers:
