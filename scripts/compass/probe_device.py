@@ -12,10 +12,14 @@ behind a spin kernel, so no host time is in it.
   the best shape's rate over SPEC's ``*_flops`` is the format's derate. Each
   GEMM follows a spin, so the rate is a burst's: with PTL enabled a sustained
   GEMM slows within a second or two.
-- Bandwidth: a `copy_` of half of each of `SIZES`, the bytes read plus
-  written, each after a write of `FLUSH` bytes so it starts from HBM; the
-  median rate per size is ``memory.bandwidth_curve`` and its largest point over
-  SPEC's bandwidth is ``memory.derate``.
+- Bandwidth: per size in `SIZES`, the bytes read plus written, a graph of up
+  to `GRAPH` copies through consecutive slices of two `POOL`-byte buffers,
+  replayed `REPS` times. Copies that together fit in the last-level cache run
+  warm, as small operators do, and larger ones from HBM. The kernel is a
+  Triton copy: `copy_` reaches about 2 TB/s on MI308X, a kernel about 3.6. The
+  running maximum of the median rate per size is ``memory.bandwidth_curve``,
+  so noise on the plateau keeps it monotone, and its largest point over SPEC's
+  bandwidth is ``memory.derate``.
 - Kernel floor: `GRAPH` empty kernels captured in one graph, replayed `REPS`
   times; ``kernel_floor_s`` is the median per kernel, with its p10 and p90.
 - Link: one kernel per card passes a counter `ROUNDS` times through the other
@@ -24,7 +28,7 @@ behind a spin kernel, so no host time is in it.
   bandwidth is ``intra_node.derate``.
 
 The run is refused unless every card is idle (under `IDLE_BYTES` of VRAM used,
-0% busy), before and after, and reads SPEC's ``device.ptl`` from
+0% busy) and reads SPEC's ``device.ptl`` from
 ``ptl/ptl_enable`` under its sysfs device (``disabled`` where it has none). OUT
 is the record: the cards, every sample and this file's text; the fragment
 printed names its sha256.
@@ -32,10 +36,12 @@ printed names its sha256.
 
 import datetime
 import hashlib
+import itertools
 import json
 import statistics
 import sys
 import time
+from functools import partial
 from pathlib import Path
 
 import triton
@@ -44,12 +50,12 @@ import triton.language as tl
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from atom.compass.spec import Fragment, MachineSpec, SpecRefusal  # noqa: E402
-from atom.compass.spec.rules import Rule  # noqa: E402
+from atom.compass.spec import Fragment, MachineSpec, SpecRefusal
+from atom.compass.spec.rules import Rule
 
 SHAPES = (4096, 8192, 16384)
 SIZES = tuple(2**k for k in range(12, 33))  # 4 KiB to 4 GiB moved
-FLUSH = 2**29  # twice the MI300 series' 256 MiB last-level cache
+POOL, COPY_BLOCK = 2**31, 4096  # bytes in each copy buffer, floats a program
 GRAPH, ROUNDS, LINK_BYTES = 1000, 1000, 2**30
 REPS = 20
 SPIN = 10**7  # device cycles a sample waits behind, well past its host calls
@@ -76,6 +82,13 @@ def _pingpong(mine, theirs, rounds, serve: tl.constexpr):
             seen = tl.atomic_add(mine, 0, sem="acquire", scope="sys")
         if not serve:
             tl.atomic_xchg(theirs, i, sem="release", scope="sys")
+
+
+@triton.jit
+def _copy(src, dst, n, BLOCK: tl.constexpr):
+    """Copy `n` floats, `BLOCK` a program."""
+    offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    tl.store(dst + offs, tl.load(src + offs, mask=offs < n), mask=offs < n)
 
 
 def cards(bdfs: list[str], drm: str = DRM) -> list[dict]:
@@ -117,13 +130,11 @@ def refuse_unfit(read: list[dict], ptl: str) -> None:
         )
 
 
-def _timed(torch, fn, before=None, reps: int = REPS) -> list[float]:
-    """Device seconds of `reps` calls of `fn`, each behind a spin and `before`."""
+def _timed(torch, fn, reps: int = REPS) -> list[float]:
+    """Device seconds of `reps` calls of `fn`, each behind a spin."""
     out = []
     for _ in range(reps):
         torch.cuda._sleep(SPIN)
-        if before:
-            before()
         start, end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
         start.record()
         fn()
@@ -143,35 +154,37 @@ def probe(torch) -> dict:
     gemm = {"bf16": {}, "fp8": {}}
     for n in SHAPES:
         x, w = (torch.randn(n, n, device="cuda", dtype=torch.bfloat16) for _ in "xw")
-        gemm["bf16"][n] = _timed(torch, lambda: torch.matmul(x, w.T))
+        gemm["bf16"][n] = _timed(torch, partial(torch.matmul, x, w.T))
         x, w = x.to(fp8), w.to(fp8)
-        gemm["fp8"][n] = _timed(
-            torch, lambda: torch._scaled_mm(x, w.T, one, one, out_dtype=torch.bfloat16)
-        )
-        del x, w
+        scaled = partial(torch._scaled_mm, x, w.T, one, one, out_dtype=torch.bfloat16)
+        gemm["fp8"][n] = _timed(torch, scaled)
         time.sleep(1)  # let a PTL card recover before the next burst
-    flush = torch.empty(FLUSH, dtype=torch.uint8, device="cuda")
+    src = torch.empty(POOL // 4, device="cuda")
+    dst = torch.empty_like(src)
     copy = {}
     for size in SIZES:
-        src = torch.empty(size // 2, dtype=torch.uint8, device="cuda")
-        dst = torch.empty_like(src)
-        copy[size] = _timed(torch, lambda: dst.copy_(src), flush.zero_)
-        del src, dst
-    del flush
+        n, k = size // 8, min(GRAPH, 2 * POOL // size)  # floats a side, copies
+        grid = (triton.cdiv(n, COPY_BLOCK),)
+        _copy[grid](src, dst, n, COPY_BLOCK, num_warps=8)  # compiles uncaptured
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            for i in range(k):
+                _copy[grid](src[i * n :], dst[i * n :], n, COPY_BLOCK, num_warps=8)
+        copy[size] = [t / k for t in _timed(torch, graph.replay)]
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
         for _ in range(GRAPH):
             torch.cuda._sleep(0)
     floor = [t / GRAPH for t in _timed(torch, graph.replay)]
 
-    mine = torch.zeros(1, dtype=torch.int32, device="cuda:0")
-    theirs = torch.zeros(1, dtype=torch.int32, device="cuda:1")
     near = torch.empty(LINK_BYTES, dtype=torch.uint8, device="cuda:0")
     far = torch.empty_like(near, device="cuda:1")
     far.copy_(near)  # also maps each card's memory into the other
     near.copy_(far)
-    link = [LINK_BYTES / t for t in _timed(torch, lambda: far.copy_(near))]
-    del near, far
+    link = [LINK_BYTES / t for t in _timed(torch, partial(far.copy_, near))]
+    mine = torch.zeros(1, dtype=torch.int32, device="cuda:0")
+    theirs = torch.zeros(1, dtype=torch.int32, device="cuda:1")
+    serve = partial(_pingpong[(1,)], mine, theirs, ROUNDS, serve=True, num_warps=1)
     trips = []
     for _ in range(REPS + 1):  # the first compiles both kernels
         mine.zero_()
@@ -180,10 +193,6 @@ def probe(torch) -> dict:
         torch.cuda.synchronize(1)
         with torch.cuda.device(1):
             _pingpong[(1,)](theirs, mine, ROUNDS, serve=False, num_warps=1)
-
-        def serve():
-            _pingpong[(1,)](mine, theirs, ROUNDS, serve=True, num_warps=1)
-
         trips += _timed(torch, serve, reps=1)
         torch.cuda.synchronize(1)
     return {
@@ -197,8 +206,8 @@ def probe(torch) -> dict:
 
 def readings(record: dict) -> dict:
     """The attainable values a record's samples give: each format's best
-    median rate, the median copy rate per size, the link's median rate, and
-    each banded field's median, p10 and p90."""
+    median rate, the running maximum of the median copy rate per size, the
+    link's median rate, and each banded field's median, p10 and p90."""
     med = statistics.median
 
     def band(samples):
@@ -209,9 +218,10 @@ def readings(record: dict) -> dict:
         f: max(2 * int(n) ** 3 / med(t) for n, t in record["gemm"][f].items())
         for f in FORMATS
     }
-    found["bandwidth_curve"] = [
-        [int(n), int(n) / med(t)] for n, t in record["copy"].items()
-    ]
+    rates = itertools.accumulate(
+        (int(n) / med(t) for n, t in record["copy"].items()), max
+    )
+    found["bandwidth_curve"] = [[int(n), r] for n, r in zip(record["copy"], rates)]
     found["link"] = med(record["link"])
     return found | {path: band(record[key]) for path, key in BANDED.items()}
 
@@ -273,11 +283,8 @@ def main(argv: list[str] | None = None) -> int:
     record = {"cards": cards(bdfs), "arch": props[0].gcnArchName}
     refuse_unfit(record["cards"], ptl)
     record |= probe(torch)
-    torch.cuda.empty_cache()
-    record["after"] = cards(bdfs)
     record |= {"torch": torch.__version__, "source": Path(__file__).read_text()}
     out.write_text(json.dumps(record) + "\n")
-    refuse_unfit(record["after"], ptl)
     root = git_tree_root("atom", str(ROOT))
     subject = {"source_root": f"{root.revision_kind}:{root.revision}"}
     subject["record"] = f"sha256:{hashlib.sha256(out.read_bytes()).hexdigest()}"
