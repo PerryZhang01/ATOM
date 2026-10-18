@@ -23,8 +23,9 @@ config.json's digest; `device`, each GPU's `<name> <arch>`, as a spec states
 it; `engine_config`, `keyed`'s fields, the parallel layout among them;
 `source_root`, `<revision_kind>-<revision>`; `sampling`, the request
 parameters, null for a record serving no client run's request; its host key
-less its model and engine; and its `stack`, the software versions run.json
-names. A measurement reads the same fields but the host key and stack from its
+less its model and engine; its `stack`, the software versions run.json
+names; and its `ptl`, the cards' PTL state, `unrecorded` for a run.json that
+names none. A measurement reads the same fields but the host key and stack from its
 key, whose `engine_config` and `sampling` are JSON objects as text. A field
 that differs between inputs refuses, naming each value and the inputs holding
 it; so do a profiled record and a record whose requests carry two sets of
@@ -49,6 +50,8 @@ FORMAT_VERSION = 2
 MEMBER = ("measurement", Topology().ranks()[0], "json")
 #: What names a GPU's model in run.json's `device`.
 CARD = ("name", "arch")
+#: The PTL state of a run.json that records none, which no machine spec states.
+UNRECORDED = "unrecorded"
 
 
 def load(
@@ -118,6 +121,7 @@ def _record(directory: Path, client_runs) -> tuple[list[Sample], dict]:
         **run_fields(run),
         "engine_config": keyed_of(engine),
         "stack": run["stack"],
+        "ptl": run.get("ptl", UNRECORDED),
         "sampling": json.loads(sampling[0]) if sampling else None,
         "host_key": {k: v for k, v in host.items() if k not in ("model", "engine")},
     }

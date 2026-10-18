@@ -136,6 +136,7 @@ def a_start(tmp_path, monkeypatch, stack):
     monkeypatch.setattr(measure_memory, "subprocess", started_by)
     monkeypatch.setattr(measure_memory.os, "killpg", gone)
     monkeypatch.setattr(measure_memory, "_device", lambda gpus: [MI355X])
+    monkeypatch.setattr(measure_memory, "_ptl", lambda gpus: "disabled")
     # rocm-smi GPU 5 as HIP device 2.
     monkeypatch.setattr(measure_memory, "hip_visible", {(5,): "2"}.get)
     monkeypatch.setattr(measure_memory, "identity", lambda *a: {"stack": stack})

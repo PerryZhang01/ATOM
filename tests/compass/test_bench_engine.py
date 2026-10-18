@@ -216,6 +216,36 @@ def test_a_device_that_cannot_hold_the_pool_stops_the_bench_naming_both_counts(
         engine.Bench(_config(eager=True), BLOCKS + 2)
 
 
+class Dies(Runner):
+    """A worker that raises in the call its config's `dies_in` names."""
+
+    def __init__(self, rank, config):
+        super().__init__(rank, config)
+        setattr(self, config.dies_in, self.die)
+
+    def die(self, *args):
+        raise RuntimeError("HIP out of memory")
+
+
+@pytest.mark.parametrize(
+    "call", ["get_num_blocks", "capture_cudagraph", "freeze_gc_heap", "bench_step"]
+)
+def test_a_worker_that_dies_in_a_call_stops_the_bench_naming_the_call(
+    manager, monkeypatch, call
+):
+    """Not the manager's bare `SystemExit`, which ends a command with status 0
+    and no message."""
+    monkeypatch.setattr(engine, "RUNNER", f"{__name__}.Dies")
+    config = _config()
+    config.dies_in = call
+    with pytest.raises(ValueError, match=f"a bench worker died, so {call} got no"):
+        bench = engine.Bench(config, BLOCKS)
+        try:
+            bench.measure(batch())
+        finally:
+            bench.exit()
+
+
 def test_a_stop_from_the_keyboard_reaches_the_process_that_started_the_bench(
     manager, monkeypatch
 ):

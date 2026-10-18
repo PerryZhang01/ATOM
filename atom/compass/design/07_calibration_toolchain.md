@@ -640,7 +640,7 @@ its own, and a population is keyed by the backend that priced it.
 
 | Artifact | Produced by | Keyed by |
 |---|---|---|
-| `machine_spec` | doc 05 probes | (device, software stack) |
+| `machine_spec` | doc 05 probes | (device, software stack, PTL state) |
 | `shape_population` | Phase 0, `trace steps` | (model, workload, engine config, the pricing backend's digest) |
 | `op_graph` | Phase 1a, `trace ops` | **structure** — not shape |
 | `price_list` | Phase 1b, `fit ops` | **(model, parallel layout, machine-spec digest, source-root digest)** — a tuple, never a path |
@@ -661,10 +661,30 @@ list does not answer for `-tp 2 -dp 2`, and a transfer between layouts, if one i
 is an explicit record backed by a measurement. A read miss names the fields in which the
 nearest entry of its kind differs.
 
-The **machine-spec digest** is the digest of the machine spec's own key, its device and
-software stack (`atom/compass/artifacts/keys.py::machine_spec_digest`), so an entry
-measured on one platform does not answer on another, and a spec edit outside those two
-moves no key ([#952](https://github.com/jgong5/ATOM/issues/952) S2).
+The **machine-spec digest** is the digest of the machine spec's own key, its device,
+software stack and PTL state (`atom/compass/artifacts/keys.py::machine_spec_digest`), so
+an entry measured on one platform does not answer on another, and a spec edit outside
+those three moves no key ([#952](https://github.com/jgong5/ATOM/issues/952) S2). The
+host name, the HBM vendor and the PTL format stay out of it (owner ruling on
+[#1434](https://github.com/jgong5/ATOM/issues/1434#issuecomment-6245078946)).
+
+The **PTL state** is `device.ptl` in the spec, `disabled` when the spec states none. A
+record reads it at capture and at run time from
+`/sys/bus/pci/devices/<bus>/ptl/ptl_enable`, with each GPU's bus as `rocm-smi
+--showbus` names it (not `/sys/class/drm/card<n>`, whose numbering is not the GPU
+index: DRM `card0` can be the BMC's VGA), a card with no `ptl` directory reading
+`disabled`, and refuses when the cards of one run disagree, naming each
+(`atom/compass/drive/identity.py::_ptl`). A fit refuses records whose PTL state is not
+the spec's, as it does their device and stack, and so does `measure memory` before its
+start. A record that carries no PTL state, captured before the field existed, refuses
+at a fit unless `--ptl enabled|disabled` states it; the fit records the stated value in
+its report, and refuses `--ptl` for records that carry a state of their own. PTL is the
+one static field that separated hjbog-srdc-39 from node 18 once both pinned one stack,
+and it accounts for the gap a synthetic decode step shows between them, about 10%.
+[#828](https://github.com/jgong5/ATOM/issues/828)'s gap on real runs, 18 to 20%, is
+larger and stays open. The band one key
+leaves: same-key cards agree within 0.6% with PTL off; with PTL on, 3 to 5% per card
+plus 1 to 2% run-to-run remains.
 
 ### Four rules
 
@@ -793,18 +813,18 @@ A global fingerprint would force re-measuring everything on a torch bump. Each a
 records the fingerprint of **its own dependency row**; on load, recompute and compare;
 mismatch **refuses** (warn only under an explicit flag).
 
-| artifact \ invalidated by | ROCm / AITER / RCCL | torch | ATOM src | model | device | host CPU | engine cfg |
-|---|---|---|---|---|---|---|---|
-| `shape_population` | - | - | **X** | **X** | - | - | **X** |
-| `op_graph` | - | **X** | **X** | **X** | - | - | X (level, cudagraph mode) |
-| `price_list` | **X** | **X** | X | - *(shape-parametric)* | **X** | - | - |
-| `region_terms` | X | X | **X** | X | X | - | X |
-| `step_measurement`, `step_linear_law` | X | X | X | X | X | - | X |
-| step grid bundle (`17` D101) | X | X | X | X | X | - | X |
-| `host_laws` | - | - | **X** | **X** | - | **X** | **X** |
-| `memory_readings` | **X** | X | X | X | **X** | - | **X** |
-| `machine_spec`: capacity | - | - | - | - | **X** | - | - |
-| `machine_spec`: tokenizer terms | - | - | - | **X** *(tokenizer)* | - | - *(T53)* | - |
+| artifact \ invalidated by | ROCm / AITER / RCCL | torch | ATOM src | model | device | PTL | host CPU | engine cfg |
+|---|---|---|---|---|---|---|---|---|
+| `shape_population` | - | - | **X** | **X** | - | - | - | **X** |
+| `op_graph` | - | **X** | **X** | **X** | - | - | - | X (level, cudagraph mode) |
+| `price_list` | **X** | **X** | X | - *(shape-parametric)* | **X** | X | - | - |
+| `region_terms` | X | X | **X** | X | X | X | - | X |
+| `step_measurement`, `step_linear_law` | X | X | X | X | X | X | - | X |
+| step grid bundle (`17` D101) | X | X | X | X | X | X | - | X |
+| `host_laws` | - | - | **X** | **X** | - | - | **X** | **X** |
+| `memory_readings` | **X** | X | X | X | **X** | X | - | **X** |
+| `machine_spec`: capacity | - | - | - | - | **X** | - | - | - |
+| `machine_spec`: tokenizer terms | - | - | - | **X** *(tokenizer)* | - | - | - *(T53)* | - |
 
 Consequences worth noting:
 
@@ -812,6 +832,9 @@ Consequences worth noting:
   what lets one campaign serve many shapes.
 - A `shape_population`'s pricing backend is in its key (D41), not its row: another
   backend addresses another entry rather than invalidating this one.
+- PTL invalidates what the device does, except the capacity: it moves the clock, not the
+  memory. `memory_readings` still refuse under another PTL state, because their key
+  carries the machine-spec digest; a parity run re-measures them.
 - `host_laws` time the host, so the host CPU invalidates them and the device does not;
   `step_measurement` and `step_linear_law` hold device time, so the host CPU does not invalidate
   them.
