@@ -22,6 +22,7 @@ Python's handler there, and a stop from the keyboard stops the bench, while
 the workers keep ignoring it.
 """
 
+import contextlib
 import signal
 
 from torch.distributed import TCPStore
@@ -29,6 +30,15 @@ from torch.distributed import TCPStore
 from atom.model_engine.async_proc import AsyncIOProcManager
 
 RUNNER = "atom.compass.bench.runner.BenchModelRunner"
+
+
+@contextlib.contextmanager
+def _refuse_a_stop(call: str):
+    """The manager stops, with a bare SystemExit, when a worker dies."""
+    try:
+        yield
+    except SystemExit as stop:
+        raise ValueError(f"a bench worker died, so {call} got no reply") from stop
 
 
 class Bench:
@@ -62,7 +72,8 @@ class Bench:
         )
         signal.signal(signal.SIGINT, signal.default_int_handler)
         try:
-            budget = self._call("get_num_blocks")
+            with _refuse_a_stop("get_num_blocks"):
+                budget = self.runner_mgr.call_func("get_num_blocks", wait_out=True)
             try:
                 allocated = self.runner_mgr.call_func(
                     "allocate_kv_cache", num_blocks, wait_out=True
@@ -77,25 +88,20 @@ class Bench:
             assert allocated, "Failed to allocate kv cache"
             config.num_kvcache_blocks = num_blocks
             if not config.enforce_eager:
-                self._call("capture_cudagraph")
+                with _refuse_a_stop("capture_cudagraph"):
+                    self.runner_mgr.call_func("capture_cudagraph", wait_out=True)
             # Unfrozen, a worker's collections walk its startup heap, and their
             # pauses would discard repeats.
-            self._call("freeze_gc_heap")
+            with _refuse_a_stop("freeze_gc_heap"):
+                self.runner_mgr.call_func("freeze_gc_heap", wait_out=True)
         except BaseException:
             self.exit()
             raise
 
     def measure(self, batch) -> dict:
         """`batch`'s step, measured on every worker."""
-        return self._call("bench_step", batch)
-
-    def _call(self, name: str, *args):
-        """Rank 0's reply to `name`, called on every worker."""
-        try:
-            return self.runner_mgr.call_func(name, *args, wait_out=True)
-        except SystemExit as stop:
-            # The manager stops, with a bare SystemExit, when a worker dies.
-            raise ValueError(f"a bench worker died, so {name} got no reply") from stop
+        with _refuse_a_stop("bench_step"):
+            return self.runner_mgr.call_func("bench_step", batch, wait_out=True)
 
     def exit(self) -> None:
         """Stop every worker; the manager calls it too, when a worker dies."""
