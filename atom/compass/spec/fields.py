@@ -161,6 +161,9 @@ FIELDS = (
             ("rendezvous_fixed_s", Kind.QUANTITY),
         )
     ),
+    # How late a host blocked on a gloo part goes on after it completes.
+    Field("interconnect.intra_node.pp.gloo.wake_s", Kind.QUANTITY, required=False),
+    Field("interconnect.intra_node.pp.gloo.wake_rise_s", Kind.QUANTITY, required=False),
     Field(
         "interconnect.inter_node.link_bandwidth_bytes_per_s", Kind.QUANTITY, peak=True
     ),

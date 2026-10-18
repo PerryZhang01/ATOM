@@ -150,7 +150,9 @@ def test_a_stage_holds_work_from_its_send_to_the_flush_and_while_kv_work_is_pend
         has_pending_kv_work=lambda: kv[0],
     )
     monkeypatch.setattr(clock, "_installed", rt)
-    spec = SimpleNamespace(value=lambda key: getattr(CARRIER, key.rsplit(".", 1)[1]))
+    spec = SimpleNamespace(
+        value=lambda key: getattr(CARRIER, key.rsplit(".", 1)[1], 1.0)
+    )
     pp_send.install(engine, spec)
     sends = partial(run.func, engine.runner_mgr.call_func)
     held = [rt.holds_work()]

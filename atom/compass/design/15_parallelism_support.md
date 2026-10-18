@@ -356,7 +356,10 @@ the time `p` after it to its exit, and the payload of send `n`:
    (R7). The previous send's `pp_ack`, if stamped at or before
    `t0 + c`, is released during this TAR, which is the common case.
 2. If that send took an ack and its ack is not yet released, the loop receives it
-   inline: NER until the grant releases `(pp_ack, n-1)`, its clock reaching `done`. If it
+   inline: NER until the grant releases `(pp_ack, n-1)`, its clock reaching `done`. A
+   loop that blocked there for `b` goes on `wake_s x (1 - exp(-b / wake_rise_s))` later,
+   gloo's wake: a host blocked on a gloo wait wakes later the longer it blocked
+   (#1451). If it
    was eager, `advance_to` its local completion when that is later than now.
 3. The loop issues send `n` at `t_send`, its clock, now past `done`, its tensors
    leaving at `e`, and registers `(pp_data, n)` (K4), noting whether it is eager (a local completion) or rendezvous (an ack to receive).
@@ -367,7 +370,8 @@ send's completion now comes from the receiver. At a downstream stage's forward
 call site, before the runner is called, the loop receives `(pp_data, n)` inline (its
 clock reaching `now_r`) and asks the runner for `t_recv_posted`: the forward's prepare end
 (`E`, `W_pre` and `W_inputs` run from the call, the entry held by the ring), as ATOM's
-`ModelRunner.run_model` calls `recv_intermediate_tensors` after `prepare_model` (#1443).
+`ModelRunner.run_model` calls `recv_intermediate_tensors` after `prepare_model` (#1443),
+then `W_recv`, the part of the launch `run_model` runs before that call (#1451).
 With non-negative host segments it is never before the call, so the `pp_ack` lookahead derivation above holds. If any gloo
 part of the send is rendezvous it registers `(pp_ack, n)` stamped their `done` (K4). The
 forward's host runs from the call, its launch waits for the metadata's arrival and its
