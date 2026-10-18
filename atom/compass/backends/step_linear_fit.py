@@ -59,6 +59,10 @@ the convex hull of its fitted steps, which `StepLinearLaw` reads. A vector with
 no more fitted steps than coefficients, or whose steps span no hull, is left
 out and named under `unfitted`; `StepLinearBackend` refuses its steps.
 
+On an MTP record a step also carries a draft label (`step_labels`). `fit` fits
+the steps that carry one on their draft labels the same way, and writes that law
+under the law's `draft`; it holds no `held_out`.
+
 Forms (`FORMS`): `base`, the features `StepLinearLaw` always prices; `history`,
 prefill plus `Sum (N_KV - N_Q)`, the KV a short chunk reads on a deep history;
 `shared`, decode with the context and padding slopes shared by every rung and
@@ -82,6 +86,7 @@ validated. A vector whose held-out steps span no hull gets none.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import math
 from pathlib import Path
@@ -542,6 +547,13 @@ def fit(samples, options=None, seed: int = 0) -> tuple[dict, dict]:
         "vectors": {k: {**v["fit"], "hull": v["hull"]} for k, v in vectors if v},
         "held_out": {},
     }
+    drafts = [
+        dataclasses.replace(s, device_s=s.draft_s, draft_s=None)
+        for s in samples
+        if s.draft_s is not None
+    ]
+    if drafts:
+        law["draft"] = fit(drafts, options, seed)[0]
     return law, report
 
 

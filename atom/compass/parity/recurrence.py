@@ -25,6 +25,8 @@ period, less one, in percent, lie within `STEP_BAND`, the run total within
 `TOTAL_BAND`.
 A failing kind's steps outside the band are named with their residual, the
 device work queued at their launch, and their recv release less the measured.
+A sending stage names the steps where the flush it infers and the record's
+`t_flush_ns` disagree.
 """
 
 import json
@@ -122,10 +124,13 @@ def _charged(steps, stage, upstream, held, carriers=None, downstream=None):
     A stage's device starts no earlier than that hold, the tensors' end of
     its send before last in `downstream`, or of its last if it waited idle
     to flush it: the head for its tokens, a later stage `IDLE_FLUSH_S`.
+    The report's `flush` holds a sending stage's steps that flushed so and
+    those stamped `t_flush_ns`, None on the last stage.
     Step `n` is called no earlier than `held[n] = (measured, predicted)`'s
     `predicted`, its `E` from `measured` if after the last exit; a step
     entered before `measured` is refused."""
     now, prev, rows, done = 0.0, None, [], -math.inf
+    flush = None if downstream is None else ([], [])  # steps inferred, stamped
     origin = steps[0]["t_enter_ns"]
     mtp = any("d_target_ns" in s for s in steps)
     rec = HostDeviceRecurrence({}, (), lambda: now, stage, mtp=mtp)
@@ -150,7 +155,11 @@ def _charged(steps, stage, upstream, held, carriers=None, downstream=None):
         post = s["t_exit_ns"] - l1 - (r1 - r0) - (d1 - d0)
         entry = max(called + e * 1e-9, rec.ends[0])
         # The last send settled: the one before the last, or the last if flushed.
-        settled = n - 2 + (called - now > (IDLE_FLUSH_S if stage and stage[0] else 0))
+        flushed = called - now > (IDLE_FLUSH_S if stage and stage[0] else 0)
+        settled = n - 2 + flushed
+        if flush is not None:
+            flush[0].extend([s["step"]] * flushed)
+            flush[1].extend([s["step"]] * ("t_flush_ns" in s))
         hold = -math.inf
         if downstream and settled >= 0:
             hold = (downstream[settled][4] - origin) * 1e-9
@@ -216,6 +225,7 @@ def _charged(steps, stage, upstream, held, carriers=None, downstream=None):
         "total": total,
         "pass": abs(total) <= TOTAL_BAND and all(v[-1] for v in kinds.values()),
         "failures": [r for r in rows if not kinds[r[1]][-1] and abs(r[2]) > STEP_BAND],
+        "flush": flush,
     }
 
 
@@ -246,6 +256,18 @@ def main(record: str, machine=None, row_bytes=None) -> int:
             )
         gate = "pass" if abs(report["total"]) <= TOTAL_BAND else "FAIL"
         print(f"    total {report['total']:+.3f}% {gate}")
+        if report["flush"] is not None and not report["flush"][1]:
+            print("    flush: the record stamps no flush")
+        elif report["flush"] is not None:
+            inferred, stamped = map(set, report["flush"])
+            off = sorted(inferred ^ stamped)
+            print(
+                f"    flush: {len(off)} steps disagree, {len(inferred)} inferred, "
+                f"{len(stamped)} stamped"
+            )
+            for step in off[:SHOWN]:
+                side = "inferred" if step in inferred else "stamped"
+                print(f"      step {step}: {side} only")
         bad = sorted(report["failures"], key=lambda r: -abs(r[2]))
         for k in KINDS:
             if mine := [r for r in bad if r[1] == k]:
