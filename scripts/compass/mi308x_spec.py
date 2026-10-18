@@ -88,29 +88,31 @@ INTAKE = {
 }.get(NAME)
 
 #: A pipeline stage's send, per carrier, fitted on hjbog-srdc-39 GPUs 4 and 5
-#: by `scripts/compass/pp_carriers.py` at commit d91f1de8c. The record is the
+#: by `scripts/compass/pp_carriers.py` at commit 25f481d58. The record is the
 #: probe's output, its samples and source.
 PP = {
     "mi308x-hjbog39": (
-        "2026-10-17",
-        "d91f1de8c",
+        "2026-10-18",
+        "25f481d58",
         {
             "rccl": {
                 "eager_threshold_bytes": 33554432,
-                "latency_s": 1.5943078324198723e-06,
-                "overhead_s": 3.808203561532445e-05,
-                "per_byte_s": 2.006901421361917e-11,
-                "rendezvous_fixed_s": 5.704185766936967e-05,
+                "latency_s": 1.823529601097107e-06,
+                "overhead_s": 3.761432693886952e-05,
+                "per_byte_s": 2.0177058218219742e-11,
+                "rendezvous_fixed_s": 5.662571197919822e-05,
             },
             "gloo": {
                 "eager_threshold_bytes": 0,
-                "latency_s": 9.95624577626586e-06,
-                "overhead_s": 1.3529834873068723e-05,
-                "per_byte_s": 1.1616917845420316e-10,
-                "rendezvous_fixed_s": 2.3746679926390014e-05,
+                "latency_s": 1.0484480299055576e-05,
+                "overhead_s": 1.672083025804017e-05,
+                "per_byte_s": 1.2054900858516598e-10,
+                "rendezvous_fixed_s": 2.6216505172828927e-05,
+                "wake_s": 0.00018522898462996682,
+                "wake_rise_s": 0.21720823966727976,
             },
         },
-        "1cd879ccca5e023c6e8b57995e661674be584a1c3a8cd88a5b35c097503f09e3",
+        "0a79e10a93145f5d1dbeb02bd7becc4e901e916a243e4cb4bf9c88cc26fc73a7",
     ),
 }.get(NAME)
 

@@ -5,21 +5,26 @@ they complete."""
 
 import json
 import math
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from test_backend_step_linear_fit import _steps, _timed_record
 from test_dp_step_max import prefill
+from test_pp_carriers import SPEC
 from test_pp_launch_send import LAWS, _runner
 from test_pp_send import ACK, DATA, L_DATA, C, _sent, _stage
 
 from atom.compass import run as compass_run
 from atom.compass.backends.step_linear_fit import fit_host, label_records
+from atom.compass.runner import pp_send
 from atom.compass.runner.overrides import (
     PP_RECV_SEGMENT,
     HostDeviceRecurrence,
     forward_shape,
 )
+from atom.compass.spec import MachineSpec, SpecRefusal
+from atom.utils import clock
 
 #: Seconds on (1, tokens, seqs) from the launch to the receive, per output kind.
 RECV = {"decode": [6e-5, 1e-7, 0.0], "prefill": [9e-5, 2e-9, 2e-5]}
@@ -85,3 +90,20 @@ def test_a_sender_blocked_on_its_previous_sends_ack_goes_on_its_wake_after_it():
         ("TAR", 4.0 + late, []),
     ]
     assert rt.send_log == [(DATA, 2, 4.0 + late + L_DATA)]
+
+
+def test_a_stage_takes_gloos_wake_from_the_machine_spec(monkeypatch):
+    monkeypatch.setattr(clock, "_installed", _stage(0)[0])
+    engine = SimpleNamespace(
+        runner_mgr=SimpleNamespace(call_func=None),
+        pp_rank=0,
+        pp_size=2,
+        has_pending_kv_work=lambda: False,
+    )
+    document = json.loads(SPEC.read_text())
+    pp_send.install(engine, MachineSpec.from_mapping(document))
+    gloo = document["interconnect"]["intra_node"]["pp"]["gloo"]
+    assert engine.runner_mgr.call_func.wake == (gloo["wake_s"], gloo["wake_rise_s"])
+    del gloo["wake_rise_s"]
+    with pytest.raises(SpecRefusal, match="wake_rise_s"):
+        pp_send.install(engine, MachineSpec.from_mapping(document))
