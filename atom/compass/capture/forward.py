@@ -356,14 +356,9 @@ def _build_runner(config, fake_mode):
         def _maybe_warmup(self):
             return
 
-    previous = torch.get_default_dtype()
-    torch.set_default_dtype(config.torch_dtype)
-    try:
-        # A fake tensor has no address: the alias check sees each buffer empty.
-        with fake_mode, patch.object(h2d, "_range", lambda t: (0, 0)):
-            return _CapturedRunner(0, config)
-    finally:
-        torch.set_default_dtype(previous)
+    # A fake tensor has no address: the alias check sees each buffer empty.
+    with fake_mode, patch.object(h2d, "_range", lambda t: (0, 0)):
+        return _CapturedRunner(0, config)
 
 
 def _weights(model):

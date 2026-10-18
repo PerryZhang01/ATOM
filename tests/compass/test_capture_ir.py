@@ -451,6 +451,35 @@ def test_trace_ops_records_torch_s_operators_and_hides_aiter_s(tmp_path_factory)
     assert (kinds["aten"], kinds["aiter"]) == ({"captured"}, {"opaque_leaf"})
 
 
+def _tensors(value):
+    if isinstance(value, dict) and "dtype" in value:
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from _tensors(item)
+
+
+def test_no_decoder_tensor_falls_back_to_torch_s_default_dtype(tmp_path_factory):
+    graph, _ = capture(1, WIDTH_2, tmp_path_factory)["decode B=2"]
+    dtypes = {
+        (op["op"], slot, tensor["dtype"])
+        for layer in _decoder(graph)
+        for op in layer
+        for slot, value in op["args"].items()
+        for tensor in _tensors(value)
+    }
+    assert not [d for d in dtypes if d[2] == "torch.float32"]
+
+
+def test_asking_a_tensor_its_device_is_no_operator(tmp_path_factory):
+    prefills = capture(1, "--prefill 512 2 --prefill 300 3", tmp_path_factory)
+    graphs = {**capture(1, WIDTH_2, tmp_path_factory), **prefills}
+    for graph, _ in graphs.values():
+        assert not [
+            op for op in _ops(graph["region"]) if op["op"] == "prim.device.default"
+        ]
+
+
 def test_tp2_leaves_its_stand_ins_copies_out_and_says_so(tmp_path_factory):
     one = _ops(capture(1, WIDTH_2, tmp_path_factory)["decode B=2"][0]["region"])
     graph, declared = capture(2, WIDTH_2, tmp_path_factory)["decode B=2"]
