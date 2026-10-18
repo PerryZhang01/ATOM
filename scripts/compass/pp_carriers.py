@@ -27,7 +27,8 @@ wake_rise_s))`` at block ``b``. OUT is JSON: each
 carrier's fields, the model's error on the arrival in seconds per posting order (min, p10,
 p50, p90, max), every sample, and this file's text. Given RECORDs this script
 wrote, it fits their samples pooled instead of probing, and OUT names their
-sha256 in place of the samples: one probe's wake moves with the run.
+sha256 in place of the samples: one probe's wake moves with the run. Its
+`band` is each field's p10 and p90 over the records, each fitted alone.
 """
 
 import hashlib
@@ -231,6 +232,16 @@ def main(out: str, *records: str) -> int:
         read = [Path(p).read_bytes() for p in records]
         samples = [s for b in read for s in json.loads(b)["samples"]]
         about = {"records": [hashlib.sha256(b).hexdigest() for b in read]}
+        # Each field's p10 and p90 over the records, each fitted alone.
+        alone = [fit(json.loads(b)["samples"]) for b in read]
+        about["band"] = {
+            c: {
+                k: [float(np.percentile([a[c][k] for a in alone], q)) for q in (10, 90)]
+                for k, v in alone[0][c].items()
+                if not isinstance(v, list)
+            }
+            for c in SIZES
+        }
     else:
         samples = probe()
         if not samples:

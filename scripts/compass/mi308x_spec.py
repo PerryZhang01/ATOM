@@ -22,6 +22,7 @@ import argparse
 import datetime
 import json
 import os
+import statistics
 import sys
 import time
 from pathlib import Path
@@ -32,22 +33,29 @@ sys.path.insert(0, str(ROOT))
 from atom.compass.spec import (
     Fragment,
     MachineSpec,
+    SpecRefusal,
     explain,
     merge,
     tokenizer_fragment,
     tokenizer_sweep,
     validate,
 )
+from atom.compass.spec.bands import refuse_unbanded
 
 NAME = os.environ.get("COMPASS_MACHINE", "mi308x-hjbog18")
 AUTHOR = "compass agent for jgong5"
 #: Token counts swept, one to past the 204,288-token p90 prompt of cc-traces.
 LENGTHS = tuple(4**k for k in range(10))
 #: The worst relative residual a tokenizer fit may leave at any swept length.
-#: Encode on node 18 costs more per token past 64k tokens than below it, so a
-#: fixed-plus-linear law holds it only to about 20% at the longest length; the
-#: bound leaves room for that and still refuses a sweep of the wrong shape.
-BOUND = 0.25
+#: Encode costs more per token past 64k tokens than below it, so a
+#: fixed-plus-linear law holds it only to about 20% on node 18 and about 35% on
+#: mi355-gpu-45; the bound leaves room for that and still refuses a sweep of the
+#: wrong shape.
+BOUND = 0.40
+#: Sweeps the bound accepts per probe: the entry states each rate's median over
+#: them, and its p10 and p90. On a loaded host a sweep can break the bound at
+#: one length; it is printed and swept again, up to as many times.
+SWEEPS = 10
 
 #: The total ATOM's `ModelRunner` read at one engine start on card 7 of node 18,
 #: at commit 0f045543d, and on card 5 of hjbog-srdc-39 at commit ce625ddd9.
@@ -80,23 +88,31 @@ SUBJECT["record"] = f"sha256:{RECORD}"
 #: hjbog-srdc-39 at commit 2d1d223be in one real c=256 first-turn cc-traces
 #: burst on Qwen3.8-27B TP1: the least-squares fit of the i-th request's chat
 #: template start on the loop to i and the body bytes of the requests before it.
-#: The record is the probe's stamp file, the run's server log beside it.
+#: The record is the probe's stamp file, the run's server log beside it. The
+#: band is each term's p10 and p90 over that burst and five more, the same
+#: probe on GPU 4 on 2026-10-18, stamp files sha256 d72108b4, d0a06a7c,
+#: c43f09c8, fdd7795f and 537a94ba.
 INTAKE = {
     "mi308x-hjbog39": (
-        "2026-10-16",
+        "2026-10-18",
         "2d1d223be",
         {"fixed_s": 0.0021464994614327293, "per_byte_s": 1.869416019632594e-08},
+        {
+            "fixed_s": (0.0018067202326291342, 0.0021858085019923947),
+            "per_byte_s": (1.2414576986522202e-08, 2.0502016173860215e-08),
+        },
         "40da90fe439e06efa8aeb8d8b3d5a17a955c507afb6f9aa18401cbbc957739de",
     ),
 }.get(NAME)
 
 #: A pipeline stage's send, per carrier, fitted on hjbog-srdc-39 GPUs 4 and 5
-#: by `scripts/compass/pp_carriers.py` at commit 93e01fbb4, pooled over six of
-#: its probe records. The record is that fit, its records' digests and source.
+#: by `scripts/compass/pp_carriers.py`, pooled at commit f61652a37 over six of
+#: its probe records, and each field's p10 and p90 over those records. The
+#: record is that fit, its records' digests and source.
 PP = {
     "mi308x-hjbog39": (
         "2026-10-18",
-        "93e01fbb4",
+        "f61652a37",
         {
             "rccl": {
                 "eager_threshold_bytes": 33554432,
@@ -115,7 +131,25 @@ PP = {
                 "wake_rise_s": 0.5825204944577904,
             },
         },
-        "53ef27fd3bca30cd1a58c637debab9ee5b14712acb572bfd0eabeb6807a9eaa0",
+        {
+            "rccl": {
+                "eager_threshold_bytes": (33554432, 33554432),
+                "latency_s": (1.551059540361166e-06, 1.8452992662787437e-06),
+                "overhead_s": (3.775578707541332e-05, 3.815520707354402e-05),
+                "per_byte_s": (2.0040145304535237e-11, 2.0241865040412074e-11),
+                "rendezvous_fixed_s": (5.7052271857238044e-05, 5.7605673286806436e-05),
+            },
+            "gloo": {
+                "eager_threshold_bytes": (0, 0),
+                "latency_s": (6.898597348481417e-06, 1.1346652172505856e-05),
+                "overhead_s": (1.3180740542832e-05, 2.1155269091286356e-05),
+                "per_byte_s": (1.1753227517226192e-10, 1.4222777041488327e-10),
+                "rendezvous_fixed_s": (2.3030740387005117e-05, 2.5839193858153713e-05),
+                "wake_s": (0.0001359877788747081, 0.00019833540571732194),
+                "wake_rise_s": (0.38485740280609293, 0.7250460403446475),
+            },
+        },
+        "877791cd3ee2a69c25aca30824fdcf45d2e192d37b67b41f76fea040176724c9",
     ),
 }.get(NAME)
 
@@ -160,10 +194,17 @@ DECLARED = {
 
 
 def fragment(
-    source: str, body: dict, origin: str, notes: str, subject=None, date=DATE
+    source: str, body: dict, origin: str, notes: str, subject=None, date=DATE, band=None
 ) -> Fragment:
+    """`band` maps each field's path to its p10 and p90, stated beside the subject."""
     stanza = {"authored_by": AUTHOR, "date": date, "origin": origin, "notes": notes}
-    if subject:
+    if band:
+        stanza["origin"] = "mixed"
+        stanza["origins"] = {
+            path: {"origin": origin, **subject, "p10": low, "p90": high}
+            for path, (low, high) in band.items()
+        }
+    elif subject:
         stanza["subject"] = subject
     document = {"schema_version": 1, "name": NAME, "provenance": stanza, **body}
     return Fragment.from_mapping(document, source)
@@ -176,18 +217,24 @@ def device_fragments() -> list[Fragment]:
     ptl = {"device": {"ptl": PTL}}
     probes = [fragment("ptl", ptl, "probed", "ptl_enable", date="2026-10-18")]
     if INTAKE:
-        date, root, terms, record = INTAKE
+        date, root, terms, band, record = INTAKE
         subject = {"model": "Qwen/Qwen3.8-27B", "source_root": f"commit:{root}"}
         subject["record"] = f"sha256:{record}"
         how = f"one real c=256 first-turn cc-traces burst at {root}"
         body = {"host": {"http_intake": terms}}
-        probes.append(fragment("intake", body, "probed", how, subject, date))
+        band = {f"host.http_intake.{k}": v for k, v in band.items()}
+        probes.append(fragment("intake", body, "probed", how, subject, date, band))
     if PP:
-        date, root, carriers, record = PP
+        date, root, carriers, band, record = PP
         subject = {"source_root": f"commit:{root}", "record": f"sha256:{record}"}
         body = {"interconnect": {"intra_node": {"pp": carriers}}}
         how = f"pp_carriers.py on two GPUs at {root}"
-        probes.append(fragment("pp", body, "probed", how, subject, date))
+        band = {
+            f"interconnect.intra_node.pp.{c}.{k}": v
+            for c, fields in band.items()
+            for k, v in fields.items()
+        }
+        probes.append(fragment("pp", body, "probed", how, subject, date, band))
     return [
         fragment("device", DEVICE, "probed", notes, SUBJECT),
         fragment("assumed", DECLARED, "assumed", "no probe fills these"),
@@ -206,13 +253,30 @@ def swept(model: str) -> Fragment:
     tok = _load_tokenizer(model)
     root = git_tree_root("atom", str(ROOT))
     text = "\n".join(p.read_text() for p in sorted((ROOT / "atom").rglob("*.py")))
+    runs, refused = [], 0
+    while len(runs) < SWEEPS:
+        try:
+            runs.append(
+                tokenizer_sweep(
+                    tok, text, LENGTHS, bound=BOUND, clock=time.perf_counter
+                )
+            )
+        except SpecRefusal as refusal:
+            refused += 1
+            print(f"sweep {len(runs) + refused} refused: {refusal.what}")
+            if refused > SWEEPS:
+                raise
+    rates = {k: [r[k] for r in runs] for k in runs[0]}
+    cut = {
+        k: statistics.quantiles(v, n=10, method="inclusive") for k, v in rates.items()
+    }
     entry = {
         "id": Path(model).name.lower(),
         "backend": "fast" if tok.is_fast else "slow",
         "vocab_size": len(tok),
         "fingerprint": _fingerprint(tok),
         "applies_to": PretrainedConfig.get_config_dict(model)[0]["architectures"],
-        **tokenizer_sweep(tok, text, LENGTHS, bound=BOUND, clock=time.perf_counter),
+        **{k: statistics.median(v) for k, v in rates.items()},
         # Measured on the host it describes, so nothing is taken off it.
         "derate": 1.0,
     }
@@ -227,6 +291,10 @@ def swept(model: str) -> Fragment:
             "source_root": f"{root.revision_kind}:{root.revision}",
         },
         source="tokenizer",
+        band={
+            "p10": {k: c[0] for k, c in cut.items()},
+            "p90": {k: c[8] for k, c in cut.items()},
+        },
     )
 
 
@@ -272,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:
     print(verdict)
     if not verdict.ok:
         return 1
+    refuse_unbanded(MachineSpec.from_mapping(merged.document))
     args.out.write_text(json.dumps(merged.document, indent=2) + "\n")
     print(report(merged))
     return 0
