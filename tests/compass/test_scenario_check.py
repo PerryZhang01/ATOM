@@ -189,9 +189,10 @@ PREFILL, DECODE = [[5, 5, False]], [[1, 6, True]]
 @pytest.mark.parametrize(
     "rank1_step1, last",
     [
-        # The mixed batch costs P + D, so rank 1 returns last, at P + 2D.
-        (PREFILL + DECODE, P + 2 * D),
-        # Rank 1 finishes its decode at 2D, so rank 0 returns last, at P + D.
+        # Rank 1's mixed batch starts at the group's device end P and costs
+        # P + D, so the last step returns at 2P + D.
+        (PREFILL + DECODE, 2 * P + D),
+        # Both decodes start at the group's device end P.
         (DECODE, P + D),
     ],
     ids=["mixed", "decode"],
