@@ -15,6 +15,7 @@ from atom.compass.backends import (
     StepLinearBackend,
     StepLinearLaw,
 )
+from atom.compass.backends.step_linear_fit import fit, label_records, mark_held_out
 from atom.compass.validate.cost import cost_accuracy
 
 #: Each forward's draft, as a share of its target.
@@ -34,8 +35,7 @@ def _mtp_record(path, steps):
 
 def test_an_mtp_record_fits_a_draft_law_that_prices_each_forward_apart(tmp_path):
     steps = _steps(3)
-    (tmp_path / "steps").mkdir()
-    law = _fit([_mtp_record(tmp_path / "steps" / "dp0.jsonl", steps)])
+    law = _fit([_mtp_record(tmp_path / "dp0.jsonl", steps)])
     assert "draft" not in _fit([_record(tmp_path / "plain.jsonl", steps)])
 
     backend = StepLinearBackend(StepLinearLaw(law))
@@ -50,11 +50,6 @@ def test_an_mtp_record_fits_a_draft_law_that_prices_each_forward_apart(tmp_path)
     cost = backend.price(middle)
     assert [(t.name, t.seconds) for t in cost.terms if t.draft] == [("draft", 0.0)]
     assert cost.target_seconds > 0
-
-    # Cost accuracy holds the target price to the target label.
-    for kind in ("prefill", "decode"):
-        summary = cost_accuracy(tmp_path / "steps", law)["unvalidated"][kind]
-        assert summary["on_totals"] == pytest.approx(0.0, abs=1e-5)
 
 
 def test_a_speculative_run_charges_the_law_s_draft_and_refuses_a_law_without_one(
@@ -72,3 +67,17 @@ def test_a_speculative_run_charges_the_law_s_draft_and_refuses_a_law_without_one
     plain = _speculative(runner(StepLinearBackend(StepLinearLaw(law))))
     assert plain.forward(prefill(8)).predicted_s == 0.0
     assert plain.refused_commands() == ("cost:StepLinearBackend: prices no draft",)
+
+
+def test_cost_accuracy_holds_a_held_out_target_price_to_the_target_label(tmp_path):
+    """The draft law records no held-out errors, and its terms leave a step's
+    validation and price to the target's."""
+    records = [_mtp_record(tmp_path / f"dp0-{s}.jsonl", _steps(s)) for s in (3, 4)]
+    samples = label_records(records)[0]
+    law, report = fit(samples)
+    mark_held_out(law, report, samples)
+    (tmp_path / "steps").mkdir()
+    _mtp_record(tmp_path / "steps" / "dp0.jsonl", _steps(5))
+    validated = cost_accuracy(tmp_path / "steps", law)["validated"]
+    for kind in ("prefill", "decode"):
+        assert validated[kind]["on_totals"] == pytest.approx(0.0, abs=1e-5)
