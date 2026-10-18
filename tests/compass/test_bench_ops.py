@@ -302,6 +302,29 @@ def test_copy_c_rotates_weights_and_instances_and_clones_past_the_first_round():
     assert copies[0][0]["out_dtype"] is torch.bfloat16
 
 
+@pytest.mark.parametrize("copies", [1, 8])
+def test_every_cold_and_warm_graph_holds_calls_calls_at_any_copies(copies):
+    # A replay's fixed cost is spread over a graph's calls: a count that moved
+    # with the copies would move each price by its copies.
+    stub = ops.Stub(_Runner(), 10_000)
+    stub.placed = [(fctx.ForwardContext(), {})]
+    graphs = []
+
+    def replay(fn, calls):
+        graphs.append(len(calls))
+        return [1.0] * ops.REPEATS
+
+    with (
+        patch.object(ops, "_function", return_value=lambda **kwargs: None),
+        patch.object(ops, "_kernels", return_value=["k"]),
+        patch.object(ops, "_replay", side_effect=replay),
+    ):
+        record = stub._time({"op": "x", "args": {"n": 1}}, "sig", [{}], copies)
+
+    assert graphs == [ops.CALLS] * (2 if copies > 1 else 1)
+    assert (record["copies"], record["calls"]) == (copies, ops.CALLS)
+
+
 def test_a_batch_takes_the_blocks_and_slots_it_is_placed_at(rule):  # noqa: F811
     line = _line([[1, 40, True], [1, 17, True]])
 
