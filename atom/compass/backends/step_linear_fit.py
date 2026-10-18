@@ -610,8 +610,8 @@ def _bands(rows) -> dict:
 
 def mark_held_out(law: dict, report: dict, samples, options=None, seed: int = 0):
     """Write the held-out errors: under each of `law`'s vectors, as `held_out`,
-    the hull of every rank's step `_held_out` priced and their errors per band;
-    under `report`'s `held_out`, each run's errors per band."""
+    the hull of every rank's step `_held_out` priced, their errors per band; under
+    `report`'s `held_out`, each run's errors per band."""
     from scipy.spatial import QhullError
 
     rows = [
