@@ -13,9 +13,7 @@ decode step whose device start precedes its host launch end is launch-exposed
 and cut; a prefill step is never cut, so a host bubble inside it stays in its
 label. On an MTP record, one with `d_target_ns`, the device label is the
 target's, `d_target_ns` with no gap, and the draft label is the rest of
-`d_busy_ns`. A step of an MTP record without `d_target_ns` is cut as
-`unsplit`: its device label would hold a draft the law prices again. The exit
-of each wait for the previous output's token copy (`t_recv_ns`)
+`d_busy_ns`. The exit of each wait for the previous output's token copy (`t_recv_ns`)
 bounds the host clock's lead over the device's (that forward had finished by
 then); the tightest of the last `ANCHORS` bounds is the lead. The copy itself
 lands on its own stream after the exit event the bound reads, by 14 to 29 us
@@ -25,6 +23,8 @@ moves a decode step across the launch-exposed cut, so it is left in the bound
 rather than corrected by a host-specific number with no record or law of its
 own to carry it. A record without device windows is refused. A step mixing
 prefill and decode rows is cut.
+A step of an MTP record without `d_target_ns` is cut as `unsplit`: its device
+label would hold a draft the law prices again.
 
 A step's host labels are its segments: `E` from the previous forward's exit,
 cut as idle when the two batches share no request; `W_pre` to the launch, less
@@ -52,8 +52,7 @@ from atom.compass.backends.shape import BatchView, RequestShape
 
 #: Token copy wait exits whose tightest bound is a step's host clock lead.
 ANCHORS = 32
-#: Why a device label is cut: a launch-exposed decode, prefill and decode rows
-#: mixed, or an MTP record's step with no target end.
+#: Why a device label is cut: a launch-exposed decode, mixed rows, no MTP target end.
 CUTS = ("exposed", "mixed", "unsplit")
 HOST_SEGMENTS = ("E", "W_pre", "W_launch", "W_post")
 TABLE_VERSION = 1
