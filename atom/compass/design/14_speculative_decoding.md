@@ -99,6 +99,18 @@ invalid id (HSA out-of-bounds)."* Compass single-sources the clock and the step 
 already (`01`), so there is one draw, not `world_size` draws that must agree. Seed it from
 the step counter and a run is reproducible, which is what `12` M-e asks for elsewhere.
 
+**As built ([#1090](https://github.com/jgong5/ATOM/issues/1090)).** `DeferredTokenStream`
+(`atom/compass/runner/step_output.py`) draws one uniform `u` per decode row of a verify
+step, from one stream per DP rank seeded by its rank, and accepts `a = #{i : u <
+rates[i]}` drafts. Over non-increasing unconditional rates that is the kernel's
+distribution, `P(a >= i+1) = rates[i]`, in one draw per row. The row reports `a + 1`
+tokens, `num_rejected = K - a` and `num_bonus = a`, and every row reports `K` draft ids,
+as ATOM's runner does. A run whose speculative config declares no acceptance is refused by
+name. ATOM refuses forced acceptance beside DSpark's confidence schedule
+(`Config.__post_init__`), so a DSpark run verifies its full draft block; its
+confidence-scheduled truncation is not modelled. The drafter is built on the meta device
+and reads no checkpoint.
+
 ### What still flows through ATOM's real code
 
 Everything downstream of the value: `SpecStats` accumulation, the bonus-token bookkeeping,

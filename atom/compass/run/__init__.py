@@ -1377,8 +1377,17 @@ def runner(model_runner, tree) -> None:
             )
         pp = getattr(config, "pipeline_parallel_size", 1)
         stage = (config.parallel_config.pipeline_parallel_rank, pp) if pp > 1 else None
+        # A drafter's runner waits for the last output's MTP status when it
+        # defers its output.
+        mtp = bool(getattr(config, "speculative_config", None)) and (
+            model_runner.tokenID_processor.is_deferred_out
+        )
         model_runner.compass_host = replay or HostDeviceRecurrence(
-            host.get("laws", {}), host.get("skip", ()), lambda: float(slot[0]), stage
+            host.get("laws", {}),
+            host.get("skip", ()),
+            lambda: float(slot[0]),
+            stage,
+            mtp=mtp,
         )
         if replay is not None:
             replay.now = lambda: float(slot[0])
@@ -1425,6 +1434,11 @@ def _graph_pool(model_runner, machine, model):
         return reserves(enforce_eager=True)
     if not model_runner._piecewise_cg_active():
         return reserves(activations=model.activations)
+    if getattr(config, "speculative_config", None):
+        raise ValueError(
+            "under a drafter ATOM's piecewise capture reserves for each draft "
+            "q bucket, and its DP token cap, which this mirror does not take"
+        )
     hf = config.hf_config
     sizes = config.compilation_config.cudagraph_capture_sizes or [config.max_num_seqs]
     capacity = machine.value("device.memory.capacity_bytes")
