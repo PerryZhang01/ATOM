@@ -4,8 +4,8 @@
     python -m atom.compass.validate.runs SIMULATED REAL...
 
 Each argument is a run directory: its step record in `steps/` and aiperf's
-export in `artifacts/profile_export_aiperf.json`. SIMULATED is the cell at the
-law, and REAL two or more real runs of it, spaced in time.
+export in `artifacts/profile_export_aiperf.json`. SIMULATED is the cell at its
+backend, and REAL two or more real runs of it, spaced in time.
 
 A directory `cctraces_sim.sh` wrote is graded whole, and refused when its
 run.json skips host segments. In one `record` or `run` wrote, whose run.json
@@ -366,7 +366,7 @@ def main(argv=None) -> None:
         prog="python -m atom.compass.validate.runs",
         description=__doc__.split("\n\n")[0],
     )
-    parser.add_argument("simulated", help="the simulated cell at the law")
+    parser.add_argument("simulated", help="the simulated cell at its backend")
     parser.add_argument("real", nargs="+", help="two or more real runs of the cell")
     args = parser.parse_args(argv)
     print(_text(grade(args.real, args.simulated)))

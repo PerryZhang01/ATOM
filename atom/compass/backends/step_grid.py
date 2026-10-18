@@ -23,8 +23,8 @@ tokens, is extrapolated instead: each B side of the cell is read along c from
 its two highest c nodes inside the pool, extended past them. Any other step
 whose cell misses a corner is refused naming the missing corners, as is one
 outside the nodes: no clamp or fallback. A missing point does not fail
-loading; it refuses the steps that need it. A step whose extension past the
-pool is not positive on either B side is refused too, naming the falling edge.
+loading; it refuses the steps that need it. A step with a B side whose
+extension past the pool is not positive is refused too, naming the falling edge.
 
 Also refused: a step mixing prefill and decode rows, a decode row computing
 more than one token, a count that is not an int, a prefill step that does not

@@ -108,7 +108,7 @@ def test_a_step_in_its_hull_prices_as_the_stub_with_one_estimated_term_per_featu
     assert {t.provenance.method for t in cost.terms} == {Method.ESTIMATED}
     assert {t.provenance.source for t in cost.terms} == {"step-linear"}
     assert not any(t.provenance.validated for t in cost.terms)
-    assert not cost.is_refused
+    assert not cost.fell_back
 
 
 def test_a_term_is_its_count_times_its_coefficient():
@@ -142,7 +142,7 @@ def test_a_step_outside_its_hull_is_priced_by_the_same_law_extrapolated(batch, h
     assert all(
         t.provenance.detail.endswith(f"outside the {hull} hull") for t in cost.terms
     )
-    assert not cost.is_refused
+    assert not cost.fell_back
 
 
 # The square (0, 0) to (2000, 2000) over (context, graph_padding): it holds

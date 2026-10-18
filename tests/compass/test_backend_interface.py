@@ -79,7 +79,7 @@ def test_a_backend_returns_a_total_with_its_parts():
     step = TwoTermBackend().price({"tokens": 512})
     assert [name for name, _, _ in step.rows()] == ["launch", "tokens"]
     assert step.seconds == pytest.approx(0.001 + 512 * 2e-6)
-    assert not step.is_refused
+    assert not step.fell_back
 
 
 def test_a_backend_says_what_it_is_answering_from():
