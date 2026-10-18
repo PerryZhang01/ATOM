@@ -19,6 +19,7 @@ from .nodes import (
     Seq,
     Tensor,
 )
+from .shapes import SymDim
 
 __all__ = [
     "Applicability",
@@ -33,5 +34,6 @@ __all__ = [
     "Repeat",
     "Role",
     "Seq",
+    "SymDim",
     "Tensor",
 ]

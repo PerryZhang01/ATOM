@@ -1,15 +1,15 @@
 # SPDX-License-Identifier: MIT
 """From a recorded op stream to an `ir.Graph`: streams to `Par`, layers to `Repeat`.
 
-A recorded op inside decoder layer *i* names its context key, and each module
-argument's path, with the layer's own number written `{L}`. Two layers whose regions are equal are
+A recorded op inside decoder layer *i* names its context key with the layer's
+own number written `{L}`. Two layers whose regions are equal are
 interchangeable for pricing; the layer sequence is run-length encoded, then the
 result again, until a pass groups nothing, so `AAAB AAAB ...` nests as
 `((A x3) B) x n`. A layer is one region, its ops a `Seq` (or the op alone),
 and what runs outside every layer sits around them. Each `Repeat` binds its
 own index to its instances' first
 layer, and a key names its layer as the sum of the indices around it and an
-offset (`{l0+l1}`, `{l0+3}`).
+offset (`{l0+l1}`, `{l0+3}`). A module argument's path names its layer alike.
 
 A side stream that waits on the main one forks; the main one waiting on it
 joins. What both ran in between is a `Par` of one branch per stream, joined
@@ -203,7 +203,7 @@ def _seq(regions):
 
 
 def to_json(graph: ir.Graph) -> str:
-    """The graph as JSON."""
+    """The graph as JSON: a str dimension is symbolic, an int concrete."""
     applicability = graph.applicability
     return json.dumps(
         {
@@ -218,7 +218,7 @@ def _arg(value):
     """An argument as JSON: a tensor, module or context key as an object."""
     if isinstance(value, ir.Tensor):
         return {
-            "shape": list(value.shape),
+            "shape": [_dim(d) for d in value.shape],
             "dtype": value.dtype,
             "stride": list(value.stride),
             "role": value.role.value,
@@ -237,7 +237,7 @@ def _json(region):
             "op": region.name,
             "kind": region.kind.value,
             "args": {slot: _arg(value) for slot, value in region.args},
-            "out": [list(s) for s in region.out_shapes],
+            "out": [[_dim(d) for d in s] for s in region.out_shapes],
             "stream": region.stream_id,
             "context": region.context_ref and region.context_ref.key,
         }
@@ -252,3 +252,7 @@ def _json(region):
         "start": region.start,
         "step": region.step,
     }
+
+
+def _dim(dim):
+    return dim.text if isinstance(dim, ir.SymDim) else dim

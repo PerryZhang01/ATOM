@@ -62,12 +62,12 @@ _IS_ATOM: dict = {}
 class Shape(NamedTuple):
     """A step's shape: `tokens` query tokens over `seqs` sequences."""
 
-    prefill: bool
+    phase: str  # "decode" or "prefill"
     tokens: int
     seqs: int
 
     def __str__(self) -> str:
-        if self.prefill:
+        if self.phase == "prefill":
             return f"prefill T={self.tokens} B={self.seqs}"
         return f"decode B={self.seqs}"
 
@@ -75,7 +75,7 @@ class Shape(NamedTuple):
 def decode(width: int) -> Shape:
     if width < 1:
         raise ValueError(f"a decode width is at least 1, got {width}")
-    return Shape(False, width, width)
+    return Shape("decode", width, width)
 
 
 def prefill(tokens: int, seqs: int) -> Shape:
@@ -84,7 +84,7 @@ def prefill(tokens: int, seqs: int) -> Shape:
             f"a prefill of {tokens} tokens over {seqs} sequences: each sequence "
             "takes at least one token"
         )
-    return Shape(True, tokens, seqs)
+    return Shape("prefill", tokens, seqs)
 
 
 def _atom_frames():
@@ -274,8 +274,10 @@ class _Recorder(TorchDispatchMode):
         return re.sub(rf"\blayers\.{self.layer}\b", f"layers.{{{LAYER}}}", path)
 
 
-def _patches(recorder):
+def _patches(recorder, dtype):
     """What the step runs under besides the modes, as one stack of patches.
+
+    * The model's `dtype` is the default, as in ATOM's runner.
 
     * A raw Triton or FlyDSL launch goes to the driver below the dispatcher: it
       is lifted to its ATOM function and not launched.
@@ -298,7 +300,7 @@ def _patches(recorder):
     def launch(kernel, *args):
         recorder.launch(f"flydsl.{getattr(kernel, 'func', kernel).__name__}")
 
-    init, zeros, numpy_ = CpuGpuBuffer.__init__, torch.zeros, torch.Tensor.numpy
+    init, zeros, numpy = CpuGpuBuffer.__init__, torch.zeros, torch.Tensor.numpy
     conv1d = gdn_attn.compute_causal_conv1d_metadata
 
     def host_zeros(*size, pin_memory=False, **kwargs):
@@ -309,7 +311,7 @@ def _patches(recorder):
 
     def host_numpy(tensor, *args, **kwargs):
         with unset_fake_temporarily():
-            return numpy_(tensor, *args, **kwargs)
+            return numpy(tensor, *args, **kwargs)
 
     def staged_init(self, *args, **kwargs):
         with (
@@ -323,6 +325,8 @@ def _patches(recorder):
             return conv1d(*args, **kwargs)
 
     stack = contextlib.ExitStack()
+    stack.callback(torch.set_default_dtype, torch.get_default_dtype())
+    torch.set_default_dtype(dtype)
     for owner, name, value in (
         (JITFunction, "run", run),
         (flydsl.compiler, "compile", launch),
@@ -334,7 +338,7 @@ def _patches(recorder):
 
 
 def _build_runner(config, fake_mode):
-    """ATOM's `ModelRunner`, built in the mode.
+    """ATOM's `ModelRunner`, built in the mode in the model's dtype.
 
     The group already exists at its width, warmup would run a forward of its
     own, and no checkpoint is read.
@@ -353,9 +357,14 @@ def _build_runner(config, fake_mode):
         def _maybe_warmup(self):
             return
 
-    # A fake tensor has no address: the alias check sees each buffer empty.
-    with fake_mode, patch.object(h2d, "_range", lambda t: (0, 0)):
-        return _CapturedRunner(0, config)
+    previous = torch.get_default_dtype()
+    torch.set_default_dtype(config.torch_dtype)
+    try:
+        # A fake tensor has no address: the alias check sees each buffer empty.
+        with fake_mode, patch.object(h2d, "_range", lambda t: (0, 0)):
+            return _CapturedRunner(0, config)
+    finally:
+        torch.set_default_dtype(previous)
 
 
 def _weights(model):
@@ -376,13 +385,12 @@ def _batch(shape, block_size):
 
     per, extra = divmod(shape.tokens, shape.seqs)
     counts = [per + (i < extra) for i in range(shape.seqs)]
-    phase = "prefill" if shape.prefill else "decode"
     seqs, blocks = {}, 0
     for index, count in enumerate(counts):
         # An id of 0 would draw one from the class counter instead.
         seq = sequence.Sequence([0] * count, block_size=block_size, id=index + 1)
         seq.status = sequence.SequenceStatus.RUNNING
-        seq.type = sequence.SequenceType[phase.upper()]
+        seq.type = sequence.SequenceType[shape.phase.upper()]
         taken = -(-count // block_size)
         seq.block_table = sequence.new_block_table(list(range(blocks, blocks + taken)))
         seqs[seq.id], blocks = seq, blocks + taken
@@ -391,8 +399,8 @@ def _batch(shape, block_size):
         num_scheduled_tokens=numpy.array(counts, dtype=numpy.int32),
         total_tokens_num=shape.tokens,
         total_seqs_num=shape.seqs,
-        **{f"total_tokens_num_{phase}": shape.tokens},
-        **{f"total_seqs_num_{phase}": shape.seqs},
+        **{f"total_tokens_num_{shape.phase}": shape.tokens},
+        **{f"total_seqs_num_{shape.phase}": shape.seqs},
         is_dummy_run=True,
     )
     return batch, blocks
@@ -402,8 +410,7 @@ def capture(model: str, tp: int, shapes, tmpdir: str):
     """Trace one step of `model` at TP `tp` at each of `shapes`, in this process.
 
     Yields, per shape, the graph, the model's config digest, what the capture
-    declared (the operators it left out of the graph among it) and the seconds
-    the shape took.
+    declared (the operators it left out of the graph among it) and its seconds.
     """
     declared = driverless.install(tp, tmpdir)
 
@@ -417,66 +424,49 @@ def capture(model: str, tp: int, shapes, tmpdir: str):
     )
     set_current_atom_config(config)
     digest = _file_digest(config.model, "config.json")
-    architecture = config.hf_config.architectures[0]
+    structure = f"{config.hf_config.architectures[0]} {digest} tp={tp} {{}} eager"
     fake_mode = driverless.driverless_mode(ShapeEnv())
-    recorder = _Recorder(config.compilation_config.static_forward_context)
+    contexts = config.compilation_config.static_forward_context
+    recorder, block_size = _Recorder(contexts), config.kv_cache_block_size
     driverless.on_wait = recorder.wait
-    previous = torch.get_default_dtype()
-    # ATOM's runner keeps the model's dtype as the default through each step.
-    torch.set_default_dtype(config.torch_dtype)
-    try:
-        with _patches(recorder):
-            runner = _build_runner(config, fake_mode)
-            model_ = runner.model
-            recorder.modules = {id(m): name for name, m in model_.named_modules()}
-            weight = dict.fromkeys(map(_storage, _weights(model_)), ir.Role.WEIGHT)
-            recorder.roles = weight
-            stacks = [
-                module
-                for name, module in model_.named_modules()
-                if isinstance(module, torch.nn.ModuleList) and name.endswith("layers")
-            ]
-            if not stacks:
-                raise ValueError(f"{type(model_).__name__} has no `layers` to fold")
-            for index, layer in enumerate(max(stacks, key=len)):
-                layer.register_forward_pre_hook(
-                    lambda m, a, i=index: setattr(recorder, "layer", i)
-                )
-                layer.register_forward_hook(
-                    lambda m, a, o: setattr(recorder, "layer", None)
-                )
-            model_.register_forward_pre_hook(
-                lambda m, a: setattr(recorder, "creating", ir.Role.ACTIVATION)
+    with _patches(recorder, config.torch_dtype):
+        runner = _build_runner(config, fake_mode)
+        stacks = [
+            module
+            for name, module in runner.model.named_modules()
+            if isinstance(module, torch.nn.ModuleList) and name.endswith("layers")
+        ]
+        if not stacks:
+            raise ValueError(f"{type(runner.model).__name__} has no `layers` to fold")
+        for index, layer in enumerate(max(stacks, key=len)):
+            layer.register_forward_pre_hook(
+                lambda m, a, i=index: setattr(recorder, "layer", i)
             )
-            block_size = config.kv_cache_block_size
-            needed = max(_batch(shape, block_size)[1] for shape in shapes)
-            recorder.creating = ir.Role.KV
-            with fake_mode, recorder:
-                runner.allocate_kv_cache(max(KV_BLOCKS, needed))
-            for shape in shapes:
-                began = time.perf_counter()
-                recorder.creating = ir.Role.METADATA
-                with fake_mode, torch._C._EnablePythonDispatcher(), recorder:
-                    # A step follows another, and the first step of a runner
-                    # takes its own path: the traced step follows one of its
-                    # own shape, so no shape's graph depends on another's.
-                    runner.forward(_batch(shape, block_size)[0])
-                    recorder.start()
-                    recorder.creating, recorder.on = ir.Role.METADATA, True
-                    runner.forward(_batch(shape, block_size)[0])
-                recorder.creating, recorder.on = None, False
-                phase = "prefill" if shape.prefill else "decode"
-                structure = f"{architecture} {digest} tp={tp} {phase} eager"
-                crossing = []
-                graph = build(recorder.items, Traced(structure, str(shape)), crossing)
-                left_out = [
-                    *recorder.left_out,
-                    *(("step-crossing", op) for op in crossing),
-                ]
-                stated = {
-                    **declared,
-                    "left_out": [{"why": why, **_json(op)} for why, op in left_out],
-                }
-                yield graph, digest, stated, time.perf_counter() - began
-    finally:
-        torch.set_default_dtype(previous)
+            layer.register_forward_hook(
+                lambda m, a, o: setattr(recorder, "layer", None)
+            )
+        runner.model.register_forward_pre_hook(
+            lambda m, a: setattr(recorder, "creating", ir.Role.ACTIVATION)
+        )
+        recorder.modules = {id(m): n for n, m in runner.model.named_modules()}
+        weights = map(_storage, _weights(runner.model))
+        recorder.roles = dict.fromkeys(weights, ir.Role.WEIGHT)
+        recorder.creating = ir.Role.KV
+        blocks = max(_batch(shape, block_size)[1] for shape in shapes)
+        with fake_mode, recorder:
+            runner.allocate_kv_cache(max(KV_BLOCKS, blocks))
+        for shape in shapes:
+            began, recorder.creating = time.perf_counter(), ir.Role.METADATA
+            with fake_mode, torch._C._EnablePythonDispatcher(), recorder:
+                # A runner's first step takes its own path, so the traced step
+                # follows one of its own shape: no graph depends on another's.
+                runner.forward(_batch(shape, block_size)[0])
+                recorder.start()
+                recorder.creating, recorder.on = ir.Role.METADATA, True
+                runner.forward(_batch(shape, block_size)[0])
+            recorder.creating, recorder.on = None, False
+            crossing, traced = [], Traced(structure.format(shape.phase), str(shape))
+            graph = build(recorder.items, traced, crossing)
+            left_out = [*recorder.left_out, *(("step-crossing", op) for op in crossing)]
+            declared["left_out"] = [{"why": why, **_json(op)} for why, op in left_out]
+            yield graph, digest, dict(declared), time.perf_counter() - began

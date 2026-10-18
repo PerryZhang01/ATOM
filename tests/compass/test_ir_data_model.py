@@ -19,11 +19,13 @@ from atom.compass.ir import (
     Repeat,
     Role,
     Seq,
+    SymDim,
     Tensor,
 )
 from atom.compass.ir.shapes import as_dim, as_shape
 
 IR_PACKAGE = Path(__file__).resolve().parents[2] / "atom" / "compass" / "ir"
+CAPTURE = "qwen3-27b/decode"
 ACTIVATION = Tensor((4, 8), "torch.bfloat16", (8, 1), Role.ACTIVATION)
 
 
@@ -36,6 +38,11 @@ def _op(name="aiter::gemm_a16w16", **kwargs):
 
 class _Unrenderable:
     """An object with no rendering of its own, as most objects have none."""
+
+
+class _Compound:
+    def __str__(self):
+        return "2*s26 + 1"
 
 
 class _Tensor:
@@ -199,13 +206,55 @@ def test_a_sequence_with_nothing_in_it_is_refused():
         Seq(())
 
 
-# --- shapes ------------------------------------------------------------------
+# --- a size that is not known yet --------------------------------------------
 
 
-def test_a_width_from_another_library_is_converted_not_taken():
+def test_a_live_symbolic_size_is_not_rendered_on_anybody_s_behalf():
+    with pytest.raises(TypeError, match="SymDim.of"):
+        as_dim(_Compound())
+    assert as_dim(SymDim.of(_Compound(), CAPTURE)) == SymDim("2*s26 + 1", CAPTURE)
+
+
+def test_a_node_holding_a_symbolic_size_is_hashable_and_comparable():
+    first = _op(out_shapes=((SymDim.of(_Compound(), CAPTURE), 4096),))
+    second = _op(out_shapes=((SymDim("2*s26 + 1", CAPTURE), 4096),))
+    third = _op(out_shapes=((SymDim("s99", CAPTURE), 4096),))
+    assert first == second != third
+    assert len({first, second, third}) == 2
+
+
+def test_two_captures_that_spell_a_symbol_the_same_are_not_the_same_size():
+    here, there = SymDim("s26", "capture-a"), SymDim("s26", "capture-b")
+    assert here != there
+    assert _op(out_shapes=((here, 8),)) != _op(out_shapes=((there, 8),))
+
+
+@pytest.mark.parametrize(
+    "text, scope", [("", CAPTURE), ("   ", CAPTURE), ("s52\ns53", CAPTURE), ("s26", "")]
+)
+def test_a_symbolic_size_needs_a_rendering_and_a_scope(text, scope):
+    with pytest.raises(ValueError, match="one-line rendering"):
+        SymDim(text, scope)
+
+
+@pytest.mark.parametrize("bad", ["4096", " 17 ", "-3", "1.5", "inf"])
+def test_a_size_that_renders_as_a_number_is_a_known_size(bad):
+    # Held as a symbol it would compare unequal to the int it is.
+    with pytest.raises(ValueError, match="belongs in the shape as an int"):
+        SymDim(bad, CAPTURE)
+
+
+def test_an_object_with_no_rendering_of_its_own_is_refused():
+    with pytest.raises(ValueError, match="no rendering of its own"):
+        SymDim.of(_Unrenderable(), CAPTURE)
+
+
+def test_a_width_from_another_library_is_converted_not_rendered():
     numpy = pytest.importorskip("numpy")
-    with pytest.raises(TypeError, match="a dimension is a concrete int"):
+    with pytest.raises(TypeError, match="SymDim.of"):
         as_dim(numpy.int64(4096))
+    with pytest.raises(ValueError, match="belongs in the shape as an int"):
+        SymDim.of(numpy.int64(4096), CAPTURE)
 
 
 def test_a_concrete_dimension_is_bounded():
@@ -270,11 +319,14 @@ def test_a_live_symbolic_value_reaches_no_field_of_a_node():
             assert len(shape_env.guards) == before, label
 
         before = len(shape_env.guards)
-        with pytest.raises(TypeError, match="a dimension is a concrete int"):
+        with pytest.raises(TypeError, match="SymDim.of"):
             _op(out_shapes=((tokens, 4096),))
-        with pytest.raises(TypeError, match="a dimension is a concrete int"):
-            Tensor((tokens, 4096), "torch.bfloat16", (4096, 1), Role.ACTIVATION)
+        rendered = SymDim.of(tokens, "one-capture")
+        op = _op(out_shapes=((rendered, 4096),))
         assert len(shape_env.guards) == before
+
+    assert rendered.text == str(tokens)
+    assert hash(op) == hash(op)
 
 
 # --- arguments ---------------------------------------------------------------
