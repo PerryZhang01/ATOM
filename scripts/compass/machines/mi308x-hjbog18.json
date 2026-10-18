@@ -128,6 +128,22 @@
       "device.ptl": {
         "origin": "probed"
       },
+      "host.http_intake.fixed_s": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "source_root": "commit:19c5ab09e",
+        "record": "sha256:dc719c11dd8c45b777cdc1c7fb32ea387adab0f6046aa73b667db6d2b912fd1a",
+        "p10": 0.0023905681113767967,
+        "p90": 0.002818263790208814
+      },
+      "host.http_intake.per_byte_s": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "source_root": "commit:19c5ab09e",
+        "record": "sha256:dc719c11dd8c45b777cdc1c7fb32ea387adab0f6046aa73b667db6d2b912fd1a",
+        "p10": 3.728040935451147e-09,
+        "p90": 6.552659606331298e-09
+      },
       "host.tokenizers[qwen3.8-27b fast]": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
@@ -150,9 +166,10 @@
       "tokenizer",
       "device",
       "assumed",
-      "ptl"
+      "ptl",
+      "intake"
     ],
-    "notes": "one Qwen3.8-27B TP1 start at 0f045543d | no probe fills these | ptl_enable"
+    "notes": "one Qwen3.8-27B TP1 start at 0f045543d | no probe fills these | ptl_enable | one real c=256 first-turn cc-traces burst at 19c5ab09e"
   },
   "host": {
     "cpu": {
@@ -178,6 +195,10 @@
     "ipc": {
       "zmq_roundtrip_s": 5e-05,
       "shm_broadcast_s": 2e-05
+    },
+    "http_intake": {
+      "fixed_s": 0.0026078916675536866,
+      "per_byte_s": 5.082586258228853e-09
     }
   },
   "device": {

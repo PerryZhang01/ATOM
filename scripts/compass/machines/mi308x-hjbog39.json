@@ -133,16 +133,16 @@
         "model": "Qwen/Qwen3.8-27B",
         "source_root": "commit:2d1d223be",
         "record": "sha256:40da90fe439e06efa8aeb8d8b3d5a17a955c507afb6f9aa18401cbbc957739de",
-        "p10": 0.0018067202326291342,
-        "p90": 0.0021858085019923947
+        "p10": 0.0023590643143750166,
+        "p90": 0.0026066054400923915
       },
       "host.http_intake.per_byte_s": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "source_root": "commit:2d1d223be",
         "record": "sha256:40da90fe439e06efa8aeb8d8b3d5a17a955c507afb6f9aa18401cbbc957739de",
-        "p10": 1.2414576986522202e-08,
-        "p90": 2.0502016173860215e-08
+        "p10": 3.576250354791265e-09,
+        "p90": 5.75468059489999e-09
       },
       "interconnect.intra_node.pp.rccl.eager_threshold_bytes": {
         "origin": "probed",
@@ -282,8 +282,8 @@
       "shm_broadcast_s": 2e-05
     },
     "http_intake": {
-      "fixed_s": 0.0021464994614327293,
-      "per_byte_s": 1.869416019632594e-08
+      "fixed_s": 0.002669345165336389,
+      "per_byte_s": 5.603337964226679e-09
     }
   },
   "device": {

@@ -760,16 +760,17 @@ def test_a_stamped_cancel_hangs_its_request_up_at_its_arrival_never_the_socket(r
 
 def _intake_run_file(monkeypatch, tmp_path, intake) -> None:
     """A run file whose machine spec states `intake` as host.http_intake, or
-    neither term for None."""
+    with no machine spec for None."""
     from test_memory_readings import DOCUMENT
 
     from atom.compass import run as compass_run
 
-    machine = copy.deepcopy(DOCUMENT)
+    run = {"bound_s": 600.0}
     if intake is not None:
+        machine = run["machine"] = copy.deepcopy(DOCUMENT)
         machine["host"]["http_intake"] = dict(zip(("fixed_s", "per_byte_s"), intake))
     path = tmp_path / "run.json"
-    path.write_text(json.dumps({"bound_s": 600.0, "machine": machine}))
+    path.write_text(json.dumps(run))
     monkeypatch.setenv(compass_run.ENV, str(path))
 
 

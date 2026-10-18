@@ -19,10 +19,10 @@ curve is `[bytes, bytes per second]` points, both rising with the bytes.
 
 Every field is required except the provenance fields `merge` fills in,
 `fp4_flops` and its derate, the bandwidth curve, the kernel floor, the pipeline
-send terms, a link's `link_setup_s` (zero when absent), the `host.http_intake`
-pair, the `host_link` pair and `device.ptl`, the cards' PTL state (`disabled`
-when absent). An engine start's memory readings are no field here: `compass
-measure memory` publishes them per configuration, as a `memory_readings` entry.
+send terms, a link's `link_setup_s` (zero when absent), the `host_link` pair
+and `device.ptl`, the cards' PTL state (`disabled` when absent). An engine
+start's memory readings are no field here: `compass measure memory` publishes
+them per configuration, as a `memory_readings` entry.
 
 **Every field says where it came from.** `provenance.origin` is one of
 `ORIGINS`. A document of several origins says `mixed`, and `merge` writes
@@ -130,8 +130,8 @@ FIELDS = (
     Field("host.ipc.zmq_roundtrip_s", Kind.QUANTITY),
     Field("host.ipc.shm_broadcast_s", Kind.QUANTITY),
     # The frontend event loop's time to take in one HTTP request.
-    Field("host.http_intake.fixed_s", Kind.QUANTITY, required=False),
-    Field("host.http_intake.per_byte_s", Kind.QUANTITY, required=False),
+    Field("host.http_intake.fixed_s", Kind.QUANTITY),
+    Field("host.http_intake.per_byte_s", Kind.QUANTITY),
     Field("device.name", Kind.TEXT),
     Field("device.arch", Kind.TEXT),
     Field("device.count_per_node", Kind.COUNT),

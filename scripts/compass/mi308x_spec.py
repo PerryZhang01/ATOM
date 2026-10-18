@@ -10,7 +10,7 @@ not the ones the device fragment recorded there. The device fragment is what
 ATOM's own `ModelRunner` read at one engine start (Qwen3.8-27B, TP1, CUDA
 graphs and prefix caching on, `--max-model-len 262144`): the device, its
 capacity and the stack; every field no probe fills is assumed, on either host.
-On hjbog-srdc-39 one real burst adds the HTTP intake terms (`INTAKE`). An
+One real burst on each host adds the HTTP intake terms (`INTAKE`). An
 engine start's memory readings are `compass measure memory`'s, not the spec's.
 One fragment per probe or origin. Writes the merged document to `--out` when
 `validate` passes, then prints `explain`'s rows for the host, device and
@@ -84,26 +84,37 @@ RECORD = {
 SUBJECT = {"model": "Qwen/Qwen3.8-27B", "width": 1, "source_root": f"commit:{COMMIT}"}
 SUBJECT["record"] = f"sha256:{RECORD}"
 
-#: The API server's event loop taking in one HTTP request, probed on
-#: hjbog-srdc-39 at commit 2d1d223be in one real c=256 first-turn cc-traces
-#: burst on Qwen3.8-27B TP1: the least-squares fit of the i-th request's chat
-#: template start on the loop to i and the body bytes of the requests before it.
-#: The record is the probe's stamp file, the run's server log beside it. The
-#: band is each term's p10 and p90 over that burst and five more, the same
-#: probe on GPU 4 on 2026-10-18, stamp files sha256 d72108b4, d0a06a7c,
-#: c43f09c8, fdd7795f and 537a94ba.
+#: The API server's event loop taking in one HTTP request: `http_intake.py`'s
+#: fit over one real c=256 first-turn cc-traces burst on Qwen3.8-27B TP1 at the
+#: commit named, the record its stamp file (hjbog-srdc-39's, from the probe's
+#: forerunner, less each request's second, cached body read). The band is each
+#: term's p10 and p90 over the host's bursts, each fitted alone: on node 18 six
+#: at 19c5ab09e, stamp files sha256 2b6b7f54, 27267eee, bb06dfdb, dc719c11,
+#: 84077607 and e2b24133; on hjbog-srdc-39 the record and five more from the
+#: forerunner on GPU 4 on 2026-10-18, d72108b4, d0a06a7c, c43f09c8, fdd7795f
+#: and 537a94ba.
 INTAKE = {
+    "mi308x-hjbog18": (
+        "2026-10-18",
+        "19c5ab09e",
+        {"fixed_s": 0.0026078916675536866, "per_byte_s": 5.082586258228853e-09},
+        {
+            "fixed_s": (0.0023905681113767967, 0.002818263790208814),
+            "per_byte_s": (3.728040935451147e-09, 6.552659606331298e-09),
+        },
+        "dc719c11dd8c45b777cdc1c7fb32ea387adab0f6046aa73b667db6d2b912fd1a",
+    ),
     "mi308x-hjbog39": (
         "2026-10-18",
         "2d1d223be",
-        {"fixed_s": 0.0021464994614327293, "per_byte_s": 1.869416019632594e-08},
+        {"fixed_s": 0.002669345165336389, "per_byte_s": 5.603337964226679e-09},
         {
-            "fixed_s": (0.0018067202326291342, 0.0021858085019923947),
-            "per_byte_s": (1.2414576986522202e-08, 2.0502016173860215e-08),
+            "fixed_s": (0.0023590643143750166, 0.0026066054400923915),
+            "per_byte_s": (3.576250354791265e-09, 5.75468059489999e-09),
         },
         "40da90fe439e06efa8aeb8d8b3d5a17a955c507afb6f9aa18401cbbc957739de",
     ),
-}.get(NAME)
+}[NAME]
 
 #: A pipeline stage's send, per carrier, fitted on hjbog-srdc-39 GPUs 4 and 5
 #: by `scripts/compass/pp_carriers.py`, pooled at commit f61652a37 over six of
@@ -220,20 +231,26 @@ def fragment(
     return Fragment.from_mapping(document, source)
 
 
+def intake(
+    model: str, date: str, root: str, terms: dict, band: dict, record: str
+) -> Fragment:
+    """The HTTP intake terms one burst of `model` at commit `root` fitted, and
+    each term's band over the host's bursts."""
+    subject = {"model": model, "source_root": f"commit:{root}"}
+    subject["record"] = f"sha256:{record}"
+    how = f"one real c=256 first-turn cc-traces burst at {root}"
+    body = {"host": {"http_intake": terms}}
+    band = {f"host.http_intake.{k}": v for k, v in band.items()}
+    return fragment("intake", body, "probed", how, subject, date, band)
+
+
 def device_fragments() -> list[Fragment]:
     """The fragments the engine start and any other probe filled, and the
     assumed rest."""
     notes = f"one Qwen3.8-27B TP1 start at {COMMIT}"
     ptl = {"device": {"ptl": PTL}}
     probes = [fragment("ptl", ptl, "probed", "ptl_enable", date="2026-10-18")]
-    if INTAKE:
-        date, root, terms, band, record = INTAKE
-        subject = {"model": "Qwen/Qwen3.8-27B", "source_root": f"commit:{root}"}
-        subject["record"] = f"sha256:{record}"
-        how = f"one real c=256 first-turn cc-traces burst at {root}"
-        body = {"host": {"http_intake": terms}}
-        band = {f"host.http_intake.{k}": v for k, v in band.items()}
-        probes.append(fragment("intake", body, "probed", how, subject, date, band))
+    probes.append(intake("Qwen/Qwen3.8-27B", *INTAKE))
     if PP:
         date, root, carriers, band, record = PP
         subject = {"source_root": f"commit:{root}", "record": f"sha256:{record}"}
