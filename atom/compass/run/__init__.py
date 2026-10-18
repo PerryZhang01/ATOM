@@ -67,7 +67,9 @@ any other, and a law missing either refuses; a list of them is one per engine co
 bundle's key, priced by `StepGridBackend`; see `step_grid`),
 ``step_roofline`` (optional, ``true`` or ``false``: with ``true`` a
 `StepRooflineBackend` prices the steps the backend refuses, through
-`StepFallbackBackend`, as it always does under ``step_grid``),
+`StepFallbackBackend`, as it always does under ``step_grid``, from the
+modules `run.modules.walk` reads off the meta build), ``padding`` (optional:
+``none`` prices a replayed graph's real rows in place of the rows it pads to),
 ``on_refusal`` (optional: ``mark``, the default, prices a step no cost source
 answers at 0 s, hands in its ``cost:`` reason and continues; ``abort`` ends
 the run there, which still writes the summary),
@@ -87,8 +89,7 @@ prefill-decode run one holding each deployment's as ``prefill/`` and
 RapidServe run each engine's as ``prefill/`` and ``decode/``: each step
 ends when the real one did, by `atom.compass.parity.replay`, and the cost
 backend's price reaches only the cost record),
-``machine`` (a machine spec mapping), ``parameter_count`` (read by the
-roofline, which without it counts the meta build's), ``store`` (the artifact
+``machine`` (a machine spec mapping), ``store`` (the artifact
 store's root, where `memory` reads the configuration's memory readings) and
 ``backend`` (the backend's ``digest``
 and its fit ``provenance``, which nothing here reads), both written by
@@ -1230,7 +1231,7 @@ def runner(model_runner, tree) -> None:
     if run is None:
         return
     from atom.compass.artifacts import machine_spec_digest, machine_spec_key
-    from atom.compass.backends.geometry import KvGeometry, Parallelism
+    from atom.compass.backends.geometry import Parallelism
     from atom.compass.backends.step_linear import StepLinearBackend, StepLinearLaw
     from atom.compass.backends.step_roofline import (
         StepFallbackBackend,
@@ -1380,24 +1381,16 @@ def runner(model_runner, tree) -> None:
             f"the run file's step_roofline is {fallback!r}; it is true, which "
             "prices the steps the backend refuses by the step roofline, or false"
         )
+    padding = run.get("padding", "executed")
+    if padding not in ("executed", "none"):
+        raise ValueError(
+            f"the run file's padding is {padding!r}; it is none, which prices a "
+            "replayed graph's real rows, or absent, which prices the rows it pads to"
+        )
     if fallback or STEP_GRID in run:
-        kv = KvGeometry.from_hf_config(
-            config.hf_config,
-            block_size=config.kv_cache_block_size,
-            parallelism=Parallelism(tp_size=tp),
-            kv_dtype=config.kv_cache_dtype,
-        )
-        # A run file without it, as a step grid's may be, counts the meta build's.
-        stated = run.get("parameter_count")
-        roofline = StepRooflineBackend(
-            machine,
-            parameters=(
-                stated // tp if stated else sum(p.numel() for p in tree.parameters())
-            ),
-            weight_bytes=model.weights.nbytes,
-            kv_token_bytes=kv.layers * kv.bytes_per_token_per_layer,
-            parameters_stated=bool(stated),
-        )
+        from atom.compass.run.modules import walk
+
+        roofline = StepRooflineBackend(machine, walk(tree), padded=padding != "none")
         backend = StepFallbackBackend(backend, roofline)
     install_cost_backend(model_runner, backend)
     if NOW_ENV in os.environ:

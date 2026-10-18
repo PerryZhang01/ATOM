@@ -281,22 +281,16 @@ def test_a_machine_file_that_is_no_spec_refuses_before_any_entry_is_read(tmp_pat
         build(tmp_path, "--step-grid", "0123456789ab", machine={"device": {}})
 
 
-def test_the_step_roofline_reads_the_models_parameter_count(monkeypatch, tmp_path):
+def test_padding_none_prices_real_rows_under_the_step_roofline(monkeypatch, tmp_path):
     r = deployment(tmp_path)
     grid = publish(tmp_path, r).key.token()
-    index = {"metadata": {"total_size": 1}}
-    for named in (f"and {tmp_path} has none", "states no metadata.total_parameters"):
-        with pytest.raises(ValueError, match=named):
-            build(tmp_path, "--step-grid", grid, "--step-roofline")
-        (tmp_path / runfile.INDEX).write_text(json.dumps(index))
-    index["metadata"]["total_parameters"] = 27_000_000_000
-    (tmp_path / runfile.INDEX).write_text(json.dumps(index))
 
-    run = build(tmp_path, "--step-grid", grid, "--step-roofline")
+    run = build(tmp_path, "--step-grid", grid, "--step-roofline", "--padding", "none")
     install(tmp_path, monkeypatch, run, r)
 
-    assert run["parameter_count"] == 27_000_000_000
+    assert run["padding"] == "none" and "parameter_count" not in run
     assert isinstance(r.compass_backend, StepFallbackBackend)
+    assert r.compass_backend.roofline.padded is False
 
 
 #: A prefill and a decode side: the engine-config fields they differ in.
