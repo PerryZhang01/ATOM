@@ -539,13 +539,14 @@ ITL and request throughput in simulated time, and the run's refusals. A
 `coverage_report=True` cell is a coverage report, not a result.
 
 A run file with `router_s` and `kv_write_req_s` makes the cell 1P1D: `pd_sim.sh`
-deploys it, taking `DECODE_EXEC` and `ATOMESH` from the environment, and aiperf
-drives the atomesh router. The traffic LP sends to `frontend-P` and reads the
-stream from `frontend-D`, as the run file's channel table names them; with
-`--enable-dp-attention` in `SERVER_ARGS` the cell is agentic, its router is
-`--dp-aware` and LP `router`, and the traffic LP talks to `router`. The result
-line adds `kv_transfers` and `kv_transfer_mean_s`, from the line the prefill
-engine logs per KV transfer.
+deploys it, taking `DECODE_EXEC`, `ATOMESH` and each side's `PREFILL_ARGS` /
+`DECODE_ARGS` flags and `PREFILL_ENV` / `DECODE_ENV` variables from the
+environment, and aiperf drives the atomesh router. The traffic LP sends to
+`frontend-P` and reads the stream from `frontend-D`, as the run file's channel
+table names them; with `--enable-dp-attention` in either side's flags the cell
+is agentic, its router is `--dp-aware` and LP `router`, and the traffic LP
+talks to `router`. The result line adds `kv_transfers` and
+`kv_transfer_mean_s`, from the line the prefill engine logs per KV transfer.
 
 `REAL=1` runs the same TP1 cell on a real server, on the GPU and the wall clock,
 so a real and a simulated cell at one seed, concurrency and traces hash send the
@@ -603,7 +604,7 @@ lists its environment.
 Given two or more records, the command also prints each form's error on every
 record under a law fitted on the others, per decode rung and prefill token band.
 
-`scripts/compass/laws/qwen3.8-27b-tp1-mi308x-hjbog39-661ef7661.json` is the
+`scripts/compass/laws/qwen3.8-27b-tp1-mi308x-ptl-disabled-661ef7661.json` is the
 `history` form with the host laws (`host`), labelled by device time, fitted on
 records captured on hjbog-srdc-39 at ce625ddd9 (ROCm/ATOM 661ef7661) in the
 nightly-20261013 image, in this order: concurrency 1, 4, 16, 64 and 256 as
@@ -619,15 +620,17 @@ stage's channels by its stage, has a downstream stage's loop leave on
 the `+inf` grant, moves the lmcache_mp lookup defer, lookup timeout,
 transfer deadlines and deferred-save restamp to the LP clock, and gives
 lmcache_mp's lookup poll sleep, transfer start stamps and scheduler adapter a
-simulated run's LP clock, and runs the simulated P/D connector inside a `multi`;
-none of these changes a real run's host time. Its
+simulated run's LP clock, runs the simulated P/D connector inside a `multi`,
+and has `clock.charge` advance a reply's `out_s` and stamp a recording's
+input pulls and output puts; none of these changes a real run's host time. Its
 engine key also states the fields the records predate, as their `server.log`
 engine arguments and the capture's environment give them: DP width 1, no DP
 attention, expert parallelism or TBO, and `AITER_LOG_LEVEL=WARNING`; the law
 states that engine key as its `engine_config`. The law
 and its host key state `machine_spec`, the digest `machine_spec_digest` gives
 `scripts/compass/machines/mi308x-hjbog39.json`, so it refuses under any other
-spec's device or software stack.
+spec's device, software stack or PTL state. Its name states that PTL state
+rather than the host it was captured on.
 
 `scripts/compass/laws/deepseek-v4-pro-dpa8-mi355x-gpu45-{prefill,decode}.json`
 are DeepSeek-V4-Pro's DPA-TP8 laws on mi355-gpu-45, one per side of a 1P1D

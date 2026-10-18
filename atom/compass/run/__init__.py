@@ -145,7 +145,8 @@ file with one needs such a deployment. `frontend(config)` then starts LP
 process of its own. The entry holds ``server``, the ``lmcache server`` flags;
 the request loop's laws, ``lookup_s`` (``[fixed, per prompt chunk]``) and
 ``request_s``; optional ``copy_width``, 1 when absent; and optional
-``writers``, the writer ranks per DP rank, 1 when absent. The copy engine
+``writers``, the writer ranks per DP rank, 1 when absent; and optional
+``state_bytes``, a rank's recurrent-state image, 0 when absent. The copy engine
 prices on the machine's ``interconnect.host_link``. Its channels' lookahead is
 ``lmcache_ipc_s``, the run's ``ipc_s`` when absent (`add_lmcache`). `engine(config)`
 has the connector factory build ``lmcache_mp`` as Compass's
@@ -241,7 +242,7 @@ AUTHORITY_FILE = "authority_endpoint.txt"
 HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field is added, changes
 #: meaning or goes.
-SUMMARY_SCHEMA_VERSION = 5
+SUMMARY_SCHEMA_VERSION = 6
 #: Compass source the host-law key leaves out, by path under the package: all
 #: of it (None), or the top-level names (def, class or assigned) only a simulated
 #: run reaches, with the comments above each and the module docstring.
@@ -624,7 +625,10 @@ def lmcache(chunk_bytes: int) -> None:
     run = spec()
     rt = _runtime(LMCACHE, run)
     rt.client_run_ended = lambda k: _hand_in(run, LMCACHE.name, rt.refusals, k)
-    server = LMCacheServer(run["lmcache"]["server"], chunk_bytes=chunk_bytes)
+    lm = run["lmcache"]
+    server = LMCacheServer(
+        lm["server"], chunk_bytes=chunk_bytes, state_bytes=lm.get("state_bytes", 0)
+    )
     sock = zmq.Context.instance().socket(zmq.ROUTER)
     sock.bind(server.url)
     ended = []
@@ -1072,10 +1076,23 @@ def engine(config):
     At DP width above one, the process joins the engine LP as the member of its
     DP rank, and its host collectives first join the group rounds it owes. A
     pipeline stage is the engine LP ``engine-pp<stage>``.
+
+    A real run recording its steps (`parity.ENV`) outside a pipeline stamps the
+    engine's input pulls and output puts into ``dp<rank>.pulls.jsonl`` beside
+    the record (`clock.stamp_pulls`).
     """
     global _member
     run = spec()
     if run is None:
+        from atom.compass import parity
+
+        record = os.environ.get(parity.ENV)
+        if record and getattr(config, "pipeline_parallel_size", 1) == 1:
+            Path(record).mkdir(parents=True, exist_ok=True)
+            rank = config.parallel_config.data_parallel_rank
+            # The worker's step timestamps read the same host clock.
+            pulls = Path(record) / f"dp{rank}.pulls.jsonl"
+            clock.stamp_pulls(pulls, time.monotonic_ns)
         return contextlib.nullcontext()
     from atom.utils.distributed import utils
 
@@ -1166,7 +1183,7 @@ def runner(model_runner, tree) -> None:
     run = spec()
     if run is None:
         return
-    from atom.compass.artifacts import machine_spec_digest
+    from atom.compass.artifacts import machine_spec_digest, machine_spec_key
     from atom.compass.backends.geometry import KvGeometry, Parallelism
     from atom.compass.backends.step_linear import StepLinearBackend, StepLinearLaw
     from atom.compass.backends.step_roofline import (
@@ -1285,8 +1302,8 @@ def runner(model_runner, tree) -> None:
     if STEP_LINEAR in run and fitted_on != platform:
         raise ValueError(
             f"the step linear law was fitted on machine spec {fitted_on} and this "
-            f"run's is {platform}; a law measured on one platform is no evidence "
-            "about another"
+            f"run's is {platform}, {machine_spec_key(machine)}; a law measured "
+            "on one platform is no evidence about another"
         )
     bundle = None
     if STEP_GRID in run:

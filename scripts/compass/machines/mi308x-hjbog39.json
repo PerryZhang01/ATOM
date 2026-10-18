@@ -119,6 +119,9 @@
       "interconnect.inter_node.derate": {
         "origin": "assumed"
       },
+      "device.ptl": {
+        "origin": "probed"
+      },
       "host.http_intake.fixed_s": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
@@ -201,10 +204,11 @@
       "tokenizer",
       "device",
       "assumed",
+      "ptl",
       "intake",
       "pp"
     ],
-    "notes": "one Qwen3.8-27B TP1 start at ce625ddd9 | no probe fills these | one real c=256 first-turn cc-traces burst at 2d1d223be | pp_carriers.py on two GPUs at 93e01fbb4"
+    "notes": "one Qwen3.8-27B TP1 start at ce625ddd9 | no probe fills these | ptl_enable | one real c=256 first-turn cc-traces burst at 2d1d223be | pp_carriers.py on two GPUs at 93e01fbb4"
   },
   "host": {
     "cpu": {
@@ -241,6 +245,7 @@
     "name": "MI308X",
     "arch": "gfx942",
     "count_per_node": 8,
+    "ptl": "disabled",
     "memory": {
       "capacity_bytes": 206141652992,
       "bandwidth_bytes_per_s": 5300000000000.0,

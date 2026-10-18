@@ -29,6 +29,7 @@ from atom.compass.backends import (
     CostRefused,
     Granularity,
     Method,
+    Refusal,
     RequestShape,
     StepGrid,
     StepGridBackend,
@@ -395,9 +396,11 @@ POOLED = {
 }
 
 
-def pooled(pool=POOL, gone=()):
+def pooled(pool=POOL, gone=(), times=None):
+    times = times or {}
     grid = bundle(
-        "eager", [point(*at, time=f(*at)) for at in sorted(POOLED - set(gone))]
+        "eager",
+        [point(*at, time=times.get(at, f(*at))) for at in sorted(POOLED - set(gone))],
     )
     grid["decode"]["nodes"]["c"] = [512, 767, 911, 1024]
     if pool:
@@ -437,6 +440,37 @@ def test_a_cell_missing_a_corner_inside_the_pool_or_with_no_pool_still_refuses(
 ):
     with pytest.raises(CostRefused, match=f"has no measurement at .*{missing}"):
         backend.price(view(*[(1, 851, True)] * 44))
+
+
+# B=48's edge read along c from 512 and 767 and extended: falling 60% it reaches
+# -908.16 at c = 1023 and -665.28 at c = 1000, where B=44's other side, B=40,
+# reads 5700; from 5110 to 2560 it reaches exactly 0 at c = 1023.
+@pytest.mark.parametrize(
+    "b,c,at_512,at_767",
+    [
+        (48, 1023, f(48, 512), 0.4 * f(48, 512)),
+        (48, 1023, 5110.0, 2560.0),
+        (44, 1000, f(48, 512), 0.4 * f(48, 512)),
+    ],
+    ids=["negative", "zero", "one-b-side"],
+)
+def test_a_falling_in_pool_edge_prices_the_past_pool_step_by_the_roofline(
+    b, c, at_512, at_767
+):
+    falling = pooled(times={(48, 512): at_512, (48, 767): at_767})
+    rows = [(1, c + 1, True)] * b
+
+    (term,) = StepFallbackBackend(falling, roofline()).price(view(*rows)).terms
+    (floor,) = roofline().price(view(*rows)).terms
+    assert (term.name, term.seconds) == (floor.name, floor.seconds)
+    assert term.provenance.refusals == (
+        Refusal(
+            "step-grid",
+            f"the decode cell holding B={b}, c={c} is past the KV pool, and "
+            "B=48's in-pool edge falls from c=512 to 767, reaching no positive "
+            f"time at c={c}",
+        ),
+    )
 
 
 def test_a_negative_count_never_reaches_the_backend():
