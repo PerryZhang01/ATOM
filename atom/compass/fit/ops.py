@@ -26,7 +26,10 @@ neighbours and their first differing kernel.
 
 The report holds, for each point and dimension along which the point has a
 measured neighbour on both sides, the price the other points of that line
-give it and its error, and per operator the median and largest error.
+give it and its error, and per phase and operator the median and largest
+error inside a band. A point that launched other kernels than the neighbours
+it is priced from is a hidden band, counted apart: no check of the neighbours'
+kernels can see it.
 """
 
 import argparse
@@ -207,11 +210,12 @@ def interpolate(points: dict, at: tuple, dims) -> tuple[float, list]:
 
 def held_out(params) -> list[dict]:
     """Each point priced along each dimension by the other points of its line,
-    where it has a neighbour on both sides."""
+    where it has a neighbour on both sides; a hidden band is a point whose
+    kernels are not the ones its neighbours launched."""
     rows = []
-    for f in params["families"].values():
+    for name, f in params["families"].items():
         points = {tuple(c): (ns, k) for c, ns, k in f["points"]}
-        for c, (ns, _) in points.items():
+        for c, (ns, own) in points.items():
             for i, dim in enumerate(f["dims"]):
                 rest = c[:i] + c[i + 1 :]
                 line = {
@@ -222,12 +226,14 @@ def held_out(params) -> list[dict]:
                 xs = [x for (x,) in line]
                 if not (xs and min(xs) < c[i] < max(xs)):
                     continue
-                row = {"op": f["op"], "dim": dim, "at": list(c), "measured_ns": ns}
+                row = {"op": f["op"], "phase": json.loads(name)[0], "dim": dim}
+                row |= {"at": list(c), "measured_ns": ns}
                 try:
-                    priced = interpolate(line, (c[i],), [dim])[0]
+                    priced, kernels = interpolate(line, (c[i],), [dim])
                     row |= {
                         "priced_ns": priced,
                         "error": priced / ns - 1 if ns else None,
+                        "hidden_band": kernels != own,
                     }
                 except Declined as why:
                     row["declined"] = str(why)
@@ -236,18 +242,21 @@ def held_out(params) -> list[dict]:
 
 
 def summary(rows) -> dict:
-    """Per operator: points held out, how many were declined, and the median
-    and largest absolute error of the rest."""
+    """Per phase and operator: points held out, how many were declined, the
+    median and largest absolute error inside a band, and the hidden bands with
+    their largest absolute error."""
     by: dict[str, list] = {}
     for r in rows:
-        by.setdefault(r["op"], []).append(r)
+        by.setdefault(f"{r['phase']} {r['op']}", []).append(r)
     out = {}
-    for op, rs in sorted(by.items()):
-        errors = [abs(r["error"]) for r in rs if r.get("error") is not None]
-        out[op] = {"held_out": len(rs), "declined": sum("declined" in r for r in rs)}
-        if errors:
-            out[op] |= {
-                "median_error": statistics.median(errors),
-                "max_error": max(errors),
-            }
+    for name, rs in sorted(by.items()):
+        priced = [r for r in rs if r.get("error") is not None]
+        inside = [abs(r["error"]) for r in priced if not r["hidden_band"]]
+        hidden = [abs(r["error"]) for r in priced if r["hidden_band"]]
+        out[name] = {"held_out": len(rs), "declined": sum("declined" in r for r in rs)}
+        if inside:
+            out[name] |= {"median_error": statistics.median(inside)}
+            out[name] |= {"max_error": max(inside)}
+        if hidden:
+            out[name] |= {"hidden_bands": len(hidden), "hidden_max_error": max(hidden)}
     return out

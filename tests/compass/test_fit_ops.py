@@ -139,25 +139,29 @@ def _fit(out, store, *dirs):
 
 
 def test_fit_ops_publishes_its_points_key_and_their_held_out_error(measured, tmp_path):
+    # 4 sits inside one band; 12 launched x between two k neighbours
     points = [_point(2, 10.0), _point(4, 12.5), _point(8, 16.0)]
-    points += [_point(16, 30.0, kernel="b"), _point(4, 1.0, n=512) | {"refused": "no"}]
-    d, key = measured("m", points)
+    points += [_point(12, 9.0, kernel="x"), _point(16, 24.0), _point(32, 50.0, "b")]
+    d, key = measured("m", points + [_point(4, 1.0, n=512) | {"refused": "no"}])
 
     got = _fit(tmp_path / "fit", tmp_path / "store", d)
 
     fields = key("decode B=2", 1024, _leaf(2, 128)).values
     assert got["key"] == {k: v for k, v in fields.items() if k != "point"}
     assert got["report"]["by_op"] == {
-        "aiter.gemm": {
-            "held_out": 2,
-            "declined": 1,
+        "decode aiter.gemm": {
+            "held_out": 4,
+            "declined": 2,
             "median_error": pytest.approx(0.04),
             "max_error": pytest.approx(0.04),
+            "hidden_bands": 1,
+            "hidden_max_error": pytest.approx(11 / 9),
         }
     }
     declined = [r["declined"] for r in got["report"]["held_out"] if "declined" in r]
     assert declined == [
-        "B = 8 lies between 4 and 16, which launched different kernels: k and b"
+        "B = 8 lies between 4 and 12, which launched different kernels: k and x",
+        "B = 16 lies between 12 and 32, which launched different kernels: x and b",
     ]
 
 
