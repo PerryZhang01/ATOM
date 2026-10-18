@@ -302,3 +302,25 @@ def test_what_ignores_sigterm_is_killed_after_the_grace(monkeypatch):
     stubborn.stdout.readline()
     serve._stop(stubborn.pid)
     assert stubborn.wait(timeout=5) == -signal.SIGKILL
+
+
+def test_each_start_takes_a_free_dp_master_port_over_the_callers(planted, monkeypatch):
+    """The port keys ATOM's compiled-graph cache, and the first start that
+    loads that cache autotunes again, so no start reuses the caller's."""
+    monkeypatch.setenv("PLANTED_EXIT", "late:0")
+    monkeypatch.setenv("ATOM_DP_MASTER_PORT", "29500")
+    popen, ports = subprocess.Popen, []
+
+    def spy(argv, **kwargs):
+        if argv[:2] == list(serve.SERVER):
+            ports.append(kwargs["env"]["ATOM_DP_MASTER_PORT"])
+        return popen(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", spy)
+    for k in range(2):
+        serve.serve(ARGS, planted / f"out{k}", (7,))
+    assert len(ports) == 2 and "29500" not in ports and ports[0] != ports[1]
+    with pytest.raises(serve.ServeError, match="^--data-parallel-master-port "):
+        serve.serve(
+            [*ARGS, "--data-parallel-master-port", "29500"], planted / "o", (7,)
+        )
