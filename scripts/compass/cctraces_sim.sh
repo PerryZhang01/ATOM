@@ -33,7 +33,8 @@
 #                   e.g. `--trajectory-start-min-ratio 0
 #                   --trajectory-start-max-ratio 0` to start every trajectory
 #                   at its first turn, with no warmup
-#   DECODE_EXEC, ATOMESH  as pd_sim.sh takes them, for a 1P1D cell
+#   DECODE_EXEC, ATOMESH, PREFILL_ARGS, DECODE_ARGS, PREFILL_ENV, DECODE_ENV
+#                   as pd_sim.sh takes them, for a 1P1D cell
 #   WAIT_S          seconds the deployment has to start, and to leave once
 #                   aiperf has; seconds aiperf has to finish once the
 #                   deployment has left (default 600)
@@ -173,7 +174,7 @@ if [[ $MODE == 1p1d ]]; then
     # router is the --dp-aware router LP, which draws from the cell's seed, and
     # its dp_sticky keys off X-Session-ID, which the real cell's aiperf sends.
     export BENCHMARK_KIND=aiperf_agentic SEED=${SEED:-20260707}
-    [[ " $SERVER_ARGS " == *" --enable-dp-attention "* ]] && export AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID=true
+    [[ " $SERVER_ARGS ${PREFILL_ARGS:-} ${DECODE_ARGS:-} " == *" --enable-dp-attention "* ]] && export AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID=true
     PREFILL_PORT=$PORT bash "$ROOT/scripts/compass/pd_sim.sh" "$OUT/run.json" >"$OUT/pd_sim.log" 2>&1 &
     ready=("pd_sim: ready" "$OUT/pd_sim.log")
     PORT=$ROUTER_PORT
