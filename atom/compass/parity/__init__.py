@@ -16,8 +16,10 @@ output's token copy (`t_recv_ns`, only on a forward that reaches it), and with
 a drafter its MTP status (`t_mtp_ns`) and draft copy (`t_draft_recv_ns`). Its device
 window is `d_busy_ns`, from an event recorded at the launch's entry to one
 recorded at the forward's exit (`d_target_ns` to one recorded just after
-`postprocess` records `forward_done_event`), and `d_gap_ns`, from the previous forward's
-exit event to this launch's entry event, absent on the first line; summed in
+`postprocess` records `forward_done_event`, or on a forward that samples
+nothing, before the drafter's `compute_draft_kv`), and `d_gap_ns`, from the
+previous forward's exit event to this launch's entry event, absent on the
+first line; summed in
 order they lay every forward on one device timeline. A later pipeline stage's
 receive of its input is `t_pp_recv_ns`, its device part `d_recv_ns`; an idle
 `flush_pp_send` since the last forward that settled a pending send is `t_flush_ns`. The events are polled,
@@ -375,6 +377,10 @@ class StepRecording:
             processor.prepare_sampled_ids = functools.partial(
                 self._target_done, sampled
             )
+            draft_kv = self.drafter.compute_draft_kv
+            self.drafter.compute_draft_kv = functools.partial(
+                self._target_done, draft_kv
+            )
         self._recording = True
 
     def forward(self, batch):
@@ -411,8 +417,10 @@ class StepRecording:
         return reply
 
     def _target_done(self, call, *args):
-        """`call(*args)` after a device event where `postprocess` has just
-        recorded `forward_done_event`: the target's end, before the draft."""
+        """`call(*args)` after a device event at the target's end, before the
+        draft: where the drafter's `compute_draft_kv` starts, and on a forward
+        that samples, where `postprocess` has just recorded `forward_done_event`,
+        which replaces the first."""
         if getattr(self, "_parity_record", None) is not None:
             self._stamps["target_event"] = self.device_event()
         return call(*args)

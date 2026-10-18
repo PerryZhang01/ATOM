@@ -50,9 +50,11 @@ def test_an_mtp_record_fits_a_draft_law_that_prices_each_forward_apart(tmp_path)
         drafts = [t.name for t in cost.terms if t.draft]
         assert drafts and all(n.startswith("draft.") for n in drafts)
 
-    middle = BatchView((RequestShape(512, 512, False),), produces_output=False)
-    cost = backend.price(middle)
-    assert [(t.name, t.seconds) for t in cost.terms if t.draft] == [("draft", 0.0)]
+    # A middle chunk's draft is its draft-KV pass, priced by the draft vector.
+    row = (RequestShape(512, 512, False),)
+    cost = backend.price(BatchView(row, produces_output=False))
+    final = backend.price(BatchView(row, produces_output=True))
+    assert cost.draft_seconds == final.draft_seconds > 0
     assert cost.target_seconds > 0
 
 
