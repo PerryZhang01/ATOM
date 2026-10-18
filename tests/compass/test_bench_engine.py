@@ -11,8 +11,10 @@ logging them, its workers agreeing over a gloo group.
 
 import itertools
 import multiprocessing
+import os
 import signal
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,6 +31,7 @@ from aiter_stub import stubbed_aiter
 with stubbed_aiter():
     from atom.compass.bench import engine
     from atom.model_engine import async_proc
+    from atom.utils import init_exit_handler
 
 BLOCKS = 7
 
@@ -156,6 +159,11 @@ def manager(monkeypatch):
     monkeypatch.setattr(async_proc, "get_mp_context", _Spawn)
     # The manager would take the test process's SIGINT and SIGTERM.
     monkeypatch.setattr(async_proc, "init_exit_handler", lambda self: None)
+    # The bench takes them too.
+    handlers = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+    yield
+    for s, handler in handlers.items():
+        signal.signal(s, handler)
 
 
 @pytest.mark.parametrize("tp, eager", [(2, False), (1, True)])
@@ -239,6 +247,38 @@ def test_a_worker_that_dies_in_a_call_stops_the_bench_naming_the_call(
     config = _config()
     config.dies_in = call
     with pytest.raises(ValueError, match=f"a bench worker died, so {call} got no"):
+        bench = engine.Bench(config, BLOCKS)
+        try:
+            bench.measure(batch())
+        finally:
+            bench.exit()
+
+
+class Signals(Runner):
+    """A worker that, in the call its config's `signals_in` names, sends SIGTERM
+    to the process that started the bench, then outlasts the bench's wait."""
+
+    def __init__(self, rank, config):
+        super().__init__(rank, config)
+        setattr(self, config.signals_in, self.send_sigterm)
+
+    def send_sigterm(self, *args):
+        os.kill(os.getppid(), signal.SIGTERM)
+        time.sleep(60)
+
+
+@pytest.mark.parametrize("call", ["allocate_kv_cache", "bench_step"])
+def test_a_sigterm_stops_the_bench_naming_the_signal_not_a_worker_or_the_pool(
+    manager, monkeypatch, call
+):
+    """With the manager's own SIGTERM handler installed, which stops the
+    workers as a dead worker does."""
+    monkeypatch.setattr(engine, "RUNNER", f"{__name__}.Signals")
+    monkeypatch.setattr(async_proc, "init_exit_handler", init_exit_handler)
+    monkeypatch.setenv("ATOM_SHUTDOWN_TIMEOUT_S", "0.1")
+    config = _config(eager=True)
+    config.signals_in = call
+    with pytest.raises(engine.Signalled, match="its process was sent SIGTERM$"):
         bench = engine.Bench(config, BLOCKS)
         try:
             bench.measure(batch())
