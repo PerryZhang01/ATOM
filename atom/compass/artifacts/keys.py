@@ -15,8 +15,8 @@ on one platform does not answer on another, and a spec edit outside those two
 
 The parallel layout (`LAYOUT`) is the rank widths (`AXES`) plus the settings
 that change kernels and groups at a fixed rank count: the switches
-(`SWITCHES`) and `decode_context_parallel_size`. A `price_list`,
-`region_terms` or `memory_readings` entry answers only at the layout it was
+(`SWITCHES`) and `decode_context_parallel_size`. A `price_list` or
+`memory_readings` entry answers only at the layout it was
 keyed at: a TP2 price list does not answer for `-tp 2 -dp 2`. A width is a
 whole number of at least one and a switch is a `bool`. A `bool` is refused in
 every other field, because `True == 1` would make two keys equal whose
@@ -60,7 +60,6 @@ class Kind(enum.Enum):
     SHAPE_POPULATION = "shape_population"
     OP_GRAPH = "op_graph"
     PRICE_LIST = "price_list"
-    REGION_TERMS = "region_terms"
     MEMORY_READINGS = "memory_readings"
     COVERAGE_HULL = "coverage_hull"
     STEP_MEASUREMENT = "step_measurement"
@@ -86,7 +85,6 @@ KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
     Kind.SHAPE_POPULATION: ("model", "workload", "engine_config", "backend"),
     Kind.OP_GRAPH: ("structure",),
     Kind.PRICE_LIST: ("model", *LAYOUT, "machine_spec", "source_root"),
-    Kind.REGION_TERMS: ("model", *LAYOUT, "machine_spec"),
     # The engine config as `run.memory.key_fields` reads it, as sorted JSON.
     Kind.MEMORY_READINGS: ("model", "machine_spec", *LAYOUT, "engine_config"),
     Kind.COVERAGE_HULL: ("price_list",),

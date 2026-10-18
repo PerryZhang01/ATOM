@@ -21,6 +21,12 @@ the analytical bound, at most the measured time on every measured step at both
 granularities, priced at attainable peaks probed on the device; the method's error and the
 configuration ranking are reported, not gated (D50.2).
 
+**Revised 2026-10-18 by the owner's ruling on
+[#1489](https://github.com/jgong5/ATOM/issues/1489):** the op-level empirical backend is
+graded by this protocol as the step-level backends are, on the same real runs, with its
+fallback share, its composed-over-measured gap and warm-over-cold reported beside it
+(D50.3).
+
 **Scope.** What counts as evidence: which results are reported, how each is measured, what
 tolerance applies and where that tolerance comes from, and what invalidates a run.
 Acceptance is paired simulated and real execution of cc-traces proper, so every rule here
@@ -641,6 +647,37 @@ the ranking (`10` D69). `16` *Wave 5* carries all of it.
 
 ---
 
+## D50.3. The op-level empirical backend is graded as the step-level ones are
+
+### Problem
+
+The op-level backend prices each leaf from measurements on the device (`07` D38) and
+composes the step by the IR's joins, with no residual. A composed step can be wrong in
+ways a step-level fit absorbs, so its grade needs the reports that say where its error
+sits.
+
+### Decision
+
+**Owner's ruling on [#1489](https://github.com/jgong5/ATOM/issues/1489), 2026-10-18.**
+**Graded by this protocol as the step-level backends are, on the same real runs:** D44's
+three results inside D45's tolerance, D47's cost accuracy on the real runs' own steps, and
+D50's cells. Qwen3.8-27B TP1 on MI308X is graded on
+[#974](https://github.com/jgong5/ATOM/issues/974)'s real runs, then DeepSeek-V4-Pro's four
+nightly configurations on MI355X and the DPA two at EP8, with D50's ranking gate. A refused
+step is D50.1's. Faster than real is gated; 5× is reported (D51).
+
+**Reported beside the grade, not gated:**
+
+1. the analytical fallback's share of priced seconds, per phase (D50.1);
+2. the per-step gap of the composed step over its measured one, per phase and op kind, on
+   the real runs' unprofiled steps (D49);
+3. the step-level backend's D47 table on the same steps, beside it;
+4. `measure ops`'s warm-over-cold ratio, per op kind (`07` D38).
+
+`16` *Stage 3d* carries it.
+
+---
+
 ## D51. Simulation speed
 
 ### What was measured before
@@ -714,6 +751,7 @@ claims there are not.
 | D50.1 | A step is refused only when some term is still unanswered after method fallback, its reasons listed per term; a fall-through and an answer of any method are not refusals, and the priced seconds are reported by method (analytical, declared, measured, estimated, unvalidated) with their steps and share of predicted seconds. A refused step costs 0 s and the run continues; `--on-refusal abort` stops at the first, and the summary is written either way. Any refusal, of any source, makes the run a coverage report: no refused-seconds fraction, no threshold, and no answered step invalidates a run, whatever its method or share. | 2026-09-19; revised 2026-10-11 (#765, and again to drop the analytical cap); 2026-10-14 (#952) |
 | D50 | Everything registered and hashed before evaluation; the case set never shrinks. One simulated run plus a reproducibility assertion; N≥3 spaced real runs. The cells are stage 2's Qwen3.8-27B TP1 on MI308X and M2's four nightly P/D configurations of DeepSeek-V4-Pro on MI355X at their concurrencies, then the DPA two at EP8. M2's ranking gate: the same best configuration as hardware at each concurrency, and rank correlation across all cells, per end-to-end metric, each inside its real-vs-real spread, with Spearman's ρ also at least 0.9. DP mechanism tests run on a CPU fake-model DP2. | 2026-09-18; revised 2026-10-01, 2026-10-09, 2026-10-10 |
 | D50.2 | The MI455 projection is sound, not graded: on every measured step, at both granularities, the analytical price at attainable peaks probed on the device, composed by the IR's own joins, is at most the measured time, with measured over analytical per op kind and phase reported beside it; every MI455 input is sourced or marked assumed, its peaks the datasheet times MI355X's probed ratios; the method's error, MI308X to MI355X on Qwen3.8-27B, and the configuration ranking are reported, not gated. Replaces the bound first stated at the spec's peaks with derates at 1, and the method that carried implementation efficiencies onto the target. | 2026-10-09; revised 2026-10-17 (#1392) |
+| D50.3 | The op-level empirical backend is graded by this protocol as the step-level backends are, on the same real runs: Qwen3.8-27B TP1 on MI308X on #974's runs, then M2's cells with the ranking gate. Faster than real is gated; 5× is reported. Reported, not gated: the analytical fallback's share of priced seconds, the per-step composed-over-measured gap per phase and op kind, the step-level backend's table beside it, and warm-over-cold. | 2026-10-18 (#1489) |
 | D51 | Measure a saturated cell early. Account cold costs once; report the simulator's own per-step CPU cost alongside the ratio. | 2026-09-18 |
 | D52 | Fail-closed invalidation conditions; any refusal is one, an answered step is not, whatever its method or share (D50.1). Scheduling claims require slack; throughput claims at saturation are fine. | 2026-09-18; revised 2026-10-11 twice |
 

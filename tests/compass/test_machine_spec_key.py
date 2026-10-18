@@ -145,9 +145,14 @@ def test_laws_fitted_on_another_spec_miss_naming_both_digests(tmp_path, kind):
     assert f"differs in machine_spec ('{digest(N39)}' there)" in str(refused.value)
 
 
-def test_region_terms_are_keyed_by_the_machine_spec_digest():
+def test_memory_readings_are_keyed_by_the_machine_spec_digest():
     with pytest.raises(ArtifactRefusal, match="states no machine_spec"):
-        Key.of(Kind.REGION_TERMS, model="Qwen/Qwen3.8-27B", **LAYOUT)
+        Key.of(
+            Kind.MEMORY_READINGS,
+            model="Qwen/Qwen3.8-27B",
+            engine_config="{}",
+            **LAYOUT,
+        )
 
 
 def edited(path: str, value) -> dict:

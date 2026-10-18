@@ -195,7 +195,7 @@ document that owns it. Nothing in `01`–`11` is outside this diagram.
   |                                                docs 01, 15          |
   +=====================================================================+
   |  L0  ARTIFACTS        machine_spec   op_graph      price_list       |
-  |                       region_terms   memory_readings coverage_hull  |
+  |                       memory_readings coverage_hull                 |
   |                       shape_population  step_measurement            |
   |                       step_linear_law  host_laws  step grid bundle  |
   |                       keys . digests . fingerprints . invalidation  |
@@ -230,7 +230,7 @@ document that owns it. Nothing in `01`–`11` is outside this diagram.
 | L5 | The calibration phases, the measurement bench and the recommended flow | [`07_calibration_toolchain.md`](07_calibration_toolchain.md) | D36–D43 |
 | L5 | Machine spec schema and probes | [`05_machine_spec_and_probes.md`](05_machine_spec_and_probes.md) | D24–D26 |
 | L0 | Artifact store, keys, invalidation | [`07`](07_calibration_toolchain.md) | D41, D43 |
-| — | Validation protocol (judges all of it) | [`08_validation_protocol.md`](08_validation_protocol.md) | D43.1, D44–D52 (+ D50.1, D50.2) |
+| — | Validation protocol (judges all of it) | [`08_validation_protocol.md`](08_validation_protocol.md) | D43.1, D44–D52 (+ D50.1, D50.2, D50.3) |
 | L5 | Configuration surface: flags, precedence, the `compass` commands with their inputs and outputs | [`13_configuration_surface.md`](13_configuration_surface.md) | D78–D81 |
 | L2/L3 | Speculative decoding and MTP | [`14_speculative_decoding.md`](14_speculative_decoding.md) | D82–D87 |
 | L1/L3 | Parallelism: TP, DP, PP, EP | [`15_parallelism_support.md`](15_parallelism_support.md) | D88–D94 |
@@ -285,7 +285,7 @@ This is what makes "no GPU at simulation time" work.
    |  key + digest + fingerprint    |       |  Phase 1a trace (JIT)     |
    |                                |<------|  cost model -> seconds    |
    |  machine_spec   price_list     |  JIT  |  memory model -> blocks   |
-   |  op_graph       region_terms   | trace |                           |
+   |  op_graph                      | trace |                           |
    |  memory_readings coverage_hull |       |  -> simulated run         |
    +--------------------------------+       +---------------------------+
 ```
@@ -298,8 +298,8 @@ rather than answering from stale data.
 ```
   GRANULARITY, a property of the backend
   +--------------------------------------------------------------+
-  |  op-level     symbolic IR + priced leaves + region terms;    |
-  |               an unpriced leaf answered by its analytical law|
+  |  op-level     symbolic IR; each leaf priced from a price_list|
+  |               or else by its analytical law; no residual     |
   |               needs: a calibration campaign                  |
   |               used for: acceptance cells                     |
   +--------------------------------------------------------------+
@@ -540,7 +540,7 @@ The documents use these precisely; a reader will bounce off without them.
 
 | Doc | Title | What it settles |
 |---|---|---|
-| [`07`](07_calibration_toolchain.md) | Calibration and Benchmarking Toolchain | The phases and the commands that run them; the backend that needs a measurement plans it; the bench is `EngineCore` without its scheduler, with one window for every step. One recommended flow per half, steps and ops. The minimal recipe: one full-engine run at TP1, plus one TP2 transfer test, plus an engine start per configuration (`measure memory`). Four classes of communication pricing. The artifact store, its keys and its invalidation matrix. |
+| [`07`](07_calibration_toolchain.md) | Calibration and Benchmarking Toolchain | The phases and the commands that run them; the backend that needs a measurement plans it; the step bench is `EngineCore` without its scheduler, with one window for every step; the op bench times each leaf alone, cold, and `fit ops` interpolates inside its hull. One recommended flow per half, steps and ops. The minimal recipe: one full-engine run at TP1, plus one TP2 transfer test, plus an engine start per configuration (`measure memory`). Four classes of communication pricing. The artifact store, its keys and its invalidation matrix. |
 | [`09`](09_fitting_and_law_selection.md) | Fitting and Law Selection | How measurements become a model: fit relative error, per-rung decode, hull guards not bounding boxes, and why leave-one-out cannot choose a family. Owns coverage geometry for every other document. |
 
 ### Part IV — How it is driven and judged
@@ -584,7 +584,7 @@ The documents use these precisely; a reader will bounce off without them.
 | D24 – D26 (+ D25.1) | `05` Machine Specification and its Probes |
 | D27 – D35 (+ D34.1) | `06` Workload Harness Contract |
 | D36 – D43 (+ D38.1, D40.1) | `07` Calibration and Benchmarking Toolchain |
-| D43.1, D44 – D52 (+ D50.1, D50.2) | `08` Validation Protocol |
+| D43.1, D44 – D52 (+ D50.1, D50.2, D50.3) | `08` Validation Protocol |
 | D53 – D62 | `09` Fitting and Law Selection |
 | D63 – D70 (+ D67.1) | `10` Analytical Laws |
 | D71 – D77 | `11` Engine Metrics under Virtual Time |

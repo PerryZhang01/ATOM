@@ -325,7 +325,7 @@ phases rather than describe a second workflow:
 | Offline home | doc `07` **Phase 1a** — trace the structures Phase 0 discovered | doc `07` **Phase 1b/1c/2** — op pricing, in-situ steps, memory constants |
 | Allowed during a simulated run | **yes**, lazily, on a structure miss | **never** |
 | Who triggers it | the runner, automatically | the operator: the toolchain's `record` and `measure` commands, `measure memory` for Phase 2 (`13` D80) |
-| Artifact written | the IR graph for that structure key | a price / region / memory-constant entry |
+| Artifact written | the IR graph for that structure key | a price / step-measurement / memory-readings entry |
 
 **Recommended path is offline for both.** Doc `07` D39's recommended flow runs the whole
 campaign, Phase 1a's `trace ops` included; a run that finds every structure already traced
