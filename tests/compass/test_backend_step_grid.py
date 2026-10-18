@@ -442,29 +442,33 @@ def test_a_cell_missing_a_corner_inside_the_pool_or_with_no_pool_still_refuses(
         backend.price(view(*[(1, 851, True)] * 44))
 
 
-# B=48's edge read along c from 512 and 767, extended to c = 1023: falling 60%
-# it reaches -908.16, and from 5110 to 2560 exactly 0.
+# B=48's edge read along c from 512 and 767 and extended: falling 60% it reaches
+# -908.16 at c = 1023 and -665.28 at c = 1000, where B=44's other side, B=40,
+# reads 5700; from 5110 to 2560 it reaches exactly 0 at c = 1023.
 @pytest.mark.parametrize(
-    "at_512,at_767",
-    [(f(48, 512), 0.4 * f(48, 512)), (5110.0, 2560.0)],
-    ids=["negative", "zero"],
+    "b,c,at_512,at_767",
+    [
+        (48, 1023, f(48, 512), 0.4 * f(48, 512)),
+        (48, 1023, 5110.0, 2560.0),
+        (44, 1000, f(48, 512), 0.4 * f(48, 512)),
+    ],
+    ids=["negative", "zero", "one-b-side"],
 )
 def test_a_falling_in_pool_edge_prices_the_past_pool_step_by_the_roofline(
-    at_512, at_767
+    b, c, at_512, at_767
 ):
     falling = pooled(times={(48, 512): at_512, (48, 767): at_767})
-    rows = [(1, 1024, True)] * 48
+    rows = [(1, c + 1, True)] * b
 
-    with pytest.raises(CostRefused, match="has no measurement at B=48, c=911"):
-        falling.price(view(*rows))
     (term,) = StepFallbackBackend(falling, roofline()).price(view(*rows)).terms
     (floor,) = roofline().price(view(*rows)).terms
     assert (term.name, term.seconds) == (floor.name, floor.seconds)
     assert term.provenance.refusals == (
         Refusal(
             "step-grid",
-            "the decode cell holding B=48, c=1023 has no measurement at "
-            "B=48, c=911; B=48, c=1024",
+            f"the decode cell holding B={b}, c={c} is past the KV pool, and "
+            "B=48's in-pool edge falls from c=512 to 767, reaching no positive "
+            f"time at c={c}",
         ),
     )
 
