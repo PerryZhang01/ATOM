@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 """A speculative run's acceptance, read from a paired real record: the record's
-engine writes its scheduler's accepted-draft histogram as its loop leaves,
+engine writes its scheduler's accepted-draft histogram as SIGTERM stops it,
 `compass run --acceptance-record` hands ATOM the rates it gives, and the
 summary names that input ``measured``.
 
@@ -8,8 +8,9 @@ Each record's scheduler is ATOM's, serving `test_speculative_step`'s requests
 over stated rates as `test_run_speculative_summary` serves them.
 """
 
-import contextlib
 import json
+import os
+import signal
 from types import SimpleNamespace
 
 import pytest
@@ -27,10 +28,10 @@ def mtp(k):
     return ["--method", "mtp", "--num-speculative-tokens", str(k)]
 
 
-def recorded(monkeypatch, tmp_path, rates, rank=0, fail=False):
+def recorded(monkeypatch, tmp_path, rates, rank=0):
     """The record directory DP rank `rank`'s engine records into, once it has
-    served requests at `rates` and left its loop, raising when `fail`; and its
-    scheduler."""
+    served requests at `rates` and taken SIGTERM inside its loop; its
+    scheduler, and the signals the handler ATOM installed before the loop took."""
     steps = tmp_path / "record" / serve.STEPS
     steps.mkdir(parents=True, exist_ok=True)
     monkeypatch.delenv(compass_run.ENV, raising=False)
@@ -38,11 +39,19 @@ def recorded(monkeypatch, tmp_path, rates, rank=0, fail=False):
     spec = _stated(monkeypatch, len(rates), synthetic_acceptance_rates=rates)
     scheduler = _served(monkeypatch, spec)
     scheduler.config.parallel_config = SimpleNamespace(data_parallel_rank=rank)
-    core = SimpleNamespace(scheduler=scheduler)
-    with contextlib.suppress(RuntimeError), compass_run.engine_loop(core):
-        if fail:
-            raise RuntimeError("the engine loop died")
-    return steps.parent, scheduler
+    took = []
+
+    def atom(signum, frame):
+        took.append(signum)
+
+    before = signal.signal(signal.SIGTERM, atom)
+    try:
+        with compass_run.engine_loop(SimpleNamespace(scheduler=scheduler)):
+            os.kill(os.getpid(), signal.SIGTERM)
+        assert signal.getsignal(signal.SIGTERM) is atom
+    finally:
+        signal.signal(signal.SIGTERM, before)
+    return steps.parent, scheduler, took
 
 
 def started(monkeypatch, tmp_path, *flag, atom=()):
@@ -57,11 +66,10 @@ def started(monkeypatch, tmp_path, *flag, atom=()):
     return seen["atom"], seen["run"]
 
 
-@pytest.mark.parametrize("fail", [False, True])
-def test_a_record_s_engine_writes_its_histogram_as_its_loop_leaves(
-    monkeypatch, tmp_path, fail
+def test_a_record_s_engine_writes_its_histogram_at_sigterm_then_atom_takes_it(
+    monkeypatch, tmp_path
 ):
-    record, scheduler = recorded(monkeypatch, tmp_path, [0.9, 0.6], rank=1, fail=fail)
+    record, scheduler, took = recorded(monkeypatch, tmp_path, [0.9, 0.6], rank=1)
 
     held = (record / serve.STEPS / "dp1.acceptance.json").read_text()
     distribution = scheduler.engine_stats.distribution
@@ -69,14 +77,14 @@ def test_a_record_s_engine_writes_its_histogram_as_its_loop_leaves(
         "draft_tokens": 2,
         "distribution": {str(a): n for a, n in distribution.items()},
     }
-    assert sum(distribution.values()) > 0
+    assert sum(distribution.values()) > 0 and took == [signal.SIGTERM]
 
 
 def test_a_run_given_its_record_draws_from_the_rates_its_histograms_give_as_measured(
     monkeypatch, tmp_path
 ):
-    record, first = recorded(monkeypatch, tmp_path, [0.8, 0.5], rank=0)
-    _, second = recorded(monkeypatch, tmp_path, [0.6, 0.3], rank=1)
+    record, first, _ = recorded(monkeypatch, tmp_path, [0.8, 0.5], rank=0)
+    _, second, _ = recorded(monkeypatch, tmp_path, [0.6, 0.3], rank=1)
     counts = [
         sum(s.engine_stats.distribution[a] for s in (first, second)) for a in (0, 1, 2)
     ]
@@ -124,7 +132,7 @@ def test_a_record_with_no_histogram_or_of_another_width_refuses_by_name(
         record = tmp_path / "record"
         (record / serve.STEPS).mkdir(parents=True)
     else:
-        record, _ = recorded(monkeypatch, tmp_path, drafted)
+        record, *_ = recorded(monkeypatch, tmp_path, drafted)
     monkeypatch.setattr(serve, "serve", unstarted)
 
     with pytest.raises(ValueError, match=refusal):

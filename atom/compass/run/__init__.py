@@ -1672,9 +1672,11 @@ def engine_loop(engine_core):
     steps cost. A stop reaches the engine as the ``+inf`` grant instead.
 
     A pipeline stage's runner calls go through `pp_send.install`'s sends. A
-    real run's engine leaving its loop, by any path, records its acceptance
-    (`_record_acceptance`)."""
-    run, sections = spec(), {}
+    real run recording its steps records its acceptance at SIGTERM
+    (`_stop_recording`)."""
+    from atom.compass import parity
+
+    run, sections, before = spec(), {}, None
     if run is not None and getattr(engine_core, "pp_size", 1) > 1:
         from atom.compass.runner import pp_send
 
@@ -1687,6 +1689,11 @@ def engine_loop(engine_core):
             run, engine_core, sections, k
         )
         before = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    elif os.environ.get(parity.ENV):
+        stop = functools.partial(
+            _stop_recording, engine_core, signal.getsignal(signal.SIGTERM)
+        )
+        before = signal.signal(signal.SIGTERM, stop)
     try:
         yield
         engine_done(engine_core, **sections)
@@ -1711,10 +1718,20 @@ def engine_loop(engine_core):
             _hand_in(run, lp, reasons + [ended], **said, **sections)
         raise
     finally:
-        if run is not None and before is not None:  # None: not set from Python
+        if before is not None:  # None: not set from Python
             signal.signal(signal.SIGTERM, before)
-        if run is None:
-            _record_acceptance(engine_core)
+
+
+def _stop_recording(engine_core, previous, signum, frame) -> None:
+    """A real recorded run's SIGTERM: `_record_acceptance`, then the signal as
+    `previous`, the handler it replaced, takes it. ATOM's handler stops the
+    workers, and the engine's loop never leaves."""
+    _record_acceptance(engine_core)
+    if callable(previous):
+        previous(signum, frame)
+    else:
+        signal.signal(signum, previous or signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
 
 
 def _record_acceptance(engine_core) -> None:
