@@ -5,6 +5,7 @@ they complete."""
 
 import json
 import math
+import re
 from types import SimpleNamespace
 
 import numpy as np
@@ -16,9 +17,11 @@ from test_pp_launch_send import LAWS, _runner
 from test_pp_send import ACK, DATA, L_DATA, C, _sent, _stage
 
 from atom.compass import run as compass_run
+from atom.compass.backends.resolver import CostRefused
 from atom.compass.backends.step_linear_fit import fit_host, label_records
 from atom.compass.runner import pp_send
 from atom.compass.runner.overrides import (
+    HOST_SEGMENTS,
     PP_RECV_SEGMENT,
     HostDeviceRecurrence,
     forward_shape,
@@ -37,7 +40,7 @@ def test_a_later_stages_record_fits_its_launch_up_to_the_receive(tmp_path):
         kind = "decode" if s["rows"][0][2] else "prefill"
         x = (1, sum(r[0] for r in s["rows"]), len(s["rows"]))
         r0 = s["t_launch_ns"][0] + round(float(np.dot(RECV[kind], x)) * 1e9)
-        s["t_pp_recv_ns"] = [r0, r0]
+        s["t_pp_recv_ns"] = [r0, r0 + 10**6]  # a 1 ms receive, its entry labels it
     record.write_text("".join(json.dumps(s) + "\n" for s in lines))
     host, report = fit_host(label_records([record])[0])
     assert report["unfitted"] == {}
@@ -59,6 +62,17 @@ def test_a_later_stage_posts_its_receive_its_launch_part_after_its_prepare_end(
     for skip, posted in (((), e + pre + recv), ((PP_RECV_SEGMENT,), e + pre)):
         stage.compass_host = HostDeviceRecurrence(laws, skip, lambda: 0.0, (1, 2))
         assert stage.pp_recv_posted(0.0, *shape)[0] == posted
+
+
+def test_a_later_stage_whose_law_lacks_its_receive_part_is_refused_by_name():
+    """The first stage runs no `W_recv`; a later one needs a law for it or a skip."""
+    laws = {"prefill": dict.fromkeys(HOST_SEGMENTS, (0, 0, 0))}
+    for stage, skip in (((0, 2), ()), ((1, 2), (PP_RECV_SEGMENT,))):
+        HostDeviceRecurrence(laws, skip, lambda: 0.0, stage).charge(prefill(8), 1.0)
+    with pytest.raises(
+        CostRefused, match=re.escape("(host: no law for prefill.W_recv)")
+    ):
+        HostDeviceRecurrence(laws, (), lambda: 0.0, (1, 2)).charge(prefill(8), 1.0)
 
 
 def test_a_sender_blocked_on_its_previous_sends_ack_goes_on_its_wake_after_it():

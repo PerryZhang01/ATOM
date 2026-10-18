@@ -1378,6 +1378,10 @@ stage and per DP rank, with a TP group modelled on its rank 0.
   `prepare_inputs` and the drafter's staging. A run without MTP never runs it; an MTP
   run whose law lacks it is refused by name.
 - `W_launch`: the launch (`ModelRunner.run_model`).
+- `W_recv`: on a pipeline stage after the first, the part of `W_launch` that
+  `run_model` runs before `recv_intermediate_tensors`; the stage posts its receive
+  after it (`15`). It is inside `W_launch`, never charged beside it. A first stage
+  never runs it; a later stage whose law lacks it is refused by name.
 - `W_post`: the sampler launch and the output (`ModelRunner.postprocess`).
 
 **The recurrence**, for forward `n`, where `now` is the clock owner's time when the

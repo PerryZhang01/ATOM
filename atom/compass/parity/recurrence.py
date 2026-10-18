@@ -98,7 +98,8 @@ def check(steps: list[dict], stage=None, upstream=None, carriers=None) -> dict:
             pre += max(sent - entry - pre * 1e-9, 0.0) * 1e9
         launch = l1 - l0 - (p1 - p0)
         law = {"E": e, "W_pre": pre - (l0 - m1), "W_launch": launch, "W_post": post}
-        law = {g: (v * 1e-9, 0, 0) for g, v in {**law, "W_inputs": l0 - m1}.items()}
+        law |= {"W_inputs": l0 - m1, "W_recv": p0 - l0}
+        law = {g: (v * 1e-9, 0, 0) for g, v in law.items()}
         rec.laws = {k: law for k in FORWARD_KINDS}
         queued = rec.ends[1] - entry - pre * 1e-9
         # Under MTP, the wait for the previous output's MTP status sits inside

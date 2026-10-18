@@ -228,7 +228,7 @@ def test_a_stage_device_starts_at_its_input_and_the_last_returns_at_its_end():
 def test_a_stage_prepares_its_inputs_before_it_waits_for_the_metadata():
     """Under MTP the last stage's 1 s input prepare runs before its wait for
     the metadata at 5 s, so its 1 s forward ends at 6 s."""
-    law = dict.fromkeys(("E", "W_pre", "W_launch", "W_post"), (0, 0, 0))
+    law = dict.fromkeys(("E", "W_pre", "W_launch", "W_post", "W_recv"), (0, 0, 0))
     law["W_inputs"] = (1.0, 0, 0)
     host = HostDeviceRecurrence({"decode": law}, (), lambda: 0.0, (1, 2), mtp=True)
     batch = _decode()

@@ -181,7 +181,9 @@ def test_a_stage_posts_its_receive_after_its_ring_wait_and_its_input_prepare(
     `E + PRE + INPUTS + 1`, and under MTP it prepares its inputs before the
     receive too."""
     stage = _runner(monkeypatch, pp - 1, lambda: 0.0, pp)
-    laws = {"prefill": {**LAWS["prefill"], "W_inputs": (INPUTS, 0, 0)}}
+    laws = {
+        "prefill": {**LAWS["prefill"], "W_inputs": (INPUTS, 0, 0), "W_recv": (0, 0, 0)}
+    }
     host = HostDeviceRecurrence(laws, (), lambda: 0.0, (pp - 1, pp), mtp=True)
     stage.compass_host = host
     batch = prefill(8)
