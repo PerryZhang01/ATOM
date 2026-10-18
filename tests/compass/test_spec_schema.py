@@ -50,15 +50,13 @@ import pytest
 from atom.compass import spec as spec_package
 from atom.compass.spec import (
     Backend,
-    FingerprintMismatch,
     Fragment,
     MachineSpec,
-    Rule,
     SpecRefusal,
     explain,
 )
 from atom.compass.spec.fields import FIELDS, SCHEMA, SCHEMA_VERSION, Kind
-from atom.compass.spec.rules import DEPLOYMENT_OWNED
+from atom.compass.spec.rules import DEPLOYMENT_OWNED, FingerprintMismatch, Rule
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 PACKAGE = REPO / "atom" / "compass" / "spec"

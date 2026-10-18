@@ -10,9 +10,9 @@ publishes them per configuration as a `memory_readings` entry.
 A per-machine script (`scripts/compass/mi3*_spec.py`) authors a spec with the
 verbs here: `tokenizer_sweep` and `tokenizer_fragment` probe the tokenizer,
 `merge` combines fragments and refuses ones that describe two hosts, `validate`
-reports every refusal of the merged document, and `explain` takes a quantity
-back to the fields under it. A run reads the result with `MachineSpec`.
-`across_ranks` is `compass measure memory`'s spread check.
+reports every refusal of the merged document, and `explain` takes a field or
+block back to its values and their origins. A run reads the result with
+`MachineSpec`. `across_ranks` is `compass measure memory`'s spread check.
 
 Nothing here imports a tensor library, a device runtime or the engine.
 """
@@ -22,16 +22,14 @@ from .machine import MachineSpec
 from .merge import Fragment, merge
 from .probes import tokenizer_fragment, tokenizer_sweep
 from .ranks import across_ranks
-from .rules import FingerprintMismatch, Rule, SpecRefusal
+from .rules import SpecRefusal
 from .tokenizers import Backend
 from .validate import validate
 
 __all__ = [
     "Backend",
-    "FingerprintMismatch",
     "Fragment",
     "MachineSpec",
-    "Rule",
     "SpecRefusal",
     "across_ranks",
     "explain",

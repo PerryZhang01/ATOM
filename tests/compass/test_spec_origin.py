@@ -15,9 +15,10 @@ import pytest
 from test_spec_schema import DOCUMENT
 from test_spec_verbs import CLASS0, CLASS1, LINKS, fragment
 
-from atom.compass.spec import MachineSpec, Rule, SpecRefusal, explain, merge
+from atom.compass.spec import MachineSpec, SpecRefusal, explain, merge
 from atom.compass.spec.fields import SCHEMA, Kind
 from atom.compass.spec.machine import entry_label
+from atom.compass.spec.rules import Rule
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CARD = {"model": "Qwen/Qwen3.8-27B", "width": 1, "source_root": "commit:983e42973"}
@@ -113,7 +114,7 @@ def test_a_mixed_document_without_its_map_is_refused_by_name():
     assert refused.value.rule is Rule.TOTALITY
     assert "records no origin for `device.memory.capacity_bytes`" in str(refused.value)
     with pytest.raises(SpecRefusal, match="records no origin"):
-        explain(spec, "kv_blocks")
+        explain(spec, "device.memory.capacity_bytes")
     with pytest.raises(SpecRefusal, match="records no origin"):
         merge(
             [fragment("machine.json", {"device": document["device"]}, origin="mixed")]
@@ -171,7 +172,7 @@ def test_origin_is_asked_per_tokenizer_entry():
 def test_explain_names_each_contributions_origin():
     combination = merge(three_origins())
     spec = MachineSpec.from_mapping(saved(combination.document))
-    rows = {row.path: row for row in explain(spec, "kv_blocks").contributions}
+    rows = {row.path: row for row in explain(spec, "device").contributions}
     assert rows["device.memory.capacity_bytes"].origin == {"origin": "probed", **CARD}
     assert str(rows["device.memory.capacity_bytes"]).endswith(
         "probed on model Qwen/Qwen3.8-27B, width 1, source_root commit:983e42973"

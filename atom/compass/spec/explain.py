@@ -6,11 +6,10 @@ supplied it and its origin; nothing is summed, since a summed check once hid
 three errors, two of which cancelled. A spec-peak number is shown with its
 derate and the derated value beside it.
 
-A term is a field or block by dotted path, or a predicted quantity out of
-`QUANTITIES`. Tokenizer rates explain per entry and per rate.
+A term is a field or block by dotted path. Tokenizer rates explain per entry
+and per rate.
 """
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,16 +19,10 @@ from .merge import Merge
 from .rules import Rule, SpecRefusal
 from .tokenizers import ENTRY_FIELDS
 
-#: Predicted quantities, and the spec fields each one is built out of. The rest
-#: of the KV budget is the run's `memory_readings` entry's.
-QUANTITIES: Mapping[str, tuple[str, ...]] = {
-    "kv_blocks": ("device.memory.capacity_bytes",),
-}
-
 
 @dataclass(frozen=True, slots=True)
 class Contribution:
-    """One spec field under a quantity: what it holds and where it came from."""
+    """One spec field under a term: what it holds and where it came from."""
 
     path: str
     value: Any
@@ -56,7 +49,7 @@ class Contribution:
 
 @dataclass(frozen=True, slots=True)
 class Explanation:
-    """What a quantity is built out of, and the spec that is stated in."""
+    """The fields under a term, and the spec that is stated in."""
 
     term: str
     digest: str
@@ -118,8 +111,8 @@ def _rows(spec: MachineSpec, path: str, origin: Merge | None) -> list[Contributi
 def explain(
     spec: MachineSpec, term: str, *, origin: Merge | None = None
 ) -> Explanation:
-    """The spec fields a quantity is built from, each with its value and source."""
-    paths = QUANTITIES.get(term) or tuple(
+    """The spec fields under a term, each with its value and source."""
+    paths = tuple(
         field.path
         for field in SCHEMA
         if field.path == term or field.path.startswith(f"{term}.")
@@ -130,7 +123,7 @@ def explain(
             Rule.ADDRESSING,
             f"`{term}` names no field this spec states",
             "ask again by the dotted path of a field or a block of fields the "
-            f"spec states, or by one of the quantities {sorted(QUANTITIES)}",
+            "spec states",
         )
     rows = tuple(row for path in held for row in _rows(spec, path, origin))
     return Explanation(term, spec.digest(), rows)

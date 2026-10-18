@@ -14,7 +14,7 @@ On hjbog-srdc-39 one real burst adds the HTTP intake terms (`INTAKE`). An
 engine start's memory readings are `compass measure memory`'s, not the spec's.
 One fragment per probe or origin. Writes the merged document to `--out` when
 `validate` passes, then prints `explain`'s rows for the host, device and
-interconnect blocks, grouped by origin, and the basis of `kv_blocks`.
+interconnect blocks, grouped by origin.
 `--sweep-from` takes the tokenizer sweep from a document this script wrote.
 """
 
@@ -242,14 +242,14 @@ def saved(path: Path) -> Fragment:
 
 
 def report(merged) -> str:
-    """`explain`'s rows grouped by origin, and the basis of `kv_blocks`."""
+    """`explain`'s rows grouped by origin."""
     spec = MachineSpec.from_mapping(merged.document)
     groups: dict[str, list[str]] = {}
     for block in ("host", "device", "interconnect"):
         for row in explain(spec, block, origin=merged).contributions:
             groups.setdefault(row.origin["origin"], []).append(f"  {row}")
     lines = [line for origin, rows in groups.items() for line in (f"{origin}:", *rows)]
-    return "\n".join(lines + [str(explain(spec, "kv_blocks", origin=merged))])
+    return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:

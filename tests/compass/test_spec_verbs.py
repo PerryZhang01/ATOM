@@ -29,7 +29,6 @@ from atom.compass import spec as spec_package
 from atom.compass.spec import (
     Fragment,
     MachineSpec,
-    Rule,
     SpecRefusal,
     across_ranks,
     explain,
@@ -38,9 +37,9 @@ from atom.compass.spec import (
     tokenizer_sweep,
     validate,
 )
-from atom.compass.spec.explain import QUANTITIES
 from atom.compass.spec.fields import BY_PATH, Kind
 from atom.compass.spec.probes import cpu_counts
+from atom.compass.spec.rules import Rule
 from atom.compass.spec.tokenizers import ENTRY_FIELDS
 
 MACHINE = "mi355x-8gpu-2node"
@@ -533,17 +532,10 @@ def test_a_block_explains_to_every_field_under_it():
     assert paths == {"host.ipc.zmq_roundtrip_s", "host.ipc.shm_broadcast_s"}
 
 
-def test_a_quantity_names_the_fields_it_is_built_out_of():
+def test_a_basis_names_the_fragment_each_field_came_from():
     combination = merged()
     spec = MachineSpec.from_mapping(combination.document)
-    basis = explain(spec, "kv_blocks", origin=combination)
-    assert [row.path for row in basis.contributions] == list(QUANTITIES["kv_blocks"])
-
-
-def test_a_quantity_names_the_fragment_each_field_came_from():
-    combination = merged()
-    spec = MachineSpec.from_mapping(combination.document)
-    basis = explain(spec, "kv_blocks", origin=combination)
+    basis = explain(spec, "device.memory.capacity_bytes", origin=combination)
     supplied = {row.path: row.supplied_by for row in basis.contributions}
     assert supplied["device.memory.capacity_bytes"] == ("class1",)
     links = explain(spec, "interconnect.intra_node", origin=combination)
@@ -570,12 +562,6 @@ def test_tokenizer_rates_explain_per_entry_and_per_rate():
     assert rates["encode_fixed_s"].derate is None
 
 
-def test_every_quantity_is_built_out_of_fields_this_schema_really_has():
-    for term, paths in QUANTITIES.items():
-        for path in paths:
-            assert path in BY_PATH, f"{term} names {path}, which is not a field"
-
-
 def test_a_term_the_schema_does_not_know_is_asked_for_again_by_path():
     # An unknown term and an optional field the document left out both come
     # back empty however they are spelled, so both are asked for again.
@@ -587,7 +573,6 @@ def test_a_term_the_schema_does_not_know_is_asked_for_again_by_path():
         assert refused.value.rule is Rule.ADDRESSING
         assert refused.value.what == f"`{term}` names no field this spec states"
         assert "ask again by the dotted path" in refused.value.remedy
-        assert "kv_blocks" in refused.value.remedy
 
 
 def test_an_empty_tokenizer_table_explains_to_no_rows_rather_than_refusing():
@@ -985,7 +970,7 @@ def test_the_node_18_fragments_validate_and_explain_splits_measured_from_declare
     assert validate(merged.document).ok
     measured, declared = script.report(merged).split("assumed:")
     for field in ("device.memory.capacity_bytes", "encode_tokens_per_s"):
-        assert field in measured and field not in declared.split("kv_blocks")[0]
+        assert field in measured and field not in declared
     for field in ("host.ipc.zmq_roundtrip_s", "host.ipc.shm_broadcast_s", "bf16_flops"):
         assert field in declared and field not in measured
 
@@ -1046,8 +1031,7 @@ def test_the_mi355x_spec_explains_what_the_start_measured_apart_from_the_declare
         for row in explain(spec, block).contributions:
             origins.setdefault(row.origin["origin"], set()).add(row.path)
     assert set(origins) == {"probed", "datasheet", "assumed"}
-    start = {row.path for row in explain(spec, "kv_blocks").contributions}
-    assert start == {"device.memory.capacity_bytes"} <= origins["probed"]
+    assert "device.memory.capacity_bytes" in origins["probed"]
     assert origins["datasheet"] == {
         "device.memory.bandwidth_bytes_per_s",
         "device.compute.bf16_flops",
