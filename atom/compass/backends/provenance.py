@@ -22,7 +22,8 @@ The methods:
 - `ESTIMATED`: anything else derived from observations of the subject. An
   estimated answer is `validated` when the query lies inside the region where
   its algorithm's held-out error was measured, and is not otherwise. The
-  algorithm, extrapolation included, is named in `source`.
+  algorithm, extrapolation included, is named in `source`: a source answering
+  past its support domain is named with `EXTRAPOLATED` after its name.
 
 `MEASURED` and `ESTIMATED` are `empirical`. `combine` gives
 the method of an answer built from several: any declared input makes it
@@ -43,6 +44,9 @@ import dataclasses
 import enum
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+
+#: What follows a source's name in an answer it extrapolated past its support domain.
+EXTRAPOLATED = "-extrapolated"
 
 
 class Method(enum.Enum):
@@ -140,6 +144,11 @@ class Provenance:
     @property
     def is_refused(self) -> bool:
         return bool(self.refusals)
+
+    @property
+    def extrapolated(self) -> bool:
+        """Whether the source that answered extrapolated past its support domain."""
+        return EXTRAPOLATED in self.source
 
     @property
     def refusal(self) -> Refusal | None:
