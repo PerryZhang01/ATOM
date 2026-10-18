@@ -203,7 +203,7 @@ def _seq(regions):
 
 
 def to_json(graph: ir.Graph) -> str:
-    """The graph as JSON: a str dimension is symbolic, an int concrete."""
+    """The graph as JSON."""
     applicability = graph.applicability
     return json.dumps(
         {
@@ -218,7 +218,7 @@ def _arg(value):
     """An argument as JSON: a tensor, module or context key as an object."""
     if isinstance(value, ir.Tensor):
         return {
-            "shape": [_dim(d) for d in value.shape],
+            "shape": list(value.shape),
             "dtype": value.dtype,
             "stride": list(value.stride),
             "role": value.role.value,
@@ -237,7 +237,7 @@ def _json(region):
             "op": region.name,
             "kind": region.kind.value,
             "args": {slot: _arg(value) for slot, value in region.args},
-            "out": [[_dim(d) for d in s] for s in region.out_shapes],
+            "out": [list(s) for s in region.out_shapes],
             "stream": region.stream_id,
             "context": region.context_ref and region.context_ref.key,
         }
@@ -252,7 +252,3 @@ def _json(region):
         "start": region.start,
         "step": region.step,
     }
-
-
-def _dim(dim):
-    return dim.text if isinstance(dim, ir.SymDim) else dim
