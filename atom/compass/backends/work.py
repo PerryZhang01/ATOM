@@ -15,11 +15,8 @@ its own derate, `BW(M)` reads the bandwidth curve, `t0` is the kernel floor,
 and each collective costs one hop of link latency plus the least bytes a rank
 must send under any algorithm, over its link bandwidth. A matrix product takes
 the rate of its wider operand format. A format the spec states no rate for is
-refused by the spec, naming the field.
-
-MoE work is priced in expectation under independent uniform routing:
-`activated_experts` is how many of the experts a batch touches, and
-`max_rank_load` the busiest expert-parallel rank's routed rows.
+refused by the spec, naming the field. A collective wider than the scale-up
+domain is refused.
 """
 
 from __future__ import annotations
@@ -27,9 +24,6 @@ from __future__ import annotations
 import bisect
 import dataclasses
 from collections.abc import Mapping, Sequence
-from math import comb
-
-import numpy as np
 
 #: Bytes per element, and so the width that decides a mixed pair's rate.
 ELEMENT_BYTES = {"fp32": 4, "bf16": 2, "fp8": 1, "fp4": 0.5}
@@ -75,15 +69,6 @@ def gemm(m: int, n: int, k: int, a="bf16", b="bf16", out="bf16") -> Work:
     """`[m, k] @ [k, n]`, operands in formats `a` and `b`."""
     moved = m * k * _size(a) + k * n * _size(b) + m * n * _size(out)
     return Work({_wider(a, b): 2 * m * n * k}, moved)
-
-
-def grouped_gemm(
-    rows: int, n: int, k: int, groups: int, a="bf16", b="bf16", out="bf16"
-) -> Work:
-    """`rows` routed rows, each through one of `groups` `[k, n]` weights that
-    are read once each."""
-    moved = rows * k * _size(a) + groups * k * n * _size(b) + rows * n * _size(out)
-    return Work({_wider(a, b): 2 * rows * n * k}, moved)
 
 
 def attention(
@@ -132,55 +117,9 @@ def allgather(ranks: int, nbytes: float) -> Work:
     return _collective(ranks, (ranks - 1) / ranks * nbytes)
 
 
-def reduce_scatter(ranks: int, nbytes: float) -> Work:
-    """Each rank's `nbytes` input reduced into `1/N` per rank."""
-    return _collective(ranks, (ranks - 1) / ranks * nbytes)
-
-
-def all_to_all(ranks: int, nbytes: float) -> Work:
-    """Each rank's `nbytes` spread evenly over the group."""
-    return _collective(ranks, (ranks - 1) / ranks * nbytes)
-
-
-def activated_experts(experts: int, top_k: int, rows: int) -> float:
-    """The expected number of experts `rows` rows touch, each routed to
-    `top_k` distinct experts of `experts`."""
-    return experts * (1 - (1 - top_k / experts) ** rows)
-
-
-def max_rank_load(rows: int, top_k: int, experts: int, ranks: int) -> float:
-    """The busiest of `ranks` expert-parallel ranks' routed rows, in
-    expectation, the experts split evenly over the ranks.
-
-    One rank's load is a sum of `rows` independent hypergeometric counts, its
-    distribution exact by FFT. The ranks' loads are negatively associated (they
-    sum to `rows * top_k`), so the product of the marginals bounds the chance
-    that every load is at most `t` from above, and the value returned is a
-    lower bound on the expected maximum, at least the mean.
-    """
-    held, rest = divmod(experts, ranks)
-    if rest:
-        raise ValueError(f"{experts} experts do not split evenly over {ranks} ranks")
-    per_row = np.array(
-        [
-            comb(held, c) * comb(experts - held, top_k - c)
-            for c in range(min(held, top_k) + 1)
-        ],
-        dtype=float,
-    ) / comb(experts, top_k)
-    size = rows * (len(per_row) - 1) + 1
-    load = np.fft.irfft(np.fft.rfft(per_row, size) ** rows, size)
-    cdf = np.clip(np.cumsum(load), 0.0, 1.0)
-    return float(np.sum(1.0 - cdf**ranks))
-
-
 def _memory_seconds(nbytes: float, machine) -> float:
     """`nbytes / BW(nbytes)`: the curve's time at each point, linear in bytes
-    between points, each end's rate held beyond it; without a curve, the
-    derated bandwidth."""
-    if "device.memory.bandwidth_curve" not in machine.values:
-        rate = machine.value("device.memory.bandwidth_bytes_per_s")
-        return nbytes / (rate * machine.value("device.memory.derate"))
+    between points, each end's rate held beyond it."""
     sizes, rates = zip(*machine.value("device.memory.bandwidth_curve"))
     i = bisect.bisect_left(sizes, nbytes)
     if i == 0 or i == len(sizes):
@@ -190,12 +129,18 @@ def _memory_seconds(nbytes: float, machine) -> float:
 
 
 def _comm_seconds(c: Collective, machine) -> float:
-    """One hop plus the bytes over the rank's links: a fully connected group
-    inside the scale-up domain spreads them over its `N-1` links."""
-    intra = c.ranks <= machine.value("interconnect.intra_node.domain_devices")
-    link = "interconnect." + ("intra_node" if intra else "inter_node")
+    """One hop plus the bytes over the rank's scale-up links: a fully connected
+    group spreads them over its `N-1` links."""
+    domain = machine.value("interconnect.intra_node.domain_devices")
+    if c.ranks > domain:
+        raise ValueError(
+            f"a collective over {c.ranks} ranks leaves the scale-up domain of "
+            f"{domain} devices (`interconnect.intra_node.domain_devices`); "
+            "only a collective inside it is priced"
+        )
+    link = "interconnect.intra_node"
     lanes = 1
-    if intra and machine.value(f"{link}.topology") == "fully_connected":
+    if machine.value(f"{link}.topology") == "fully_connected":
         lanes = c.ranks - 1
     rate = machine.value(f"{link}.link_bandwidth_bytes_per_s")
     rate *= machine.value(f"{link}.derate") * lanes
