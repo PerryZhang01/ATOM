@@ -44,6 +44,7 @@ def publish(store, graph, model, declared, tp, command):
     import torch
 
     from atom.compass import artifacts as a
+    from atom.compass.artifacts.keys import NO_PTL
     from atom.compass.run import host_cpu
 
     from .graph import to_json
@@ -62,6 +63,7 @@ def publish(store, graph, model, declared, tp, command):
             atom_src=a.Reading.of_source_root(roots[0]),
             model=model,
             device=declared["arch"],
+            ptl=NO_PTL,
             host_cpu=host_cpu(),
             engine_config=json.dumps({"enforce_eager": True, "tp": tp}),
         ),
