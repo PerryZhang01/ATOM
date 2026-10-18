@@ -15,8 +15,12 @@ machine document.
 import contextlib
 import copy
 import hashlib
+import importlib.util
 import json
 import subprocess
+import sys
+import types
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -300,6 +304,34 @@ def test_a_second_start_that_autotunes_publishes_nothing(tmp_path, monkeypatch):
         "published"
     )
     assert not (tmp_path / "s").exists()
+
+
+def test_the_reading_runner_warms_up_once_as_a_serving_start_does(monkeypatch):
+    # A second warmup's peak counts what the first left allocated, and the
+    # KV pool a serving start sizes reads the first's.
+    warmups = []
+
+    class ModelRunner:
+        def forward(self, batch):
+            return batch
+
+        def _maybe_warmup(self):
+            warmups.append(self.forward(SimpleNamespace(total_tokens_num=16_384)))
+
+    engine = types.ModuleType("atom.model_engine.model_runner")
+    engine.ModelRunner = ModelRunner
+    monkeypatch.setitem(sys.modules, engine.__name__, engine)
+    path = Path(measure_memory.__file__).with_name("memory_runner.py")
+    spec = importlib.util.spec_from_file_location("reading_runner", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    runner = module.MemoryReadingModelRunner()
+    runner._read = {}
+
+    runner._maybe_warmup()
+
+    assert len(warmups) == 1
+    assert runner._read == {"warmup_tokens": 16_384}
 
 
 def test_readings_taken_without_the_offload_connector_refuse_a_run_that_offloads(
