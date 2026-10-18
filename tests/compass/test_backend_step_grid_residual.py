@@ -392,6 +392,24 @@ def test_a_band_member_prices_decode_by_rung_and_prefill_by_token_band():
     assert band(view((1, 600, True), (511, 511, False))) == "prefill tokens 512-2048"
 
 
+def test_a_top_band_held_as_lo_minus_prices_the_steps_past_the_last_edge():
+    # A residual fitted when the top prefill band was spelled `8192-`.
+    values = {"prefill tokens 2048-8192": 1.5, "prefill tokens 8192-": 1.25}
+    fitted_before = residual(b={"form": "band", "values": values})
+    top = view((8192, 8192, False), (1000, 1000, False), produces_output=False)
+    below = view((4096, 4096, False), produces_output=False)
+
+    assert band(top) == "prefill tokens 8192+"
+    assert fitted_before.factor(top)[0] == 1.25
+    assert fitted_before.factor(below)[0] == 1.5
+
+
+def test_a_band_member_holding_the_top_band_in_both_spellings_fails_loading():
+    both = {"prefill tokens 8192-": 1.25, "prefill tokens 8192+": 1.5}
+    with pytest.raises(ValueError, match="member b does not load: .* both <lo>- and"):
+        residual(b={"form": "band", "values": both})
+
+
 def triples_of(factor, n=400, b=(24, 41), prefill=True, q=(8, 65)):
     """`n` triples: one in four of one to three prefill chunks of `q` tokens a
     row (none without `prefill`), alternately producing no output and output,
