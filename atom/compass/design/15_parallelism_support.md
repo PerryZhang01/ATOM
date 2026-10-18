@@ -212,7 +212,8 @@ transfer to DP.
   EP8 diagnostic cells.
 - **Why `max` is the critical path here.** Under DP-attention a layer's barrier-delimited
   segments are the local segment and the MoE segment. With EP off the MoE segment is
-  rank-invariant by construction (above). With EP on that holds under uniform routing.
+  rank-invariant by construction (above). With EP on its priced cost is rank-invariant
+  under uniform routing: every rank is priced at the expected maximum rank load (`10` D64).
   When one segment is rank-invariant the sum of per-segment maxima equals the max of
   per-rank sums.
   Rank 0 at attention 3 per layer and rank 1 at 1, both at MoE `c`, give

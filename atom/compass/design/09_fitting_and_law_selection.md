@@ -435,8 +435,9 @@ the gfx942 decode attention grid places workgroups so that the rows `i mod 16` s
 dispatch class; the fit found 16 from the data alone.
 
 **Assumed treatment: uniform routing** (owner's DP ruling, 2026-10-01). Under DP the
-MoE segment is priced as if routing spread tokens evenly over the experts, at every
-granularity, from `T_moe` with EP on or off (`15` D90). Real
+MoE segment is priced under independent uniform routing over the experts, at every
+granularity, from `T_moe` with EP on or off (`15` D90); the analytical laws price it in
+expectation, under EP at the expected maximum rank load (`10` D64). Real
 routing is data-dependent (`15` D92 Q2) and no feature carries it, so whatever skew a
 capture's routing has is folded into the fitted MoE terms. `max` over ranks is the
 per-layer critical path, by construction with EP off and under this treatment with EP on
