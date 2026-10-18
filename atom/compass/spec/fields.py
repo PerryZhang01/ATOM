@@ -1,53 +1,29 @@
 # SPDX-License-Identifier: MIT
 """The schema as data: every field the machine spec has, and what it may hold.
 
-The table is the schema. Reading a document means checking it against this and
-nothing else, which is what makes the schema closed -- a key with no row here is
-refused wherever it sits, so the separation rule holds without anyone
-maintaining a list of the knobs it excludes.
+The table is the schema, so a key with no row here is refused wherever it sits.
 
-Three things about the table are load-bearing.
+**A spec-peak number is marked, and its derate is derived from the mark.**
+`closed()` adds a derate to the block of every field marked `peak`, so a peak
+cannot be added without the haircut that makes it achievable.
 
-**A spec-peak number is marked, and its derate is derived from the mark.** No
-row declares a derate. `closed()` adds one to the block of every field marked
-`peak`, so a number that came off a datasheet cannot be added without also
-requiring the haircut that turns it into an achievable one. Listing the derates
-by hand would let the two drift: a new peak term would be accepted with no
-derate, which is exactly the quiet datasheet-as-achievable the rule exists to
-stop. Five derates come out of the four blocks here plus the one in a tokenizer
-entry, and none of them is written down.
-
-**A checked value is the spec's own.** Every kind returns a copy rather than
-what the document handed over: `tuple` for a list of names, and a walk for a
-tokenizer entry, which holds mappings and lists of its own where a list of
-names holds scalars. A frozen spec that aliased its caller's document would
-have a digest that moves afterwards, under an artifact that already recorded
-it.
+**A checked value is the spec's own.** Every kind returns a copy, so a frozen
+spec's digest cannot move when the caller's document does.
 
 **Types are checked positively.** A count is an `int` that is not a `bool`, a
-quantity is a positive real, a derate is a fraction in (0, 1]. `bool` is an
-`int` in Python, so a check that only asked for an integer would accept `True`
-as a core count; and a quantity that is allowed to be zero or negative turns a
-division in a cost term into an infinity or a negative duration far from here.
+quantity is a positive real, a derate is a fraction in (0, 1].
 
-Everything in the table is required. A machine has an interconnect whether or
-not a particular run drives it, and the value of refusing a missing term is that
-the refusal happens while a person is authoring the document rather than in the
-middle of a simulated run. The exceptions are the provenance fields `merge`
-fills in later, `fp4_flops`, which a device with no FP4 matrix core omits, the
-pipeline send terms, which only a pipeline run reads, a link's
-`link_setup_s`, a one-off cost that is zero when absent, the two
-`host.http_intake` terms, which a host not probed for them omits, and
-`device.ptl`, the cards' PTL state, `disabled` when absent. An engine
+Every field is required except the provenance fields `merge` fills in,
+`fp4_flops`, the pipeline send terms, a link's `link_setup_s` (zero when
+absent), the `host.http_intake` pair, the `host_link` pair and `device.ptl`,
+the cards' PTL state (`disabled` when absent). An engine
 start's memory readings are no field here: `compass measure memory` publishes
 them per configuration, as a `memory_readings` entry.
 
 **Every field says where it came from.** `provenance.origin` is one of
-`ORIGINS`, and anything else is refused. A document built from several
-origins says `mixed`, and `merge` writes
-`provenance.origins`: one entry per field, keyed as `Merge.sources` keys it,
-holding the field's own origin and, on a probed field, the subject the probe
-ran on (`SUBJECT`).
+`ORIGINS`. A document of several origins says `mixed`, and `merge` writes
+`provenance.origins`: one entry per field, holding the field's origin and, on
+a probed field, the subject the probe ran on (`SUBJECT`).
 """
 
 import enum
@@ -125,7 +101,6 @@ FIELDS = (
     Field("host.tokenizers", Kind.TOKENIZERS),
     Field("host.ipc.zmq_roundtrip_s", Kind.QUANTITY),
     Field("host.ipc.shm_broadcast_s", Kind.QUANTITY),
-    Field("host.admission_fixed_s", Kind.QUANTITY),
     # The frontend event loop's time to take in one HTTP request.
     Field("host.http_intake.fixed_s", Kind.QUANTITY, required=False),
     Field("host.http_intake.per_byte_s", Kind.QUANTITY, required=False),

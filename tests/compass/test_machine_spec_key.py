@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Price lists, region terms, step linear laws and host laws are keyed by the
+"""Price lists, memory readings, step linear laws and host laws are keyed by the
 machine-spec digest: the digest of the spec's device, software stack and PTL
 state.
 
@@ -176,7 +176,7 @@ def test_a_bundle_measured_with_ptl_on_refuses_where_it_is_off(tmp_path):
 
 @pytest.mark.parametrize(
     "row",
-    [Row.PRICE_LIST, Row.REGION_TERMS, Row.MEMORY_READINGS, Row.STEP_GRID_BUNDLE],
+    [Row.PRICE_LIST, Row.MEMORY_READINGS, Row.STEP_GRID_BUNDLE],
     ids=lambda row: row.name,
 )
 def test_an_entry_published_before_the_ptl_axis_refuses_naming_it(tmp_path, row):
@@ -321,9 +321,14 @@ def test_laws_fitted_on_another_spec_miss_naming_both_digests(tmp_path, kind):
     assert f"differs in machine_spec ('{digest(N39)}' there)" in str(refused.value)
 
 
-def test_region_terms_are_keyed_by_the_machine_spec_digest():
+def test_memory_readings_are_keyed_by_the_machine_spec_digest():
     with pytest.raises(ArtifactRefusal, match="states no machine_spec"):
-        Key.of(Kind.REGION_TERMS, model="Qwen/Qwen3.8-27B", **LAYOUT)
+        Key.of(
+            Kind.MEMORY_READINGS,
+            model="Qwen/Qwen3.8-27B",
+            engine_config="{}",
+            **LAYOUT,
+        )
 
 
 def edited(path: str, value) -> dict:

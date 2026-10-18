@@ -21,7 +21,8 @@ from test_memory_readings import DOCUMENT, TOKENIZER
 
 from atom.compass import run as compass_run
 from atom.compass.clock import LpId, single_engine_table
-from atom.compass.spec import FingerprintMismatch, SpecRefusal
+from atom.compass.spec import SpecRefusal
+from atom.compass.spec.rules import FingerprintMismatch
 from atom.utils import clock
 from atom.utils.clock import LPRuntime
 

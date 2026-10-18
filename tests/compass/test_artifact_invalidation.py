@@ -7,7 +7,7 @@ every cell: where the matrix says a row depends on an axis, moving that
 axis refuses and the refusal names the cell; where it says the row does not,
 moving the same axis loads clean. A matrix that has been tidied into a uniform rule
 passes neither half, and one pair -- `price_list` surviving a model change
-while `region_terms` refuses one -- is also published and loaded through the
+while `memory_readings` refuses one -- is also published and loaded through the
 store, because a table that is right in the abstract and unwired in the store
 is machinery with no caller.
 
@@ -116,12 +116,6 @@ KEY_OF: dict[Row, Key] = {
         source_root=ATOM_ROOT.revision,
         **LAYOUT,
     ),
-    Row.REGION_TERMS: Key.of(
-        Kind.REGION_TERMS,
-        model="Qwen/Qwen3-32B",
-        machine_spec="sha256:mi308x",
-        **LAYOUT,
-    ),
     Row.MEMORY_READINGS: Key.of(
         Kind.MEMORY_READINGS,
         model="Qwen/Qwen3-32B",
@@ -189,7 +183,7 @@ def test_the_matrix_is_not_uniform():
     """
     assert not MATRIX[Row.PRICE_LIST][Axis.MODEL].depends
     assert MATRIX[Row.PRICE_LIST][Axis.MODEL].note == "shape-parametric"
-    assert MATRIX[Row.REGION_TERMS][Axis.MODEL].depends
+    assert MATRIX[Row.MEMORY_READINGS][Axis.MODEL].depends
     assert not MATRIX[Row.MACHINE_SPEC_TOKENIZER_TERMS][Axis.DEVICE].depends
     assert not MATRIX[Row.MACHINE_SPEC_CAPACITY][Axis.SOFTWARE_STACK].depends
 
@@ -299,7 +293,7 @@ def test_a_fingerprint_carries_only_the_cells_its_row_depends_on():
     """
     assert fingerprint(Row.PRICE_LIST, BASE).axes == axes_of(Row.PRICE_LIST)
     assert Axis.MODEL not in fingerprint(Row.PRICE_LIST, BASE).axes
-    assert Axis.MODEL in fingerprint(Row.REGION_TERMS, BASE).axes
+    assert Axis.MODEL in fingerprint(Row.MEMORY_READINGS, BASE).axes
     assert fingerprint(Row.MACHINE_SPEC_CAPACITY, BASE).axes == (Axis.DEVICE,)
 
 
@@ -321,20 +315,20 @@ def test_no_axis_of_the_matrix_is_a_width():
 # --- one row survives what the other refuses, through the store ------------
 
 
-def test_a_price_list_survives_a_model_change_and_region_terms_refuses_one(tmp_path):
+def test_a_price_list_survives_a_model_change_and_memory_readings_refuse_one(tmp_path):
     """The pair that proves the table is a table and not a uniform rule."""
     store = ArtifactStore(tmp_path)
     publish(store, KEY_OF[Row.PRICE_LIST])
-    publish(store, KEY_OF[Row.REGION_TERMS])
+    publish(store, KEY_OF[Row.MEMORY_READINGS])
     other = BASE.with_reading(Axis.MODEL, "deepseek-ai/DeepSeek-V3.1")
 
     survived = store.load(KEY_OF[Row.PRICE_LIST], conditions=other, gates=GATES)
     assert survived.key == KEY_OF[Row.PRICE_LIST]
 
     with pytest.raises(ArtifactRefusal) as refused:
-        store.load(KEY_OF[Row.REGION_TERMS], conditions=other, gates=GATES)
+        store.load(KEY_OF[Row.MEMORY_READINGS], conditions=other, gates=GATES)
     assert refused.value.rule is Rule.INVALIDATED
-    assert "`region_terms` x `model`" in str(refused.value)
+    assert "`memory_readings` x `model`" in str(refused.value)
     assert "deepseek-ai/DeepSeek-V3.1" in str(refused.value)
 
 
@@ -379,7 +373,7 @@ def test_an_aiter_bump_refuses_while_its_meaning_is_open(tmp_path):
         Axis.SOFTWARE_STACK,
         "rocm7.2.4 / aiter v0.1.20-103-g23f83724f / rccl2.22.3",
     )
-    for row in (Row.PRICE_LIST, Row.REGION_TERMS, Row.MEMORY_READINGS):
+    for row in (Row.PRICE_LIST, Row.MEMORY_READINGS):
         publish(store, KEY_OF[row])
         with pytest.raises(ArtifactRefusal) as refused:
             store.load(KEY_OF[row], conditions=bumped, gates=GATES)
@@ -393,12 +387,12 @@ def test_an_aiter_bump_refuses_while_its_meaning_is_open(tmp_path):
 def test_a_refusal_names_every_cell_that_moved(tmp_path):
     """Two axes moved, two cells named -- never an aggregate without its parts."""
     store = ArtifactStore(tmp_path)
-    publish(store, KEY_OF[Row.REGION_TERMS])
+    publish(store, KEY_OF[Row.MEMORY_READINGS])
     drifted = moved(moved(BASE, Axis.DEVICE), Axis.ENGINE_CONFIG)
     with pytest.raises(ArtifactRefusal) as refused:
-        store.load(KEY_OF[Row.REGION_TERMS], conditions=drifted, gates=GATES)
-    assert "`region_terms` x `device`" in str(refused.value)
-    assert "`region_terms` x `engine cfg`" in str(refused.value)
+        store.load(KEY_OF[Row.MEMORY_READINGS], conditions=drifted, gates=GATES)
+    assert "`memory_readings` x `device`" in str(refused.value)
+    assert "`memory_readings` x `engine cfg`" in str(refused.value)
 
 
 # --- the explicit flag, and the comparison that cannot be made -------------
@@ -407,10 +401,10 @@ def test_a_refusal_names_every_cell_that_moved(tmp_path):
 def test_the_explicit_flag_warns_and_still_names_the_cell(tmp_path):
     """A warning is allowed, and only under a flag the caller has to write."""
     store = ArtifactStore(tmp_path)
-    published = publish(store, KEY_OF[Row.REGION_TERMS])
-    with pytest.warns(StaleArtifact, match=r"`region_terms` x `model`"):
+    published = publish(store, KEY_OF[Row.MEMORY_READINGS])
+    with pytest.warns(StaleArtifact, match=r"`memory_readings` x `model`"):
         loaded = store.load(
-            KEY_OF[Row.REGION_TERMS],
+            KEY_OF[Row.MEMORY_READINGS],
             conditions=moved(BASE, Axis.MODEL),
             gates=GATES,
             on_mismatch=OnMismatch.WARN,
@@ -481,7 +475,6 @@ BUT_HOST_CPU = (
 BEFORE_HOST_CPU = {
     "op_graph": ("torch", "atom_src", "model", "engine_config"),
     "price_list": ("software_stack", "torch", "atom_src", "device"),
-    "region_terms": BUT_HOST_CPU,
     "memory_readings": BUT_HOST_CPU,
     "machine_spec_capacity": ("device",),
     "machine_spec_tokenizer_terms": ("model",),
@@ -595,9 +588,9 @@ def test_a_gate_absent_from_one_side_is_named(tmp_path):
         gone.value
     )
 
-    publish(store, KEY_OF[Row.REGION_TERMS], gates=GateState.of())
+    publish(store, KEY_OF[Row.MEMORY_READINGS], gates=GateState.of())
     with pytest.raises(ArtifactRefusal) as arrived:
-        store.load(KEY_OF[Row.REGION_TERMS], conditions=BASE, gates=GATES)
+        store.load(KEY_OF[Row.MEMORY_READINGS], conditions=BASE, gates=GATES)
     assert "`PRICE_KERNELS` is in force now and did not shape this entry" in str(
         arrived.value
     )
@@ -685,14 +678,14 @@ def test_a_step_names_every_key_that_missed_not_the_first(tmp_path):
     """The ledger collects so the refusal can name all of them at once."""
     store = ArtifactStore(tmp_path)
     step = Resolution("step 7")
-    for row in (Row.PRICE_LIST, Row.REGION_TERMS):
+    for row in (Row.PRICE_LIST, Row.MEMORY_READINGS):
         assert store.answer(KEY_OF[row], step, conditions=BASE, gates=GATES) is None
     assert not step.complete
     with pytest.raises(ArtifactRefusal) as refused:
         step.require_complete()
     assert refused.value.rule is Rule.RESOLUTION
     assert "price_list(" in str(refused.value)
-    assert "region_terms(" in str(refused.value)
+    assert "memory_readings(" in str(refused.value)
     assert "0 of 2 artifacts" in str(refused.value)
 
 
@@ -702,7 +695,7 @@ def test_a_report_never_states_a_count_without_its_decomposition(tmp_path):
     published = publish(store, KEY_OF[Row.PRICE_LIST])
     step = Resolution("step 41")
     store.answer(KEY_OF[Row.PRICE_LIST], step, conditions=BASE, gates=GATES)
-    store.answer(KEY_OF[Row.REGION_TERMS], step, conditions=BASE, gates=GATES)
+    store.answer(KEY_OF[Row.MEMORY_READINGS], step, conditions=BASE, gates=GATES)
     lines = step.report().splitlines()
     assert lines[0] == "step 41: 1 of 2 answered"
     assert len(lines) == 3
@@ -741,14 +734,14 @@ def test_a_recorded_row_the_matrix_no_longer_names_is_refused(tmp_path):
 
     The cell-level version of this refuses eleven lines away in
     `Fingerprint.from_json`, and the row is the more likely one to move:
-    `ROWS_OF` is one edit, #174 may add two rows, and the schema version does
-    not change when the matrix does.
+    `ROWS_OF` is one edit, as retiring `region_terms` was, and the schema
+    version does not change when the matrix does.
     """
     store = ArtifactStore(tmp_path)
     entry = publish(store, KEY_OF[Row.MACHINE_SPEC_CAPACITY])
     document = json.loads((entry.directory / "entry.json").read_bytes())
     document["fingerprints"]["region_terms"] = fingerprint(
-        Row.REGION_TERMS, BASE
+        Row.MEMORY_READINGS, BASE
     ).as_json()
     (entry.directory / "entry.json").chmod(0o644)
     (entry.directory / "entry.json").write_text(json.dumps(document))
@@ -966,15 +959,16 @@ def test_two_rows_over_the_same_axes_are_still_not_compared():
     Compared cell by cell they would report no difference, which is an answer
     to a question that was never asked.
     """
-    assert axes_of(Row.REGION_TERMS) == axes_of(Row.MEMORY_READINGS)
+    assert axes_of(Row.STEP_GRID_BUNDLE) == axes_of(Row.MEMORY_READINGS)
     with pytest.raises(ArtifactRefusal) as refused:
         differences(
-            fingerprint(Row.REGION_TERMS, BASE),
+            fingerprint(Row.STEP_GRID_BUNDLE, BASE),
             fingerprint(Row.MEMORY_READINGS, BASE),
         )
     assert refused.value.rule is Rule.NOT_COMPARABLE
-    assert "a `region_terms` fingerprint was compared with a `memory_readings` one" in (
-        str(refused.value)
+    assert (
+        "a `step grid bundle` fingerprint was compared with a `memory_readings` one"
+        in str(refused.value)
     )
 
 
