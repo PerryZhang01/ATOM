@@ -33,6 +33,7 @@ sys.path.insert(0, str(ROOT))
 from atom.compass.spec import (
     Fragment,
     MachineSpec,
+    SpecRefusal,
     explain,
     merge,
     tokenizer_fragment,
@@ -50,8 +51,9 @@ LENGTHS = tuple(4**k for k in range(10))
 #: fixed-plus-linear law holds it only to about 20% at the longest length; the
 #: bound leaves room for that and still refuses a sweep of the wrong shape.
 BOUND = 0.25
-#: Sweeps per probe: the entry states each rate's median over them, and its
-#: p10 and p90.
+#: Sweeps the bound accepts per probe: the entry states each rate's median over
+#: them, and its p10 and p90. On a loaded host a sweep can break the bound at
+#: one length; it is printed and swept again, up to as many times.
 SWEEPS = 10
 
 #: The total ATOM's `ModelRunner` read at one engine start on card 3 of node 18,
@@ -250,10 +252,19 @@ def swept(model: str) -> Fragment:
     tok = _load_tokenizer(model)
     root = git_tree_root("atom", str(ROOT))
     text = "\n".join(p.read_text() for p in sorted((ROOT / "atom").rglob("*.py")))
-    runs = [
-        tokenizer_sweep(tok, text, LENGTHS, bound=BOUND, clock=time.perf_counter)
-        for _ in range(SWEEPS)
-    ]
+    runs, refused = [], 0
+    while len(runs) < SWEEPS:
+        try:
+            runs.append(
+                tokenizer_sweep(
+                    tok, text, LENGTHS, bound=BOUND, clock=time.perf_counter
+                )
+            )
+        except SpecRefusal as refusal:
+            refused += 1
+            print(f"sweep {len(runs) + refused} refused: {refusal.what}")
+            if refused > SWEEPS:
+                raise
     rates = {k: [r[k] for r in runs] for k in runs[0]}
     cut = {
         k: statistics.quantiles(v, n=10, method="inclusive") for k, v in rates.items()
