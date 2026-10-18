@@ -2,15 +2,18 @@
 """Grade cells from every source, in one table: `python -m atom.compass.validate CELL...`
 
 A CELL holds runs of one workload: `step_linear/` (at its run file's step linear law, or
-of several the one fitted under the engine config each real run states)
+of several the one fitted under the engine config each real run states) or `step_grid/`
+(at its run file's bundle, which `run.step_grid.load` checks against this process as
+for a run of the config its ATOM arguments resolve)
 and two or more `real*/`. `cctraces_sim.sh` writes each run.json as the run file with
 the `workload` every run must share; `record` and `run` write their own, the run file
 as `run_file`, and `validate.runs` decides which client run of theirs is graded, and
 whether one is. Rows: `validate.runs`' grades, TTFT p50 per band of uncached prompt
 tokens graded alike; per run `record` or `run` wrote, its warmup: how many requests
 its export names as such and how many steps hold only those; `validate.cost` on the
-steps graded (with the steps it leaves out) and `memory.check` per real run; and the
-simulated run's refusals by source, shares and speed. Any refusal makes a
+steps graded (with the steps it leaves out, refuses or extrapolates) and
+`memory.check` per real run; and the simulated run's refusals by source, its steps
+extrapolated and priced by a fallback, shares and speed. Any refusal makes a
 `cctraces_sim.sh` cell a coverage report; the shares grade nothing, and neither do the
 counts but preemptions and prefill tokens.
 """
@@ -23,15 +26,18 @@ from pathlib import Path
 from statistics import median
 
 from atom.compass.backends.cost import GROUPS
+from atom.compass.drive import run as drive_run
 from atom.compass.memory.check import MemoryRefusal, parts
 from atom.compass.run import (
     LP_FILE,
+    STEP_GRID,
     STEP_LINEAR,
     _fitted_here,
+    _machine,
     entries,
     refuse_renamed_keys,
 )
-from atom.compass.run.step_grid import keyed_of
+from atom.compass.run.step_grid import keyed_of, load
 from atom.compass.validate import cost, runs
 
 BANDS = {0: "0-512", 512: "512-2048", 2048: "2048-8192", 8192: "8192+"}
@@ -82,9 +88,10 @@ def _warmup(run: Path, warmup: dict | None):
         yield f"warmup {run.name}", "warmup", value, "not graded"
 
 
-def _cost(run: Path, law: dict, steps: list[dict]):
+def _cost(run: Path, backend, steps: list[dict]):
     numbers = {s["step"] for s in steps}
-    report, where = cost.cost_accuracy(run / "steps", law, numbers), f"cost {run.name}"
+    report = cost.cost_accuracy(run / "steps", backend, numbers)
+    where = f"cost {run.name}"
     for group, (hull, gated) in HULL.items():
         for kind, s in report[group].items():
             held = "-" if s["held_out"] is None else f"{s['held_out']:+.2%}"
@@ -100,6 +107,7 @@ def _cost(run: Path, law: dict, steps: list[dict]):
     yield where, "left out", f"not labelled {json.dumps(report['cut'])}; warm steps, real s { {w['step']: round(w['real_s'], 2) for w in report['warm']} }", "-"
     for band, r in report["refused"].items():
         yield where, f"refused {band}", f"{r['steps']} steps, real {r['real_s']:.2f} s", "-"
+    yield where, "extrapolated", f"{report['extrapolated']} steps", "-"
 
 
 def _memory(law: Path, real: Path):
@@ -130,6 +138,8 @@ def _summary(run: Path, summary: dict):
         else f"cost refused {n['fraction_of_steps']:.1%} of {n['steps']} steps"
     )
     yield where, "refusals", f"{n['count']} {json.dumps(dict(n['by_source']))}; {cost}", verdict
+    for k in ("extrapolated", "fallback"):
+        yield where, f"{k} steps", f"{schedule.get(f'{k}_steps')} of {n['steps']}", "not gated"
     by_method = schedule["seconds_by_method"] or {}
     for g in GROUPS:
         yield where, g, json.dumps(by_method.get(g)), "not gated"
@@ -139,34 +149,54 @@ def _summary(run: Path, summary: dict):
     yield where, "speed", value, f"{met} {c['speed_target_ratio']:g}x"
 
 
+def _law(run_file: dict, real: Path) -> dict:
+    """The run file's step linear law for `real`: of several, the one fitted
+    under the engine config its record states."""
+    laws = entries(run_file, STEP_LINEAR)
+    if len(laws) > 1:
+        here = keyed_of(json.loads((real / "steps/dp0.engine.json").read_text()))
+        return _fitted_here(laws, here, lambda e: e.get("engine_config"), STEP_LINEAR)
+    return laws[0]
+
+
+def _grid(run: dict):
+    """The backend of the bundle that `run`, the run.json of `compass run
+    --step-grid`, names, loaded under the config its ATOM arguments resolve."""
+    argv = run["argv"]
+    atom_args = argv[argv.index("--") + 1 :] if "--" in argv else []
+    config, machine = drive_run._config(atom_args), _machine(run["run_file"])
+    return load(run["run_file"][STEP_GRID], config, machine)[0]
+
+
 def rows(cell) -> list[tuple]:
     """The cell's rows, (result, metric, value, verdict), its verdict first."""
     cell = Path(cell)
     real = sorted(r for r in cell.glob("real*") if r.is_dir())
-    law = cell / "step_linear"
     if (cell / "law").is_dir():
         raise ValueError(f"{cell} holds law/, a run directory now named step_linear/")
-    run = {r.name: json.loads((r / "run.json").read_text()) for r in (*real, law)}
+    simulated = [cell / k for k in (STEP_LINEAR, STEP_GRID) if (cell / k).is_dir()]
+    if len(simulated) != 1:
+        raise ValueError(
+            f"{cell} holds {[s.name for s in simulated]} of step_linear/ and "
+            "step_grid/; a cell holds one simulated run"
+        )
+    (sim,) = simulated
+    run = {r.name: json.loads((r / "run.json").read_text()) for r in (*real, sim)}
     for name, f in run.items():
         refuse_renamed_keys(f, cell / name / "run.json")
     if len({json.dumps(f.get("workload"), sort_keys=True) for f in run.values()}) != 1:
         raise ValueError(f"{cell}'s runs {sorted(run)} ran different workloads")
-    summary = json.loads((law / "summary.json").read_text())
+    summary = json.loads((sim / "summary.json").read_text())
     verdict = "coverage report" if summary["coverage_report"] else "graded"
     out = [("cell", "verdict", f"{len(real)} real runs", verdict)]
-    out += _runs(real, law)
+    out += _runs(real, sim)
+    grid = _grid(run[STEP_GRID]) if sim.name == STEP_GRID else None
     for r in real:
-        law_file = run["step_linear"].get("run_file", run["step_linear"])
-        laws = entries(law_file, STEP_LINEAR)
-        if len(laws) > 1:
-            here = keyed_of(json.loads((r / "steps/dp0.engine.json").read_text()))
-            laws = [
-                _fitted_here(laws, here, lambda e: e.get("engine_config"), STEP_LINEAR)
-            ]
+        backend = grid or _law(run[STEP_LINEAR].get("run_file", run[STEP_LINEAR]), r)
         steps, _traces, warmup = runs.graded(r)
-        out += [*_warmup(r, warmup), *_cost(r, laws[0], steps)]
-        out += _memory(law, r)
-    out += [*_warmup(law, runs.graded(law)[2]), *_summary(law, summary)]
+        out += [*_warmup(r, warmup), *_cost(r, backend, steps)]
+        out += _memory(sim, r)
+    out += [*_warmup(sim, runs.graded(sim)[2]), *_summary(sim, summary)]
     return out
 
 

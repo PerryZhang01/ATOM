@@ -18,7 +18,9 @@ as the batch's ``compass_pp_host`` and
 the tensors' as the batch's ``compass_pp_release``, and, when the ``gloo`` parts
 are rendezvous, returns their completion, and the ``rccl`` parts', on ``pp_ack`` stamped at it; at a
 non-last stage's forward's launch end it waits for its previous send's ``gloo``
-parts, then sends. The ``rccl`` parts hold the sender's stream, not its host: its
+parts, then sends. A host that blocked on them for ``b`` seconds wakes
+``wake_s x (1 - exp(-b / wake_rise_s))`` after they complete, gloo's wake.
+The ``rccl`` parts hold the sender's stream, not its host: its
 forwards after that wait start their device work no earlier. An idle
 flush waits for the previous send the same way. The frames move between the
 stages' TP-rank-0 workers over the PP CPU group.
@@ -73,6 +75,18 @@ def lookaheads(models: dict[str, CarrierModel]) -> tuple[float, float]:
     return l_data, t_min - l_data
 
 
+def gloo_wake(spec) -> tuple[float, float]:
+    """``(wake_s, wake_rise_s)``, gloo's wake from a `MachineSpec`; a missing
+    field is refused by name."""
+    return tuple(spec.value(f"{PREFIX}.gloo.{f}") for f in ("wake_s", "wake_rise_s"))
+
+
+def woken(wake, block: float) -> float:
+    """How long after its gloo parts complete a host that blocked on them for
+    `block` seconds goes on."""
+    return wake[0] * -math.expm1(-block / wake[1]) if block > 0 else 0.0
+
+
 def is_rendezvous(models, parts) -> bool:
     return any(not models[c].eager(n) for c, n in parts)
 
@@ -114,8 +128,8 @@ class StageSends:
     it, and acts only on ``forward`` and ``flush_pp_send`` inside the run.
     """
 
-    def __init__(self, rt, call, rank: int, pp: int, models) -> None:
-        self.rt, self.call, self.models = rt, call, models
+    def __init__(self, rt, call, rank: int, pp: int, models, wake=(0.0, 1.0)) -> None:
+        self.rt, self.call, self.models, self.wake = rt, call, models, wake
 
         def ch(a, b, kind):
             return f"engine-pp{a}->engine-pp{b}:{kind}#dp0"
@@ -211,7 +225,10 @@ class StageSends:
             return
         kind, at, self.held = pending
         if kind == "ack":
+            entry = self.rt.now
             self.held = self._frame("pp_ack", self.ack_in, at)["tensors_done"]
+            if late := woken(self.wake, self.rt.now - entry):
+                self.rt.advance_to(self.rt.now + late)
         elif at > self.rt.now:
             self.rt.advance_to(at)
 
@@ -224,7 +241,12 @@ def install(engine, spec) -> None:
     rt = clock.installed()
     mgr = engine.runner_mgr
     sends = StageSends(
-        rt, mgr.call_func, engine.pp_rank, engine.pp_size, carrier_models(spec)
+        rt,
+        mgr.call_func,
+        engine.pp_rank,
+        engine.pp_size,
+        carrier_models(spec),
+        gloo_wake(spec),
     )
     mgr.call_func = sends
     rt.holds_work = lambda: sends.pending is not None or engine.has_pending_kv_work()

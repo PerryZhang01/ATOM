@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from test_drive_gpu import GPU45, SHOWHW
+
 TREE = Path(__file__).resolve().parents[2]
 SCRIPT = TREE / "scripts/compass/cctraces_sim.sh"
 LISTING = (
@@ -28,6 +30,22 @@ LISTING = (
 
 
 def test_a_process_on_a_middle_named_gpu_contaminates_the_cell(tmp_path):
+    fields = _cell(tmp_path, "1,2,3", SHOWHW)
+    assert fields["contaminated"] == "True", fields
+    assert fields["gpu_before"] == fields["gpu_after"] == "4242:481734656", fields
+
+
+def test_hip_devices_4_and_5_are_read_as_the_rocm_smi_gpus_they_are(tmp_path):
+    # On gpu-45 they are rocm-smi GPUs 7 and 4, so the process on GPU 5 is not
+    # on the cell's GPUs.
+    fields = _cell(tmp_path, "4,5", GPU45)
+    assert fields["contaminated"] == "False", fields
+    assert fields["gpu_before"] == fields["gpu_after"] == "", fields
+
+
+def _cell(tmp_path, gpus, showhw):
+    """The result line's fields of a real cell on the HIP devices `gpus` of a
+    node whose `rocm-smi --showhw` prints `showhw`."""
     bin_ = tmp_path / "bin"
     bin_.mkdir()
     (bin_ / "python3").write_text(
@@ -64,7 +82,12 @@ def test_a_process_on_a_middle_named_gpu_contaminates_the_cell(tmp_path):
         f"mkdir -p artifacts && cp {export} artifacts/profile_export_aiperf.json\n"
     )
     smi = bin_ / "rocm-smi"
-    smi.write_text(f"#!/bin/sh\ncat <<'EOF'\n{LISTING}EOF\n")
+    (tmp_path / "showhw").write_text(showhw)
+    (tmp_path / "listing").write_text(LISTING)
+    smi.write_text(
+        f'#!/bin/sh\ncase "$*" in *--showhw*) cat {tmp_path}/showhw;;\n'
+        f"*) cat {tmp_path}/listing;;\nesac\n"
+    )
     for f in bin_.iterdir():
         f.chmod(0o755)
     traces = tmp_path / "traces.jsonl"
@@ -75,7 +98,7 @@ def test_a_process_on_a_middle_named_gpu_contaminates_the_cell(tmp_path):
         os.environ,
         PATH=f"{bin_}:{os.environ['PATH']}",
         REAL="1",
-        HIP_VISIBLE_DEVICES="1,2,3",
+        HIP_VISIBLE_DEVICES=gpus,
         MODEL=str(tmp_path),
         TRACES=str(traces),
         HARNESS_PYTHON=str(harness),
@@ -92,6 +115,4 @@ def test_a_process_on_a_middle_named_gpu_contaminates_the_cell(tmp_path):
     )
     assert done.returncode == 0, done.stdout + done.stderr
     result = done.stdout.splitlines()[-1]
-    fields = dict(f.split("=", 1) for f in result.split()[1:])
-    assert fields["contaminated"] == "True", result
-    assert fields["gpu_before"] == fields["gpu_after"] == "4242:481734656", result
+    return dict(f.split("=", 1) for f in result.split()[1:])

@@ -61,14 +61,10 @@ priced by `StepStubBackend`), ``step_linear`` (a `StepLinearLaw` mapping,
 priced by `StepLinearBackend`; its ``machine_spec`` digest and
 its ``engine_config``, `step_grid.keyed` as it was fitted, refuse a run under
 any other, and a law missing either refuses; a list of them is one per engine config, a process taking its own), ``step_grid`` (an artifact store's root and a
-bundle's key, priced by `StepGridBackend`; see `step_grid`) and ``replay`` (a
-real run's parity record directory, or for a prefill-decode run one holding
-each deployment's as ``prefill/`` and ``decode/``, ``prefill<k>/`` and
-``decode<k>/`` above one of a side: each step ends when the real one did, by
-`atom.compass.parity.replay`),
+bundle's key, priced by `StepGridBackend`; see `step_grid`),
 ``step_roofline`` (optional, ``true`` or ``false``: with ``true`` a
 `StepRooflineBackend` prices the steps the backend refuses, through
-`StepFallbackBackend`),
+`StepFallbackBackend`, as it always does under ``step_grid``),
 ``on_refusal`` (optional: ``mark``, the default, prices a step no cost source
 answers at 0 s, hands in its ``cost:`` reason and continues; ``abort`` ends
 the run there, which still writes the summary),
@@ -82,9 +78,15 @@ on ``(1, tokens, seqs)``, refused where absent; ``key``, the `host_key` they wer
 fitted under and the ``machine_spec`` digest of the spec of the platform they
 were fitted on, which a run with laws must match; ``skip``, segments zeroed for
 a what-if run, which the graders refuse; a list of them as ``step_linear``'s),
-``machine`` (a machine spec mapping), ``parameter_count`` (read with
-``step_roofline``), ``store`` (the artifact store's root, where `memory` reads
-the configuration's memory readings) and ``backend`` (the backend's ``digest``
+or in its place ``replay`` (a real run's parity record directory, or for a
+prefill-decode run one holding each deployment's as ``prefill/`` and
+``decode/``, ``prefill<k>/`` and ``decode<k>/`` above one of a side: each step
+ends when the real one did, by `atom.compass.parity.replay`, and the cost
+backend's price reaches only the cost record),
+``machine`` (a machine spec mapping), ``parameter_count`` (read by the
+roofline, which without it counts the meta build's), ``store`` (the artifact
+store's root, where `memory` reads the configuration's memory readings) and
+``backend`` (the backend's ``digest``
 and its fit ``provenance``, which nothing here reads), both written by
 `atom.compass.drive.runfile`, and ``out_dir``,
 where the step table, the run summary and each server LP's hand-in go, one
@@ -92,7 +94,8 @@ file written as the LP leaves its loop. It holds the LP's refusals: an
 engine's are the worker's refused commands and the engine's refused clock
 calls, a frontend's its executor's refused jobs and its refused clock calls.
 An engine's also holds what its worker's steps cost, for the summary's
-predicted seconds and their shares by method (`backends.cost.GROUPS`).
+predicted seconds and their shares by method (`backends.cost.GROUPS`), and
+its counts of steps extrapolated and of steps a fallback priced.
 It holds the memory the worker predicts too, for
 ``python -m atom.compass.memory.check``, with the assumption a
 `memory_readings` member it read states, which `compass run` records, and
@@ -143,7 +146,8 @@ file with one needs such a deployment. `frontend(config)` then starts LP
 process of its own. The entry holds ``server``, the ``lmcache server`` flags;
 the request loop's laws, ``lookup_s`` (``[fixed, per prompt chunk]``) and
 ``request_s``; optional ``copy_width``, 1 when absent; and optional
-``writers``, the writer ranks per DP rank, 1 when absent. The copy engine
+``writers``, the writer ranks per DP rank, 1 when absent; and optional
+``state_bytes``, a rank's recurrent-state image, 0 when absent. The copy engine
 prices on the machine's ``interconnect.host_link``. Its channels' lookahead is
 ``lmcache_ipc_s``, the run's ``ipc_s`` when absent (`add_lmcache`). `engine(config)`
 has the connector factory build ``lmcache_mp`` as Compass's
@@ -208,8 +212,9 @@ from atom.utils import clock
 
 ENV = "ATOM_COMPASS_RUN"
 CLOCK_ENV = "ATOM_COMPASS_CLOCK_ENDPOINT"
-#: The file an engine LP's clock is mapped from, for its model runner workers.
-NOW_ENV = "ATOM_COMPASS_NOW"
+#: The file an engine LP's clock is mapped from, for its model runner workers;
+#: by its hand-in name in the out_dir.
+NOW_ENV, NOW_FILE = "ATOM_COMPASS_NOW", "now-{}.bin"
 FRONTEND, ENGINE, TRAFFIC = LpId("frontend"), LpId("engine"), LpId("traffic")
 ROUTER, LMCACHE = LpId("router"), LpId("lmcache")
 #: Run-file keys for how many deployments of each prefill-decode side run.
@@ -238,7 +243,7 @@ AUTHORITY_FILE = "authority_endpoint.txt"
 HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field is added, changes
 #: meaning or goes.
-SUMMARY_SCHEMA_VERSION = 5
+SUMMARY_SCHEMA_VERSION = 6
 #: Compass source the host-law key leaves out, by path under the package: all
 #: of it (None), or the top-level names (def, class or assigned) only a simulated
 #: run reaches, with the comments above each and the module docstring.
@@ -350,9 +355,15 @@ def spec() -> dict | None:
 
 def _check_host(path, host: dict) -> None:
     """Refuse a ``host`` entry the runner would read as zero host time."""
-    from atom.compass.runner.overrides import FORWARD_KINDS, HOST_SEGMENTS, MTP_SEGMENT
+    from atom.compass.runner.overrides import (
+        FORWARD_KINDS,
+        HOST_SEGMENTS,
+        MTP_SEGMENT,
+        PP_RECV_SEGMENT,
+    )
 
-    laws, segments = host.get("laws", {}), (*HOST_SEGMENTS, MTP_SEGMENT)
+    laws = host.get("laws", {})
+    segments = (*HOST_SEGMENTS, MTP_SEGMENT, PP_RECV_SEGMENT)
     if (
         set(host) - {"laws", "skip", "key"}
         or set(host.get("skip", ())) - set(segments)
@@ -615,7 +626,10 @@ def lmcache(chunk_bytes: int) -> None:
     run = spec()
     rt = _runtime(LMCACHE, run)
     rt.client_run_ended = lambda k: _hand_in(run, LMCACHE.name, rt.refusals, k)
-    server = LMCacheServer(run["lmcache"]["server"], chunk_bytes=chunk_bytes)
+    lm = run["lmcache"]
+    server = LMCacheServer(
+        lm["server"], chunk_bytes=chunk_bytes, state_bytes=lm.get("state_bytes", 0)
+    )
     sock = zmq.Context.instance().socket(zmq.ROUTER)
     sock.bind(server.url)
     ended = []
@@ -732,6 +746,7 @@ class _RecordingAuthority(ClockAuthority):
             LP_FILE,
             STEP_TABLE_FILE,
             SUMMARY_FILE,
+            "now-{}.raised",
         ):
             for f in out.glob(name.format("*")):
                 f.unlink()
@@ -1062,10 +1077,23 @@ def engine(config):
     At DP width above one, the process joins the engine LP as the member of its
     DP rank, and its host collectives first join the group rounds it owes. A
     pipeline stage is the engine LP ``engine-pp<stage>``.
+
+    A real run recording its steps (`parity.ENV`) outside a pipeline stamps the
+    engine's input pulls and output puts into ``dp<rank>.pulls.jsonl`` beside
+    the record (`clock.stamp_pulls`).
     """
     global _member
     run = spec()
     if run is None:
+        from atom.compass import parity
+
+        record = os.environ.get(parity.ENV)
+        if record and getattr(config, "pipeline_parallel_size", 1) == 1:
+            Path(record).mkdir(parents=True, exist_ok=True)
+            rank = config.parallel_config.data_parallel_rank
+            # The worker's step timestamps read the same host clock.
+            pulls = Path(record) / f"dp{rank}.pulls.jsonl"
+            clock.stamp_pulls(pulls, time.monotonic_ns)
         return contextlib.nullcontext()
     from atom.utils.distributed import utils
 
@@ -1083,7 +1111,7 @@ def engine(config):
     utils.LP_OF_RANK = dict.fromkeys(range(pc.data_parallel_size), lp)
     _member = f"dp{pc.data_parallel_rank}" if pc.data_parallel_size > 1 else None
     name = lp.name if _member is None else f"{lp.name}.{_member}"
-    os.environ[NOW_ENV] = str(Path(run["out_dir"]) / f"now-{name}.bin")
+    os.environ[NOW_ENV] = str(Path(run["out_dir"]) / NOW_FILE.format(name))
     clock.settle_before_collectives()
     if _member is not None and _offloads_to_lmcache_mp(config.kv_transfer_config):
         _park_before_dispatch()
@@ -1156,7 +1184,7 @@ def runner(model_runner, tree) -> None:
     run = spec()
     if run is None:
         return
-    from atom.compass.artifacts import machine_spec_digest
+    from atom.compass.artifacts import machine_spec_digest, machine_spec_key
     from atom.compass.backends.geometry import KvGeometry, Parallelism
     from atom.compass.backends.step_linear import StepLinearBackend, StepLinearLaw
     from atom.compass.backends.step_roofline import (
@@ -1184,22 +1212,27 @@ def runner(model_runner, tree) -> None:
             from atom.compass.run.step_grid import keyed
 
             run[name] = _fitted_here(run[name], keyed(config), engine, name)
-    backends = (STEP_STUB, STEP_LINEAR, STEP_GRID, "replay")
+    backends = (STEP_STUB, STEP_LINEAR, STEP_GRID)
     keys = [k for k in backends if k in run]
     if len(keys) != 1:
         raise ValueError(
             f"a run file prices its steps from one of {', '.join(backends[:-1])} "
-            f"and replay, and this one has {' and '.join(keys) or 'none'}"
+            f"and {backends[-1]}, and this one has {' and '.join(keys) or 'none'}"
         )
     replay = None
     if "replay" in run:
-        from atom.compass.parity.replay import ReplayBackend
+        if "host" in run:
+            raise ValueError(
+                "a run file's replay ends each step where the real one did, in "
+                "place of its host laws, and this one has both"
+            )
+        from atom.compass.parity.replay import ReplayHost
 
         dp_rank = config.parallel_config.data_parallel_rank
         # This deployment's record: prefill/, or prefill1/ for engine-P1.
         name = _pd_name(config, run) or ""
         side = {"P": "prefill", "D": "decode"}.get(name[:1], "") + name[1:]
-        backend = replay = ReplayBackend(Path(run["replay"]) / side, dp_rank)
+        replay = ReplayHost(Path(run["replay"]) / side, dp_rank)
     if STEP_LINEAR in run:
         if tp != 1:
             raise ValueError(
@@ -1275,8 +1308,8 @@ def runner(model_runner, tree) -> None:
     if STEP_LINEAR in run and fitted_on != platform:
         raise ValueError(
             f"the step linear law was fitted on machine spec {fitted_on} and this "
-            f"run's is {platform}; a law measured on one platform is no evidence "
-            "about another"
+            f"run's is {platform}, {machine_spec_key(machine)}; a law measured "
+            "on one platform is no evidence about another"
         )
     bundle = None
     if STEP_GRID in run:
@@ -1302,23 +1335,30 @@ def runner(model_runner, tree) -> None:
             f"the run file's step_roofline is {fallback!r}; it is true, which "
             "prices the steps the backend refuses by the step roofline, or false"
         )
-    if fallback:
+    if fallback or STEP_GRID in run:
         kv = KvGeometry.from_hf_config(
             config.hf_config,
             block_size=config.kv_cache_block_size,
             parallelism=Parallelism(tp_size=tp),
             kv_dtype=config.kv_cache_dtype,
         )
+        # A run file without it, as a step grid's may be, counts the meta build's.
+        stated = run.get("parameter_count")
         roofline = StepRooflineBackend(
             machine,
-            parameters=run["parameter_count"] // tp,
+            parameters=(
+                stated // tp if stated else sum(p.numel() for p in tree.parameters())
+            ),
             weight_bytes=model.weights.nbytes,
             kv_token_bytes=kv.layers * kv.bytes_per_token_per_layer,
+            parameters_stated=bool(stated),
         )
         backend = StepFallbackBackend(backend, roofline)
     install_cost_backend(model_runner, backend)
     if NOW_ENV in os.environ:
-        slot = np.memmap(os.environ[NOW_ENV], np.float64, "r", shape=(1,))
+        now = Path(os.environ[NOW_ENV])
+        model_runner.compass_raised_file = _raised_file(now, model_runner.rank)
+        slot = np.memmap(now, np.float64, "r", shape=(1,))
         host = run.get("host", {})
         ours = host.get("laws") and {**host_key(config), "machine_spec": platform}
         theirs = host.get("key") or {}
@@ -1563,12 +1603,20 @@ def _engine_hand_in(run: dict, engine_core, sections: dict, client_run=None) -> 
     _hand_in(run, lp, reasons, client_run, **said, **sections)
 
 
+def _raised_file(now: Path, rank) -> Path:
+    """Where worker `rank` of the engine whose clock file is `now` writes what
+    it raised; ``*`` globs every rank's."""
+    return now.with_suffix(f".{rank}.raised")
+
+
 @contextlib.contextmanager
 def engine_loop(engine_core):
     """Around the engine's loop: `engine_done` once it leaves, which raises if
     that was before the finish. If either raises in a run, hand in the engine's
     refused clock calls and the exception, and what the workers say in 10 wall
-    seconds unless one died. Under ``step_grid`` the workers are asked for the bundle
+    seconds unless one died. A dead worker reaches the engine as a bare
+    `SystemExit`, so its ``ended:`` reason carries what each worker rank wrote
+    it raised. Under ``step_grid`` the workers are asked for the bundle
     before the loop, so a run that ends early still hands it in.
 
     In a run the engine ignores SIGTERM until it has handed in: ATOM's handler
@@ -1605,9 +1653,12 @@ def engine_loop(engine_core):
             rt = clock.installed()
             lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
             reasons = said.pop("refusals", []) + rt.refusals
-            _hand_in(
-                run, lp, reasons + [f"ended:{lp} raised {e!r}"], **said, **sections
-            )
+            ended = f"ended:{lp} raised {e!r}"
+            if isinstance(e, SystemExit):
+                now = Path(run["out_dir"]) / NOW_FILE.format(lp)
+                for f in sorted(now.parent.glob(_raised_file(now, "*").name)):
+                    ended += f"; {f.read_text()}"
+            _hand_in(run, lp, reasons + [ended], **said, **sections)
         raise
     finally:
         if run is not None and before is not None:  # None: not set from Python
@@ -1739,6 +1790,9 @@ def _summary(run: dict, a, record, wall: float, hand_ins: dict, since: dict) -> 
         }
         for g in GROUPS
     }
+    # Steps answered past a source's support domain, and below a source that declined.
+    for key in ("extrapolated_steps", "fallback_steps"):
+        schedule[key] = total(key)
     # Each assumed treatment the steps were priced under, with its step count.
     treatments = sum((Counter(p.get("treatments", {})) for p in priced), Counter())
     treatments -= sum((Counter(p.get("treatments", {})) for p in before), Counter())
@@ -1751,6 +1805,7 @@ def _summary(run: dict, a, record, wall: float, hand_ins: dict, since: dict) -> 
         if n.startswith("engine")
     ):
         schedule.update(predicted_seconds=None, seconds_by_method=None, treatments=None)
+        schedule.update(extrapolated_steps=None, fallback_steps=None)
         schedule["refusals"].update(steps=None, fraction_of_steps=None)
     summary["configuration"] = configuration(run)
     summary["schema_version"] = SUMMARY_SCHEMA_VERSION

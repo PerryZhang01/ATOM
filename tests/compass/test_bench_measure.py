@@ -12,6 +12,7 @@ pass and the provenance names planted trees.
 
 import copy
 import json
+import os
 import re
 import shutil
 from contextlib import nullcontext
@@ -82,6 +83,9 @@ def run(tmp_path, monkeypatch, model_dir):  # noqa: F811
     monkeypatch.setattr(measure, "atom_config", lambda atom_args: config)
     monkeypatch.setattr(measure, "identity", lambda *_: copy.deepcopy(run.identity))
     monkeypatch.setattr(measure, "quiet", lambda gpus, out: nullcontext())
+    # rocm-smi GPU 7 as HIP device 3; the command sets the variable in-process.
+    monkeypatch.setattr(measure, "hip_visible", {(7,): "3"}.get)
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising=False)
     monkeypatch.setattr(measure, "roots_for", lambda _: (ATOM_ROOT, AITER_ROOT))
     monkeypatch.setattr(measure, "start_bench", Bench)
     monkeypatch.setattr(Bench, "started", [])
@@ -129,6 +133,12 @@ def entries(store) -> list:
 
 def by_view(store) -> dict:
     return {key.values["view"]: (key, member) for key, member in entries(store)}
+
+
+def test_the_bench_runs_on_the_hip_device_of_its_rocm_smi_gpu(run):
+    rec = str(run.record)
+    run(rec, "--sample", "all", *run.named(rec))
+    assert os.environ["HIP_VISIBLE_DEVICES"] == "3"
 
 
 def test_measuring_one_record_twice_publishes_each_view_once_and_then_nothing(run):
@@ -186,6 +196,17 @@ def test_a_held_entry_taken_under_other_readings_refuses_naming_it(run):
     assert Bench.started == []
 
 
+def test_a_held_entry_measured_on_cards_of_another_ptl_state_refuses(run):
+    rec = str(run.record)
+    run.identity["ptl"] = "enabled"
+    run(rec, "--sample", "all", *run.named(rec))
+    run.identity["ptl"] = "disabled"
+    Bench.started.clear()
+    with pytest.raises(SystemExit, match=r"other readings than this run's:\n.*enabled"):
+        run(rec, "--sample", "all", *run.named(rec))
+    assert Bench.started == []
+
+
 def test_sample_n_draws_n_views_from_each_stratum_by_its_seed(run):
     """This record decodes on rungs and prefills in chunks under 512 tokens."""
     strata = {}
@@ -220,7 +241,7 @@ def test_sample_n_draws_n_views_from_each_stratum_by_its_seed(run):
             "prefill without output tokens 512-2048",
         ),
         ([[2048, 2048, False]], None, True, "prefill with output tokens 2048-8192"),
-        ([[4096, 4096, False]] * 2, None, True, "prefill with output tokens 8192-"),
+        ([[4096, 4096, False]] * 2, None, True, "prefill with output tokens 8192+"),
     ],
 )
 def test_a_batch_is_drawn_by_its_kind_and_rung_or_its_prefill_token_band(
@@ -324,6 +345,44 @@ def test_grid_points_are_measured_with_origin_plan_and_new_shapes_add_only_their
         sources = {str(population), record_source} if new else {str(population)}
         assert member["sources"] == sorted(sources)
         assert member["traces"] == [f"trace-{i}" for i in range(4)]
+
+
+def test_a_view_both_replayed_and_planned_names_only_its_replay(run):
+    """The record is replayed on its traces; the plan places its points from
+    the same steps, published as a population whose client runs name each
+    request's trace as a graded one."""
+    population = published_population(run)
+    token, rec = population.token(), str(run.record)
+    definition = run.tmp / "definition.json"
+    definition.write_text(json.dumps(DEFINITION))
+    graded = []
+    for i, requests in enumerate(RUNS):
+        renamed = {
+            n: r | {"trace": f"graded {r['trace']}"} for n, r in requests.items()
+        }
+        (run.tmp / f"graded{i}.json").write_text(json.dumps({"requests": renamed}))
+        graded += ["--client-run", token, str(run.tmp / f"graded{i}.json")]
+    grid = ["--grid", token, "--grid-definition", str(definition), *graded]
+    store = run(rec, "--sample", "all", *run.named(rec), *grid)
+
+    planned = json.loads((run.tmp / "out/plan.json").read_text())
+    replayed = views(read(run.record / "steps")[0])
+    held = by_view(store)
+    assert views(planned["lines"]) & replayed
+    assert set(held) == views(planned["lines"]) | replayed
+    assert len(Bench.measured) == len(held)
+    for view, (_, member) in held.items():
+        if view in replayed:
+            assert member["traces"] == [f"trace-{i}" for i in range(4)]
+            assert member["origin"] == "replay" and "plan" not in member
+            assert member["sources"] == [
+                measure.file_digest(run.record / "steps/dp0.jsonl")
+            ]
+        else:
+            assert member["origin"] == "plan"
+            assert member["plan"] == measure._digest(planned)
+            assert member["sources"] == [str(population)]
+            assert member["traces"] == [f"graded trace-{i}" for i in range(4)]
 
 
 def test_the_planner_reads_the_engine_every_grid_input_states(run):

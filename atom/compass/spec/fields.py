@@ -15,7 +15,8 @@ quantity is a positive real, a derate is a fraction in (0, 1].
 
 Every field is required except the provenance fields `merge` fills in,
 `fp4_flops`, the pipeline send terms, a link's `link_setup_s` (zero when
-absent), the `host.http_intake` pair and the `host_link` pair. An engine
+absent), the `host.http_intake` pair, the `host_link` pair and `device.ptl`,
+the cards' PTL state (`disabled` when absent). An engine
 start's memory readings are no field here: `compass measure memory` publishes
 them per configuration, as a `memory_readings` entry.
 
@@ -106,6 +107,7 @@ FIELDS = (
     Field("device.name", Kind.TEXT),
     Field("device.arch", Kind.TEXT),
     Field("device.count_per_node", Kind.COUNT),
+    Field("device.ptl", Kind.TEXT, required=False),
     Field("device.memory.capacity_bytes", Kind.QUANTITY),
     Field("device.memory.bandwidth_bytes_per_s", Kind.QUANTITY, peak=True),
     Field("device.compute.bf16_flops", Kind.QUANTITY, peak=True),
@@ -134,6 +136,9 @@ FIELDS = (
             ("rendezvous_fixed_s", Kind.QUANTITY),
         )
     ),
+    # How late a host blocked on a gloo part goes on after it completes.
+    Field("interconnect.intra_node.pp.gloo.wake_s", Kind.QUANTITY, required=False),
+    Field("interconnect.intra_node.pp.gloo.wake_rise_s", Kind.QUANTITY, required=False),
     Field(
         "interconnect.inter_node.link_bandwidth_bytes_per_s", Kind.QUANTITY, peak=True
     ),

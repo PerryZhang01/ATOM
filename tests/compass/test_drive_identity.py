@@ -26,6 +26,7 @@ CARD = {
     "Card SKU": "M3080202",
     "Node ID": "9",
     "GFX Version": "gfx942",
+    "PCI Bus": "0000:0A:00.0",
 }
 ARGV = ["compass", "record", "--gpu", "7", "--out", "d", "--", "--model", "m"]
 MACHINES = Path(__file__).parents[2] / "scripts/compass/machines"
@@ -59,6 +60,7 @@ def planted(tmp_path, monkeypatch):
         "aiter": _checkout(tmp_path / "aiter", "v0"),
     }
     monkeypatch.setattr(drive, "module_root", lambda module: str(trees[module]))
+    monkeypatch.setattr(drive, "PCI", str(tmp_path / "pci"))
     (tmp_path / "rocm" / ".info").mkdir(parents=True)
     (tmp_path / "rocm" / ".info" / "version").write_text("7.2.4\n")
     monkeypatch.setenv("ROCM_PATH", str(tmp_path / "rocm"))
@@ -99,6 +101,7 @@ def test_the_identity_holds_its_entries_and_no_workload(planted):
         "source": run["source"],
         "host_key": host_key(config),
         "device": [],
+        "ptl": "disabled",
         "stack": {
             "rocm": "7.2.4",
             "aiter": _git(trees["aiter"], "rev-parse", "--short=9", "HEAD"),
@@ -166,6 +169,14 @@ def test_each_named_gpu_is_recorded_with_its_model(planted):
     ]
     with pytest.raises(GpuRefusal, match=r"^rocm-smi lists no GPU \[8\]"):
         drive.identity(*served, ARGV, (7, 8))
+
+
+def test_the_named_cards_ptl_state_is_recorded(planted, tmp_path):
+    *_, served = planted
+    ptl = tmp_path / "pci" / CARD["PCI Bus"].lower() / "ptl"
+    ptl.mkdir(parents=True)
+    (ptl / "ptl_enable").write_text("enabled\n")
+    assert drive.identity(*served, ARGV, (7, 6))["ptl"] == "enabled"
 
 
 #: rocm-smi's listing of GPU 0 in compass-next:nightly-20261013 on mi355-gpu-45.

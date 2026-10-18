@@ -41,7 +41,8 @@ the step linear law's solver, MAD drops and hulls; `seqs` equal to `tokens` on
 every sample gets zero. Two keys refuse. The law and the host key state the
 `--machine-spec` digest, which a run's spec must match, and the host key's `engine` is the
 law's `engine_config`. A segment outside `HOST_SEGMENTS` is
-fitted for a kind whose samples carry it: `W_inputs`, on an MTP record.
+fitted for a kind whose samples carry it: `W_inputs`, on an MTP record, and
+`W_recv`, on a later pipeline stage's.
 
 Each equation is divided by its own label and the coefficients are bound to be
 non-negative. Steps whose relative residual is more than `MAD_K` scaled MADs
@@ -544,12 +545,17 @@ def fit(samples, options=None, seed: int = 0) -> tuple[dict, dict]:
     return law, report
 
 
+def token_band(tokens: int) -> str:
+    """The band of `TOKEN_BANDS` `tokens` falls in: `lo-hi`, or `lo+` past the last."""
+    lo = max([0] + [b for b in TOKEN_BANDS if b <= tokens])
+    hi = min([b for b in TOKEN_BANDS if b > tokens], default=None)
+    return f"{lo}+" if hi is None else f"{lo}-{hi}"
+
+
 def _band(key: str, counts) -> str:
     if key != "prefill":
         return f"decode rung {key}"
-    lo = max([0] + [b for b in TOKEN_BANDS if b <= counts[1]])
-    hi = min([b for b in TOKEN_BANDS if b > counts[1]], default="")
-    return f"prefill tokens {lo}-{hi}"
+    return f"prefill tokens {token_band(counts[1])}"
 
 
 def _held_out(samples, options, seed, warm=None):

@@ -239,6 +239,8 @@ class ProvenanceMix:
         self.seconds = 0.0
         self.refused_steps = 0
         self.refused_seconds = 0.0
+        #: Steps with a term its source extrapolated past its support domain.
+        self.extrapolated_steps = 0
         self._method_seconds: dict[tuple[Method, bool], float] = {}
         self._method_steps: dict[tuple[Method, bool], int] = {}
         self._reasons: dict[tuple[str, str], int] = {}
@@ -249,6 +251,7 @@ class ProvenanceMix:
         self.steps += 1
         self.treatments.update(step.treatments)
         self.seconds = fold_step(self.seconds, step.seconds)
+        self.extrapolated_steps += any(t.provenance.extrapolated for t in step.terms)
         if step.is_refused:
             self.refused_steps += 1
             self.refused_seconds = fold_step(self.refused_seconds, step.refused_seconds)

@@ -32,7 +32,7 @@ from pathlib import Path
 
 import atom
 from atom.compass import parity
-from atom.compass.drive.gpu import quiet
+from atom.compass.drive.gpu import hip_visible, quiet
 from atom.compass.drive.identity import identity
 from atom.compass.run import CLOCK_ENV, ENV, _write_whole
 
@@ -102,7 +102,7 @@ def serve(atom_args, out, gpus=(), run=None, extra_env=None) -> None:
     )
     env[parity.ENV] = str(out / STEPS)
     if run is None:
-        env["HIP_VISIBLE_DEVICES"] = ",".join(map(str, gpus))
+        env["HIP_VISIBLE_DEVICES"] = hip_visible(gpus)
     else:
         endpoint, run_file = f"tcp://{HOST}:{clock_port}", out / RUN_FILE
         run = {**run, "out_dir": str(out), "clock_endpoint": endpoint}
