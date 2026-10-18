@@ -44,7 +44,6 @@ import os
 import pickle
 import queue
 import threading
-import time
 
 import zmq
 
@@ -724,12 +723,12 @@ def reply_queue() -> queue.Queue:
 class PullStamps:
     """A real recording's engine loop: the first input pull and the first
     output put after each worker reply, one ``{"t_pull_ns" | "t_put_ns": ns}``
-    line each in `path`, on the host's monotonic clock."""
+    line each in `path`, read off `now`, the machine clock its caller hands in."""
 
     KEYS = ("t_pull_ns", "t_put_ns")
 
-    def __init__(self, path) -> None:
-        self.file = open(path, "w", buffering=1)  # noqa: SIM115
+    def __init__(self, path, now) -> None:
+        self.file, self.now = open(path, "w", buffering=1), now  # noqa: SIM115
         self.lock = threading.Lock()
         self.armed: set[str] = set()
 
@@ -741,17 +740,18 @@ class PullStamps:
         with self.lock:
             if key in self.armed:
                 self.armed.discard(key)
-                self.file.write(f'{{"{key}": {time.monotonic_ns()}}}\n')
+                self.file.write(f'{{"{key}": {self.now()}}}\n')
 
 
 #: The engine's `PullStamps` on a real recording, else None.
 _stamps: PullStamps | None = None
 
 
-def stamp_pulls(path) -> None:
-    """Stamp this engine's pulls and puts into `path`; a real recording's only."""
+def stamp_pulls(path, now) -> None:
+    """Stamp this engine's pulls and puts into `path` off the clock `now`; a
+    real recording's only."""
     global _stamps
-    _stamps = PullStamps(path)
+    _stamps = PullStamps(path, now)
 
 
 class _StampedQueue(queue.Queue):

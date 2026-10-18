@@ -1076,7 +1076,9 @@ def engine(config):
         if record and getattr(config, "pipeline_parallel_size", 1) == 1:
             Path(record).mkdir(parents=True, exist_ok=True)
             rank = config.parallel_config.data_parallel_rank
-            clock.stamp_pulls(Path(record) / f"dp{rank}.pulls.jsonl")
+            # The worker's step timestamps read the same host clock.
+            pulls = Path(record) / f"dp{rank}.pulls.jsonl"
+            clock.stamp_pulls(pulls, time.monotonic_ns)
         return contextlib.nullcontext()
     from atom.utils.distributed import utils
 
