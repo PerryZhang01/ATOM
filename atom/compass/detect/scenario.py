@@ -55,9 +55,10 @@ def expected_timeline(record, prefill_s: float, decode_s: float, tars) -> list:
     `decode_s` when a row decodes. With no host laws it enters at its start or
     once the device work two forwards back ends, whichever is later, and
     returns then, or, when it produces output, once the previous output
-    forward's device work ends. Above DP width one a rank producing output,
-    not a dummy, returns at the group's latest return and any other at its own;
-    the step is one TAR per distinct return, ascending.
+    forward's device work ends. Above DP width one the group's device end is
+    the latest over ranks, which each rank takes as its last device end, and
+    as its output end on an output forward; each rank returns at its own exit,
+    and the step is one TAR per distinct return, ascending.
 
     Raises ValueError when the ranks hold different step counts, or a step
     starts after the TAR rows end.
@@ -73,23 +74,21 @@ def expected_timeline(record, prefill_s: float, decode_s: float, tars) -> list:
         if i >= len(tars):
             raise ValueError(f"record step {k} has no TAR row")
         now = tars[i][0]
-        returns = []
+        returns, ends = set(), {}
         for r in ranks:
             step = record[r][k]
             rows = [row[-1] for row in step["rows"]]
             busy = prefill_s * (not all(rows)) + decode_s * any(rows)
             two_back, last, output = device[r]
             host = max(now, two_back)
-            end = max(last, host) + busy
-            back = host
-            if step["produces_output"]:
-                back, output = max(host, output), end
-            device[r] = (last, max(end, host), output)
-            waits = step["produces_output"] and not step["is_dummy_run"]
-            returns.append((back - now, waits))
-        top = max(t for t, _ in returns)
+            ends[r] = max(last, host) + busy
+            returns.add((max(host, output) if step["produces_output"] else host) - now)
+        end = max(ends.values())
+        for r in ranks:
+            _, last, output = device[r]
+            device[r] = (last, end, end if record[r][k]["produces_output"] else output)
         start = now
-        for t in sorted({top if waits else t for t, waits in returns}):
+        for t in sorted(returns):
             want.append((start, now + t))
             start, i = now + t, i + 1
     return want

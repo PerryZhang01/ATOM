@@ -194,8 +194,11 @@ class BatchView:
     `produces_output` are the batch-level scalars: a rung is a property of the
     replayed graph, and `moe_rows` is the rows the data-parallel group's MoE
     gather carries, which the MoE segment is priced from. It is None on one
-    rank. `produces_output` says whether the step samples, which a pure middle
-    prefill chunk does not; None when the caller did not say.
+    rank. `draft_moe_rows` is the rows the same gather carries on an MTP
+    draft's first pass, which runs each rank's own token count; None on one
+    rank or with no such drafter. `produces_output` says whether the step
+    samples, which a pure middle prefill chunk does not; None when the caller
+    did not say.
     `tbo_tokens` is the two-batch-overlap split the data-parallel group
     agreed: per micro-batch, each rank's token count. It is None when the
     step is not split, and on one rank. `image_tokens` counts the scheduled
@@ -210,6 +213,7 @@ class BatchView:
     requests: tuple[RequestShape, ...]
     capture_rung: int | None = None
     moe_rows: int | None = None
+    draft_moe_rows: int | None = None
     produces_output: bool | None = None
     tbo_tokens: tuple[tuple[int, ...], ...] | None = None
     image_tokens: int = 0

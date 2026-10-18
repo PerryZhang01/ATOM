@@ -64,6 +64,8 @@ DATE, COMMIT = {
     "mi308x-hjbog18": ("2026-10-17", "0f045543d"),
     "mi308x-hjbog39": ("2026-10-14", "ce625ddd9"),
 }[NAME]
+#: Every card's `ptl_enable` on each host, as sysfs read on 2026-10-18.
+PTL = {"mi308x-hjbog18": "enabled", "mi308x-hjbog39": "disabled"}[NAME]
 #: Each start's record: the sha256 of its server log, as
 #: `python -m atom.compass.memory.check` digests it.
 RECORD = {
@@ -170,7 +172,8 @@ def device_fragments() -> list[Fragment]:
     """The fragments the engine start and any other probe filled, and the
     assumed rest."""
     notes = f"one Qwen3.8-27B TP1 start at {COMMIT}"
-    probes = []
+    ptl = {"device": {"ptl": PTL}}
+    probes = [fragment("ptl", ptl, "probed", "ptl_enable", date="2026-10-18")]
     if INTAKE:
         date, root, terms, record = INTAKE
         subject = {"model": "Qwen/Qwen3.8-27B", "source_root": f"commit:{root}"}

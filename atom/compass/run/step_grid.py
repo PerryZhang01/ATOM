@@ -34,8 +34,10 @@ environment. Loading refuses, naming what differs:
   that was not measured;
 - a configured bound above the one the grid was planned for.
 
-A cell past the KV capacity is incomplete, so it refuses at lookup and needs no
-check here. The residual's recipe reads no chunk size, so none is keyed.
+A decode corner past the KV pool the grid records is extrapolated at lookup,
+and any other unmeasured corner refuses there, so neither needs a check here;
+the run composes the step roofline below the backend for the steps it refuses.
+The residual's recipe reads no chunk size, so none is keyed.
 """
 
 import json

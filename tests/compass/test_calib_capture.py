@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from test_drive_gpu import GPU45, SHOWHW
 
 COMPASS = Path(__file__).resolve().parents[2] / "scripts" / "compass"
 BASH = shutil.which("bash")
@@ -25,7 +26,7 @@ echo "c=$CONCURRENCY done" >> "$2/../order"
 """
 
 
-def _capture(tmp_path, smi, cells, gpus="6"):
+def _capture(tmp_path, smi, cells, gpus="6", showhw=SHOWHW):
     tree = tmp_path / "ATOM"
     (tree / "scripts" / "compass").mkdir(parents=True)
     for name in ("calib_capture.sh", "_lib.sh"):
@@ -34,7 +35,11 @@ def _capture(tmp_path, smi, cells, gpus="6"):
     (tree / ".compass-commit").write_text("cafe\n")
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    (bindir / "rocm-smi").write_text(f"#!/bin/sh\nprintf '{smi}'\n")
+    (bindir / "showhw").write_text(showhw)
+    (bindir / "rocm-smi").write_text(
+        f'#!/bin/sh\ncase "$*" in *--showhw*) cat {bindir}/showhw;;\n'
+        f"*) printf '{smi}';;\nesac\n"
+    )
     (bindir / "rocm-smi").chmod(0o755)
     (tmp_path / "run.json").write_text("{}")
     env = dict(
@@ -92,3 +97,16 @@ def test_a_process_on_an_unnamed_gpu_leaves_the_cell_running(tmp_path):
     r, cap = _capture(tmp_path, "PID 1 is using 2 DRM device(s):\n6 7\n", "1", "0,1")
     assert r.returncode == 0, r.stderr
     assert (cap / "c1.log").read_text().startswith("cafe\nCONCURRENCY=1 GPU=0,1 ")
+
+
+@pytest.mark.skipif(BASH is None, reason="no bash on PATH")
+@pytest.mark.parametrize("gpu, rc", [("1", 0), ("3", 3)])
+def test_the_guard_reads_hip_devices_0_and_1_as_rocm_smi_gpus_3_and_0(
+    tmp_path, gpu, rc
+):
+    smi = f"PID 1 is using 1 DRM device(s):\n{gpu}\n"
+    r, cap = _capture(tmp_path, smi, "1", "0,1", GPU45)
+    assert r.returncode == rc, r.stderr
+    log = (cap / "c1.log").read_text()
+    assert log.startswith("cafe\nCONCURRENCY=1 GPU=0,1 ROCM_SMI_GPU=3,0 ")
+    assert ("rocm-smi GPU 3 is in use" in log) == (rc == 3)

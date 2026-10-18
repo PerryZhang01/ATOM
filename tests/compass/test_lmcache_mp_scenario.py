@@ -20,6 +20,7 @@ import json
 import math
 import os
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -99,12 +100,30 @@ class Workload(Traffic):
         rt.close()
 
 
-def _measure(out: Path, machine: Path, width: list) -> None:
+def _server(port: int) -> list[str]:
+    """The lmcache server's flags, which LP lmcache reads from the run file."""
+    flags = ["--host", "127.0.0.1", "--port", str(port), "--chunk-size", "256"]
+    return flags + ["--l1-size-gb", "1", "--eviction-policy", "LRU"]
+
+
+def _offload(port: int) -> dict[str, str]:
+    """The offload environment of a run and of the readings it reads."""
+    extra = {"lmcache.mp.host": "tcp://127.0.0.1", "lmcache.mp.port": port}
+    return OFFLOAD_ENV | {
+        "ATOM_KV_OFFLOAD": "lmcache_mp",
+        "ATOM_KV_OFFLOAD_EXTRA_CONFIG": json.dumps(extra),
+    }
+
+
+def _measure(out: Path, machine: Path, width: list, port: int) -> None:
+    """The readings, taken with a real lmcache server beside the engine."""
     from atom.compass import cli
 
     gpus = os.environ.get("HIP_VISIBLE_DEVICES", "0")
+    beside = shlex.join(["lmcache", "server", *_server(port)])
     cli.main(
         ["measure", "memory", "--gpu", gpus, "--machine", str(machine)]
+        + ["--beside", beside]
         + ["--store", str(out / "store"), "--out", str(out / "measure")]
         + ["--", *ATOM_ARGS, *width]
     )
@@ -114,9 +133,7 @@ def run_scenario(root: Path, seed: str, dp: int, lmcache_port: int) -> dict:
     """One run in its own process tree, reading the readings in ``root/store``."""
     out = root / f"seed{seed}"
     out.mkdir()
-    port = _free_port()
-    flags = ["--host", "127.0.0.1", "--port", str(lmcache_port)]
-    flags += ["--chunk-size", "256", "--l1-size-gb", "1", "--eviction-policy", "LRU"]
+    port, flags = _free_port(), _server(lmcache_port)
     machine = json.loads((root / "machine.json").read_text())
     run_file = _run_file(
         out,
@@ -127,16 +144,13 @@ def run_scenario(root: Path, seed: str, dp: int, lmcache_port: int) -> dict:
         bound_s=60.0,
         lmcache={"server": flags, "lookup_s": [STATION_S, 0.0], "request_s": STATION_S},
     )
-    extra = {"lmcache.mp.host": "tcp://127.0.0.1", "lmcache.mp.port": lmcache_port}
     env = dict(
         os.environ,
-        **OFFLOAD_ENV,
+        **_offload(lmcache_port),
         PYTHONHASHSEED=seed,
         PYTHONPATH=str(TREE),
         AITER_LOG_LEVEL="WARNING",
         ATOM_COMPASS_PARITY_RECORD=str(out / "parity"),
-        ATOM_KV_OFFLOAD="lmcache_mp",
-        ATOM_KV_OFFLOAD_EXTRA_CONFIG=json.dumps(extra),
     )
     requests = bodies(MODEL, 1 + BURST * dp, PREFIX_WORDS)
     with open(out / "server.log", "w") as log:
@@ -183,10 +197,12 @@ def runs(request, tmp_path_factory):
         "latency_s": COPY_S,
     }
     machine.write_text(json.dumps(spec))
+    lmcache_port = _free_port()  # the run file names it, so both runs share it
     with pytest.MonkeyPatch.context() as mp:
         mp.setenv("AITER_LOG_LEVEL", "WARNING")  # the readings are keyed by it
-        _measure(root, machine, DP2 if dp > 1 else [])
-    lmcache_port = _free_port()  # the run file names it, so both runs share it
+        for name, value in _offload(lmcache_port).items():
+            mp.setenv(name, value)
+        _measure(root, machine, DP2 if dp > 1 else [], lmcache_port)
     return dp, [run_scenario(root, seed, dp, lmcache_port) for seed in ("1", "2")]
 
 
@@ -369,6 +385,19 @@ def test_each_dp_member_parks_once_a_step_and_leaves_at_the_latest_park(runs):
     for k, start in enumerate(starts):
         at = [parks[rank]["at"][k] for rank in record]
         assert {left for _, left in at} == {max(p for p, _ in at)} == {start}, k
+
+
+@NEEDS_A_RUN
+def test_each_rank_looks_up_blocking_by_both_triggers(runs):
+    """Each rank looks a request up with no prefetch to consume, and stops
+    waiting for a deferred prefetch at least once."""
+    dp, (run, _) = runs
+    for rank in read(run["out"] / "parity"):
+        lp = compass_run.LP_FILE.format("engine" if dp == 1 else f"engine.dp{rank}")
+        n = json.loads((run["out"] / lp).read_text())["lookups"]
+        print(f"\ndp{rank}: {n}")
+        assert n["lookup_n"] > n["lookup_prefetched"], (rank, n)
+        assert n["lookup_defer_expired"] > 0, (rank, n)
 
 
 # --- (c): the parity record's offload decisions, without a driver -------------

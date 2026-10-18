@@ -29,7 +29,8 @@
 #   STORE            artifact store holding the simulated configuration's memory
 #                    readings, taken by `compass measure memory`. Unset, the
 #                    script takes them first into OUT_DIR/store: `compass measure
-#                    memory` on the real run's GPUs, flags and environment.
+#                    memory` on the real run's GPUs, flags and environment,
+#                    under LMCACHE with an lmcache server of its own beside it.
 #   SERVER_ARGS      more API server flags, on both runs (default CONFIG's; tp2's are
 #                    --enforce-eager --max-model-len 8192 --no-enable_prefix_caching)
 #   WAIT_S           seconds a server has to start, and to stop (default 1800)
@@ -56,7 +57,7 @@
 # file, step table and summary), and compare.json; the last lines are the real run's
 # admission, send to response headers, and the compare per DP rank. Under
 # LMCACHE they also give the requests whose offload loads and saves differ, and
-# each run's expired-session sweeps, from its server's log. A
+# each run's expired-session sweeps and eviction ticks, from its server's log. A
 # simulated run that needs a step past the real record ends at the replay's
 # refusal, which the last lines name; the records are compared all the same.
 set -euo pipefail
@@ -88,15 +89,6 @@ ALONE=${ALONE:-0} GAP=0.05
 [[ $ALONE == 1 ]] && GAP=0.25
 mkdir -p "$OUT/real" "$OUT/sim"
 OUT=$(realpath "$OUT")
-if [[ -z ${STORE:-} ]]; then
-    STORE=$OUT/store
-    # shellcheck disable=SC2086 # SERVER_ARGS is a word list
-    ATOM_DP_MASTER_PORT=$(compass_free_port) python3 -c \
-        "from atom.compass.cli import main; main()" measure memory \
-        --gpu "${HIP_VISIBLE_DEVICES:-$(seq -s, 0 $((TP - 1)))}" --machine "$MACHINE" \
-        --store "$STORE" --out "$OUT/memory" -- --model "$MODEL" -tp "$TP" \
-        $DPA $SERVER_ARGS
-fi
 LMCACHE=${LMCACHE:-0} PREFIX=0 LM_FLAGS=
 if [[ $LMCACHE == 1 ]]; then
     PREFIX=${PREFIX_WORDS:-600} LM_PORT=$(compass_free_port)
@@ -106,6 +98,18 @@ if [[ $LMCACHE == 1 ]]; then
     export ATOM_KV_OFFLOAD=lmcache_mp OFFLOAD_MIN_LOAD_TOKENS=256 OFFLOAD_MIN_SAVE_TOKENS=256
     export ATOM_KV_OFFLOAD_EXTRA_CONFIG="{\"lmcache.mp.host\": \"tcp://127.0.0.1\",
         \"lmcache.mp.port\": $LM_PORT}"
+fi
+if [[ -z ${STORE:-} ]]; then
+    STORE=$OUT/store
+    # measure memory takes rocm-smi's indexes of the real run's HIP devices.
+    gpus=$(compass_gpus smi "${HIP_VISIBLE_DEVICES:-$(seq -s, 0 $((TP - 1)))}")
+    # shellcheck disable=SC2086 # SERVER_ARGS is a word list
+    ATOM_DP_MASTER_PORT=$(compass_free_port) python3 -c \
+        "from atom.compass.cli import main; main()" measure memory \
+        --gpu "$gpus" --machine "$MACHINE" \
+        ${LM_FLAGS:+--beside "lmcache server $LM_FLAGS"} \
+        --store "$STORE" --out "$OUT/memory" -- --model "$MODEL" -tp "$TP" \
+        $DPA $SERVER_ARGS
 fi
 
 server= lmcache=
@@ -159,7 +163,7 @@ fi
 RUN=$OUT/sim/run.json
 python3 - "$RUN" "$OUT" "$MACHINE" "$MODEL" "$STORE" "$(compass_free_port)" "${DPA:+$TP}" \
     "$LM_FLAGS" "${IMAGE_S:-0.01}" "$TP" <<'EOF'
-import json, sys
+import json, re, sys
 from pathlib import Path
 
 run, out, machine, model, store, port, width, lmcache, image_s, tp = sys.argv[1:]
@@ -185,6 +189,10 @@ if lmcache:
     # a model whose ranks share one copy refuses by name.
     writers = 1 if width else int(tp)
     spec["lmcache"] = {"server": lmcache.split(), "writers": writers, **laws}
+    # A rank's recurrent-state image, as the real run logged it; the simulated
+    # engine refuses a run file that names another.
+    image = re.findall(r"image_bytes=(\d+)", Path(f"{out}/real/server.log").read_text())
+    spec["lmcache"]["state_bytes"] = int(image[0]) if image else 0
 Path(run).write_text(json.dumps(spec))
 EOF
 serve sim --compass-run "$RUN"
@@ -232,5 +240,6 @@ if any(decisions):
           f"{len(sim)} simulated; {len(differ)} differ: {differ}")
 EOF
 if [[ $LMCACHE == 1 ]]; then
-    grep -H "expired sessions" "$OUT/real/lmcache.log" "$OUT/sim/server.log" || true
+    grep -H -e "expired sessions" -e "triggering eviction" "$OUT/real/lmcache.log" \
+        "$OUT/sim/server.log" || true
 fi

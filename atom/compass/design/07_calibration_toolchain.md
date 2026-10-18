@@ -275,7 +275,8 @@ predicted; if not, that is the finding and the recipe grows.
 real engine, reads the readings below on every rank once the KV cache is allocated and
 the graphs are captured, publishes one `memory_readings` entry (D41), and exits (`13`
 D80); `record` takes none. The entry is keyed by the model, the digest of `--machine`,
-the parallel layout and the engine config (`atom/compass/run/memory.py::key_fields`), and
+the parallel layout and the engine config, its KV offload connector included
+(`atom/compass/run/memory.py::key_fields`), and
 records the stack the start ran on, which a run's spec must pin. A run reads its rank's
 member and refuses when there is no entry, so the readings leave the machine spec (doc
 `05` D25). This phase exists because these memory quantities cannot be derived from
@@ -287,7 +288,7 @@ campaign and the one with the tightest acceptance gate behind it — KV block co
 |---|---|
 | **Input** | ATOM's arguments: the model, its widths, and the engine config that fixes the capture ladder |
 | **Output** | one `memory_readings` entry for that configuration (D41) |
-| **Cost** | one start per configuration. Minutes, no workload, no traffic |
+| **Cost** | one start per configuration, two on a cold inductor cache. Minutes, no workload, no traffic |
 | **Needs a GPU** | **yes**, and a **quiet** one |
 
 **What is read, and where it comes from:**
@@ -295,10 +296,10 @@ campaign and the one with the tightest acceptance gate behind it — KV block co
 | Reading | Source |
 |---|---|
 | `capacity_bytes` | the device, once; the capacity a run sizes against stays the machine spec's configured one (`13` D78) |
-| `driver_and_collective_reserve_bytes` | ATOM's own `get_num_blocks` `non_torch` term |
+| `driver_and_collective_reserve_bytes` | ATOM's own `get_num_blocks` `non_torch` term, from a start in which inductor autotuned no kernel: the configs autotuning tries stay loaded, +12 to 26 MiB a rank on a cold cache (Qwen3.8-27B TP2), so a start that autotuned is started again on the cache it warmed, under a free `ATOM_DP_MASTER_PORT`, since the first start to load ATOM's compiled-graph cache autotunes again ([#1428](https://github.com/jgong5/ATOM/issues/1428)) |
 | `allocator_retained_after_load_bytes` | torch allocator, after weight load completes, less the model's parameter and buffer storages |
 | `persistent_forward_buffer_bytes` | allocated bytes where `get_num_blocks` reads the device, less those after load: `allocate_forward_vars`, attention metadata setup |
-| `activation_bytes` over `warmup_tokens` | the warmup forward's allocator peak above what stays allocated, on a second warmup: on a cold compile cache the first's peak sat in inductor's autotuning tensors, +15.8% (Qwen3-0.6B) and +65.2% (Qwen3-30B-A3B) ([#705](https://github.com/jgong5/ATOM/issues/705)) |
+| `activation_bytes` over `warmup_tokens` | ATOM's one warmup forward's allocator peak above what stays allocated, as a serving start reads it, from a start in which inductor autotuned no kernel: on a cold compile cache the peak sat in inductor's autotuning tensors, +15.8% (Qwen3-0.6B) and +65.2% (Qwen3-30B-A3B) ([#705](https://github.com/jgong5/ATOM/issues/705)). A second warmup in the same start reads higher than the first, which is the one that sizes the KV pool ([#1481](https://github.com/jgong5/ATOM/issues/1481)) |
 | `cudagraph_pool_bytes` | reserved delta across capture, at the configuration's own ladder, as `capture_cudagraph` returns it |
 
 **Three rules that turn this from a reading into evidence:**
@@ -468,8 +469,8 @@ each server in steps 2, 3 and 6 serves the client runs a client started apart se
  5.  compass fit host <records>; compass fit steps --backend step-linear|step-grid ... [CPU]
        -> host_laws; a step_linear_law or a step grid bundle
  6.  compass run <backend> --machine M [--coverage <populations, records>] ...  [CPU, a server]
-       -> with a backend that has a coverage check, refuses before it starts
-          if coverage fails; run.json records what grading reads
+       -> the step grid's coverage check reports before it starts, refusing
+          no step (17 D99); run.json records what grading reads
  7.  python -m atom.compass.validate; python -m atom.compass.memory.check,
      outside the CLI                                       [CPU]
        -> whether each client run is gradeable, the separable results (08 D44);
@@ -530,11 +531,7 @@ doc 04 D21's **stated node** plus a dedicated standalone benchmark calling the s
 point.
 
 **(c) MoE all-to-all (EP)** — MORI, called inside `moe_forward`, invisible at any degree.
-It also has a property no generic model captures: `_get_dispatch_config` caps `block_num`
-at `get_cu_num()` because dispatch and combine use a **grid-wide spin barrier requiring all
-blocks co-resident**, so the kernel occupies the entire device. That is doc 04 D19's
-`exclusive` join policy, and it is a measured fact rather than a modelling choice. (On an
-80-CU MI308X, launching 128 blocks deadlocks.)
+Its block counts, ATOM's two TBO paths and the overlap are doc 04 D19's.
 
 **(d) p2p.** PP is `isend`/`recv` on NCCL (`atom/distributed/pp_comm.py::async_send_intermediate_tensors`, `commit_pp_send_work`),
 priceable like (a). **KV transfer is not priced at all** — doc 01 D6 simulates it as
@@ -579,7 +576,7 @@ dedicated flow has to be built: **one new tool, shared by (b) and (c); nothing n
 |---|---|---|---|
 | **(a)** dispatcher-visible | `measure ops` at each width — the same bench, the same graph-capture-and-replay method as any operator | **everything**, including the CUDA-graph replay method and the artifact schema | none; it is an op with a process group |
 | **(b)** invisible collectives | `measure ops` at each width, driven from the **stated-node list** rather than from the captured graph | the bench, the timing method, the artifact schema | a **stated-entry-point benchmark**: call `all_gather_reg`/`all_gather_unreg` directly at the shapes the graphs imply |
-| **(c)** MoE all-to-all | `measure ops` at each width and EP degree | the same stated-entry-point benchmark as (b) | the `exclusive` occupancy annotation, and a block-count cap at `get_cu_num()` |
+| **(c)** MoE all-to-all | `measure ops` at each width and EP degree | the same stated-entry-point benchmark as (b) | the block count per phase: `min(128, CU)` in prefill, `min(64, CU)` in decode |
 | **(d)** p2p / PP | `measure ops` at each width and PP degree | same as (a) — `isend`/`recv` are dispatcher-visible | none |
 | **(d)** KV transfer | **not priced** | — | nothing: doc `01` D6 computes it from the machine spec, which is what keeps interconnect configurable |
 
@@ -643,7 +640,7 @@ its own, and a population is keyed by the backend that priced it.
 
 | Artifact | Produced by | Keyed by |
 |---|---|---|
-| `machine_spec` | doc 05 probes | (device, software stack) |
+| `machine_spec` | doc 05 probes | (device, software stack, PTL state) |
 | `shape_population` | Phase 0, `trace steps` | (model, workload, engine config, the pricing backend's digest) |
 | `op_graph` | Phase 1a, `trace ops` | **structure** — not shape |
 | `price_list` | Phase 1b, `fit ops` | **(model, parallel layout, machine-spec digest, source-root digest)** — a tuple, never a path |
@@ -664,10 +661,30 @@ list does not answer for `-tp 2 -dp 2`, and a transfer between layouts, if one i
 is an explicit record backed by a measurement. A read miss names the fields in which the
 nearest entry of its kind differs.
 
-The **machine-spec digest** is the digest of the machine spec's own key, its device and
-software stack (`atom/compass/artifacts/keys.py::machine_spec_digest`), so an entry
-measured on one platform does not answer on another, and a spec edit outside those two
-moves no key ([#952](https://github.com/jgong5/ATOM/issues/952) S2).
+The **machine-spec digest** is the digest of the machine spec's own key, its device,
+software stack and PTL state (`atom/compass/artifacts/keys.py::machine_spec_digest`), so
+an entry measured on one platform does not answer on another, and a spec edit outside
+those three moves no key ([#952](https://github.com/jgong5/ATOM/issues/952) S2). The
+host name, the HBM vendor and the PTL format stay out of it (owner ruling on
+[#1434](https://github.com/jgong5/ATOM/issues/1434#issuecomment-6245078946)).
+
+The **PTL state** is `device.ptl` in the spec, `disabled` when the spec states none. A
+record reads it at capture and at run time from
+`/sys/bus/pci/devices/<bus>/ptl/ptl_enable`, with each GPU's bus as `rocm-smi
+--showbus` names it (not `/sys/class/drm/card<n>`, whose numbering is not the GPU
+index: DRM `card0` can be the BMC's VGA), a card with no `ptl` directory reading
+`disabled`, and refuses when the cards of one run disagree, naming each
+(`atom/compass/drive/identity.py::_ptl`). A fit refuses records whose PTL state is not
+the spec's, as it does their device and stack, and so does `measure memory` before its
+start. A record that carries no PTL state, captured before the field existed, refuses
+at a fit unless `--ptl enabled|disabled` states it; the fit records the stated value in
+its report, and refuses `--ptl` for records that carry a state of their own. PTL is the
+one static field that separated hjbog-srdc-39 from node 18 once both pinned one stack,
+and it accounts for the gap a synthetic decode step shows between them, about 10%.
+[#828](https://github.com/jgong5/ATOM/issues/828)'s gap on real runs, 18 to 20%, is
+larger and stays open. The band one key
+leaves: same-key cards agree within 0.6% with PTL off; with PTL on, 3 to 5% per card
+plus 1 to 2% run-to-run remains.
 
 ### Four rules
 
@@ -796,18 +813,18 @@ A global fingerprint would force re-measuring everything on a torch bump. Each a
 records the fingerprint of **its own dependency row**; on load, recompute and compare;
 mismatch **refuses** (warn only under an explicit flag).
 
-| artifact \ invalidated by | ROCm / AITER / RCCL | torch | ATOM src | model | device | host CPU | engine cfg |
-|---|---|---|---|---|---|---|---|
-| `shape_population` | - | - | **X** | **X** | - | - | **X** |
-| `op_graph` | - | **X** | **X** | **X** | - | - | X (level, cudagraph mode) |
-| `price_list` | **X** | **X** | X | - *(shape-parametric)* | **X** | - | - |
-| `region_terms` | X | X | **X** | X | X | - | X |
-| `step_measurement`, `step_linear_law` | X | X | X | X | X | - | X |
-| step grid bundle (`17` D101) | X | X | X | X | X | - | X |
-| `host_laws` | - | - | **X** | **X** | - | **X** | **X** |
-| `memory_readings` | **X** | X | X | X | **X** | - | **X** |
-| `machine_spec`: capacity | - | - | - | - | **X** | - | - |
-| `machine_spec`: tokenizer terms | - | - | - | **X** *(tokenizer)* | - | - *(T53)* | - |
+| artifact \ invalidated by | ROCm / AITER / RCCL | torch | ATOM src | model | device | PTL | host CPU | engine cfg |
+|---|---|---|---|---|---|---|---|---|
+| `shape_population` | - | - | **X** | **X** | - | - | - | **X** |
+| `op_graph` | - | **X** | **X** | **X** | - | - | - | X (level, cudagraph mode) |
+| `price_list` | **X** | **X** | X | - *(shape-parametric)* | **X** | X | - | - |
+| `region_terms` | X | X | **X** | X | X | X | - | X |
+| `step_measurement`, `step_linear_law` | X | X | X | X | X | X | - | X |
+| step grid bundle (`17` D101) | X | X | X | X | X | X | - | X |
+| `host_laws` | - | - | **X** | **X** | - | - | **X** | **X** |
+| `memory_readings` | **X** | X | X | X | **X** | X | - | **X** |
+| `machine_spec`: capacity | - | - | - | - | **X** | - | - | - |
+| `machine_spec`: tokenizer terms | - | - | - | **X** *(tokenizer)* | - | - | - *(T53)* | - |
 
 Consequences worth noting:
 
@@ -815,6 +832,9 @@ Consequences worth noting:
   what lets one campaign serve many shapes.
 - A `shape_population`'s pricing backend is in its key (D41), not its row: another
   backend addresses another entry rather than invalidating this one.
+- PTL invalidates what the device does, except the capacity: it moves the clock, not the
+  memory. `memory_readings` still refuse under another PTL state, because their key
+  carries the machine-spec digest; a parity run re-measures them.
 - `host_laws` time the host, so the host CPU invalidates them and the device does not;
   `step_measurement` and `step_linear_law` hold device time, so the host CPU does not invalidate
   them.

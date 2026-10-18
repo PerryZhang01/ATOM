@@ -208,9 +208,10 @@ def test_planned_points_measured_and_published_cover_every_step_and_name_a_dropp
         "steps": 15,
         "covered": 15,
         "share": 1.0,
-        "uncovered": [],
+        "extrapolated": 0,
+        "fallback": 0,
+        "declined": [],
         "missing": {},
-        "refused": [],
         "prefill_above_top_c": 0,
     }
     named = steps(*records)[0]
@@ -222,12 +223,15 @@ def test_planned_points_measured_and_published_cover_every_step_and_name_a_dropp
         if name == "decode":
             name, at = f"decode rung {at[0]}", at[1:]
         assert out["missing"] == {name: [at]}
-        # Named, each step whose price the unmeasured corner refuses.
-        assert out["uncovered"] == refusing(backend, named) != []
-        assert out["refused"] == [] and out["covered"] == 15 - len(out["uncovered"])
+        # Named, each step whose price the unmeasured corner refuses, to fall
+        # to the roofline below the grid.
+        declined = [d["step"] for d in out["declined"]]
+        assert declined == refusing(backend, named) != []
+        assert out["fallback"] == len(declined)
+        assert out["covered"] == 15 - len(declined)
 
 
-def test_a_step_outside_the_residuals_hull_is_refused_and_fails_coverage(
+def test_a_step_outside_the_residuals_hull_is_extrapolated_and_counted(
     tmp_path, monkeypatch
 ):
     records = [record(tmp_path, monkeypatch, *MIXED)]
@@ -240,17 +244,20 @@ def test_a_step_outside_the_residuals_hull_is_refused_and_fails_coverage(
 
     out = coverage(tmp_path, member, *records)
 
-    assert out["missing"] == {}
     # Every step but the final 8 + 20 token chunk and the decode steps.
-    refused = {r["step"].rsplit(" ", 1)[1]: r["reasons"] for r in out["refused"]}
-    assert sorted(refused, key=int) == ["0", "1", "2", "4"]
-    assert all(
-        reasons[0].startswith("the step at tokens=")
-        and "outside the residual's hull" in reasons[0]
-        for reasons in refused.values()
-    )
+    assert (out["missing"], out["declined"], out["extrapolated"]) == ({}, [], 4)
     assert out["covered"] == out["steps"] - 4
-    assert out["uncovered"] == [r["step"] for r in out["refused"]]
+
+
+def test_the_planned_grid_records_its_kv_pool_and_a_loaded_bundle_reads_it(
+    tmp_path, monkeypatch
+):
+    records = [record(tmp_path, monkeypatch, *MIXED)]
+    planned = plan(*records)
+
+    assert planned["decode"]["pool"] == {"block_size": 16, "blocks": 4096}
+    member = measured(planned, located(tmp_path, planned))
+    assert loaded(tmp_path, member).grid.pool == (16, 4096)
 
 
 def test_prefill_is_planned_by_whether_the_chunk_produces_output(tmp_path, monkeypatch):
@@ -482,7 +489,7 @@ def test_coverage_counts_apart_the_prefill_steps_cached_past_the_top_c_node(
     )
 
     assert out["prefill_above_top_c"] == 1
-    assert out["refused"] == [{"step": last, "reasons": [reason]}]
+    assert out["declined"] == [{"step": last, "reasons": [reason]}]
     assert out["covered"] == out["steps"] - 1
 
 

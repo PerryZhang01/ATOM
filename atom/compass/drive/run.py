@@ -19,8 +19,9 @@ is `step_grid_plan.coverage`, over the bundle `step_grid.load` loads under the
 config ATOM's arguments resolve. An input whose DP rank's engine file (a
 record's `steps/dp<r>.engine.json`, a population's `engine` member) states
 another `SHAPING` field than that config refuses first, naming each field and
-both values; a step the check does not cover refuses the run, naming the step.
-Another backend has no check, and refuses `--coverage`.
+both values. The check refuses no step: it counts those the grid extrapolates
+and those that fall to the step roofline below it, naming each with the grid's
+reasons. Another backend has no check, and refuses `--coverage`.
 
 Once the server stops, run.json gains, beside `serve`'s identity: `run_file`,
 the run file the server was handed; `step_roofline`, the run file's key,
@@ -96,27 +97,12 @@ def _parser() -> argparse.ArgumentParser:
 def check(inputs, run: dict, atom_args) -> dict:
     """The step grid's coverage of the steps `inputs` hold, over the bundle the
     run file `run` names, loaded under the config `atom_args` resolve; an
-    input that ran under other `SHAPING` fields, or a step the check does not
-    cover, refuses."""
+    input that ran under other `SHAPING` fields refuses."""
     store, config = ArtifactStore(run["store"]), _config(atom_args)
     here = step_grid.keyed(config) | {name: getattr(config, name) for name in BOUNDS}
     steps = [s for name in inputs for s in _steps(name, store, here)]
     backend, _ = step_grid.load(run[STEP_GRID], config, compass_run._machine(run))
-    report = coverage(backend, steps)
-    if report["uncovered"]:
-        details = [
-            f"unmeasured corners of {g}: {c}" for g, c in report["missing"].items()
-        ]
-        details += [
-            f"{r['step']}: {'; '.join(r['reasons'])}" for r in report["refused"]
-        ]
-        raise ValueError(
-            f"--coverage: {len(report['uncovered'])} of {report['steps']} steps "
-            "are not covered, so no server starts: "
-            + ", ".join(report["uncovered"])
-            + "".join(f"\n  {d}" for d in details)
-        )
-    return {"inputs": list(inputs), **report}
+    return {"inputs": list(inputs), **coverage(backend, steps)}
 
 
 def _steps(name: str, store, here: dict) -> list:

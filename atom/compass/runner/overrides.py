@@ -73,7 +73,9 @@ of which a single-process test can show:
   caller and a silence
   never does, but "reaches" means the fact of it and not the reason for it: a
   successor that wants its refusal diagnosable in the engine's own log has to
-  put it there itself, on the worker side, before it raises.
+  put it there itself, on the worker side, before it raises. `forward` does:
+  it writes what it raises to the file `compass_raised_file` names, which the
+  engine reads into its ``ended:`` reason when the `SystemExit` reaches it.
 
 The worker control commands are refused the third way: by a reply. A raise
 would end the engine for a command a client sent while serving, and a None
@@ -94,12 +96,13 @@ source and compare it with this table.
 from __future__ import annotations
 
 import collections
+import contextlib
 import json
 import logging
 import math
 import os
 import pickle
-from functools import partial
+from functools import partial, wraps
 from typing import Any
 
 import numpy as np
@@ -189,6 +192,24 @@ class RunnerRefusal(RuntimeError):
     """Raised where this runner has no answer and will not invent one."""
 
 
+def _says_why(forward):
+    """`forward`, writing what it raises to the file `compass_raised_file`
+    names, when set, before it raises: past the worker boundary the engine
+    gets a bare `SystemExit`, and reads the reason there."""
+
+    @wraps(forward)
+    def said(self, batch):
+        try:
+            return forward(self, batch)
+        except BaseException as e:
+            if path := getattr(self, "compass_raised_file", None):
+                with contextlib.suppress(OSError):  # raise `e`, not a failed write
+                    path.write_text(f"rank {self.rank} raised {e!r}")
+            raise
+
+    return said
+
+
 def install_device_readings(runner: Any, readings: DeviceReadings) -> None:
     """Give a runner the readings its KV budget will be computed from.
 
@@ -250,6 +271,13 @@ FORWARD_KINDS = ("decode", "prefill", "middle")
 COST_TABLE_VERSION = 1
 
 
+def forward_shape(batch: Any) -> tuple[str, tuple]:
+    """A forward's kind in `FORWARD_KINDS` and its law features ``(1, tokens, seqs)``."""
+    kind = "decode" if batch.total_seqs_num_prefill == 0 else "prefill"
+    kind = kind if batch.produces_output() else "middle"
+    return kind, (1, batch.total_tokens_num, batch.total_seqs_num)
+
+
 class HostDeviceRecurrence:
     """One runner's host and device timelines, composed into each forward's charge.
 
@@ -291,8 +319,7 @@ class HostDeviceRecurrence:
         without `refuse` that segment is 0. A segment in `skip` needs none, a
         middle chunk runs no `W_post`, and only an output forward under `mtp`
         runs `MTP_SEGMENT`."""
-        kind = "decode" if batch.total_seqs_num_prefill == 0 else "prefill"
-        kind = kind if batch.produces_output() else "middle"
+        kind, x = forward_shape(batch)
         law = self.laws.get(kind, {})
         ran = HOST_SEGMENTS[: 3 if kind == "middle" else 4]
         ran += (MTP_SEGMENT,) if self.mtp and kind != "middle" else ()
@@ -302,25 +329,30 @@ class HostDeviceRecurrence:
 
             named = ", ".join(f"{kind}.{s}" for s in missing)
             raise CostRefused(kind, [Refusal("host", f"no law for {named}")])
-        x = (1, batch.total_tokens_num, batch.total_seqs_num)
-        self.segments = {
-            s: float(np.dot(law.get(s, (0, 0, 0)), x)) * (s not in self.skip)
-            for s in (*HOST_SEGMENTS, MTP_SEGMENT)
-        }
-        e, pre, launch, post, inputs = self.segments.values()
         now = self.now()
         called, meta = getattr(batch, "compass_pp_host", (now, -math.inf))
-        host = max(called + e, self.ends[0]) + pre
+        prepared, self.segments = self.prepare_end(called, kind, x)
+        launch, post = self.segments["W_launch"], self.segments["W_post"]
+        host = max(prepared, meta)
         output = batch.produces_output()
-        if self.mtp and output:  # output_end stays -inf on a PP stage
-            host = max(host, self.output_end)
-        host = max(host + inputs, meta)
         launch_end = host + launch
         release = getattr(batch, "compass_pp_release", -math.inf)
         target_end = max(self.ends[-1], host, release) + device_s
         end = max(target_end + draft_s, launch_end)
         self._held = now, launch_end, target_end, draft_s, end, output, post
         return end
+
+    def prepare_end(self, called: float, kind: str, x: tuple) -> tuple[float, dict]:
+        """A forward's prepare end, with `MTP_SEGMENT`, and each segment's seconds."""
+        law = self.laws.get(kind, {})
+        seg = {
+            s: float(np.dot(law.get(s, (0, 0, 0)), x)) * (s not in self.skip)
+            for s in (*HOST_SEGMENTS, MTP_SEGMENT)
+        }
+        host = max(called + seg["E"], self.ends[0]) + seg["W_pre"]
+        if self.mtp and kind != "middle":  # output_end stays -inf on a PP stage
+            host = max(host, self.output_end)
+        return host + seg[MTP_SEGMENT], seg
 
     def release(self, end: float) -> float:
         """The exit less `now` of the forward `device_end` priced, its device
@@ -612,8 +644,9 @@ class PricedSteps:
     def priced_steps(self) -> dict[str, Any]:
         """This rank's own steps, folded into one `ProvenanceMix` as each was
         priced, before the max over the DP group, with the steps and seconds
-        of each of `GROUPS` apart. A dict even before the first step, since a
-        None reply parks the engine that asks.
+        of each of `GROUPS` apart, and the steps a source extrapolated and
+        those a fallback priced after a source declined. A dict even before
+        the first step, since a None reply parks the engine that asks.
         """
         from atom.compass.backends.cost import GROUPS, ProvenanceMix, group
 
@@ -623,6 +656,9 @@ class PricedSteps:
         return {
             "steps": mix.steps,
             "seconds": mix.seconds,
+            "extrapolated_steps": mix.extrapolated_steps,
+            # A priced step that carries refusals fell through to a later source.
+            "fallback_steps": mix.refused_steps,
             **{f"{g}_steps": steps.get(g, 0) for g in GROUPS},
             **{f"{g}_seconds": seconds.get(g, 0.0) for g in GROUPS},
             "treatments": dict(mix.treatments),
@@ -655,28 +691,42 @@ class PipelineFrames:
         when its device work ends, in seconds from the call; the `W_post` the
         stage loop charges after its send, left out of `predicted_s`; and its parts as
         ``(carrier, bytes)`` in the order the next receives them, the size and
-        the pickled metadata on gloo, then each tensor on RCCL."""
+        the pickled metadata on gloo, then each tensor on RCCL, as ATOM splits
+        `_pp_output`'s `_PP_PROXY_KEYS`; a key it does not size is refused."""
         pp = int(_config_field(self, "pipeline_parallel_size") or 1)
         if pp == 1 or self.config.parallel_config.pipeline_parallel_rank == pp - 1:
             return None
-        from aiter.dist.parallel_state import TensorMetadata
+        from atom.distributed import pp_comm
 
-        self._setup_pp_shared_indexer()
-        n, width = batch.total_tokens_num, self.hf_text_config.hidden_size
-        sizes = dict.fromkeys(
-            ("hidden_states", "residual"), ((n, width), self.config.torch_dtype)
-        )
-        if self._pp_send_needs_sparse:
-            sizes["sparse_kv_indices"] = ((n * self._pp_index_topk,), torch.int32)
-        meta = [
-            (k, TensorMetadata("cuda", d, torch.Size(s))) for k, (s, d) in sizes.items()
-        ]
-        tensors = [("rccl", math.prod(s) * d.itemsize) for s, d in sizes.values()]
+        out = self._pp_output(batch.total_tokens_num)
+        if unsized := set(pp_comm._PP_PROXY_KEYS) - out.keys():
+            raise RuntimeError(f"Compass cannot size ATOM's PP keys {sorted(unsized)}")
+        sent = {k: out[k] for k in pp_comm._PP_PROXY_KEYS if out[k] is not None}
+        # A "meta" device pickles to the length of ATOM's "cuda".
+        meta, device_tensors = pp_comm._split_tensor_dict(sent)
+        tensors = [("rccl", t.nbytes) for t in device_tensors]
         host = getattr(self, "compass_host", None)
         post = 0.0
         if isinstance(host, HostDeviceRecurrence) and self.rank == 0:
             seconds, post = host.ends[-1] - host.now(), host.segments["W_post"]
         return seconds, post, [("gloo", 8), ("gloo", len(pickle.dumps(meta))), *tensors]
+
+    def _pp_output(self, n: int) -> dict:
+        """Each key a non-last stage's output can carry to ATOM's PP send, a
+        meta tensor for `n` tokens, or None where this stage does not carry it."""
+        self._setup_pp_shared_indexer()
+        meta, on = partial(torch.empty, device="meta"), self._pp_send_needs_sparse
+        x = meta(n, self.hf_text_config.hidden_size, dtype=self.config.torch_dtype)
+        sparse = meta(n * self._pp_index_topk, dtype=torch.int32) if on else None
+        return {"hidden_states": x, "residual": x, "sparse_kv_indices": sparse}
+
+    def pp_recv_posted(self, called: float, kind: str, x: tuple) -> tuple:
+        """Where this stage posts its ``pp_data`` receive, its forward's prepare
+        end, and its device end; the call and -inf with no host recurrence."""
+        host = getattr(self, "compass_host", None)
+        if not isinstance(host, HostDeviceRecurrence):
+            return called, -math.inf
+        return host.prepare_end(called, kind, x)[0], host.ends[-1]
 
     def send_pp_frame(self, kind: str, frame: dict) -> bool:
         """Post one stage-loop frame to the next stage (``pp_data``) or the one
@@ -996,6 +1046,7 @@ class NonAllocatingRunner(
         )
         return 0.0, [], 0
 
+    @_says_why
     @torch.inference_mode()
     def forward(self, batch: Any) -> Any:
         """Report what a step produced, without running one.
@@ -1055,6 +1106,8 @@ class NonAllocatingRunner(
         The reply's `predicted_s` is the step's duration: this rank's batch
         priced by the installed cost backend, then its DP group target, on TP
         rank 0; the engine reads no other rank's reply, and it reports 0 s.
+        Its `out_s` and `group_out` are `_group_step_seconds`'s `_out_s` and
+        `_group_out`, which `clock.charge` advances after the return.
         A runner with no backend refuses the step rather than report one that
         took no time. ATOM's `dummy_execution` answers with this reply too, so
         an idle DP rank's dummy batch is priced and joins the group's targets.
@@ -1125,6 +1178,8 @@ class NonAllocatingRunner(
             predicted_s=seconds,
             group_targets=getattr(self, "_group_targets", None),
         )
+        out.out_s = getattr(self, "_out_s", None)
+        out.group_out = getattr(self, "_group_out", None)
         out.pp_send = self._pp_send(batch, seconds)
         if out.pp_send is not None:
             out.predicted_s -= out.pp_send[1]
@@ -1147,7 +1202,10 @@ def _group_step_seconds(
     cross-rank collectives, and every rank leaves at its own charge. With no
     `compass_host`, a rank with output, not the DP dummy, leaves at the group's
     max, any other at its own seconds. `_group_targets` holds all,
-    by rank, or None with one rank.
+    by rank, or None with one rank. `_out_s` is the host's ``out_s`` for this
+    step, the seconds from its return to the engine's next input pull, or
+    None; `_group_out` holds each rank's target plus its ``out_s``, for the
+    ranks with one, or None.
 
     A pipeline stage runs only its own layers, so it is refused unless its
     backend states the `stage_share` it prices; any other backend prices the
@@ -1224,16 +1282,22 @@ def _group_step_seconds(
         charge_s = charge(batch, device_s, refuse=False)
     if refused:
         vars(runner).setdefault("_refused_commands", []).append(refused)
-    group_s, targets = charge_s, None
+    group_s, targets, pulls = charge_s, None, None
+    out_s = getattr(host, "out_s", None)
     if group is not None:
         waits = host is None and batch.produces_output() and not batch.is_dummy_run
-        mine = torch.tensor([charge_s, waits], dtype=torch.float64)
+        out = math.nan if out_s is None else out_s
+        mine = torch.tensor([charge_s, waits, out], dtype=torch.float64)
         rows = [torch.empty_like(mine) for _ in range(group.size())]
         torch.distributed.all_gather(rows, mine, group=group)
         top = max(r[0].item() for r in rows)
-        targets = tuple(top if w else s for s, w in (r.tolist() for r in rows))
+        rows = [r.tolist() for r in rows]
+        targets = tuple(top if w else s for s, w, _ in rows)
+        ends = zip(targets, (o for *_, o in rows))
+        pulls = tuple(t + o for t, o in ends if not math.isnan(o)) or None
         group_s = targets[group.rank()]
     vars(runner)["_group_targets"] = targets
+    vars(runner)["_out_s"], vars(runner)["_group_out"] = out_s, pulls
     record = getattr(runner, "_parity_record", None)
     if record is None:
         return group_s

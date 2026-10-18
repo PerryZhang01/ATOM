@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from test_drive_gpu import GPU45, SHOWHW
 
 ROOT = Path(__file__).resolve().parents[2]
 STUB = """#!/bin/bash
@@ -31,18 +32,22 @@ case "$1 $2" in
     echo '{"steps": {"0": {"compared": 3, "identical": 3}}, "first_divergence": {"0": null}}'
     exit 0 ;;
 "-c from atom.compass.cli import main; main()")
-    echo "$* GPU_MAX_HW_QUEUES=${GPU_MAX_HW_QUEUES-} ATOM_NUMA_BIND=${ATOM_NUMA_BIND-}" >> "$STUB_LOG"
+    echo "${*//$'\\n'/ } GPU_MAX_HW_QUEUES=${GPU_MAX_HW_QUEUES-} ATOM_NUMA_BIND=${ATOM_NUMA_BIND-}" >> "$STUB_LOG"
+    echo "${ATOM_KV_OFFLOAD-}" > "$STUB_LOG.offload"
     exit "${MEASURE_RC:-0}" ;;
 esac
 exec "$REAL_PYTHON" "$@"
 """
 
 
-def _parity(tmp_path, **env):
+def _parity(tmp_path, showhw=SHOWHW, **env):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     (bindir / "python3").write_text(STUB)
     (bindir / "python3").chmod(0o755)
+    (tmp_path / "showhw").write_text(showhw)
+    (bindir / "rocm-smi").write_text(f"#!/bin/sh\ncat {tmp_path}/showhw\n")
+    (bindir / "rocm-smi").chmod(0o755)
     model = tmp_path / "model"
     model.mkdir()
     (model / "config.json").write_text('{"architectures": ["DeepseekV4ForCausalLM"]}')
@@ -166,6 +171,12 @@ def test_the_measurement_takes_the_real_runs_gpus(tmp_path):
     assert len(servers) == 3
 
 
+def test_the_measurement_names_the_real_runs_hip_devices_as_rocm_smi_gpus(tmp_path):
+    r, servers, _ = _parity(tmp_path, GPU45, STORE=None, HIP_VISIBLE_DEVICES="0,1")
+    assert r.returncode == 0, r.stderr
+    assert " measure memory --gpu 3,0 " in servers[0]
+
+
 def test_a_failed_measurement_starts_no_server(tmp_path):
     r, servers, run = _parity(tmp_path, STORE=None, MEASURE_RC="3")
     assert r.returncode != 0
@@ -185,3 +196,20 @@ def test_lmcache_writes_from_each_dp_rank_under_dp_attention_else_each_tp_rank(
     r, _, run = _parity(tmp_path, CONFIG=config, LMCACHE="1")
     assert r.returncode == 0, r.stderr
     assert json.loads(run.read_text())["lmcache"]["writers"] == writers
+
+
+def test_under_lmcache_the_measurement_offloads_to_a_server_of_its_own(
+    tmp_path, monkeypatch
+):
+    lm = tmp_path / "lm"
+    lm.mkdir()
+    (lm / "lmcache").write_text("#!/bin/bash\nexec sleep 60\n")
+    (lm / "lmcache").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{lm}:{os.environ['PATH']}")
+    r, servers, run = _parity(tmp_path, LMCACHE="1", STORE=None)
+    assert r.returncode == 0, r.stderr
+    measure = servers[0]
+    beside = measure.split(" --beside ", 1)[1].split(" --store ", 1)[0].split()
+    server = json.loads(run.read_text())["lmcache"]["server"]
+    assert beside == ["lmcache", "server", *server]
+    assert (tmp_path / "servers.log.offload").read_text() == "lmcache_mp\n"

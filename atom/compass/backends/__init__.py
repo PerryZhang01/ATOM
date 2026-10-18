@@ -34,8 +34,10 @@ The pieces, and the rule each exists to make structural rather than customary:
   with the extrapolation named in their source, and a term is validated only
   inside the hull of the law's held-out steps.
 - `StepGrid` / `StepGridBackend` -- step-level: a grid of measured whole
-  forwards, read at a batch's equivalent homogeneous shape, answering only
-  inside a cell whose every corner was measured and refusing elsewhere.
+  forwards, read at a batch's equivalent homogeneous shape, answering inside a
+  cell whose every corner was measured, extrapolating a decode cell past the
+  KV pool and a residual past its hull, with the extrapolation named in the
+  source, and refusing elsewhere.
 - `ProvenanceMix` -- the run-level mixture by method and validated, and
   refusals counted by number, by fraction of steps and by fraction of
   predicted seconds. A run with nothing in

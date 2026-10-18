@@ -28,6 +28,11 @@ S2.7 adds `measure memory`, and grading decides whether a run is gradeable.
 [#952](https://github.com/jgong5/ATOM/issues/952):** tasks and gates carry its names, the
 step linear law, the step grid (`17`), the analytical laws, and the CPU and GPU gates.
 
+**Revised 2026-10-17 by the owner's ruling on
+[#1392](https://github.com/jgong5/ATOM/issues/1392):** Wave 5 is #627's stage 3c, the
+analytical projection at step and op level, its tasks the issues #1392 tracks; the
+projection's first check is the analytical bound on every measured step (D95).
+
 **Scope.** How the work is organised, allocated and gated; what happens first; and what
 each stage must produce. It is **detailed through M2**. Work after v1 is listed, not
 planned — see *After v1*. Phase 0b's answers can still reshape Waves 4–6, and the plan
@@ -66,8 +71,9 @@ part of v1, added after that
 - **M2 runs in two steps, expert parallelism off and then EP8.** First the nightly cells
   as written: TP8, DP-attention where the cell sets it, expert parallelism off (#501).
   There is no MORI all-to-all; the DP group's exchange is the variable-size gather sized by
-  the peers' token counts. Then, before v1 is done, DP-attention + EP8 within a node, with
-  a MORI routing model, graded the same way; its real side is this project's own run with
+  the peers' token counts. Then, before v1 is done, DP-attention + EP8 within a node,
+  with uniform routing declared and MORI absorbed by the step linear law (W4.10), graded
+  the same way; its real side is this project's own run with
   `--enable-expert-parallel`, since no nightly cell passes it. A P/D deployment is one
   prefill node and one decode node. EP beyond one node is out of scope, not projected.
 - **M1 is #627's stages 1 and 1b** (`README.md` owns its text): cc-traces end to end on a
@@ -85,11 +91,11 @@ part of v1, added after that
 - **The analytical laws move onto the critical path.** `10` D68 authored analytical laws during the
   empirical campaign as a side wave; the MI455 projection makes them an M2 deliverable.
 - **A projection is sound, not graded.** MI455 has no ground truth in M2, so the
-  projection is held to these checks instead of an error bar: the roofline is a lower
-  bound on every measured MI355X step; every MI455 input is sourced or marked assumed;
-  and the same projection method, run MI308X → MI355X on Qwen3.8-27B (DeepSeek-V4-Pro's
-  FP4 experts do not run on gfx942), is scored against real MI355X runs to give the
-  method an error estimate.
+  projection is held to these checks instead of an error bar (`08` D50.2, revised by
+  #1392): on every measured step, at both granularities, analytical is at most measured;
+  every MI455 input is sourced or marked assumed; and the same projection method, run
+  MI308X → MI355X on Qwen3.8-27B (DeepSeek-V4-Pro's FP4 experts do not run on gfx942), is
+  reported against real MI355X runs to give the method an error estimate.
 - **The other milestones are retired, not renumbered.** Each maps as follows, so an older
   citation still resolves:
 
@@ -537,7 +543,7 @@ it.
 | ID | Task | Module | Effort | Depends on |
 |---|---|---|---|---|
 | **W4.1** | The toolchain's ops half (`13` D80): `trace ops` (Phase 1a), `measure ops` with collectives (`07` D40), `fit ops`, and the ops-half settings of `run`, on S2.7's bench and entry | `capture/`, `bench/`, `backends/` | 400–700 | W2.4, W2.5, S2.7 |
-| **W4.2** | DeepSeek-V4-Pro capture: a fake or meta implementation for every operator P0b.1 names — shape and dtype rules, no math — plus #501's launch interceptor for Triton, FlyDSL and MORI and its two host-query rules, with no ATOM change | `capture/`, `ir/` | 600–1000 | **P0b.1** |
+| **W4.2** | DeepSeek-V4-Pro capture: a fake or meta implementation for every operator P0b.1 names — shape and dtype rules, no math — plus #501's launch interceptor for Triton, FlyDSL and MORI and its two host-query rules, with no ATOM change; carried by S3c.9 ([#1401](https://github.com/jgong5/ATOM/issues/1401)) | `capture/`, `ir/` | 600–1000 | **P0b.1** |
 | **W4.3** | The real side: the nightly P/D configurations of `recipes/mesh/DeepSeek-V4.md` (TP; DP-attention + TBO; TP + MTP3; DP-attention + MTP1) on the MI355X pair, driven by cc-traces, with per-request records and a real-vs-real repeat per cell for the noise floor (`08` D45) | `scripts/compass/` | 200–350 | **P0b.3**, GPU queue |
 | **W4.4** | Calibration Phases 1b / 1c on MI355X for DeepSeek-V4-Pro's operator families: FP4 MoE GEMMs, attention with its compressors, the CSA indexer, mHC, the DP group's variable-size gather | `backends/`, calibration | 400–700 | W4.1, W4.2, GPU queue |
 | **W4.5** | Fitting and law selection for those families (`09`) | `backends/` | 300–500 | W4.4 |
@@ -545,24 +551,45 @@ it.
 | **W4.7** | MTP: per-position acceptance measured from W4.3's real runs, never declared (`08`), feeding the spec-decode pricing of `14` | `runner/`, `backends/` | 200–350 | W4.3 |
 | **W4.8** | Mooncake transfer time from the spec, checked against the transfer timings W4.3 records | `kv/` | 150–250 | W2.3, W4.3 |
 | **W4.9** | DeepSeek-V4-Pro 1P+1D at the nightly topology: W3.5's slice with one container per node, TP8 and DP-attention on each side as the cell sets it | wiring | 150–300 | W3.1, W3.5, W4.2 |
-| **W4.10** | M2's EP8 step: `exclusive` occupancy honoured in the IR; group membership per P0.6; MORI dispatch/combine carried as the group's collective in W4.6's step, in place of the gather, and priced from W4.12 by a routing model (#501) | `ir/`, `backends/` | 350–600 | **P0.6**, **P0b.2**, W4.6, W4.12 |
+| **W4.10** | M2's EP8 step at step granularity: uniform routing declared (owner ruling on [#627](https://github.com/jgong5/ATOM/issues/627#issuecomment-6194442788), 2026-10-15); the step linear law fitted under the EP8 engine config on #1106's captures absorbs MORI dispatch and combine through its `moe_rows` term and intercepts, `T_moe` being the rows the group dispatches (`15` D90), with the measured received-row imbalance reported beside its accuracy (#1108). Group membership is P0.6's answer; under TBO MORI dispatch and combine overlap the other micro-batch's compute, on the comm stream or, under `--all2all-backend low-latency` within one node, as split send and receive (`04` D19, [#531](https://github.com/jgong5/ATOM/issues/531)); MORI's analytical price is stage 3c's ([#1392](https://github.com/jgong5/ATOM/issues/1392)) | `backends/` | 15–50 | W4.6, #1106 |
 | **W4.11** | The EP8 real side: W4.3's DP-attention cells re-run with `--enable-expert-parallel` on the MI355X pair, with the same records and repeat, since no nightly cell passes it | `scripts/compass/` | 50–100 | W4.3, GPU queue |
-| **W4.12** | MORI dispatch/combine within a node on MI355X, measured and fitted (`09`) for W4.10's routing model | `backends/`, calibration | 150–300 | W4.1, W4.2, GPU queue |
-| **W4.13** | The step grid evaluated on DeepSeek-V4-Pro, not graded (`17` D105): a workload-planned grid and fit on the nightly TP cell (TP8, no DP-attention, no MTP, expert parallelism off) on MI355X, prefill node and decode node, compared with W4.3's per-step tables and with the op-level backend where available, reported per `08` D47. Competes with W4.4 and W4.12 for MI355X | calibration | 200–350 | S2.2–S2.6, W4.3, GPU queue |
+| ~~**W4.12**~~ | ~~MORI dispatch/combine within a node on MI355X, measured and fitted (`09`) for W4.10's routing model~~ | ~~`backends/`, calibration~~ | ~~150–300~~ | **deferred**: nothing consumes it at step granularity, where W4.10's law absorbs MORI; re-planned with the op-level backend at EP8. The analytical MORI price is stage 3c's ([#1392](https://github.com/jgong5/ATOM/issues/1392)) |
+| **W4.13** | The step grid evaluated on DeepSeek-V4-Pro, not graded (`17` D105): a workload-planned grid and fit on the nightly TP cell (TP8, no DP-attention, no MTP, expert parallelism off) on MI355X, prefill node and decode node, compared with W4.3's per-step tables and with the op-level backend where available, reported per `08` D47. Competes with W4.4 for MI355X | calibration | 200–350 | S2.2–S2.6, W4.3, GPU queue |
 
 ### Wave 5 — MI455 by roofline
 
+#627's stage 3c, tracked on [#1392](https://github.com/jgong5/ATOM/issues/1392) and ruled
+there on 2026-10-17: the analytical projection (`10` D64) at step and op level, for
+DeepSeek-V4-Pro on MI455, built so that a new model needs only new extractors, and checked
+by `08` D50.2. Every issue carries `e2e-stage3c`. The step-level rows do not wait on
+capture: step level is a second projection, independent of capture, as hedge and
+cross-check.
+
 | ID | Task | Module | Effort | Depends on |
 |---|---|---|---|---|
-| **W5.1** | The MI455 machine spec in the `05` schema; every field sourced or marked assumed | `spec/` | 100–200 | **P0b.4** |
-| **W5.2** | Analytical laws for DeepSeek-V4-Pro's operator families, per precision (`10`) | `backends/` | 400–600 | W4.2 |
-| **W5.3** | The soundness check (`08` D50.2): the roofline at the spec's peaks, derates at 1 and no host floor, composed by the step's `Par` joins and TBO's overlap, is a lower bound on every measured MI355X step; the measured-to-roofline efficiency reported per operator family from W4.4's tables | `backends/`, `validate/` | 150–250 | W4.4, W4.6, W5.2 |
-| **W5.4** | The projection: MI355X efficiencies from W5.3 carried onto the MI455 spec, with every assumption written into the artifact | `backends/`, `artifacts/` | 150–300 | W5.1, W5.3 |
-| **W5.5** | The method's error: Qwen3.8-27B's MI308X tables projected to MI355X by W5.4's method and scored against real MI355X runs | `validate/` | 150–250 | W5.4, GPU queue |
+| **S3c.1** | Simplify first: the IR package shrunk to what capture needs ([#1393](https://github.com/jgong5/ATOM/issues/1393)), the spec package to its production callers ([#1394](https://github.com/jgong5/ATOM/issues/1394)) | `ir/`, `spec/` | net negative | — |
+| **S3c.2** | The spec fields the attainable-peak roofline reads: the bandwidth curve, the kernel floor, a derate per compute format (`05` D25; [#1407](https://github.com/jgong5/ATOM/issues/1407)) | `spec/` | 40–80 | S3c.1 |
+| **S3c.3** | The probes on MI308X and MI355X: per-format GEMM rate, the bandwidth curve, the kernel floor, link latency and bandwidth (`05` D26; [#1396](https://github.com/jgong5/ATOM/issues/1396)) | `scripts/compass/` | 200–300 | S3c.2, GPU queue |
+| **S3c.4** | Work primitives and the one price, shared by both granularities: GEMM, grouped GEMM, attention, elementwise, the collectives' lower bounds, MoE in expectation (`10` D64, D66; [#1397](https://github.com/jgong5/ATOM/issues/1397)) | `backends/` | 200–300 | S3c.2 |
+| **S3c.5** | The MI455 machine spec in the `05` schema: datasheet peaks times MI355X's probed ratios, every field sourced or marked assumed, with its assumed `memory_readings` entry ([#1291](https://github.com/jgong5/ATOM/issues/1291)) | `spec/`, `scripts/compass/` | 120–220 | **P0b.4**, S3c.3, #1226 |
+| **S3c.6** | Step level, dense models: module extractors over the meta build and a step roofline summing one roofline per module ([#1398](https://github.com/jgong5/ATOM/issues/1398)) | `run/`, `backends/` | 250–350 | S3c.4 |
+| **S3c.7** | Step level, DeepSeek-V4-Pro's modules: attention with its compressors and CSA indexer, mHC, the FP4 MoE with its shared expert, the DP gather and reduce-scatter over `T_moe`, MORI at EP8 ([#1399](https://github.com/jgong5/ATOM/issues/1399)) | `run/` | 250–350 | S3c.6, #1387, #530 |
+| **S3c.8** | Op level, capture into the IR on Qwen3.8-27B ([#1400](https://github.com/jgong5/ATOM/issues/1400)) | `capture/` | 400–500 | S3c.1 |
+| **S3c.9** | Op level, DeepSeek-V4-Pro capture at the nightly shapes, which is W4.2 ([#1401](https://github.com/jgong5/ATOM/issues/1401)) | `capture/` | 500–600 | S3c.8, #530 |
+| **S3c.10** | The extractor registry for aten and dense opaque op kinds ([#1402](https://github.com/jgong5/ATOM/issues/1402)) | `backends/` | 200–300 | S3c.4, S3c.8 |
+| **S3c.11** | Extractors for DeepSeek-V4-Pro's opaque op kinds ([#1403](https://github.com/jgong5/ATOM/issues/1403)) | `backends/` | 250–300 | S3c.10, S3c.9 |
+| **S3c.12** | `OpGraphBackend` prices an IR graph analytically, composed by the IR's joins and TBO's overlap ([#1404](https://github.com/jgong5/ATOM/issues/1404)) | `backends/`, `run/` | 250–350 | S3c.10, #531 |
+| **S3c.13** | The bound gate and the gap reports at both granularities (`08` D50.2 item 1; [#1405](https://github.com/jgong5/ATOM/issues/1405)) | `validate/` | 150–250 | S3c.6, S3c.12 |
+| **S3c.14** | The projection: MI455's artifact for the four P/D cells, EP off and EP8, at both granularities, every assumed input listed; and the method's error, Qwen3.8-27B from MI308X to MI355X (`08` D50.2 items 2 and 3; [#1406](https://github.com/jgong5/ATOM/issues/1406)) | `validate/`, `artifacts/` | 150–250 | S3c.13, S3c.5, S3c.7, S3c.11 |
+| **S3c.15** | The projection re-priced at ±20% of each ratio carried from MI355X, capped at the datasheet, with the ranking each gives (`10` D69; [#1466](https://github.com/jgong5/ATOM/issues/1466)) | `validate/` | 40–80 | S3c.14 |
 
-If MI455 hardware arrives during M2, W4.3–W4.5 repeat on it (W4.11 and W4.12 too, for the
-EP8 step), and W5.4's projection becomes
-a calibration.
+**W5.1–W5.5 are retired by the ruling**, so an older citation resolves here: W5.1 is
+S3c.5; W5.2's laws are S3c.4 with the extractors of S3c.6, S3c.7, S3c.10 and S3c.11;
+W5.3's soundness check is S3c.13, at probed peaks rather than the spec's at derate 1; W5.4
+and W5.5 are S3c.14, whose projection carries no implementation efficiency (`10` D68).
+
+If MI455 hardware arrives during M2, W4.3–W4.5 repeat on it (W4.11 too, for the
+EP8 step), and S3c.3's probes run on it, so its peaks are probed rather than carried.
 
 ### Wave 6 — M2 acceptance
 
@@ -592,8 +619,8 @@ Listed so it is not mistaken for an omission; each is re-planned when v1 lands.
 ## The GPU booking queue
 
 **M2's hardware, by D95.** An RDMA-connected MI355X pair for the paired runs of W4.3 and W4.11, and a
-third MI355X node for W4.4 and W4.12, so that calibration does not queue behind the pairs; an MI308X
-node for development, the CPU-and-GPU gates, W5.5's MI308X side, stage 2's real side
+third MI355X node for W4.4, so that calibration does not queue behind the pairs; an MI308X
+node for development, the CPU-and-GPU gates, S3c.3's MI308X probes, stage 2's real side
 (S2.1), and the step grid's measurement (S2.2) while it is idle from stage 2's critical
 path. Until dedicated nodes
 exist, the shared pools below serve, with the pre-flight gate as written.
@@ -671,7 +698,7 @@ decision that belongs to the project owner, not to the agent that ran it.
 |---|---|
 | ~~**T10** fails~~ | ~~adapter cost rises to ~2,000 vendored lines — vendor, fork, or restrict the harness~~ — **did not fire.** P0.3, 2026-09-20: the subclass works and nothing is vendored. The escalation this row prepared for never arose |
 | **T5** fails | the op-level backend has no IR at TP>1 — options and their effect on M2 onward |
-| ~~**P0b.1** finds an operator that needs more than a shape rule~~ | **ruled by the owner on #501**: two rows needed more, MORI at EP8 and the DP gather with EP off, both sized by the peers' token counts. W4.2 takes the launch interceptor; M2 runs expert parallelism off first, then EP8 with a MORI routing model (W4.10) |
+| ~~**P0b.1** finds an operator that needs more than a shape rule~~ | **ruled by the owner on #501**: two rows needed more, MORI at EP8 and the DP gather with EP off, both sized by the peers' token counts. W4.2 takes the launch interceptor; M2 runs expert parallelism off first, then EP8 with a MORI routing model (W4.10) — superseded 2026-10-15 ([#627](https://github.com/jgong5/ATOM/issues/627#issuecomment-6194442788)): uniform routing declared |
 | ~~**P0b.3** finds the nightly runs unusable~~ | **ruled by the owner on #503**: every paired cell is re-run on the dedicated pair, and W4.3 is booked for it |
 | **P0b.4** leaves an MI455 input unsourced | the projection ships with that input marked assumed, or waits — the owner's call |
 | ~~**T21** fails~~ | ~~calibration does not transfer across width~~ — **off the critical path by D95**: M2 is graded at the nightly widths |
