@@ -151,6 +151,7 @@ def record(tmp_path, run, lines, name="a", trace="trace-300", session=300):
         },
         "device": [DEVICE],
         "stack": STACK,
+        "ptl": "disabled",
         "profiled": False,
     }
     (directory / "run.json").write_text(json.dumps(run_json))
