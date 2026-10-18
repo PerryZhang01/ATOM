@@ -531,12 +531,7 @@ doc 04 D21's **stated node** plus a dedicated standalone benchmark calling the s
 point.
 
 **(c) MoE all-to-all (EP)** — MORI, called inside `moe_forward`, invisible at any degree.
-Its block count is two numbers:
-`MoriPrepareAndFinalize._get_dispatch_config` launches `min(128, get_cu_num())` blocks at
-16 warps in prefill and `min(64, get_cu_num())` at 4 warps in decode, capped at the CU
-count because dispatch and combine spin on a grid-wide barrier that needs all their blocks
-co-resident (on an 80-CU MI308X, 128 blocks deadlock). The kernel does not hold the whole
-device, and under TBO it overlaps the other micro-batch's compute (doc 04 D19).
+Its block counts, ATOM's two TBO paths and the overlap are doc 04 D19's.
 
 **(d) p2p.** PP is `isend`/`recv` on NCCL (`atom/distributed/pp_comm.py::async_send_intermediate_tensors`, `commit_pp_send_work`),
 priceable like (a). **KV transfer is not priced at all** — doc 01 D6 simulates it as

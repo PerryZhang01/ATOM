@@ -548,15 +548,26 @@ is wrong once both branches are compute-heavy:
 (`atom/model_ops/fused_moe/mori_prepare_finalize.py`) launches `min(128, get_cu_num())`
 blocks at 16 warps in prefill and `min(64, get_cu_num())` at 4 warps in decode. The cap at
 the CU count exists because both kernels spin on a grid-wide barrier that needs all of
-their own blocks co-resident (on an 80-CU MI308X, 128 blocks deadlock). So a dispatch
-holds every CU only in prefill on a device of at most 128 CUs: on MI355X (256 CUs) a
-prefill dispatch holds half, and a decode dispatch holds 64 CUs on either device. Under
-TBO they run on the comm stream (`_prepare_async_comm_stream`,
-`_finalize_async_comm_stream`) beside the other micro-batch's compute, and a TBO step is
-priced by laying both micro-batches' operators on the compute and comm streams in ATOM's
-order and taking the finish time, the DP group's `max` kept (owner's
+their own blocks co-resident (on an 80-CU MI308X, 128 blocks deadlock). On MI355X (256
+CUs) a prefill dispatch launches 128 blocks, half its CUs, and a decode dispatch launches
+64 blocks, fewer than either device's CUs. Without TBO `prepare` and `finalize` run them
+in order on the one stream, a `Seq`. Under TBO ATOM takes one of two paths, and both
+overlap the other micro-batch's compute:
+
+- **Comm stream** (MORI's default `high-throughput` mode, or `low-latency` across nodes):
+  `_prepare_async_comm_stream` and `_finalize_async_comm_stream` yield to the other
+  micro-batch, then run `dispatch` and `combine` on the comm stream at
+  `_get_dispatch_config`'s block count.
+- **Split send and receive** (`--all2all-backend low-latency` within one node,
+  `_use_split_send_recv`): `_prepare_async_ll` and `_finalize_async_ll` issue
+  `dispatch_send` or `combine_send` on the compute stream and yield; the other
+  micro-batch's thread issues the matching `dispatch_recv` or `combine_recv` at its next
+  MoE prepare or finalize, or as it exits. No comm stream and no `_get_dispatch_config`.
+
+Either way a TBO step is priced by laying both micro-batches' operators on the streams
+ATOM issues them to, in ATOM's order, and taking the finish time, the DP group's `max`
+kept (owner's
 [ruling on #531](https://github.com/jgong5/ATOM/issues/531#issuecomment-6244543796)).
-Without TBO they run in order on the one stream, a `Seq`.
 
 **The tracer has to earn a `Par`.** `torch.cuda.stream()` and `wait_stream()` are not
 dispatcher events — a dispatch trace records a *serial* operator list for work the device
