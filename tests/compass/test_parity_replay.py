@@ -27,7 +27,11 @@ from atom.compass import run as compass_run
 from atom.compass.clock import LpId
 from atom.compass.parity import ARRIVALS, ENV, compare, traffic
 from atom.compass.parity.replay import ReplayBackend
-from atom.compass.runner.overrides import RunnerRefusal, install_cost_backend
+from atom.compass.runner.overrides import (
+    RunnerRefusal,
+    _says_why,
+    install_cost_backend,
+)
 from atom.model_engine.scheduler import Scheduler
 from atom.model_engine.sequence import Sequence
 from atom.sampling_params import SamplingParams
@@ -186,6 +190,36 @@ def test_a_worker_that_replays_past_its_record_names_why_in_the_engine_hand_in(
     assert json.loads(hand_in.read_text())["refusals"] == [
         f"ended:engine raised SystemExit(); rank 0 raised {why!r}"
     ]
+
+
+def test_an_earlier_runs_raised_file_is_not_read_into_this_runs_end(
+    tmp_path, monkeypatch
+):
+    path = _run_file(tmp_path)
+    run = json.loads(path.read_text())
+    (tmp_path / "now-engine.0.raised").write_text("rank 0 raised RunnerRefusal()")
+    compass_run._RecordingAuthority(run)  # a rerun into the same out_dir
+    monkeypatch.setenv(compass_run.ENV, str(path))
+    monkeypatch.setenv(compass_run.NOW_ENV, str(tmp_path / "now-engine.bin"))
+    engine = compass_run._PublishedClock(
+        compass_run.ENGINE, compass_run.channel_table(run), None
+    )
+    monkeypatch.setattr(clock, "_installed", engine)
+    with pytest.raises(SystemExit), compass_run.engine_loop(SimpleNamespace()):
+        raise SystemExit()
+    hand_in = tmp_path / compass_run.LP_FILE.format(compass_run.ENGINE.name)
+    assert json.loads(hand_in.read_text())["refusals"] == [
+        "ended:engine raised SystemExit()"
+    ]
+
+
+def test_a_raised_file_that_cannot_be_written_leaves_the_refusal(tmp_path):
+    def forward(self, batch):
+        raise RunnerRefusal("why")
+
+    runner = SimpleNamespace(rank=0, compass_raised_file=tmp_path / "no" / "f")
+    with pytest.raises(RunnerRefusal, match="^why$"):
+        _says_why(forward)(runner, None)
 
 
 def test_a_real_workload_is_sent_in_order_and_its_send_times_written(tmp_path):

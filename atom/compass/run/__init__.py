@@ -733,6 +733,7 @@ class _RecordingAuthority(ClockAuthority):
             LP_FILE,
             STEP_TABLE_FILE,
             SUMMARY_FILE,
+            "now-{}.raised",
         ):
             for f in out.glob(name.format("*")):
                 f.unlink()

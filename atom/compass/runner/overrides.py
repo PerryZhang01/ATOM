@@ -96,6 +96,7 @@ source and compare it with this table.
 from __future__ import annotations
 
 import collections
+import contextlib
 import json
 import logging
 import math
@@ -202,7 +203,8 @@ def _says_why(forward):
             return forward(self, batch)
         except BaseException as e:
             if path := getattr(self, "compass_raised_file", None):
-                path.write_text(f"rank {self.rank} raised {e!r}")
+                with contextlib.suppress(OSError):  # raise `e`, not a failed write
+                    path.write_text(f"rank {self.rank} raised {e!r}")
             raise
 
     return said
