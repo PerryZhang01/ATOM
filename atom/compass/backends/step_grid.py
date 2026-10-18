@@ -23,7 +23,8 @@ tokens, is extrapolated instead: each B side of the cell is read along c from
 its two highest c nodes inside the pool, extended past them. Any other step
 whose cell misses a corner is refused naming the missing corners, as is one
 outside the nodes: no clamp or fallback. A missing point does not fail
-loading; it refuses the steps that need it.
+loading; it refuses the steps that need it. A step whose extension past the
+pool is not positive is refused too.
 
 Also refused: a step mixing prefill and decode rows, a decode row computing
 more than one token, a count that is not an int, a prefill step that does not
@@ -217,7 +218,8 @@ class _Cells:
         its cell is past a pool of `blocks` KV blocks of `size` tokens, with the
         cell and how far past the pool's measured edge; else None. Each B side
         whose corners were measured is interpolated, and any other is read on
-        its two highest c nodes at which B rows fit the pool, extended to c."""
+        its two highest c nodes at which B rows fit the pool, extended to c;
+        None too when the value is not positive."""
         sides = self._sides(view, at)
         value, past = Fraction(0), []
         for b, weight in sides[0]:
@@ -235,6 +237,8 @@ class _Cells:
                     f"c {float(at[1] - high):g} past {high}, the pool's edge at B={b}"
                 )
             value += weight * sum(self.points[b, c] * w for c, w in column)
+        if value <= 0:
+            return None
         return value, self._cell(sides), "; ".join(past)
 
 
