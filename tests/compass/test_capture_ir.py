@@ -8,6 +8,7 @@ into `Repeat` and `Par` is also exercised on its own, on op streams written
 here.
 """
 
+import collections
 import json
 import os
 import pathlib
@@ -17,6 +18,7 @@ import sys
 
 import pytest
 import sympy
+from test_capture_real_model import EXPECTED_GUARDS, EXPECTED_HOST_RESOLUTIONS
 
 from atom.compass import cli, ir
 from atom.compass.artifacts import ArtifactStore, Kind, Topology
@@ -78,11 +80,38 @@ def test_ops_between_a_fork_and_its_join_are_a_par_one_branch_per_stream():
     assert par == ir.Par((ir.Seq((b, d)), c), ir.JoinPolicy.RESOURCE_BOUND)
 
 
-def test_a_stream_the_step_never_joins_leaves_the_graph():
+def test_a_stream_the_step_never_joins_leaves_the_graph_for_left_out():
     stream = [_op("a"), Fork(1), _op("copy", stream=1), _op("b")]
-    region = build([(None, item) for item in stream], Traced("x", ())).region
+    items = [(None, item) for item in stream]
+    items += [(0, _op("x")), (0, _op("late", stream=1))]
+    left_out = []
+    region = build(items, Traced("x", ()), left_out).region
 
-    assert [op.name for op in region.items] == ["a", "b"]
+    assert [op.name for op, _ in _bound(region)] == ["a", "b", "x"]
+    assert [op.name for op in left_out] == ["copy", "late"]
+
+
+@pytest.mark.parametrize(
+    "layers, where",
+    [
+        ((0, 1), "forks in layer 0 and joins in layer 1"),
+        (
+            (None, 0, None),
+            "forks in segment 0, outside the layers and joins in segment 2",
+        ),
+    ],
+)
+def test_a_fork_joined_in_another_segment_is_refused_by_name(layers, where):
+    items = [
+        (layers[0], _op("a")),
+        (layers[0], Fork(1)),
+        (layers[0], _op("s", stream=1)),
+    ]
+    items += [(layer, _op("b")) for layer in layers[1:]]
+    items += [(layers[-1], Join(1))]
+
+    with pytest.raises(ValueError, match=f"stream 1 {where}"):
+        build(items, Traced("x", ()))
 
 
 def test_a_context_key_names_a_layer_as_a_sum_of_indices():
@@ -246,3 +275,37 @@ def test_the_graph_traced_at_two_widths_gives_each_width_s_shapes(tmp_path_facto
 def test_trace_ops_refuses_a_width_torch_would_specialise(tmp_path):
     with pytest.raises(SystemExit, match="--width 1 traces no symbol"):
         cli.main(["trace", "ops", "--model", "m", "--width", "1", "--store", "s"])
+
+
+@pytest.mark.parametrize("tp, width", [(1, 2), (2, 2), (1, 8)])
+def test_trace_ops_publishes_the_host_asks_and_guards_it_traced_under(
+    tp, width, tmp_path_factory
+):
+    graph, declared = capture(tp, width, tmp_path_factory)
+
+    asks = collections.Counter(declared["host_resolutions"])
+    assert asks == EXPECTED_HOST_RESOLUTIONS
+    guards = {guard.replace("<axis>", "B") for guard in EXPECTED_GUARDS[tp]}
+    assert set(graph["guards"]) == guards
+
+
+def test_trace_ops_records_torch_s_operators_and_hides_aiter_s(tmp_path_factory):
+    ops = _ops(capture(1, 2, tmp_path_factory)[0]["region"])
+
+    kinds = collections.defaultdict(set)
+    for op in ops:
+        kinds[op["op"].split(".")[0]].add(op["kind"])
+    assert (kinds["aten"], kinds["aiter"]) == ({"captured"}, {"opaque_leaf"})
+
+
+def test_tp2_s_collective_stand_ins_leave_only_the_collective(tmp_path_factory):
+    one = _ops(capture(1, 2, tmp_path_factory)[0]["region"])
+    graph, declared = capture(2, 2, tmp_path_factory)
+    two = _ops(graph["region"])
+
+    added = collections.Counter(op["op"] for op in two)
+    added.subtract(op["op"] for op in one)
+    added = {name for name, n in added.items() if n > 0}
+    assert {name.split(".")[0] for name in added} == {"aiter", "_c10d_functional"}
+    stand_ins = [op["op"] for op in declared["left_out"] if op["why"] == "stand-in"]
+    assert "aten.copy_.default" in stand_ins

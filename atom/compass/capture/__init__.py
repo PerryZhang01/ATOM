@@ -9,9 +9,10 @@ held as the symbol `B` (`forward`); decoder layers fold into `Repeat` and
 forked streams into `Par` (`graph`). The `op_graph` is keyed by structure: the
 model's architecture and config.json digest, the TP width, decode, eager. Its
 members are ``graph`` (`graph.to_json`) and ``declared``, what the capture
-stated in place of a device and every host ask of the width it answered. A TP
-group's ranks run one graph, so rank 0's is the entry's. The declarations are
-process-global, so a process captures once.
+stated in place of a device, every host ask of the width it answered, and the
+operators it left out of the graph, each with why. A TP group's ranks run one
+graph, so rank 0's is the entry's. The declarations are process-global, so a
+process captures once.
 """
 
 import argparse

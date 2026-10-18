@@ -83,6 +83,18 @@ class Event:
 
 main_stream = Stream()
 current = [main_stream]
+#: True while a stand-in collective runs: its functional collective is ATOM's
+#: work, and the copy back into ATOM's tensor is the stand-in's own.
+standing_in = [False]
+
+
+@contextlib.contextmanager
+def _stand_in():
+    standing_in[0] = True
+    try:
+        yield
+    finally:
+        standing_in[0] = False
 
 
 @contextlib.contextmanager
@@ -189,7 +201,8 @@ def _group(tp: int) -> dict:
     Every shard is the one a `tp`-way deployment holds and every collective ATOM
     issues is dispatched; aiter's `all_reduce_` answers from its fake. The two
     legacy `c10d` collectives ATOM reaches have no fake kernel, so they go
-    through their functional forms, which give the same shapes.
+    through their functional forms, which give the same shapes, and copy the
+    result back under `standing_in`, since the legacy ones write in place.
     """
     import torch.distributed as dist
     from torch.distributed import _functional_collectives as functional
@@ -228,11 +241,13 @@ def _group(tp: int) -> dict:
         parallel_state.init_model_parallel_group, dist.new_group = group, new_group
 
     def all_gather_into_tensor(output, input, group=None, async_op=False):
-        gathered = functional.all_gather_tensor(input, 0, group or dist.group.WORLD)
-        output.copy_(gathered.reshape(output.shape))
+        with _stand_in():
+            gathered = functional.all_gather_tensor(input, 0, group or dist.group.WORLD)
+            output.copy_(gathered.reshape(output.shape))
 
     def broadcast(tensor, src=0, group=None, async_op=False):
-        tensor.copy_(functional.broadcast(tensor, src, group or dist.group.WORLD))
+        with _stand_in():
+            tensor.copy_(functional.broadcast(tensor, src, group or dist.group.WORLD))
 
     dist.all_gather_into_tensor, dist.broadcast = all_gather_into_tensor, broadcast
     dist.barrier = lambda *args, **kwargs: None  # no shape, nobody to wait for

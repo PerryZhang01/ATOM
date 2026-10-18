@@ -15,8 +15,11 @@ A side stream that waits on the main one forks; the main one waiting on it
 joins. What both ran in between is a `Par` of one branch per stream, joined
 `resource_bound`: the branches' work shares one device, and an unsaturated one
 prices as their max anyway. A stream the step forks and never joins carries
-work that crosses the step boundary (the sampled ids' copy to the host), and
-its ops are not in the graph.
+work that crosses the step boundary (the sampled ids' copy to the host): its
+ops from that fork on leave the graph for the caller's `left_out`. Whether a
+fork is joined is decided over the whole step, and a fork joined in another
+segment (another layer, or across the layers) is refused, since a `Par` cannot
+cross a layer's edge.
 """
 
 import dataclasses
@@ -54,31 +57,66 @@ class _Run:
     count: int
 
 
-def build(items, applicability: Traced) -> ir.Graph:
-    """`items`, `(layer or None, Op | Fork | Join)` in dispatch order, as a graph."""
+def build(items, applicability: Traced, left_out=None) -> ir.Graph:
+    """`items`, `(layer or None, Op | Fork | Join)` in dispatch order, as a graph.
+
+    The ops of a stream the step forks and never joins are appended to
+    `left_out`.
+    """
     segments = []  # (layer or None, items), consecutive items of one layer
     for layer, item in items:
         if not segments or segments[-1][0] != layer:
             segments.append((layer, []))
         segments[-1][1].append(item)
-    tokens = [(layer is not None, tuple(_regions(seg))) for layer, seg in segments]
+    unjoined, crossing = _unjoined(segments), set()
+    left_out = [] if left_out is None else left_out
+    tokens = [
+        (layer is not None, tuple(_regions(seg, n, unjoined, crossing, left_out)))
+        for n, (layer, seg) in enumerate(segments)
+    ]
     return ir.Graph(applicability, _seq(_place(_fold(tokens), (), 0)))
 
 
-def _regions(items):
-    joined = {item.stream for item in items if isinstance(item, Join)}
-    crossing = {item.stream for item in items if isinstance(item, Fork)} - joined
+def _unjoined(segments):
+    """`(segment, position)` of each fork that no later join of its stream answers."""
+    pending = {}  # stream: (segment, position) of its earliest unanswered fork
+    for n, (layer, seg) in enumerate(segments):
+        for i, item in enumerate(seg):
+            if isinstance(item, Fork):
+                pending.setdefault(item.stream, (n, i))
+            elif isinstance(item, Join) and item.stream in pending:
+                where = pending.pop(item.stream)[0]
+                if where != n:
+                    raise ValueError(
+                        f"stream {item.stream} forks in {_segment(segments, where)} "
+                        f"and joins in {_segment(segments, n)}: a Par cannot cross "
+                        "a layer's edge"
+                    )
+    return set(pending.values())
+
+
+def _segment(segments, n):
+    layer = segments[n][0]
+    return f"layer {layer}" if layer is not None else f"segment {n}, outside the layers"
+
+
+def _regions(items, n, unjoined, crossing, left_out):
     out, span, open_ = [], [], set()
-    for item in items:
+    for i, item in enumerate(items):
         if isinstance(item, Fork):
-            open_ |= {item.stream} & joined
+            if (n, i) in unjoined or item.stream in crossing:
+                crossing.add(item.stream)
+            else:
+                open_.add(item.stream)
         elif isinstance(item, Join):
             if item.stream in open_:
                 open_.discard(item.stream)
                 if not open_:
                     out += _par(span)
                     span = []
-        elif item.stream_id not in crossing:
+        elif item.stream_id in crossing:
+            left_out.append(item)
+        else:
             (span if open_ else out).append(item)
     return out
 

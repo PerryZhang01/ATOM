@@ -24,7 +24,7 @@ import atom
 from atom.compass import ir
 
 from . import driverless
-from .graph import LAYER, Fork, Join, Traced, build
+from .graph import LAYER, Fork, Join, Traced, _json, build
 
 #: The name the step's width is written under in every shape.
 SYMBOL = "B"
@@ -42,7 +42,7 @@ WIDTH_FIELDS = (
 #: Torch's own namespaces; an operator in any other hides its kernels.
 TORCH_NAMESPACES = ("aten", "prim", "prims", "_c10d_functional", "c10d")
 #: ATOM's H2D publication copies with a count it took `operator.index` of, so
-#: its copies are at the hint and describe one width.
+#: its copies are at the hint, describe one width, and are left out.
 H2D = "atom/utils/h2d.py"
 
 _ROOT = pathlib.Path(atom.__file__).resolve().parent.parent
@@ -64,24 +64,31 @@ def _site() -> str:
 
 
 class _Recorder(TorchDispatchMode):
-    """Every dispatched operator and launched kernel, as `ir.Op`, by layer."""
+    """Every dispatched operator and launched kernel, as `ir.Op`, by layer.
+
+    What is not ATOM's work at the traced width goes to `left_out`, with why.
+    """
 
     def __init__(self, axis, scope, contexts):
         super().__init__()
         self.axis, self.scope, self.contexts = str(axis), scope, contexts
         self.layer, self.items, self.symbolic, self.on = None, [], False, False
+        self.left_out = []
 
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         out = func(*args, **(kwargs or {}))
         name = str(func)
-        if not name.startswith("profiler.") and not _site().startswith(H2D):
+        if not name.startswith("profiler."):
             torch_own = name.split(".")[0] in TORCH_NAMESPACES
             kind = ir.NodeKind.CAPTURED if torch_own else ir.NodeKind.OPAQUE_LEAF
             leaves = _pytree.tree_leaves((args, kwargs))
-            self.add(name, kind, leaves, _pytree.tree_leaves(out))
+            why = "h2d" if _site().startswith(H2D) else None
+            if driverless.standing_in[0] and not name.startswith("_c10d_functional."):
+                why = "stand-in"
+            self.add(name, kind, leaves, _pytree.tree_leaves(out), why)
         return out
 
-    def add(self, name, kind, inputs, outputs=()):
+    def add(self, name, kind, inputs, outputs=(), why=None):
         if not self.on:  # the forward only, not the build before it
             return
         ins = [t for t in inputs if isinstance(t, torch.Tensor)]
@@ -103,7 +110,10 @@ class _Recorder(TorchDispatchMode):
             stream_id=driverless.current[0].stream_id,
             context_ref=key and ir.ContextRef(key),
         )
-        self.items.append((self.layer, op))
+        if why:
+            self.left_out.append((why, op))
+        else:
+            self.items.append((self.layer, op))
 
     def wait(self, waiter, waited):
         """A side stream waiting on the main one forks; the reverse joins."""
@@ -259,7 +269,8 @@ def _decode_batch(width, axis, block_size):
 def capture(model: str, tp: int, width: int, tmpdir: str):
     """Trace one decode step of `model` at TP `tp`, its width a symbol hinted `width`.
 
-    Returns the graph, the model's config digest, and what the capture declared.
+    Returns the graph, the model's config digest, and what the capture declared,
+    the operators it left out of the graph among it.
     """
     if width < MIN_WIDTH:
         raise ValueError(
@@ -319,8 +330,8 @@ def capture(model: str, tp: int, width: int, tmpdir: str):
         )
     guards = {re.sub(rf"\b{axis}\b", SYMBOL, str(g.expr)) for g in shape_env.guards}
     declared["host_resolutions"] = resolutions
-    return (
-        build(recorder.items, Traced(structure, tuple(sorted(guards)))),
-        digest,
-        declared,
-    )
+    crossing = []
+    graph = build(recorder.items, Traced(structure, tuple(sorted(guards))), crossing)
+    left_out = [*recorder.left_out, *(("step-crossing", op) for op in crossing)]
+    declared["left_out"] = [{"why": why, **_json(op)} for why, op in left_out]
+    return graph, digest, declared
