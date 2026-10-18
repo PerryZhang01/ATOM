@@ -577,9 +577,10 @@ cc-traces e2e and by the per-step error spread (D47), never by a total. TBO unde
 and op-level pricing for V4-Pro are prerequisites, so neither cell is acceptance evidence
 before both exist.
 
-The mechanism tests run device-free on a CPU fake-model DP2: both ranks report the same
-step seconds, equal to the larger of the two; an idle rank's dummy batch is priced and
-enters the `max`; the batch view refuses a DP run that states no `num_tokens_across_dp`
+The mechanism tests run device-free on a CPU fake-model DP2: with no host time both
+output ranks report the same step seconds, equal to the larger of the two; with host
+time two members share the later device end and each returns at its own release; an
+idle rank's dummy batch is priced and enters the `max`; the batch view refuses a DP run that states no `num_tokens_across_dp`
 (#470); and the CA refuses members whose call counts differ (#528).
 
 ### Repeats

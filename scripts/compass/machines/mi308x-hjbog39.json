@@ -3,7 +3,7 @@
   "name": "mi308x-hjbog39",
   "provenance": {
     "authored_by": "compass agent for jgong5",
-    "date": "2026-10-16",
+    "date": "2026-10-17",
     "origin": "mixed",
     "origins": {
       "host.cpu.cores_physical": {
@@ -16,57 +16,57 @@
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "width": 1,
-        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
-        "source_root": "commit:ce625ddd9"
+        "source_root": "commit:ce625ddd9",
+        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52"
       },
       "device.arch": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "width": 1,
-        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
-        "source_root": "commit:ce625ddd9"
+        "source_root": "commit:ce625ddd9",
+        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52"
       },
       "device.count_per_node": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "width": 1,
-        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
-        "source_root": "commit:ce625ddd9"
+        "source_root": "commit:ce625ddd9",
+        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52"
       },
       "device.memory.capacity_bytes": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "width": 1,
-        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
-        "source_root": "commit:ce625ddd9"
+        "source_root": "commit:ce625ddd9",
+        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52"
       },
       "device.software_pinned_to.rocm": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "width": 1,
-        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
-        "source_root": "commit:ce625ddd9"
+        "source_root": "commit:ce625ddd9",
+        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52"
       },
       "device.software_pinned_to.aiter": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "width": 1,
-        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
-        "source_root": "commit:ce625ddd9"
+        "source_root": "commit:ce625ddd9",
+        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52"
       },
       "device.software_pinned_to.rccl": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "width": 1,
-        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
-        "source_root": "commit:ce625ddd9"
+        "source_root": "commit:ce625ddd9",
+        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52"
       },
       "device.software_pinned_to.torch": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "width": 1,
-        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
-        "source_root": "commit:ce625ddd9"
+        "source_root": "commit:ce625ddd9",
+        "record": "sha256:e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52"
       },
       "host.ipc.zmq_roundtrip_s": {
         "origin": "assumed"
@@ -128,6 +128,56 @@
         "source_root": "commit:2d1d223be",
         "record": "sha256:40da90fe439e06efa8aeb8d8b3d5a17a955c507afb6f9aa18401cbbc957739de"
       },
+      "interconnect.intra_node.pp.rccl.eager_threshold_bytes": {
+        "origin": "probed",
+        "source_root": "commit:d91f1de8c",
+        "record": "sha256:1cd879ccca5e023c6e8b57995e661674be584a1c3a8cd88a5b35c097503f09e3"
+      },
+      "interconnect.intra_node.pp.rccl.latency_s": {
+        "origin": "probed",
+        "source_root": "commit:d91f1de8c",
+        "record": "sha256:1cd879ccca5e023c6e8b57995e661674be584a1c3a8cd88a5b35c097503f09e3"
+      },
+      "interconnect.intra_node.pp.rccl.overhead_s": {
+        "origin": "probed",
+        "source_root": "commit:d91f1de8c",
+        "record": "sha256:1cd879ccca5e023c6e8b57995e661674be584a1c3a8cd88a5b35c097503f09e3"
+      },
+      "interconnect.intra_node.pp.rccl.per_byte_s": {
+        "origin": "probed",
+        "source_root": "commit:d91f1de8c",
+        "record": "sha256:1cd879ccca5e023c6e8b57995e661674be584a1c3a8cd88a5b35c097503f09e3"
+      },
+      "interconnect.intra_node.pp.rccl.rendezvous_fixed_s": {
+        "origin": "probed",
+        "source_root": "commit:d91f1de8c",
+        "record": "sha256:1cd879ccca5e023c6e8b57995e661674be584a1c3a8cd88a5b35c097503f09e3"
+      },
+      "interconnect.intra_node.pp.gloo.eager_threshold_bytes": {
+        "origin": "probed",
+        "source_root": "commit:d91f1de8c",
+        "record": "sha256:1cd879ccca5e023c6e8b57995e661674be584a1c3a8cd88a5b35c097503f09e3"
+      },
+      "interconnect.intra_node.pp.gloo.latency_s": {
+        "origin": "probed",
+        "source_root": "commit:d91f1de8c",
+        "record": "sha256:1cd879ccca5e023c6e8b57995e661674be584a1c3a8cd88a5b35c097503f09e3"
+      },
+      "interconnect.intra_node.pp.gloo.overhead_s": {
+        "origin": "probed",
+        "source_root": "commit:d91f1de8c",
+        "record": "sha256:1cd879ccca5e023c6e8b57995e661674be584a1c3a8cd88a5b35c097503f09e3"
+      },
+      "interconnect.intra_node.pp.gloo.per_byte_s": {
+        "origin": "probed",
+        "source_root": "commit:d91f1de8c",
+        "record": "sha256:1cd879ccca5e023c6e8b57995e661674be584a1c3a8cd88a5b35c097503f09e3"
+      },
+      "interconnect.intra_node.pp.gloo.rendezvous_fixed_s": {
+        "origin": "probed",
+        "source_root": "commit:d91f1de8c",
+        "record": "sha256:1cd879ccca5e023c6e8b57995e661674be584a1c3a8cd88a5b35c097503f09e3"
+      },
       "host.tokenizers[qwen3.8-27b fast]": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
@@ -138,9 +188,10 @@
       "tokenizer",
       "device",
       "assumed",
-      "intake"
+      "intake",
+      "pp"
     ],
-    "notes": "one Qwen3.8-27B TP1 start at ce625ddd9 | no probe fills these | one real c=256 first-turn cc-traces burst at 2d1d223be"
+    "notes": "one Qwen3.8-27B TP1 start at ce625ddd9 | no probe fills these | one real c=256 first-turn cc-traces burst at 2d1d223be | pp_carriers.py on two GPUs at d91f1de8c"
   },
   "host": {
     "cpu": {
@@ -199,6 +250,22 @@
       "domain_devices": 8,
       "link_bandwidth_bytes_per_s": 64000000000.0,
       "link_latency_s": 2e-06,
+      "pp": {
+        "rccl": {
+          "eager_threshold_bytes": 33554432,
+          "latency_s": 1.5943078324198723e-06,
+          "overhead_s": 3.808203561532445e-05,
+          "per_byte_s": 2.006901421361917e-11,
+          "rendezvous_fixed_s": 5.704185766936967e-05
+        },
+        "gloo": {
+          "eager_threshold_bytes": 0,
+          "latency_s": 9.95624577626586e-06,
+          "overhead_s": 1.3529834873068723e-05,
+          "per_byte_s": 1.1616917845420316e-10,
+          "rendezvous_fixed_s": 2.3746679926390014e-05
+        }
+      },
       "derate": 0.8
     },
     "inter_node": {

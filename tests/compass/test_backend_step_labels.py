@@ -227,3 +227,39 @@ def test_the_command_s_laws_load_in_a_run_file(tmp_path, monkeypatch):
     assert r.compass_host.laws == law["host"]["laws"]
     rows = [(1, 900, True), (1, 400, True)]
     assert r.compass_backend.price(_view(rows, 2)).seconds > 0
+
+
+def test_host_laws_fitted_under_a_stated_engine_load_at_that_engine(
+    tmp_path, monkeypatch
+):
+    from test_run_step_grid import deployment, run_file
+
+    from atom.compass import run as compass_run
+
+    r = deployment(tmp_path, enable_dp_attention=False, enable_expert_parallel=False)
+    key = compass_run.host_key(r.config)
+    later = ("data_parallel_size", "enable_dp_attention", "enable_expert_parallel")
+    later += ("enable_tbo", "enable_tbo_decode", "env")
+    # Records whose host key predates those engine fields, as a capture's do.
+    old = key | {"engine": {k: v for k, v in key["engine"].items() if k not in later}}
+    records = [
+        str(_timed_record(tmp_path / f"dp0-{s}.jsonl", _steps(s), key=old)[0])
+        for s in (19, 20)
+    ]
+    stated = tmp_path / "stated.engine.json"
+    stated.write_text(json.dumps(key["engine"]))
+    spec = machine_spec_digest(MachineSpec.from_mapping(DOCUMENT))
+    out = ["--out", str(tmp_path / "law.json"), "--machine-spec", spec]
+    main([*records, *out, "--engine", str(stated)])
+    law = json.loads((tmp_path / "law.json").read_text())
+    assert law["host"]["key"]["engine"] == law["engine_config"] == key["engine"]
+
+    run = run_file(tmp_path, monkeypatch, step_linear=law, host=law["host"])
+    del run["step_grid"]
+    (tmp_path / "run.json").write_text(json.dumps(run))
+    monkeypatch.setenv(compass_run.NOW_ENV, str(tmp_path / "now.bin"))
+    compass_run._PublishedClock(
+        compass_run.ENGINE, compass_run.channel_table(run), None
+    )
+    compass_run.runner(r, META_8B)
+    assert r.compass_host.laws == law["host"]["laws"]

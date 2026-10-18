@@ -17,6 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 import torch.distributed as dist
 from test_bench_window import BUSY, MS, PREPARE, Bench, batch
 
@@ -162,7 +163,7 @@ def test_every_worker_starts_in_engine_cores_order_and_the_slowest_is_charged(
     manager, tp, eager
 ):
     config = _config(tp=tp, eager=eager)
-    bench = engine.Bench(config)
+    bench = engine.Bench(config, BLOCKS)
     try:
         assert config.num_kvcache_blocks == BLOCKS
         result = bench.measure(batch())
@@ -183,6 +184,38 @@ def test_every_worker_starts_in_engine_cores_order_and_the_slowest_is_charged(
     assert result["discarded"] == 1
 
 
+def test_the_bench_holds_the_pool_it_is_given_not_the_one_its_budget_gives(manager):
+    config = _config(eager=True)
+    bench = engine.Bench(config, BLOCKS + 2)
+    try:
+        log = bench.runner_mgr.call_func("call_log", wait_out=True)
+    finally:
+        bench.exit()
+    pool = ["allocate_kv_cache", BLOCKS + 2]
+    assert log == ["get_num_blocks", pool, "freeze_gc_heap"]
+    assert config.num_kvcache_blocks == BLOCKS + 2
+
+
+class Small(Runner):
+    """A device that holds the `BLOCKS` its budget gives, and no more."""
+
+    def allocate_kv_cache(self, blocks):
+        if blocks > BLOCKS:
+            raise torch.OutOfMemoryError("HIP out of memory")
+        return super().allocate_kv_cache(blocks)
+
+
+def test_a_device_that_cannot_hold_the_pool_stops_the_bench_naming_both_counts(
+    manager, monkeypatch
+):
+    monkeypatch.setattr(engine, "RUNNER", f"{__name__}.Small")
+    refusal = (
+        f"a pool of {BLOCKS + 2} KV blocks, and this device's budget gives {BLOCKS}$"
+    )
+    with pytest.raises(ValueError, match=refusal):
+        engine.Bench(_config(eager=True), BLOCKS + 2)
+
+
 def test_a_stop_from_the_keyboard_reaches_the_process_that_started_the_bench(
     manager, monkeypatch
 ):
@@ -191,7 +224,7 @@ def test_a_stop_from_the_keyboard_reaches_the_process_that_started_the_bench(
     monkeypatch.setattr(async_proc, "init_exit_handler", ignore)
     previous = signal.getsignal(signal.SIGINT)
     try:
-        bench = engine.Bench(_config(eager=True))
+        bench = engine.Bench(_config(eager=True), BLOCKS)
         bench.exit()
         assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
     finally:
@@ -212,4 +245,4 @@ def test_a_parallelism_the_bench_does_not_build_refuses_before_any_worker_starts
 ):
     monkeypatch.setattr(engine, "AsyncIOProcManager", None)  # never called
     with pytest.raises(ValueError, match=f"does not measure under {what}"):
-        engine.Bench(_config(**refused))
+        engine.Bench(_config(**refused), BLOCKS)

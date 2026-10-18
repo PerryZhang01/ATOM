@@ -6,7 +6,7 @@ The run file's ``store`` is the artifact store's root. The key is the
 machine spec's digest and `key_fields`, read off the resolved ATOM config: the
 served config.json's digest, the parallel layout, and as sorted JSON the
 engine config the readings move with, `step_grid.keyed`'s fields and the
-scheduler bounds. `compass measure memory`
+scheduler bounds and any KV offload connector. `compass measure memory`
 publishes one member per rank, ``readings.<rank>.json``, holding
 `ENTRY_FIELDS`; each rank reads its own. A configuration with no entry
 refuses, naming its key and the fields the nearest entry differs in, and so
@@ -61,8 +61,13 @@ def key_fields(config) -> dict:
     """The key of `config`'s readings, less the machine spec's digest."""
     from atom.compass.run import _file_digest
     from atom.compass.run.step_grid import BOUNDS, keyed
+    from atom.kv_transfer.disaggregation.factory import KVConnectorFactory
 
     engine = keyed(config) | {name: getattr(config, name) for name in BOUNDS}
+    leaves = KVConnectorFactory.leaf_connectors(config) or ()
+    offload = [n for n, _ in leaves if KVConnectorFactory.is_offload_backend(n)]
+    if offload:
+        engine["kv_offload"] = sorted(offload)
     return {
         "model": _file_digest(config.model, "config.json"),
         **topology(config).widths,

@@ -37,6 +37,7 @@ class Kind(enum.Enum):
 
     TEXT = "text"
     COUNT = "count"
+    BYTES = "bytes"  # a size in bytes, zero included
     QUANTITY = "quantity"
     DERATE = "derate"
     NAMES = "names"
@@ -126,7 +127,7 @@ FIELDS = (
         Field(f"interconnect.intra_node.pp.{carrier}.{name}", kind, required=False)
         for carrier in ("rccl", "gloo")
         for name, kind in (
-            ("eager_threshold_bytes", Kind.COUNT),
+            ("eager_threshold_bytes", Kind.BYTES),
             ("latency_s", Kind.QUANTITY),
             ("overhead_s", Kind.QUANTITY),
             ("per_byte_s", Kind.QUANTITY),
@@ -240,6 +241,10 @@ def check(field: Field, value: object, path: str) -> object:
     if kind is Kind.COUNT:
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             _refuse(path, "a positive whole number", value)
+        return value
+    if kind is Kind.BYTES:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            _refuse(path, "a whole number of bytes", value)
         return value
     if kind is Kind.QUANTITY:
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:

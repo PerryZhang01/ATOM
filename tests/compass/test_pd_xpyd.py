@@ -121,19 +121,55 @@ def test_a_server_runs_as_the_deployment_its_index_names():
             name(_server(XPYD, "kv_producer", **kv), XPYD)
 
 
-def test_a_replay_with_several_deployments_of_a_side_is_refused_by_name(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    "instances, role, index, record",
+    [
+        (XPYD, "kv_producer", 1, "prefill1"),
+        (XPYD, "kv_consumer", 0, "decode0"),
+        ({"prefill_instances": 2}, "kv_consumer", None, "decode"),
+        ({}, "kv_producer", None, "prefill"),
+    ],
+)
+def test_a_replay_reads_the_record_of_its_own_deployment(
+    tmp_path, monkeypatch, instances, role, index, record
 ):
-    path = _run_file(tmp_path, replay=str(tmp_path), **XPYD)
+    path = _run_file(tmp_path, replay=str(tmp_path), **instances)
     run = json.loads(path.read_text())
     del run["step_stub"]
     path.write_text(json.dumps(run))
     monkeypatch.setenv(compass_run.ENV, str(path))
+
+    class Read(Exception):
+        pass
+
+    def backend(directory, dp_rank):
+        raise Read(directory, dp_rank)
+
+    monkeypatch.setattr("atom.compass.parity.replay.ReplayBackend", backend)
+    kv = {"kv_connector": "compass", "kv_role": role}
+    if index is not None:
+        kv["compass_instance"] = index
     config = SimpleNamespace(
-        tensor_parallel_size=1, parallel_config=SimpleNamespace(data_parallel_rank=0)
+        tensor_parallel_size=1,
+        parallel_config=SimpleNamespace(data_parallel_rank=1),
+        kv_transfer_config=kv,
     )
-    with pytest.raises(ValueError, match="several deployments of a side"):
+    with pytest.raises(Read) as read:
         compass_run.runner(SimpleNamespace(config=config), None)
+    assert read.value.args == (tmp_path / record, 1)
+
+
+def test_a_worker_order_lists_each_deployment_rank_once_and_names_no_configuration():
+    run = XPYD | {"prefill_data_parallel_size": 2, "clock_endpoint": "tcp://x"}
+    order = {"P": [[1, 0], [0, 0], [1, 1], [0, 1]], "D": [[1, 0], [0, 0]]}
+    assert compass_run.worker_order(run | {"worker_order": order}) == order
+    assert compass_run.worker_order(run) == {}
+    assert compass_run.configuration(run | {"worker_order": order}) == XPYD | {
+        "prefill_data_parallel_size": 2
+    }
+    for bad in ({"P": order["P"][:3]}, {"D": [[0, 0], [0, 0]]}, {"X": [[0, 0]]}):
+        with pytest.raises(ValueError, match="list each of its deployments"):
+            compass_run.worker_order(run | {"worker_order": bad})
 
 
 # --- the connector -----------------------------------------------------------
