@@ -723,3 +723,44 @@ which no cache directory above holds.
    CONCURRENCY=<C>`, `SERVER_ARGS="--max-model-len 262144"`, `AIPERF_EXTRA_ARGS` the
    warmup arguments; then `python -m atom.compass.parity
    $R/cell/c<C>/step_linear/steps OUT/steps`.
+
+### The same cell under the step grid
+
+The step grid reuses steps 1 to 4: the calibration records are its residual's
+targets, and the real runs are its coverage check's inputs and its graded side.
+Its points are planned from shape populations rather than records: the planner
+refuses inputs stating two KV block counts, and two real starts of one
+configuration differ by a few blocks (#1349), while every simulated start takes
+its count from the one `memory_readings` entry. A population may serve any
+traces, the graded ones included, since its shapes are all the plan reads. The
+grid definition is a calibration input; `$G` below holds nodes at powers of two
+and no margin:
+
+```json
+{"prefill": {"B": [1, 2, 4, ..., 256], "T": [1, 2, 4, ..., 16384],
+             "c": [0, 1, 2, 4, ..., 131072]},
+ "decode": {"c": [0, 1, 2, 4, ..., 131072]}, "margin": 0}
+```
+
+8. Per concurrency, `compass trace steps --step-linear LAW --host-laws HOST $M $S
+   --out $R/pop/<traces>/c<C> -- $ATOM`, serving one client run as a `run`
+   server's client, of traces 256 to 392 and of traces 0 to 255; its stop
+   publishes a `shape_population`, `POP` below.
+9. `compass measure steps --grid POP... --grid-definition $G --client-run POP
+   $R/pop/<traces>/c<C>/artifacts/client_run.json ... --sampling '{"ignore_eos":
+   true}' --gpu G $S --out $R/grid -- $ATOM`. The deep-context prefill corners
+   take most of its hours. Several GPUs each take a subset of the populations
+   into a store of its own, starts a minute apart; copying each store's
+   `step_measurement` entries into one, and this step again over every
+   population, measures what remains.
+10. `compass fit steps --backend step-grid --grid POP... --grid-definition $G
+    $R/cal/c* --client-run ...`, naming every population and record, `$M $S --out
+    $R/fit-grid`; it prints the bundle's token. A second fit of one definition
+    into one store is refused as an overwrite: refit into a fresh store.
+11. `compass run --step-grid BUNDLE --host-laws HOST --coverage $R/cell/c<C>/real*
+    $M $S --out $R/cell/c<C>/step_grid -- $ATOM`, serving the same client run as
+    step 5. The check counts the real steps the bundle covers, extrapolates past
+    the residual's hull or the KV pool, and leaves to the step roofline; grading
+    takes only a run that ran it.
+12. `python -m atom.compass.validate $R/cell/c<C>`, which reads the bundle from
+    the store the run file names, by key and digest.
