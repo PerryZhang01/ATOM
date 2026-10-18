@@ -41,28 +41,44 @@ class JoinPolicy(enum.Enum):
 
 @dataclass(frozen=True, slots=True)
 class ContextRef:
-    """The key an operator's ambient state is looked up by, with `{index}` holes."""
+    """The key an operator's ambient state is looked up by, with `{index}` holes.
+
+    A hole is a sum of repeat indices and at most one trailing offset, so a
+    layer two repeats deep is named `{outer+inner}` and its neighbour
+    `{outer+inner+1}`.
+    """
 
     key: str
 
     def __post_init__(self) -> None:
         try:
-            names = self.index_names
+            holes = self._holes()
         except ValueError as exc:
             raise ValueError(
                 f"{self.key!r} is not a usable context key: {exc}"
             ) from None
-        if not self.key.strip() or not all(name.isidentifier() for name in names):
+        if not self.key.strip() or not all(
+            _is_sum(terms) for _, terms in holes if terms is not None
+        ):
             raise ValueError(
-                f"{self.key!r}: a context key is non-empty and its placeholders "
-                "are plain names a repeat index can carry"
+                f"{self.key!r}: a context key is non-empty and each placeholder "
+                "is a sum of plain names a repeat index can carry, then at most "
+                "one offset"
             )
+
+    def _holes(self) -> list[tuple[str, list[str] | None]]:
+        holes = []
+        for text, field, spec, conversion in string.Formatter().parse(self.key):
+            if spec or conversion:
+                raise ValueError(f"the placeholder {field!r} takes no format")
+            holes.append((text, None if field is None else field.split("+")))
+        return holes
 
     @property
     def index_names(self) -> tuple[str, ...]:
         """The repeat indices this key is written in terms of, in order."""
-        fields = (f for _, f, _, _ in string.Formatter().parse(self.key))
-        return tuple(dict.fromkeys(f for f in fields if f is not None))
+        terms = (t for _, ts in self._holes() if ts for t in ts if not t.isdigit())
+        return tuple(dict.fromkeys(terms))
 
     def bind(self, **values: int) -> "ContextRef":
         """This key with its indices substituted, for one repeat instance."""
@@ -71,7 +87,24 @@ class ContextRef:
                 f"cannot bind {self.key!r}: it is written in terms of "
                 f"{list(self.index_names)}, got {sorted(values)}"
             )
-        return ContextRef(self.key.format(**values))
+        return ContextRef(
+            "".join(
+                text
+                + (
+                    ""
+                    if terms is None
+                    else str(sum(int(values.get(t, t)) for t in terms))
+                )
+                for text, terms in self._holes()
+            )
+        )
+
+
+def _is_sum(terms: list[str]) -> bool:
+    *names, last = terms
+    return all(t.isidentifier() for t in names) and (
+        last.isidentifier() or bool(names) and last.isdigit()
+    )
 
 
 class Region:
