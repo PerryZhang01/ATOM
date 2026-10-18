@@ -38,6 +38,11 @@ A decode corner past the KV pool the grid records is extrapolated at lookup,
 and any other unmeasured corner refuses there, so neither needs a check here;
 the run composes the step roofline below the backend for the steps it refuses.
 The residual's recipe reads no chunk size, so none is keyed.
+
+Grading a run reads its bundle with `read` instead: by the run file's key, with
+no check against the grading process, refused unless its digest is the one the
+run recorded, since the run checked that bundle against its own process when
+it started.
 """
 
 import json
@@ -48,6 +53,7 @@ from atom.compass.artifacts import (
     ArtifactStore,
     Axis,
     Conditions,
+    Entry,
     GateState,
     Key,
     Kind,
@@ -128,20 +134,8 @@ def load(spec: Mapping, config, machine) -> tuple[StepGridBackend, dict]:
             "a step grid bundle is measured at data-parallel width 1, and this "
             f"run has data_parallel_size {dp}"
         )
-    fields = dict(spec)
-    store = ArtifactStore(fields.pop("store"))
-    key = Key.of(Kind.STEP_GRID_BUNDLE, **fields)
-    entry = store.read(key)
-    try:
-        member = json.loads(entry.read_member(*MEMBER))
-        grid, residual = StepGrid(member["grid"]), Residual(member["residual"])
-        bounds = {name: member["bounds"][name] for name in BOUNDS}
-        row = dict(entry.fingerprints[Row.STEP_GRID_BUNDLE].cells)
-        recorded = json.loads(row[Axis.ENGINE_CONFIG].value)
-    except (KeyError, TypeError, ValueError) as error:
-        raise ValueError(
-            f"{key} does not load: {type(error).__name__}: {error}"
-        ) from error
+    store, key, entry = _entry(spec)
+    member, grid, residual, bounds, recorded = _parts(key, entry)
     ours = keyed(config)
     pairs = {
         "graph mode": (grid.graph_mode, "eager" if config.enforce_eager else "replay"),
@@ -184,3 +178,42 @@ def load(spec: Mapping, config, machine) -> tuple[StepGridBackend, dict]:
         "key": key.values,
         "digest": entry.digest,
     }
+
+
+def read(spec: Mapping, digest: str) -> StepGridBackend:
+    """The backend the bundle at the run file's key prices with, read from the
+    store it names with no check against this process; refused, naming the key,
+    unless the entry's digest is `digest`, the one a run that loaded it
+    recorded."""
+    _, key, entry = _entry(spec)
+    if entry.digest != digest:
+        raise ValueError(
+            f"{key} digests {entry.digest} in its store, and the run priced "
+            f"with the bundle that digests {digest}"
+        )
+    _, grid, residual, *_ = _parts(key, entry)
+    return StepGridBackend(grid, residual, bundle=str(key))
+
+
+def _entry(spec: Mapping) -> tuple[ArtifactStore, Key, Entry]:
+    """The store the run file names, the bundle's key and its entry there."""
+    fields = dict(spec)
+    store = ArtifactStore(fields.pop("store"))
+    key = Key.of(Kind.STEP_GRID_BUNDLE, **fields)
+    return store, key, store.read(key)
+
+
+def _parts(key: Key, entry: Entry) -> tuple:
+    """The bundle's member, its grid, residual and bounds, and the engine
+    config it was measured under; or a refusal naming `key`."""
+    try:
+        member = json.loads(entry.read_member(*MEMBER))
+        grid, residual = StepGrid(member["grid"]), Residual(member["residual"])
+        bounds = {name: member["bounds"][name] for name in BOUNDS}
+        row = dict(entry.fingerprints[Row.STEP_GRID_BUNDLE].cells)
+        recorded = json.loads(row[Axis.ENGINE_CONFIG].value)
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(
+            f"{key} does not load: {type(error).__name__}: {error}"
+        ) from error
+    return member, grid, residual, bounds, recorded

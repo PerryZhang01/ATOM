@@ -3,8 +3,8 @@
 
 A CELL holds runs of one workload: `step_linear/` (at its run file's step linear law, or
 of several the one fitted under the engine config each real run states) or `step_grid/`
-(at its run file's bundle, which `run.step_grid.load` checks against this process as
-for a run of the config its ATOM arguments resolve)
+(at its run file's bundle, which `run.step_grid.read` reads by key with no check against
+this process, refused unless its digest is the one the run summary records)
 and two or more `real*/`. `cctraces_sim.sh` writes each run.json as the run file with
 the `workload` every run must share; `record` and `run` write their own, the run file
 as `run_file`, and `validate.runs` decides which client run of theirs is graded, and
@@ -26,18 +26,16 @@ from pathlib import Path
 from statistics import median
 
 from atom.compass.backends.cost import GROUPS
-from atom.compass.drive import run as drive_run
 from atom.compass.memory.check import MemoryRefusal, parts
 from atom.compass.run import (
     LP_FILE,
     STEP_GRID,
     STEP_LINEAR,
     _fitted_here,
-    _machine,
     entries,
     refuse_renamed_keys,
 )
-from atom.compass.run.step_grid import keyed_of, load
+from atom.compass.run.step_grid import keyed_of, read
 from atom.compass.validate import cost, runs
 
 BANDS = {0: "0-512", 512: "512-2048", 2048: "2048-8192", 8192: "8192+"}
@@ -159,13 +157,17 @@ def _law(run_file: dict, real: Path) -> dict:
     return laws[0]
 
 
-def _grid(run: dict):
-    """The backend of the bundle that `run`, the run.json of `compass run
-    --step-grid`, names, loaded under the config its ATOM arguments resolve."""
-    argv = run["argv"]
-    atom_args = argv[argv.index("--") + 1 :] if "--" in argv else []
-    config, machine = drive_run._config(atom_args), _machine(run["run_file"])
-    return load(run["run_file"][STEP_GRID], config, machine)[0]
+def _grid(sim: Path, run: dict, summary: dict):
+    """The backend of the bundle the run file of `run`, `sim`'s run.json, names,
+    read with the digest `summary`, its run summary, records for it."""
+    recorded = summary.get(STEP_GRID, {}).values()
+    digests = sorted({g["digest"] for g in recorded if "digest" in g})
+    if len(digests) != 1:
+        raise ValueError(
+            f"{sim}'s run summary records the step grid bundle digests {digests}, "
+            "and grading reads the one bundle its run priced with"
+        )
+    return read(run.get("run_file", run)[STEP_GRID], *digests)
 
 
 def rows(cell) -> list[tuple]:
@@ -190,7 +192,7 @@ def rows(cell) -> list[tuple]:
     verdict = "coverage report" if summary["coverage_report"] else "graded"
     out = [("cell", "verdict", f"{len(real)} real runs", verdict)]
     out += _runs(real, sim)
-    grid = _grid(run[STEP_GRID]) if sim.name == STEP_GRID else None
+    grid = _grid(sim, run[STEP_GRID], summary) if sim.name == STEP_GRID else None
     for r in real:
         backend = grid or _law(run[STEP_LINEAR].get("run_file", run[STEP_LINEAR]), r)
         steps, _traces, warmup = runs.graded(r)
