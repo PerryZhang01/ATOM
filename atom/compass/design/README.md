@@ -83,8 +83,8 @@ one most often assumed to be the second.
 
 ### Not modelled at all
 
-Fragmentation. Neighbour contention. A device that has never been measured (except by
-roofline, whose assumed derates make its terms declared). See **Scope and non-goals**
+Fragmentation. Neighbour contention. A device that has never been measured (except by the
+analytical projection, whose peaks carried from a probed device make its terms declared). See **Scope and non-goals**
 below for where each is recorded.
 
 ---
@@ -320,7 +320,8 @@ every term it returns carries a **method** (`backends/provenance.py::Method`), a
 reports its seconds by method (`08` D50.1). Fallback runs only along method inside one
 granularity: an op-level backend answers an unpriced leaf by its analytical law, a
 step-level run falls to the step roofline only where its run file composes
-`StepFallbackBackend`, and nothing falls from op-level to step-level (#952).
+`StepFallbackBackend`, as every step grid run does, and nothing falls from op-level to
+step-level (#952).
 
 One step-level backend goes beyond its "used for" line by ruling: `17`'s step grid is
 graded as a candidate for #627's stage 2 (`17` D96, `07` D36).
@@ -339,8 +340,9 @@ graded as a candidate for #627's stage 2 (`17` D96, `07` D36).
 | Generalization | predict beyond the configurations used for calibration |
 | Simulation speed | aim ≥ 5×; negotiable, but **faster than a real run** is the floor |
 
-A roofline backend has its own, looser goals, stated in advance, with **configuration ranking** as
-its primary gate rather than latency error (`10` D67.1).
+The analytical method has its own gate, stated in advance: on every measured step, at both
+granularities, it prices **at most the measured time**; configuration ranking and the
+method's error are reported, not gated (`10` D67.1, #1392).
 
 Final proof is **paired simulated and real execution of cc-traces proper**.
 
@@ -363,7 +365,7 @@ Stated here so they are not discovered at review.
 
 | Not in scope | Where it is recorded |
 |---|---|
-| A device that has never been measured — except by roofline, which is derate-dominated and declared while its derates are assumed | `10` D69 |
+| A device that has never been measured — except by the analytical projection, declared while its peaks are carried from a probed device | `10` D69 |
 | Neighbour contention. Compass models a **dedicated** device, so it will not predict an OOM a shared box produces | `03` D14 |
 | Memory fragmentation — not modelled, not planned, and nobody models it | `03` D16 |
 | **Cancellation** — `status` is `"completed"` on all 1,697 subagent wrappers in both corpora. There is nothing to replay. | `06` D35 |
@@ -476,14 +478,14 @@ The documents use these precisely; a reader will bounce off without them.
 | **declared** | the method of a term some input of which is assumed, or was observed on another subject (another platform, width, model or engine config). Its note states the origin, and the successor or why there is none. A declared memory term can fail its gate but cannot pass it; declared cost seconds are reported apart and not gated. The word is reserved for the method; for anything else these documents say *stated*. |
 | **subject** | what an empirical term observes: the model, the deployment config, the source root, and the platform the run's machine spec describes, device and software stack, host driver, firmware and power settings included. There is no machine-identity mechanism. |
 | **source** | one thing a resolver asks for a price (`backends/resolver.py::CostSource`). A term's provenance names the source that answered, every one that declined before it, and the algorithm behind an estimated answer. |
-| **analytical fallback** | the analytical law that answers what an empirical source declines, inside one granularity: an op-level backend's law for an unpriced leaf, always on, or the step roofline a run file composes with `StepFallbackBackend`. Its terms carry their own method, declared while an input is assumed, and its share of seconds is always reported. |
+| **analytical fallback** | the analytical law that answers what an empirical source declines, inside one granularity: an op-level backend's law for an unpriced leaf, always on, or the step roofline a run file composes with `StepFallbackBackend`, as every step grid run does (`17` D102). Its terms carry their own method, declared while an input is assumed, and its share of seconds is always reported. |
 | **opaque leaf** | an operator the tracer records as one node whose internal kernels are invisible, because ATOM deliberately registers a whole subsystem as a single dispatcher op. ~20 of them hold 60–75% of step time. |
 | **logical process (LP)** | the unit the Clock Authority coordinates. *Not* an OS process — a TP group is one LP, a DP group is one LP, because both already have a hardware barrier. |
 | **structure** | a distinct operator list, independent of shape. Prefill has two (chunked, unchunked); decode has one across all CUDA-graph rungs. Traces are cached per structure, not per shape. |
 | **treatment** | a factor that moves cost and is invisible to every feature in the model. Uniform MoE routing under DP is one. Decode **row order** is one to the op-level IR. The step linear law prices it with `rowmod(k)` (`09` D61); the step grid's residual reads it (`17` D100). |
 | **refusal** | a declined answer with a named reason. Refusals are results, not errors, and are preferred to guesses everywhere. A **refused step** is one with some term still unanswered after method fallback, its reasons listed per term: it costs 0 s, the run continues, and any refusal makes the run a coverage report (`08` D50.1). A source that declines while a later one answers is a fall-through, and an answer of any method, unvalidated included, is reported by its method; neither is a refusal. |
 | **step grid** | the step-level backend of `17`, run-file key `step_grid`: a grid of step measurements looked up per batch, plus a residual, fitted on real-run step times, bench replays or both, for what the grid's coordinates cannot see (row order, raggedness). |
-| **complete cell** | a cell of the step grid whose every corner was measured. The step grid answers only inside one, by exact hit or interpolation; anywhere else it refuses. |
+| **complete cell** | a cell of the step grid whose every corner was measured. The step grid interpolates only inside one; it extrapolates a decode cell past the KV pool, and anywhere else declines to the step roofline (`17` D99, D102). |
 | **recipe** | the step grid's feature functions and the constants frozen with them. Configuration supplies geometry and hardware values, a fit supplies coefficients, and a recipe's version changes only when a function does. |
 | **bundle** | the step grid's artifact: a grid, a recipe and the residual fitted with them, identified by a `07` D41 key and a digest, never by a path. |
 
@@ -532,7 +534,7 @@ The documents use these precisely; a reader will bounce off without them.
 | [`05`](05_machine_spec_and_probes.md) | Machine Specification and its Probes | The one input artifact describing device, host, interconnect and the software stack it is pinned to. Read this before `03` and `04`, both of which consume it. Probe tools and their contamination refusals. |
 | [`03`](03_memory_and_kv_model.md) | Memory Model and the KV Pool | **Do not simulate the KV pool** — ATOM's real one is pure arithmetic. Substitute the five device readings, never the arithmetic. How a prefix-cache hit reaches the cost model. Validate per term, never as a sum. |
 | [`04`](04_model_capture_and_cost_ir.md) | Model Capture and the Cost IR | Capture with `TorchDispatchMode` + `FakeTensorMode` + `ShapeEnv`. A hierarchical, symbolic, stream-annotated IR whose `Repeat` nests and tolerates non-contiguous layer patterns. **Opaque leaves** are priced, not decomposed. |
-| [`10`](10_analytical_laws.md) | Analytical Laws | Cost and memory from device parameters and model geometry, with no observation of the subject. Three classes: exact from geometry, device-parameterised, policy-determined. The analytical fallback, the step roofline and the MI455 projection. Accuracy goals stated in advance with **ranking** as the primary gate. **The most speculative document here.** |
+| [`10`](10_analytical_laws.md) | Analytical Laws | Cost and memory from device parameters and model geometry, with no observation of the subject. Three classes: exact from geometry, device-parameterised, policy-determined. The analytical fallback, the step roofline and the MI455 projection. Its gate is a **bound**, at most the measured time on every measured step; ranking is reported. **The most speculative document here.** |
 | [`17`](17_step_grid_backend.md) | Step Grid Backend | A measured grid of whole forwards, answered only from complete cells, plus a residual fitted on real-run step times, bench replays or both. A stage-2 candidate, graded by stage 2's protocol and off the stage-2 path for now (#627). |
 
 ### Part III — How the data is made
@@ -614,4 +616,4 @@ The documents use these precisely; a reader will bounce off without them.
 | D3.2 | Always-on causality detectors: a straggler, checked on receipt and at each drain, fails the run rather than warning; a stall the Clock Authority cannot see waits for ever and prints one `DIAG_S` diagnostic, never aborting; a CI clock-source lint |
 | D3.3 | The Clock Authority ships two deployment forms from one implementation: co-hosted by default, standalone for multi-container runs |
 | D43.1 | ATOM's suite is a merge gate on every Compass change, unmodified, in two gates: a CPU gate (every test file outside `tests/plugin/` and `cpu_gate_exclude.txt`, driver-free as a batch, held to green) per change, a GPU gate, a superset judged as a delta per wave against `gate_gpu.sh`'s recorded baseline, by an equality on a per-tree expectation rather than "no worse than". The CPU gate **exits 98** rather than reporting "GPU not required" when it cannot tell |
-| D67.1 | A roofline backend's goals are graded against real runs, **configuration ranking** first; its latency goals are diagnostics for that, not the result |
+| D67.1 | The analytical method's gate is a **bound**: on every measured step, at both granularities, analytical is at most measured; configuration ranking and measured over analytical are reported, not gated |

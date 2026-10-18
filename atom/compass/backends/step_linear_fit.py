@@ -39,8 +39,10 @@ host laws as a run file's `host` entry: `key`, and `laws[kind][segment]`,
 seconds on `(1, tokens, seqs)`, fitted on the samples' host labels. They take
 the step linear law's solver, MAD drops and hulls; `seqs` equal to `tokens` on
 every sample gets zero. Two keys refuse. The law and the host key state the
-`--machine-spec` digest, which a run's spec must match. A segment outside `HOST_SEGMENTS` is
-fitted for a kind whose samples carry it: `W_inputs`, on an MTP record.
+`--machine-spec` digest, which a run's spec must match, and the host key's `engine` is the
+law's `engine_config`. A segment outside `HOST_SEGMENTS` is
+fitted for a kind whose samples carry it: `W_inputs`, on an MTP record, and
+`W_recv`, on a later pipeline stage's.
 
 Each equation is divided by its own label and the coefficients are bound to be
 non-negative. Steps whose relative residual is more than `MAD_K` scaled MADs
@@ -543,12 +545,17 @@ def fit(samples, options=None, seed: int = 0) -> tuple[dict, dict]:
     return law, report
 
 
+def token_band(tokens: int) -> str:
+    """The band of `TOKEN_BANDS` `tokens` falls in: `lo-hi`, or `lo+` past the last."""
+    lo = max([0] + [b for b in TOKEN_BANDS if b <= tokens])
+    hi = min([b for b in TOKEN_BANDS if b > tokens], default=None)
+    return f"{lo}+" if hi is None else f"{lo}-{hi}"
+
+
 def _band(key: str, counts) -> str:
     if key != "prefill":
         return f"decode rung {key}"
-    lo = max([0] + [b for b in TOKEN_BANDS if b <= counts[1]])
-    hi = min([b for b in TOKEN_BANDS if b > counts[1]], default="")
-    return f"prefill tokens {lo}-{hi}"
+    return f"prefill tokens {token_band(counts[1])}"
 
 
 def _held_out(samples, options, seed, warm=None):
@@ -723,7 +730,7 @@ def main(argv=None) -> None:
     law["machine_spec"] = args.machine_spec
     law["engine_config"] = engine
     if "host" in law:
-        law["host"]["key"]["machine_spec"] = args.machine_spec
+        law["host"]["key"] |= {"machine_spec": args.machine_spec, "engine": engine}
     if len(args.records) > 1 and dp == 1:
         mark_held_out(law, report, samples, options)
     Path(args.out).write_text(json.dumps(law) + "\n")

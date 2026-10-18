@@ -27,17 +27,18 @@ coefficients are stated, not fitted, so `step-stub` refuses.
 `shape_population` tokens, with the nodes and margin `--grid-definition`
 states, as `measure steps` plans, and reads each planned point's
 `step_measurement` by its batch view under its targets' configuration,
-whichever plan measured it; a planned point the store does not hold refuses,
-naming each, and no other measurement is read as a point. Its targets are
-records and the tokens of `measure steps`' replayed batches (`TARGET`); a
+whichever replay or plan measured it; a planned point the store does not hold
+refuses, naming each, and no other measurement is read as a point. Its targets
+are records and the tokens of `measure steps`' replayed batches (`TARGET`); a
 planned point named as one refuses. `step_grid_fit.bundle` fits the bundle,
 keyed by the grid definition's digest; `--seed` fixes its held-out split. The
 report's provenance names each target run with every trace it served, and the
-plan with the inputs its points came from and their traces.
+plan with the `--grid` inputs it read and the traces their lines served.
 
-A `--grid` input is read with the client runs a `--client-run` names for it.
-`--sessions A:B` keeps the `--grid` lines `measure steps --sessions A:B` keeps,
-so under it every `--grid` input needs a `--client-run`.
+A `--grid` input is read with the client runs a `--client-run` names for it,
+and one no `--client-run` names refuses, as `measure steps` refuses to plan
+over it. `--sessions A:B` keeps the `--grid` lines `measure steps --sessions
+A:B` keeps.
 """
 
 import copy
@@ -111,8 +112,8 @@ def _step_grid(samples, config, args) -> tuple[dict, dict, dict]:
         {
             "source": "plan",
             "run": measure._digest(planned),
-            "inputs": sorted({i for p in points for i in p["sources"]}),
-            "traces": sorted({t for p in points for t in p["traces"]}),
+            "inputs": sorted({source for source, *_ in read.values()}),
+            "traces": sorted({t for _, x in steps for t in x["traces"]}),
         }
     ]
     fields = {"device": config["device"], "grid": measure._digest(definition)}
@@ -169,10 +170,10 @@ def main(argv: list[str]) -> None:
             "--grid-definition FILE states"
         )
     named = {Path(r) for r, _ in args.client_run}
-    if args.sessions and (unnamed := [n for n in args.grid if Path(n) not in named]):
+    if unnamed := [n for n in args.grid or () if Path(n) not in named]:
         raise ValueError(
-            f"{', '.join(unnamed)} is named by no --client-run, and --sessions "
-            "keeps a --grid input's lines by the traces its client runs sent"
+            f"{', '.join(unnamed)} is named by no --client-run; name the client "
+            "runs its server served, as measure steps planned over it with them"
         )
     kind, sources, fit = BACKENDS[args.backend]
     # A --client-run naming a --grid input and no target is the planner's alone.
