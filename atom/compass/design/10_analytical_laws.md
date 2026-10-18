@@ -224,7 +224,7 @@ where 4×200 at 4,376 tokens costs **63.16 ms** — fewer tokens, more time, rep
 
 ### Decision
 
-**An analytical law is a smooth bound and is allowed to be.** It does not model these four
+**An analytical law is a smooth bound and is allowed to be.** It does not model these
 places: they are where the measured time sits furthest above it, and the
 measured-over-analytical report per op kind and per phase (D68) is where they show.
 
@@ -393,7 +393,7 @@ DeepSeek-V4-Pro. Its families, each priced at both granularities:
 
 | Family | Law | Spec fields read (`05` D25) |
 |---|---|---|
-| MoE expert GEMMs | D64, routing in expectation | the FP4 rate for the FP4 routed experts, each operand pair's wider format for the rest; `BW(bytes)`; `t0` |
+| MoE expert GEMMs | D64, routing in expectation | each operand pair's wider format (FP4 only where the activations are MXFP4 too); `BW(bytes)`; `t0` |
 | attention, with its compressors | D64 | the rate at each leaf's operand format; `BW(bytes)`; `t0` |
 | the CSA indexer | D64 | the same |
 | mHC | D64 | the same |
@@ -439,10 +439,11 @@ vendor library, not of ATOM's kernels: no implementation efficiency enters it (D
 > **A projection onto an unmeasured device is as good as its carried ratios, and nothing in
 > the procedure validates them there: its terms are declared.**
 
-Three mitigations, none of which removes the caveat:
+Mitigations, none of which removes the caveat:
 
 1. **Report sensitivity.** Every projection onto an unmeasured device is reported with its
-   carried ratios, and recomputed at ±20% of each. A ranking that survives that band is
+   carried ratios, and recomputed at ±20% of each, capped at 1, the datasheet
+   ([#1466](https://github.com/jgong5/ATOM/issues/1466)). A ranking that survives that band is
    more trustworthy than one that doesn't.
 2. **Rank, don't predict.** Configuration ranking is reported beside the projection
    (D67.1). A ratio error that applies uniformly across configurations may leave the

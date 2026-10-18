@@ -550,7 +550,7 @@ it.
 | **W4.7** | MTP: per-position acceptance measured from W4.3's real runs, never declared (`08`), feeding the spec-decode pricing of `14` | `runner/`, `backends/` | 200–350 | W4.3 |
 | **W4.8** | Mooncake transfer time from the spec, checked against the transfer timings W4.3 records | `kv/` | 150–250 | W2.3, W4.3 |
 | **W4.9** | DeepSeek-V4-Pro 1P+1D at the nightly topology: W3.5's slice with one container per node, TP8 and DP-attention on each side as the cell sets it | wiring | 150–300 | W3.1, W3.5, W4.2 |
-| **W4.10** | M2's EP8 step: `exclusive` occupancy honoured in the IR; group membership per P0.6; MORI dispatch/combine carried as the group's collective in W4.6's step, in place of the gather, and priced from W4.12 by a routing model (#501) | `ir/`, `backends/` | 350–600 | **P0.6**, **P0b.2**, W4.6, W4.12 |
+| **W4.10** | M2's EP8 step: MORI dispatch and combine on the comm stream, overlapping the other micro-batch's compute under TBO ([#531](https://github.com/jgong5/ATOM/issues/531)); group membership per P0.6; MORI dispatch/combine carried as the group's collective in W4.6's step, in place of the gather, and priced from W4.12 by a routing model (#501) | `ir/`, `backends/` | 350–600 | **P0.6**, **P0b.2**, W4.6, W4.12 |
 | **W4.11** | The EP8 real side: W4.3's DP-attention cells re-run with `--enable-expert-parallel` on the MI355X pair, with the same records and repeat, since no nightly cell passes it | `scripts/compass/` | 50–100 | W4.3, GPU queue |
 | **W4.12** | MORI dispatch/combine within a node on MI355X, measured and fitted (`09`) for W4.10's routing model | `backends/`, calibration | 150–300 | W4.1, W4.2, GPU queue |
 | **W4.13** | The step grid evaluated on DeepSeek-V4-Pro, not graded (`17` D105): a workload-planned grid and fit on the nightly TP cell (TP8, no DP-attention, no MTP, expert parallelism off) on MI355X, prefill node and decode node, compared with W4.3's per-step tables and with the op-level backend where available, reported per `08` D47. Competes with W4.4 and W4.12 for MI355X | calibration | 200–350 | S2.2–S2.6, W4.3, GPU queue |
@@ -580,6 +580,7 @@ cross-check.
 | **S3c.12** | `OpGraphBackend` prices an IR graph analytically, composed by the IR's joins and TBO's overlap ([#1404](https://github.com/jgong5/ATOM/issues/1404)) | `backends/`, `run/` | 250–350 | S3c.10, #531 |
 | **S3c.13** | The bound gate and the gap reports at both granularities (`08` D50.2 item 1; [#1405](https://github.com/jgong5/ATOM/issues/1405)) | `validate/` | 150–250 | S3c.6, S3c.12 |
 | **S3c.14** | The projection: MI455's artifact for the four P/D cells, EP off and EP8, at both granularities, every assumed input listed; and the method's error, Qwen3.8-27B from MI308X to MI355X (`08` D50.2 items 2 and 3; [#1406](https://github.com/jgong5/ATOM/issues/1406)) | `validate/`, `artifacts/` | 150–250 | S3c.13, S3c.5, S3c.7, S3c.11 |
+| **S3c.15** | The projection re-priced at ±20% of each ratio carried from MI355X, capped at the datasheet, with the ranking each gives (`10` D69; [#1466](https://github.com/jgong5/ATOM/issues/1466)) | `validate/` | 40–80 | S3c.14 |
 
 **W5.1–W5.5 are retired by the ruling**, so an older citation resolves here: W5.1 is
 S3c.5; W5.2's laws are S3c.4 with the extractors of S3c.6, S3c.7, S3c.10 and S3c.11;

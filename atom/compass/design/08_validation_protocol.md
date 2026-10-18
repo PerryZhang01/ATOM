@@ -607,21 +607,20 @@ error bar quoted on the projection would be invented.
 ### Decision
 
 **Revised 2026-10-17 by the owner's ruling on
-[#1392](https://github.com/jgong5/ATOM/issues/1392).** **The projection is held to three
-checks instead of an error bar.** A projection that fails the first two, or ships without
-the third's measurement, is not M2's result.
+[#1392](https://github.com/jgong5/ATOM/issues/1392).** **The projection is held to the
+checks below instead of an error bar.** A projection that fails item 1 or 2, or ships
+without item 3's measurement, is not M2's result.
 
 1. **On every measured step, at both granularities, analytical is at most measured.** The
    step-level and op-level projections of `10` D64 price each step at the attainable peaks
-   probed on the device that ran it, composed by the IR's own joins: `Seq` sums, `Par`
-   joins, TBO overlaps, a DP group takes the max, and `resource_bound` takes one roofline
-   over its branches' summed work. Applied as D47 applies cost accuracy, on the real runs'
+   probed on the device that ran it, composed by the joins of
+   [topic 10](10_analytical_laws.md#d64-the-attainable-peak-roofline-at-step-and-op-level).
+   Applied as D47 applies cost accuracy, on the real runs'
    own unprofiled steps (D49), the stage-2 MI308X record and the stage-3 MI355X records: no
    step's analytical price may exceed its measured time. One that does is a defect in an
    extractor, a join or the spec, reported with its op kind or module; it is a bound, not a
-   statistic, so none is tolerated. Beside it, not gated: measured over analytical per op
-   kind and per phase, as distributions, never as a mean alone, with no threshold yet
-   (`10` D68).
+   statistic, so none is tolerated. Beside it, not gated: the measured-over-analytical
+   report of `10` D68.
 2. **Every MI455 input is sourced or marked assumed.** A machine-spec field's origin is
    recorded per field across save, `MachineSpec.origin()` (`05` D26); which fields
    are assumed is rule 5 of `05` D25's schema rules. MI455's attainable peaks are its

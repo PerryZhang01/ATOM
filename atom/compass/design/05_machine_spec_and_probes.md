@@ -229,7 +229,8 @@ Mooncake's KV transfer between the prefill and the decode node (`01` D6).
    **refuses and names it** (`07` D38). These are the terms with no law behind them; a
    silent default is the worst kind of wrong.
 2. **`derate` is mandatory wherever a spec-peak number appears**, so nobody can quietly
-   use a datasheet FLOP as an achievable one.
+   use a datasheet FLOP as an achievable one. `memory.derate` is derived, not probed: the
+   bandwidth curve's largest point over `bandwidth_bytes_per_s`.
 3. **`software_pinned_to` is checked, not decorative.** Device numbers track the
    ROCm/RCCL/AITER build as well as the die (`07` D43). A stack mismatch warns loudly by
    default and refuses under `validate(strict=True)`; constants moved across stacks by a
@@ -343,7 +344,7 @@ configuration into a `memory_readings` entry (`07` D38, Phase 2).
 |---|---|---|
 | `device-memory`, at TP1 | `capacity_bytes` | the device's capacity; the readings of an engine start are `measure memory`'s |
 | `device-compute` | `compute.derate`, one per format | per format (BF16, FP8, FP4 where the device has it), the best large-GEMM rate the vendor library reaches; derate is attainable over the datasheet `*_flops` (#1392) |
-| `device-bandwidth` | `memory.bandwidth_curve`, `memory.derate` | a STREAM copy sweep over transfer sizes; derate is the largest size's rate over the datasheet bandwidth |
+| `device-bandwidth` | `memory.bandwidth_curve` | a STREAM copy sweep over transfer sizes; `memory.derate` is derived from it (schema rule 2) |
 | `kernel-floor` | `kernel_floor_s` | an empty kernel replayed in a graph, so the host's launch time is not in it |
 | `http-intake` | `host.http_intake.*` | one real c=256 first-turn burst with the API server's loop stamped; fit `fixed + bytes x per_byte` to each request's chat-template start on the loop against its index and the body bytes taken in before it. Needs a real server, so it runs on a card of the target; one burst does not separate the two terms well (0.9 ms + 54 ns/B to 3.2 ms + 0 across bursts) |
 
@@ -351,7 +352,7 @@ configuration into a `memory_readings` entry (`07` D38, Phase 2).
 
 | Probe | Fills | Notes |
 |---|---|---|
-| `interconnect-intra` | `intra_node.*` | link latency from a small-message round trip, link bandwidth and its `derate` from a large peer copy (#1392); collectives in **real groups**, several sizes, for the empirical pricing of `07` D40 |
+| `interconnect-intra` | `intra_node.*` | link latency as half a small-message round trip (one hop), link bandwidth and its `derate` from a large peer copy (#1392); collectives in **real groups**, several sizes, for the empirical pricing of `07` D40 |
 
 **Class 3 — two nodes.**
 
