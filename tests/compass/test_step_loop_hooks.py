@@ -9,6 +9,7 @@ the arrival schedule: a grant delivers each request whose arrival it reaches
 into the engine's input queue, as the input thread would.
 """
 
+import json
 import queue
 import random
 import threading
@@ -238,6 +239,53 @@ def test_a_reply_advances_the_clock_only_by_the_seconds_it_carries(installed):
     workers.reply = ScheduledBatchOutput([], [], None, None, None, predicted_s=0.5)
     call(lambda: workers.call_func("dummy_execution", wait_out=True))
     assert ca.calls == [("TAR", 0.0, 0.5, 0.5)]
+
+
+def test_a_reply_with_out_s_returns_at_the_forwards_end_then_at_the_pull(installed):
+    ca = Authority([], None)
+    call = _install(ca)
+    workers = Workers(ScheduledBatchOutput([], [], None, None, None, predicted_s=0.5))
+    workers.reply.out_s = 0.25
+    call(lambda: workers.call_func("forward", wait_out=True))
+    assert ca.calls == [("TAR", 0.0, 0.5, 0.5), ("TAR", 0.5, 0.75, 0.75)]
+
+
+def test_a_real_recording_stamps_the_first_pull_and_put_after_each_reply(
+    tmp_path, monkeypatch
+):
+    from atom.compass import parity
+    from atom.compass import run as compass_run
+    from atom.model_engine.sequence import get_exit_sequence
+
+    monkeypatch.delenv(compass_run.ENV, raising=False)
+    monkeypatch.setenv(parity.ENV, str(tmp_path))
+    monkeypatch.setattr(clock, "_stamps", None)
+    config = SimpleNamespace(
+        pipeline_parallel_size=1, parallel_config=SimpleNamespace(data_parallel_rank=3)
+    )
+    with compass_run.engine(config):
+        engine = Engine(SimpleNamespace())
+        engine.output_queue = clock.relay_queue(3)
+    enqueue = engine.runner_mgr.enqueue
+
+    def step(msg):  # the request's last step is followed by the shutdown
+        enqueue(msg)
+        if engine.runner_mgr.steps == STEPS:
+            engine.input_queue.put([get_exit_sequence()])
+
+    engine.runner_mgr.rpc_broadcast_mq.enqueue = step
+    engine.input_queue.put(
+        [SimpleNamespace(id=0, status=SequenceStatus.WAITING, left=STEPS)]
+    )
+    engine.utility_handler.push_metrics = lambda: None
+
+    EngineCore.busy_loop(engine)
+
+    lines = (tmp_path / "dp3.pulls.jsonl").read_text().splitlines()
+    stamps = [next(iter(json.loads(line).items())) for line in lines]
+    # One pull after each step; the only put is the finished request's.
+    assert [k for k, _ in stamps] == ["t_pull_ns"] * 2 + ["t_put_ns", "t_pull_ns"]
+    assert [t for _, t in stamps] == sorted(t for _, t in stamps)
 
 
 def test_with_pending_kv_work_an_idle_point_waits_one_drain_interval(installed):

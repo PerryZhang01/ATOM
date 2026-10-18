@@ -49,24 +49,27 @@ LENGTHS = tuple(4**k for k in range(10))
 #: bound leaves room for that and still refuses a sweep of the wrong shape.
 BOUND = 0.25
 
-#: The total ATOM's `ModelRunner` read at one engine start on card 3 of node 18,
-#: at commit 983e42973, and on card 5 of hjbog-srdc-39 at commit ce625ddd9.
+#: The total ATOM's `ModelRunner` read at one engine start on card 7 of node 18,
+#: at commit 0f045543d, and on card 5 of hjbog-srdc-39 at commit ce625ddd9.
 TOTAL = 206141652992
-#: The software stack each host's readings were taken under, torch included.
+#: The software stack both hosts' readings were taken under, torch included:
+#: compass-next:nightly-20261013's.
 STACK = {
     "rocm": "7.2.4",
-    "aiter": "f4e7c7509",
+    "aiter": "9205e1059",
     "rccl": "2.27.7",
     "torch": "2.10.0+rocm7.2.4.git3d3aa833",
 }
-DATE, COMMIT, PIN = {
-    "mi308x-hjbog18": ("2026-10-11", "983e42973", STACK),
-    "mi308x-hjbog39": ("2026-10-14", "ce625ddd9", dict(STACK, aiter="9205e1059")),
+DATE, COMMIT = {
+    "mi308x-hjbog18": ("2026-10-17", "0f045543d"),
+    "mi308x-hjbog39": ("2026-10-14", "ce625ddd9"),
 }[NAME]
+#: Every card's `ptl_enable` on each host, as sysfs read on 2026-10-18.
+PTL = {"mi308x-hjbog18": "enabled", "mi308x-hjbog39": "disabled"}[NAME]
 #: Each start's record: the sha256 of its server log, as
 #: `python -m atom.compass.memory.check` digests it.
 RECORD = {
-    "mi308x-hjbog18": "f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87",
+    "mi308x-hjbog18": "213874c331d63384299d21d68bdffd1cda1aecf72ba4a9eab80beb63a7243bd7",
     "mi308x-hjbog39": "e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
 }[NAME]
 #: What the start ran: the model, the width, the tree and the run's record.
@@ -87,6 +90,35 @@ INTAKE = {
     ),
 }.get(NAME)
 
+#: A pipeline stage's send, per carrier, fitted on hjbog-srdc-39 GPUs 4 and 5
+#: by `scripts/compass/pp_carriers.py` at commit 93e01fbb4, pooled over six of
+#: its probe records. The record is that fit, its records' digests and source.
+PP = {
+    "mi308x-hjbog39": (
+        "2026-10-18",
+        "93e01fbb4",
+        {
+            "rccl": {
+                "eager_threshold_bytes": 33554432,
+                "latency_s": 1.5106052160263062e-06,
+                "overhead_s": 3.796907745993579e-05,
+                "per_byte_s": 2.0165586891245436e-11,
+                "rendezvous_fixed_s": 5.63815019316789e-05,
+            },
+            "gloo": {
+                "eager_threshold_bytes": 0,
+                "latency_s": 1.0642048437148333e-05,
+                "overhead_s": 1.3869054915274048e-05,
+                "per_byte_s": 1.207313759980259e-10,
+                "rendezvous_fixed_s": 2.428104060241613e-05,
+                "wake_s": 0.00018016894767673692,
+                "wake_rise_s": 0.5825204944577904,
+            },
+        },
+        "53ef27fd3bca30cd1a58c637debab9ee5b14712acb572bfd0eabeb6807a9eaa0",
+    ),
+}.get(NAME)
+
 DEVICE = {
     "host": {"cpu": {"cores_physical": 112, "cores_logical": 224}},
     "device": {
@@ -94,7 +126,7 @@ DEVICE = {
         "arch": "gfx942",
         "count_per_node": 8,
         "memory": {"capacity_bytes": TOTAL},
-        "software_pinned_to": PIN,
+        "software_pinned_to": STACK,
     },
 }
 
@@ -142,7 +174,8 @@ def device_fragments() -> list[Fragment]:
     """The fragments the engine start and any other probe filled, and the
     assumed rest."""
     notes = f"one Qwen3.8-27B TP1 start at {COMMIT}"
-    probes = []
+    ptl = {"device": {"ptl": PTL}}
+    probes = [fragment("ptl", ptl, "probed", "ptl_enable", date="2026-10-18")]
     if INTAKE:
         date, root, terms, record = INTAKE
         subject = {"model": "Qwen/Qwen3.8-27B", "source_root": f"commit:{root}"}
@@ -150,6 +183,12 @@ def device_fragments() -> list[Fragment]:
         how = f"one real c=256 first-turn cc-traces burst at {root}"
         body = {"host": {"http_intake": terms}}
         probes.append(fragment("intake", body, "probed", how, subject, date))
+    if PP:
+        date, root, carriers, record = PP
+        subject = {"source_root": f"commit:{root}", "record": f"sha256:{record}"}
+        body = {"interconnect": {"intra_node": {"pp": carriers}}}
+        how = f"pp_carriers.py on two GPUs at {root}"
+        probes.append(fragment("pp", body, "probed", how, subject, date))
     return [
         fragment("device", DEVICE, "probed", notes, SUBJECT),
         fragment("assumed", DECLARED, "assumed", "no probe fills these"),

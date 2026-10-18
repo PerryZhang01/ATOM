@@ -36,8 +36,9 @@ the refusal happens while a person is authoring the document rather than in the
 middle of a simulated run. The exceptions are the provenance fields `merge`
 fills in later, `fp4_flops`, which a device with no FP4 matrix core omits, the
 pipeline send terms, which only a pipeline run reads, a link's
-`link_setup_s`, a one-off cost that is zero when absent, and the two
-`host.http_intake` terms, which a host not probed for them omits. An engine
+`link_setup_s`, a one-off cost that is zero when absent, the two
+`host.http_intake` terms, which a host not probed for them omits, and
+`device.ptl`, the cards' PTL state, `disabled` when absent. An engine
 start's memory readings are no field here: `compass measure memory` publishes
 them per configuration, as a `memory_readings` entry.
 
@@ -61,6 +62,7 @@ class Kind(enum.Enum):
 
     TEXT = "text"
     COUNT = "count"
+    BYTES = "bytes"  # a size in bytes, zero included
     QUANTITY = "quantity"
     DERATE = "derate"
     NAMES = "names"
@@ -130,6 +132,7 @@ FIELDS = (
     Field("device.name", Kind.TEXT),
     Field("device.arch", Kind.TEXT),
     Field("device.count_per_node", Kind.COUNT),
+    Field("device.ptl", Kind.TEXT, required=False),
     Field("device.memory.capacity_bytes", Kind.QUANTITY),
     Field("device.memory.bandwidth_bytes_per_s", Kind.QUANTITY, peak=True),
     Field("device.compute.bf16_flops", Kind.QUANTITY, peak=True),
@@ -151,13 +154,16 @@ FIELDS = (
         Field(f"interconnect.intra_node.pp.{carrier}.{name}", kind, required=False)
         for carrier in ("rccl", "gloo")
         for name, kind in (
-            ("eager_threshold_bytes", Kind.COUNT),
+            ("eager_threshold_bytes", Kind.BYTES),
             ("latency_s", Kind.QUANTITY),
             ("overhead_s", Kind.QUANTITY),
             ("per_byte_s", Kind.QUANTITY),
             ("rendezvous_fixed_s", Kind.QUANTITY),
         )
     ),
+    # How late a host blocked on a gloo part goes on after it completes.
+    Field("interconnect.intra_node.pp.gloo.wake_s", Kind.QUANTITY, required=False),
+    Field("interconnect.intra_node.pp.gloo.wake_rise_s", Kind.QUANTITY, required=False),
     Field(
         "interconnect.inter_node.link_bandwidth_bytes_per_s", Kind.QUANTITY, peak=True
     ),
@@ -265,6 +271,10 @@ def check(field: Field, value: object, path: str) -> object:
     if kind is Kind.COUNT:
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             _refuse(path, "a positive whole number", value)
+        return value
+    if kind is Kind.BYTES:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            _refuse(path, "a whole number of bytes", value)
         return value
     if kind is Kind.QUANTITY:
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:

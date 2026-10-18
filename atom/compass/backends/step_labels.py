@@ -26,7 +26,8 @@ A step's host labels are its segments: `E` from the previous forward's exit,
 cut as idle when the two batches share no request; `W_pre` to the launch, less
 the staging gate's wait; `W_launch`; `W_post` from the launch to the exit, less
 the token copy wait, and a middle chunk has none. With an MTP status wait,
-`W_pre` ends at it and `W_inputs` runs from it to the launch.
+`W_pre` ends at it and `W_inputs` runs from it to the launch. On a later
+pipeline stage, `W_recv` runs from the launch to the receive of its input.
 
 `write_table` writes a record's labels beside it, `dp<r>.cost.jsonl`, for
 people: a first line `{"version": TABLE_VERSION}`, then per step `step`,
@@ -169,6 +170,8 @@ def label(record, run: str | None = None) -> tuple[list[Sample], list[dict]]:
         host = {"W_pre": g0 - enter + m0 - g1, "W_launch": l1 - l0}
         if "t_mtp_ns" in s:
             host["W_inputs"] = l0 - m1
+        if "t_pp_recv_ns" in s:
+            host["W_recv"] = s["t_pp_recv_ns"][0] - l0
         if host_kind(view) != "middle":
             host["W_post"] = s["t_exit_ns"] - l1 - (r1 - r0)
         idle = prev is not None and not _shared(s, prev)

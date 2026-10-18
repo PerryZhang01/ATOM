@@ -100,6 +100,7 @@ BASE = Conditions.of(
     atom_src=Reading.of_source_root(ATOM_ROOT),
     model="Qwen/Qwen3-32B",
     device="MI308X-80CU",
+    ptl="disabled",
     host_cpu="Intel(R) Xeon(R) Platinum 8480C",
     engine_config="cudagraph=piecewise,level=3",
 )
@@ -129,7 +130,7 @@ KEY_OF: dict[Row, Key] = {
         engine_config="cudagraph=piecewise,level=3",
     ),
     Row.MACHINE_SPEC_CAPACITY: Key.of(
-        Kind.MACHINE_SPEC, device="MI308X-80CU", software_stack="rocm7.2.4"
+        Kind.MACHINE_SPEC, device="MI308X-80CU", software_stack="rocm7.2.4", ptl="x"
     ),
     Row.STEP_GRID_BUNDLE: Key.of(
         Kind.STEP_GRID_BUNDLE,
@@ -310,6 +311,7 @@ def test_no_axis_of_the_matrix_is_a_width():
         "atom_src",
         "model",
         "device",
+        "ptl",
         "host_cpu",
         "engine_config",
     }
@@ -446,7 +448,7 @@ def test_conditions_that_state_fewer_than_every_axis_are_refused():
     with pytest.raises(ArtifactRefusal) as refused:
         Conditions.of(torch="2.10.0", model="Qwen/Qwen3-32B")
     assert refused.value.rule is Rule.INVALIDATED
-    assert "no atom_src, device, engine_config, host_cpu, software_stack" in str(
+    assert "no atom_src, device, engine_config, host_cpu, ptl, software_stack" in str(
         refused.value
     )
 
@@ -489,14 +491,7 @@ BEFORE_HOST_CPU = {
 
 @pytest.mark.parametrize(
     "row",
-    [
-        Row.OP_GRAPH,
-        Row.PRICE_LIST,
-        Row.REGION_TERMS,
-        Row.MEMORY_READINGS,
-        Row.MACHINE_SPEC_CAPACITY,
-        Row.STEP_GRID_BUNDLE,
-    ],
+    [Row.OP_GRAPH, Row.MACHINE_SPEC_CAPACITY],
     ids=lambda row: row.name,
 )
 def test_an_entry_published_before_the_host_cpu_axis_still_loads(tmp_path, row):
@@ -990,7 +985,8 @@ def test_one_row_over_different_axes_names_both_sides_axes():
         differences(Fingerprint(Row.PRICE_LIST, now.cells[:-1]), now)
     assert (
         "`price_list` was fingerprinted over ROCm / AITER / RCCL, torch, ATOM src, "
-        "but the matrix now rows it over ROCm / AITER / RCCL, torch, ATOM src, device"
+        "device, but the matrix now rows it over ROCm / AITER / RCCL, torch, ATOM "
+        "src, device, PTL"
     ) in str(refused.value)
 
 

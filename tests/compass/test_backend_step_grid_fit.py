@@ -12,6 +12,7 @@ record and the measurements are taken on `test_run_step_grid.py`'s deployment
 at `BOUNDS`, under the readings a run of it takes.
 """
 
+import itertools
 import json
 import math
 import re
@@ -21,6 +22,8 @@ import pytest
 from test_artifact_invalidation import moved
 from test_artifact_store import stanza
 from test_backend_step_linear_fit import _record
+from test_bench_window import BUSY, MS, Bench
+from test_bench_window import batch as bench_batch
 from test_fit_samples import DEVICE, HOST, SOURCE
 from test_fit_steps import fit, planted_roots  # noqa: F401
 from test_memory_readings import DOCUMENT, STACK
@@ -34,9 +37,11 @@ from atom.compass.artifacts import (
     Topology,
     member_name,
 )
-from atom.compass.backends import BatchView, RequestShape
-from atom.compass.backends.step_grid import equivalent_shape
+from atom.compass.backends import BatchView, CostRefused, RequestShape
+from atom.compass.backends.step_grid import StepGridBackend, equivalent_shape
 from atom.compass.backends.step_grid_residual import Residual, order, raggedness
+from atom.compass.backends.step_labels import digest
+from atom.compass.bench import window
 from atom.compass.bench.measure import measurement_key
 from atom.compass.fit.samples import MEMBER
 from atom.compass.run import step_grid
@@ -51,6 +56,9 @@ DEFINITION = {
 DECODE = [(b, c) for b in (1, 8) for c in (0, 512, 1023)]
 PREFILL = [(b, t, c) for b in (1, 8) for t in (16, 256) for c in (0, 768)]
 GRID = ("--backend", "step-grid", "--grid")
+#: The bench's reply for a batch on `test_bench_window.py`'s planted device,
+#: whose kept repeats a measurement publishes as they are.
+BENCHED = Bench(itertools.repeat(MS), itertools.repeat(BUSY)).bench_step(bench_batch())
 
 
 def batch(rows, output=True) -> dict:
@@ -143,6 +151,7 @@ def record(tmp_path, run, lines, name="a", trace="trace-300", session=300):
         },
         "device": [DEVICE],
         "stack": STACK,
+        "ptl": "disabled",
         "profiled": False,
     }
     (directory / "run.json").write_text(json.dumps(run_json))
@@ -158,7 +167,7 @@ def measured(tmp_path, run, line, origin="plan", seconds=None, conditions=None):
         **line,
         "seconds": time(line) if seconds is None else seconds,
         "statistic": "median",
-        "repeats": 45,
+        "repeats": BENCHED["repeats"],
         "origin": origin,
         "sources": ["planted"],
         "traces": ["trace-7"],
@@ -216,10 +225,57 @@ def test_a_fitted_bundle_prices_each_grid_node_at_its_measured_time_times_the_fa
         p for kind in ("output", "no_output") for p in grid["prefill"][kind]
     ]
     assert len(points) == len(nodes()) == 22
+    # A point counts its measurement's kept repeats.
+    assert {(p["statistic"], p["repeats"]) for p in points} == {
+        ("median", window.REPEATS)
+    }
     assert (grid["unit"], grid["value"]) == ("s", "bench window")
     assert copy["params"]["definition"] == DEFINITION
     assert copy["params"]["bounds"] == BOUNDS
     assert copy["params"]["sources"] == ["record"]
+
+
+def test_a_fitted_bundle_validates_its_held_out_batches_and_not_a_batch_outside_them(
+    tmp_path, run
+):
+    """Every target lies in the box whose corners are the prefill nodes, so a
+    prefill node is inside the hull of the held-out batches iff one of them has
+    its shape. A held-out batch outside the residual's hull, which is of the
+    batches fitted, is extrapolated, and so unvalidated."""
+    lines = nodes() * 4 + mixed()
+    a = record(tmp_path, run, lines)
+    for line in nodes():
+        measured(tmp_path, run, line)
+
+    copy = fitted(tmp_path, a, *clients(a))
+    backend = loaded(tmp_path, run, copy)
+
+    def validated(line, priced_by=backend):
+        try:
+            (term,) = priced_by.price(view(line)).terms
+        except CostRefused:
+            return None
+        return term.provenance.validated
+
+    def shape(line):
+        return line["produces_output"], equivalent_shape(view(line).requests)
+
+    report = copy["report"]
+    assert (report["unpriced"], report["cut"]) == ([], {})  # triple i is lines[i]
+    held = [lines[i] for k in report["kinds"].values() for i in k["held_out"]]
+    outcomes = [validated(x) for x in held]
+    past = [backend.price(view(x)).terms[0].provenance.extrapolated for x in held]
+    assert outcomes == [not p for p in past] and True in outcomes
+    corners = [x for x in nodes() if not x["rows"][0][2]]
+    inside = [shape(x) in set(map(shape, held)) for x in corners]
+    assert [validated(x) for x in corners] == inside
+    assert any(inside) and not all(inside)
+    # A bundle that records no held-out batches validates none.
+    residual = copy["params"]["residual"]
+    for fitted_kind in residual["kinds"].values():
+        del fitted_kind["held_out"]
+    bare = StepGridBackend(backend.grid, Residual(residual), "bare")
+    assert [validated(x, bare) for x in held] == [o and False for o in outcomes]
 
 
 def test_a_planned_point_the_store_does_not_hold_refuses_naming_each(tmp_path, run):
@@ -264,13 +320,13 @@ def test_a_grid_measured_under_sessions_fits_given_the_same_sessions(tmp_path, r
 def test_the_residual_is_fitted_on_records_replays_or_both_and_reported_by_source(
     tmp_path, run, sources
 ):
-    record(tmp_path, run, nodes() + mixed(seed=2), name="grid")
+    g = record(tmp_path, run, nodes() + mixed(seed=2), name="grid")
     for line in nodes():
         measured(tmp_path, run, line)
-    targets, named = [], []
+    targets, named = [], clients(g)
     if "record" in sources:
         a = record(tmp_path, run, mixed(seed=3))
-        targets, named = [a], clients(a)
+        targets, named = [a], named + clients(a)
     if "replay" in sources:
         targets += [
             measured(tmp_path, run, x, "replay", time(x) * factor(x)) for x in mixed()
@@ -291,7 +347,40 @@ def test_the_residual_is_fitted_on_records_replays_or_both_and_reported_by_sourc
             assert abs(spread["centre"]) < 1e-3 and spread["held_out_error"] < 1e-3
     *runs, planned = copy["report"]["provenance"]
     assert sorted({r["source"] for r in runs}) == sources
-    assert (planned["source"], planned["traces"]) == ("plan", ["trace-7"])
+    assert (planned["source"], planned["traces"]) == ("plan", ["trace-300"])
+
+
+def test_a_grid_input_no_client_run_names_refuses_naming_it(tmp_path, run):
+    """As `measure steps` refuses to plan over it, with or without `--sessions`."""
+    g = record(tmp_path, run, nodes() + mixed(seed=2), name="grid")
+    for line in nodes():
+        measured(tmp_path, run, line)
+    a = record(tmp_path, run, mixed(seed=3))
+
+    with pytest.raises(SystemExit, match=re.escape(f"{g} is named by no --client-run")):
+        fitted(tmp_path, a, *clients(a), grid="grid")
+    assert not (tmp_path / "store" / "step_grid_bundle").exists()
+
+
+def test_a_plan_whose_points_a_replay_measured_first_names_only_its_grid_inputs(
+    tmp_path, run
+):
+    """Every point is held as a replay of another run measured it, naming
+    that run's source and trace; the plan names `--grid`'s records and the
+    traces their lines served."""
+    top = [x for x in nodes() if x["rows"][0][2] and x["rows"][0][1] == 1024]
+    a = record(tmp_path, run, [x for x in nodes() if x not in top], trace="trace-3")
+    b = record(tmp_path, run, top, name="b", trace="trace-5")
+    for line in nodes():
+        measured(tmp_path, run, line, "replay")
+    t = record(tmp_path, run, mixed(), name="t")
+
+    copy = fitted(tmp_path, t, *clients(a), *clients(b), *clients(t), grid="a b")
+
+    *_, planned = copy["report"]["provenance"]
+    files = sorted(digest(d / "steps" / "dp0.jsonl") for d in (a, b))
+    assert planned["source"] == "plan"
+    assert (planned["inputs"], planned["traces"]) == (files, ["trace-3", "trace-5"])
 
 
 def test_a_planned_point_named_as_a_target_refuses(tmp_path, run):

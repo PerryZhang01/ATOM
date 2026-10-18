@@ -6,9 +6,9 @@ run builds. This records them where both runs can be read the same way, at the
 model runner's `forward`: one JSON line per call, built before the call runs,
 because a real forward rewrites some batch fields in place. Each line carries
 the batch as the `BatchView` a simulated runner prices it from (`rows`, `rung`,
-and above DP width 1 `moe_rows`); a real runner settles that view from the
-`ForwardMode` its own forward settled, so recording adds no DP collective. Its
-line also carries `t_enter_ns` and `t_exit_ns`, the worker's
+and above DP width 1 `moe_rows`, with an MTP drafter `draft_moe_rows` too); a
+real runner settles that view from the `ForwardMode` its own forward settled,
+so recording adds no DP collective. Its line also carries `t_enter_ns` and `t_exit_ns`, the worker's
 monotonic clock around its forward, and is written once the forward returns.
 Inside the forward it carries `[enter, exit]` on that clock around the staging
 gate (`t_gate_ns`), the launch (`t_launch_ns`) and the wait for the previous
@@ -49,6 +49,7 @@ schedules them in the other order names them the other way round, and `compare`
 may then report a step where the twins' rows differ.
 """
 
+import bisect
 import collections
 import copy
 import functools
@@ -81,6 +82,8 @@ TIMESTAMPS = (
     "d_gap_ns",
     "d_target_ns",
     "d_recv_ns",
+    "t_pull_ns",
+    "t_put_ns",
 )
 
 
@@ -123,10 +126,10 @@ class StepRecord:
         per request, and as the `BatchView` `runner` prices it from: `rows`
         (query tokens, context tokens, decode), `rung`, the graph width the
         step replays or None, and `moe_rows`, the rows the DP group's MoE
-        gather carries, absent at DP width 1. The view's mode is the one
-        `forward` settled, stamped by `run_model` under `forward_mode`;
-        without one it is `forward_mode`'s, which runs the DP collective
-        itself. Each prefill window is added to its request's
+        gather carries, absent at DP width 1, and `draft_moe_rows` where the
+        view has it. The view's mode is the one `forward` settled, stamped by
+        `run_model` under `forward_mode`; without one it is `forward_mode`'s,
+        which runs the DP collective itself. Each prefill window is added to its request's
         digest; the line holding a request's final chunk names it under
         `named`. A dummy batch is fabricated for DP synchronisation and names
         no request, so its `batch` is empty; its `rows` are what it runs.
@@ -205,6 +208,8 @@ class StepRecord:
         line["rung"] = view.capture_rung
         if view.moe_rows is not None:
             line["moe_rows"] = view.moe_rows
+        if view.draft_moe_rows is not None:
+            line["draft_moe_rows"] = view.draft_moe_rows
         self.pending.append((line, window))
         self.flush()
         self.step += 1
@@ -287,6 +292,31 @@ def carry_response_ids() -> None:
             return add(self, seqs)
 
         cls.add_request = add_request
+
+
+def _memory_format(name: str):
+    import torch
+
+    return getattr(torch, name)
+
+
+def key_memory_formats_by_name() -> None:
+    """Pickle a `torch.memory_format` as its name in `torch`.
+
+    Pickle otherwise saves one under the first module in `sys.modules` that
+    reaches it, so inductor's FX graph cache keys a weight by the process's
+    import order: an API server's engine and `compass measure memory`'s keyed
+    the same graphs apart, and a server started after the measurement compiled
+    them again, reading `non_torch` above it. Each real runner calls this
+    before its model compiles."""
+    import copyreg
+
+    import torch
+
+    copyreg.pickle(
+        torch.memory_format,
+        lambda f: (_memory_format, (str(f).removeprefix("torch."),)),
+    )
 
 
 class StepRecording:
@@ -433,6 +463,9 @@ def read(directory, stage: int = 0) -> dict[int, list[dict]]:
     the steps entered before the first send are the engine's start, not the
     workload's: they are left out and the rest renumbered from 0. A step
     naming requests with response ids holds them by key in `response_ids`.
+    A real rank's ``dp<rank>.pulls.jsonl`` (`clock.PullStamps`) gives each
+    step the first ``t_pull_ns`` and ``t_put_ns`` at or after its
+    ``t_exit_ns`` and before the next step's ``t_enter_ns``, where there is one.
     """
     directory, record, start = pathlib.Path(directory), {}, None
     if (directory / ARRIVALS).exists():
@@ -441,6 +474,8 @@ def read(directory, stage: int = 0) -> dict[int, list[dict]]:
     prefix = f"pp{stage}." if stage else ""
     for path in sorted(directory.glob(f"{prefix}dp*[0-9].jsonl")):
         steps = [json.loads(line) for line in path.read_text().splitlines()]
+        if (pulls := path.with_suffix(".pulls.jsonl")).exists():
+            _join_stamps(steps, pulls)
         keys = {}
         for step in steps:
             for req_id, key, *response_id in step.pop("named"):
@@ -456,6 +491,21 @@ def read(directory, stage: int = 0) -> dict[int, list[dict]]:
                 row[0] = keys.get(row[0], row[0])
         record[int(path.stem[len(prefix) + 2 :])] = steps
     return record
+
+
+def _join_stamps(steps: list[dict], path) -> None:
+    """Put into each step the first stamp of each key in `path` at or after
+    its exit and before the next step's entry."""
+    times = collections.defaultdict(list)
+    for line in path.read_text().splitlines():
+        for key, ns in json.loads(line).items():
+            times[key].append(ns)
+    ends = [s["t_enter_ns"] for s in steps[1:]] + [float("inf")]
+    for step, end in zip(steps, ends):
+        for key, ts in times.items():
+            i = bisect.bisect_left(ts, step["t_exit_ns"])
+            if i < len(ts) and ts[i] < end:
+                step[key] = ts[i]
 
 
 def _request_ranks(name: str, record: dict[int, list[dict]]) -> dict[str, int]:

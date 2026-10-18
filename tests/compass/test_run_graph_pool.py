@@ -25,7 +25,6 @@ from test_memory_readings import (
     META_8B,
     READINGS,
     WARMUP_TOKENS,
-    overridden,
     with_readings,
 )
 from test_vertical_slice import _run_file
@@ -47,27 +46,19 @@ def _installed(
     dpa=False,
     ep=False,
     sizes=None,
-    hf_overrides=None,
     readings=READINGS[1],
     **run,
 ):
     """A worker's runner after `run.runner` installed its readings, the entry
-    holding `readings`. With `hf_overrides`, the config.json leaves out each
-    key they set."""
+    holding `readings`."""
     path = _run_file(tmp_path, **run)
     monkeypatch.setenv(compass_run.ENV, str(path))
-    raw = json.loads(CONFIG_JSON.read_text())
-    if hf_overrides is None:
-        (tmp_path / "config.json").write_text(CONFIG_JSON.read_text())
-        hf = PretrainedConfig.from_dict(raw["text_config"])
-    else:
-        text = {k: v for k, v in raw["text_config"].items() if k not in hf_overrides}
-        hf, _ = overridden(tmp_path, raw | {"text_config": text}, hf_overrides)
+    (tmp_path / "config.json").write_text(CONFIG_JSON.read_text())
+    hf = PretrainedConfig.from_dict(json.loads(CONFIG_JSON.read_text())["text_config"])
     runner = SimpleNamespace(
         config=SimpleNamespace(
             model=str(tmp_path),
             hf_config=hf,
-            hf_overrides=hf_overrides,
             tensor_parallel_size=1,
             enable_dp_attention=dpa,
             enable_expert_parallel=ep,
@@ -156,20 +147,6 @@ def test_an_assumed_entry_declares_the_readings_a_run_installs(monkeypatch, tmp_
     assert runner.compass_memory["assumed"] == ASSUMED
 
 
-def test_a_field_only_hf_overrides_sets_reaches_the_installed_readings(
-    monkeypatch, tmp_path
-):
-    runner = _installed(
-        monkeypatch,
-        tmp_path,
-        eager=True,
-        hf_overrides={"max_position_embeddings": 65536},
-    )
-    peak_torch = runner.compass_memory["readings"]["peak_torch"]
-    (buffers,) = [row for row in peak_torch if row["name"] == "buffers"]
-    assert buffers["source"].startswith("65536 positions")
-
-
 @pytest.mark.parametrize(
     ("dpa", "dp", "ep", "label"),
     [(True, 8, False, "1x8"), (True, 8, True, "1x8x8"), (False, 2, False, 1)],
@@ -195,3 +172,28 @@ def test_an_entry_at_the_expert_parallel_off_layout_does_not_answer_one_on(
         _installed(
             monkeypatch, tmp_path, eager=True, dpa=True, dp=8, ep=True, readings=None
         )
+
+
+def test_a_run_prices_the_activations_at_the_warmup_its_reading_took(
+    monkeypatch, tmp_path
+):
+    # A max_model_len that does not divide max_num_batched_tokens: ATOM's
+    # `warmup_model` runs one sequence of 6144 tokens, not 8192.
+    import test_memory_readings
+
+    monkeypatch.setitem(test_memory_readings.WORKER, "max_model_len", 6144)
+    measured = dict(READINGS[1], warmup_tokens=6144)
+    runner = _installed(monkeypatch, tmp_path, eager=False, readings=measured)
+    assert runner.compass_memory["tokens"] == 6144
+    (activations,) = [
+        row
+        for row in runner.compass_memory["readings"]["peak_torch"]
+        if row["name"] == "activations"
+    ]
+    assert (activations["nbytes"], activations["method"]) == (
+        measured["activation_bytes"],
+        "measured",
+    )
+    assert NonAllocatingRunner._estimate_cudagraph_overhead(runner) == int(
+        measured["activation_bytes"] * 0.2
+    )

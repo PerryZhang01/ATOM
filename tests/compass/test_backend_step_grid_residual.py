@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """The step grid's residual: the lookup times a factor fitted over the rows' features
-in batch order, one fit per grid kind, answering only inside the hull it was
-fitted on.
+in batch order, one fit per grid kind, answering past the hull it was fitted on
+by the same members, the step's source naming how far past.
 
 Decode steps come from ATOM's `Scheduler` and are priced through the runner's
 `forward` and `_group_step_seconds`. Each holds 32 rows caching prompts of 575
@@ -42,7 +42,7 @@ from test_dp_step_max import runner
 
 from atom.compass.backends import CostRefused, Method, RequestShape
 from atom.compass.backends.shape import sum_context
-from atom.compass.backends.step_grid import equivalent_shape
+from atom.compass.backends.step_grid import coordinates, equivalent_shape
 from atom.compass.backends.step_grid_residual import (
     RECIPE,
     Recipe,
@@ -181,58 +181,66 @@ def test_the_term_is_fitted_and_its_detail_holds_the_lookup_and_each_member():
     )
 
 
+def source(prompts, backend):
+    """The provenance of the one term `backend` prices these decode rows at."""
+    rows = [(1, p + 1, True) for p in prompts]
+    (term,) = backend.price(view(*rows)).terms
+    return term.provenance
+
+
 # Both decode hulls bound order <= 1/4; the second also holds raggedness at 1, so
-# its facet has no raggedness entry.
+# its facet has no raggedness entry. Alternating passes the first by its order,
+# 31/64 - 1/4; grouped differs from the second's raggedness by 1/4.
 @pytest.mark.parametrize(
-    "hull,inside,outside,named",
+    "hull,inside,outside,factor,past",
     [
-        (
-            {"facets": [[0, 0, 1, 0, -0.25]]},
-            GROUPED,
-            ALTERNATING,
-            "order=0.484375, raggedness=1.25",
-        ),
+        ({"facets": [[0, 0, 1, 0, -0.25]]}, GROUPED, ALTERNATING, 1.3046875, 0.234),
         (
             {"equal": {"raggedness": 1.0}, "facets": [[0, 0, 1, -0.25]]},
             HOMOGENEOUS,
             GROUPED,
-            "order=0.015625, raggedness=1.25",
+            1.0703125,
+            0.25,
         ),
     ],
     ids=["facet", "equal"],
 )
-def test_a_step_outside_the_residuals_hull_refuses_naming_it(
-    hull, inside, outside, named
+def test_a_step_outside_the_residuals_hull_is_priced_by_its_members_naming_how_far(
+    hull, inside, outside, factor, past
 ):
     backend = eager(residual=residual({"decode": hull}, o=ORDERED))
 
     assert price(inside, backend)[1] == ()
-    assert price(outside, backend) == (
-        0.0,
-        (
-            (
-                "cost:step-grid: the step at tokens=0.03125, query_context=0.0234375, "
-                f"{named} is outside the residual's hull of decode steps"
-            ),
-        ),
+    assert source(inside, backend).source == "step-grid"
+    assert price(outside, backend) == (pytest.approx(4261e-6 * factor), ())
+    out = source(outside, backend)
+    assert out.source == (
+        f"step-grid-extrapolated: {past} past the residual's decode hull"
+    )
+    assert (out.method, out.validated, out.extrapolated) == (
+        Method.ESTIMATED,
+        False,
+        True,
     )
 
 
-def test_a_hull_refusal_refuses_that_step_only():
+def test_only_the_steps_outside_the_hull_are_extrapolated_each_at_its_members_price():
     # tokens <= 1/32: the three 64-token middle chunks are outside, the final 8 in.
     tokens = {"facets": [[1, 0, 0, 0, 0, -1 / 32]]}
     hulls = dict.fromkeys(("prefill_output", "prefill_no_output"), tokens)
-    backend = eager(
-        residual=residual(hulls, u=linear()),
-        output=FINAL,
-        no_output=MIDDLE,
-        unit="ms",
-    )
 
-    steps, refused = chunks(backend)
-    assert steps == [(False, 0.0)] * 3 + [(True, 3e-3)]
-    assert len(refused) == 3
-    assert all("tokens=0.0625," in r and "residual's hull" in r for r in refused)
+    def backend(fitted):
+        return eager(residual=fitted, output=FINAL, no_output=MIDDLE, unit="ms")
+
+    bounded = backend(residual(hulls, u=linear()))
+    steps, refused = chunks(bounded)
+    assert (steps, refused) == chunks(backend(residual(u=linear())))
+    assert refused == ()
+    middle = [view((64, 64 * k, False), produces_output=False) for k in (1, 2, 3)]
+    final = view((8, 200, False), produces_output=True)
+    assert [
+        bounded.price(v).terms[0].provenance.extrapolated for v in (*middle, final)
+    ] == [True, True, True, False]
 
 
 @pytest.mark.parametrize(
@@ -551,8 +559,8 @@ def test_outliers_are_dropped_until_settled_and_the_hull_is_the_kept_views():
     assert output["zero"] == ["prefill tokens 512-2048"]
     banded = mapping["kinds"]["prefill_output"]["members"]["band"]["values"]
     assert "prefill tokens 512-2048" not in banded
-    with pytest.raises(CostRefused, match="outside the residual's hull of decode"):
-        load_and_price(mapping, planted).factor(wide)
+    *_, past = load_and_price(mapping, planted).factor(wide)
+    assert past.endswith("past the residual's decode hull")
 
 
 def relative_error(member, triple):
@@ -615,6 +623,22 @@ def test_a_feature_constant_over_the_fit_is_zeroed_and_held_at_its_value():
     for name in ("identity", "exp"):
         assert report["decode"]["members"][name]["zero"] == ["tokens"]
         assert decode_fit["members"][name]["coefficients"]["tokens"] == 0.0
+
+
+@pytest.mark.parametrize("n, spans", [(8, False), (12, True)])
+def test_held_out_batches_are_validated_only_when_their_coordinates_span_a_hull(
+    n, spans
+):
+    """8 decode triples hold out 2, which differ in B and c and span no hull; 12
+    hold out 3, which do."""
+    triples = triples_of(planted, n=n, prefill=False)
+    mapping, report = fit(triples, seed=0)
+
+    assert ("held_out" in mapping["kinds"]["decode"]) is spans
+    loaded = Residual(mapping)
+    for i in report["decode"]["held_out"]:
+        v = triples[i][0]
+        assert loaded.validated(v, coordinates(v.requests, prefill=False)) is spans
 
 
 def replaced(triples, v):

@@ -66,6 +66,11 @@ DP_MACHINE["interconnect"]["intra_node"]["pp"] = {
     }
     for carrier in ("rccl", "gloo")
 }
+#: And gloo's wake, about a picosecond: a blocked stage goes on as it completes.
+DP_MACHINE["interconnect"]["intra_node"]["pp"]["gloo"] |= {
+    "wake_s": 2.0**-40,
+    "wake_rise_s": 1.0,
+}
 DONE = "data: [DONE]"
 #: The slice's parallelism: two DP ranks at TP 1, with expert parallelism.
 DP_WIDTH = ["-tp", "2", "--enable-dp-attention", "--enable-expert-parallel"]

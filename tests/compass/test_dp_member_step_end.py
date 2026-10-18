@@ -27,6 +27,7 @@ from atom.compass import run as compass_run
 from atom.compass.audit import sync_scan
 from atom.compass.backends.step_stub import Coefficients, StepStubBackend
 from atom.compass.clock import NER, ClockAuthority, LpId, single_engine_table
+from atom.compass.runner.overrides import HostDeviceRecurrence
 from atom.utils import clock
 from atom.utils.clock import LPRuntime, WrappedSocket
 from atom.utils.distributed import utils
@@ -226,3 +227,110 @@ def test_a_host_collective_settles_first_and_a_device_collective_does_not(
     dist.broadcast(tensor=t, src=0)
 
     assert len(settled) == (3 if settles else 0)
+
+
+@pytest.mark.parametrize("second", ["prefill", "dummy"])
+def test_a_member_returns_at_its_own_release_after_the_groups_device_end(
+    dp2,  # noqa: F811
+    second,
+):
+    # dp0's prefill is launch-bound, 50 ms of launch over 5 ms of device; dp1's
+    # forward has no host time. The forwards' collectives hold dp1's device
+    # until dp0's launch ends, but dp1 returns at its own release, before dp0.
+    coefficients = Coefficients.constant(prefill_seconds=0.005, decode_seconds=0.001)
+    ranks = [
+        runner(StepStubBackend(coefficients), dp_size=2, dp_rank=r) for r in (0, 1)
+    ]
+    launch = {"prefill": {"W_launch": [0.05, 0, 0]}}
+    ranks[0].compass_host = HostDeviceRecurrence(
+        launch, ("E", "W_pre", "W_post"), lambda: 0.0
+    )
+    ranks[1].compass_host = HostDeviceRecurrence({}, (), lambda: 0.0)
+    step = {"prefill": lambda: ranks[1].forward(prefill(8))}
+    step["dummy"] = ranks[1].dummy_execution
+
+    busy, other = dp2(lambda: ranks[0].forward(prefill(40)), step[second])
+
+    assert [busy.predicted_s, other.predicted_s] == [0.05, 0.0]
+    assert busy.group_targets == other.group_targets == (0.05, 0.0)
+    hosts = [r.compass_host for r in ranks]
+    assert [h.ends[-1] for h in hosts] == [0.05, 0.05]
+    assert hosts[1].output_end == 0.05
+
+
+def test_a_member_returns_at_its_own_pull_with_what_arrived_before_it(
+    monkeypatch, collectives
+):
+    # dp1 pulls 30 ms after its release, dp0 10 ms after its own; a request
+    # sent at 0.1 s is inside dp1's window from its release to its pull.
+    pulls = (TARGETS[0] + 0.03, TARGETS[1] + 0.01)
+    sends = (0.05, 0.1)
+    endpoint = f"inproc:test-dp-pull-{uuid.uuid4().hex}"
+    server = clock_transport.serve(
+        ClockAuthority(TABLE, members=compass_run._members(TABLE, 2)), endpoint
+    )
+    clock_transport.connect(LpId("traffic"), endpoint).send(
+        (NER, math.inf, [], math.inf)
+    )
+    ctx, address = zmq.Context(), f"inproc://dp-pull-{uuid.uuid4().hex}"
+    push, pull = ctx.socket(zmq.PUSH), ctx.socket(zmq.PULL)
+    push.bind(address)
+    pull.connect(address)
+    returned, intake = [], queue.Queue()
+
+    def frontend():
+        rt = LPRuntime(FRONTEND, TABLE, clock_transport.connect(FRONTEND, endpoint))
+        rt.start_run()
+        sock = WrappedSocket(rt, push, REQUEST)
+        for t in sends:
+            rt.advance_to(t)
+            sock.send(str(t).encode())
+        rt.next_event(math.inf)
+
+    def dp0():  # asks the same rounds as `clock.charge` on dp1
+        rt = LPRuntime(ENGINE, TABLE, clock_transport.connect(ENGINE, endpoint, "dp0"))
+        rt.start_run()
+        rt.advance_group((*TARGETS, *pulls), pulls[1])
+        returned.append(rt.now)
+        rt.next_event(math.inf)
+
+    rt = LPRuntime(ENGINE, TABLE, clock_transport.connect(ENGINE, endpoint, "dp1"))
+    rt.start_run()
+    monkeypatch.setattr(clock, "_installed", rt)
+    clock.settle_before_collectives()
+    sock = WrappedSocket(rt, pull, REQUEST)
+
+    def receive():
+        for _ in sends:
+            intake.put(sock.recv())
+        rt.back_at_wait_point()
+
+    threads = [_thread(receive), _thread(frontend), _thread(dp0)]
+    reply = SimpleNamespace(
+        predicted_s=TARGETS[0], out_s=0.03, group_targets=TARGETS, group_out=pulls
+    )
+
+    clock.charge(reply)
+
+    assert rt.now == pulls[0]
+    assert [intake.get(timeout=10), intake.get(timeout=10)] == [b"0.05", b"0.1"]
+    dist.all_reduce(None)
+    assert collectives == [pulls[1]]
+    rt.next_event(math.inf)
+    for t in threads:
+        t.join(timeout=10)
+    assert returned == [pulls[1]]
+    server.close()
+    ctx.destroy(linger=0)
+
+
+def test_each_rank_gathers_its_pull_beside_its_release(dp2):  # noqa: F811
+    ranks = [runner(StepStubBackend(), dp_size=2, dp_rank=r) for r in (0, 1)]
+    for r, (charge_s, out_s) in zip(ranks, [(0.05, 0.002), (0.001, None)]):
+        r.compass_host = SimpleNamespace(charge=lambda *_, s=charge_s: s, out_s=out_s)
+
+    busy, idle = dp2(lambda: ranks[0].forward(prefill(40)), ranks[1].dummy_execution)
+
+    assert busy.group_targets == idle.group_targets == (0.05, 0.001)
+    assert busy.group_out == idle.group_out == (0.05 + 0.002,)
+    assert [busy.out_s, idle.out_s] == [0.002, None]
