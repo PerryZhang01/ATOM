@@ -61,6 +61,7 @@ class Sample:
     """One real forward, labelled.
 
     `device_s` is its device label, None when cut, and `cut` names why (`CUTS`).
+    `draft_s` is its draft label, None when cut or on a step with no draft.
     `host` holds the segments it has, in seconds: no `W_post` on a middle chunk,
     no `E` on the record's first forward or after an idle engine (`idle`).
     `provenance` holds `source`, `run` (the run's digest), `requests` (the
@@ -76,6 +77,7 @@ class Sample:
     host: dict
     idle: bool
     provenance: dict
+    draft_s: float | None = None
 
 
 def digest(record) -> str:
@@ -192,7 +194,17 @@ def label(record, run: str | None = None) -> tuple[list[Sample], list[dict]]:
             "config": config,
         }
         samples.append(
-            Sample(s["step"], s["dp_rank"], view, device, cut, host, idle, provenance)
+            Sample(
+                s["step"],
+                s["dp_rank"],
+                view,
+                device,
+                cut,
+                host,
+                idle,
+                provenance,
+                None if cut else draft,
+            )
         )
         gap_ns = s.get("d_gap_ns")
         table.append(

@@ -19,7 +19,8 @@ recorded at the forward's exit (`d_target_ns` to one recorded just after
 `postprocess` records `forward_done_event`), and `d_gap_ns`, from the previous forward's
 exit event to this launch's entry event, absent on the first line; summed in
 order they lay every forward on one device timeline. A later pipeline stage's
-receive of its input is `t_pp_recv_ns`, its device part `d_recv_ns`. The events are polled,
+receive of its input is `t_pp_recv_ns`, its device part `d_recv_ns`; an idle
+`flush_pp_send` since the last forward that settled a pending send is `t_flush_ns`. The events are polled,
 never waited on, so a line is written once its exit event has completed, and
 `exit` writes the rest. Under `kv` a line carries the lmcache offload loads
 and saves the scheduler handed the worker since the previous line
@@ -78,6 +79,7 @@ TIMESTAMPS = (
     "t_mtp_ns",
     "t_draft_recv_ns",
     "t_pp_recv_ns",
+    "t_flush_ns",
     "d_busy_ns",
     "d_gap_ns",
     "d_target_ns",
@@ -384,6 +386,12 @@ class StepRecording:
         if self._recording:
             record_kv(self, meta)
         return super().process_kvconnector_output(meta)
+
+    def flush_pp_send(self):
+        """ATOM's idle flush, stamped for the next forward when a send is pending."""
+        if getattr(self, "_pp_pending_send", None):
+            return self._stamped("t_flush_ns", super().flush_pp_send)
+        return super().flush_pp_send()
 
     def _stamped(self, key, call, *args):
         """`call(*args)`, stamped under `key` when this forward is recorded."""
