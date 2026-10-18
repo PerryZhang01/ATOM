@@ -187,5 +187,5 @@ def test_a_stage_posts_its_receive_after_its_ring_wait_and_its_input_prepare(
     batch = prefill(8)
     for _ in range(pp):
         host.charge(batch, 1.0)
-    posted = stage.pp_recv_posted(0.0, *forward_shape(batch))
+    posted, _ = stage.pp_recv_posted(0.0, *forward_shape(batch))
     assert posted == E + 2 * (PRE + INPUTS) + 1.0
