@@ -73,6 +73,7 @@ def test_the_hjbog39_law_loads_under_its_own_spec_and_refuses_under_node_18s(
         _installed(monkeypatch, tmp_path, step_linear=HERE, machine=N18)
     assert f"fitted on machine spec {digest(N39)}" in str(refused.value)
     assert f"this run's is {digest(N18)}" in str(refused.value)
+    assert "ptl='enabled'" in str(refused.value)
 
 
 #: The spec each checked-in law was fitted under; a law missing here fails below.

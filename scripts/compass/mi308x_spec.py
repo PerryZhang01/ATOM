@@ -56,26 +56,27 @@ BOUND = 0.25
 #: one length; it is printed and swept again, up to as many times.
 SWEEPS = 10
 
-#: The total ATOM's `ModelRunner` read at one engine start on card 3 of node 18,
-#: at commit 983e42973, and on card 5 of hjbog-srdc-39 at commit ce625ddd9.
+#: The total ATOM's `ModelRunner` read at one engine start on card 7 of node 18,
+#: at commit 0f045543d, and on card 5 of hjbog-srdc-39 at commit ce625ddd9.
 TOTAL = 206141652992
-#: The software stack each host's readings were taken under, torch included.
+#: The software stack both hosts' readings were taken under, torch included:
+#: compass-next:nightly-20261013's.
 STACK = {
     "rocm": "7.2.4",
-    "aiter": "f4e7c7509",
+    "aiter": "9205e1059",
     "rccl": "2.27.7",
     "torch": "2.10.0+rocm7.2.4.git3d3aa833",
 }
-DATE, COMMIT, PIN = {
-    "mi308x-hjbog18": ("2026-10-11", "983e42973", STACK),
-    "mi308x-hjbog39": ("2026-10-14", "ce625ddd9", dict(STACK, aiter="9205e1059")),
+DATE, COMMIT = {
+    "mi308x-hjbog18": ("2026-10-17", "0f045543d"),
+    "mi308x-hjbog39": ("2026-10-14", "ce625ddd9"),
 }[NAME]
 #: Every card's `ptl_enable` on each host, as sysfs read on 2026-10-18.
 PTL = {"mi308x-hjbog18": "enabled", "mi308x-hjbog39": "disabled"}[NAME]
 #: Each start's record: the sha256 of its server log, as
 #: `python -m atom.compass.memory.check` digests it.
 RECORD = {
-    "mi308x-hjbog18": "f4951d84d5fd2b76c50c18c8234a1586fbeb5f0ee89897dc54f0c44f6bb1eb87",
+    "mi308x-hjbog18": "213874c331d63384299d21d68bdffd1cda1aecf72ba4a9eab80beb63a7243bd7",
     "mi308x-hjbog39": "e7c309168326a052460eb20e1cec1f0744415b69161e80856069339158600c52",
 }[NAME]
 #: What the start ran: the model, the width, the tree and the run's record.
@@ -158,7 +159,7 @@ DEVICE = {
         "arch": "gfx942",
         "count_per_node": 8,
         "memory": {"capacity_bytes": TOTAL},
-        "software_pinned_to": PIN,
+        "software_pinned_to": STACK,
     },
 }
 
