@@ -3,7 +3,7 @@
 
 Each command in `COMMANDS` runs its module's `main` with the arguments after
 its words; a module not yet built refuses as not built. Each command in
-`REFUSED`, the op-level half and the deprecated ones, refuses with its reason.
+`REFUSED` refuses with its reason.
 A refusal a command raises (`ValueError`, `OSError`, `ArtifactRefusal`,
 `GpuRefusal`, `SpecRefusal`) exits with its message rather than a traceback.
 """
@@ -39,6 +39,10 @@ COMMANDS = {
         "an engine start's memory readings [GPU]",
     ),
     "fit steps": ("atom.compass.fit.steps", "a step-level backend's fit"),
+    "fit ops": (
+        "atom.compass.fit.ops",
+        "a price_list from measure ops's measurements",
+    ),
     "fit host": ("atom.compass.fit.host", "the host laws, fitted on real runs"),
     "run": ("atom.compass.drive.run", "a simulated serve"),
 }
@@ -49,7 +53,6 @@ MACHINE = (
 )
 #: Each command that refuses, to why and where its work is.
 REFUSED = {
-    "fit ops": OPS,
     "trace": "there is no bare trace: use compass trace steps or compass trace ops",
     "plan": (
         "deprecated: compass measure steps --grid plans the step grid's points, "
@@ -64,9 +67,6 @@ REFUSED = {
 }
 USAGE = "usage: compass <command> [<args>]; compass <command> --help for its own\n\n"
 USAGE += "\n".join(f"  {c:16} {doc}" for c, (_, doc) in COMMANDS.items())
-USAGE += "\n" + "\n".join(
-    f"  {c:16} (ops half)" for c, why in REFUSED.items() if why == OPS
-)
 
 
 def main(argv=None) -> None:

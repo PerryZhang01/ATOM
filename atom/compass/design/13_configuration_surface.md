@@ -196,7 +196,7 @@ compass fit steps      --backend step-grid --grid <population>... --grid-definit
                        --client-run INPUT EXPORT... --machine M --out D --store S
 compass fit host       RECORD... --client-run RECORD EXPORT... --machine M \
                        --out D --store S
-compass fit ops                   (ops half)
+compass fit ops        MEASURED... --out D --store S
 compass run            <backend> --machine M  --out D --store S -- <ATOM args>
 
 <backend>   one of --step-linear KEY, --step-stub FILE, --step-grid KEY; --step-linear
@@ -207,6 +207,7 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
 <targets>   record directories, and the keys of step_measurement entries of replayed
             batches
 <sample>    --sample N --seed S, or --sample all
+MEASURED    measure ops --out directories, whose points fit ops reads from --store
 ```
 
 | Command | Phase (`07` D38) | Device | Reads | Writes |
@@ -219,7 +220,7 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
 | `measure memory` | 2 | GPU | ATOM's arguments; the machine spec | `--store`: one `memory_readings` for the configuration; `--out`: `run.json`, logs, a readable copy |
 | `fit steps` | from 1c's measurements | none | the machine spec; `record` directories, each with the exports of the client runs its server served, and `step_measurement` entries, as the backend accepts | `--store`: a `step_linear_law` or a step grid bundle, with its report; `--out`: a readable copy |
 | `fit host` | from real runs | none | the machine spec; `record` directories only, each with the exports of the client runs its server served | `--store`: `host_laws`, with its report |
-| `fit ops` | from 1b's measurements | none | `measure ops`'s `op_measurement` entries | `--store`: a `price_list`, interpolating only between same-kernel neighbours |
+| `fit ops` | from 1b's measurements | none | `measure ops` `--out` directories, whose `op_measurement` entries it reads from `--store` | `--store`: a `price_list`, interpolating only between same-kernel neighbours |
 | `run` | a simulated serve | none | a backend, the machine spec, the configuration's `memory_readings`, ATOM's arguments; the requests clients send | `--out`: the step record with its cost lines, the step table, the run summary, `run.json` with the run file and what grading reads (below), logs |
 
 **Shared by every command:**
