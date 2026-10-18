@@ -9,6 +9,7 @@ import os
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass, field, fields
+from itertools import pairwise
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import torch
@@ -1303,8 +1304,9 @@ class SpeculativeConfig:
     # (accepted_draft / total_draft), i.e. (length - 1) / num_speculative_tokens.
     synthetic_acceptance_rate: float | None = None
     # Resolved per-position *unconditional* acceptance rates (entry i = marginal
-    # probability that the first i+1 draft tokens are all accepted), filled in by
-    # __post_init__. None => real draft/target rejection sampling.
+    # probability that the first i+1 draft tokens are all accepted), given by
+    # --spec-decode-acceptance-rates or filled in by __post_init__ from a scalar.
+    # None => real draft/target rejection sampling.
     synthetic_acceptance_rates: list[float] | None = None
 
     # model_type → mtp_model_type mapping
@@ -1375,7 +1377,7 @@ class SpeculativeConfig:
     def _resolve_synthetic_acceptance(self) -> None:
         """Validate the forced-acceptance knobs and resolve to per-position rates.
 
-        Both knobs describe the same curve, so exactly one may be set; the rate
+        The knobs describe the same curve, so at most one may be set; the rate
         form is converted to a length and everything downstream reads only
         ``synthetic_acceptance_rates``.
         """
@@ -1393,7 +1395,16 @@ class SpeculativeConfig:
                 "describe the same curve; set at most one."
             )
         length = self.synthetic_acceptance_length
-        if self.synthetic_acceptance_rate is None and length is None:
+        rates = self.synthetic_acceptance_rates
+        if rates is not None and (
+            length is not None or self.synthetic_acceptance_rate is not None
+        ):
+            raise ValueError(
+                "--spec-decode-acceptance-rates and the scalar "
+                "--spec-decode-acceptance-length / -rate describe the same curve; "
+                "set at most one."
+            )
+        if self.synthetic_acceptance_rate is None and length is None and rates is None:
             return
 
         n = self.num_speculative_tokens
@@ -1402,7 +1413,22 @@ class SpeculativeConfig:
                 "Forced speculative acceptance needs --num-speculative-tokens, "
                 f"but it is {n!r}."
             )
-        if self.synthetic_acceptance_rate is not None:
+        if rates is not None:
+            if len(rates) != n:
+                raise ValueError(
+                    f"--spec-decode-acceptance-rates needs {n} rates, one per "
+                    f"speculative position, but got {len(rates)}: {rates}."
+                )
+            if not all(0.0 <= r <= 1.0 for r in rates):
+                raise ValueError(
+                    f"--spec-decode-acceptance-rates must be in [0, 1], got {rates}."
+                )
+            if any(b > a for a, b in pairwise(rates)):
+                raise ValueError(
+                    f"--spec-decode-acceptance-rates must be non-increasing, got {rates}."
+                )
+            length = 1.0 + sum(rates)
+        elif self.synthetic_acceptance_rate is not None:
             rate = self.synthetic_acceptance_rate
             if not 0.0 <= rate <= 1.0:
                 raise ValueError(
@@ -1416,8 +1442,9 @@ class SpeculativeConfig:
                 f"must be in [1, {n + 1}] for num_speculative_tokens={n}, but got "
                 f"{length}."
             )
-        self.synthetic_acceptance_length = length
-        self.synthetic_acceptance_rates = acceptance_length_to_rates(length, n)
+        if rates is None:
+            self.synthetic_acceptance_length = length
+            self.synthetic_acceptance_rates = acceptance_length_to_rates(length, n)
         logger.info(
             "Forced speculative acceptance ON: mean acceptance length %.4f over "
             "%d draft positions (per-position rates %s). Throughput numbers from "
@@ -2217,7 +2244,7 @@ class Config:
         ):
             raise ValueError(
                 "Forced speculative acceptance (--spec-decode-acceptance-length "
-                "/ --spec-decode-acceptance-rate) cannot be combined with the "
+                "/ -rate / -rates) cannot be combined with the "
                 "DSpark confidence scheduler (--dspark-config "
                 "'{\"confidence_schedule\": true}'): it sizes each request's "
                 "verify length at runtime, and a short one caps acceptance below "

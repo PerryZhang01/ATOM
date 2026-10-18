@@ -195,6 +195,9 @@ def synthetic_settings(argv, environment):
         value = option(argv, (f"--spec-decode-acceptance-{key}",))
         if value is not None:
             settings[f"acceptance_{key}"] = float(value)
+    value = option(argv, ("--spec-decode-acceptance-rates",))
+    if value is not None:
+        settings["acceptance_rates"] = [float(v) for v in value.split(",")]
     declared = environment.get("ATOM_DSV41_BENCHMARK_SYNTHETIC")
     forced = bool(settings)
     # A declaration can describe older/custom synthetic mechanisms. Preserve it
