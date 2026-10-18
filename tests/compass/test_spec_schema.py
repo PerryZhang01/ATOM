@@ -359,6 +359,12 @@ BREAKAGES = {
     "a required field is missing": lambda: drop(
         document(), "device", "memory", "capacity_bytes"
     ),
+    "the http intake fixed cost is missing": lambda: drop(
+        document(), "host", "http_intake", "fixed_s"
+    ),
+    "the http intake per-byte cost is missing": lambda: drop(
+        document(), "host", "http_intake", "per_byte_s"
+    ),
     "a spec that is not a mapping at all": lambda: [1, 2],
     "a tokenizer entry field is missing": lambda: drop(
         document(), "host", "tokenizers", 0, "vocab_size"
