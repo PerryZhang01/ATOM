@@ -176,11 +176,8 @@ class LMCacheServer:
         lmcache logs it."""
         tracked = len(self.objects) + len(self._staged)
         mark = self.args.eviction_trigger_watermark
-        if (
-            not self.capacity
-            or (usage := self._size([*self.objects, *self._staged]) / self.capacity)
-            < mark
-        ):
+        used = self._size(self.objects) + self._size(self._staged)
+        if not self.capacity or (usage := used / self.capacity) < mark:
             return []
         ratio = min(1.0, max(0.0, self.args.eviction_ratio))
         target = int(tracked * ratio) or int(ratio > 0)
@@ -351,7 +348,7 @@ class LMCacheServer:
         self._recurrent |= bool(state)
         null = self.args.null_block_id
         states = [(*k, 1) for k, *ids in zip(keys, *state) if set(ids) - {null}]
-        used, wanted = self._size([*self.objects, *self._staged]), []
+        used, wanted = self._size(self.objects) + self._size(self._staged), []
         for group in (keys, states):  # one allocation a group: all or nothing
             new = [k for k in group if k not in self.objects and k not in self._staged]
             if used + self._size(new) <= self.capacity:
