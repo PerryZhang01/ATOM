@@ -1,22 +1,20 @@
 # SPDX-License-Identifier: MIT
 """One decode step of a model, traced with no device into an `ir.Graph`.
 
-ATOM's own `ModelRunner` runs its own decode step through the model's own
-classes under `TorchDispatchMode` over `FakeTensorMode(ShapeEnv())`, with the
-Python dispatcher on. The step's width is one free symbol, rendered `B`, set
-on the `ScheduledBatch`; ATOM derives every other bound from it.
-
-`SymInt.__index__` and `__int__` are `guard_int`: a host fill or slice that
-asks the width for a number would record `Eq(B, hint)` and make the graph
-constant. The capture answers those asks with the hint and logs each with its
-ATOM line instead, and refuses a graph in which anything specialised.
+ATOM's `ModelRunner` runs its own decode step through the model's own classes
+under `TorchDispatchMode` over `FakeTensorMode(ShapeEnv())`, the Python
+dispatcher on. The step's width is one free symbol, written `B`, set on the
+`ScheduledBatch`; ATOM derives every other bound from it. `SymInt.__index__`
+and `__int__` are `guard_int`, so a host fill that asks the width for a number
+would pin `B` to the hint: the capture answers such an ask with the hint, logs
+its ATOM line, and refuses a graph in which anything specialised.
 """
 
 import contextlib
 import pathlib
 import re
 import sys
-import unittest.mock
+from unittest.mock import patch
 
 import torch
 from torch.utils import _pytree
@@ -34,18 +32,17 @@ SYMBOL = "B"
 MIN_WIDTH = 2
 #: The KV pool the step indexes; a block count, not a reading.
 KV_BLOCKS = 64
-#: The batch fields that carry a decode step's width: one query row per
-#: sequence, so one symbol.
+#: A decode step's width: one query row per sequence, so one symbol for all four.
 WIDTH_FIELDS = (
     "total_tokens_num",
     "total_tokens_num_decode",
     "total_seqs_num",
     "total_seqs_num_decode",
 )
-#: Namespaces whose operators are torch's own; any other hides its kernels.
+#: Torch's own namespaces; an operator in any other hides its kernels.
 TORCH_NAMESPACES = ("aten", "prim", "prims", "_c10d_functional", "c10d")
-#: ATOM's H2D publication checks each count with `operator.index` and copies
-#: with the number, so its copies are at the hint and describe one width.
+#: ATOM's H2D publication copies with a count it took `operator.index` of, so
+#: its copies are at the hint and describe one width.
 H2D = "atom/utils/h2d.py"
 
 _ROOT = pathlib.Path(atom.__file__).resolve().parent.parent
@@ -59,8 +56,9 @@ def _site() -> str:
         if path.is_relative_to(_ROOT / "atom") and not path.is_relative_to(
             _ROOT / "atom" / "compass"
         ):
-            name = frame.f_code.co_name
-            return f"{path.relative_to(_ROOT)}:{frame.f_lineno} in {name}"
+            return (
+                f"{path.relative_to(_ROOT)}:{frame.f_lineno} in {frame.f_code.co_name}"
+            )
         frame = frame.f_back
     return "outside atom"
 
@@ -71,24 +69,21 @@ class _Recorder(TorchDispatchMode):
     def __init__(self, axis, scope, contexts):
         super().__init__()
         self.axis, self.scope, self.contexts = str(axis), scope, contexts
-        self.layer = None
-        self.items = []  # (layer index or None, Op | Fork | Join)
-        self.symbolic = False
+        self.layer, self.items, self.symbolic, self.on = None, [], False, False
 
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         out = func(*args, **(kwargs or {}))
         name = str(func)
         if not name.startswith("profiler.") and not _site().startswith(H2D):
+            torch_own = name.split(".")[0] in TORCH_NAMESPACES
+            kind = ir.NodeKind.CAPTURED if torch_own else ir.NodeKind.OPAQUE_LEAF
             leaves = _pytree.tree_leaves((args, kwargs))
-            kind = (
-                ir.NodeKind.CAPTURED
-                if name.split(".")[0] in TORCH_NAMESPACES
-                else ir.NodeKind.OPAQUE_LEAF
-            )
             self.add(name, kind, leaves, _pytree.tree_leaves(out))
         return out
 
     def add(self, name, kind, inputs, outputs=()):
+        if not self.on:  # the forward only, not the build before it
+            return
         ins = [t for t in inputs if isinstance(t, torch.Tensor)]
         outs = [t for t in outputs if isinstance(t, torch.Tensor)]
         key = next(
@@ -106,18 +101,17 @@ class _Recorder(TorchDispatchMode):
                 "out_dtypes": tuple(str(t.dtype) for t in outs),
             },
             stream_id=driverless.current[0].stream_id,
-            context_ref=None if key is None else ir.ContextRef(key),
+            context_ref=key and ir.ContextRef(key),
         )
         self.items.append((self.layer, op))
 
     def wait(self, waiter, waited):
         """A side stream waiting on the main one forks; the reverse joins."""
-        if waited is None or waiter is waited:
+        if not self.on:
             return
-        main = driverless.main_stream
-        if waited is main:
+        if waited is driverless.main_stream and waiter is not waited:
             self.items.append((self.layer, Fork(waiter.stream_id)))
-        elif waiter is main:
+        elif waiter is driverless.main_stream and waited not in (None, waiter):
             self.items.append((self.layer, Join(waited.stream_id)))
 
     def _shape(self, tensor):
@@ -131,121 +125,83 @@ class _Recorder(TorchDispatchMode):
         return ir.SymDim(re.sub(rf"\b{self.axis}\b", SYMBOL, text), self.scope)
 
 
-@contextlib.contextmanager
-def _launches(recorder):
-    """Record a raw Triton or FlyDSL launch as an op, and do not launch it.
+def _patches(recorder, log):
+    """What the step runs under besides the modes, as one stack of patches.
 
-    It goes to the driver below the dispatcher, where a fake tensor has no
-    address to hand it.
+    * A raw Triton or FlyDSL launch goes to the driver below the dispatcher: it
+      is recorded as an op and not launched.
+    * `CpuGpuBuffer.__init__` (ATOM's own) allocates its host side and that
+      side's numpy view outside the fake mode, unpinned (pinning is a driver
+      allocation); its device side is ATOM's `zeros_like`, faked.
+    * A host ask of a symbolic count is answered with its hint and its ATOM
+      line logged; `__bool__` is untouched, so a branch on the width guards.
+      The block table's padded width is compared with concrete host rows.
     """
+    import flydsl.compiler
+    from torch._subclasses.fake_tensor import unset_fake_temporarily
     from triton.runtime.jit import JITFunction
+
+    from atom.utils import CpuGpuBuffer
+    from atom.utils.block_tables import BlockTableState
 
     def run(kernel, *args, **kwargs):
         leaves = [*args, *kwargs.values()]
         recorder.add(f"triton.{kernel.__name__}", ir.NodeKind.CAPTURED, leaves)
 
-    original = JITFunction.run
-    JITFunction.run = run
-    try:
-        import flydsl.compiler as flydsl
-    except ImportError:
-        flydsl = None
-    if flydsl is not None:
-        compile_and_launch = flydsl.compile
+    def launch(kernel, *args):
+        name = getattr(kernel, "func", kernel).__name__
+        recorder.add(f"flydsl.{name}", ir.NodeKind.CAPTURED, args)
 
-        def launch(kernel, *args):
-            name = getattr(kernel, "func", kernel).__name__
-            recorder.add(f"flydsl.{name}", ir.NodeKind.CAPTURED, args)
+    init, zeros, numpy = CpuGpuBuffer.__init__, torch.zeros, torch.Tensor.numpy
 
-        flydsl.compile = launch
-    try:
-        yield
-    finally:
-        JITFunction.run = original
-        if flydsl is not None:
-            flydsl.compile = compile_and_launch
-
-
-@contextlib.contextmanager
-def _staged_buffers():
-    """Run ATOM's own `CpuGpuBuffer.__init__` with its host side kept real.
-
-    Its host tensor and that tensor's numpy view are allocated outside the
-    fake mode (a fake has no numpy view); pinning is a driver allocation and is
-    dropped. The device side is ATOM's own `zeros_like`, faked.
-    """
-    from torch._subclasses.fake_tensor import unset_fake_temporarily
-
-    from atom.utils import CpuGpuBuffer
-
-    original_init = CpuGpuBuffer.__init__
-    real_zeros, real_numpy = torch.zeros, torch.Tensor.numpy
-
-    def zeros(*size, **kwargs):
-        kwargs.pop("pin_memory", None)
-        device = kwargs.get("device")
-        if device is not None and torch.device(device).type != "cpu":
-            return real_zeros(*size, **kwargs)
+    def host_zeros(*size, pin_memory=False, **kwargs):
+        if torch.device(kwargs.get("device") or "cpu").type != "cpu":
+            return zeros(*size, **kwargs)
         with unset_fake_temporarily():
-            return real_zeros(*size, **kwargs)
+            return zeros(*size, **kwargs)
 
-    def numpy(tensor, *args, **kwargs):
+    def host_numpy(tensor, *args, **kwargs):
         with unset_fake_temporarily():
-            return real_numpy(tensor, *args, **kwargs)
+            return numpy(tensor, *args, **kwargs)
 
     def staged_init(self, *args, **kwargs):
-        torch.zeros, torch.Tensor.numpy = zeros, numpy
-        try:
-            original_init(self, *args, **kwargs)
-        finally:
-            torch.zeros, torch.Tensor.numpy = real_zeros, real_numpy
+        with (
+            patch.object(torch, "zeros", host_zeros),
+            patch.object(torch.Tensor, "numpy", host_numpy),
+        ):
+            init(self, *args, **kwargs)
 
-    CpuGpuBuffer.__init__ = staged_init
-    try:
-        yield
-    finally:
-        CpuGpuBuffer.__init__ = original_init
-
-
-@contextlib.contextmanager
-def _resolved_on_the_host(log):
-    """Answer a host ask of a symbolic count with its hint, logging the ATOM line.
-
-    `__bool__` is left alone, so a branch on the width still guards.
-    """
-    from atom.utils.block_tables import BlockTableState
-
-    original = torch.SymInt.__index__, torch.SymInt.__int__, torch.SymInt.__hash__
-    original_prepare = BlockTableState.prepare
+    index, prepare = torch.SymInt.__index__, BlockTableState.prepare
 
     def resolved(self):
-        hint = self.node.hint
-        if hint is None:  # unbacked: torch raises rather than guess
-            return original[0](self)
+        if self.node.hint is None:  # unbacked: torch raises rather than guess
+            return index(self)
         log.append(_site())
-        return int(hint)
+        return int(self.node.hint)
 
-    def prepare(self, rows, *, pad_to=None, **kwargs):
-        # The padded width is compared with the host rows, which are concrete.
-        if isinstance(pad_to, torch.SymInt):
-            pad_to = int(pad_to)
-        return original_prepare(self, rows, pad_to=pad_to, **kwargs)
+    def concrete_pad(self, rows, *, pad_to=None, **kwargs):
+        pad_to = int(pad_to) if isinstance(pad_to, torch.SymInt) else pad_to
+        return prepare(self, rows, pad_to=pad_to, **kwargs)
 
-    torch.SymInt.__index__ = torch.SymInt.__int__ = resolved
-    torch.SymInt.__hash__ = lambda self: hash(resolved(self))
-    BlockTableState.prepare = prepare
-    try:
-        yield
-    finally:
-        torch.SymInt.__index__, torch.SymInt.__int__, torch.SymInt.__hash__ = original
-        BlockTableState.prepare = original_prepare
+    stack = contextlib.ExitStack()
+    for owner, name, value in (
+        (JITFunction, "run", run),
+        (flydsl.compiler, "compile", launch),
+        (CpuGpuBuffer, "__init__", staged_init),
+        (torch.SymInt, "__index__", resolved),
+        (torch.SymInt, "__int__", resolved),
+        (torch.SymInt, "__hash__", lambda self: hash(resolved(self))),
+        (BlockTableState, "prepare", concrete_pad),
+    ):
+        stack.enter_context(patch.object(owner, name, value))
+    return stack
 
 
 def _build_runner(config, fake_mode):
-    """ATOM's `ModelRunner`, built in the mode in the model's dtype, reading nothing.
+    """ATOM's `ModelRunner`, built in the mode in the model's dtype.
 
-    The group already exists at its width, warmup runs a forward of its own,
-    and no checkpoint is loaded.
+    The group already exists at its width, warmup would run a forward of its
+    own, and no checkpoint is read.
     """
     from atom.model_engine.model_runner import ModelRunner
     from atom.utils import h2d
@@ -265,33 +221,29 @@ def _build_runner(config, fake_mode):
     torch.set_default_dtype(config.torch_dtype)
     try:
         # A fake tensor has no address: the alias check sees each buffer empty.
-        with fake_mode, unittest.mock.patch.object(h2d, "_range", lambda t: (0, 0)):
+        with fake_mode, patch.object(h2d, "_range", lambda t: (0, 0)):
             return _CapturedRunner(0, config)
     finally:
         torch.set_default_dtype(previous)
 
 
 def _decode_batch(width, axis, block_size):
-    """`width` one-token sequences, the count fields rebound to `axis`.
+    """`width` one-token sequences, the width fields rebound to `axis`.
 
     `ScheduledBatch.__init__` compares its staged token array's length with the
     count, which would solve a symbol there, so it is built concrete.
     """
     import numpy as np
 
+    from atom.model_engine import sequence
     from atom.model_engine.scheduler import ScheduledBatch
-    from atom.model_engine.sequence import (
-        Sequence,
-        SequenceStatus,
-        SequenceType,
-        new_block_table,
-    )
 
     seqs = {}
     for index in range(width):
-        seq = Sequence([0], block_size=block_size, id=index)
-        seq.status, seq.type = SequenceStatus.RUNNING, SequenceType.DECODE
-        seq.block_table = new_block_table([index])
+        seq = sequence.Sequence([0], block_size=block_size, id=index)
+        seq.status = sequence.SequenceStatus.RUNNING
+        seq.type = sequence.SequenceType.DECODE
+        seq.block_table = sequence.new_block_table([index])
         seqs[seq.id] = seq
     batch = ScheduledBatch(
         seqs=seqs,
@@ -302,27 +254,6 @@ def _decode_batch(width, axis, block_size):
     for name in WIDTH_FIELDS:
         setattr(batch, name, axis)
     return batch
-
-
-def _step_axis(fake_mode, width):
-    """A free symbol with hint `width`, made from a tensor built outside the mode."""
-    from torch._subclasses.fake_tensor import unset_fake_temporarily
-
-    with unset_fake_temporarily():
-        template = torch.zeros(width, dtype=torch.int32)
-    return fake_mode.from_tensor(template, static_shapes=False).shape[0]
-
-
-def _decoder_layers(model):
-    """The longest `layers` list in the model: its decoder stack."""
-    stacks = [
-        module
-        for name, module in model.named_modules()
-        if isinstance(module, torch.nn.ModuleList) and name.split(".")[-1] == "layers"
-    ]
-    if not stacks:
-        raise ValueError(f"{type(model).__name__} has no `layers` list to fold")
-    return max(stacks, key=len)
 
 
 def capture(model: str, tp: int, width: int, tmpdir: str):
@@ -337,6 +268,7 @@ def capture(model: str, tp: int, width: int, tmpdir: str):
         )
     declared = driverless.install(tp, tmpdir)
 
+    from torch._subclasses.fake_tensor import unset_fake_temporarily
     from torch.fx.experimental.symbolic_shapes import ShapeEnv
 
     from atom.compass.run import _file_digest
@@ -347,43 +279,48 @@ def capture(model: str, tp: int, width: int, tmpdir: str):
     )
     set_current_atom_config(config)
     digest = _file_digest(config.model, "config.json")
-    architecture = config.hf_config.architectures[0]
-    structure = f"{architecture} {digest} tp={tp} decode eager"
+    structure = f"{config.hf_config.architectures[0]} {digest} tp={tp} decode eager"
     shape_env = ShapeEnv()
     fake_mode = driverless.driverless_mode(shape_env)
-    resolutions = []
-    with _staged_buffers():
+    # Built outside the mode: a tensor made inside it is already static.
+    with unset_fake_temporarily():
+        template = torch.zeros(width, dtype=torch.int32)
+    axis = fake_mode.from_tensor(template, static_shapes=False).shape[0]
+    contexts = config.compilation_config.static_forward_context
+    recorder, resolutions = _Recorder(axis, structure, contexts), []
+    driverless.on_wait = recorder.wait
+    with _patches(recorder, resolutions):
         runner = _build_runner(config, fake_mode)
-        axis = _step_axis(fake_mode, width)
-        recorder = _Recorder(
-            axis, structure, config.compilation_config.static_forward_context
-        )
-        driverless.on_wait = recorder.wait
-        for index, layer in enumerate(_decoder_layers(runner.model)):
+        stacks = [
+            module
+            for name, module in runner.model.named_modules()
+            if isinstance(module, torch.nn.ModuleList) and name.endswith("layers")
+        ]
+        if not stacks:
+            raise ValueError(f"{type(runner.model).__name__} has no `layers` to fold")
+        for index, layer in enumerate(max(stacks, key=len)):
             layer.register_forward_pre_hook(
                 lambda m, a, i=index: setattr(recorder, "layer", i)
             )
             layer.register_forward_hook(
                 lambda m, a, o: setattr(recorder, "layer", None)
             )
-        # Before the batch: its constructor already asks its counts for a number.
-        with _resolved_on_the_host(resolutions):
-            batch = _decode_batch(width, axis, config.kv_cache_block_size)
-            with fake_mode:
-                runner.allocate_kv_cache(KV_BLOCKS)
-                with torch._C._EnablePythonDispatcher(), _launches(recorder), recorder:
-                    runner.forward(batch)
+        batch = _decode_batch(width, axis, config.kv_cache_block_size)
+        with fake_mode:
+            runner.allocate_kv_cache(KV_BLOCKS)
+            recorder.on = True
+            with torch._C._EnablePythonDispatcher(), recorder:
+                runner.forward(batch)
     if shape_env.replacements or not recorder.symbolic:
+        specialised = [f"{k} = {v}" for k, v in shape_env.replacements.items()]
         raise RuntimeError(
             "the step's width specialised: "
-            + (
-                ", ".join(f"{k} = {v}" for k, v in shape_env.replacements.items())
-                or f"no recorded shape carries {SYMBOL}"
-            )
+            + (", ".join(specialised) or f"no recorded shape carries {SYMBOL}")
         )
-    guards = sorted(
-        {re.sub(rf"\b{axis}\b", SYMBOL, str(g.expr)) for g in shape_env.guards}
-    )
-    graph = build(recorder.items, Traced(structure, tuple(guards)))
+    guards = {re.sub(rf"\b{axis}\b", SYMBOL, str(g.expr)) for g in shape_env.guards}
     declared["host_resolutions"] = resolutions
-    return graph, digest, declared
+    return (
+        build(recorder.items, Traced(structure, tuple(sorted(guards)))),
+        digest,
+        declared,
+    )

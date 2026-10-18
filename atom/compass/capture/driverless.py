@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
 """What a capture declares in place of a device, so ATOM builds and steps on none.
 
-Every substitution is process-global, and the `torch.cuda` ones must be in
-place before aiter is imported (its Triton configs read device properties at
-import), so a capture owns its process.
+Every substitution is process-global, and the `torch.cuda` ones must precede
+aiter's import (its Triton configs read device properties at import), so a
+capture owns its process.
 """
 
 import contextlib
@@ -12,15 +12,28 @@ import pathlib
 
 import torch
 
-# The declared device: an MI308X. Nothing here reads a device.
+# The declared device, an MI308X. Nothing here reads a device.
 ARCH = "gfx942"
-CU_COUNT = 80
 CAPABILITY = (9, 4)
-TOTAL_MEMORY_BYTES = 192 << 30
+
+
+class _Props:
+    multi_processor_count = 80
+    gcnArchName = name = ARCH
+    major, minor = CAPABILITY
+    total_memory = 192 << 30
+    warp_size = 64
+    max_threads_per_multi_processor = 2048
+    L2_cache_size = 8 << 20
+    regs_per_multiprocessor = shared_memory_per_block = 65536
+
+
+def on_wait(waiter, waited):
+    """Told of each wait one stream makes on another; the recorder replaces it."""
 
 
 class Stream:
-    """A stream with an identity and no device; each wait is passed to `on_wait`."""
+    """A stream with an identity and no device."""
 
     created = 0
 
@@ -65,11 +78,7 @@ class Event:
         return True
 
     def elapsed_time(self, other):
-        raise RuntimeError("a capture runs no kernel and has no elapsed time to report")
-
-
-def on_wait(waiter, waited):
-    """Replaced by the recorder for the forward it traces."""
+        raise RuntimeError("a capture runs no kernel and has no elapsed time")
 
 
 main_stream = Stream()
@@ -85,26 +94,11 @@ def _stream(stream):
         current[0] = previous
 
 
-class _Props:
-    multi_processor_count = CU_COUNT
-    gcnArchName = name = ARCH
-    major, minor = CAPABILITY
-    total_memory = TOTAL_MEMORY_BYTES
-    warp_size = 64
-    max_threads_per_multi_processor = 2048
-    L2_cache_size = 8 << 20
-    regs_per_multiprocessor = 65536
-    shared_memory_per_block = 65536
-
-
 def install(tp: int, tmpdir: str) -> dict:
-    """Declare the device, the arch and a peerless group of width `tp`.
-
-    Returns what was declared, for the artifact's record.
-    """
+    """Declare the device, the arch and a peerless group of width `tp`; say what."""
     cuda = {
-        # True: ATOM branches on the device throughout and on False takes paths
-        # no deployment runs. `driverless_mode` tells the fake mode otherwise.
+        # True: on False ATOM takes paths no deployment runs. The fake mode is
+        # told otherwise by `driverless_mode`.
         "is_available": lambda: True,
         "device_count": lambda: 1,
         "_lazy_init": lambda *a, **k: None,
@@ -132,63 +126,51 @@ def install(tp: int, tmpdir: str) -> dict:
         setattr(torch.cuda, name, value)
     # ATOM's H2D publication reads the current stream's id off `torch._C`.
     torch._C._cuda_getCurrentStream = lambda *a: (current[0].stream_id, 0, 1)
-
     # No checkpoint is read, so a parameter's fill is arbitrary either way, and
     # the in-place RNG fills ask the device for a generator.
-    for name in ("uniform_", "normal_"):
-        setattr(torch.Tensor, name, lambda self, *a, **k: self)
+    torch.Tensor.uniform_ = torch.Tensor.normal_ = lambda self, *a, **k: self
 
     from torch._subclasses import fake_tensor
 
     # A device-tagged fake primes a real CUDA context; nothing here runs backward.
     fake_tensor.init_gpu_context = lambda device: None
-
     flags = {
-        # The default custom vocab gather needs the device communicator, which
-        # opens a rendezvous with absent ranks; the non-custom one gathers the
-        # same shapes.
+        # The default custom vocab gather needs the device communicator.
         "ATOM_USE_CUSTOM_ALL_GATHER": "0",
         # The packed H2D transport reads `.numpy()` and device pointers off one
         # staging block; direct copies each buffer with its own `copy_`.
         "ATOM_H2D_BACKEND": "direct",
     }
     os.environ.update(flags)
-    return {
-        "cuda": sorted(cuda),
-        "arch": _declare_arch(tmpdir),
-        "flags": flags,
-        "group": _build_group(tp),
-    }
+    _declare_arch(tmpdir)
+    return {"cuda": sorted(cuda), "arch": ARCH, "flags": flags, "group": _group(tp)}
 
 
 def driverless_mode(shape_env):
     """A fake mode told the device is absent, while ATOM is told it is there.
 
-    `avoid_device_init` keeps `torch.tensor` on the host, swaps the device guard
-    for a no-op and skips constant propagation across a device move, each of
-    which would otherwise reach a driver.
+    `avoid_device_init` keeps `torch.tensor` on the host, makes the device guard
+    a no-op and skips constant propagation across a device move, each of which
+    would otherwise reach a driver.
     """
     from torch._subclasses.fake_tensor import FakeTensorMode
 
     class _DriverlessFakeTensorMode(FakeTensorMode):
-        @property
-        def avoid_device_init(self):
-            return True
+        avoid_device_init = property(lambda self: True)
 
     return _DriverlessFakeTensorMode(shape_env=shape_env, allow_non_fake_inputs=True)
 
 
-def _declare_arch(tmpdir: str) -> str:
+def _declare_arch(tmpdir: str) -> None:
     """Answer aiter's `rocminfo` shell-out and Triton's target query with `ARCH`."""
     import triton
     from triton.backends.compiler import GPUTarget
 
-    binpath = pathlib.Path(tmpdir) / "declared-bin"
-    binpath.mkdir(parents=True, exist_ok=True)
-    rocminfo = binpath / "rocminfo"
+    rocminfo = pathlib.Path(tmpdir) / "declared-bin" / "rocminfo"
+    rocminfo.parent.mkdir(parents=True, exist_ok=True)
     rocminfo.write_text(f'#!/bin/sh\necho "  Name:                    {ARCH}"\n')
     rocminfo.chmod(0o755)
-    os.environ["PATH"] = f"{binpath}:{os.environ.get('PATH', '')}"
+    os.environ["PATH"] = f"{rocminfo.parent}:{os.environ.get('PATH', '')}"
     os.environ["GPU_ARCHS"] = ARCH
 
     class _DeclaredTarget:
@@ -196,22 +178,18 @@ def _declare_arch(tmpdir: str) -> str:
             return GPUTarget("hip", ARCH, 64)
 
         def __getattr__(self, name):
-            raise RuntimeError(
-                f"a device-free capture has no Triton driver; read {name}"
-            )
+            raise RuntimeError(f"a device-free capture has no Triton driver: {name}")
 
     triton.runtime.driver.set_active(_DeclaredTarget())
-    return ARCH
 
 
-def _build_group(tp: int) -> dict:
+def _group(tp: int) -> dict:
     """A process group of width `tp` in one process, its transport declined.
 
-    The width is real, so every shard is the one a `tp`-way deployment holds and
-    every collective ATOM issues is dispatched; aiter's `all_reduce_` answers
-    from its fake implementation. The legacy `c10d` collectives have no fake
-    kernel, so the two ATOM reaches go through their functional forms, which
-    give the same shapes.
+    Every shard is the one a `tp`-way deployment holds and every collective ATOM
+    issues is dispatched; aiter's `all_reduce_` answers from its fake. The two
+    legacy `c10d` collectives ATOM reaches have no fake kernel, so they go
+    through their functional forms, which give the same shapes.
     """
     import torch.distributed as dist
     from torch.distributed import _functional_collectives as functional
@@ -223,24 +201,22 @@ def _build_group(tp: int) -> dict:
 
     from aiter.dist import parallel_state
 
-    original_group, original_new_group = (
-        parallel_state.init_model_parallel_group,
-        dist.new_group,
-    )
+    group, new_group = parallel_state.init_model_parallel_group, dist.new_group
 
-    def decline_transport(*args, **kwargs):
+    def no_transport(*args, **kwargs):
         kwargs.update(
             use_device_communicator=False, use_message_queue_broadcaster=False
         )
-        return original_group(*args, **kwargs)
+        return group(*args, **kwargs)
 
-    def decline_backend(ranks=None, **kwargs):
-        kwargs["backend"] = "fake"
+    def fake_backend(ranks=None, **kwargs):
         kwargs.pop("pg_options", None)
-        return original_new_group(ranks, **kwargs)
+        return new_group(ranks, **{**kwargs, "backend": "fake"})
 
-    parallel_state.init_model_parallel_group = decline_transport
-    dist.new_group = decline_backend
+    parallel_state.init_model_parallel_group, dist.new_group = (
+        no_transport,
+        fake_backend,
+    )
     try:
         parallel_state.init_distributed_environment(
             world_size=tp, rank=0, backend="fake", local_rank=0
@@ -249,8 +225,7 @@ def _build_group(tp: int) -> dict:
             tensor_model_parallel_size=tp, backend="fake"
         )
     finally:
-        parallel_state.init_model_parallel_group = original_group
-        dist.new_group = original_new_group
+        parallel_state.init_model_parallel_group, dist.new_group = group, new_group
 
     def all_gather_into_tensor(output, input, group=None, async_op=False):
         gathered = functional.all_gather_tensor(input, 0, group or dist.group.WORLD)
@@ -259,10 +234,8 @@ def _build_group(tp: int) -> dict:
     def broadcast(tensor, src=0, group=None, async_op=False):
         tensor.copy_(functional.broadcast(tensor, src, group or dist.group.WORLD))
 
-    dist.all_gather_into_tensor = all_gather_into_tensor
-    dist.broadcast = broadcast
-    # No shape and no bytes; there is nobody to wait for.
-    dist.barrier = lambda *args, **kwargs: None
+    dist.all_gather_into_tensor, dist.broadcast = all_gather_into_tensor, broadcast
+    dist.barrier = lambda *args, **kwargs: None  # no shape, nobody to wait for
     return {
         "world_size": parallel_state.get_tp_group().world_size,
         "declined": ["device_communicator", "message_queue_broadcaster", "barrier"],
