@@ -368,12 +368,12 @@ def test_an_unmodelled_request_type_is_refused_by_name(op):
         _call(server, op, 1)
 
 
-def _native_store(server, worker_id, end, state_at):
+def _native_store(server, worker_id, end, state_at, **kw):
     """A store of chunks [0, `end`) as ATOM's native-state layout sends it:
     attention blocks on every chunk, recurrent state on chunks `state_at`."""
     n = end // CHUNK
     ids = [[7] * n, [5 if i in state_at else -1 for i in range(n)]]
-    return _do(server, "store", _key(worker_id, 0, end), 1, ids, b"")
+    return _do(server, "store", _key(worker_id, 0, end, **kw), 1, ids, b"")
 
 
 @pytest.mark.parametrize(
@@ -437,3 +437,15 @@ def test_a_recurrent_state_is_evicted_apart_from_its_chunk_and_ends_a_hit_earlie
     states = {(*server._okey(_key(), r, last), 1) for r in (0, 1)}
     assert set(server.evict(0.0)) == states  # 90% full: two of twelve objects
     assert _hit(server, "c") == 2  # every attention chunk is still here
+
+
+def test_end_session_makes_its_recurrent_states_most_recent_too():
+    flags = FLAGS + ["--null-block-id", "-1", "--separate-object-groups"]
+    server = LMCacheServer(
+        flags + ["--eviction-ratio", "0.5"], chunk_bytes=GIB // 8, state_bytes=GIB // 8
+    )
+    for rid, salt in (("r0", ""), ("r1", "x")):
+        for w in (0, 1):
+            _native_store(server, w, CHUNK, {0}, rid=rid, salt=salt)
+    _do(server, "end_session", "r0")
+    assert {k[4] for k in server.evict(0.0)} == {"x"}  # full: four of eight
