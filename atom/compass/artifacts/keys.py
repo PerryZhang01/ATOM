@@ -84,7 +84,7 @@ KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
     # `workload` is the digest of the requests its steps name; `backend` the
     # pricing backend's digest, so another backend addresses another entry.
     Kind.SHAPE_POPULATION: ("model", "workload", "engine_config", "backend"),
-    Kind.OP_GRAPH: ("structure",),
+    Kind.OP_GRAPH: ("structure", "shape"),
     Kind.PRICE_LIST: ("model", *LAYOUT, "machine_spec", "source_root"),
     Kind.REGION_TERMS: ("model", *LAYOUT, "machine_spec"),
     # The engine config as `run.memory.key_fields` reads it, as sorted JSON.
@@ -126,7 +126,7 @@ WHY: Mapping[Kind, str] = {
     Kind.PRICE_LIST: (
         "a bare or merged price file states no width and silently prices nothing"
     ),
-    Kind.OP_GRAPH: "an op_graph is keyed by structure, never by shape",
+    Kind.OP_GRAPH: "an op_graph holds one shape: a decode width or a prefill (T, B)",
     Kind.COVERAGE_HULL: (
         "a hull is keyed by the digest of the price list it was built from"
     ),

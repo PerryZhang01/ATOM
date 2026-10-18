@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
-"""`compass trace ops`: a decode step of the published Qwen3.8-27B, traced with
-no device into the IR and published as an `op_graph`, at TP1 and TP2.
+"""`compass trace ops`: steps of the published Qwen3.8-27B, traced with no
+device into the IR at decode widths and prefill shapes, each published as an
+`op_graph`, at TP1 and TP2.
 
 Each capture runs the console script's `main` in a fresh interpreter, because
 what a capture declares in place of a device is process-global. The folding
@@ -9,6 +10,7 @@ here.
 """
 
 import collections
+import importlib
 import json
 import os
 import pathlib
@@ -17,11 +19,11 @@ import subprocess
 import sys
 
 import pytest
-import sympy
-from test_capture_real_model import EXPECTED_GUARDS, EXPECTED_HOST_RESOLUTIONS
+import torch
 
 from atom.compass import cli, ir
 from atom.compass.artifacts import ArtifactStore, Kind, Topology
+from atom.compass.capture import forward, population_shapes
 from atom.compass.capture.graph import Fork, Join, Traced, build
 
 TREE = pathlib.Path(__file__).resolve().parents[2]
@@ -31,11 +33,15 @@ ATTENTION = {
     "linear_attention": "aiter.linear_attention_with_output_base.default",
     "full_attention": "aiter.unified_attention_with_output_base.default",
 }
+GEMM = "aiter.gemm_a16w16.default"
+MROPE = "atom.model_ops.triton_mrope:try_mrope_qk_fused"
+KV_INDICES = "atom.utils.block_convert:kv_indices_generate_triton"
+KV_INDICES_METADATA = ("block_tables", "kv_indptr_convert", "kv_indices_convert")
 
 
 def _op(name, key=None, stream=0, dims=((2,),)):
     ref = key and ir.ContextRef(key)
-    return ir.Op(name, "opaque_leaf", dims, dims, stream_id=stream, context_ref=ref)
+    return ir.Op(name, "opaque_leaf", (), dims, stream_id=stream, context_ref=ref)
 
 
 def _bound(region, env=None):
@@ -126,20 +132,131 @@ def test_a_hole_that_is_not_a_sum_of_names_then_an_offset_is_refused(key):
         ir.ContextRef(key)
 
 
-# --- the published 27B, captured --------------------------------------------
+# --- lifting a raw launch, on functions written here ---------------------------
+
+
+_RECORDER: dict = {}
+
+
+@pytest.fixture
+def recorder(monkeypatch):
+    """A recording recorder, which the functions below launch through, that
+    takes this file for ATOM's own."""
+    monkeypatch.setitem(forward._IS_ATOM, __file__, True)
+    recorder = forward._Recorder({})
+    recorder.on = True
+    monkeypatch.setitem(_RECORDER, "now", recorder)
+    return recorder
+
+
+def _scaled(x, scale):
+    y = torch.empty_like(x)
+    _RECORDER["now"].launch("triton._scaled_kernel")
+    _RECORDER["now"].launch("triton._scaled_tail_kernel")
+    return y.view(-1)
+
+
+def _rescaled(x, scale):
+    scale = scale * 2
+    _RECORDER["now"].launch("triton._scaled_kernel")
+
+
+@torch.library.custom_op("compass_test::leaf", mutates_args=())
+def _leaf(x: torch.Tensor) -> torch.Tensor:
+    return x.clone()
+
+
+_leaf.register_fake(torch.empty_like)
+
+
+def _wraps_a_leaf(x):
+    _leaf(x)
+    _RECORDER["now"].launch("triton._scaled_kernel")
+
+
+def test_a_raw_launch_lifts_to_its_function_with_what_it_dispatched(recorder):
+    x = torch.empty(4, 8, device="meta")
+    with recorder:
+        x.add(1)
+        _scaled(x, 0.5)
+        x.mul(2)
+
+    names = [op.name for _, op in recorder.items]
+    assert names == ["aten.add.Tensor", f"{__name__}:_scaled", "aten.mul.Tensor"]
+    lifted = recorder.items[1][1]
+    assert lifted.kind is ir.NodeKind.OPAQUE_LEAF
+    x_arg = ir.Tensor((4, 8), "torch.float32", (8, 1), ir.Role.METADATA)
+    assert dict(lifted.args) == {"x": x_arg, "scale": 0.5}
+
+
+def test_a_function_that_reassigns_a_parameter_before_its_launch_is_refused(
+    recorder,
+):
+    with recorder, pytest.raises(ValueError, match=r"_rescaled.*\['scale'\]"):
+        _rescaled(torch.empty(2, device="meta"), 1.0)
+
+
+def test_a_function_that_dispatches_a_leaf_is_refused_unless_a_host_query(
+    recorder, monkeypatch
+):
+    x = torch.empty(2, device="meta")
+    with recorder, pytest.raises(ValueError, match="compass_test.leaf.default"):
+        _wraps_a_leaf(x)
+
+    monkeypatch.setattr(forward, "HOST_QUERIES", ("compass_test.leaf.default",))
+    recorder.start()
+    with recorder:
+        _wraps_a_leaf(x)
+    assert [op.name for _, op in recorder.items] == [f"{__name__}:_wraps_a_leaf"]
+
+
+# --- shapes a population holds ---------------------------------------------------
+
+
+def _record(tmp_path, lines):
+    (tmp_path / "steps").mkdir()
+    (tmp_path / "run.json").write_text("{}")
+    rows = [{"is_dummy_run": False, "rung": None, **line} for line in lines]
+    text = "".join(json.dumps({"step": i, **r}) + "\n" for i, r in enumerate(rows))
+    (tmp_path / "steps" / "dp0.jsonl").write_text(text)
+    return str(tmp_path)
+
+
+def test_a_population_names_each_step_s_shape(tmp_path):
+    record = _record(
+        tmp_path,
+        [
+            {"rows": [[1, 90, True]] * 3, "rung": 4},
+            {"rows": [[1, 90, True]] * 2},
+            {"rows": [[100, 0, False], [1, 50, True]]},
+            {"rows": [[7, 0, False]], "is_dummy_run": True},
+        ],
+    )
+    shapes = population_shapes([record], ArtifactStore(str(tmp_path / "store")))
+    assert list(map(str, shapes)) == ["decode B=4", "decode B=2", "prefill T=101 B=2"]
+
+
+def test_a_speculative_decode_step_is_refused_by_name(tmp_path):
+    record = _record(tmp_path, [{"rows": [[1, 9, True], [3, 9, True]]}])
+    with pytest.raises(ValueError, match="step 0 decodes 3 tokens in a row"):
+        population_shapes([record], ArtifactStore(str(tmp_path / "store")))
+
+
+# --- the published 27B, captured ----------------------------------------------
 
 _CAPTURES: dict = {}
 
 
-def capture(tp, width, tmp_path_factory):
-    """The graph `compass trace ops` published at (tp, width), and its declarations."""
-    if (tp, width) in _CAPTURES:
-        return _CAPTURES[tp, width]
-    root = tmp_path_factory.mktemp(f"tp{tp}w{width}")
+def capture(tp, shapes, tmp_path_factory):
+    """`compass trace ops` at TP `tp` over the `shapes` arguments, in one
+    process: each shape's published graph and declarations, by shape."""
+    if (tp, shapes) in _CAPTURES:
+        return _CAPTURES[tp, shapes]
+    root = tmp_path_factory.mktemp(f"tp{tp}")
     (root / "model").mkdir()
     (root / "model" / "config.json").write_bytes(CONFIG.read_bytes())
     argv = ["trace", "ops", "--model", str(root / "model"), "--tp", str(tp)]
-    argv += ["--width", str(width), "--store", str(root / "store")]
+    argv += [*shapes.split(), "--store", str(root / "store")]
     done = subprocess.run(
         [
             sys.executable,
@@ -154,17 +271,21 @@ def capture(tp, width, tmp_path_factory):
         cwd=TREE,
         env={**os.environ, "PYTHONPATH": str(TREE)},
     )
-    published = re.search(r"^published .* as (\w+)$", done.stdout, re.MULTILINE)
-    assert published, f"rc {done.returncode}\n{done.stderr[-4000:]}"
+    tokens = re.findall(r"^published .* as (\w+)$", done.stdout, re.MULTILINE)
+    assert tokens, f"rc {done.returncode}\n{done.stderr[-4000:]}"
     store = ArtifactStore(str(root / "store"))
-    entry = store.read(store.key_from_token(Kind.OP_GRAPH, published.group(1)))
     rank = next(iter(Topology().ranks()))
-    graph, declared = (
-        json.loads(entry.read_member(stem, rank, "json"))
-        for stem in ("graph", "declared")
-    )
-    _CAPTURES[tp, width] = graph, declared
-    return graph, declared
+    graphs = {}
+    for token in tokens:
+        entry = store.read(store.key_from_token(Kind.OP_GRAPH, token))
+        graph, declared = (
+            json.loads(entry.read_member(stem, rank, "json"))
+            for stem in ("graph", "declared")
+        )
+        assert entry.key.values["shape"] == graph["shape"]
+        graphs[graph["shape"]] = graph, declared
+    _CAPTURES[tp, shapes] = graphs
+    return graphs
 
 
 def _layers(region):
@@ -195,22 +316,21 @@ def _decoder(graph):
     ]
 
 
-def _at(graph, width):
-    """Every op of `graph` with its shapes evaluated at `B = width`."""
-    B = sympy.Symbol("B")
+def _tensors(value):
+    if isinstance(value, dict) and "role" in value:
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from _tensors(item)
 
-    def dim(d):
-        return d if isinstance(d, int) else int(sympy.sympify(d).subs(B, width))
 
-    return [
-        (op["op"], [[dim(d) for d in s] for s in op["in"] + op["out"]])
-        for op in _ops(graph["region"])
-    ]
+WIDTH_2 = "--width 2"
+WIDTHS = "--width 256 --width 2 --width 1 --width 16"
 
 
 @pytest.mark.parametrize("tp", [1, 2])
 def test_trace_ops_folds_the_27b_by_its_layer_types(tp, tmp_path_factory):
-    graph, _ = capture(tp, 2, tmp_path_factory)
+    graph, _ = capture(tp, WIDTH_2, tmp_path_factory)["decode B=2"]
     layers = _decoder(graph)
 
     assert len(layers) == len(LAYER_TYPES)
@@ -227,7 +347,7 @@ def test_trace_ops_folds_the_27b_by_its_layer_types(tp, tmp_path_factory):
 
 
 def test_each_layer_s_context_key_binds_to_that_layer(tmp_path_factory):
-    graph, _ = capture(1, 2, tmp_path_factory)
+    graph, _ = capture(1, WIDTH_2, tmp_path_factory)["decode B=2"]
     keys = []
 
     def walk(region, env):
@@ -249,8 +369,8 @@ def test_each_layer_s_context_key_binds_to_that_layer(tmp_path_factory):
 
 
 def test_tp2_adds_two_row_parallel_reduces_to_each_layer(tmp_path_factory):
-    one = _decoder(capture(1, 2, tmp_path_factory)[0])
-    two = _decoder(capture(2, 2, tmp_path_factory)[0])
+    one = _decoder(capture(1, WIDTH_2, tmp_path_factory)["decode B=2"][0])
+    two = _decoder(capture(2, WIDTH_2, tmp_path_factory)["decode B=2"][0])
 
     for at_one, at_two in zip(one, two, strict=True):
         names = [op["op"] for op in at_two]
@@ -260,37 +380,74 @@ def test_tp2_adds_two_row_parallel_reduces_to_each_layer(tmp_path_factory):
         assert rest == [op["op"] for op in at_one]
 
 
-def test_the_graph_traced_at_two_widths_gives_each_width_s_shapes(tmp_path_factory):
-    two, eight = capture(1, 2, tmp_path_factory)[0], capture(1, 8, tmp_path_factory)[0]
-
-    for width in (2, 8):
-        assert _at(two, width) == _at(eight, width)
-    assert _at(two, 2) != _at(two, 8)
-    for layer in _decoder(two):
-        for op in layer:
-            if op["op"].startswith(("aiter.gemm", "aiter.unified", "aiter.linear")):
-                assert op["in"][0][0] == "B", op
-
-
-def test_trace_ops_refuses_a_width_torch_would_specialise(tmp_path):
-    with pytest.raises(SystemExit, match="--width 1 traces no symbol"):
-        cli.main(["trace", "ops", "--model", "m", "--width", "1", "--store", "s"])
-
-
-@pytest.mark.parametrize("tp, width", [(1, 2), (2, 2), (1, 8)])
-def test_trace_ops_publishes_the_host_asks_and_guards_it_traced_under(
-    tp, width, tmp_path_factory
+def test_each_width_is_its_own_graph_whatever_was_captured_beside_it(
+    tmp_path_factory,
 ):
-    graph, declared = capture(tp, width, tmp_path_factory)
+    graphs = capture(1, WIDTHS, tmp_path_factory)
+    alone = capture(1, WIDTH_2, tmp_path_factory)["decode B=2"]
 
-    asks = collections.Counter(declared["host_resolutions"])
-    assert asks == EXPECTED_HOST_RESOLUTIONS
-    guards = {guard.replace("<axis>", "B") for guard in EXPECTED_GUARDS[tp]}
-    assert set(graph["guards"]) == guards
+    assert graphs["decode B=2"] == alone
+    for width in (1, 2, 16, 256):
+        graph, _ = graphs[f"decode B={width}"]
+        gemms = [op for op in _ops(graph["region"]) if op["op"] == GEMM]
+        assert gemms and all(op["args"]["A"]["shape"][0] == width for op in gemms)
+
+
+@pytest.mark.parametrize("width", [16, 256])
+def test_mrope_is_one_leaf_per_full_attention_layer_at_either_kernel(
+    width, tmp_path_factory
+):
+    graph, _ = capture(1, WIDTHS, tmp_path_factory)[f"decode B={width}"]
+    ops = _ops(graph["region"])
+
+    mrope = [op for op in ops if op["op"] == MROPE]
+    assert len(mrope) == LAYER_TYPES.count("full_attention")
+    assert not [op for op in ops if op["op"].startswith(("triton.", "flydsl."))]
+    for op in ops:
+        if ":" in op["op"]:
+            assert op["op"].startswith("atom.") and op["kind"] == "opaque_leaf"
+            assert importlib.import_module(op["op"].split(":")[0])
+
+
+def test_each_tensor_argument_carries_where_its_storage_came_from(tmp_path_factory):
+    graph, _ = capture(1, WIDTHS, tmp_path_factory)["decode B=16"]
+    ops = _ops(graph["region"])
+
+    [indices] = [op for op in ops if op["op"] == KV_INDICES]
+    roles = {slot: indices["args"][slot]["role"] for slot in KV_INDICES_METADATA}
+    assert roles == dict.fromkeys(KV_INDICES_METADATA, "metadata")
+    for op in (op for op in ops if op["op"] == GEMM):
+        assert (op["args"]["A"]["role"], op["args"]["B"]["role"]) == (
+            "activation",
+            "weight",
+        )
+    [mrope, *_] = [op for op in ops if op["op"] == MROPE]
+    assert mrope["args"]["positions"]["role"] == "metadata"
+    assert re.fullmatch(
+        r"\S+\.layers\.\S+\.rotary_emb", mrope["args"]["rotary_emb"]["module"]
+    )
+    roles = {t["role"] for op in ops for v in op["args"].values() for t in _tensors(v)}
+    assert roles <= {"activation", "weight", "kv", "metadata"}
+
+
+def test_a_prefill_is_captured_at_its_tokens_and_sequences(tmp_path_factory):
+    graphs = capture(1, "--prefill 512 2 --prefill 300 3", tmp_path_factory)
+
+    assert set(graphs) == {"prefill T=512 B=2", "prefill T=300 B=3"}
+    for tokens in (512, 300):
+        [(graph, _)] = [g for s, g in graphs.items() if f"T={tokens} " in s]
+        assert "prefill" in graph["structure"]
+        gemms = [op for op in _ops(graph["region"]) if op["op"] == GEMM]
+        assert gemms and all(op["args"]["A"]["shape"][0] == tokens for op in gemms)
+
+
+def test_trace_ops_refuses_a_width_with_no_sequence(tmp_path):
+    with pytest.raises(SystemExit, match="a decode width is at least 1"):
+        cli.main(["trace", "ops", "--model", "m", "--width", "0", "--store", "s"])
 
 
 def test_trace_ops_records_torch_s_operators_and_hides_aiter_s(tmp_path_factory):
-    ops = _ops(capture(1, 2, tmp_path_factory)[0]["region"])
+    ops = _ops(capture(1, WIDTH_2, tmp_path_factory)["decode B=2"][0]["region"])
 
     kinds = collections.defaultdict(set)
     for op in ops:
@@ -299,8 +456,8 @@ def test_trace_ops_records_torch_s_operators_and_hides_aiter_s(tmp_path_factory)
 
 
 def test_tp2_leaves_its_stand_ins_copies_out_and_says_so(tmp_path_factory):
-    one = _ops(capture(1, 2, tmp_path_factory)[0]["region"])
-    graph, declared = capture(2, 2, tmp_path_factory)
+    one = _ops(capture(1, WIDTH_2, tmp_path_factory)["decode B=2"][0]["region"])
+    graph, declared = capture(2, WIDTH_2, tmp_path_factory)["decode B=2"]
     two = _ops(graph["region"])
 
     added = collections.Counter(op["op"] for op in two)
@@ -311,5 +468,5 @@ def test_tp2_leaves_its_stand_ins_copies_out_and_says_so(tmp_path_factory):
     left_out = collections.defaultdict(list)
     for op in declared["left_out"]:
         left_out[op["why"]].append(op["op"])
-    assert set(left_out) == {"h2d", "stand-in", "step-crossing"}
+    assert set(left_out) == {"h2d", "host", "stand-in", "step-crossing"}
     assert left_out["stand-in"].count("aten.copy_.default") == 2
