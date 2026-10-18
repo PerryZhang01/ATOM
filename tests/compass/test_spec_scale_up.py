@@ -13,7 +13,8 @@ from test_spec_origin import saved
 from test_spec_schema import DOCUMENT, STACK, document, read, refusal_from
 from test_spec_verbs import fragment
 
-from atom.compass.spec import MachineSpec, Rule, SpecRefusal, merge, validate
+from atom.compass.spec import MachineSpec, SpecRefusal, merge, validate
+from atom.compass.spec.rules import Rule
 
 MI455 = "mi455x-72gpu"
 

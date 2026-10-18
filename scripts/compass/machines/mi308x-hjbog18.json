@@ -74,9 +74,6 @@
       "host.ipc.shm_broadcast_s": {
         "origin": "assumed"
       },
-      "host.admission_fixed_s": {
-        "origin": "assumed"
-      },
       "device.memory.bandwidth_bytes_per_s": {
         "origin": "assumed"
       },
@@ -172,8 +169,7 @@
     "ipc": {
       "zmq_roundtrip_s": 5e-05,
       "shm_broadcast_s": 2e-05
-    },
-    "admission_fixed_s": 0.009
+    }
   },
   "device": {
     "name": "MI308X",

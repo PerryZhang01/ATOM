@@ -5,7 +5,7 @@ A fingerprint is not one digest, and there is no method here that makes one.
 It is **the readings of the axes the row depends on, kept apart**, because an
 artifact that refuses with a single moved hash says only that something
 changed, and nothing about which axis did. Keeping the cells apart is what lets
-a refusal say `region_terms x model`, and what lets a `price_list` be shown
+a refusal say `memory_readings x model`, and what lets a `price_list` be shown
 surviving the same change.
 
 **A reading states what kind of thing it is, and two kinds are not compared.**
