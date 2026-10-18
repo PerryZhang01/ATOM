@@ -47,10 +47,11 @@ AUTHOR = "compass agent for jgong5"
 #: Token counts swept, one to past the 204,288-token p90 prompt of cc-traces.
 LENGTHS = tuple(4**k for k in range(10))
 #: The worst relative residual a tokenizer fit may leave at any swept length.
-#: Encode on node 18 costs more per token past 64k tokens than below it, so a
-#: fixed-plus-linear law holds it only to about 20% at the longest length; the
-#: bound leaves room for that and still refuses a sweep of the wrong shape.
-BOUND = 0.25
+#: Encode costs more per token past 64k tokens than below it, so a
+#: fixed-plus-linear law holds it only to about 20% on node 18 and about 35% on
+#: mi355-gpu-45; the bound leaves room for that and still refuses a sweep of the
+#: wrong shape.
+BOUND = 0.40
 #: Sweeps the bound accepts per probe: the entry states each rate's median over
 #: them, and its p10 and p90. On a loaded host a sweep can break the bound at
 #: one length; it is printed and swept again, up to as many times.
