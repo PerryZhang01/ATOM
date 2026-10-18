@@ -109,7 +109,15 @@ as ATOM's runner does. A run whose speculative config declares no acceptance is 
 name. ATOM refuses forced acceptance beside DSpark's confidence schedule
 (`Config.__post_init__`), so a DSpark run verifies its full draft block; its
 confidence-scheduled truncation is not modelled. The drafter is built on the meta device
-and reads no checkpoint.
+and reads no checkpoint; a drafter hook ATOM renames is refused by name.
+
+The realisations differ: the kernel draws per position from a generator re-seeded each
+step, the host one uniform per row from a per-rank stream, so a paired run below full
+acceptance parts at the first differing draw. Only the distribution is shared; it is
+checked against the kernel at K = 1, and at K > 1 by
+[#1546](https://github.com/jgong5/ATOM/issues/1546). A speculative step whose price tags
+no draft term is refused by name, `cost:<backend>: prices no draft`; step-level backends
+tag one with [#1541](https://github.com/jgong5/ATOM/issues/1541).
 
 ### What still flows through ATOM's real code
 

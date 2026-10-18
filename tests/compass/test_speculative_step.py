@@ -5,10 +5,12 @@ ATOM's own scheduler, and the target and draft device time charged apart."""
 import itertools
 import json
 import queue
+import sys
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import torch
 from conftest import MockConfig
 from test_dp_step_max import dp2, prefill, runner  # noqa: F401
 from test_parity_recurrence import MS, line
@@ -16,10 +18,15 @@ from test_parity_recurrence import MS, line
 from atom.compass.backends import step_labels
 from atom.compass.backends.cost import CostTerm, StepCost
 from atom.compass.backends.step_stub import Coefficients, StepStubBackend
+from atom.compass.run import _graph_pool
 from atom.compass.runner.overrides import (
     HOST_SEGMENTS,
     MTP_SEGMENT,
     HostDeviceRecurrence,
+    NonAllocatingRunner,
+    RunnerRefusal,
+    drafts_on_meta,
+    schedulable_ladder,
 )
 from atom.compass.runner.step_output import DeferredTokenStream
 from atom.model_engine.scheduler import ScheduledBatchOutput, Scheduler
@@ -44,7 +51,7 @@ def _serve(rates, seed=0):
             max_num_batched_tokens=512,
         )
     )
-    stream = DeferredTokenStream([7], drafts=k, rates=rates, seed=seed)
+    stream = DeferredTokenStream([7], rates=rates, seed=seed)
     Sequence.counter = itertools.count()
     params = SamplingParams(max_tokens=MAX_TOKENS, ignore_eos=True)
     seqs = [
@@ -183,3 +190,89 @@ def test_an_mtp_record_labels_the_target_alone_and_the_draft_apart(tmp_path):
     assert [s.device_s for s in samples] == pytest.approx([0.010] * 4)
     assert [row["draft_s"] for row in table] == pytest.approx([0.0005] * 4)
     assert [s.host["W_post"] for s in samples] == pytest.approx([0.00075] * 4)
+
+
+def _speculative(r, rates=(0.5,)):
+    r.config.speculative_config = SimpleNamespace(synthetic_acceptance_rates=rates)
+    return r
+
+
+def test_a_speculative_step_priced_with_no_draft_term_is_refused_by_name():
+    """The drafter runs after every target forward, so a price with no draft
+    term is refused, not charged 0 s of draft; a tagged one is charged."""
+    plain = _speculative(runner(StepStubBackend(Coefficients.constant(10.0, 1.0))))
+    assert plain.forward(prefill(8)).predicted_s == 0.0
+    assert plain.refused_commands() == ("cost:StepStubBackend: prices no draft",)
+    tagged = _speculative(runner(_Drafting(Coefficients.constant(10.0, 1.0), 4.0)))
+    assert tagged.forward(prefill(8)).predicted_s == pytest.approx(14.0)
+    assert tagged.refused_commands() == ()
+
+
+HOOKS = ("_build_draft_model", "load_model", "arm_aux_capture")
+
+
+def _drafters(monkeypatch, gone=None):
+    """A stand-in for ATOM's drafter module: `Drafter` defining each of `HOOKS`
+    but `gone`, a direct flavor, and a flavor below it that builds its own
+    model."""
+    hooks = {h: lambda self, *a: None for h in HOOKS if h != gone}
+    Drafter = type("Drafter", (), hooks)
+
+    class Direct(Drafter):
+        pass
+
+    class Deeper(Direct):
+        def _build_draft_model(self, model_class):
+            return torch.empty(1)
+
+        def load_model(self, target):
+            raise AssertionError("read the checkpoint")
+
+    module = SimpleNamespace(Drafter=Drafter)
+    monkeypatch.setitem(sys.modules, "atom.spec_decode.drafter", module)
+    return Deeper
+
+
+def test_a_flavor_below_a_direct_subclass_builds_on_meta_and_reads_nothing(
+    monkeypatch,
+):
+    deeper = _drafters(monkeypatch)
+    drafts_on_meta()
+    assert deeper()._build_draft_model(None).device.type == "meta"
+    deeper().load_model(None)
+
+
+@pytest.mark.parametrize("gone", HOOKS)
+def test_a_drafter_hook_atom_renamed_is_refused_by_name(monkeypatch, gone):
+    _drafters(monkeypatch, gone)
+    with pytest.raises(RunnerRefusal, match=f"no longer defines {gone}"):
+        drafts_on_meta()
+
+
+def test_pipeline_parallel_speculation_is_refused_before_the_drafter():
+    r = object.__new__(NonAllocatingRunner)
+    r.config = MockConfig(
+        pipeline_parallel_size=2,
+        speculative_config=SimpleNamespace(synthetic_acceptance_rates=[0.5]),
+    )
+    with pytest.raises(RunnerRefusal, match="pipeline parallel"):
+        r._build_and_load_model(object)
+
+
+def test_piecewise_capture_under_a_drafter_is_refused():
+    config = SimpleNamespace(enforce_eager=False, speculative_config=object())
+    r = SimpleNamespace(config=config, _piecewise_cg_active=lambda: True)
+    with pytest.raises(ValueError, match="draft q bucket"):
+        _graph_pool(r, None, None)
+
+
+@pytest.mark.parametrize("k, top", [(None, 64), (1, 32), (3, 16)])
+def test_the_ladder_charges_each_sequence_its_drafts(k, top):
+    spec = k and SimpleNamespace(num_speculative_tokens=k)
+    config = SimpleNamespace(
+        max_num_seqs=256,
+        max_num_batched_tokens=64,
+        capture_sizes=[1, 2, 4, 8, 16, 32, 64],
+        speculative_config=spec,
+    )
+    assert schedulable_ladder(config)[-1] == top

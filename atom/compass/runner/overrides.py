@@ -583,9 +583,19 @@ def drafts_on_meta() -> None:
 
     `ModelRunner.__init__` builds the drafter on this rank's device and loads it
     right after `_build_and_load_model`, with no override point between. The
-    drafter's own buffers stay on the host; only the draft model is meta.
+    drafter's own buffers stay on the host; only the draft model is meta. Every
+    subclass of `Drafter` is patched, at any depth; a hook `Drafter` no longer
+    defines is refused by name, since the flavors would then build on this
+    rank's device and read the checkpoint.
     """
     from atom.spec_decode.drafter import Drafter
+
+    hooks = ("_build_draft_model", "load_model", "arm_aux_capture")
+    if missing := [h for h in hooks if h not in vars(Drafter)]:
+        raise RunnerRefusal(
+            f"Drafter no longer defines {', '.join(missing)}, which a simulated "
+            "run patches to build the drafter on meta and read no checkpoint"
+        )
 
     def on_meta(build):
         @wraps(build)
@@ -595,7 +605,9 @@ def drafts_on_meta() -> None:
 
         return built
 
-    for cls in (Drafter, *Drafter.__subclasses__()):
+    classes = [Drafter]
+    for cls in classes:  # grows as it goes: every subclass, at any depth
+        classes += cls.__subclasses__()
         if build := vars(cls).get("_build_draft_model"):
             cls._build_draft_model = on_meta(build)
         for name in ("load_model", "arm_aux_capture"):
@@ -1207,7 +1219,6 @@ class NonAllocatingRunner(
             spec, draws = _config_field(self, "speculative_config"), {}
             if spec is not None:  # one seeded stream per DP rank
                 draws = {
-                    "drafts": spec.num_speculative_tokens,
                     "rates": spec.synthetic_acceptance_rates,
                     "seed": self.config.parallel_config.data_parallel_rank,
                 }
@@ -1265,7 +1276,9 @@ def _group_step_seconds(
     A step no cost source answers costs 0 s on this rank and still counts as
     a priced step; its reason, ``cost:`` and what each source said, joins the
     refusals the summary reads. With `compass_abort` set it raises instead,
-    which ends the worker. A forward `compass_host` refuses takes the same path,
+    which ends the worker. Under a speculative config, a step whose price tags
+    no `draft` term is refused the same way, since the drafter runs after
+    every target forward. A forward `compass_host` refuses takes the same path,
     charged with each segment it named at 0; a step both refuse has one reason.
 
     On the rank that keeps the parity record, each step also appends its cost
@@ -1296,14 +1309,18 @@ def _group_step_seconds(
             "each stage the whole model would count it once per stage"
         )
     from atom.compass.backends.cost import ProvenanceMix, fold_seconds
-    from atom.compass.backends.resolver import CostRefused
+    from atom.compass.backends.resolver import CostRefused, Refusal
 
     if mode is None:
         mode = forward_mode(batch, runner)
     mix = vars(runner).setdefault("_priced", ProvenanceMix())
+    spec = getattr(runner.config, "speculative_config", None)
     terms, refused = (), None
     try:
         cost = backend.price(batch_view(batch, mode, runner))
+        if spec and not any(t.draft for t in cost.terms):
+            name = type(backend).__name__
+            raise CostRefused(batch, [Refusal(name, "prices no draft")])
     except CostRefused as refusal:
         if getattr(runner, "compass_abort", False):
             raise
@@ -1328,10 +1345,8 @@ def _group_step_seconds(
             return host.release(*t.tolist())
 
     try:
-        if host is None:
-            charge_s = fold_seconds((device_s, draft_s))
-        else:
-            charge_s = charge(batch, device_s, draft_s)
+        total = fold_seconds((device_s, draft_s))
+        charge_s = total if host is None else charge(batch, device_s, draft_s)
     except CostRefused as refusal:
         if getattr(runner, "compass_abort", False):
             raise

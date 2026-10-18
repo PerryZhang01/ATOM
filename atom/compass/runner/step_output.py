@@ -114,26 +114,25 @@ class DeferredTokenStream:
     of the step sequence rather than of any request in it; only the id each
     request is reported with depends on the request.
 
-    Under speculation, `drafts` is the draft width and `rates` the per-position
-    unconditional acceptance ATOM's forced acceptance resolves to. Each decode
-    row of a batch that verifies drafts accepts `a` of them, drawn from a
-    stream seeded by `seed`: `a >= i + 1` with probability `rates[i]`, the
-    distribution ATOM's synthetic rejection kernel draws. Every row reports
-    `drafts` draft ids.
+    Under speculation, `rates` is the per-position unconditional acceptance
+    ATOM's forced acceptance resolves to, one per draft. Each row of a decode
+    batch that verifies drafts accepts `a` of them, drawn from a stream seeded
+    by `seed`: `a >= i + 1` with probability `rates[i]`, the distribution
+    ATOM's synthetic rejection kernel draws. Every row reports one draft id per
+    rate.
     """
 
     def __init__(
         self,
         token_ids: list[int],
         deferred: bool = True,
-        drafts: int = 0,
         rates: list[float] | None = None,
         seed: int = 0,
     ) -> None:
         self.token_ids = token_ids
         self.deferred = deferred
         self.prev_batch: Any = None
-        self.drafts, self.rates = drafts, rates
+        self.rates = rates
         self.rng = np.random.default_rng(seed)
 
     @staticmethod
@@ -175,17 +174,15 @@ class DeferredTokenStream:
         width = 0 if source is None else int(source.total_seqs_num)
         accepted, rejected = np.zeros((2, width), dtype=np.int32)
         k = 0 if self.rates is None or source is None else source.num_spec_step
-        if k:  # decode rows follow the prefill rows
-            first = int(source.total_seqs_num_prefill)
-            u = self.rng.random((width - first, 1))
-            accepted[first:] = (u < np.asarray(self.rates[:k])).sum(axis=1)
-            rejected[first:] = k - accepted[first:]
+        if k and not source.total_tokens_num_prefill:  # ATOM verifies no prefill
+            u = self.rng.random((width, 1))
+            accepted[:] = (u < np.asarray(self.rates[:k])).sum(axis=1)
+            rejected[:] = k - accepted
         # Picked by request id: requests fewer than len(ids) apart never share one.
         ids = [self.token_ids[int(r) % len(self.token_ids)] for r in req_ids]
         drafts = None
-        if self.drafts:
-            drafts = np.repeat(np.asarray(ids, dtype=np.int32), self.drafts)
-            drafts = drafts.reshape(width, self.drafts)
+        if self.rates:
+            drafts = np.tile(np.array(ids, np.int32)[:, None], (1, len(self.rates)))
         return {
             "req_ids": req_ids,
             "token_ids": [(i,) * (a + 1) for i, a in zip(ids, accepted)],
