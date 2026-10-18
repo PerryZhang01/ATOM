@@ -136,7 +136,7 @@ Path(run).write_text(json.dumps({
     "clock_endpoint": f"tcp://127.0.0.1:{port}", "bound_s": 1e7,
     "admission_path": "serving", "ipc_s": 2.0**-14, "stream_s": 2.0**-12,
     "router_s": 2.0**-12, "kv_write_req_s": 2.0**-10, "kv_link": "intra_node",
-    "replay": f"{out}/real/record", "machine": machine, "store": store,
+    "replay": f"{out}/real/record", "step_stub": {}, "machine": machine, "store": store,
     "prefill_data_parallel_size": int(dp_p), "decode_data_parallel_size": int(dp_d),
     "out_dir": f"{out}/sim",
     "prefill_instances": int(prefills), "decode_instances": int(decodes),
