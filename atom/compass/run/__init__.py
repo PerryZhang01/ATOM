@@ -61,11 +61,7 @@ priced by `StepStubBackend`), ``step_linear`` (a `StepLinearLaw` mapping,
 priced by `StepLinearBackend`; its ``machine_spec`` digest and
 its ``engine_config``, `step_grid.keyed` as it was fitted, refuse a run under
 any other, and a law missing either refuses; a list of them is one per engine config, a process taking its own), ``step_grid`` (an artifact store's root and a
-bundle's key, priced by `StepGridBackend`; see `step_grid`) and ``replay`` (a
-real run's parity record directory, or for a prefill-decode run one holding
-each deployment's as ``prefill/`` and ``decode/``, ``prefill<k>/`` and
-``decode<k>/`` above one of a side: each step ends when the real one did, by
-`atom.compass.parity.replay`),
+bundle's key, priced by `StepGridBackend`; see `step_grid`),
 ``step_roofline`` (optional, ``true`` or ``false``: with ``true`` a
 `StepRooflineBackend` prices the steps the backend refuses, through
 `StepFallbackBackend`, as it always does under ``step_grid``),
@@ -82,6 +78,11 @@ on ``(1, tokens, seqs)``, refused where absent; ``key``, the `host_key` they wer
 fitted under and the ``machine_spec`` digest of the spec of the platform they
 were fitted on, which a run with laws must match; ``skip``, segments zeroed for
 a what-if run, which the graders refuse; a list of them as ``step_linear``'s),
+or in its place ``replay`` (a real run's parity record directory, or for a
+prefill-decode run one holding each deployment's as ``prefill/`` and
+``decode/``, ``prefill<k>/`` and ``decode<k>/`` above one of a side: each step
+ends when the real one did, by `atom.compass.parity.replay`, and the cost
+backend's price reaches only the cost record),
 ``machine`` (a machine spec mapping), ``parameter_count`` (read by the
 roofline, which without it counts the meta build's), ``store`` (the artifact
 store's root, where `memory` reads the configuration's memory readings) and
@@ -1201,22 +1202,27 @@ def runner(model_runner, tree) -> None:
             from atom.compass.run.step_grid import keyed
 
             run[name] = _fitted_here(run[name], keyed(config), engine, name)
-    backends = (STEP_STUB, STEP_LINEAR, STEP_GRID, "replay")
+    backends = (STEP_STUB, STEP_LINEAR, STEP_GRID)
     keys = [k for k in backends if k in run]
     if len(keys) != 1:
         raise ValueError(
             f"a run file prices its steps from one of {', '.join(backends[:-1])} "
-            f"and replay, and this one has {' and '.join(keys) or 'none'}"
+            f"and {backends[-1]}, and this one has {' and '.join(keys) or 'none'}"
         )
     replay = None
     if "replay" in run:
-        from atom.compass.parity.replay import ReplayBackend
+        if "host" in run:
+            raise ValueError(
+                "a run file's replay ends each step where the real one did, in "
+                "place of its host laws, and this one has both"
+            )
+        from atom.compass.parity.replay import ReplayHost
 
         dp_rank = config.parallel_config.data_parallel_rank
         # This deployment's record: prefill/, or prefill1/ for engine-P1.
         name = _pd_name(config, run) or ""
         side = {"P": "prefill", "D": "decode"}.get(name[:1], "") + name[1:]
-        backend = replay = ReplayBackend(Path(run["replay"]) / side, dp_rank)
+        replay = ReplayHost(Path(run["replay"]) / side, dp_rank)
     if STEP_LINEAR in run:
         if tp != 1:
             raise ValueError(

@@ -3,7 +3,7 @@
 
 ATOM's `Scheduler` drives the simulated runner's `forward` on one DP rank, as in
 `test_parity_record.py`; a "real" record is that run with entry and exit
-times written in, and the replay is the same run priced by `ReplayBackend`.
+times written in, and the replay is the same run with `ReplayHost` as its host.
 """
 
 import http.server
@@ -26,12 +26,8 @@ from test_vertical_slice import _run_file
 from atom.compass import run as compass_run
 from atom.compass.clock import LpId, single_engine_table
 from atom.compass.parity import ARRIVALS, ENV, compare, read, traffic
-from atom.compass.parity.replay import ReplayBackend
-from atom.compass.runner.overrides import (
-    RunnerRefusal,
-    _says_why,
-    install_cost_backend,
-)
+from atom.compass.parity.replay import ReplayHost
+from atom.compass.runner.overrides import RunnerRefusal, _says_why
 from atom.model_engine.scheduler import Scheduler
 from atom.model_engine.sequence import Sequence
 from atom.sampling_params import SamplingParams
@@ -63,16 +59,17 @@ class _Arrival:
 def _run(directory, monkeypatch, late=(None, 0), replay=None, at=None):
     """Requests 0-3 to completion, request `late[0]` added after step
     `late[1]`, or with `at`, once the engine LP's clock reaches `at`; with
-    `replay`, each step priced by it on a clock its replies advance, through
-    `clock.charge` with `at`. Returns that clock after each step, the runner,
-    and the requests in each step."""
+    `replay`, a record directory, each step ended by its `ReplayHost` on a
+    clock its replies advance, through `clock.charge` with `at`, and priced by
+    `_Runner`'s step stub. Returns that clock after each step, the runner, and
+    the requests in each step."""
     monkeypatch.setenv(ENV, str(directory))
     config = _config()
     scheduler, runner = Scheduler(config), _Runner(config)
     now = [0.0]
     if replay is not None:
-        install_cost_backend(runner, replay)
-        runner.compass_host, replay.now = replay, lambda: now[0]
+        runner.compass_host = host = ReplayHost(replay, 0)
+        host.now = lambda: now[0]
     params = SamplingParams(max_tokens=3, ignore_eos=True)
     sequences = [Sequence(_prompt(i), BLOCK, sampling_params=params) for i in range(4)]
     for i, sequence in enumerate(sequences):
@@ -151,17 +148,15 @@ def test_an_arrival_between_a_return_and_the_pull_joins_the_next_step_as_it_did(
     # It reaches the engine halfway from step due - 1's return to its pull.
     exit_s = (ENTER * due + EXIT - SENT[0]) / 1e9
     at = exit_s + PULL / 2e9
-    replay = ReplayBackend(real, 0)
 
-    clock, _, took = _run(tmp_path / "sim", monkeypatch, (3, None), replay, at)
+    clock, _, took = _run(tmp_path / "sim", monkeypatch, (3, None), real, at)
 
     assert took == members
     assert clock[due - 1] == pytest.approx(exit_s + PULL / 1e9)
     assert compare(real, tmp_path / "sim")["first_divergence"] == {0: None}
     (real / "dp0.pulls.jsonl").rename(tmp_path / "dropped")
-    replay = ReplayBackend(real, 0)
     with pytest.raises(RunnerRefusal, match="this is step"):  # a step longer
-        _run(tmp_path / "sim2", monkeypatch, (3, None), replay, at)
+        _run(tmp_path / "sim2", monkeypatch, (3, None), real, at)
     assert compare(real, tmp_path / "sim2")["first_divergence"][0]["step"] == due
 
 
@@ -198,9 +193,7 @@ def test_each_replayed_step_ends_where_the_real_forward_returned(
 ):
     directory, members = real
     n = len(members)
-    clock, runner, _ = _run(
-        tmp_path / "sim", monkeypatch, replay=ReplayBackend(directory, 0)
-    )
+    clock, runner, _ = _run(tmp_path / "sim", monkeypatch, replay=directory)
     exits = [ENTER * (i + 1) + EXIT for i in range(n)]
     assert clock == pytest.approx([(t - SENT[0]) / 1e9 for t in exits])
     assert runner._priced.steps == n
@@ -208,6 +201,15 @@ def test_each_replayed_step_ends_where_the_real_forward_returned(
         0: {"compared": n, "identical": n}
     }
     assert compare(directory, tmp_path / "sim")["first_divergence"] == {0: None}
+    # The step stub's price reaches the cost record and no clock.
+    lines = (tmp_path / "sim" / "dp0.cost.jsonl").read_text().splitlines()[1:]
+    cost = [json.loads(line) for line in lines]
+    starts = [0.0, *clock[:-1]]
+    assert [c["charge_s"] for c in cost] == pytest.approx(
+        [t - s for s, t in zip(starts, clock)]
+    )
+    assert {t["source"] for c in cost for t in c["terms"]} == {"step-stub"}
+    assert all(c["device_s"] > 0 for c in cost)
 
 
 def test_a_request_released_one_step_late_is_named_at_its_first_step(
@@ -216,8 +218,7 @@ def test_a_request_released_one_step_late_is_named_at_its_first_step(
     directory, members = real
     due = next(i for i, step in enumerate(members) if 1 in step)
     assert due > 0, "request 1 must wait for a step to be released late"
-    replay = ReplayBackend(directory, 0)
-    _, _, late = _run(tmp_path / "sim", monkeypatch, (1, due), replay)
+    _, _, late = _run(tmp_path / "sim", monkeypatch, (1, due), directory)
     assert 1 not in late[due]
     report = compare(directory, tmp_path / "sim")
     assert report["first_divergence"][0]["step"] == due
@@ -232,7 +233,7 @@ def test_a_step_past_the_end_of_the_real_record_ends_the_run_by_name(
     path.write_text("".join(path.read_text().splitlines(keepends=True)[:3]))
     why = f"replay: {path} has 2 steps, and this is step 2"
     with pytest.raises(RunnerRefusal, match=f"^{re.escape(why)}$"):
-        _run(tmp_path / "sim", monkeypatch, replay=ReplayBackend(directory, 0))
+        _run(tmp_path / "sim", monkeypatch, replay=directory)
 
 
 def test_a_run_file_naming_a_record_replays_it_on_the_engine_clock(
@@ -241,14 +242,22 @@ def test_a_run_file_naming_a_record_replays_it_on_the_engine_clock(
     directory, _ = real
     monkeypatch.delenv(ENV)
     r = deployment(tmp_path)
-    run = json.loads(_run_file(tmp_path).read_text())
-    del run["step_stub"]
-    (tmp_path / "run.json").write_text(json.dumps(run | {"replay": str(directory)}))
+    run = json.loads(_run_file(tmp_path).read_text()) | {"replay": str(directory)}
     monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
     monkeypatch.setenv(compass_run.NOW_ENV, str(tmp_path / "now.bin"))
     engine = compass_run._PublishedClock(
         compass_run.ENGINE, compass_run.channel_table(run), None
     )
+    # A replay ends steps and prices nothing, and replaces the host laws.
+    refused = {
+        "has none": {k: v for k, v in run.items() if k != "step_stub"},
+        "in place of its host laws": run | {"host": {}},
+    }
+    for why, bad in refused.items():
+        (tmp_path / "run.json").write_text(json.dumps(bad))
+        with pytest.raises(ValueError, match=why):
+            compass_run.runner(r, META_8B)
+    (tmp_path / "run.json").write_text(json.dumps(run))
     compass_run.runner(r, META_8B)
     engine.now = 0.002
     charged = [r.forward(decode(B37)).predicted_s for _ in "ab"]
@@ -266,7 +275,6 @@ def test_a_worker_that_replays_past_its_record_names_why_in_the_engine_hand_in(
     monkeypatch.delenv(ENV)
     r = deployment(tmp_path)
     run = json.loads(_run_file(tmp_path).read_text())
-    del run["step_stub"]
     (tmp_path / "run.json").write_text(json.dumps(run | {"replay": str(directory)}))
     monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
     now = tmp_path / compass_run.NOW_FILE.format(compass_run.ENGINE.name)
@@ -420,7 +428,6 @@ def test_each_side_of_a_prefill_decode_run_replays_its_own_record(
         tmp_path, kv_transfer_config={"kv_connector": "compass", "kv_role": role}
     )
     run = json.loads(_run_file(tmp_path, **PD).read_text())
-    del run["step_stub"]
     (tmp_path / "run.json").write_text(json.dumps(run | {"replay": str(directory)}))
     monkeypatch.setenv(compass_run.ENV, str(tmp_path / "run.json"))
     monkeypatch.setenv(compass_run.NOW_ENV, str(tmp_path / "now.bin"))

@@ -177,7 +177,7 @@ if not any(arch in entry["applies_to"] for entry in tokenizers):
 spec = {
     "clock_endpoint": f"tcp://127.0.0.1:{port}", "bound_s": 1e7,
     "admission_path": "serving", "ipc_s": 2.0**-14, "stream_s": 2.0**-12,
-    "replay": f"{out}/real/record", "machine": machine, "store": store,
+    "replay": f"{out}/real/record", "step_stub": {}, "machine": machine, "store": store,
     "data_parallel_size": int(width or 1), "out_dir": f"{out}/sim",
     "image_preprocess_s": float(image_s),
 }
