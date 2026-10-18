@@ -26,9 +26,11 @@ run file has no host laws and so prices no host time; when the step roofline
 was on in a run of another backend than the step grid, which always prices
 below it; when its first client run refused anything, or has no summary to
 say; when it ran the step grid without a coverage check; and when its
-backend's fit inputs were profiled or served a trace it served. Beside the
-table, the command states how many of that client run's steps its backend
-extrapolated and a fallback below it priced.
+backend's fit inputs were profiled or served a trace it served. The step
+grid's plan, an input of `source` `plan`, is not one: it placed the points
+from shapes alone, so it may have read any trace, a graded one included.
+Beside the table, the command states how many of that client run's steps its
+backend extrapolated and a fallback below it priced.
 
 The tolerance of a metric is the real runs' own spread: its distance between
 every ordered pair of real runs, at most. A metric's result is its distance
@@ -227,7 +229,8 @@ def _not_graded(run, traces) -> list[str]:
         why.append(f"it refused {refused['count']}: {refused['reasons']}")
     if STEP_GRID in run["run_file"] and not coverage:
         why.append("it ran the step grid without a coverage check")
-    inputs = (run["provenance"]["provenance"] or {}).get("inputs") or []
+    provenance = run["provenance"]["provenance"] or {}
+    inputs = [i for i in provenance.get("inputs") or () if i.get("source") != "plan"]
     if fitted := sorted({t for i in inputs for t in i["traces"]} & set(traces)):
         why.append(f"its backend was fitted on traces it served: {fitted}")
     if profiled := [i["run"] for i in inputs if i.get("profiled")]:
