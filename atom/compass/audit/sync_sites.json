@@ -4423,6 +4423,18 @@
    "mechanism_why": "the op bench times leaves on a real device for the measure ops command, and no simulated run starts one"
   },
   {
+   "id": "atom/compass/bench/ops.py::_kernels::torch.cuda.synchronize()::device_sync#0",
+   "file": "atom/compass/bench/ops.py",
+   "symbol": "_kernels",
+   "call": "torch.cuda.synchronize",
+   "expr": "torch.cuda.synchronize()",
+   "shape": "device_sync",
+   "peer": "none",
+   "why": "the op bench waits for one profiled call of a leaf to finish before it reads the kernels the call launched",
+   "mechanism": "K9",
+   "mechanism_why": "the op bench times leaves on a real device for the measure ops command, and no simulated run starts one"
+  },
+  {
    "id": "atom/compass/bench/ops.py::main::ProcessPoolExecutor(1, mp_context=spawn)::thread_start#0",
    "file": "atom/compass/bench/ops.py",
    "symbol": "main",
@@ -4436,14 +4448,14 @@
    "mechanism_why": "starting a process cannot park; the measuring command is no LP, and a GPU command serves no simulated run"
   },
   {
-   "id": "atom/compass/bench/ops.py::main::bench.submit(measure, config, points, instances, args.llc_mib << 20)::executor_handoff#0",
+   "id": "atom/compass/bench/ops.py::main::bench.submit(measure, config, todo, args.llc_mib << 20)::executor_handoff#0",
    "file": "atom/compass/bench/ops.py",
    "symbol": "main",
    "call": "bench.submit",
-   "expr": "bench.submit(measure, config, points, instances, args.llc_mib << 20)",
+   "expr": "bench.submit(measure, config, todo, args.llc_mib << 20)",
    "shape": "executor_handoff",
    "peer": "process",
-   "why": "measure ops hands every point to its bench process at once",
+   "why": "measure ops hands every shape's points to its bench process at once",
    "mechanism": "K9",
    "mechanism_why": "the op bench times leaves on a real device for the measure ops command, and no simulated run starts one"
   },
