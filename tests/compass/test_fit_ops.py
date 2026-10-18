@@ -140,7 +140,7 @@ def _fit(out, store, *dirs):
 
 def test_fit_ops_publishes_its_points_key_and_their_held_out_error(measured, tmp_path):
     points = [_point(2, 10.0), _point(4, 12.5), _point(8, 16.0)]
-    points += [_point(16, 30.0, kernel="b"), _point(4, 1.0) | {"refused": "no"}]
+    points += [_point(16, 30.0, kernel="b"), _point(4, 1.0, n=512) | {"refused": "no"}]
     d, key = measured("m", points)
 
     got = _fit(tmp_path / "fit", tmp_path / "store", d)
