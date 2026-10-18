@@ -3,6 +3,9 @@
 
     compass measure ops (--width W | --prefill T B)... [--context C] --llc-mib M
         --gpu G --store S --out DIR -- <ATOM args>
+    compass measure ops --plan RECORD... --llc-mib M --gpu G --store S
+        --out DIR -- <ATOM args>
+    compass measure ops --coverage RECORD... --store S --out DIR -- <ATOM args>
 
 Each shape names the `op_graph` `compass trace ops` published in S for the
 model and TP width ATOM's arguments resolve. A point is one leaf of that graph,
@@ -34,25 +37,55 @@ again. A second graph runs copy 0 K times, warm; with one copy there is none.
 Each graph is replayed `WARMUPS` times, then `REPEATS` times timed;
 a repeat is the replay's device time over K, and a graph that captured no
 kernel times 0. The kernels one eager call of copy 0 launches are the point's
-kernel identity.
+kernel identity. A batch the KV pool cannot place refuses its leaves.
 
 DIR gets run.json, the run's identity, and ops.jsonl, one line per point. S
 gets each measured point as an `op_measurement`, keyed by the model, the
 parallel layout, the digest of the machine spec of the device, stack and PTL
 state run.json reads, the source root and the point.
+
+`--plan` places the points itself, in rounds, from the steps of the record
+directories it names (`record`'s or `trace steps`' output), and captures each
+`op_graph` S lacks as `trace ops` does. A decode leaf's points lie at its
+width over the rows' context; a prefill leaf's over its tokens, its family the
+leaf with its token count abstracted and, when its kind depends on context,
+its rows. First every leaf at every rung of ATOM's decode ladder, at the
+steps' lowest mean and highest max row context. A kind depends on context when
+a leaf of it, at one width, launched other kernels or timed more than
+`CONTEXT_MOVES` apart across contexts, or was never timed at two. Then each
+such decode leaf at every rung over a ladder of the steps' mean and max row
+contexts, and each prefill family over a ladder of the token counts its steps
+hold, chunk remainders among them: a ladder keeps a value `LADDER_STEP` past
+the last it kept, and the largest. Then, while two neighbouring points of a
+family launched different kernels and lie more than one apart, the point
+halfway. DIR gets each round's ops.jsonl in `round<n>`, and plan.jsonl, every
+point the plan holds, measured now or read from S.
+
+`--coverage` reads DIR's plan.jsonl and counts a step of the record
+directories it names as measured when every leaf of its `op_graph` lies on a
+point or between two, with every point from the one to the other of the same
+kernels: a decode leaf of a kind that depends on context over its step's mean
+to max row context, any other decode leaf at its width, and a prefill leaf at
+its tokens, unless its kind depends on context and a row of its step was
+cached, since the bench's prefill rows are fresh. It prints the counts by
+phase and, per leaf kind, the steps it left out by why.
 """
 
 import argparse
+import bisect
 import copy
 import dataclasses
 import datetime
 import hashlib
 import importlib
+import itertools
 import json
 import multiprocessing
 import os
+import re
 import statistics
 import warnings
+from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
@@ -93,12 +126,16 @@ def main(argv: list[str]) -> None:
     from atom.compass.run.step_grid import keyed
 
     cut = argv.index("--") if "--" in argv else len(argv)
+    if "--coverage" in argv[:cut]:
+        return print(json.dumps(_coverage_main(argv[:cut], argv[cut + 1 :]), indent=1))
     args = _parser().parse_args(argv[:cut])
     if len(args.gpu) != 1:
         raise ValueError(f"--gpu names {len(args.gpu)} GPUs; the op bench uses one")
     shapes = [decode(w) for w in args.width] + [prefill(*s) for s in args.prefill]
-    if not shapes:
-        raise ValueError("name a shape: --width or --prefill")
+    if not shapes and not args.plan:
+        raise ValueError("name a shape: --width or --prefill, or --plan")
+    if shapes and args.plan:
+        raise ValueError("--plan places every point; name no --width or --prefill")
     if args.context is None and any(s.phase == "decode" for s in shapes):
         raise ValueError("a decode shape needs --context, each row's tokens")
     os.environ["HIP_VISIBLE_DEVICES"] = hip_visible(args.gpu)
@@ -125,6 +162,8 @@ def main(argv: list[str]) -> None:
         run = identity(out / "engine.json", config.model, command, args.gpu)
         (out / "run.json").write_text(json.dumps(run))
         key, held = keys(config, run), 0
+        if args.plan:
+            return plan(store, key, config, run, args, " ".join(command), out)
         for shape, context, found in todo:
             for sig in list(found):
                 if store.directory_for(key(shape, context, sig)).exists():
@@ -161,6 +200,13 @@ def _parser() -> argparse.ArgumentParser:
         help="a prefill of T tokens over B sequences",
     )
     p.add_argument("--context", type=int, help="each decode row's tokens")
+    p.add_argument(
+        "--plan",
+        action="append",
+        default=[],
+        metavar="RECORD",
+        help="a record directory whose steps the planned points cover",
+    )
     p.add_argument(
         "--llc-mib",
         type=int,
@@ -227,7 +273,14 @@ def measure(config, todo, llc: int) -> list[dict]:
         stub, rule, got = Stub(runner, llc), ReplayRule(config), []
         with patch.object(runner.model, "forward", stub), torch.inference_mode():
             for shape, context, found in todo:
-                got += stub.point(rule, shape, context, found)
+                try:
+                    got += stub.point(rule, shape, context, found)
+                except ValueError as error:  # a batch the KV pool cannot place
+                    got += [
+                        {"shape": str(shape), "context": context, "op": op["op"]}
+                        | {"leaf": sig, "refused": f"ValueError: {error}"}
+                        for sig, (op, _) in found.items()
+                    ]
         return got
     finally:
         runner.exit()
@@ -675,3 +728,291 @@ def publish(store, key, config, run: dict, command: str, results, out: Path):
                         member_name("point", RANK, "json"): json.dumps(record).encode()
                     },
                 )
+
+
+#: A ladder keeps a value only this many times the last it kept, and the largest.
+LADDER_STEP = 1.25
+#: The spread of a leaf's cold times across contexts, over the largest, past
+#: which its kind depends on context; a repeat's spread stays within 4%.
+CONTEXT_MOVES = 0.10
+
+
+def plan(store, key, config, run, args, command: str, out: Path) -> None:
+    """Measure the points the steps of `--plan`'s record directories call for,
+    round by round, and write every point held to plan.jsonl in `out`."""
+    from atom.compass.capture import population_steps
+    from atom.compass.capture.forward import decode
+    from atom.compass.runner.overrides import schedulable_ladder
+
+    steps = list(population_steps(args.plan))
+    contexts = [c for s, line in steps if s.phase == "decode" for c in _rows(line)]
+    if not contexts:
+        raise ValueError("the --plan records hold no decode step to read contexts of")
+    rungs = [decode(r) for r in schedulable_ladder(config)]
+    graphs, done, tried = {}, {}, set()
+
+    def measure_round(want, n):
+        dependent = _dependent(done.values())
+        _load(store, config, args.store, {s for s, _ in want}, graphs)
+        todo = []
+        for (shape, context), families in want.items():
+            found = {}
+            for sig, (op, instances) in graphs[shape].items():
+                fam = _family(shape, context, op["op"], sig, dependent)[0]
+                if (
+                    (str(shape), context, sig) in done
+                    or families
+                    and fam not in families
+                ):
+                    continue
+                if store.directory_for(at := key(shape, context, sig)).exists():
+                    held = store.read(at).read_member("point", RANK, "json")
+                    done[str(shape), context, sig] = json.loads(held)
+                else:
+                    found[sig] = op, instances
+            todo += [(shape, context, found)] if found else []
+        print(f"round {n}: {sum(len(f) for *_, f in todo)} points to measure")
+        results = _bench(config, todo, args.llc_mib << 20) if todo else []
+        (out / f"round{n}").mkdir(exist_ok=True)
+        publish(store, key, config, run, command, results, out / f"round{n}")
+        done.update(((r["shape"], r["context"], r["leaf"]), r) for r in results)
+
+    measure_round(
+        {(s, c): None for s in rungs for c in (min(contexts), max(contexts))}, 0
+    )
+    dependent, want = _dependent(done.values()), defaultdict(set)
+    for shape in rungs:
+        for sig, (op, _) in graphs[shape].items():
+            if dependent.get(op["op"], True):
+                for c in _ladder(contexts):
+                    want[shape, c].add(_family(shape, c, op["op"], sig, dependent)[0])
+    prefills = {s for s, _ in steps if s.phase == "prefill"}
+    _load(store, config, args.store, prefills, graphs)
+    seen = defaultdict(dict)
+    for shape in sorted(prefills):
+        for sig, (op, _) in graphs[shape].items():
+            fam, tokens = _family(shape, None, op["op"], sig, dependent)
+            seen[fam].setdefault(tokens, shape)
+    for fam, at in seen.items():
+        for tokens in _ladder(at):
+            want[at[tokens], None].add(fam)
+    n = 1
+    while want:
+        measure_round(want, n)
+        n += 1
+        want = _densify(_families(done.values(), _dependent(done.values())), tried)
+    (out / "plan.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in done.values())
+    )
+    kinds = Counter(r["op"] for r in done.values() if "refused" not in r)
+    print(json.dumps({"points per leaf kind": dict(kinds.most_common())}, indent=1))
+    print(f"{sum(kinds.values())} of {len(done)} points measured in {n} rounds")
+
+
+def _coverage_main(argv: list[str], atom_args: list[str]) -> dict:
+    from atom.compass.bench.measure import atom_config
+
+    p = argparse.ArgumentParser(prog=f"{PROG} --coverage")
+    p.add_argument("--coverage", action="append", required=True, metavar="RECORD")
+    p.add_argument("--store", required=True, help="the artifact store's root")
+    p.add_argument("--out", required=True, help="the --plan run's --out")
+    args = p.parse_args(argv)
+    lines = (Path(args.out) / "plan.jsonl").read_text().splitlines()
+    records = [json.loads(line) for line in lines]
+    store = ArtifactStore(args.store)
+    return coverage(store, args.store, atom_config(atom_args), args.coverage, records)
+
+
+def coverage(store, root, config, names, records) -> dict:
+    """How the measured points among `records` cover the steps of the record
+    directories `names`: the steps and those covered by phase, and per leaf
+    kind the steps it left out by why."""
+    from atom.compass.capture import population_steps
+
+    steps = list(population_steps(names))
+    dependent = _dependent(records)
+    axes = {
+        fam: ([p[0] for p in points], [p[1] for p in points])
+        for fam, points in _families(records, dependent).items()
+    }
+    graphs, report, out = {}, defaultdict(Counter), defaultdict(Counter)
+    _load(store, config, root, {s for s, _ in steps}, graphs)
+    families = {
+        s: [
+            (op["op"], *_family(s, None, op["op"], sig, dependent))
+            for sig, (op, _) in g.items()
+        ]
+        for s, g in graphs.items()
+    }
+    for shape, line in steps:
+        whys, cached = {}, any(row[1] > row[0] for row in line["rows"])
+        for name, fam, tokens in families[shape]:
+            moves = dependent.get(name, True)
+            if fam not in axes:
+                whys[name] = "no measured point"
+            elif shape.phase == "decode":
+                whys[name] = _bracket(*axes[fam], *_rows(line)) if moves else ""
+            elif cached and moves:
+                whys[name] = "a cached row, measured on fresh rows only"
+            else:
+                whys[name] = _bracket(*axes[fam], tokens, tokens)
+        whys = {name: why for name, why in whys.items() if why}
+        report[shape.phase].update(steps=1, covered=not whys)
+        for name, why in whys.items():
+            out[name][why] += 1
+    total = sum(report.values(), Counter())
+    return {
+        "steps": total["steps"],
+        "covered": total["covered"],
+        "share": total["covered"] / max(total["steps"], 1),
+        "by phase": {phase: dict(c) for phase, c in report.items()},
+        "left out, by leaf kind": {k: dict(v) for k, v in sorted(out.items())},
+    }
+
+
+def _rows(line) -> tuple[int, int]:
+    """A step's rows' mean and max context."""
+    contexts = [row[1] for row in line["rows"]]
+    return sum(contexts) // len(contexts), max(contexts)
+
+
+def _ladder(values) -> list:
+    kept = []
+    for v in sorted(set(values)):
+        if not kept or v >= kept[-1] * LADDER_STEP:
+            kept.append(v)
+    return kept + [v] if kept[-1] != v else kept
+
+
+def _shape(text: str):
+    from atom.compass.capture.forward import decode, prefill
+
+    counts = [int(n) for n in re.findall(r"=(\d+)", text)]
+    return prefill(*counts) if text.startswith("prefill") else decode(*counts)
+
+
+def _abstract(value, n: int):
+    """`value` with every int equal to `n` replaced by ``"T"``."""
+    # ponytail: an unrelated int equal to n (a stride of 1 at T = 1) is
+    # abstracted too, so that shape's leaf joins another family and its
+    # points bracket nothing; symbolic slots in the contract would end it.
+    if isinstance(value, dict):
+        return {k: _abstract(v, n) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_abstract(v, n) for v in value]
+    return "T" if type(value) is int and value == n else value
+
+
+def _family(shape, context, op: str, sig: str, dependent: dict):
+    """The family a leaf's point belongs to, and where on its axis: a decode
+    leaf at its width over context; a prefill leaf over its tokens, at its rows
+    too when its kind depends on context."""
+    if shape.phase == "decode":
+        return json.dumps([str(shape), sig]), context
+    rows = shape.seqs if dependent.get(op, True) else None
+    leaf = _abstract(json.loads(sig), shape.tokens)
+    return json.dumps(["prefill", rows, leaf], sort_keys=True), shape.tokens
+
+
+def _dependent(records) -> dict[str, bool]:
+    """Whether each leaf kind timed at two contexts of one width depends on
+    context: its kernels or its cold times differ there."""
+    by = defaultdict(list)
+    for r in records:
+        if "refused" not in r and r["shape"].startswith("decode"):
+            by[r["op"], r["shape"], r["leaf"]].append(r)
+    kinds = {}
+    for (op, *_), points in by.items():
+        if len(points) > 1:
+            cold = [p["cold_ns"] for p in points]
+            kernels = {tuple(p["kernels"]) for p in points}
+            moved = max(cold) - min(cold) > CONTEXT_MOVES * max(cold)
+            kinds[op] = kinds.get(op, False) or moved or len(kernels) > 1
+    return kinds
+
+
+def _families(records, dependent) -> dict:
+    """Each family's measured points, `(at, kernels, record)` in `at` order."""
+    found = defaultdict(list)
+    for r in records:
+        if "refused" not in r:
+            shape = _shape(r["shape"])
+            fam, at = _family(shape, r["context"], r["op"], r["leaf"], dependent)
+            found[fam].append((at, tuple(r["kernels"]), r))
+    return {fam: sorted(points, key=lambda p: p[0]) for fam, points in found.items()}
+
+
+def _bracket(ats, kernels, lo, hi) -> str:
+    """'' if `lo` to `hi` lies on or between two points, `ats` in order, that
+    launched the same `kernels` as every point between them; else why not."""
+    i, j = bisect.bisect_right(ats, lo) - 1, bisect.bisect_left(ats, hi)
+    if i < 0 or j == len(ats):
+        return "outside the measured range"
+    if len(set(kernels[min(i, j) : max(i, j) + 1])) > 1:
+        return "between two kernels"
+    return ""
+
+
+def _densify(families, tried: set) -> dict:
+    """The point halfway between each two neighbours of a family that launched
+    different kernels and lie more than one apart, unless `tried`."""
+    from atom.compass.capture.forward import prefill
+
+    want = defaultdict(set)
+    for fam, points in families.items():
+        for (a, ka, record), (b, kb, _) in itertools.pairwise(points):
+            mid = (a + b) // 2
+            if ka == kb or b - a < 2 or (fam, mid) in tried:
+                continue
+            tried.add((fam, mid))
+            shape = _shape(record["shape"])
+            at = (
+                (shape, mid)
+                if shape.phase == "decode"
+                else (prefill(mid, shape.seqs), None)
+            )
+            want[at].add(fam)
+    return want
+
+
+def _load(store, config, root, shapes, graphs: dict) -> None:
+    """Each of `shapes`' leaves into `graphs`, its op_graph captured first when
+    the store has none."""
+    from atom.compass.artifacts import ArtifactRefusal
+
+    missing = []
+    for shape in shapes - graphs.keys():
+        try:
+            graphs[shape] = leaves(graph(store, config, shape)["region"])
+        except ArtifactRefusal:
+            missing.append(shape)
+    if missing:
+        _capture(config, missing, root)
+    for shape in missing:
+        graphs[shape] = leaves(graph(store, config, shape)["region"])
+
+
+def _capture(config, shapes, root) -> None:
+    """`trace ops` of `shapes` into the store at `root`, in a process of its
+    own that sees no GPU."""
+    from atom.compass import capture
+
+    argv = ["--model", config.model, "--tp", str(config.tensor_parallel_size)]
+    for s in shapes:
+        argv += ["--prefill", str(s.tokens)] if s.phase == "prefill" else ["--width"]
+        argv.append(str(s.seqs))
+    child = multiprocessing.get_context("spawn").Process(
+        target=capture.main, args=([*argv, "--store", str(root)],)
+    )
+    with patch.dict(os.environ, HIP_VISIBLE_DEVICES="", CUDA_VISIBLE_DEVICES=""):
+        child.start()
+    child.join()
+    if child.exitcode:
+        raise ValueError(f"trace ops of {len(shapes)} shapes exited {child.exitcode}")
+
+
+def _bench(config, todo, llc: int) -> list[dict]:
+    """`measure` in a process of its own, so the device is free at its end."""
+    spawn = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(1, mp_context=spawn) as bench:
+        return bench.submit(measure, config, todo, llc).result()
