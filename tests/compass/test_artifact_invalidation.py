@@ -108,7 +108,7 @@ BASE = Conditions.of(
 #: A key per row of the matrix. The three `machine_spec` rows share one key,
 #: because they are three facets of one artifact and that is the point of them.
 KEY_OF: dict[Row, Key] = {
-    Row.OP_GRAPH: Key.of(Kind.OP_GRAPH, structure="qwen3-moe-48L"),
+    Row.OP_GRAPH: Key.of(Kind.OP_GRAPH, structure="qwen3-moe-48L", shape="decode B=2"),
     Row.PRICE_LIST: Key.of(
         Kind.PRICE_LIST,
         model="Qwen/Qwen3-32B",
@@ -648,7 +648,7 @@ def test_a_refusal_says_which_key_missed_where_a_count_does_not(tmp_path):
     no_graph = Resolution("step 41")
     store.answer(KEY_OF[Row.PRICE_LIST], no_graph, conditions=BASE, gates=GATES)
     store.answer(
-        Key.of(Kind.OP_GRAPH, structure="never-traced"),
+        Key.of(Kind.OP_GRAPH, structure="never-traced", shape="decode B=2"),
         no_graph,
         conditions=BASE,
         gates=GATES,
@@ -666,7 +666,7 @@ def test_a_refusal_says_which_key_missed_where_a_count_does_not(tmp_path):
     counts = [(len(step.answers), len(step.misses)) for step in (no_graph, no_price)]
     assert counts[0] == counts[1] == (1, 1)
     assert no_graph.report() != no_price.report()
-    assert "op_graph(structure='never-traced')" in no_graph.report()
+    assert "op_graph(structure='never-traced', shape=" in no_graph.report()
     assert "no entry for" in no_graph.report()
     assert no_graph.misses[0].rule is Rule.RESOLUTION
     assert "price_list" in no_price.report()

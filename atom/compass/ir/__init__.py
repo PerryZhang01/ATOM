@@ -6,19 +6,32 @@ machine with no device runtime.
 """
 
 from .graph import Applicability, Graph
-from .nodes import ContextRef, JoinPolicy, NodeKind, Op, Par, Region, Repeat, Seq
-from .shapes import SymDim
+from .nodes import (
+    ContextRef,
+    JoinPolicy,
+    ModuleRef,
+    NodeKind,
+    Op,
+    Par,
+    Region,
+    Repeat,
+    Role,
+    Seq,
+    Tensor,
+)
 
 __all__ = [
     "Applicability",
     "ContextRef",
     "Graph",
     "JoinPolicy",
+    "ModuleRef",
     "NodeKind",
     "Op",
     "Par",
     "Region",
     "Repeat",
+    "Role",
     "Seq",
-    "SymDim",
+    "Tensor",
 ]
