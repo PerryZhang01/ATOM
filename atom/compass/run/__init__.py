@@ -208,8 +208,9 @@ from atom.utils import clock
 
 ENV = "ATOM_COMPASS_RUN"
 CLOCK_ENV = "ATOM_COMPASS_CLOCK_ENDPOINT"
-#: The file an engine LP's clock is mapped from, for its model runner workers.
-NOW_ENV = "ATOM_COMPASS_NOW"
+#: The file an engine LP's clock is mapped from, for its model runner workers;
+#: by its hand-in name in the out_dir.
+NOW_ENV, NOW_FILE = "ATOM_COMPASS_NOW", "now-{}.bin"
 FRONTEND, ENGINE, TRAFFIC = LpId("frontend"), LpId("engine"), LpId("traffic")
 ROUTER, LMCACHE = LpId("router"), LpId("lmcache")
 #: Run-file keys for how many deployments of each prefill-decode side run.
@@ -732,6 +733,7 @@ class _RecordingAuthority(ClockAuthority):
             LP_FILE,
             STEP_TABLE_FILE,
             SUMMARY_FILE,
+            "now-{}.raised",
         ):
             for f in out.glob(name.format("*")):
                 f.unlink()
@@ -1083,7 +1085,7 @@ def engine(config):
     utils.LP_OF_RANK = dict.fromkeys(range(pc.data_parallel_size), lp)
     _member = f"dp{pc.data_parallel_rank}" if pc.data_parallel_size > 1 else None
     name = lp.name if _member is None else f"{lp.name}.{_member}"
-    os.environ[NOW_ENV] = str(Path(run["out_dir"]) / f"now-{name}.bin")
+    os.environ[NOW_ENV] = str(Path(run["out_dir"]) / NOW_FILE.format(name))
     clock.settle_before_collectives()
     if _member is not None and _offloads_to_lmcache_mp(config.kv_transfer_config):
         _park_before_dispatch()
@@ -1318,7 +1320,9 @@ def runner(model_runner, tree) -> None:
         backend = StepFallbackBackend(backend, roofline)
     install_cost_backend(model_runner, backend)
     if NOW_ENV in os.environ:
-        slot = np.memmap(os.environ[NOW_ENV], np.float64, "r", shape=(1,))
+        now = Path(os.environ[NOW_ENV])
+        model_runner.compass_raised_file = _raised_file(now, model_runner.rank)
+        slot = np.memmap(now, np.float64, "r", shape=(1,))
         host = run.get("host", {})
         ours = host.get("laws") and {**host_key(config), "machine_spec": platform}
         theirs = host.get("key") or {}
@@ -1568,12 +1572,20 @@ def _engine_hand_in(run: dict, engine_core, sections: dict, client_run=None) -> 
     _hand_in(run, lp, reasons, client_run, **said, **sections)
 
 
+def _raised_file(now: Path, rank) -> Path:
+    """Where worker `rank` of the engine whose clock file is `now` writes what
+    it raised; ``*`` globs every rank's."""
+    return now.with_suffix(f".{rank}.raised")
+
+
 @contextlib.contextmanager
 def engine_loop(engine_core):
     """Around the engine's loop: `engine_done` once it leaves, which raises if
     that was before the finish. If either raises in a run, hand in the engine's
     refused clock calls and the exception, and what the workers say in 10 wall
-    seconds unless one died. Under ``step_grid`` the workers are asked for the bundle
+    seconds unless one died. A dead worker reaches the engine as a bare
+    `SystemExit`, so its ``ended:`` reason carries what each worker rank wrote
+    it raised. Under ``step_grid`` the workers are asked for the bundle
     before the loop, so a run that ends early still hands it in.
 
     In a run the engine ignores SIGTERM until it has handed in: ATOM's handler
@@ -1610,9 +1622,12 @@ def engine_loop(engine_core):
             rt = clock.installed()
             lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
             reasons = said.pop("refusals", []) + rt.refusals
-            _hand_in(
-                run, lp, reasons + [f"ended:{lp} raised {e!r}"], **said, **sections
-            )
+            ended = f"ended:{lp} raised {e!r}"
+            if isinstance(e, SystemExit):
+                now = Path(run["out_dir"]) / NOW_FILE.format(lp)
+                for f in sorted(now.parent.glob(_raised_file(now, "*").name)):
+                    ended += f"; {f.read_text()}"
+            _hand_in(run, lp, reasons + [ended], **said, **sections)
         raise
     finally:
         if run is not None and before is not None:  # None: not set from Python
