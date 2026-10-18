@@ -9,6 +9,11 @@ written against it yet; implementation follows the execution plan in `16`.
 step-level and op-level, and no fallback crosses them (D17); a stated node's terms
 carry the `declared` method (D21).
 
+**Revised 2026-10-18 by the owner's
+[ruling on #531](https://github.com/jgong5/ATOM/issues/531#issuecomment-6244543796):** MORI
+dispatch and combine overlap the other micro-batch's compute under TBO, and `JoinPolicy`
+has no `exclusive` value (D19).
+
 **Depends on:** `02_model_runner_and_cost_backend.md` (the backend plug point this fills),
 `03_memory_and_kv_model.md` (the activation term this supplies).
 
@@ -531,15 +536,42 @@ graph:
 | compute \|\| collective, two micro-batches, CPU-baton-serialized compute | TBO | **not** a `Par` — two graphs interleaved, modelled one level up |
 | step-crossing async | D2H sampled ids, PP isend, KV offload | not a node; a latency annotation at the step boundary |
 
-`JoinPolicy` has three values, because `max()` is wrong in two of three regimes:
+`JoinPolicy` (`atom/compass/ir/nodes.py`) has `max` and `resource_bound`, because `max()`
+is wrong once both branches are compute-heavy:
 
 - **`max`** — branches small, device not saturated. The V4 source states its own case:
   *"side streams ~25us, main Q/KV chain ~87us"*, so the join is free.
 - **`resource_bound`** — both branches compute-heavy: `max(t_a, t_b, (w_a + w_b) / peak)`.
-- **`exclusive`** — MORI dispatch/combine caps `block_num` at `get_cu_num()` because it
-  uses a **grid-wide spin barrier requiring every block co-resident**. It occupies the
-  whole device; concurrent work does not overlap it, so cost adds. (On an 80-CU MI308X,
-  launching 128 blocks deadlocks.)
+
+**MORI dispatch and combine do not hold the whole device.**
+`MoriPrepareAndFinalize._get_dispatch_config`
+(`atom/model_ops/fused_moe/mori_prepare_finalize.py`) launches `min(128, get_cu_num())`
+blocks at 16 warps in prefill and `min(64, get_cu_num())` at 4 warps in decode. The cap at
+the CU count exists because both kernels spin on a grid-wide barrier that needs all of
+their own blocks co-resident (on an 80-CU MI308X, 128 blocks deadlock). On MI355X (256
+CUs) a prefill dispatch launches 128 blocks, half its CUs, and a decode dispatch launches
+64 blocks, fewer than either device's CUs. Without TBO `prepare` and `finalize` run them
+in order on the one stream, a `Seq`. Under TBO ATOM takes one of two paths, and both
+overlap the other micro-batch's compute:
+
+- **Comm stream** (MORI's default `high-throughput` mode, or `low-latency` across nodes):
+  `_prepare_async_comm_stream` and `_finalize_async_comm_stream` yield to the other
+  micro-batch, then run `dispatch` and `combine` on the comm stream at
+  `_get_dispatch_config`'s block count.
+- **Split send and receive** (`--all2all-backend low-latency` within one node,
+  `_use_split_send_recv`): `_prepare_async_ll` and `_finalize_async_ll` issue
+  `dispatch_send` or `combine_send` on the compute stream and yield; the other
+  micro-batch's thread issues the matching `dispatch_recv` or `combine_recv` at its next
+  MoE prepare or finalize, or as it exits. No comm stream and no `_get_dispatch_config`.
+
+On the comm-stream path a TBO step is priced by laying both micro-batches' operators on
+the compute and comm streams in ATOM's order and taking the finish time, the DP group's
+`max` kept (owner's
+[ruling on #531](https://github.com/jgong5/ATOM/issues/531#issuecomment-6244543796)).
+That price cannot see the split path's overlap: `UBatchWrapper` hands both micro-batches
+one compute stream, so each send and the partner's matching receive lie in order on it,
+and the overlap is the transfer in flight between them, which no stream carries. A TBO
+step on the split path is refused by name (`08` D50.1) until that transfer has a price.
 
 **The tracer has to earn a `Par`.** `torch.cuda.stream()` and `wait_stream()` are not
 dispatcher events — a dispatch trace records a *serial* operator list for work the device
@@ -1173,7 +1205,7 @@ Deferred to future work by decision on 2026-09-18.
 | D17 | Two granularities behind one `CostBackend`; the step level discovers the structure set the op level traces. No fallback crosses granularity: a capture failure fails the run, lazy trace off makes an unseen structure a refusal, an IR guard miss traces | 2026-09-18; revised 2026-10-14 (#952) |
 | D18 | Capture with `TorchDispatchMode` + `FakeTensorMode(ShapeEnv)` + `_EnablePythonDispatcher()`, on FakeTensor rather than bare meta; **four** disciplines, not three — the fourth is that the engine's host arithmetic asks a symbol for a number, so the capture keeps the conversion, logs it with the line it happened on, and asserts that log against a stated set | 2026-09-18, fourth discipline 2026-09-22 |
 | D18.1 | `torch.export` recorded as an unverified alternative; rejected now on decomposition fidelity and on capturing a model call rather than an engine step | 2026-09-18 |
-| D19 | Hierarchical, symbolic, stream-annotated IR: `Seq` / `Repeat` / `Par`. No branches in the IR — applicability is a discrete key plus an evaluated guard domain | 2026-09-18 |
+| D19 | Hierarchical, symbolic, stream-annotated IR: `Seq` / `Repeat` / `Par`. No branches in the IR — applicability is a discrete key plus an evaluated guard domain | 2026-09-18; revised 2026-10-18 (#531) |
 | D20 | Opaque leaves are priced, not decomposed. Each carries a stated parameter extractor. FlyDSL and MORI need no IR node. | 2026-09-18 |
 | D21 | Stated nodes over chased coverage, their terms declared; refuse and record `unpriced` reasons; a failed forward writes no graph | 2026-09-18; revised 2026-10-14 (#952) |
 | D22 | Liveness stays observational under fake tensors; internal scratch of an opaque leaf is a stated per-leaf constant. Revised: until capture lands the activation term is a coefficient measured on a real run, scratch inside it, and the walk replaces it after | 2026-09-18; revised 2026-10-10 |
