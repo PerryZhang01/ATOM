@@ -12,7 +12,9 @@ offset (`{l0+l1}`, `{l0+3}`).
 A side stream that waits on the main one forks; the main one waiting on it
 joins. What both ran in between is a `Par` of one branch per stream, joined
 `resource_bound`: the branches' work shares one device, and an unsaturated one
-prices as their max anyway.
+prices as their max anyway. A stream the step forks and never joins carries
+work that crosses the step boundary (the sampled ids' copy to the host), and
+its ops are not in the graph.
 """
 
 import dataclasses
@@ -62,20 +64,20 @@ def build(items, applicability: Traced) -> ir.Graph:
 
 
 def _regions(items):
+    joined = {item.stream for item in items if isinstance(item, Join)}
+    crossing = {item.stream for item in items if isinstance(item, Fork)} - joined
     out, span, open_ = [], [], set()
     for item in items:
         if isinstance(item, Fork):
-            open_.add(item.stream)
+            open_ |= {item.stream} & joined
         elif isinstance(item, Join):
             if item.stream in open_:
                 open_.discard(item.stream)
                 if not open_:
                     out += _par(span)
                     span = []
-        else:
+        elif item.stream_id not in crossing:
             (span if open_ else out).append(item)
-    if open_:
-        raise ValueError(f"streams {sorted(open_)} forked and never joined")
     return out
 
 
