@@ -71,8 +71,9 @@ part of v1, added after that
 - **M2 runs in two steps, expert parallelism off and then EP8.** First the nightly cells
   as written: TP8, DP-attention where the cell sets it, expert parallelism off (#501).
   There is no MORI all-to-all; the DP group's exchange is the variable-size gather sized by
-  the peers' token counts. Then, before v1 is done, DP-attention + EP8 within a node, with
-  a MORI routing model, graded the same way; its real side is this project's own run with
+  the peers' token counts. Then, before v1 is done, DP-attention + EP8 within a node,
+  with uniform routing declared and MORI absorbed by the step linear law (W4.10), graded
+  the same way; its real side is this project's own run with
   `--enable-expert-parallel`, since no nightly cell passes it. A P/D deployment is one
   prefill node and one decode node. EP beyond one node is out of scope, not projected.
 - **M1 is #627's stages 1 and 1b** (`README.md` owns its text): cc-traces end to end on a
@@ -550,10 +551,10 @@ it.
 | **W4.7** | MTP: per-position acceptance measured from W4.3's real runs, never declared (`08`), feeding the spec-decode pricing of `14` | `runner/`, `backends/` | 200–350 | W4.3 |
 | **W4.8** | Mooncake transfer time from the spec, checked against the transfer timings W4.3 records | `kv/` | 150–250 | W2.3, W4.3 |
 | **W4.9** | DeepSeek-V4-Pro 1P+1D at the nightly topology: W3.5's slice with one container per node, TP8 and DP-attention on each side as the cell sets it | wiring | 150–300 | W3.1, W3.5, W4.2 |
-| **W4.10** | M2's EP8 step: MORI dispatch and combine on the comm stream, overlapping the other micro-batch's compute under TBO ([#531](https://github.com/jgong5/ATOM/issues/531)); group membership per P0.6; MORI dispatch/combine carried as the group's collective in W4.6's step, in place of the gather, and priced from W4.12 by a routing model (#501) | `ir/`, `backends/` | 350–600 | **P0.6**, **P0b.2**, W4.6, W4.12 |
+| **W4.10** | M2's EP8 step at step granularity: uniform routing declared (owner ruling on [#627](https://github.com/jgong5/ATOM/issues/627#issuecomment-6194442788), 2026-10-15); the step linear law fitted under the EP8 engine config on #1106's captures absorbs MORI dispatch and combine through its `moe_rows` term and intercepts, `T_moe` being the rows the group dispatches (`15` D90), with the measured received-row imbalance reported beside its accuracy (#1108). Group membership is P0.6's answer; MORI dispatch and combine run on the comm stream, overlapping the other micro-batch's compute under TBO ([#531](https://github.com/jgong5/ATOM/issues/531)); MORI's join in the IR is [#1408](https://github.com/jgong5/ATOM/issues/1408)'s and its analytical price stage 3c's ([#1392](https://github.com/jgong5/ATOM/issues/1392)) | `backends/` | 15–50 | W4.6, #1106 |
 | **W4.11** | The EP8 real side: W4.3's DP-attention cells re-run with `--enable-expert-parallel` on the MI355X pair, with the same records and repeat, since no nightly cell passes it | `scripts/compass/` | 50–100 | W4.3, GPU queue |
-| **W4.12** | MORI dispatch/combine within a node on MI355X, measured and fitted (`09`) for W4.10's routing model | `backends/`, calibration | 150–300 | W4.1, W4.2, GPU queue |
-| **W4.13** | The step grid evaluated on DeepSeek-V4-Pro, not graded (`17` D105): a workload-planned grid and fit on the nightly TP cell (TP8, no DP-attention, no MTP, expert parallelism off) on MI355X, prefill node and decode node, compared with W4.3's per-step tables and with the op-level backend where available, reported per `08` D47. Competes with W4.4 and W4.12 for MI355X | calibration | 200–350 | S2.2–S2.6, W4.3, GPU queue |
+| ~~**W4.12**~~ | ~~MORI dispatch/combine within a node on MI355X, measured and fitted (`09`) for W4.10's routing model~~ | ~~`backends/`, calibration~~ | ~~150–300~~ | **deferred**: nothing consumes it at step granularity, where W4.10's law absorbs MORI; re-planned with the op-level backend at EP8. The analytical MORI price is stage 3c's ([#1392](https://github.com/jgong5/ATOM/issues/1392), [#1408](https://github.com/jgong5/ATOM/issues/1408)) |
+| **W4.13** | The step grid evaluated on DeepSeek-V4-Pro, not graded (`17` D105): a workload-planned grid and fit on the nightly TP cell (TP8, no DP-attention, no MTP, expert parallelism off) on MI355X, prefill node and decode node, compared with W4.3's per-step tables and with the op-level backend where available, reported per `08` D47. Competes with W4.4 for MI355X | calibration | 200–350 | S2.2–S2.6, W4.3, GPU queue |
 
 ### Wave 5 — MI455 by roofline
 
@@ -587,7 +588,7 @@ S3c.5; W5.2's laws are S3c.4 with the extractors of S3c.6, S3c.7, S3c.10 and S3c
 W5.3's soundness check is S3c.13, at probed peaks rather than the spec's at derate 1; W5.4
 and W5.5 are S3c.14, whose projection carries no implementation efficiency (`10` D68).
 
-If MI455 hardware arrives during M2, W4.3–W4.5 repeat on it (W4.11 and W4.12 too, for the
+If MI455 hardware arrives during M2, W4.3–W4.5 repeat on it (W4.11 too, for the
 EP8 step), and S3c.3's probes run on it, so its peaks are probed rather than carried.
 
 ### Wave 6 — M2 acceptance
@@ -618,7 +619,7 @@ Listed so it is not mistaken for an omission; each is re-planned when v1 lands.
 ## The GPU booking queue
 
 **M2's hardware, by D95.** An RDMA-connected MI355X pair for the paired runs of W4.3 and W4.11, and a
-third MI355X node for W4.4 and W4.12, so that calibration does not queue behind the pairs; an MI308X
+third MI355X node for W4.4, so that calibration does not queue behind the pairs; an MI308X
 node for development, the CPU-and-GPU gates, S3c.3's MI308X probes, stage 2's real side
 (S2.1), and the step grid's measurement (S2.2) while it is idle from stage 2's critical
 path. Until dedicated nodes
@@ -697,7 +698,7 @@ decision that belongs to the project owner, not to the agent that ran it.
 |---|---|
 | ~~**T10** fails~~ | ~~adapter cost rises to ~2,000 vendored lines — vendor, fork, or restrict the harness~~ — **did not fire.** P0.3, 2026-09-20: the subclass works and nothing is vendored. The escalation this row prepared for never arose |
 | **T5** fails | the op-level backend has no IR at TP>1 — options and their effect on M2 onward |
-| ~~**P0b.1** finds an operator that needs more than a shape rule~~ | **ruled by the owner on #501**: two rows needed more, MORI at EP8 and the DP gather with EP off, both sized by the peers' token counts. W4.2 takes the launch interceptor; M2 runs expert parallelism off first, then EP8 with a MORI routing model (W4.10) |
+| ~~**P0b.1** finds an operator that needs more than a shape rule~~ | **ruled by the owner on #501**: two rows needed more, MORI at EP8 and the DP gather with EP off, both sized by the peers' token counts. W4.2 takes the launch interceptor; M2 runs expert parallelism off first, then EP8 with a MORI routing model (W4.10) — superseded 2026-10-15 ([#627](https://github.com/jgong5/ATOM/issues/627#issuecomment-6194442788)): uniform routing declared |
 | ~~**P0b.3** finds the nightly runs unusable~~ | **ruled by the owner on #503**: every paired cell is re-run on the dedicated pair, and W4.3 is booked for it |
 | **P0b.4** leaves an MI455 input unsourced | the projection ships with that input marked assumed, or waits — the owner's call |
 | ~~**T21** fails~~ | ~~calibration does not transfer across width~~ — **off the critical path by D95**: M2 is graded at the nightly widths |
