@@ -30,6 +30,10 @@ COMMANDS = {
         "atom.compass.bench.measure",
         "batches replayed or planned, measured on the bench [GPU]",
     ),
+    "measure ops": (
+        "atom.compass.bench.ops",
+        "each op_graph leaf timed alone on one device, cold [GPU]",
+    ),
     "measure memory": (
         "atom.compass.drive.measure_memory",
         "an engine start's memory readings [GPU]",
@@ -45,7 +49,6 @@ MACHINE = (
 )
 #: Each command that refuses, to why and where its work is.
 REFUSED = {
-    "measure ops": OPS,
     "fit ops": OPS,
     "trace": "there is no bare trace: use compass trace steps or compass trace ops",
     "plan": (
