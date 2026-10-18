@@ -19,7 +19,9 @@ parallelism and pipeline parallelism refuse.
 The manager leaves SIGINT ignored in the process that starts it, as an engine
 core's process wants; the bench's is the command's, so the bench restores
 Python's handler there, and a stop from the keyboard stops the bench, while
-the workers keep ignoring it.
+the workers keep ignoring it. The manager's SIGTERM handler there stops the
+workers as a dead worker does; the bench's raises `Signalled` instead, naming
+the signal, so a command sent one fails as stopped, not as a worker's death.
 """
 
 import contextlib
@@ -32,11 +34,28 @@ from atom.model_engine.async_proc import AsyncIOProcManager
 RUNNER = "atom.compass.bench.runner.BenchModelRunner"
 
 
+class Signalled(SystemExit):
+    """A signal the bench's process was sent: a SystemExit, so nothing on the
+    command's way out takes it for a refusal, and the command fails printing
+    it. The manager's own stop, a bare SystemExit, is a worker's death."""
+
+
+def _signalled(signum, frame):
+    # GNU timeout signals the command, then its process group: a repeat must
+    # not cut the teardown short. Not SIG_IGN, which the processes the command
+    # starts after would inherit.
+    signal.signal(signum, lambda *_: None)
+    name = signal.Signals(signum).name
+    raise Signalled(f"the bench stopped: its process was sent {name}")
+
+
 @contextlib.contextmanager
 def _refuse_a_stop(call: str):
     """The manager stops, with a bare SystemExit, when a worker dies."""
     try:
         yield
+    except Signalled:
+        raise
     except SystemExit as stop:
         raise ValueError(f"a bench worker died, so {call} got no reply") from stop
 
@@ -71,6 +90,7 @@ class Bench:
             config,
         )
         signal.signal(signal.SIGINT, signal.default_int_handler)
+        signal.signal(signal.SIGTERM, _signalled)
         try:
             with _refuse_a_stop("get_num_blocks"):
                 budget = self.runner_mgr.call_func("get_num_blocks", wait_out=True)
@@ -78,6 +98,8 @@ class Bench:
                 allocated = self.runner_mgr.call_func(
                     "allocate_kv_cache", num_blocks, wait_out=True
                 )
+            except Signalled:
+                raise
             except SystemExit as stop:
                 # The manager stops, with a bare SystemExit, when a worker dies.
                 raise ValueError(

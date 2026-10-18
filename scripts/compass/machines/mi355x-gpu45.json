@@ -108,9 +108,6 @@
       "host.ipc.shm_broadcast_s": {
         "origin": "assumed"
       },
-      "host.admission_fixed_s": {
-        "origin": "assumed"
-      },
       "interconnect.intra_node.topology": {
         "origin": "assumed"
       },
@@ -182,7 +179,6 @@
       "zmq_roundtrip_s": 5e-05,
       "shm_broadcast_s": 2e-05
     },
-    "admission_fixed_s": 0.009,
     "http_intake": {
       "fixed_s": 0.001966482509138914,
       "per_byte_s": 5.288974015662166e-09

@@ -512,8 +512,9 @@ scales with prompt length while a constant does not. At 256 clients with sub-age
 requests will queue for the executor, and that queueing is a real serving effect worth
 reproducing rather than averaging away.
 
-`host.admission_fixed_s` covers what is left: everything between HTTP arrival and the
-request appearing in `scheduler.waiting`, **excluding** tokenize.
+`ADMISSION_DELAY_S` (`atom/compass/clock/channels.py`) covers what is left, per admission
+path: the request channel's lookahead from the traffic source into the serving stack,
+**excluding** tokenize.
 
 **HTTP intake is a serial cost on the event loop** (revised 2026-10-16, #1103). The real
 loop takes a burst in one request at a time: at c=256 first turn, about 3 ms each, so the

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""The three verbs over the spec: combining fragments, checking one, reading one.
+"""The verbs over the spec: combining fragments, checking one, reading one.
 
 The fragments below are the ones the probes of each hardware probe class would emit --
 a tokenizer and an interprocess measurement that need no device, a single-card
@@ -27,12 +27,9 @@ import pytest
 
 from atom.compass import spec as spec_package
 from atom.compass.spec import (
-    QUANTITIES,
     Fragment,
     MachineSpec,
-    Rule,
     SpecRefusal,
-    StackMismatch,
     across_ranks,
     explain,
     merge,
@@ -42,11 +39,8 @@ from atom.compass.spec import (
 )
 from atom.compass.spec.fields import BY_PATH, Kind
 from atom.compass.spec.probes import cpu_counts
+from atom.compass.spec.rules import Rule
 from atom.compass.spec.tokenizers import ENTRY_FIELDS
-from atom.compass.spec.validate import CONDITIONS
-from atom.compass.spec.validate import DERATES as DERATES_ASKED
-from atom.compass.spec.validate import MISSING as MISSING_ASKED
-from atom.compass.spec.validate import STACK as STACK_ASKED
 
 MACHINE = "mi355x-8gpu-2node"
 #: A tokenizer entry's fields by name, to say which of its rates is a peak.
@@ -73,7 +67,6 @@ CLASS0 = {
         "cpu": {"cores_physical": 96, "cores_logical": 192},
         "tokenizers": [TOKENIZER],
         "ipc": {"zmq_roundtrip_s": 5.0e-5, "shm_broadcast_s": 2.0e-5},
-        "admission_fixed_s": 9.0e-3,
         "http_intake": {"fixed_s": 2.0e-3, "per_byte_s": 2.0e-8},
     }
 }
@@ -392,10 +385,9 @@ def test_a_tokenizer_entry_with_no_id_combines_with_nothing():
 
 
 def test_a_complete_spec_validates_and_resolves():
-    checked = validate(merged().document, observed_stack=STACK)
+    checked = validate(merged().document)
     assert checked.ok, [str(refusal) for refusal in checked.refusals]
-    assert checked.spec.value("device.name") == "MI355X"
-    assert checked.stack_differences == ()
+    assert str(checked) == "ok: 0 refusal(s)"
 
 
 def test_every_missing_field_is_reported_and_not_only_the_first():
@@ -408,121 +400,13 @@ def test_every_missing_field_is_reported_and_not_only_the_first():
         if "`" in refusal.what
     }
     assert {"device.arch", "device.memory.capacity_bytes"} <= missing
-    assert not checked.ok and checked.spec is None
+    assert not checked.ok
 
 
 def test_a_spec_peak_with_no_derate_beside_it_is_refused():
     thin = without(CLASS1, "device", "compute", "derate")
     checked = validate(merge(fragments(class1=thin)).document)
     assert [refusal.rule for refusal in checked.refusals] == [Rule.DERATE]
-
-
-def test_a_stack_that_has_moved_warns_and_names_both_versions():
-    with pytest.warns(StackMismatch, match="7.2.4"):
-        checked = validate(merged().document, observed_stack=dict(STACK, rocm="7.3.0"))
-    assert checked.ok
-    assert checked.stack_differences == (("rocm", "7.2.4", "7.3.0"),)
-
-
-def test_a_stack_that_has_moved_is_refused_under_the_strict_flag():
-    with pytest.warns(StackMismatch):
-        checked = validate(
-            merged().document, observed_stack=dict(STACK, rocm="7.3.0"), strict=True
-        )
-    assert not checked.ok
-    assert checked.refusals[0].rule is Rule.PINNED_STACK
-    assert "7.3.0" in checked.refusals[0].what
-
-
-def test_a_stack_that_matches_is_silent():
-    assert validate(merged().document, observed_stack=STACK, strict=True).ok
-
-
-def test_a_stack_difference_is_rendered_by_the_run_that_refused_nothing():
-    # Without the strict flag nothing is refused, so the difference is the only
-    # thing this check found. It is on the dataclass either way; the string is
-    # where a reader of the summary looks for what the check did.
-    with pytest.warns(StackMismatch):
-        checked = validate(merged().document, observed_stack=dict(STACK, rocm="7.3.0"))
-    assert checked.ok
-    assert str(checked) == (
-        "ok: 0 refusal(s)\n"
-        "  stack moved: the constants were probed against rocm '7.2.4' "
-        "(now '7.3.0')"
-    )
-
-
-def test_a_clear_check_says_which_conditions_it_could_not_ask():
-    # One of the three conditions is opt-in, and a check that is silent about
-    # what it declined to ask is a clear with no content behind it.
-    bare = validate(merged().document)
-    assert bare.ok
-    assert [condition.split(" -- ")[0] for condition in bare.not_asked] == [STACK_ASKED]
-    assert "`observed_stack=`" in bare.not_asked[0]
-    assert bare.asked_in_part == ()
-    asked = validate(merged().document, observed_stack=STACK, strict=True)
-    assert asked.ok and asked.not_asked == () and asked.asked_in_part == ()
-
-
-def test_a_desk_fix_refusal_does_not_hide_the_stack():
-    # The phase-one refusal here is a derate an author types in at a desk; the
-    # stack pin beside it is present and schema-valid. Both are reported,
-    # because the stack question is asked of the fields that did resolve.
-    thin = without(CLASS1, "device", "memory", "derate")
-    with pytest.warns(StackMismatch):
-        checked = validate(
-            merge(fragments(class1=thin)).document,
-            observed_stack=dict(STACK, rocm="7.3.0"),
-            strict=True,
-        )
-    rules = [refusal.rule for refusal in checked.refusals]
-    assert checked.spec is None
-    assert rules.count(Rule.DERATE) == 1
-    assert rules.count(Rule.PINNED_STACK) == 1
-    assert checked.not_asked == ()
-    assert "7.3.0" in str(checked)
-
-
-def test_the_stack_is_asked_of_the_pins_a_partial_document_carries():
-    # A pin the document leaves out is reported once, as missing, by the schema
-    # half. The stack question is still asked of the pins it does carry, so the
-    # moved one is found, and the absent one is named as the part it could not
-    # be asked of -- rather than the check itself declining the absent field and
-    # taking every other result of the run down with it.
-    document = merged().document
-    del document["device"]["software_pinned_to"]["rccl"]
-    with pytest.warns(StackMismatch):
-        checked = validate(document, observed_stack=dict(STACK, rocm="7.3.0"))
-    assert checked.spec is None
-    assert [refusal.rule for refusal in checked.refusals] == [Rule.SHAPE]
-    assert [component for component, _, _ in checked.stack_differences] == ["rocm"]
-    (in_part,) = checked.asked_in_part
-    assert in_part.startswith(STACK_ASKED)
-    assert "`device.software_pinned_to.rccl`" in in_part
-
-
-def test_a_question_none_of_whose_fields_resolved_was_not_asked_at_all():
-    # The other side of the same split: with every pin gone there is nothing
-    # the stack question could have been asked of, so it is unasked and the
-    # count of what the run reached must not include it.
-    document = merged().document
-    del document["device"]["software_pinned_to"]
-    checked = validate(document, observed_stack=STACK)
-    (unasked,) = checked.not_asked
-    assert unasked.startswith(STACK_ASKED)
-    assert "could not be asked at all" in unasked
-    assert checked.asked_in_part == ()
-
-
-def test_a_document_that_is_not_a_mapping_is_refused():
-    checked = validate("a filename, not a document")
-    assert [refusal.rule for refusal in checked.refusals] == [Rule.SHAPE]
-    # Nothing was read against the schema here, so the two conditions that are
-    # otherwise asked of anything name themselves rather than being counted as
-    # questions this run answered.
-    assert [condition.split(" -- ")[0] for condition in checked.not_asked] == list(
-        CONDITIONS
-    )
 
 
 def test_an_unknown_key_is_refused_where_it_sits():
@@ -545,23 +429,15 @@ def test_a_field_stated_twice_is_reported_beside_the_rest_rather_than_raised():
 
 
 def test_one_mistyped_key_does_not_take_the_rest_of_the_document_with_it():
-    # The refusal a mistyped key earns is about that key. A check that stopped
-    # there would leave every other field unchecked and every consistency
-    # question with nothing resolved to be asked of -- the desk fix hiding the
-    # stack again, on a document edited after its merge and handed to
-    # `validate` directly, since a merge refuses the unknown key before this runs.
+    # The refusal a mistyped key earns is about that key; the field it was
+    # meant to state is reported missing beside it.
     document = merged().document
     memory = document["device"]["memory"]
     memory["capacity_byte"] = memory.pop("capacity_bytes")
-    with pytest.warns(StackMismatch):
-        checked = validate(
-            document, observed_stack=dict(STACK, rocm="7.3.0"), strict=True
-        )
+    checked = validate(document)
     rules = [refusal.rule for refusal in checked.refusals]
     assert rules.count(Rule.SEPARATION) == 1
     assert rules.count(Rule.SHAPE) == 1
-    assert rules.count(Rule.PINNED_STACK) == 1
-    assert checked.not_asked == ()
 
 
 def test_a_block_holding_a_scalar_does_not_take_the_rest_with_it_either():
@@ -569,13 +445,9 @@ def test_a_block_holding_a_scalar_does_not_take_the_rest_with_it_either():
     # under it are gone, and everything beside it is still checked.
     document = merged().document
     document["device"]["memory"] = 288.0e9
-    with pytest.warns(StackMismatch):
-        checked = validate(
-            document, observed_stack=dict(STACK, rocm="7.3.0"), strict=True
-        )
+    checked = validate(document)
     rules = [refusal.rule for refusal in checked.refusals]
     assert rules.count(Rule.DERATE) == 1
-    assert rules.count(Rule.PINNED_STACK) == 1
 
 
 def test_a_value_of_the_wrong_shape_is_reported():
@@ -598,67 +470,6 @@ def test_two_tokenizer_entries_claiming_one_architecture_are_refused():
     document = merge(fragments(class0=twice)).document
     checked = validate(document)
     assert [refusal.rule for refusal in checked.refusals] == [Rule.TOKENIZER_IDENTITY]
-
-
-def test_raise_first_gives_the_spec_or_the_first_refusal():
-    assert validate(merged().document).raise_first().value("device.arch") == "gfx950"
-    with pytest.raises(SpecRefusal):
-        validate(without(merged().document, "device", "arch")).raise_first()
-
-
-def refused_by_condition():
-    """One subject per condition in the check set, each earning its refusal.
-
-    Each subject comes with the rule and a piece of the text only that
-    condition's refusal writes. A subject that is wrong in one respect is
-    usually wrong in another too, so a rule alone can be earned by a
-    neighbouring condition while the one named here produces nothing.
-    """
-    thin = without(CLASS1, "device", "arch")
-    no_derate = without(CLASS1, "device", "memory", "derate")
-    with pytest.warns(StackMismatch):
-        moved = validate(
-            merged().document, observed_stack=dict(STACK, rocm="7.3.0"), strict=True
-        )
-    return {
-        MISSING_ASKED: [
-            (
-                validate(merge(fragments(class1=thin)).document),
-                Rule.SHAPE,
-                "`device.arch` is missing",
-            ),
-        ],
-        DERATES_ASKED: [
-            (
-                validate(merge(fragments(class1=no_derate)).document),
-                Rule.DERATE,
-                "`device.memory.derate` is missing, and its block states a spec peak",
-            )
-        ],
-        STACK_ASKED: [
-            (moved, Rule.PINNED_STACK, "this spec's constants were probed against")
-        ],
-    }
-
-
-def test_the_check_set_names_every_condition_a_spec_can_be_refused_by():
-    # The check set is what a result's `not_asked` is measured against and what
-    # the count of conditions the package says it reaches is a count of. A
-    # condition earnable in the code and absent from the list is one no result
-    # reports on; one listed and earnable by nothing is a count with no subject.
-    assert set(refused_by_condition()) == set(CONDITIONS)
-
-
-@pytest.mark.parametrize("condition", CONDITIONS)
-def test_each_condition_in_the_check_set_is_earned_by_a_spec(condition):
-    for checked, rule, written in refused_by_condition()[condition]:
-        assert not checked.ok, condition
-        # The rule and the text on one refusal: the rule alone is shared by
-        # conditions, and the text alone could sit on a refusal of another rule.
-        assert any(
-            refusal.rule is rule and written in refusal.what
-            for refusal in checked.refusals
-        ), (condition, [str(refusal) for refusal in checked.refusals])
 
 
 # --- explain: the basis of a number ------------------------------------------
@@ -722,22 +533,14 @@ def test_a_block_explains_to_every_field_under_it():
     assert paths == {"host.ipc.zmq_roundtrip_s", "host.ipc.shm_broadcast_s"}
 
 
-def test_a_quantity_names_the_fields_it_is_built_out_of():
+def test_a_basis_names_the_fragment_each_field_came_from():
     combination = merged()
     spec = MachineSpec.from_mapping(combination.document)
-    basis = explain(spec, "collective", origin=combination)
-    paths = [row.path for row in basis.contributions]
-    assert "interconnect.intra_node.link_latency_s" in paths
-    assert "device.count_per_node" in paths
-    assert len(paths) == len(set(paths))
-
-
-def test_a_quantity_names_the_fragment_each_field_came_from():
-    combination = merged()
-    spec = MachineSpec.from_mapping(combination.document)
-    basis = explain(spec, "collective", origin=combination)
+    basis = explain(spec, "device.memory.capacity_bytes", origin=combination)
     supplied = {row.path: row.supplied_by for row in basis.contributions}
-    assert supplied["device.count_per_node"] == ("class1",)
+    assert supplied["device.memory.capacity_bytes"] == ("class1",)
+    links = explain(spec, "interconnect.intra_node", origin=combination)
+    supplied = {row.path: row.supplied_by for row in links.contributions}
     assert supplied["interconnect.intra_node.link_latency_s"] == ("links",)
 
 
@@ -760,42 +563,17 @@ def test_tokenizer_rates_explain_per_entry_and_per_rate():
     assert rates["encode_fixed_s"].derate is None
 
 
-def test_every_quantity_is_built_out_of_fields_this_schema_really_has():
-    for term, paths in QUANTITIES.items():
-        for path in paths:
-            assert path in BY_PATH, f"{term} names {path}, which is not a field"
-
-
 def test_a_term_the_schema_does_not_know_is_asked_for_again_by_path():
+    # An unknown term and an optional field the document left out both come
+    # back empty however they are spelled, so both are asked for again.
     assert "device.clock_ceiling" not in BY_PATH
-    with pytest.raises(SpecRefusal) as refused:
-        explain(resolved(), "device.clock_ceiling")
-    assert refused.value.rule is Rule.ADDRESSING
-    assert refused.value.what.startswith(
-        "`device.clock_ceiling` is not a field, a block of fields or a quantity"
-    )
-    assert "ask again by the whole dotted path" in refused.value.remedy
-    assert "kv_blocks" in refused.value.remedy
-    assert "declared by this schema" not in str(refused.value)
-
-
-def test_an_optional_field_the_document_left_out_is_refused_as_absent():
-    # The path is right, so a remedy that says to ask again would send the
-    # reader round in a circle. The spec reads without `provenance.notes`
-    # because the schema declares it optional, and `explain` says exactly what
-    # the accessor says about the same field.
-    spec = resolved()
     assert not BY_PATH["provenance.notes"].required
-    assert "provenance.notes" not in spec.values
-    with pytest.raises(SpecRefusal) as refused:
-        explain(spec, "provenance.notes")
-    with pytest.raises(SpecRefusal) as accessed:
-        spec.value("provenance.notes")
-    assert refused.value.rule is Rule.TOTALITY
-    assert "is declared by this schema as optional" in refused.value.what
-    assert "write it in the document" in refused.value.remedy
-    assert "ask again" not in refused.value.remedy
-    assert str(refused.value) == str(accessed.value)
+    for term in ("device.clock_ceiling", "provenance.notes"):
+        with pytest.raises(SpecRefusal) as refused:
+            explain(resolved(), term)
+        assert refused.value.rule is Rule.ADDRESSING
+        assert refused.value.what == f"`{term}` names no field this spec states"
+        assert "ask again by the dotted path" in refused.value.remedy
 
 
 def test_an_empty_tokenizer_table_explains_to_no_rows_rather_than_refusing():
@@ -808,69 +586,7 @@ def test_an_empty_tokenizer_table_explains_to_no_rows_rather_than_refusing():
     assert spec.value("host.tokenizers") == ()
     basis = explain(spec, "host.tokenizers")
     assert basis.contributions == ()
-    assert str(basis).splitlines() == [
-        f"host.tokenizers, from spec {spec.digest()}",
-        "  host.tokenizers = ()",
-    ]
-
-
-def test_an_empty_tokenizer_table_is_printed_as_empty_under_a_quantity():
-    # Five rows from the other fields and none from the table. Without its own
-    # line the table reads as a field the quantity does not use.
-    document = copy.deepcopy(merged().document)
-    document["host"]["tokenizers"] = []
-    basis = explain(MachineSpec.from_mapping(document), "admission")
-    assert len(basis.contributions) == 5
-    printed = str(basis).splitlines()
-    assert len(printed) == 7
-    assert printed[-1] == "  host.tokenizers = ()"
-
-
-def assembled_without(*paths):
-    """The resolved spec assembled from parts, with the named fields left out."""
-    whole = resolved()
-    return MachineSpec(
-        values={p: v for p, v in whole.values.items() if p not in paths},
-        tokenizers=whole.tokenizers,
-    )
-
-
-def test_a_quantity_missing_one_field_is_refused_rather_than_explained_from_the_rest():
-    # The other six fields still explain to twelve rows, which read as a whole
-    # basis for a number that cannot be computed. The refusal is the accessor's.
-    spec = assembled_without("device.memory.capacity_bytes")
-    with pytest.raises(SpecRefusal) as refused:
-        explain(spec, "kv_blocks")
-    with pytest.raises(SpecRefusal) as accessed:
-        spec.value("device.memory.capacity_bytes")
-    assert refused.value.rule is Rule.TOTALITY
-    assert str(refused.value) == str(accessed.value)
-
-
-def test_every_missing_field_under_a_quantity_is_named_and_not_only_the_first():
-    spec = assembled_without("host.admission_fixed_s", "host.ipc.shm_broadcast_s")
-    with pytest.raises(SpecRefusal) as refused:
-        explain(spec, "admission")
-    assert refused.value.rule is Rule.TOTALITY
-    assert refused.value.what.startswith(
-        "`host.admission_fixed_s`, `host.ipc.shm_broadcast_s` are declared by "
-        "this schema, and this spec carries no value for them"
-    )
-    assert "fragments that supply these fields" in refused.value.remedy
-
-
-def test_a_block_an_assembled_spec_holds_nothing_under_names_every_field():
-    # A spec built from parts can lack required fields too, and then the
-    # absent field is required, so the remedy is in whatever assembled it.
-    spec = assembled_without("host.ipc.zmq_roundtrip_s", "host.ipc.shm_broadcast_s")
-    with pytest.raises(SpecRefusal) as refused:
-        explain(spec, "host.ipc")
-    assert refused.value.rule is Rule.TOTALITY
-    assert "`host.ipc.zmq_roundtrip_s`, `host.ipc.shm_broadcast_s` are declared" in (
-        refused.value.what
-    )
-    assert "merge the fragments" in refused.value.remedy
-    assert "optional" not in refused.value.what
+    assert str(basis).splitlines() == [f"host.tokenizers, from spec {spec.digest()}"]
 
 
 def test_a_block_explains_without_an_optional_field_the_document_left_out():
@@ -905,18 +621,7 @@ def test_the_basis_prints_its_spec_and_one_line_per_field():
 def test_the_spread_this_hardware_really_shows_is_not_an_error(
     tp_width, reading, spread
 ):
-    readings = [reading] * (tp_width - 1) + [reading + spread]
-    measured = across_ranks("non_torch", tp_width, readings)
-    assert measured.minimum == reading
-    assert measured.spread == spread
-    assert measured.relative == spread / reading
-
-
-def test_the_reading_taken_is_the_smallest_whatever_order_the_ranks_came_in():
-    high = across_ranks(
-        "non_torch", 4, [7458 * MIB, 7266 * MIB, 7266 * MIB, 7266 * MIB]
-    )
-    assert high.minimum == 7266 * MIB
+    across_ranks("non_torch", [reading] * (tp_width - 1) + [reading + spread])
 
 
 def test_a_neighbour_holding_fifty_times_the_rank_is_refused():
@@ -924,41 +629,22 @@ def test_a_neighbour_holding_fifty_times_the_rank_is_refused():
     # 152.01 GB, and six runs died on a negative memory budget before anything
     # compared the ranks.
     with pytest.raises(SpecRefusal) as refused:
-        across_ranks("non_torch", 4, [2.94e9, 2.94e9, 2.94e9, 152.01e9])
+        across_ranks("non_torch", [2.94e9, 2.94e9, 2.94e9, 152.01e9])
     assert refused.value.rule is Rule.RANK_AGREEMENT
     assert "2940000000.0" in refused.value.what
     assert "152010000000.0" in refused.value.what
 
 
-def test_the_spread_is_reported_and_not_folded_into_the_reading():
-    measured = across_ranks("non_torch", 8, [10704 * MIB] * 7 + [11344 * MIB])
-    assert "spread" in str(measured) and "6.0%" in str(measured)
-
-
-def test_a_rank_that_was_not_read_is_refused():
-    with pytest.raises(SpecRefusal) as refused:
-        across_ranks("non_torch", 8, [10704 * MIB] * 7)
-    assert refused.value.rule is Rule.RANK_AGREEMENT
-    assert "7 reading(s) for the 8 ranks" in refused.value.what
-
-
 def test_a_reading_no_spec_could_hold_is_refused_where_the_ranks_are():
     with pytest.raises(SpecRefusal) as refused:
-        across_ranks("non_torch", 2, [0, 970.0e6])
+        across_ranks("non_torch", [0, 970.0e6])
     assert refused.value.rule is Rule.SHAPE
-
-
-def test_how_quiet_the_machine_has_to_be_is_the_callers_judgement():
-    readings = [10704 * MIB] * 7 + [11344 * MIB]
-    assert across_ranks("non_torch", 8, readings, limit=0.06).relative < 0.06
-    with pytest.raises(SpecRefusal):
-        across_ranks("non_torch", 8, readings, limit=0.01)
 
 
 # --- what the package reaches -------------------------------------------------
 
 
-def test_the_three_verbs_are_reachable_by_name():
+def test_the_verbs_are_reachable_by_name():
     for name in ("merge", "validate", "explain", "across_ranks"):
         assert name in spec_package.__all__
         assert getattr(spec_package, name, None) is not None
@@ -1285,8 +971,8 @@ def test_the_node_18_fragments_validate_and_explain_splits_measured_from_declare
     assert validate(merged.document).ok
     measured, declared = script.report(merged).split("assumed:")
     for field in ("device.memory.capacity_bytes", "encode_tokens_per_s"):
-        assert field in measured and field not in declared.split("kv_blocks")[0]
-    for field in ("host.ipc.zmq_roundtrip_s", "host.admission_fixed_s", "bf16_flops"):
+        assert field in measured and field not in declared
+    for field in ("host.ipc.zmq_roundtrip_s", "host.ipc.shm_broadcast_s", "bf16_flops"):
         assert field in declared and field not in measured
 
 
@@ -1311,7 +997,7 @@ def test_the_checked_in_mi308x_specs_hold_their_start(monkeypatch, name):
     monkeypatch.setenv("COMPASS_MACHINE", name)
     script = _node18_script()
     path = SPEC_ROOT / "scripts" / "compass" / "machines" / f"{name}.json"
-    values = validate(json.loads(path.read_text())).raise_first().values
+    values = MachineSpec.from_mapping(json.loads(path.read_text())).values
     for fragment in script.device_fragments():
         for key, value in fragment.values.items():
             if not key.startswith("provenance."):
@@ -1319,14 +1005,14 @@ def test_the_checked_in_mi308x_specs_hold_their_start(monkeypatch, name):
 
 
 def _mi355x_spec(monkeypatch):
-    """The MI355X script and its checked-in document, validated."""
+    """The MI355X script and its checked-in document, read."""
     monkeypatch.delenv("COMPASS_MACHINE", raising=False)
     path = SPEC_ROOT / "scripts" / "compass" / "mi355x_spec.py"
     loaded = importlib.util.spec_from_file_location("mi355x_spec", path)
     script = importlib.util.module_from_spec(loaded)
     loaded.loader.exec_module(script)
     document = SPEC_ROOT / "scripts" / "compass" / "machines" / f"{script.NAME}.json"
-    return script, validate(json.loads(document.read_text())).raise_first()
+    return script, MachineSpec.from_mapping(json.loads(document.read_text()))
 
 
 def test_the_checked_in_mi355x_spec_holds_its_start(monkeypatch):
@@ -1346,8 +1032,7 @@ def test_the_mi355x_spec_explains_what_the_start_measured_apart_from_the_declare
         for row in explain(spec, block).contributions:
             origins.setdefault(row.origin["origin"], set()).add(row.path)
     assert set(origins) == {"probed", "datasheet", "assumed"}
-    start = {row.path for row in explain(spec, "kv_blocks").contributions}
-    assert start == {"device.memory.capacity_bytes"} <= origins["probed"]
+    assert "device.memory.capacity_bytes" in origins["probed"]
     assert origins["datasheet"] == {
         "device.memory.bandwidth_bytes_per_s",
         "device.compute.bf16_flops",

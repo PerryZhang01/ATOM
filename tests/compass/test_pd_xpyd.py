@@ -134,18 +134,15 @@ def test_a_replay_reads_the_record_of_its_own_deployment(
     tmp_path, monkeypatch, instances, role, index, record
 ):
     path = _run_file(tmp_path, replay=str(tmp_path), **instances)
-    run = json.loads(path.read_text())
-    del run["step_stub"]
-    path.write_text(json.dumps(run))
     monkeypatch.setenv(compass_run.ENV, str(path))
 
     class Read(Exception):
         pass
 
-    def backend(directory, dp_rank):
+    def host(directory, dp_rank):
         raise Read(directory, dp_rank)
 
-    monkeypatch.setattr("atom.compass.parity.replay.ReplayBackend", backend)
+    monkeypatch.setattr("atom.compass.parity.replay.ReplayHost", host)
     kv = {"kv_connector": "compass", "kv_role": role}
     if index is not None:
         kv["compass_instance"] = index

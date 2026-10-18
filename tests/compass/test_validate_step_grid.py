@@ -1,26 +1,30 @@
 # SPDX-License-Identifier: MIT
 """Grading a step-grid cell: `python -m atom.compass.validate` on a cell whose
-simulated run is `step_grid/`, as `compass run --step-grid` writes it.
+simulated run is `step_grid/`, as `compass run --step-grid` writes it, or as
+`cctraces_sim.sh` does.
 
-The cell is `test_validate_main`'s, laid out as `record` and `run` write it, its
-simulated run moved to `step_grid/`. Its run file names a bundle published as
-`test_run_step_grid` publishes one, under that file's deployment, which the
-run's ATOM arguments resolve to here. The bundle's grid measures each real step
+The cell is `test_validate_main`'s, its simulated run moved to `step_grid/`.
+Its run file names a bundle published as `test_run_step_grid` publishes one,
+under that file's deployment read in another ATOM tree, and its run summary
+records the bundle's digest. The bundle's grid measures each real step
 at the planted law's price on that step's own node, its residual's factor is
 one, and its held-out hull holds every step, so the grid prices each real step
 as the law does.
 """
 
+import hashlib
 import json
 import re
 
 import pytest
+from test_artifact_invalidation import moved
 from test_backend_step_grid import fitted, linear, point
 from test_memory_readings import DOCUMENT
-from test_run_step_grid import BOUNDS, KEY, deployment, publish
+from test_run_step_grid import BOUNDS, deployment, publish, readings
 from test_validate_cost import LAW, _record, _steps
 from test_validate_main import _as_recorded, _graded, _rows
 
+from atom.compass.artifacts import Axis
 from atom.compass.backends import (
     StepGrid,
     StepGridBackend,
@@ -90,27 +94,43 @@ def _bundle(steps, missing=()):
     return {"grid": grid, "residual": residual, "bounds": BOUNDS}
 
 
-def _as_grid(tmp_path, monkeypatch, missing=(), **config):
-    """`tmp_path`'s cell with its simulated run moved to `step_grid/`, a
-    `compass run --step-grid` directory over `_bundle`, its ATOM arguments
-    resolving to the deployment `config` edits."""
+def _as_grid(tmp_path, monkeypatch, missing=(), digest=None, parallel=None, **key):
+    """`tmp_path`'s cell with its simulated run moved to `step_grid/` over
+    `_bundle`, published under the deployment's readings in another ATOM tree,
+    and with `parallel` its entry also restates that key field, which this
+    tree's keys no longer have, as one published before they dropped it does:
+    a `compass run --step-grid` directory whose ATOM arguments resolve to the
+    deployment, or a `cctraces_sim.sh` one, whose run.json is the run file. Its
+    run file names the bundle at `key`'s fields over the entry's, and its
+    summary records `digest`, the bundle's when None. The configs a grading
+    resolves are returned."""
     r = deployment(tmp_path)
-    publish(tmp_path, r, member=_bundle(_steps(), missing))
-    vars(r.config).update(config)
+    there = moved(readings(r), Axis.ATOM_SRC)
+    entry = publish(tmp_path, r, member=_bundle(_steps(), missing), conditions=there)
+    path = entry.directory / "entry.json"
+    document = json.loads(path.read_bytes())
+    if parallel:
+        document["key"]["parallel"] = parallel
+        path.chmod(0o644)
+        path.write_text(json.dumps(document))
     resolved = []
     monkeypatch.setattr(
         drive_run, "_config", lambda args: resolved.append(args) or r.config
     )
     sim = (tmp_path / "c4" / "step_linear").rename(tmp_path / "c4" / "step_grid")
     run = json.loads((sim / "run.json").read_text())
-    run["argv"] = ["-c", "run", "--step-grid", "planted", "--", *ATOM_ARGS]
-    run["run_file"] = {
-        "step_grid": {"store": str(tmp_path / "store"), **KEY},
-        "host": {"laws": {}},
-        "machine": DOCUMENT,
-    }
-    run["coverage"] = {"inputs": ["planted"], "uncovered": []}
+    grid = {"step_grid": {"store": str(tmp_path / "store"), **document["key"], **key}}
+    if "format_version" in run:
+        run["argv"] = ["-c", "run", "--step-grid", "planted", "--", *ATOM_ARGS]
+        run["run_file"] = grid | {"host": {"laws": {}}, "machine": DOCUMENT}
+        run["coverage"] = {"inputs": ["planted"], "uncovered": []}
+    else:
+        run = {"workload": run["workload"], **grid}
     (sim / "run.json").write_text(json.dumps(run))
+    summary = json.loads((sim / "summary.json").read_text())
+    digest = digest or f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+    summary["step_grid"] = {"engine": {"key": document["key"], "digest": digest}}
+    (sim / "summary.json").write_text(json.dumps(summary))
     return resolved
 
 
@@ -119,18 +139,19 @@ def _renamed(rows):
     return {tuple(k): v for k, v in json.loads(named)}
 
 
+@pytest.mark.parametrize("parallel", [None, "tp1-dp1"])
 def test_a_step_grid_cell_grades_every_row_the_step_linear_cell_does(
-    capsys, tmp_path, monkeypatch
+    capsys, tmp_path, monkeypatch, parallel
 ):
     _rows(capsys, tmp_path)
     _as_recorded(tmp_path / "c4")
     linear_rows = _graded(capsys, tmp_path / "c4")
-    resolved = _as_grid(tmp_path, monkeypatch)
+    resolved = _as_grid(tmp_path, monkeypatch, parallel=parallel)
 
     rows = _graded(capsys, tmp_path / "c4")
     assert rows == _renamed(linear_rows)
-    # The bundle loaded under the config the simulated run's ATOM arguments resolve.
-    assert resolved == [ATOM_ARGS]
+    # Read by key and digest: no config resolved, another tree's bundle read.
+    assert resolved == []
     assert rows["cost real0", "decode validated"][0].startswith("10 steps")
     assert rows["cost real0", "prefill validated"][0].startswith("9 steps")
     assert rows["summary step_grid", "refusals"][1] == "none"
@@ -151,14 +172,55 @@ def test_a_real_step_the_grid_refuses_is_counted_apart_and_priced_nowhere(
         assert rows[f"cost {real}", "decode validated"][0].startswith("9 steps")
 
 
-def test_a_bundle_the_grid_refuses_to_load_refuses_the_cell_naming_why(
+def test_a_cell_cctraces_sim_wrote_grades_with_no_argv_as_its_step_linear_cell(
+    capsys, tmp_path, monkeypatch
+):
+    linear_rows = _rows(capsys, tmp_path)
+    _as_grid(tmp_path, monkeypatch)
+
+    assert _graded(capsys, tmp_path / "c4") == _renamed(linear_rows)
+
+
+#: The refusals: the summary's digest is not the entry's, the run file's key has
+#: no entry, and the entry's member changed after it was published.
+DIFFERS = r"holds 1 entries keyed .*; the run priced with the one digesting sha256:0$"
+MISSING = (
+    r'holds 0 entries keyed step_grid_bundle {.*"grid": "other".*}, digesting \[\]'
+)
+CHANGED = r"params\.\S+\.json is not the member the entry of step_grid_bundle {.*}"
+
+
+@pytest.mark.parametrize(
+    "digest, key, member, refused",
+    [
+        ("sha256:0", {}, False, DIFFERS),
+        (None, {"grid": "other"}, False, MISSING),
+        (None, {}, True, CHANGED),
+    ],
+)
+def test_a_bundle_other_than_the_one_the_run_priced_with_refuses_the_cell(
+    capsys, tmp_path, monkeypatch, digest, key, member, refused
+):
+    _rows(capsys, tmp_path)
+    _as_grid(tmp_path, monkeypatch, digest=digest, **key)
+    if member:
+        (path,) = (tmp_path / "store" / "step_grid_bundle").glob("*/params.*")
+        path.chmod(0o644)
+        path.write_text(json.dumps(_bundle(_steps(), missing={15})))
+
+    with pytest.raises(ValueError, match=refused):
+        main([str(tmp_path / "c4")])
+
+
+def test_a_run_summary_recording_no_bundle_refuses_the_cell(
     capsys, tmp_path, monkeypatch
 ):
     _rows(capsys, tmp_path)
-    _as_recorded(tmp_path / "c4")
-    _as_grid(tmp_path, monkeypatch, max_num_seqs=64)
+    _as_grid(tmp_path, monkeypatch)
+    path = tmp_path / "c4" / "step_grid" / "summary.json"
+    path.write_text(json.dumps(json.loads(path.read_text()) | {"step_grid": {}}))
 
-    with pytest.raises(ValueError, match="max_num_seqs 64 is above the 48"):
+    with pytest.raises(ValueError, match=re.escape("bundle digests [], and grading")):
         main([str(tmp_path / "c4")])
 
 

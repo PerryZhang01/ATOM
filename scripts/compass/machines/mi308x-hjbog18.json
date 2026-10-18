@@ -74,9 +74,6 @@
       "host.ipc.shm_broadcast_s": {
         "origin": "assumed"
       },
-      "host.admission_fixed_s": {
-        "origin": "assumed"
-      },
       "device.memory.bandwidth_bytes_per_s": {
         "origin": "assumed"
       },
@@ -173,7 +170,6 @@
       "zmq_roundtrip_s": 5e-05,
       "shm_broadcast_s": 2e-05
     },
-    "admission_fixed_s": 0.009,
     "http_intake": {
       "fixed_s": 0.0026078916675536866,
       "per_byte_s": 5.082586258228853e-09

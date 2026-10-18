@@ -134,7 +134,6 @@ DOCUMENT = {
         "cpu": {"cores_physical": 96, "cores_logical": 192},
         "tokenizers": [TOKENIZER],
         "ipc": {"zmq_roundtrip_s": 5.0e-5, "shm_broadcast_s": 2.0e-5},
-        "admission_fixed_s": 9.0e-3,
         "http_intake": {"fixed_s": 2.0e-3, "per_byte_s": 2.0e-8},
     },
     "device": {

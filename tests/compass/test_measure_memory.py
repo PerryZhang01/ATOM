@@ -17,6 +17,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import types
@@ -511,3 +512,40 @@ def test_the_mi308x_entry_gives_the_readings_its_spec_gave():
     )
     assert {k: v.total for k, v in readings.as_dict().items()} == FROM_THE_SPEC
     assert readings.declared == ()
+
+
+#: Prints the FX graph cache's hash of a weight's metadata, as a real runner's
+#: process keys it; with `first`, a module reaching `torch` sits ahead of
+#: torch's own in `sys.modules`, as an API server's imports put one.
+_WEIGHT_KEY = """
+import sys, types
+if sys.argv[1] == "first":
+    sys.modules["a_first"] = first = types.ModuleType("a_first")
+import torch
+from torch._inductor.codecache import FxGraphCachePickler
+from torch._inductor.codecache import extract_tensor_metadata_for_cache_key
+from atom.compass.parity import key_memory_formats_by_name
+
+if sys.argv[1] == "first":
+    first.torch = torch
+key_memory_formats_by_name()
+gm = torch.fx.GraphModule(torch.nn.Module(), torch.fx.Graph())
+meta = extract_tensor_metadata_for_cache_key(torch.empty(4))
+print(FxGraphCachePickler(gm).get_hash(meta))
+"""
+
+
+def test_a_weights_compile_key_is_the_same_whatever_the_import_order():
+    root = CONFIG_JSON.parents[2]
+    keys = {
+        subprocess.run(
+            [sys.executable, "-c", _WEIGHT_KEY, order],
+            cwd=root,
+            env=os.environ | {"PYTHONPATH": str(root)},
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        for order in ("first", "torch")
+    }
+    assert len(keys) == 1, keys

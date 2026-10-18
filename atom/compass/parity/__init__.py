@@ -294,6 +294,31 @@ def carry_response_ids() -> None:
         cls.add_request = add_request
 
 
+def _memory_format(name: str):
+    import torch
+
+    return getattr(torch, name)
+
+
+def key_memory_formats_by_name() -> None:
+    """Pickle a `torch.memory_format` as its name in `torch`.
+
+    Pickle otherwise saves one under the first module in `sys.modules` that
+    reaches it, so inductor's FX graph cache keys a weight by the process's
+    import order: an API server's engine and `compass measure memory`'s keyed
+    the same graphs apart, and a server started after the measurement compiled
+    them again, reading `non_torch` above it. Each real runner calls this
+    before its model compiles."""
+    import copyreg
+
+    import torch
+
+    copyreg.pickle(
+        torch.memory_format,
+        lambda f: (_memory_format, (str(f).removeprefix("torch."),)),
+    )
+
+
 class StepRecording:
     """Records each forward call; put it before `ModelRunner` in the bases.
 
