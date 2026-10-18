@@ -7,14 +7,10 @@
     "origin": "mixed",
     "origins": {
       "host.cpu.cores_physical": {
-        "origin": "probed",
-        "model": "/models/DeepSeek-V4-Pro",
-        "source_root": "commit:b1fb70c0d3ef77fb91f3c3bffab3b55a9ed07d23"
+        "origin": "probed"
       },
       "host.cpu.cores_logical": {
-        "origin": "probed",
-        "model": "/models/DeepSeek-V4-Pro",
-        "source_root": "commit:b1fb70c0d3ef77fb91f3c3bffab3b55a9ed07d23"
+        "origin": "probed"
       },
       "device.name": {
         "origin": "probed",
@@ -76,13 +72,17 @@
         "origin": "probed",
         "model": "/models/DeepSeek-V4-Pro",
         "source_root": "commit:19c5ab09e",
-        "record": "sha256:2397696f6df3a280660cbc95e7c8db0d61b77fba9986c3d388ccde75f2d5f574"
+        "record": "sha256:2397696f6df3a280660cbc95e7c8db0d61b77fba9986c3d388ccde75f2d5f574",
+        "p10": 0.001966482509138914,
+        "p90": 0.001966482509138914
       },
       "host.http_intake.per_byte_s": {
         "origin": "probed",
         "model": "/models/DeepSeek-V4-Pro",
         "source_root": "commit:19c5ab09e",
-        "record": "sha256:2397696f6df3a280660cbc95e7c8db0d61b77fba9986c3d388ccde75f2d5f574"
+        "record": "sha256:2397696f6df3a280660cbc95e7c8db0d61b77fba9986c3d388ccde75f2d5f574",
+        "p10": 5.288974015662166e-09,
+        "p90": 5.288974015662166e-09
       },
       "device.memory.bandwidth_bytes_per_s": {
         "origin": "datasheet"
@@ -141,7 +141,19 @@
       "host.tokenizers[deepseek-v4-pro fast]": {
         "origin": "probed",
         "model": "/models/DeepSeek-V4-Pro",
-        "source_root": "commit:b1fb70c0d3ef77fb91f3c3bffab3b55a9ed07d23"
+        "source_root": "commit:88dfbb914581d743c16855b36f5edab6e9d5b809",
+        "p10": {
+          "encode_fixed_s": 6.274415314860249e-06,
+          "encode_tokens_per_s": 959926.851458146,
+          "decode_fixed_s": 9.622373485698014e-07,
+          "decode_tokens_per_s": 7326077.620210434
+        },
+        "p90": {
+          "encode_fixed_s": 6.75017874063726e-06,
+          "encode_tokens_per_s": 973736.3232658788,
+          "decode_fixed_s": 1.0026383540423067e-06,
+          "decode_tokens_per_s": 7483267.090440603
+        }
       }
     },
     "fragments": [
@@ -168,10 +180,10 @@
         "applies_to": [
           "DeepseekV4ForCausalLM"
         ],
-        "encode_fixed_s": 6.460180446920842e-06,
-        "encode_tokens_per_s": 976350.0764833268,
-        "decode_fixed_s": 1.046620708126832e-06,
-        "decode_tokens_per_s": 7347770.259508678,
+        "encode_fixed_s": 6.5194501752822816e-06,
+        "encode_tokens_per_s": 968276.5240179158,
+        "decode_fixed_s": 9.82301925581818e-07,
+        "decode_tokens_per_s": 7412521.531864962,
         "derate": 1.0
       }
     ],

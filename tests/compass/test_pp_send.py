@@ -172,7 +172,7 @@ def test_a_stage_waits_for_its_own_ring_and_only_the_last_for_its_device_work():
 
     def charges(stage, n=5):
         host = HostDeviceRecurrence({}, (), lambda: 0.0, stage)
-        return [host.charge(decode, 1.0) for _ in range(n)]
+        return [host.charge(decode, 1.0, 0.0) for _ in range(n)]
 
     # Entry waits for the device work `pp` forwards back, not two.
     assert charges((0, 4)) == [0.0, 0.0, 0.0, 0.0, 1.0]

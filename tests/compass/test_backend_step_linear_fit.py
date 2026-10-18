@@ -954,3 +954,34 @@ def test_the_command_refuses_records_without_one_engine_config_naming_the_field(
     with pytest.raises(ValueError, match=re.escape(named)):
         main([*map(str, records), "--out", str(tmp_path / "law.json"), *SPEC])
     assert not (tmp_path / "law.json").exists()
+
+
+def test_a_dp_law_is_held_out_run_by_run_and_validates_every_rank_inside(
+    tmp_path, monkeypatch
+):
+    import test_step_linear_dp as dp
+
+    monkeypatch.setattr(dp, "DP", 2)
+    runs = {seed: dp._groups(seed, n=120) for seed in (0, 1)}
+    records = []
+    for seed, groups in runs.items():
+        (tmp_path / str(seed)).mkdir()
+        records += dp._records(tmp_path / str(seed), groups)
+    for path in records:
+        _engine_file(path, {"data_parallel_size": 2, "enable_dp_attention": True})
+    main([*map(str, records), "--out", str(tmp_path / "law.json"), *SPEC])
+    written = json.loads((tmp_path / "law.json").read_text())
+
+    decode = written["decode"]["4"]["held_out"]["bands"]["decode rung 4"]
+    assert decode["steps"] == 120
+    assert max(abs(decode["p10"]), abs(decode["p90"])) < 1e-6
+    prefill = written["prefill"]["held_out"]["bands"]
+    assert sum(b["steps"] for b in prefill.values()) == 120
+    backend = StepLinearBackend(StepLinearLaw(written), 2)
+    views = [v for groups in runs.values() for vs, _ in groups for v in vs]
+    assert all(
+        {t.provenance.validated for t in backend.price(v).terms} == {True}
+        for v in views
+    )
+    far = BatchView((RequestShape(1, 10**6, True),) * 4, capture_rung=4)
+    assert not any(t.provenance.validated for t in backend.price(far).terms)

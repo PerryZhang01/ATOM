@@ -188,9 +188,12 @@ else
     main=(-m atom.entrypoints.openai.api_server)
     [[ -z ${HTTP_INTAKE:-} ]] || main=("$ROOT/scripts/compass/http_intake.py" serve "$HTTP_INTAKE")
     # The keep-alive timeout as in pd_sim.sh, aiperf's pool in the router's place.
-    # Its own process group, so a real server's workers stop with it.
+    # Its own process group, so a real server's workers stop with it. A free
+    # DP master port, as `compass record` gives one: the port keys ATOM's
+    # compiled-graph cache, and the first start that loads it autotunes again.
     # shellcheck disable=SC2086 # SERVER_ARGS is a word list
-    ATOM_COMPASS_PARITY_RECORD=$record setsid python3 "${main[@]}" \
+    ATOM_DP_MASTER_PORT=$(compass_free_port) ATOM_COMPASS_PARITY_RECORD=$record setsid \
+        python3 "${main[@]}" \
         --model "$MODEL" --host 127.0.0.1 --server-port "$PORT" --timeout-keep-alive 1000000 \
         $SERVER_ARGS "${compass[@]}" >"$OUT/server.log" 2>&1 &
     # Ready once uvicorn listens; the frontend answers /health from then on,

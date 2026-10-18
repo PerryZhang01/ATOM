@@ -38,11 +38,16 @@ SUBJECT = {"model": MODEL, "width": 8, "source_root": f"commit:{COMMIT}"}
 SUBJECT["record"] = f"sha256:{RECORD}"
 
 #: `http_intake.py`'s fit over one real c=256 first-turn cc-traces burst at
-#: `FLAGS`, run at the commit named; the record is the probe's stamp file.
+#: `FLAGS`, run at the commit named; the record is the probe's stamp file. It is
+#: the only burst there, so each term's band is that burst's value at both ends.
 INTAKE = (
     "2026-10-18",
     "19c5ab09e",
     {"fixed_s": 0.001966482509138914, "per_byte_s": 5.288974015662166e-09},
+    {
+        "fixed_s": (0.001966482509138914, 0.001966482509138914),
+        "per_byte_s": (5.288974015662166e-09, 5.288974015662166e-09),
+    },
     "2397696f6df3a280660cbc95e7c8db0d61b77fba9986c3d388ccde75f2d5f574",
 )
 
@@ -116,6 +121,7 @@ def main(argv: list[str] | None = None) -> int:
     print(verdict)
     if not verdict.ok:
         return 1
+    base.refuse_unbanded(base.MachineSpec.from_mapping(merged.document))
     args.out.write_text(json.dumps(merged.document, indent=2) + "\n")
     print(base.report(merged))
     return 0

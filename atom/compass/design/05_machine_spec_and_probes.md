@@ -50,6 +50,12 @@ attainable peaks probed on the device: one compute rate per format, a bandwidth 
 class-1 and class-2 probes (D26). A `derate` is attainable over datasheet, probed; a device
 with no hardware carries a probed device's, assumed.
 
+**Revised 2026-10-18 by the owner's
+[ruling on #1482](https://github.com/jgong5/ATOM/pull/1482#issuecomment-6248221485):** a
+probed number carries the p10 and p90 its probe measured, beside its subject in
+`provenance.origins`, and a spec that states one without them is refused by name before it
+is written (D25 rule 5, [#1518](https://github.com/jgong5/ATOM/issues/1518)).
+
 **Scope.** The single input artifact that tells Compass what machine it is simulating,
 its schema, and the tools that fill it in. A project requirement is that compute, memory
 size, bandwidth and interconnect are **configured and not read from a device runtime**, so
@@ -115,7 +121,7 @@ provenance:                      # the document's origin, and each field's
   date: 2026-09-18
   origin: datasheet | probed | assumed | mixed
   subject: {model, width, source_root, record}   # a probed document only, rule 5
-  origins: {...}                 # each field's origin, written by `merge`, rule 5
+  origins: {...}                 # each field's origin, subject and band, written by `merge`, rule 5
   fragments: [...]               # filled by `merge`, see D26
   notes: free text
 
@@ -245,7 +251,14 @@ Mooncake's KV transfer between the prefill and the decode node (`01` D6).
 5. **Every field has an origin, and the document records it** (`spec/fields.py::ORIGINS`,
    `MachineSpec.origin`): `datasheet`, `probed` or `assumed`.
    A probed field also records its subject, what the probe ran on: model, width, source
-   root, and the digest of the run record it read. A fragment states one
+   root, and the digest of the run record it read. A probed number, a quantity or a byte
+   count, also records its band, `p10` and `p90`: the spread of the value over the
+   probe's records, each fitted alone, or over its repeated sweeps; a tokenizer entry
+   records one per rate. Readers use the value, never the band. A spec that states a
+   probed number without its band is refused by name before it is written
+   (`spec/bands.py::refuse_unbanded`). A count or a text is read, not sampled, and so is
+   a field the table marks `exact`, the device's capacity: those carry no band. A
+   fragment states one
    `provenance.origin` for what it supplies, or `mixed` with each field's origin in
    `provenance.origins` (the tokenizer probe's: the caller's origin on its entries,
    `probed` on the core counts it reads). An
@@ -429,6 +442,6 @@ a single term.
 | # | Decision | Date |
 |---|---|---|
 | D24 | The spec describes the machine; ATOM's config describes the deployment. Thread-pool width becomes an ATOM config option, not a Compass one. | 2026-09-18 |
-| D25 | Four-section schema: `provenance`, `host`, `device`, `interconnect`. Mandatory derates, no memory readings (`measure memory`'s entries, 2026-10-14), activations included (2026-10-16), `software_pinned_to` checked, torch included, as the target's stack, whole spec echoed into every artifact. Revised for the MI455 projection: an optional dense `fp4_flops`, `intra_node.domain_devices` for a scale-up fabric wider than a node, and every field given an origin, `datasheet`, `probed` or `assumed`, `provenance.origin` and per field `provenance.origins` with a probe's subject, kept across a save. Revised: a `host.http_intake` pair, the event loop's charge per HTTP request taken in, required once every committed spec stated it. An optional per-link `link_setup_s`, charged once on a rank pair's first KV write. Revised for the attainable-peak roofline: a `derate` is attainable over datasheet, probed, one per compute format; `memory.bandwidth_curve` and `kernel_floor_s` added; a device never run carries a probed device's derates, assumed. | 2026-09-18; revised 2026-10-10; torch 2026-10-13 (#851); origin 2026-10-14 (#952); intake 2026-10-16 (#1103), required 2026-10-18 (#1230); link setup 2026-10-16 (#1172); activations and the transfer origin dropped 2026-10-16 (#1226); attainable peaks 2026-10-17 (#1392); `host.admission_fixed_s` dropped 2026-10-17 (#1000) |
+| D25 | Four-section schema: `provenance`, `host`, `device`, `interconnect`. Mandatory derates, no memory readings (`measure memory`'s entries, 2026-10-14), activations included (2026-10-16), `software_pinned_to` checked, torch included, as the target's stack, whole spec echoed into every artifact. Revised for the MI455 projection: an optional dense `fp4_flops`, `intra_node.domain_devices` for a scale-up fabric wider than a node, and every field given an origin, `datasheet`, `probed` or `assumed`, `provenance.origin` and per field `provenance.origins` with a probe's subject, kept across a save. Revised: a `host.http_intake` pair, the event loop's charge per HTTP request taken in, required once every committed spec stated it. An optional per-link `link_setup_s`, charged once on a rank pair's first KV write. Revised for the attainable-peak roofline: a `derate` is attainable over datasheet, probed, one per compute format; `memory.bandwidth_curve` and `kernel_floor_s` added; a device never run carries a probed device's derates, assumed. A probed number carries its measured p10 and p90 beside its subject, and a spec stating one without them is refused by name before it is written. | 2026-09-18; revised 2026-10-10; torch 2026-10-13 (#851); origin 2026-10-14 (#952); intake 2026-10-16 (#1103), required 2026-10-18 (#1230); link setup 2026-10-16 (#1172); activations and the transfer origin dropped 2026-10-16 (#1226); attainable peaks 2026-10-17 (#1392); `host.admission_fixed_s` dropped 2026-10-17 (#1000); bands 2026-10-18 (#1482, #1518) |
 | D26 | Probes emit fragments; `merge` / `validate` / `explain` combine and check them. Four hardware probe classes plus a datasheet path; the transfer path dropped 2026-10-14 (#937). Every hardware probe implements the contamination refusals. All are the `spec` package's functions, run by per-machine scripts, with no `compass` command. Machine specs are developers', one per supported machine, passed by `--machine`; an engine start's memory readings are `measure memory`'s, not the spec's. Revised: class 1 probes the per-format GEMM rate, the bandwidth curve and the kernel floor; class 2 the link latency and bandwidth. | 2026-09-18; revised 2026-10-13 and 2026-10-14 (#851); 2026-10-17 (#1392) |
 | D25.1 | Runtime-constant fields renamed to say what they are; ATOM's own term recorded as a mapping column. `host.tokenizer` becomes `host.tokenizers[]`, keyed by tokenizer identity (id + backend + fingerprint) with `applies_to` model architectures. | 2026-09-19 |

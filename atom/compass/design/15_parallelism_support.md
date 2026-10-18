@@ -164,8 +164,9 @@ transfer to DP.
 - **Combine.** Every rank prices its own batch with its own runner and backend. With host
   time (a `HostDeviceRecurrence`), the group's device end is the `max` over ranks of each
   rank's absolute device end on the LP clock: every forward kind, the DP dummy included,
-  joins one `all_reduce(MAX)`. Each rank writes it back as its last device end, and as its
-  output end on an output forward, then leaves at its own composed charge, as a real rank
+  joins one `all_reduce(MAX)`, under MTP with the latest target end beside it. Each rank
+  writes the device end back as its last device end, and as its output end on an output
+  forward, the target end in its place under MTP, then leaves at its own composed charge, as a real rank
   returns at its own launch end while per-layer collectives tie the devices. A replay host
   leaves at its own replayed charge. With no host time, a rank with output other than the
   DP dummy leaves at the `max` over ranks of the step seconds, any other at its own.
