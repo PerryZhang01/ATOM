@@ -97,13 +97,15 @@ the `max` over ranks (`15` D90).
   is refused, and no store key holding the engine config states `parallel`.
 - **Features.** The rank's own batch features (D55), plus two the group decides: the
   DP-unified rung every rank shares, settled by `ForwardMode.decide`, and the MoE row
-  count, which the MoE terms read alone. With EP off that count is `T_moe`, the rows the
-  group's MoE gather carries; with EP on it is open (`15` D90).
+  count, which the MoE terms read alone. That count is `T_moe` (`BatchView.moe_rows`)
+  with EP on or off: with EP off the rows the group's MoE gather carries, with EP on the
+  rows the group dispatches to MORI (`15` D90).
 - **The capture.** Full-engine steps on a real deployment at the law's layout,
   logging per forward each rank's batch features and the MoE row count beside the
   measured step seconds. Under DP-attention the local segment runs at TP 1, as in the
   TP1-only full-engine calibration of `07` D38; with EP off the MoE segment does not,
-  since `flatten_tp_across_dp` shards every expert `dp` ways.
+  since `flatten_tp_across_dp` shards every expert `dp` ways; with EP on it does, each
+  rank running its own experts whole on the rows MORI delivers.
 - **The fit: alternating max-affine regression.** The ranks wait for each other inside the
   forward, so a rank's measured step is the group's step and its own cost is never seen:
   the observation is `y = max_r f(x_r)`. The fit alternates two moves until no step
@@ -434,11 +436,19 @@ dispatch class; the fit found 16 from the data alone.
 
 **Assumed treatment: uniform routing** (owner's DP ruling, 2026-10-01). Under DP the
 MoE segment is priced as if routing spread tokens evenly over the experts, at every
-granularity, from `T_moe` with EP off; with EP on its row count is open (`15` D90). Real
+granularity, from `T_moe` with EP on or off (`15` D90). Real
 routing is data-dependent (`15` D92 Q2) and no feature carries it, so whatever skew a
 capture's routing has is folded into the fitted MoE terms. `max` over ranks is the
 per-layer critical path, by construction with EP off and under this treatment with EP on
 (`15` D90); where routing is not uniform under EP, `max` underestimates the step.
+Stage 3 keeps this treatment at EP8 (owner ruling on
+[#627](https://github.com/jgong5/ATOM/issues/627#issuecomment-6194442788), 2026-10-15):
+the step linear law fitted under the EP8 engine config absorbs MORI dispatch and combine
+through its prefill `moe_rows` term and its intercepts, and no received-rows feature is
+fitted. A decode vector needs no `moe_rows` term, since at a replayed rung `T_moe` is
+fixed by the rung and the rung's intercept holds it. The measured received-row
+imbalance, whose size `15` D90 states, is reported beside the law's accuracy
+([#1108](https://github.com/jgong5/ATOM/issues/1108)).
 
 **Suspected treatments to check before fitting:** raggedness (workload-dependent, and it
 was a zero column for 2,997 samples), cached fraction, and the prefill chunk's position in
@@ -484,7 +494,7 @@ choice that must be visible.
 | # | Decision | Date |
 |---|---|---|
 | D53 | Fit relative error, not absolute seconds. MAD outlier test on the same relative residuals. | 2026-09-18 |
-| D54 | Prefill and decode fitted separately; decode per CUDA-graph rung with both coefficients per rung. Under DP and EP, the step linear law is one per-rank law per engine config, which states the parallel layout, with the DP-unified rung and the MoE row count as features (`T_moe` with EP off; open with EP on), captured on a real deployment at that layout and fitted by alternating max-affine regression. Its label is one forward's device busy time, plus the device gap before it on a decode, with launch-exposed decodes cut and no prefill cut; host laws (`E`, `W_pre`, `W_launch`, `W_post`, and under MTP `W_inputs`, `W_pre` split at the MTP status wait), each `(1, tokens, seqs)` per decode, output prefill and pure middle chunk (a middle chunk has no sampler launch, output or R1 wait, so its `W_post` is zero and not fitted), are fitted beside it, keyed by host CPU, `atom` digest, model and engine config, with no transfer. | 2026-09-18; revised 2026-10-01, 2026-10-09 (`T_moe`, #502) and 2026-10-11 (#815); label per step kind 2026-10-12 (#843); named 2026-10-14 (#952); `W_inputs` 2026-10-16 (#829); engine config as the key 2026-10-16 (#973) |
+| D54 | Prefill and decode fitted separately; decode per CUDA-graph rung with both coefficients per rung. Under DP and EP, the step linear law is one per-rank law per engine config, which states the parallel layout, with the DP-unified rung and the MoE row count as features (`T_moe`, EP on or off), captured on a real deployment at that layout and fitted by alternating max-affine regression. Its label is one forward's device busy time, plus the device gap before it on a decode, with launch-exposed decodes cut and no prefill cut; host laws (`E`, `W_pre`, `W_launch`, `W_post`, and under MTP `W_inputs`, `W_pre` split at the MTP status wait), each `(1, tokens, seqs)` per decode, output prefill and pure middle chunk (a middle chunk has no sampler launch, output or R1 wait, so its `W_post` is zero and not fitted), are fitted beside it, keyed by host CPU, `atom` digest, model and engine config, with no transfer. | 2026-09-18; revised 2026-10-01, 2026-10-09 (`T_moe`, #502) and 2026-10-11 (#815); label per step kind 2026-10-12 (#843); named 2026-10-14 (#952); `W_inputs` 2026-10-16 (#829); EP on 2026-10-15 (#627, #1106); engine config as the key 2026-10-16 (#973) |
 | D55 | Attention terms summed per request; the padding term is the rung's rectangle, not the batch's. A decode rung may add `rowmod(k)` (D61). | 2026-09-18; revised 2026-10-14 (#941) |
 | D56 | Distinguish rank deficiency from coverage gap: drop zero-variance features explicitly, report the condition number, and treat "widening the evidence does not move the error" as evidence the feature is wrong. | 2026-09-18 |
 | D57 | Every fit reports provenance, sample count, dropped count, condition number and validity hull. Report an interval or report nothing. | 2026-09-18 |
