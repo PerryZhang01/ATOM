@@ -68,7 +68,7 @@ each deployment's as ``prefill/`` and ``decode/``, ``prefill<k>/`` and
 `atom.compass.parity.replay`),
 ``step_roofline`` (optional, ``true`` or ``false``: with ``true`` a
 `StepRooflineBackend` prices the steps the backend refuses, through
-`StepFallbackBackend`),
+`StepFallbackBackend`, as it always does under ``step_grid``),
 ``on_refusal`` (optional: ``mark``, the default, prices a step no cost source
 answers at 0 s, hands in its ``cost:`` reason and continues; ``abort`` ends
 the run there, which still writes the summary),
@@ -82,9 +82,10 @@ on ``(1, tokens, seqs)``, refused where absent; ``key``, the `host_key` they wer
 fitted under and the ``machine_spec`` digest of the spec of the platform they
 were fitted on, which a run with laws must match; ``skip``, segments zeroed for
 a what-if run, which the graders refuse; a list of them as ``step_linear``'s),
-``machine`` (a machine spec mapping), ``parameter_count`` (read with
-``step_roofline``), ``store`` (the artifact store's root, where `memory` reads
-the configuration's memory readings) and ``backend`` (the backend's ``digest``
+``machine`` (a machine spec mapping), ``parameter_count`` (read by the
+roofline, which without it counts the meta build's), ``store`` (the artifact
+store's root, where `memory` reads the configuration's memory readings) and
+``backend`` (the backend's ``digest``
 and its fit ``provenance``, which nothing here reads), both written by
 `atom.compass.drive.runfile`, and ``out_dir``,
 where the step table, the run summary and each server LP's hand-in go, one
@@ -92,7 +93,8 @@ file written as the LP leaves its loop. It holds the LP's refusals: an
 engine's are the worker's refused commands and the engine's refused clock
 calls, a frontend's its executor's refused jobs and its refused clock calls.
 An engine's also holds what its worker's steps cost, for the summary's
-predicted seconds and their shares by method (`backends.cost.GROUPS`).
+predicted seconds and their shares by method (`backends.cost.GROUPS`), and
+its counts of steps extrapolated and of steps a fallback priced.
 It holds the memory the worker predicts too, for
 ``python -m atom.compass.memory.check``, with the assumption a
 `memory_readings` member it read states, which `compass run` records, and
@@ -1302,18 +1304,23 @@ def runner(model_runner, tree) -> None:
             f"the run file's step_roofline is {fallback!r}; it is true, which "
             "prices the steps the backend refuses by the step roofline, or false"
         )
-    if fallback:
+    if fallback or STEP_GRID in run:
         kv = KvGeometry.from_hf_config(
             config.hf_config,
             block_size=config.kv_cache_block_size,
             parallelism=Parallelism(tp_size=tp),
             kv_dtype=config.kv_cache_dtype,
         )
+        # A run file without it, as a step grid's may be, counts the meta build's.
+        stated = run.get("parameter_count")
         roofline = StepRooflineBackend(
             machine,
-            parameters=run["parameter_count"] // tp,
+            parameters=(
+                stated // tp if stated else sum(p.numel() for p in tree.parameters())
+            ),
             weight_bytes=model.weights.nbytes,
             kv_token_bytes=kv.layers * kv.bytes_per_token_per_layer,
+            parameters_stated=bool(stated),
         )
         backend = StepFallbackBackend(backend, roofline)
     install_cost_backend(model_runner, backend)
@@ -1744,6 +1751,9 @@ def _summary(run: dict, a, record, wall: float, hand_ins: dict, since: dict) -> 
         }
         for g in GROUPS
     }
+    # Steps answered past a source's support domain, and below a source that declined.
+    for key in ("extrapolated_steps", "fallback_steps"):
+        schedule[key] = total(key)
     # Each assumed treatment the steps were priced under, with its step count.
     treatments = sum((Counter(p.get("treatments", {})) for p in priced), Counter())
     treatments -= sum((Counter(p.get("treatments", {})) for p in before), Counter())
@@ -1756,6 +1766,7 @@ def _summary(run: dict, a, record, wall: float, hand_ins: dict, since: dict) -> 
         if n.startswith("engine")
     ):
         schedule.update(predicted_seconds=None, seconds_by_method=None, treatments=None)
+        schedule.update(extrapolated_steps=None, fallback_steps=None)
         schedule["refusals"].update(steps=None, fraction_of_steps=None)
     summary["configuration"] = configuration(run)
     summary["schema_version"] = SUMMARY_SCHEMA_VERSION

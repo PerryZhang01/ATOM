@@ -623,8 +623,9 @@ class PricedSteps:
     def priced_steps(self) -> dict[str, Any]:
         """This rank's own steps, folded into one `ProvenanceMix` as each was
         priced, before the max over the DP group, with the steps and seconds
-        of each of `GROUPS` apart. A dict even before the first step, since a
-        None reply parks the engine that asks.
+        of each of `GROUPS` apart, and the steps a source extrapolated and
+        those a fallback priced after a source declined. A dict even before
+        the first step, since a None reply parks the engine that asks.
         """
         from atom.compass.backends.cost import GROUPS, ProvenanceMix, group
 
@@ -634,6 +635,9 @@ class PricedSteps:
         return {
             "steps": mix.steps,
             "seconds": mix.seconds,
+            "extrapolated_steps": mix.extrapolated_steps,
+            # A priced step that carries refusals fell through to a later source.
+            "fallback_steps": mix.refused_steps,
             **{f"{g}_steps": steps.get(g, 0) for g in GROUPS},
             **{f"{g}_seconds": seconds.get(g, 0.0) for g in GROUPS},
             "treatments": dict(mix.treatments),

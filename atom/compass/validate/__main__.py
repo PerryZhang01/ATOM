@@ -10,7 +10,8 @@ whether one is. Rows: `validate.runs`' grades, TTFT p50 per band of uncached pro
 tokens graded alike; per run `record` or `run` wrote, its warmup: how many requests
 its export names as such and how many steps hold only those; `validate.cost` on the
 steps graded (with the steps it leaves out) and `memory.check` per real run; and the
-simulated run's refusals by source, shares and speed. Any refusal makes a
+simulated run's refusals by source, its steps extrapolated and priced by a
+fallback, shares and speed. Any refusal makes a
 `cctraces_sim.sh` cell a coverage report; the shares grade nothing, and neither do the
 counts but preemptions and prefill tokens.
 """
@@ -130,6 +131,8 @@ def _summary(run: Path, summary: dict):
         else f"cost refused {n['fraction_of_steps']:.1%} of {n['steps']} steps"
     )
     yield where, "refusals", f"{n['count']} {json.dumps(dict(n['by_source']))}; {cost}", verdict
+    for k in ("extrapolated", "fallback"):
+        yield where, f"{k} steps", f"{schedule.get(f'{k}_steps')} of {n['steps']}", "not gated"
     by_method = schedule["seconds_by_method"] or {}
     for g in GROUPS:
         yield where, g, json.dumps(by_method.get(g)), "not gated"
