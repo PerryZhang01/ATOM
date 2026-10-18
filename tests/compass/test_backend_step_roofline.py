@@ -69,6 +69,20 @@ def test_a_step_is_the_larger_of_its_compute_and_memory_bounds(batch, bound, sec
     assert roofline().granularity is Granularity.STEP
 
 
+def test_the_compute_bound_reads_the_bf16_derate_not_another_formats():
+    document = copy.deepcopy(DOCUMENT)
+    document["device"]["compute"]["derate"] = {"bf16": 0.70, "fp8": 0.35}
+    machine = MachineSpec.from_mapping(document)
+    backend = StepRooflineBackend(
+        machine, parameters=PARAMETERS, weight_bytes=WEIGHTS, kv_token_bytes=KV
+    )
+
+    (term,) = backend.price(view((8192, 8192, False))).terms
+
+    assert term.name == "roofline.compute"
+    assert term.seconds == 2 * PARAMETERS * 8192 / (2.5e15 * 0.70)
+
+
 @pytest.mark.parametrize("batch", IN_HULL, ids=range(len(IN_HULL)))
 def test_a_step_the_law_prices_is_the_laws_answer(batch):
     assert fallback().price(batch) == backend().price(batch)
