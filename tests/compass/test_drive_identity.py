@@ -171,6 +171,14 @@ def test_each_named_gpu_is_recorded_with_its_model(planted):
         drive.identity(*served, ARGV, (7, 8))
 
 
+def test_the_named_cards_ptl_state_is_recorded(planted, tmp_path):
+    *_, served = planted
+    ptl = tmp_path / "pci" / CARD["PCI Bus"].lower() / "ptl"
+    ptl.mkdir(parents=True)
+    (ptl / "ptl_enable").write_text("enabled\n")
+    assert drive.identity(*served, ARGV, (7, 6))["ptl"] == "enabled"
+
+
 #: rocm-smi's listing of GPU 0 in compass-next:nightly-20261013 on mi355-gpu-45.
 GPU45_CARD = {
     "Card Series": "AMD Radeon Graphics",

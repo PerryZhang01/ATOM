@@ -678,8 +678,13 @@ device (`/sys/class/drm/card<n>/device/ptl/`), a card with no `ptl` directory re
 `disabled`, and refuses when the cards of one run disagree, naming each
 (`atom/compass/drive/identity.py::_ptl`). A fit refuses records whose PTL state is not
 the spec's, as it does their device and stack, and so does `measure memory` before its
-start. PTL is the one static field that separated hjbog-srdc-39 from node 18 once both
-pinned one stack; it, not the host, is why their decode steps differed. The band one key
+start. A record that carries no PTL state, captured before the field existed, refuses
+at a fit unless `--ptl enabled|disabled` states it; the fit records the stated value in
+its report, and refuses `--ptl` for records that carry a state of their own. PTL is the
+one static field that separated hjbog-srdc-39 from node 18 once both pinned one stack,
+and it accounts for the gap a synthetic decode step shows between them, about 10%.
+[#828](https://github.com/jgong5/ATOM/issues/828)'s gap on real runs, 18 to 20%, is
+larger and stays open. The band one key
 leaves: same-key cards agree within 0.6% with PTL off; with PTL on, 3 to 5% per card
 plus 1 to 2% run-to-run remains.
 
@@ -830,7 +835,8 @@ Consequences worth noting:
 - A `shape_population`'s pricing backend is in its key (D41), not its row: another
   backend addresses another entry rather than invalidating this one.
 - PTL invalidates what the device does, except the capacity: it moves the clock, not the
-  memory.
+  memory. `memory_readings` still refuse under another PTL state, because their key
+  carries the machine-spec digest; a parity run re-measures them.
 - `host_laws` time the host, so the host CPU invalidates them and the device does not;
   `step_measurement` and `step_linear_law` hold device time, so the host CPU does not invalidate
   them.

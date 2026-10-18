@@ -186,6 +186,17 @@ def test_a_held_entry_taken_under_other_readings_refuses_naming_it(run):
     assert Bench.started == []
 
 
+def test_a_held_entry_measured_on_cards_of_another_ptl_state_refuses(run):
+    rec = str(run.record)
+    run.identity["ptl"] = "enabled"
+    run(rec, "--sample", "all", *run.named(rec))
+    run.identity["ptl"] = "disabled"
+    Bench.started.clear()
+    with pytest.raises(SystemExit, match=r"other readings than this run's:\n.*enabled"):
+        run(rec, "--sample", "all", *run.named(rec))
+    assert Bench.started == []
+
+
 def test_sample_n_draws_n_views_from_each_stratum_by_its_seed(run):
     """This record decodes on rungs and prefills in chunks under 512 tokens."""
     strata = {}
