@@ -266,6 +266,8 @@ def install_cost_backend(runner: Any, backend: CostBackend) -> None:
 HOST_SEGMENTS = ("E", "W_pre", "W_launch", "W_post")  # in the order the host runs them
 #: The part of prepare after the MTP status wait; an output forward runs it under MTP.
 MTP_SEGMENT = "W_inputs"
+#: The part of `W_launch` a later pipeline stage runs before it receives its input.
+PP_RECV_SEGMENT = "W_recv"
 FORWARD_KINDS = ("decode", "prefill", "middle")
 #: The format of a simulated run's `dp<r>.cost.jsonl`, its first line.
 COST_TABLE_VERSION = 1
@@ -299,6 +301,7 @@ class HostDeviceRecurrence:
         ring = 2 if stage is None else stage[1]
         self.ends = collections.deque([-math.inf] * ring, maxlen=ring)  # n-ring..n-1
         self.last = None if stage is None else stage[0] == stage[1] - 1
+        self.recv = stage is not None and stage[0] > 0  # a later stage receives
         self.output_end = -math.inf  # target end of the last output forward
         self.mtp = mtp
 
@@ -318,11 +321,12 @@ class HostDeviceRecurrence:
         is refused, naming each ``<kind>.<segment>``, the state as it was;
         without `refuse` that segment is 0. A segment in `skip` needs none, a
         middle chunk runs no `W_post`, and only an output forward under `mtp`
-        runs `MTP_SEGMENT`."""
+        runs `MTP_SEGMENT`; a stage after the first runs `PP_RECV_SEGMENT`."""
         kind, x = forward_shape(batch)
         law = self.laws.get(kind, {})
         ran = HOST_SEGMENTS[: 3 if kind == "middle" else 4]
         ran += (MTP_SEGMENT,) if self.mtp and kind != "middle" else ()
+        ran += (PP_RECV_SEGMENT,) if self.recv else ()
         missing = [s for s in ran if s not in {*law, *self.skip}]
         if refuse and self.laws and missing:
             from atom.compass.backends.resolver import CostRefused, Refusal
@@ -343,11 +347,12 @@ class HostDeviceRecurrence:
         return end
 
     def prepare_end(self, called: float, kind: str, x: tuple) -> tuple[float, dict]:
-        """A forward's prepare end, with `MTP_SEGMENT`, and each segment's seconds."""
+        """A forward's prepare end, with `MTP_SEGMENT`, and each segment's seconds,
+        `PP_RECV_SEGMENT`'s too."""
         law = self.laws.get(kind, {})
         seg = {
             s: float(np.dot(law.get(s, (0, 0, 0)), x)) * (s not in self.skip)
-            for s in (*HOST_SEGMENTS, MTP_SEGMENT)
+            for s in (*HOST_SEGMENTS, MTP_SEGMENT, PP_RECV_SEGMENT)
         }
         host = max(called + seg["E"], self.ends[0]) + seg["W_pre"]
         if self.mtp and kind != "middle":  # output_end stays -inf on a PP stage
@@ -722,11 +727,13 @@ class PipelineFrames:
 
     def pp_recv_posted(self, called: float, kind: str, x: tuple) -> tuple:
         """Where this stage posts its ``pp_data`` receive, its forward's prepare
-        end, and its device end; the call and -inf with no host recurrence."""
+        end and `PP_RECV_SEGMENT`, and its device end; the call and -inf with no
+        host recurrence."""
         host = getattr(self, "compass_host", None)
         if not isinstance(host, HostDeviceRecurrence):
             return called, -math.inf
-        return host.prepare_end(called, kind, x)[0], host.ends[-1]
+        end, seg = host.prepare_end(called, kind, x)
+        return end + seg[PP_RECV_SEGMENT], host.ends[-1]
 
     def send_pp_frame(self, kind: str, frame: dict) -> bool:
         """Post one stage-loop frame to the next stage (``pp_data``) or the one
@@ -1220,7 +1227,8 @@ def _group_step_seconds(
     On the rank that keeps the parity record, each step also appends its cost
     line to `dp<r>.cost.jsonl` beside it: the record's `step`; with a
     `compass_host` that reports them, each of `HOST_SEGMENTS` and
-    `MTP_SEGMENT` in seconds, `MTP_SEGMENT` 0.0 where the law has none, and `skipped`,
+    `MTP_SEGMENT` and `PP_RECV_SEGMENT`, the part of `W_launch` before a
+    later stage's receive, in seconds, each 0.0 where the law has none, and `skipped`,
     those its `skip` charged as 0; `device_s`, the backend's price;
     `charge_s`, that composed with host time (`device_s` with no host);
     `group_s`, its DP group target; `terms`, each one's `name`, `seconds`

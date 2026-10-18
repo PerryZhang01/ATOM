@@ -102,9 +102,12 @@ def test_a_law_fitted_from_identity_s_record_loads_under_the_spec_it_ran_on(
     readings = step_grid.conditions(r.config, n39)
     loaded = ArtifactStore(store).load(law, conditions=readings, gates=GateState.of())
     assert loaded.key == law
-    n18 = step_grid.conditions(r.config, spec("mi308x-hjbog18")[1])
+    # The same host's spec under the image before nightly-20261013.
+    older = json.loads(path.read_text())
+    older["device"]["software_pinned_to"]["aiter"] = "f4e7c7509"
+    older = step_grid.conditions(r.config, MachineSpec.from_mapping(older))
     with pytest.raises(ArtifactRefusal, match="`ROCm / AITER / RCCL`") as refused:
-        ArtifactStore(store).load(law, conditions=n18, gates=GateState.of())
+        ArtifactStore(store).load(law, conditions=older, gates=GateState.of())
     assert "aiter 9205e1059" in str(refused.value)
     assert "aiter f4e7c7509" in str(refused.value)
 
