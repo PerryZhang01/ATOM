@@ -75,6 +75,21 @@ def test_the_hjbog39_law_loads_under_its_own_spec_and_refuses_under_node_18s(
     assert f"this run's is {digest(N18)}" in str(refused.value)
 
 
+#: The spec each checked-in law was fitted under; a law missing here fails below.
+LAW_SPECS = {
+    "qwen3.8-27b-tp1-mi308x-ptl-disabled-661ef7661.json": "mi308x-hjbog39.json",
+    "deepseek-v4-pro-dpa8-mi355x-gpu45-prefill.json": "mi355x-gpu45.json",
+    "deepseek-v4-pro-dpa8-mi355x-gpu45-decode.json": "mi355x-gpu45.json",
+}
+
+
+@pytest.mark.parametrize("name", sorted(p.name for p in (ROOT / "laws").glob("*.json")))
+def test_every_checked_in_law_stamps_the_digest_of_its_spec(name):
+    law = json.loads((ROOT / "laws" / name).read_text())
+    spec = json.loads((ROOT / "machines" / LAW_SPECS[name]).read_text())
+    assert law["machine_spec"] == law["host"]["key"]["machine_spec"] == digest(spec)
+
+
 def test_the_ptl_off_law_refuses_on_cards_of_its_stack_with_ptl_on(
     monkeypatch, tmp_path
 ):

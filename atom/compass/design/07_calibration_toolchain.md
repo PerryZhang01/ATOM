@@ -669,8 +669,10 @@ host name, the HBM vendor and the PTL format stay out of it (owner ruling on
 [#1434](https://github.com/jgong5/ATOM/issues/1434#issuecomment-6245078946)).
 
 The **PTL state** is `device.ptl` in the spec, `disabled` when the spec states none. A
-record reads it at capture and at run time from `ptl_enable` under each card's PCI
-device (`/sys/class/drm/card<n>/device/ptl/`), a card with no `ptl` directory reading
+record reads it at capture and at run time from
+`/sys/bus/pci/devices/<bus>/ptl/ptl_enable`, with each GPU's bus as `rocm-smi
+--showbus` names it (not `/sys/class/drm/card<n>`, whose numbering is not the GPU
+index: DRM `card0` can be the BMC's VGA), a card with no `ptl` directory reading
 `disabled`, and refuses when the cards of one run disagree, naming each
 (`atom/compass/drive/identity.py::_ptl`). A fit refuses records whose PTL state is not
 the spec's, as it does their device and stack, and so does `measure memory` before its
