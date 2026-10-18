@@ -310,7 +310,7 @@ The asymmetry is not stylistic. It follows from one property:
 > **Tracing is device-free; measuring is not.**
 
 Capture runs under `FakeTensorMode` (doc `04` D18) and allocates nothing on a GPU, so it
-can happen *inside a simulated run* at the moment a structure is first asked for.
+can happen *inside a simulated run* at the moment a shape is first asked for.
 Measuring runs kernels, so it can never happen inside a simulated run — a simulated run
 is defined by not touching a device.
 
@@ -320,18 +320,18 @@ phases rather than describe a second workflow:
 | | `trace` | `measure` |
 |---|---|---|
 | Needs a device | no | **yes** |
-| Offline home | doc `07` **Phase 1a** — trace the structures Phase 0 discovered | doc `07` **Phase 1b/1c/2** — op pricing, in-situ steps, memory constants |
-| Allowed during a simulated run | **yes**, lazily, on a structure miss | **never** |
+| Offline home | doc `07` **Phase 1a** — trace the shapes Phase 0 discovered | doc `07` **Phase 1b/1c/2** — op pricing, in-situ steps, memory constants |
+| Allowed during a simulated run | **yes**, lazily, for a shape no graph holds | **never** |
 | Who triggers it | the runner, automatically | the operator: the toolchain's `record` and `measure` commands, `measure memory` for Phase 2 (`13` D80) |
-| Artifact written | the IR graph for that structure key | a price / step-measurement / memory-readings entry |
+| Artifact written | the IR graph for that discrete key and shape (`04` D19) | a price / step-measurement / memory-readings entry |
 
 **Recommended path is offline for both.** Doc `07` D39's recommended flow runs the whole
-campaign, Phase 1a's `trace ops` included; a run that finds every structure already traced
+campaign, Phase 1a's `trace ops` included; a run that finds every shape already traced
 does no lazy work at all, which is also the only way a run is reproducible from its
 artifacts.
 
 **The lazy path has a stated cost; it is not a convenience.** It exists
-because a structure set is discovered, not enumerated (doc `07` Phase 0 is a
+because a shape set is discovered, not enumerated (doc `07` Phase 0 is a
 best-effort over-cover), and refusing a whole run because one unforeseen shape appeared
 is worse than tracing it. Its costs, stated so nobody is surprised:
 
@@ -339,13 +339,14 @@ is worse than tracing it. Its costs, stated so nobody is surprised:
    correspond to virtual time. Harmless to the predicted numbers (the clock does not
    advance during it) but it degrades the ≥5x speed result, so the run artifact records
    lazy-trace count and seconds separately.
-2. A newly traced structure has **no prices**. The graph exists; the leaves in it may
-   not. Each unpriced leaf is answered by its analytical law, which an op-level backend
-   always has, and the step reports that share of its seconds by method (`08` D50.1),
-   so the gap is named with a graph attached, which is exactly the input `measure ops`
-   needs to extend the campaign. A capture that fails is an error and the run exits;
-   with lazy trace disabled an unseen structure is a refusal; an IR guard miss triggers a
-   trace (#952).
+2. A newly traced shape has **no measured prices** of its own. The graph exists; its
+   leaves were measured at other points, if at all. A leaf with same-kernel neighbours
+   among its measured points is interpolated between them (`07` D42); any other leaf is
+   answered by its analytical law, which an op-level backend always has, and the step
+   reports that share of its seconds by method (`08` D50.1), so the gap is named with a
+   graph attached, which is exactly the input `measure ops` needs to extend the
+   campaign. A capture that fails is an error and the run exits; with lazy trace
+   disabled a shape no graph holds is a refusal (#952).
 
 **Consequence worth stating plainly:** a lazy trace prices a new structure only
 analytically. It makes the gap diagnosable; `measure` closes it, offline, on a machine
@@ -570,5 +571,5 @@ section had no production caller and was deleted
 |---|---|---|
 | D10 | Attach at `ModelRunner.forward`, delivered by a `--runner-qualname` subclass; no ATOM change for the injection. Revised: `flush_pp_send` keeps ATOM's own answer and the stage loop settles the pending send before calling it; the control-command refusals are recorded in [`01` D5](01_execution_and_time_model.md#decision-log) | 2026-09-18, revised 2026-09-28 and 2026-09-30 |
 | D10.1 | A model comes into existence three ways, none reading weights: HF-config geometry where only geometry is needed; a `torch.device("meta")` context where a module tree is needed without tracing (no transient, no GPU, covers buffers - ATOM already has this shape at `models/utils.py::no_init_weights`, unused); and `FakeTensorMode` for tracing, on the right device branch; capture is concrete since #1489. `--load_dummy` is reused in all three. `_init_weight_params_on_meta` is not a bug but is superseded by the meta context. The T5 fallback is the meta context, on the wrong device branch. | 2026-09-20; concrete capture 2026-10-18 (#1489) |
-| D11 | No modes on the runner. Every run simulates; the algorithm comes from a pluggable cost backend. `measure` and `trace` are orthogonal flags. A backend has a granularity and `price()`s a step, each term carrying its method. A backend's `seconds` is one forward's device busy time; host time is composed outside it (`01` D4). | 2026-09-18; revised 2026-10-11 (#815) and 2026-10-14 (#952) |
+| D11 | No modes on the runner. Every run simulates; the algorithm comes from a pluggable cost backend. `measure` and `trace` are orthogonal flags. A backend has a granularity and `price()`s a step, each term carrying its method. A backend's `seconds` is one forward's device busy time; host time is composed outside it (`01` D4). A lazy trace captures a shape no graph holds. | 2026-09-18; revised 2026-10-11 (#815) and 2026-10-14 (#952); lazy trace per shape 2026-10-18 (#1489) |
 | D12 | M1 fake model = KV/weight geometry from the HF config + a shape stub, its terms declared, including the quadratic query term; constant mode retained for bring-up. Revised: the fake model is `CompassModelRunner` plus `StepStubBackend`, geometry from ATOM's own pool sizing; the `FakeModel` class is deleted | 2026-09-18, revised 2026-10-15 (#1076) |

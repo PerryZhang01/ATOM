@@ -141,7 +141,7 @@ atom/compass/
   backends/   CostBackend interface, StepCost, provenance and method; the step-level and op-level backends
   memory/     device-reading substitution, per-term model
   ir/         Cost IR (Seq/Repeat/Par), nested-Repeat detector, opaque leaves
-  capture/    FakeTensorMode capture, guard domains
+  capture/    FakeTensorMode capture, one concrete graph per shape, leaf contracts
   spec/       machine-spec schema, probes, merge / validate / explain
   artifacts/  store, keys, digests, invalidation matrix
   drive/      serving ATOM for record, trace steps and run; measure memory; run.json; the GPU checks
@@ -473,7 +473,7 @@ Depends on Wave 1. The first three are the vertical slice.
 | **W2.2** | Memory: substitute the five device readings, reuse ATOM's budget arithmetic and `plan_pools`; per-term validation, never a sum | `memory/` | 400–600 | W1.7 |
 | **W2.3** | Simulated KV connector registered into ATOM's existing factory; `latency + bytes/bandwidth` from the spec | `kv/` | 250–400 | W1.7 |
 | **W2.4** | Artifact store: keys, digests, source-root fingerprints, the invalidation matrix | `artifacts/` | 500–700 | W1.7 |
-| **W2.5** | `FakeTensorMode` capture with the three mandatory disciplines and post-trace assertions; guard-domain evaluation | `capture/` | 500–800 | W1.10, **P0.4** |
+| **W2.5** | ~~`FakeTensorMode` capture with the three mandatory disciplines and post-trace assertions; guard-domain evaluation~~ **Superseded by concrete capture** since 2026-10-18 (#1489): one graph per decode width and prefill (T, B), with no disciplines and no guard domain (`04` D18, D19); carried by S3c.8 and S3d.12 | `capture/` | ~~500–800~~ | W1.10, **P0.4** |
 | **W2.6** | Metrics under virtual time: per-step sampling, the class taxonomy, OpenMetrics backfill | `metrics/` | 300–500 | W2.1 |
 | **W2.7** | Determinism test: byte-diff of two step tables from one configuration, in CI (`01` D3.4) | `tests/compass/` | ~100 | W2.1 |
 | **W2.8** | Model construction under `FakeTensorMode` with `--load_dummy empty` (`02` D10.1), including the buffer audit of T68 | `runner/` | 200–350 | W2.5 |

@@ -1163,10 +1163,11 @@ bucket 512.
 
 **The inductor fusion gap.** An eager trace shows N unfused operators where one fused
 kernel runs, over-counting launches and mispricing the fusion. Magnitude: **~4.8% of a
-decode step, ~0.6% of a prefill step.** Three candidate treatments, none chosen:
+decode step, ~0.6% of a prefill step.** Three candidate treatments, none chosen, and the
+second excluded since 2026-10-18 because the op level fits no residual ([#1489](https://github.com/jgong5/ATOM/issues/1489)):
 
 1. declare the bias and report it alongside every result;
-2. fit a fusion correction per structure;
+2. ~~fit a fusion correction per structure;~~
 3. capture the compiled operator list **once** on whatever device is available and diff it
    against the eager trace to build a structural correction — a one-time calibration,
    which the `measure` flag of D11 already sanctions, leaving simulation device-free.

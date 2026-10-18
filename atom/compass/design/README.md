@@ -195,7 +195,7 @@ document that owns it. Nothing in `01`–`11` is outside this diagram.
   |                                                docs 01, 15          |
   +=====================================================================+
   |  L0  ARTIFACTS        machine_spec   op_graph      price_list       |
-  |                       memory_readings coverage_hull                 |
+  |                       op_measurement memory_readings coverage_hull  |
   |                       shape_population  step_measurement            |
   |                       step_linear_law  host_laws  step grid bundle  |
   |                       keys . digests . fingerprints . invalidation  |

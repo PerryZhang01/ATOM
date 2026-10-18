@@ -125,7 +125,9 @@ prices the real rows instead.
 
 - The op list comes from capture into the IR (`04`).
 - A leaf's interface is everything needed to execute it: tensor specs and values plus the
-  ambient values it reads. The same arguments run a benchmark or give an estimate. Kernel
+  ambient values it reads. An estimate reads the leaf's contract (`04` D20); the benchmark
+  times the same call inside ATOM's own forward, which supplies its weights, KV and
+  metadata (`07` D39). Kernel
   selection and environment belong to the benchmark.
 - An extractor registry maps an op kind to work primitives. `F` and `C` sum over the
   primitives; `M` is the leaf's own boundary. A fused op is one leaf priced once, so fusion

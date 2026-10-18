@@ -453,7 +453,7 @@ Each of these voided real percentages before.
 ### Problem
 
 Several documents emit refusals — an unpriced leaf, a missing runtime constant, an
-unmatched tokenizer, a guard domain no binding satisfies, a refused control command — and
+unmatched tokenizer, a shape no graph holds with lazy trace off, a refused control command — and
 none of them says what happens next. Abort the run? Continue and mark the step? And which
 declines are refusals at all, when a later source or the analytical fallback can still answer?
 The answer changes what a result *is*, so it belongs here rather than in any one of them.
