@@ -1359,9 +1359,7 @@ def runner(model_runner, tree) -> None:
         cudagraph_overhead=reserved,
     )
     install_device_readings(model_runner, readings)
-    model_runner.compass_memory = record(
-        readings, tokens=warmup, memory=measured
-    )
+    model_runner.compass_memory = record(readings, tokens=warmup, memory=measured)
     if bundle is not None:
         model_runner.compass_step_grid = {**bundle, "describe": backend.describe()}
 
