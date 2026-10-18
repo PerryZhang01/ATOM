@@ -12,6 +12,7 @@ one, and its held-out hull holds every step, so the grid prices each real step
 as the law does.
 """
 
+import hashlib
 import json
 import re
 
@@ -19,11 +20,11 @@ import pytest
 from test_artifact_invalidation import moved
 from test_backend_step_grid import fitted, linear, point
 from test_memory_readings import DOCUMENT
-from test_run_step_grid import BOUNDS, KEY, deployment, publish, readings
+from test_run_step_grid import BOUNDS, deployment, publish, readings
 from test_validate_cost import LAW, _record, _steps
 from test_validate_main import _as_recorded, _graded, _rows
 
-from atom.compass.artifacts import ArtifactRefusal, Axis
+from atom.compass.artifacts import Axis
 from atom.compass.backends import (
     StepGrid,
     StepGridBackend,
@@ -93,24 +94,32 @@ def _bundle(steps, missing=()):
     return {"grid": grid, "residual": residual, "bounds": BOUNDS}
 
 
-def _as_grid(tmp_path, monkeypatch, missing=(), digest=None, **key):
+def _as_grid(tmp_path, monkeypatch, missing=(), digest=None, parallel=None, **key):
     """`tmp_path`'s cell with its simulated run moved to `step_grid/` over
-    `_bundle`, published under the deployment's readings in another ATOM tree:
+    `_bundle`, published under the deployment's readings in another ATOM tree,
+    and with `parallel` its entry also restates that key field, which this
+    tree's keys no longer have, as one published before they dropped it does:
     a `compass run --step-grid` directory whose ATOM arguments resolve to the
     deployment, or a `cctraces_sim.sh` one, whose run.json is the run file. Its
-    run file names the bundle at `key`'s fields over `KEY`, and its summary
-    records `digest`, the bundle's when None. The configs a grading resolves
-    are returned."""
+    run file names the bundle at `key`'s fields over the entry's, and its
+    summary records `digest`, the bundle's when None. The configs a grading
+    resolves are returned."""
     r = deployment(tmp_path)
     there = moved(readings(r), Axis.ATOM_SRC)
     entry = publish(tmp_path, r, member=_bundle(_steps(), missing), conditions=there)
+    path = entry.directory / "entry.json"
+    document = json.loads(path.read_bytes())
+    if parallel:
+        document["key"]["parallel"] = parallel
+        path.chmod(0o644)
+        path.write_text(json.dumps(document))
     resolved = []
     monkeypatch.setattr(
         drive_run, "_config", lambda args: resolved.append(args) or r.config
     )
     sim = (tmp_path / "c4" / "step_linear").rename(tmp_path / "c4" / "step_grid")
     run = json.loads((sim / "run.json").read_text())
-    grid = {"step_grid": {"store": str(tmp_path / "store"), **KEY, **key}}
+    grid = {"step_grid": {"store": str(tmp_path / "store"), **document["key"], **key}}
     if "format_version" in run:
         run["argv"] = ["-c", "run", "--step-grid", "planted", "--", *ATOM_ARGS]
         run["run_file"] = grid | {"host": {"laws": {}}, "machine": DOCUMENT}
@@ -119,7 +128,8 @@ def _as_grid(tmp_path, monkeypatch, missing=(), digest=None, **key):
         run = {"workload": run["workload"], **grid}
     (sim / "run.json").write_text(json.dumps(run))
     summary = json.loads((sim / "summary.json").read_text())
-    summary["step_grid"] = {"engine": {"key": KEY, "digest": digest or entry.digest}}
+    digest = digest or f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+    summary["step_grid"] = {"engine": {"key": document["key"], "digest": digest}}
     (sim / "summary.json").write_text(json.dumps(summary))
     return resolved
 
@@ -129,17 +139,18 @@ def _renamed(rows):
     return {tuple(k): v for k, v in json.loads(named)}
 
 
+@pytest.mark.parametrize("parallel", [None, "tp1-dp1"])
 def test_a_step_grid_cell_grades_every_row_the_step_linear_cell_does(
-    capsys, tmp_path, monkeypatch
+    capsys, tmp_path, monkeypatch, parallel
 ):
     _rows(capsys, tmp_path)
     _as_recorded(tmp_path / "c4")
     linear_rows = _graded(capsys, tmp_path / "c4")
-    resolved = _as_grid(tmp_path, monkeypatch)
+    resolved = _as_grid(tmp_path, monkeypatch, parallel=parallel)
 
     rows = _graded(capsys, tmp_path / "c4")
     assert rows == _renamed(linear_rows)
-    # Read by key and digest: no config resolved, the other tree's bundle read.
+    # Read by key and digest: no config resolved, another tree's bundle read.
     assert resolved == []
     assert rows["cost real0", "decode validated"][0].startswith("10 steps")
     assert rows["cost real0", "prefill validated"][0].startswith("9 steps")
@@ -170,24 +181,34 @@ def test_a_cell_cctraces_sim_wrote_grades_with_no_argv_as_its_step_linear_cell(
     assert _graded(capsys, tmp_path / "c4") == _renamed(linear_rows)
 
 
+#: The refusals: the summary's digest is not the entry's, the run file's key has
+#: no entry, and the entry's member changed after it was published.
+DIFFERS = r"holds 1 entries keyed .*; the run priced with the one digesting sha256:0$"
+MISSING = (
+    r'holds 0 entries keyed step_grid_bundle {.*"grid": "other".*}, digesting \[\]'
+)
+CHANGED = r"params\.\S+\.json is not the member the entry of step_grid_bundle {.*}"
+
+
 @pytest.mark.parametrize(
-    "summary, key, refused",
+    "digest, key, member, refused",
     [
-        (
-            "sha256:0",
-            {},
-            r"^step_grid_bundle\(.*\) digests sha256:\w{64} in its store.*digests sha256:0$",
-        ),
-        (None, {"grid": "other"}, r"no entry for step_grid_bundle\(.*grid='other'"),
+        ("sha256:0", {}, False, DIFFERS),
+        (None, {"grid": "other"}, False, MISSING),
+        (None, {}, True, CHANGED),
     ],
 )
 def test_a_bundle_other_than_the_one_the_run_priced_with_refuses_the_cell(
-    capsys, tmp_path, monkeypatch, summary, key, refused
+    capsys, tmp_path, monkeypatch, digest, key, member, refused
 ):
     _rows(capsys, tmp_path)
-    _as_grid(tmp_path, monkeypatch, digest=summary, **key)
+    _as_grid(tmp_path, monkeypatch, digest=digest, **key)
+    if member:
+        (path,) = (tmp_path / "store" / "step_grid_bundle").glob("*/params.*")
+        path.chmod(0o644)
+        path.write_text(json.dumps(_bundle(_steps(), missing={15})))
 
-    with pytest.raises((ValueError, ArtifactRefusal), match=refused):
+    with pytest.raises(ValueError, match=refused):
         main([str(tmp_path / "c4")])
 
 
