@@ -13,7 +13,8 @@ run it grades, its warmup left out, with the backend the simulated run priced wi
 Each step is labelled as the fit labels it, by its device time
 (`step_labels.label`, which also says which steps carry no label and refuses a
 record without device windows), and priced by `StepLinearBackend` or `StepGridBackend`. The
-error of a step is `priced / real - 1`. Per kind the report gives the error
+error of a step is `priced / real - 1`, its target price over its target label on
+an MTP record; draft terms enter no figure. Per kind the report gives the error
 on totals, on totals holding out the step that contributes most to their error,
 and the median per step; per decode rung or prefill token band, the p10, p50
 and p90 of the per-step error and the fraction of steps within 10%.
@@ -156,10 +157,11 @@ def cost_accuracy(record, backend, steps=None) -> dict:
             r["steps"] += 1
             r["real_s"] += seconds
             continue
-        validated = all(t.provenance.validated for c in costs for t in c.terms)
-        extrapolated += any(t.provenance.extrapolated for c in costs for t in c.terms)
-        top = max(range(len(costs)), key=lambda i: costs[i].seconds)
-        band, price = _band(key, group[top][1]), costs[top].seconds
+        terms = [t for c in costs for t in c.terms if not t.draft]
+        validated = all(t.provenance.validated for t in terms)
+        extrapolated += any(t.provenance.extrapolated for t in terms)
+        top = max(range(len(costs)), key=lambda i: costs[i].target_seconds)
+        band, price = _band(key, group[top][1]), costs[top].target_seconds
         priced.append((key, band, step, seconds, price, validated))
     leading = _leading_slow(priced, law)
     for key, band, step, seconds, price, validated in priced:
