@@ -25,10 +25,10 @@ run so refuses by name, a KV tensor argument among them.
 
 Cold, by copies. A call's bytes are its tensor arguments' spans, the tensors
 of each module it names and, for a leaf that names a context key, the KV and
-per-request state its layer holds for the batch. One graph runs the leaf K
-times, cycling over N copies, N the least whose bytes pass the last-level
-cache and, for a context key, at least its I instances (at most
-`MAX_COPIES`), and K at least `MIN_CALLS`. Copy c takes fresh activations,
+per-request state its layer holds for the batch. One graph runs the leaf K =
+`CALLS` times, cycling over N copies, N the least whose bytes pass the
+last-level cache and, for a context key, at least its I instances (at most
+K). Copy c takes fresh activations,
 the c-th of the model's weights of that spec (a clone past the last), and
 instance c mod I at placement (c div I) mod P, its metadata and module
 tensors cloned past the first round: a placement is the point's batch on KV
@@ -91,17 +91,17 @@ from atom.compass.artifacts import (
     member_name,
     roots_for,
 )
+from atom.compass.capture.forward import _weights
 from atom.compass.drive.gpu import add_gpu_flag
 
 PROG = "compass measure ops"
 #: The timing protocol's version; it changes whenever a count below does.
-PROTOCOL = 2
+PROTOCOL = 3
 WARMUPS = 3
 REPEATS = 20
-#: Copies one graph cycles over at most.
-MAX_COPIES = 256
-#: Calls one graph holds at least, so a replay outlasts the timer's jitter.
-MIN_CALLS = 32
+#: Calls every graph holds, and so the copies it cycles over at most. One count
+#: for every leaf: a replay's fixed cost adds the same share to every price.
+CALLS = 256
 #: The rank every member is written at: the bench is one rank.
 RANK = Topology().ranks()[0]
 
@@ -305,7 +305,7 @@ class Stub:
     def __init__(self, runner, llc: int) -> None:
         self.runner, self.llc = runner, llc
         self.weights, self.leaves, self.placed = {}, {}, []
-        for t in _tensors(runner.model):
+        for t in _weights(runner.model):
             if t.device.type != runner.device.type:
                 continue
             self.weights.setdefault(_spec(t), {})[t.data_ptr()] = t
@@ -399,9 +399,9 @@ class Stub:
                 need = None
             elif key in self.modules:
                 size += sum(t.nbytes for t in _own(self.modules[key]))
-        n = min(MAX_COPIES, self.llc // size + 1) if size else 1
+        n = min(CALLS, self.llc // size + 1) if size else 1
         if need is None:  # cycle over every instance's state, which is held anyway
-            n = min(MAX_COPIES, max(n, len(instances)))
+            n = min(CALLS, max(n, len(instances)))
         return n, size, need or -(-n // len(instances))
 
     def _time(self, op, sig, instances, n) -> dict:
@@ -414,7 +414,7 @@ class Stub:
             forward_context._forward_context = calls[0][1]
             fn(**calls[0][0])  # compiles and tunes outside the graphs
             kernels = _kernels(fn, calls[0][0])
-            cycle = [calls[i % n] for i in range(max(n, MIN_CALLS))]
+            cycle = [calls[i % n] for i in range(CALLS)]
             cold = _replay(fn, cycle)
             warm = _replay(fn, calls[:1] * len(cycle)) if n > 1 else None
         finally:
@@ -643,15 +643,6 @@ def _module_copy(module):
                 k: v if v is None else _clone(v) for k, v in value.items()
             }
     return twin
-
-
-def _tensors(model):
-    """Every tensor the model holds: parameters, buffers and tensor attributes."""
-    for module in model.modules():
-        held = [*module._parameters.values(), *module._buffers.values()]
-        for value in [*held, *vars(module).values()]:
-            if isinstance(value, torch.Tensor):
-                yield value
 
 
 def _stateful(held) -> bool:

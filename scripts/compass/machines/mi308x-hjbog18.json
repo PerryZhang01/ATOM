@@ -77,10 +77,16 @@
       "device.memory.bandwidth_bytes_per_s": {
         "origin": "assumed"
       },
+      "device.memory.bandwidth_curve": {
+        "origin": "assumed"
+      },
       "device.compute.bf16_flops": {
         "origin": "assumed"
       },
       "device.compute.fp8_flops": {
+        "origin": "assumed"
+      },
+      "device.kernel_floor_s": {
         "origin": "assumed"
       },
       "interconnect.intra_node.topology": {
@@ -107,7 +113,10 @@
       "device.memory.derate": {
         "origin": "assumed"
       },
-      "device.compute.derate": {
+      "device.compute.derate.bf16": {
+        "origin": "assumed"
+      },
+      "device.compute.derate.fp8": {
         "origin": "assumed"
       },
       "interconnect.intra_node.derate": {
@@ -118,6 +127,22 @@
       },
       "device.ptl": {
         "origin": "probed"
+      },
+      "host.http_intake.fixed_s": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "source_root": "commit:19c5ab09e",
+        "record": "sha256:dc719c11dd8c45b777cdc1c7fb32ea387adab0f6046aa73b667db6d2b912fd1a",
+        "p10": 0.0023905681113767967,
+        "p90": 0.002818263790208814
+      },
+      "host.http_intake.per_byte_s": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "source_root": "commit:19c5ab09e",
+        "record": "sha256:dc719c11dd8c45b777cdc1c7fb32ea387adab0f6046aa73b667db6d2b912fd1a",
+        "p10": 3.728040935451147e-09,
+        "p90": 6.552659606331298e-09
       },
       "host.tokenizers[qwen3.8-27b fast]": {
         "origin": "probed",
@@ -141,9 +166,10 @@
       "tokenizer",
       "device",
       "assumed",
-      "ptl"
+      "ptl",
+      "intake"
     ],
-    "notes": "one Qwen3.8-27B TP1 start at 0f045543d | no probe fills these | ptl_enable"
+    "notes": "one Qwen3.8-27B TP1 start at 0f045543d | no probe fills these | ptl_enable | one real c=256 first-turn cc-traces burst at 19c5ab09e"
   },
   "host": {
     "cpu": {
@@ -169,6 +195,10 @@
     "ipc": {
       "zmq_roundtrip_s": 5e-05,
       "shm_broadcast_s": 2e-05
+    },
+    "http_intake": {
+      "fixed_s": 0.0026078916675536866,
+      "per_byte_s": 5.082586258228853e-09
     }
   },
   "device": {
@@ -179,13 +209,27 @@
     "memory": {
       "capacity_bytes": 206141652992,
       "bandwidth_bytes_per_s": 5300000000000.0,
+      "bandwidth_curve": [
+        [
+          4096,
+          110000000000.0
+        ],
+        [
+          4294967296,
+          4505000000000.0
+        ]
+      ],
       "derate": 0.85
     },
     "compute": {
       "bf16_flops": 344000000000000.0,
       "fp8_flops": 688000000000000.0,
-      "derate": 0.7
+      "derate": {
+        "bf16": 0.7,
+        "fp8": 0.7
+      }
     },
+    "kernel_floor_s": 2e-06,
     "software_pinned_to": {
       "rocm": "7.2.4",
       "aiter": "9205e1059",

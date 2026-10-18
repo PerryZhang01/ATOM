@@ -527,7 +527,7 @@ stamped request it takes in, a cancel excepted, once the body is read and before
 runs: an event cost, as a tokenizer call on the loop is. The clock stands still until every
 open encode job is placed and the callbacks due by then have run, so an encode that
 completes inside an intake hands its result on when the intake ends, whatever wall time
-its real thread took. A spec that states neither term
+its real thread took. A run file with no machine spec
 charges nothing. The client's own send spread is not modelled. The `http` channel's
 admission delay (`channels.py::ADMISSION_DELAY_S`) stays the channel's lookahead; it was
 measured at low load, so it overlaps one request's intake.

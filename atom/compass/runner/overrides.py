@@ -321,7 +321,8 @@ class HostDeviceRecurrence:
         than the batch's `compass_pp_release`; `target_end` is the target's
         end, and `release` follows. A batch's
         `compass_pp_host = (called, meta)` runs the host from `called` in place
-        of `now` and holds the launch until `meta`. With any
+        of `now`; its launch posts the receive after `PP_RECV_SEGMENT` and
+        runs the rest once `meta` is in. With any
         laws and `refuse`, a forward whose kind lacks one for a segment it runs
         is refused, naming each ``<kind>.<segment>``, the state as it was;
         without `refuse` that segment is 0. A segment in `skip` needs none, a
@@ -344,7 +345,7 @@ class HostDeviceRecurrence:
         launch, post = self.segments["W_launch"], self.segments["W_post"]
         host = max(prepared, meta)
         output = batch.produces_output()
-        launch_end = host + launch
+        launch_end = max(prepared, meta - self.segments[PP_RECV_SEGMENT]) + launch
         release = getattr(batch, "compass_pp_release", -math.inf)
         self.target_end = max(self.ends[-1], host, release) + device_s
         self._held = now, launch_end, output, post

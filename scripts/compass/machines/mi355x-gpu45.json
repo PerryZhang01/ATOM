@@ -68,6 +68,22 @@
         "source_root": "commit:409bedc98",
         "record": "sha256:02618dade3d07bcaac510da11cf8a279a1fe3ef2fce72d41e88a76f2df7c32c6"
       },
+      "host.http_intake.fixed_s": {
+        "origin": "probed",
+        "model": "/models/DeepSeek-V4-Pro",
+        "source_root": "commit:19c5ab09e",
+        "record": "sha256:2397696f6df3a280660cbc95e7c8db0d61b77fba9986c3d388ccde75f2d5f574",
+        "p10": 0.001966482509138914,
+        "p90": 0.001966482509138914
+      },
+      "host.http_intake.per_byte_s": {
+        "origin": "probed",
+        "model": "/models/DeepSeek-V4-Pro",
+        "source_root": "commit:19c5ab09e",
+        "record": "sha256:2397696f6df3a280660cbc95e7c8db0d61b77fba9986c3d388ccde75f2d5f574",
+        "p10": 5.288974015662166e-09,
+        "p90": 5.288974015662166e-09
+      },
       "device.memory.bandwidth_bytes_per_s": {
         "origin": "datasheet"
       },
@@ -92,6 +108,12 @@
       "host.ipc.shm_broadcast_s": {
         "origin": "assumed"
       },
+      "device.memory.bandwidth_curve": {
+        "origin": "assumed"
+      },
+      "device.kernel_floor_s": {
+        "origin": "assumed"
+      },
       "interconnect.intra_node.topology": {
         "origin": "assumed"
       },
@@ -110,7 +132,13 @@
       "device.memory.derate": {
         "origin": "assumed"
       },
-      "device.compute.derate": {
+      "device.compute.derate.bf16": {
+        "origin": "assumed"
+      },
+      "device.compute.derate.fp8": {
+        "origin": "assumed"
+      },
+      "device.compute.derate.fp4": {
         "origin": "assumed"
       },
       "interconnect.intra_node.derate": {
@@ -143,11 +171,12 @@
     "fragments": [
       "tokenizer",
       "device",
+      "intake",
       "datasheet",
       "assumed",
       "ptl"
     ],
-    "notes": "one DeepSeek-V4-Pro -tp 8 --enable-dp-attention --enable-tbo start at 409bedc98 | MI355X datasheet | no probe fills these | no card has a ptl directory"
+    "notes": "one DeepSeek-V4-Pro -tp 8 --enable-dp-attention --enable-tbo start at 409bedc98 | one real c=256 first-turn cc-traces burst at 19c5ab09e | MI355X datasheet | no probe fills these | no card has a ptl directory"
   },
   "host": {
     "cpu": {
@@ -173,6 +202,10 @@
     "ipc": {
       "zmq_roundtrip_s": 5e-05,
       "shm_broadcast_s": 2e-05
+    },
+    "http_intake": {
+      "fixed_s": 0.001966482509138914,
+      "per_byte_s": 5.288974015662166e-09
     }
   },
   "device": {
@@ -183,14 +216,29 @@
     "memory": {
       "capacity_bytes": 309220868096,
       "bandwidth_bytes_per_s": 8000000000000.0,
+      "bandwidth_curve": [
+        [
+          4096,
+          110000000000.0
+        ],
+        [
+          4294967296,
+          6800000000000.0
+        ]
+      ],
       "derate": 0.85
     },
     "compute": {
       "bf16_flops": 2516600000000000.0,
       "fp8_flops": 5033200000000000.0,
       "fp4_flops": 1.00663e+16,
-      "derate": 0.7
+      "derate": {
+        "bf16": 0.7,
+        "fp8": 0.7,
+        "fp4": 0.7
+      }
     },
+    "kernel_floor_s": 2e-06,
     "software_pinned_to": {
       "rocm": "7.2.4",
       "aiter": "9205e1059",

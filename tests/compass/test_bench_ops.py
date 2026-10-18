@@ -71,7 +71,8 @@ def test_each_leaf_holds_every_instance_s_context_key_and_module_path():
 
 LIVE = {
     "kv_indptr": torch.arange(9, dtype=torch.int32),
-    "cu_seqlens_q": torch.arange(3, dtype=torch.int32),
+    # Its own shape and stride, with more room than `kv_indptr`.
+    "cu_seqlens_q": torch.arange(12, dtype=torch.int32)[:3],
     "slots": torch.arange(64, dtype=torch.int32)[8:],
 }
 
@@ -139,14 +140,16 @@ def test_a_module_copy_holds_tensors_of_its_own():
 
 
 class _Runner:
-    """ATOM's runner as the stub sees it: a model, its buffers, and a forward
-    that sets the forward context and calls the model."""
+    """ATOM's runner as the stub sees it: a model, its persistent buffers, and
+    a forward that writes a batch's blocks and slots into them, sets the
+    forward context on them and calls the model."""
 
     device = torch.device("cpu")
 
     def __init__(self, contexts=()):
         self.model = torch.nn.Sequential(torch.nn.Linear(3, 3), torch.nn.Linear(3, 3))
         self.forward_vars = {"block_tables": torch.zeros(4, 8, dtype=torch.int32)}
+        self.positions = torch.zeros(2, dtype=torch.int64)
         text = SimpleNamespace(hidden_size=3)
         self.config = SimpleNamespace(
             compilation_config=SimpleNamespace(static_forward_context=dict(contexts)),
@@ -158,8 +161,11 @@ class _Runner:
 
     def forward(self, batch):
         self.batches.append(batch)
+        block, slot = batch
+        self.forward_vars["block_tables"].fill_(block)
+        self.positions.fill_(slot)
         meta = fctx.AttentionMetaData(block_tables=self.forward_vars["block_tables"])
-        context = fctx.Context(positions=torch.arange(2))
+        context = fctx.Context(positions=self.positions)
         fctx._forward_context = fctx.ForwardContext(attn_metadata=meta, context=context)
         self.model(torch.zeros(2, dtype=torch.int32), context.positions)
 
@@ -213,6 +219,26 @@ def test_a_point_places_its_batch_for_its_context_keys_and_refuses_by_name(
     [meta] = [r for r in got if r["op"] == "aten.add_.Tensor"]
     assert meta["metadata"] == {"self": "block_tables"}
     assert {r["placements"] for r in got} == {5}
+
+
+def test_each_placement_keeps_its_own_forward_context_and_metadata():
+    runner = _Runner()
+    stub = ops.Stub(runner, 10_000)
+    meta = _t([2, 8], "metadata", dtype="torch.int32")
+    stub.leaves = ops.leaves(
+        _graph(_leaf("aten.add_.Tensor", ("self", meta)), layers=1)["region"]
+    )
+
+    with patch.object(runner.model, "forward", stub):
+        for p in range(3):
+            runner.forward((4 * p, 2 * p))
+
+    for p, (snap, views) in enumerate(stub.placed):
+        [(name, view)] = views.values()
+        assert name == "block_tables"
+        assert set(snap.attn_metadata.block_tables.flatten().tolist()) == {4 * p}
+        assert set(view.flatten().tolist()) == {4 * p}
+        assert snap.context.positions.tolist() == [2 * p] * 2
 
 
 def test_a_call_counts_its_module_s_tensors_and_cycles_over_every_layer():
@@ -274,6 +300,29 @@ def test_copy_c_rotates_weights_and_instances_and_clones_past_the_first_round():
     assert copies[3][0]["rope"] is runner.model[0]
     assert copies[4][0]["rope"] is not runner.model[0]
     assert copies[0][0]["out_dtype"] is torch.bfloat16
+
+
+@pytest.mark.parametrize("copies", [1, 8])
+def test_every_cold_and_warm_graph_holds_calls_calls_at_any_copies(copies):
+    # A replay's fixed cost is spread over a graph's calls: a count that moved
+    # with the copies would move each price by its copies.
+    stub = ops.Stub(_Runner(), 10_000)
+    stub.placed = [(fctx.ForwardContext(), {})]
+    graphs = []
+
+    def replay(fn, calls):
+        graphs.append(len(calls))
+        return [1.0] * ops.REPEATS
+
+    with (
+        patch.object(ops, "_function", return_value=lambda **kwargs: None),
+        patch.object(ops, "_kernels", return_value=["k"]),
+        patch.object(ops, "_replay", side_effect=replay),
+    ):
+        record = stub._time({"op": "x", "args": {"n": 1}}, "sig", [{}], copies)
+
+    assert graphs == [ops.CALLS] * (2 if copies > 1 else 1)
+    assert (record["copies"], record["calls"]) == (copies, ops.CALLS)
 
 
 def test_a_batch_takes_the_blocks_and_slots_it_is_placed_at(rule):  # noqa: F811
