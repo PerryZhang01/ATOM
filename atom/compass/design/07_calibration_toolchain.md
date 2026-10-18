@@ -469,8 +469,8 @@ each server in steps 2, 3 and 6 serves the client runs a client started apart se
  5.  compass fit host <records>; compass fit steps --backend step-linear|step-grid ... [CPU]
        -> host_laws; a step_linear_law or a step grid bundle
  6.  compass run <backend> --machine M [--coverage <populations, records>] ...  [CPU, a server]
-       -> with a backend that has a coverage check, refuses before it starts
-          if coverage fails; run.json records what grading reads
+       -> the step grid's coverage check reports before it starts, refusing
+          no step (17 D99); run.json records what grading reads
  7.  python -m atom.compass.validate; python -m atom.compass.memory.check,
      outside the CLI                                       [CPU]
        -> whether each client run is gradeable, the separable results (08 D44);
