@@ -5,7 +5,9 @@ A recorded op inside decoder layer *i* names its context key with the layer's
 own number written `{L}`. Two layers whose regions are equal are
 interchangeable for pricing; the layer sequence is run-length encoded, then the
 result again, until a pass groups nothing, so `AAAB AAAB ...` nests as
-`((A x3) B) x n`. Each `Repeat` binds its own index to its instances' first
+`((A x3) B) x n`. A layer is one region, its ops a `Seq` (or the op alone),
+and what runs outside every layer sits around them. Each `Repeat` binds its
+own index to its instances' first
 layer, and a key names its layer as the sum of the indices around it and an
 offset (`{l0+l1}`, `{l0+3}`).
 
@@ -132,7 +134,8 @@ def _place(tokens, names, offset):
         else:
             terms = [*names, str(offset)] if offset or not names else list(names)
             number = "{" + "+".join(terms) + "}" if names else str(offset)
-            out += [_rekey(region, number) for region in token[1]]
+            regions = [_rekey(region, number) for region in token[1]]
+            out += [_seq(regions)] if token[0] else regions
         offset += _layers(token)
     return out
 
