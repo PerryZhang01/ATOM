@@ -8,10 +8,14 @@ import pytest
 from test_backend_step_linear_fit import _fit, _record, _steps, _view
 from test_dp_step_max import prefill, runner
 from test_speculative_step import _speculative
+from test_validate_cost import LAW, _two_ranks
+from test_validate_cost import _record as _rank_record
 
 from atom.compass.backends import (
     BatchView,
+    CostTerm,
     RequestShape,
+    StepCost,
     StepLinearBackend,
     StepLinearLaw,
 )
@@ -69,15 +73,59 @@ def test_a_speculative_run_charges_the_law_s_draft_and_refuses_a_law_without_one
     assert plain.refused_commands() == ("cost:StepLinearBackend: prices no draft",)
 
 
-def test_cost_accuracy_holds_a_held_out_target_price_to_the_target_label(tmp_path):
-    """The draft law records no held-out errors, and its terms leave a step's
-    validation and price to the target's."""
+def test_cost_accuracy_grades_the_draft_apart_and_unvalidated(tmp_path):
+    """The draft law records no held-out errors: its terms leave a step's
+    validation and price to the target's, and its own grade is unvalidated."""
     records = [_mtp_record(tmp_path / f"dp0-{s}.jsonl", _steps(s)) for s in (3, 4)]
     samples = label_records(records)[0]
     law, report = fit(samples)
     mark_held_out(law, report, samples)
     (tmp_path / "steps").mkdir()
     _mtp_record(tmp_path / "steps" / "dp0.jsonl", _steps(5))
-    validated = cost_accuracy(tmp_path / "steps", law)["validated"]
+    report = cost_accuracy(tmp_path / "steps", law)
     for kind in ("prefill", "decode"):
-        assert validated[kind]["on_totals"] == pytest.approx(0.0, abs=1e-5)
+        assert report["validated"][kind]["on_totals"] == pytest.approx(0.0, abs=1e-5)
+    assert "draft" not in report["validated"]
+    draft = report["unvalidated"]["draft"]
+    assert draft["on_totals"] == pytest.approx(0.0, abs=1e-5)
+    targets = sum(
+        s["real_s"]
+        for group in ("validated", "unvalidated")
+        for kind, s in report[group].items()
+        if kind != "draft"
+    )
+    assert draft["real_s"] == pytest.approx(SHARE * targets, rel=1e-5)
+
+    del law["draft"]  # a law that prices no draft grades it as 0 s, unvalidated
+    report = cost_accuracy(tmp_path / "steps", law)
+    assert "draft" not in report["validated"]
+    assert report["unvalidated"]["draft"]["on_totals"] == -1.0
+
+
+class _DraftDearestWhenCheapest:
+    """`LAW`'s prices plus a draft that is dearest on the cheapest target."""
+
+    def __init__(self):
+        self.law = StepLinearBackend(StepLinearLaw(LAW))
+
+    def price(self, view):
+        cost = self.law.price(view)
+        made = cost.terms[0].provenance
+        draft = CostTerm("draft", 1.0 / cost.target_seconds, made, draft=True)
+        return StepCost([*cost.terms, draft], cost.treatments)
+
+    def describe(self):
+        return "planted, with a draft"
+
+
+def test_a_group_step_prices_as_its_rank_of_dearest_target_not_of_dearest_step(
+    tmp_path,
+):
+    ranks = _two_ranks()
+    for r, steps in enumerate(ranks):
+        _rank_record(tmp_path / "steps", steps, rank=r, group=ranks)
+    report = cost_accuracy(tmp_path / "steps", _DraftDearestWhenCheapest())
+    for kind in ("prefill", "decode"):
+        s = report["validated"][kind]
+        assert s["steps"] == 10
+        assert s["on_totals"] == pytest.approx(0.0, abs=1e-9)

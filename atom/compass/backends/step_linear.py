@@ -193,7 +193,8 @@ class StepLinearBackend(CostBackend):
         if draft is not None and batch_view.produces_output is False:
             made = Provenance(
                 Method.ESTIMATED,
-                f"in the target price of a step with no output; {draft.fitted_on}",
+                "in the target label of a step with no output, priced by a prefill"
+                f" vector fitted with final chunks that hold none; {draft.fitted_on}",
                 SOURCE,
             )
             terms.append(CostTerm("draft", 0.0, made, draft=True))
