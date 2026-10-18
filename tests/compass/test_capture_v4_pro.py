@@ -135,17 +135,17 @@ def test_each_layer_runs_its_shared_expert_beside_the_moe_on_every_rank_s_rows(
                 f"{MORI}.dispatch",
                 f"{MORI}.combine",
             ]
+            # Each names MORI's method, and its slots are that method's parameters.
+            for op in exchanged:
+                module, _, qualname = op["op"].partition(":")
+                fn = functools.reduce(
+                    getattr, qualname.split("."), importlib.import_module(module)
+                )
+                assert set(op["args"]) <= set(inspect.signature(fn).parameters)
         else:
             assert {op["op"].split(":")[0] for op in exchanged} == {MOE}
         # In: this rank's rows. Out of the dispatch or gather: every rank's.
         assert _rows(exchanged[0]) == (tokens, DP * tokens)
-        # Each names the function ATOM calls, and its slots are that function's.
-        for op in exchanged:
-            module, _, qualname = op["op"].partition(":")
-            fn = functools.reduce(
-                getattr, qualname.split("."), importlib.import_module(module)
-            )
-            assert set(op["args"]) <= set(inspect.signature(fn).parameters)
 
 
 def test_a_dp_decode_at_width_1_gathers_one_row_from_each_rank(tmp_path_factory):
