@@ -5,6 +5,7 @@ pricing a stage's input in the recurrence gate."""
 import copy
 import importlib.util
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -144,3 +145,57 @@ def test_the_probe_recovers_the_carriers_it_was_sampled_from():
     assert probe.fit(samples)["rccl"]["rendezvous_fixed_s"] == pytest.approx(
         fixed, rel=0.01
     )
+
+
+def _samples(truth):
+    return [
+        _sample(c, n, late, *truth[c])
+        for c in probe.SIZES
+        for n in probe.SIZES[c]
+        for late in (False, True)
+    ]
+
+
+TRUTH = {"rccl": (1024, 1e-5, 2e-6, 1e-11, 5e-5), "gloo": (0, 0, 0, 1e-9, 3e-5)}
+
+
+def test_a_late_size_is_eager_only_if_its_sender_completes_before_the_post():
+    """Each late receive posted 1 ms before `LATE`, as a device-timed RCCL
+    send's is: rendezvous sizes that complete before `LATE` stay rendezvous."""
+    samples = _samples(TRUTH)
+    for s in samples:
+        if s["late"]:
+            rdv = s["bytes"] > TRUTH[s["carrier"]][0]
+            for k in ("post", "end", "done") if rdv else ("post", "end"):
+                s[k] -= 1e-3
+    fit = probe.fit(samples)
+    assert [fit[c]["eager_threshold_bytes"] for c in TRUTH] == [1024, 0]
+
+
+def test_a_carrier_threshold_is_no_bool():
+    document = json.loads(SPEC.read_text())
+    document["interconnect"]["intra_node"]["pp"]["gloo"]["eager_threshold_bytes"] = True
+    with pytest.raises(SpecRefusal, match="eager_threshold_bytes"):
+        MachineSpec.from_mapping(document)
+
+
+def test_the_probe_fits_how_late_a_blocked_gloo_sender_wakes():
+    """A sender blocked `b` before the post completes `W (1 - exp(-b / rise))`
+    past the rendezvous price; the late order's sender, blocked `LATE`, too."""
+    wake = (1.5e-4, 0.05)
+    samples = _samples(TRUTH)
+    for s in samples:
+        if s["carrier"] == "gloo" and s["late"]:
+            s["done"] = s["end"] = s["end"] + wake[0] * -math.expm1(-probe.LATE / 0.05)
+    _, _, _, g, fixed = TRUTH["gloo"]
+    for b in probe.BLOCKS:
+        done = b + fixed + 8 * g + wake[0] * -math.expm1(-b / wake[1])
+        stamps = {"send": 0.0, "done": done, "post": b, "end": done}
+        samples.append(
+            {"carrier": "gloo", "bytes": 8, "late": True, "block": b} | stamps
+        )
+    gloo = probe.fit(samples)["gloo"]
+    assert (gloo["wake_s"], gloo["wake_rise_s"]) == pytest.approx(wake, rel=1e-4)
+    assert gloo["late"] == pytest.approx([0] * 5, abs=1e-9)
+    assert gloo["rendezvous_fixed_s"] == pytest.approx(fixed, rel=1e-6)
+    assert "wake_s" not in probe.fit(_samples(TRUTH))["gloo"]

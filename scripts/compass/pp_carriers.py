@@ -5,8 +5,8 @@
 
 Rank 0 sends one message per size to rank 1 with `torch.distributed.isend`, a
 device tensor on an RCCL group and a CPU tensor on a gloo group, as ATOM's PP
-send does; rank 1 posts its receive before the send, or `LATE` seconds after
-it. Each side stamps its completion on the monotonic clock both processes
+send does; rank 1 posts its receive before the send, or after running for
+`LATE` seconds. Each side stamps its completion on the monotonic clock both processes
 share. An RCCL send is queued behind device work, as ATOM queues it behind
 the forward, and is timed from that work's end; RCCL stamps are device
 events polled to completion, so no host call or synchronize is in them. A
@@ -15,7 +15,14 @@ its threshold the largest eager size, 0 when there is none. With the
 receive posted first, rendezvous sizes fit ``rendezvous_fixed_s + bytes x
 per_byte_s`` from the send, weighted by relative error; eager sizes, or every
 size when none is eager, take that ``per_byte_s`` and fit ``overhead_s`` on the
-sender and ``latency_s`` from its completion to the arrival. OUT is JSON: each
+sender and ``latency_s`` from its completion to the arrival.
+
+A gloo sender blocked in its wait completes later the longer it was blocked
+before the receive was posted. Rank 1 then runs for each of `BLOCKS` seconds
+before it posts, rank 0 waiting on an 8-byte gloo send, as ATOM's next stage
+runs its own forward while the stage before waits on the send's size. The
+sender's completion past the rendezvous price fits ``wake_s x (1 - exp(-b /
+wake_rise_s))`` at block ``b``. OUT is JSON: each
 carrier's fields, the model's error on the arrival in seconds per posting order (min, p10,
 p50, p90, max), every sample, and this file's text.
 """
@@ -28,18 +35,45 @@ from pathlib import Path
 
 import numpy as np
 
+from atom.compass.runner.pp_send import woken
+
 LATE, WARM, REPS = 0.05, 3, 20
+BLOCKS = (0.002, 0.01, 0.05, 0.2, 1.0)
 SPIN = 10**6  # device cycles the RCCL send waits behind, well past its host call
 SIZES = {"rccl": [2**k for k in range(3, 30)], "gloo": [2**k for k in range(3, 25)]}
 #: The stamps of one sample: rank 0's send and completion, rank 1's post and end.
 STAMPS = ("send", "done", "post", "end")
 
 
-def fit(samples: list[dict]) -> dict:
-    """Each carrier's five fields and residual spread from `samples`."""
-    out, got = {}, {}
+def fit_wake(samples: list[dict], price: float) -> tuple[float, float]:
+    """``(wake_s, wake_rise_s)`` from `samples` with a ``block``, each sender's
+    completion less the post and `price`, the median per block."""
+    from scipy.optimize import curve_fit
+
+    by = {}
     for s in samples:
-        got.setdefault((s["carrier"], s["bytes"], s["late"]), []).append(s)
+        if s.get("block") is not None:
+            by.setdefault(s["block"], []).append(s["done"] - s["post"] - price)
+    b = np.array(sorted(by))
+    y = np.array([np.median(by[k]) for k in b])
+    (w, rise), _ = curve_fit(
+        lambda b, w, r: w * -np.expm1(-b / r),
+        b,
+        y,
+        p0=(max(y[-1], 1e-6), np.median(b)),
+        bounds=(1e-12, np.inf),
+    )
+    return float(w), float(rise)
+
+
+def fit(samples: list[dict]) -> dict:
+    """Each carrier's fields and residual spread from `samples`; gloo's wake
+    when any sample has a ``block``."""
+    out, got = {}, {}
+    blocked = [s for s in samples if s.get("block") is not None]
+    for s in samples:
+        if s.get("block") is None:
+            got.setdefault((s["carrier"], s["bytes"], s["late"]), []).append(s)
     for c, sizes in SIZES.items():
         med = {
             (n, late): {
@@ -49,7 +83,7 @@ def fit(samples: list[dict]) -> dict:
             for n in sizes
             for late in (False, True)
         }
-        eager = [n for n in sizes if med[n, True]["done"] < LATE]
+        eager = [n for n in sizes if med[n, True]["done"] < med[n, True]["post"]]
         if eager != sizes[: len(eager)] or len(eager) == len(sizes):
             raise SystemExit(f"{c}: eager sizes {eager} are not a proper prefix")
         rdv = sizes[len(eager) :]
@@ -68,6 +102,10 @@ def fit(samples: list[dict]) -> dict:
             "per_byte_s": float(g),
             "rendezvous_fixed_s": float(fixed),
         }
+        wake = (0.0, 1.0)
+        if c == "gloo" and blocked:
+            wake = fit_wake(blocked, fixed + 8 * g)
+            out[c]["wake_s"], out[c]["wake_rise_s"] = wake
         # The model's receive end less the measured, in seconds, per posting order.
         for late in (False, True):
             m = [med[n, late] for n in sizes]
@@ -75,7 +113,7 @@ def fit(samples: list[dict]) -> dict:
                 (
                     max(s["post"], o + n * g + lat)
                     if n in eager
-                    else max(0.0, s["post"]) + fixed + n * g
+                    else max(0.0, s["post"]) + fixed + n * g + woken(wake, s["post"])
                 )
                 for n, s in zip(sizes, m)
             ]
@@ -100,8 +138,16 @@ def _polled(event) -> float:
     return time.monotonic()
 
 
+def _run(seconds: float) -> None:
+    """Keep the host busy for `seconds`, as a stage running its forward."""
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        pass
+
+
 def probe() -> list[dict]:
-    """This rank's stamps over every carrier, size, order and repeat."""
+    """This rank's stamps over every carrier, size, order and repeat, then
+    over every block of an 8-byte gloo send."""
     import torch
     import torch.distributed as dist
 
@@ -128,7 +174,7 @@ def probe() -> list[dict]:
                             ready = _event()
                         dist.isend(x, 1, group=groups[c]).wait()
                     else:
-                        time.sleep(LATE if late else 0)
+                        _run(LATE if late else 0)
                         t0 = time.monotonic()
                         dist.irecv(x, 0, group=groups[c]).wait()
                     if dev == "cuda":
@@ -139,7 +185,20 @@ def probe() -> list[dict]:
                     else:
                         t1 = time.monotonic()
                     if i >= WARM:
-                        stamps.append((c, n, late, t0, t1))
+                        stamps.append((c, n, late, None, t0, t1))
+    x = torch.ones(8, dtype=torch.uint8)
+    for block in BLOCKS:
+        for i in range(WARM + REPS):
+            dist.barrier(groups["gloo"])
+            if rank == 0:
+                t0 = time.monotonic()
+                dist.isend(x, 1, group=groups["gloo"]).wait()
+            else:
+                _run(block)
+                t0 = time.monotonic()
+                dist.irecv(x, 0, group=groups["gloo"]).wait()
+            if i >= WARM:
+                stamps.append(("gloo", 8, True, block, t0, time.monotonic()))
     dist.barrier(groups["gloo"])
     both = [None, None]
     dist.all_gather_object(both, stamps, group=groups["gloo"])
@@ -151,12 +210,13 @@ def probe() -> list[dict]:
             "carrier": c,
             "bytes": n,
             "late": late,
+            "block": b,
             "send": s,
             "done": d,
             "post": p,
             "end": e,
         }
-        for (c, n, late, s, d), (*_, p, e) in zip(*both)
+        for (c, n, late, b, s, d), (*_, p, e) in zip(*both)
     ]
 
 

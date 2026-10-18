@@ -245,6 +245,8 @@ def install_cost_backend(runner: Any, backend: CostBackend) -> None:
 HOST_SEGMENTS = ("E", "W_pre", "W_launch", "W_post")  # in the order the host runs them
 #: The part of prepare after the MTP status wait; an output forward runs it under MTP.
 MTP_SEGMENT = "W_inputs"
+#: The part of `W_launch` a later pipeline stage runs before it receives its input.
+PP_RECV_SEGMENT = "W_recv"
 FORWARD_KINDS = ("decode", "prefill", "middle")
 #: The format of a simulated run's `dp<r>.cost.jsonl`, its first line.
 COST_TABLE_VERSION = 1
@@ -691,11 +693,14 @@ class PipelineFrames:
 
     def pp_recv_posted(self, called: float, kind: str, x: tuple) -> tuple:
         """Where this stage posts its ``pp_data`` receive, its forward's prepare
-        end, and its device end; the call and -inf with no host recurrence."""
+        end and `PP_RECV_SEGMENT`, 0 without a law, and its device end; the call
+        and -inf with no host recurrence."""
         host = getattr(self, "compass_host", None)
         if not isinstance(host, HostDeviceRecurrence):
             return called, -math.inf
-        return host.prepare_end(called, kind, x)[0], host.ends[-1]
+        law = host.laws.get(kind, {}).get(PP_RECV_SEGMENT, (0, 0, 0))
+        recv = float(np.dot(law, x)) * (PP_RECV_SEGMENT not in host.skip)
+        return host.prepare_end(called, kind, x)[0] + recv, host.ends[-1]
 
     def send_pp_frame(self, kind: str, frame: dict) -> bool:
         """Post one stage-loop frame to the next stage (``pp_data``) or the one
