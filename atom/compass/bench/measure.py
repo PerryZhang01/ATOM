@@ -29,7 +29,9 @@ in a token band of `step_linear_fit.TOKEN_BANDS`), or all of them by `--sample
 all`. `--grid` runs the step grid's planner over its inputs' lines for the
 engine they state and the nodes and margin `--grid-definition` states, and its
 points are measured with origin `plan`, the digest of the plan, which
-`<out>/plan.json` holds, and the `--grid` inputs as their sources.
+`<out>/plan.json` holds, and the `--grid` inputs as their sources. A planned
+point that is also a replayed view is measured once, as that replay alone: its
+origin, sources and traces are the replay's, and it names no plan.
 
 A measurement's key is the configuration (model, device,
 `keyed` engine, source root, `--sampling`), the step kind and the view's
@@ -404,9 +406,11 @@ def _add(points: dict, line: dict, origin: str, sources, traces, plan=None):
         _digest(view),
         {"view": view, "origin": origin, "sources": set(), "traces": set()},
     )
+    if point["origin"] != origin:
+        return  # a replayed view the plan also places stays the replay's alone
     point["sources"].update(sources)
     point["traces"].update(traces)
-    if plan and point["origin"] == "plan":
+    if plan:
         point["plan"] = plan
 
 
