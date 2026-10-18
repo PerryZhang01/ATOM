@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Price lists, region terms, step linear laws and host laws are keyed by the
+"""Price lists, memory readings, step linear laws and host laws are keyed by the
 machine-spec digest: the digest of the spec's device, software stack and PTL
 state.
 
