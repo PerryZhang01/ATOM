@@ -298,14 +298,18 @@ def test_trace_ops_records_torch_s_operators_and_hides_aiter_s(tmp_path_factory)
     assert (kinds["aten"], kinds["aiter"]) == ({"captured"}, {"opaque_leaf"})
 
 
-def test_tp2_s_collective_stand_ins_leave_only_the_collective(tmp_path_factory):
+def test_tp2_leaves_its_stand_ins_copies_out_and_says_so(tmp_path_factory):
     one = _ops(capture(1, 2, tmp_path_factory)[0]["region"])
     graph, declared = capture(2, 2, tmp_path_factory)
     two = _ops(graph["region"])
 
     added = collections.Counter(op["op"] for op in two)
     added.subtract(op["op"] for op in one)
-    added = {name for name, n in added.items() if n > 0}
-    assert {name.split(".")[0] for name in added} == {"aiter", "_c10d_functional"}
-    stand_ins = [op["op"] for op in declared["left_out"] if op["why"] == "stand-in"]
-    assert "aten.copy_.default" in stand_ins
+    # ATOM's legacy collectives write in place; the stand-ins copy back.
+    assert added["aten.copy_.default"] == 0
+    assert added["_c10d_functional.wait_tensor.default"] == 2
+    left_out = collections.defaultdict(list)
+    for op in declared["left_out"]:
+        left_out[op["why"]].append(op["op"])
+    assert set(left_out) == {"h2d", "stand-in", "step-crossing"}
+    assert left_out["stand-in"].count("aten.copy_.default") == 2
