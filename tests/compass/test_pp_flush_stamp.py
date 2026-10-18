@@ -43,7 +43,9 @@ def test_a_flush_that_settles_a_send_is_stamped_on_the_next_forward(
     monkeypatch.setenv(ENV, str(tmp_path / "real"))
     runner = _Recorded(0, _config())
     runner.forward(batches[0])
-    assert runner.flush_pp_send() and runner.flush_pp_send()
+    assert runner.flush_pp_send()
+    assert runner._pp_pending_send == []  # ATOM's flush ran
+    assert runner.flush_pp_send()
     runner.sends = False
     runner.forward(batches[1])
     runner.flush_pp_send()  # the forward settled its send: nothing pending
@@ -73,16 +75,27 @@ def test_the_gate_reports_a_sending_stages_inferred_and_stamped_flushes():
     assert last["flush"] is None
 
 
-def test_the_script_names_each_sending_stages_disagreements(tmp_path, capsys):
-    head, last = pp2_record()
-    head[2]["t_flush_ns"] = [19 * MS, 19 * MS]
+def _gate(tmp_path, capsys, head, last):
+    """The script's output on a record of `head` and `last`, split per stage."""
     for name, steps in zip(("dp0", "pp1.dp0"), (head, last)):
         (tmp_path / f"{name}.jsonl").write_text(
             "".join(json.dumps(s) + "\n" for s in steps)
         )
     assert recurrence.main(str(tmp_path)) == 0
-    out = capsys.readouterr().out
-    stage0, stage1 = out.split("dp0 pp1 kind")
+    return capsys.readouterr().out.split("dp0 pp1 kind")
+
+
+def test_the_script_names_each_sending_stages_disagreements(tmp_path, capsys):
+    head, last = pp2_record()
+    head[2]["t_flush_ns"] = [19 * MS, 19 * MS]
+    stage0, stage1 = _gate(tmp_path, capsys, head, last)
     assert "flush: 1 steps disagree, 2 inferred, 1 stamped" in stage0
     assert "step 3: inferred only" in stage0
+    assert "flush" not in stage1
+
+
+def test_a_record_without_flush_stamps_says_so_and_counts_nothing(tmp_path, capsys):
+    stage0, stage1 = _gate(tmp_path, capsys, *pp2_record())
+    assert "flush: the record stamps no flush\n" in stage0
+    assert "disagree" not in stage0 and "inferred only" not in stage0
     assert "flush" not in stage1

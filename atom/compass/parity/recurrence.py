@@ -157,10 +157,9 @@ def _charged(steps, stage, upstream, held, carriers=None, downstream=None):
         # The last send settled: the one before the last, or the last if flushed.
         flushed = called - now > (IDLE_FLUSH_S if stage and stage[0] else 0)
         settled = n - 2 + flushed
-        if flush is not None and flushed:
-            flush[0].append(s["step"])
-        if flush is not None and "t_flush_ns" in s:
-            flush[1].append(s["step"])
+        if flush is not None:
+            flush[0].extend([s["step"]] * flushed)
+            flush[1].extend([s["step"]] * ("t_flush_ns" in s))
         hold = -math.inf
         if downstream and settled >= 0:
             hold = (downstream[settled][4] - origin) * 1e-9
@@ -257,7 +256,9 @@ def main(record: str, machine=None, row_bytes=None) -> int:
             )
         gate = "pass" if abs(report["total"]) <= TOTAL_BAND else "FAIL"
         print(f"    total {report['total']:+.3f}% {gate}")
-        if report["flush"] is not None:
+        if report["flush"] is not None and not report["flush"][1]:
+            print("    flush: the record stamps no flush")
+        elif report["flush"] is not None:
             inferred, stamped = map(set, report["flush"])
             off = sorted(inferred ^ stamped)
             print(
