@@ -41,6 +41,10 @@ class Signalled(SystemExit):
 
 
 def _signalled(signum, frame):
+    # GNU timeout signals the command, then its process group: a repeat must
+    # not cut the teardown short. Not SIG_IGN, which the processes the command
+    # starts after would inherit.
+    signal.signal(signum, lambda *_: None)
     name = signal.Signals(signum).name
     raise Signalled(f"the bench stopped: its process was sent {name}")
 
