@@ -77,7 +77,10 @@ def _recorded(warmup, drafter=False):
             self.attn_metadata_builder = GRAPHABLE
             self.tokenID_processor = _Processor()
             if drafter:
-                self.drafter = SimpleNamespace(compute_draft_kv=lambda *a: None)
+                # The draft-KV pass queues the draft's device time.
+                self.drafter = SimpleNamespace(
+                    compute_draft_kv=lambda *a: setattr(self, "next", "exit")
+                )
             self.exited = False
             self.forward(warmup)
 

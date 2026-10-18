@@ -13,7 +13,9 @@ decode step whose device start precedes its host launch end is launch-exposed
 and cut; a prefill step is never cut, so a host bubble inside it stays in its
 label. On an MTP record, one with `d_target_ns`, the device label is the
 target's, `d_target_ns` with no gap, and the draft label is the rest of
-`d_busy_ns`. The exit of each wait for the previous output's token copy (`t_recv_ns`)
+`d_busy_ns`. A step of an MTP record without `d_target_ns` is cut as
+`unsplit`: its device label would hold a draft the law prices again. The exit
+of each wait for the previous output's token copy (`t_recv_ns`)
 bounds the host clock's lead over the device's (that forward had finished by
 then); the tightest of the last `ANCHORS` bounds is the lead. The copy itself
 lands on its own stream after the exit event the bound reads, by 14 to 29 us
@@ -50,8 +52,9 @@ from atom.compass.backends.shape import BatchView, RequestShape
 
 #: Token copy wait exits whose tightest bound is a step's host clock lead.
 ANCHORS = 32
-#: Why a device label is cut: a launch-exposed decode, or prefill and decode rows mixed.
-CUTS = ("exposed", "mixed")
+#: Why a device label is cut: a launch-exposed decode, prefill and decode rows
+#: mixed, or an MTP record's step with no target end.
+CUTS = ("exposed", "mixed", "unsplit")
 HOST_SEGMENTS = ("E", "W_pre", "W_launch", "W_post")
 TABLE_VERSION = 1
 
@@ -146,6 +149,7 @@ def label(record, run: str | None = None) -> tuple[list[Sample], list[dict]]:
             "by its device time"
         )
     exposed = _launch_exposed(lines)
+    mtp = any("d_target_ns" in s for s in steps)
     key = path.with_suffix(".key.json")
     config = json.loads(key.read_text()) if key.exists() else None
     run = run or digest(record)
@@ -165,6 +169,8 @@ def label(record, run: str | None = None) -> tuple[list[Sample], list[dict]]:
             cut = "mixed"
         elif not view.prefill and s["step"] in exposed:
             cut = "exposed"
+        elif mtp and "d_target_ns" not in s:
+            cut = "unsplit"
         gap = 0 if view.prefill else s.get("d_gap_ns", 0)
         device = None if cut else (gap + s["d_busy_ns"]) * 1e-9
         draft = None
