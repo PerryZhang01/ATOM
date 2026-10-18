@@ -326,6 +326,44 @@ def test_grid_points_are_measured_with_origin_plan_and_new_shapes_add_only_their
         assert member["traces"] == [f"trace-{i}" for i in range(4)]
 
 
+def test_a_view_both_replayed_and_planned_names_only_its_replay(run):
+    """The record is replayed on its traces; the plan places its points from
+    the same steps, published as a population whose client runs name each
+    request's trace as a graded one."""
+    population = published_population(run)
+    token, rec = population.token(), str(run.record)
+    definition = run.tmp / "definition.json"
+    definition.write_text(json.dumps(DEFINITION))
+    graded = []
+    for i, requests in enumerate(RUNS):
+        renamed = {
+            n: r | {"trace": f"graded {r['trace']}"} for n, r in requests.items()
+        }
+        (run.tmp / f"graded{i}.json").write_text(json.dumps({"requests": renamed}))
+        graded += ["--client-run", token, str(run.tmp / f"graded{i}.json")]
+    grid = ["--grid", token, "--grid-definition", str(definition), *graded]
+    store = run(rec, "--sample", "all", *run.named(rec), *grid)
+
+    planned = json.loads((run.tmp / "out/plan.json").read_text())
+    replayed = views(read(run.record / "steps")[0])
+    held = by_view(store)
+    assert views(planned["lines"]) & replayed
+    assert set(held) == views(planned["lines"]) | replayed
+    assert len(Bench.measured) == len(held)
+    for view, (_, member) in held.items():
+        if view in replayed:
+            assert member["traces"] == [f"trace-{i}" for i in range(4)]
+            assert member["origin"] == "replay" and "plan" not in member
+            assert member["sources"] == [
+                measure.file_digest(run.record / "steps/dp0.jsonl")
+            ]
+        else:
+            assert member["origin"] == "plan"
+            assert member["plan"] == measure._digest(planned)
+            assert member["sources"] == [str(population)]
+            assert member["traces"] == [f"graded trace-{i}" for i in range(4)]
+
+
 def test_the_planner_reads_the_engine_every_grid_input_states(run):
     rec, other = str(run.record), run.tmp / "other"
     shutil.copytree(run.record, other)
