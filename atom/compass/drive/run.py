@@ -23,12 +23,9 @@ both values. The check refuses no step: it counts those the grid extrapolates
 and those that fall to the step roofline below it, naming each with the grid's
 reasons. Another backend has no check, and refuses `--coverage`.
 
-`--acceptance-record` names a speculative `compass record` directory: the
-accepted-draft histograms of its DP ranks, summed, give the per-position rates
-(`measured`) the run hands ATOM as ``--spec-decode-acceptance-rates``, and the
-run file names the record, so the summary states the input as ``measured``.
-A record with no histogram or of another draft width than ATOM's arguments
-refuses, as do ATOM's arguments stating an acceptance of their own.
+`--acceptance-record` names a speculative `compass record` directory: its
+histograms' rates (`measured`) go to ATOM as ``--spec-decode-acceptance-rates``,
+and the run file names the record, so the summary states the input ``measured``.
 
 Once the server stops, run.json gains, beside `serve`'s identity: `run_file`,
 the run file the server was handed; `step_roofline`, the run file's key,
@@ -113,11 +110,9 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def measured(record, atom_args) -> list[float]:
-    """The per-position rates the accepted-draft histograms of `record`, a
-    `compass record` directory, give over its DP ranks: entry ``i`` the share
-    of drafting rows that accepted more than ``i`` drafts. Refuses a record
-    with no histogram or of another draft width than ATOM's arguments, and
-    ATOM's arguments stating an acceptance of their own."""
+    """The rates the accepted-draft histograms of `record` give over its DP
+    ranks: entry ``i`` the share of rows that accepted more than ``i`` drafts.
+    Refuses no histogram, another draft width, and a stated acceptance."""
     engine = runfile._engine_args(atom_args)
     for knob in ("rate", "length", "rates"):
         if getattr(engine, f"spec_decode_acceptance_{knob}") is not None:

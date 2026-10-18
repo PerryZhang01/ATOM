@@ -239,11 +239,9 @@ LP_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
 )
 #: Each client run's hand-ins and summary, by its index.
 CLIENT_DIR = "client-{}"
-#: Beside a real run's step record, by DP rank: its scheduler's draft width and
-#: accepted-draft histogram, written as its engine loop leaves.
+#: A real run's draft width and accepted-draft histogram, by DP rank.
 ACCEPTANCE_FILE = "dp{}.acceptance.json"
-#: The run-file key naming the record whose histograms gave the run's
-#: acceptance rates.
+#: The run-file key naming the record that gave the acceptance rates.
 ACCEPTANCE_RECORD = "acceptance_record"
 #: The endpoint a standalone authority serves at, written to its out_dir.
 AUTHORITY_FILE = "authority_endpoint.txt"
@@ -1628,9 +1626,7 @@ def _acceptance(scheduler, run: dict) -> dict:
     """A speculative engine's drafter, its draft width, the acceptance input
     ATOM's flag stated with its method, the per-position rates it resolved to,
     and the scheduler's accepted-draft histogram (`EngineStats.distribution`).
-    The input is ``measured``, naming the record, when the run file names an
-    `ACCEPTANCE_RECORD` whose histograms gave the flag's rates; else
-    ``declared``."""
+    The input is ``measured`` from a run file's `ACCEPTANCE_RECORD`."""
     spec = scheduler.config.speculative_config
     # A stated rate also resolves a length, so it is read first.
     stated = (
@@ -1672,8 +1668,7 @@ def engine_loop(engine_core):
     steps cost. A stop reaches the engine as the ``+inf`` grant instead.
 
     A pipeline stage's runner calls go through `pp_send.install`'s sends. A
-    real run recording its steps records its acceptance at SIGTERM
-    (`_stop_recording`)."""
+    recorded real run's SIGTERM goes through `_stop_recording`."""
     from atom.compass import parity
 
     run, sections, before = spec(), {}, None
@@ -1723,37 +1718,28 @@ def engine_loop(engine_core):
 
 
 def _stop_recording(engine_core, previous, signum, frame) -> None:
-    """A real recorded run's SIGTERM: `_record_acceptance`, then the signal as
-    `previous`, the handler it replaced, takes it. ATOM's handler stops the
-    workers, and the engine's loop never leaves."""
-    _record_acceptance(engine_core)
+    """A recorded real run's SIGTERM, where its engine stops: a speculative
+    engine outside a pipeline writes its draft width and accepted-draft
+    histogram beside the record (`ACCEPTANCE_FILE`), then `previous` takes it."""
+    from atom.compass import parity
+
+    scheduler = getattr(engine_core, "scheduler", None)
+    config, stats = getattr(scheduler, "config", None), getattr(
+        scheduler, "engine_stats", None
+    )
+    if (
+        getattr(stats, "spec_enabled", False)
+        and getattr(config, "pipeline_parallel_size", 1) == 1
+    ):
+        width = config.speculative_config.num_speculative_tokens
+        held = {"draft_tokens": width, "distribution": dict(stats.distribution)}
+        name = ACCEPTANCE_FILE.format(config.parallel_config.data_parallel_rank)
+        _write_whole(Path(os.environ[parity.ENV]) / name, json.dumps(held))
     if callable(previous):
         previous(signum, frame)
     else:
         signal.signal(signum, previous or signal.SIG_DFL)
         os.kill(os.getpid(), signum)
-
-
-def _record_acceptance(engine_core) -> None:
-    """Write a speculative engine's draft width and accepted-draft histogram
-    beside a real run's step record, as `ACCEPTANCE_FILE` of its DP rank;
-    outside a pipeline, as its pulls are."""
-    from atom.compass import parity
-
-    record = os.environ.get(parity.ENV)
-    scheduler = getattr(engine_core, "scheduler", None)
-    stats = getattr(scheduler, "engine_stats", None)
-    if not record or not getattr(stats, "spec_enabled", False):
-        return
-    config = scheduler.config
-    if getattr(config, "pipeline_parallel_size", 1) > 1:
-        return
-    held = {
-        "draft_tokens": config.speculative_config.num_speculative_tokens,
-        "distribution": dict(stats.distribution),
-    }
-    name = ACCEPTANCE_FILE.format(config.parallel_config.data_parallel_rank)
-    _write_whole(Path(record) / name, json.dumps(held))
 
 
 def _until_end(run: dict, a: "_RecordingAuthority") -> bool:
