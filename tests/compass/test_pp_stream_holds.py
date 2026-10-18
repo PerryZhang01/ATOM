@@ -96,7 +96,7 @@ def test_a_receiving_stage_takes_a_rendezvous_tensor_after_its_own_device_work(
         pp=pp,
         models=ALL_RDV,
     )
-    stage.compass_host.charge(prefill(8), 1.0)
+    stage.compass_host.charge(prefill(8), 1.0, 0.0)
     assert stage.compass_host.ends[-1] == busy
     batch = prefill(8)
     run("forward", batch)

@@ -41,7 +41,7 @@ class ReplayHost:
         self.step = 0
         self.now = None  # the engine LP's clock, set where the run installs it
 
-    def charge(self, batch, device_s: float) -> float:
+    def charge(self, batch, device_s: float, draft_s: float) -> float:
         """Seconds from now to the next step's real return; `out_s` becomes
         that step's."""
         i, self.step = self.step, self.step + 1
