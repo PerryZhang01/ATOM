@@ -215,6 +215,20 @@ def test_a_point_places_its_batch_for_its_context_keys_and_refuses_by_name(
     assert {r["placements"] for r in got} == {5}
 
 
+def test_a_call_counts_its_module_s_tensors_and_cycles_over_every_layer():
+    layers = {f"model.layers.{i}.attn": SimpleNamespace(layer_num=i) for i in (0, 1)}
+    kv = {f"layer_{i}": SimpleNamespace(k_cache=torch.zeros(64, 16, 4)) for i in (0, 1)}
+    stub = ops.Stub(_Runner(layers), 100)
+    attn = {"op": "x", "args": {"layer": {"context": None}}}
+    rope = {"op": "x", "args": {"rope": {"module": None}}}
+    pairs = [{"layer": key} for key in layers]
+
+    # 4 blocks of 256 bytes is past a 100-byte cache, and both layers still cycle.
+    assert stub._plan(attn, pairs, kv, 4, 2) == (2, 1024, 1)
+    # A Linear(3, 3) holds 12 floats, 48 bytes: 3 copies pass 100, on one placement.
+    assert stub._plan(rope, [{"rope": "0"}], kv, 4, 2) == (3, 48, 1)
+
+
 def test_copy_c_rotates_weights_and_instances_and_clones_past_the_first_round():
     runner = _Runner()
     stub = ops.Stub(runner, 10_000)
