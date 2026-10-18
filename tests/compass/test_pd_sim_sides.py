@@ -33,6 +33,8 @@ LAWS = [
     for side in ("prefill", "decode")
 ]
 PREFILL_ENV = {"ATOM_NUMA_BIND": "1", "GPU_MAX_HW_QUEUES": "5"}
+#: Outside `PERFORMANCE_KEYS`, so `keyed` reads none of it.
+DECODE_ENV = {"PD_SIM_DECODE_ONLY": "7"}
 SHARED_ENV = {
     "AITER_BF16_FP8_MOE_BOUND": "0",
     "AITER_LOG_LEVEL": "WARNING",
@@ -85,6 +87,7 @@ def started(tmp_path, script) -> dict:
         PREFILL_ARGS="--enable-tbo",
         DECODE_ARGS=f"--cudagraph-capture-sizes {DECODE_SIZES}",
         PREFILL_ENV=" ".join(f"{k}={v}" for k, v in PREFILL_ENV.items()),
+        DECODE_ENV=" ".join(f"{k}={v}" for k, v in DECODE_ENV.items()),
     )
     args = [out / "run.json"] + ([out] if script == "cctraces_sim.sh" else [])
     done = subprocess.run(
@@ -138,6 +141,7 @@ def test_each_side_starts_under_its_own_flags_and_picks_its_own_law(
     assert (
         PREFILL_ENV.items() <= p_env.items() and not PREFILL_ENV.keys() & d_env.keys()
     )
+    assert DECODE_ENV.items() <= d_env.items() and not DECODE_ENV.keys() & p_env.keys()
 
     for law, (argv, env) in zip(LAWS, sides.values()):
         for name in PERFORMANCE_KEYS:

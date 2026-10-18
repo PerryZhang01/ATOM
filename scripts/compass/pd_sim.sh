@@ -32,7 +32,7 @@
 #   PREFILL_ENV DECODE_ENV
 #                       NAME=VALUE words set in that side's servers only, e.g.
 #                       `ATOM_NUMA_BIND=1 GPU_MAX_HW_QUEUES=5`
-#   ATOMESH            the router binary (default: atomesh)
+#   ATOMESH             the router binary (default: atomesh)
 #   ATOM_COMPASS_PARITY_RECORD
 #                       when set, each server records its steps
 #                       (atom/compass/parity) under it, in prefill/ and decode/,
