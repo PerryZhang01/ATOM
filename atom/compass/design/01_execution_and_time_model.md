@@ -458,17 +458,20 @@ frames. The CA completes the LP's request only when every member has called:
 
 With `lmcache_mp` above DP width 1, a park request amends rules 1, 2 and 5 (D6.1).
 
-Every member's step end is a round (owner ruling 2026-10-15, #988; revised 2026-10-16, #1267).
+Every member's step end is a round, and so is every member's input pull (owner ruling
+2026-10-15, #988; revised 2026-10-16, #1267, and 2026-10-18, #1345).
 With host time, one `all_reduce(MAX)` over the DP group, which every forward kind joins, the DP
 dummy included, gives each forward the group's device end on the LP clock, as per-layer
 collectives hold every rank's device until the slowest. Each rank writes it back as its last
-device end, and as its output end on an output forward, and ends at its own release, as a real
-rank returns at its own launch end and takes in arrivals before `_sync_dp_state`. A replay rank
-ends at its own replayed return. With no host time, a rank whose forward
+device end, and as its output end on an output forward, and its forward ends at its own
+release, as a real rank returns at its own launch end. A replay rank's forward ends at its
+own replayed return. With no host time, a rank whose forward
 waits on its device, one with output other than the DP dummy, ends at the group's `max`;
-any other ends at its own seconds, as a real idle rank takes in arrivals when its own
-forward returns. Each member asks one TAR per distinct end, ascending, returns at its own
-and owes the rest. Until they are paid its sends are stamped at its own end; a TAR before
+any other ends at its own seconds, as a real idle rank's forward returns on its own. Where
+`out_s` is set, each member then returns at its own pull, its end plus its `out_s`, and
+takes in arrivals there before `_sync_dp_state`; the pulls join the ends as rounds
+(`group_out`). Each member asks one TAR per distinct round, ascending, returns at its own
+pull (its own end where there is no `out_s`) and owes the rest. Until they are paid its sends are stamped at its own end; a TAR before
 the last owed round and any NER are refused; and every host collective on its clock owner
 thread, a `torch.distributed` collective whose tensors are all on the CPU or that has none,
 pays them first, as it returns at the latest arrival. A device collective returns once
@@ -1199,8 +1202,8 @@ The rules that settle the boundaries #53's categories left in the wrong place:
   sizes both). So the TP workers and every rank of a lockstep DP group sit in the engine
   LP, and a startup assertion refuses a process group whose ranks map to more than one
   LP.
-- **A DP step is one TAR per member step end, each at the member's own release** (D3, #988,
-  #1267). Each rank charges its own forward by the recurrence below, from the group's
+- **A DP step is one TAR per member release and per member pull; each member returns at
+  its own pull** (D3, #988, #1267, #1345). Each rank charges its own forward by the recurrence below, from the group's
   device end, the `max` over ranks of each rank's absolute device end by one
   `all_reduce(MAX)`; the ranks exchange the step targets by one `all_gather` inside the
   predicted forward, and every rank calls the CA as a member of the LP (D3). With no host

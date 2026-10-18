@@ -725,8 +725,6 @@ class PullStamps:
     output put after each worker reply, one ``{"t_pull_ns" | "t_put_ns": ns}``
     line each in `path`, read off `now`, the machine clock its caller hands in."""
 
-    KEYS = ("t_pull_ns", "t_put_ns")
-
     def __init__(self, path, now) -> None:
         self.file, self.now = open(path, "w", buffering=1), now  # noqa: SIM115
         self.lock = threading.Lock()
@@ -734,7 +732,7 @@ class PullStamps:
 
     def arm(self) -> None:
         with self.lock:
-            self.armed = set(self.KEYS)
+            self.armed = {"t_pull_ns", "t_put_ns"}
 
     def stamp(self, key: str) -> None:
         with self.lock:
