@@ -238,3 +238,20 @@ def test_a_memory_bound_step_over_meta_build_weights_is_analytical(
     assert term.name == "roofline.memory"
     assert term.provenance.method is Method.ANALYTICAL
     assert "weights" not in note and "parameter_count" not in note
+
+
+def test_a_compute_bound_step_over_parameters_off_the_build_is_analytical():
+    """Without a stated parameter count the roofline counts the meta build's,
+    so a compute bound on a datasheet spec states nothing."""
+    backend = StepRooflineBackend(
+        _spec("datasheet"),
+        parameters=PARAMETERS,
+        weight_bytes=WEIGHTS,
+        kv_token_bytes=KV,
+        parameters_stated=False,
+    )
+    (term,) = backend.price(BOUNDS["compute"][0]).terms
+
+    assert term.name == "roofline.compute"
+    assert term.provenance.method is Method.ANALYTICAL
+    assert term.provenance.note == ""

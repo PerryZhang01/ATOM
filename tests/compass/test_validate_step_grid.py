@@ -18,15 +18,22 @@ import pytest
 from test_backend_step_grid import fitted, linear, point
 from test_memory_readings import DOCUMENT
 from test_run_step_grid import BOUNDS, KEY, deployment, publish
-from test_validate_cost import LAW, _steps
+from test_validate_cost import LAW, _record, _steps
 from test_validate_main import _as_recorded, _graded, _rows
 
-from atom.compass.backends import StepLinearBackend, StepLinearLaw
+from atom.compass.backends import (
+    StepGrid,
+    StepGridBackend,
+    StepLinearBackend,
+    StepLinearLaw,
+)
 from atom.compass.backends.shape import BatchView, RequestShape
 from atom.compass.backends.step_grid import coordinates
 from atom.compass.backends.step_grid_fit import VALUE
+from atom.compass.backends.step_grid_residual import Residual
 from atom.compass.drive import run as drive_run
 from atom.compass.validate.__main__ import main
+from atom.compass.validate.cost import cost_accuracy
 
 ATOM_ARGS = ["--model", "planted", "--max-model-len", "2048"]
 
@@ -166,3 +173,23 @@ def test_a_cell_of_two_simulated_runs_or_none_is_refused(capsys, tmp_path, both)
     held = "['step_linear', 'step_grid']" if both else "[]"
     with pytest.raises(ValueError, match=re.escape(f"holds {held} of step_linear/")):
         main([str(cell)])
+
+
+def test_a_real_step_past_the_residuals_hull_is_priced_unvalidated_and_counted(
+    tmp_path,
+):
+    """Decode step i reads N_KV = 2000 + 5000 i; a decode hull bounding
+    query_context to 10000 / 2^20 leaves steps 2 to 9 past it."""
+    member = _bundle(_steps())
+    member["residual"]["kinds"]["decode"]["hull"] = {
+        "facets": [[0, 1, 0, 0, -10000 / 2**20]]
+    }
+    grid, residual = StepGrid(member["grid"]), Residual(member["residual"])
+
+    report = cost_accuracy(
+        _record(tmp_path / "steps", _steps()), StepGridBackend(grid, residual, "b")
+    )
+
+    assert (report["extrapolated"], report["refused"]) == (8, {})
+    assert report["unvalidated"]["decode"]["steps"] == 8
+    assert report["validated"]["decode"]["steps"] == 2

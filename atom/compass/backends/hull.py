@@ -53,3 +53,13 @@ class Hull:
         normals, offsets = self.facets[:, :-1], self.facets[:, -1]
         scale = np.abs(normals) @ np.abs(x) + np.abs(offsets)
         return bool(np.all(normals @ x + offsets <= _HULL_TOLERANCE * scale))
+
+    def excess(self, point: tuple[float, ...]) -> float:
+        """How far `point` is outside: the most it differs from an equal
+        feature or passes a facet, `a . x + c`; 0 inside. A fit's facets are
+        hulled in the box of its features' ranges, so past two or more varying
+        features it is a share of a range."""
+        x = np.array([point[i] for i in self.vary], dtype=np.float64)
+        passed = self.facets[:, :-1] @ x + self.facets[:, -1]
+        differ = [abs(point[i] - value) for i, value in self.equal.items()]
+        return float(max([0.0, *passed, *differ]))

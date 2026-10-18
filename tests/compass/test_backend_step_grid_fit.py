@@ -240,7 +240,7 @@ def test_a_fitted_bundle_validates_its_held_out_batches_and_not_a_batch_outside_
     """Every target lies in the box whose corners are the prefill nodes, so a
     prefill node is inside the hull of the held-out batches iff one of them has
     its shape. A held-out batch outside the residual's hull, which is of the
-    batches fitted, is refused."""
+    batches fitted, is extrapolated, and so unvalidated."""
     lines = nodes() * 4 + mixed()
     a = record(tmp_path, run, lines)
     for line in nodes():
@@ -263,7 +263,7 @@ def test_a_fitted_bundle_validates_its_held_out_batches_and_not_a_batch_outside_
     assert (report["unpriced"], report["cut"]) == ([], {})  # triple i is lines[i]
     held = [lines[i] for k in report["kinds"].values() for i in k["held_out"]]
     outcomes = [validated(x) for x in held]
-    assert True in outcomes and set(outcomes) <= {True, None}
+    assert True in outcomes and set(outcomes) <= {True, False}
     corners = [x for x in nodes() if not x["rows"][0][2]]
     inside = [shape(x) in set(map(shape, held)) for x in corners]
     assert [validated(x) for x in corners] == inside

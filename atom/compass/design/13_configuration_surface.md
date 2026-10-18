@@ -135,8 +135,8 @@ python -m atom.entrypoints.openai_server <ATOM arguments> \
 | `--store` | the artifact store keys resolve in, the configuration's `memory_readings` included (`07` D41) | **none — refuses** |
 | `--host-laws` | the host laws by store key (`09` D54), composed by `01` D4's recurrence. Repeats, one entry per engine config, each process installing its own config's, as `--step-linear` does (the [#973 ruling](https://github.com/jgong5/ATOM/issues/973#issuecomment-6210598012)) | none: the run charges no host time and records that |
 | `--on-refusal` | `mark`: a refused step costs 0 s, its reason is recorded, and the run continues. `abort`: stop at the first refusal; the run summary is still written. Either way a refusal makes the run a coverage report (`08` D50.1) | `mark` (`08` D50.1) |
-| `--step-roofline` | a switch, named by its run-file key `step_roofline`, with no value: the step roofline has no host bound (the owner's ruling on [#1047](https://github.com/jgong5/ATOM/issues/1047)). On, it composes `StepFallbackBackend`: the step roofline (`10` D64) prices the device time of the steps the backend refuses, with the method its inputs give it | off; `run.json` records it when on |
-| `--coverage` | `shape_population` keys and `record` directories the backend's coverage check reads before the run starts; a failed check refuses the run (`07` D37) | off; `run.json` records the check's result, or that none ran |
+| `--step-roofline` | a switch, named by its run-file key `step_roofline`, with no value: the step roofline has no host bound (the owner's ruling on [#1047](https://github.com/jgong5/ATOM/issues/1047)). On, it composes `StepFallbackBackend`: the step roofline (`10` D64) prices the device time of the steps the backend refuses, with the method its inputs give it. A step grid run composes it without the switch (`17` D102) | off; `run.json` records it when on |
+| `--coverage` | `shape_population` keys and `record` directories the backend's coverage check reads before the run starts; the step grid's check refuses no step, and counts those it extrapolates or declines to the roofline (`17` D99) | off; `run.json` records the check's result, or that none ran |
 
 `run` reads the `memory_readings` entry for its configuration (`07` D41) and refuses when
 there is none, naming the configuration. `compass measure memory` takes it; for a device
@@ -303,7 +303,7 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
   assumption of each assumed `memory_readings` member an engine read.
   `python -m atom.compass.validate` decides from them whether a client run is gradeable:
   not when the run skipped host segments, priced with a backend
-  fitted on the traces it grades or on profiled inputs, ran the step grid without a passed
+  fitted on the traces it grades or on profiled inputs, ran the step grid without a
   coverage check, or refused a step of that client run (`08` D50.1). A backend fitted
   under another engine configuration refuses to run: that is a mismatch, not a reason.
 
