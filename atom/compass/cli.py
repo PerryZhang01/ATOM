@@ -24,7 +24,7 @@ COMMANDS = {
     ),
     "trace ops": (
         "atom.compass.capture",
-        "a decode step traced with no device, published as an op_graph",
+        "a step traced with no device, published as an op_graph",
     ),
     "measure steps": (
         "atom.compass.bench.measure",

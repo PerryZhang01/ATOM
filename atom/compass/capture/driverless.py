@@ -9,23 +9,34 @@ capture owns its process.
 import contextlib
 import os
 import pathlib
+import types
 
 import torch
 
-# The declared device, an MI308X. Nothing here reads a device.
-ARCH = "gfx942"
-CAPABILITY = (9, 4)
+#: The devices a capture can declare, by arch: compute units, capability and
+#: memory. ATOM and aiter branch on the arch and size grids by the CU count.
+#: Nothing here reads a device.
+DEVICES = {
+    "gfx942": (80, (9, 4), 192 << 30),  # MI308X
+    "gfx950": (256, (9, 5), 288 << 30),  # MI355X
+}
 
 
-class _Props:
-    multi_processor_count = 80
-    gcnArchName = name = ARCH
-    major, minor = CAPABILITY
-    total_memory = 192 << 30
-    warp_size = 64
-    max_threads_per_multi_processor = 2048
-    L2_cache_size = 8 << 20
-    regs_per_multiprocessor = shared_memory_per_block = 65536
+def _props(arch):
+    cus, (major, minor), memory = DEVICES[arch]
+    return types.SimpleNamespace(
+        multi_processor_count=cus,
+        gcnArchName=arch,
+        name=arch,
+        major=major,
+        minor=minor,
+        total_memory=memory,
+        warp_size=64,
+        max_threads_per_multi_processor=2048,
+        L2_cache_size=8 << 20,
+        regs_per_multiprocessor=65536,
+        shared_memory_per_block=65536,
+    )
 
 
 def on_wait(waiter, waited):
@@ -106,8 +117,10 @@ def _stream(stream):
         current[0] = previous
 
 
-def install(tp: int, tmpdir: str) -> dict:
-    """Declare the device, the arch and a peerless group of width `tp`; say what."""
+def install(tmpdir: str, arch: str) -> dict:
+    """Declare the device of `arch`; say what."""
+    if arch not in DEVICES:
+        raise ValueError(f"no declared device for {arch}; declared: {sorted(DEVICES)}")
     cuda = {
         # True: on False ATOM takes paths no deployment runs. The fake mode is
         # told otherwise by `driverless_mode`.
@@ -116,9 +129,9 @@ def install(tp: int, tmpdir: str) -> dict:
         "_lazy_init": lambda *a, **k: None,
         "get_rng_state": lambda *a, **k: torch.zeros(16, dtype=torch.uint8),
         "set_rng_state": lambda *a, **k: None,
-        "get_device_properties": lambda *a, **k: _Props(),
+        "get_device_properties": lambda *a, **k: _props(arch),
         "current_device": lambda: 0,
-        "get_device_capability": lambda *a, **k: CAPABILITY,
+        "get_device_capability": lambda *a, **k: DEVICES[arch][1],
         "Stream": Stream,
         "Event": Event,
         "current_stream": lambda *a, **k: current[0],
@@ -132,6 +145,8 @@ def install(tp: int, tmpdir: str) -> dict:
             "reserved_bytes.all.current": 0,
         },
         "memory_allocated": lambda *a, **k: 0,
+        "reset_peak_memory_stats": lambda *a, **k: None,
+        "empty_cache": lambda *a, **k: None,
         "is_current_stream_capturing": lambda: False,
     }
     for name, value in cuda.items():
@@ -152,10 +167,12 @@ def install(tp: int, tmpdir: str) -> dict:
         # The packed H2D transport reads `.numpy()` and device pointers off one
         # staging block; direct copies each buffer with its own `copy_`.
         "ATOM_H2D_BACKEND": "direct",
+        # aiter's CU count, which it would otherwise ask rocminfo for.
+        "CU_NUM": str(DEVICES[arch][0]),
     }
     os.environ.update(flags)
-    _declare_arch(tmpdir)
-    return {"cuda": sorted(cuda), "arch": ARCH, "flags": flags, "group": _group(tp)}
+    _declare_arch(tmpdir, arch)
+    return {"cuda": sorted(cuda), "arch": arch, "flags": flags}
 
 
 def driverless_mode(shape_env):
@@ -173,21 +190,24 @@ def driverless_mode(shape_env):
     return _DriverlessFakeTensorMode(shape_env=shape_env, allow_non_fake_inputs=True)
 
 
-def _declare_arch(tmpdir: str) -> None:
-    """Answer aiter's `rocminfo` shell-out and Triton's target query with `ARCH`."""
+def _declare_arch(tmpdir: str, arch: str) -> None:
+    """Answer aiter's `rocminfo` shell-out and Triton's target query with `arch`."""
     import triton
     from triton.backends.compiler import GPUTarget
 
     rocminfo = pathlib.Path(tmpdir) / "declared-bin" / "rocminfo"
     rocminfo.parent.mkdir(parents=True, exist_ok=True)
-    rocminfo.write_text(f'#!/bin/sh\necho "  Name:                    {ARCH}"\n')
+    rocminfo.write_text(
+        f"#!/bin/sh\necho 'Agent 1\n  Name: {arch}\n  Device Type: GPU\n"
+        f"  Compute Unit: {DEVICES[arch][0]}\n  ASIC Revision: 0'\n"
+    )
     rocminfo.chmod(0o755)
     os.environ["PATH"] = f"{rocminfo.parent}:{os.environ.get('PATH', '')}"
-    os.environ["GPU_ARCHS"] = ARCH
+    os.environ["GPU_ARCHS"] = arch
 
     class _DeclaredTarget:
         def get_current_target(self):
-            return GPUTarget("hip", ARCH, 64)
+            return GPUTarget("hip", arch, 64)
 
         def __getattr__(self, name):
             raise RuntimeError(f"a device-free capture has no Triton driver: {name}")
@@ -195,11 +215,11 @@ def _declare_arch(tmpdir: str) -> None:
     triton.runtime.driver.set_active(_DeclaredTarget())
 
 
-def _group(tp: int) -> dict:
-    """A process group of width `tp` in one process, its transport declined.
+def group(tp: int, dp: int) -> dict:
+    """A TP x DP process group in one process, its transport declined.
 
     Every shard is the one a `tp`-way deployment holds and every collective ATOM
-    issues is dispatched; aiter's `all_reduce_` answers from its fake. The two
+    issues is dispatched; aiter's `all_reduce_` answers from its fake. The
     legacy `c10d` collectives ATOM reaches have no fake kernel, so they go
     through their functional forms, which give the same shapes, and copy the
     result back under `standing_in`, since the legacy ones write in place.
@@ -208,9 +228,10 @@ def _group(tp: int) -> dict:
     from torch.distributed import _functional_collectives as functional
     from torch.testing._internal.distributed.fake_pg import FakeStore
 
-    os.environ.update(RANK="0", LOCAL_RANK="0", WORLD_SIZE=str(tp))
-    os.environ["HIP_VISIBLE_DEVICES"] = ",".join(map(str, range(tp)))
-    dist.init_process_group(backend="fake", store=FakeStore(), rank=0, world_size=tp)
+    world = tp * dp
+    os.environ.update(RANK="0", LOCAL_RANK="0", WORLD_SIZE=str(world))
+    os.environ["HIP_VISIBLE_DEVICES"] = ",".join(map(str, range(world)))
+    dist.init_process_group(backend="fake", store=FakeStore(), rank=0, world_size=world)
 
     from aiter.dist import parallel_state
 
@@ -232,10 +253,10 @@ def _group(tp: int) -> dict:
     )
     try:
         parallel_state.init_distributed_environment(
-            world_size=tp, rank=0, backend="fake", local_rank=0
+            world_size=tp, rank=0, backend="fake", local_rank=0, data_parallel_size=dp
         )
         parallel_state.initialize_model_parallel(
-            tensor_model_parallel_size=tp, backend="fake"
+            tensor_model_parallel_size=tp, data_parallel_size=dp, backend="fake"
         )
     finally:
         parallel_state.init_model_parallel_group, dist.new_group = group, new_group
@@ -249,10 +270,17 @@ def _group(tp: int) -> dict:
         with _stand_in():
             tensor.copy_(functional.broadcast(tensor, src, group or dist.group.WORLD))
 
+    def all_to_all_single(output, input, *args, group=None, async_op=False):
+        with _stand_in():
+            sent = functional.all_to_all_single(input, None, None, group)
+            output.copy_(sent)
+
     dist.all_gather_into_tensor, dist.broadcast = all_gather_into_tensor, broadcast
+    dist.all_to_all_single = all_to_all_single
     dist.barrier = lambda *args, **kwargs: None  # no shape, nobody to wait for
     return {
         "world_size": parallel_state.get_tp_group().world_size,
+        "dp": parallel_state.get_dp_group().world_size,
         "declined": ["device_communicator", "message_queue_broadcaster", "barrier"],
-        "functional": ["all_gather_into_tensor", "broadcast"],
+        "functional": ["all_gather_into_tensor", "broadcast", "all_to_all_single"],
     }
