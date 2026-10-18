@@ -332,7 +332,8 @@ is the residual's job (D100).
   the grid was planned for. A decode cell whose every unmeasured corner holds more
   blocks than that pool at `B` rows of `c + 1` tokens is read on each B side along c:
   between its measured corners, or, where a corner is past the pool, from its two highest
-  c nodes inside the pool, its measured boundary nodes, extended past them.
+  c nodes inside the pool, its measured boundary nodes, extended past them. A B side
+  whose extension comes out not positive, as a falling edge can give, declines the step.
 - **Otherwise the grid declines**, naming the missing corners, and the step falls to the
   step roofline (D102). No clamp, missing-point recovery, completion from another axis,
   calibrated model or constant fallback (`09` D58; principle 6).

@@ -241,7 +241,7 @@ AUTHORITY_FILE = "authority_endpoint.txt"
 HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field is added, changes
 #: meaning or goes.
-SUMMARY_SCHEMA_VERSION = 5
+SUMMARY_SCHEMA_VERSION = 6
 #: Compass source the host-law key leaves out, by path under the package: all
 #: of it (None), or the top-level names (def, class or assigned) only a simulated
 #: run reaches, with the comments above each and the module docstring.

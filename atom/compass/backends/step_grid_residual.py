@@ -51,7 +51,7 @@ other step is answered by its kind's members alone. A linear member outputs its
 transform of z_0 + Sum z_f.feature_f, naming every feature of its kind. A band
 member outputs the factor of the batch's band (`band`): a batch of decode rows
 only is in `decode rung <rung>`, `eager` when it replays no graph, and any
-other in `prefill tokens <lo>-<hi>`, its token count's band over
+other in `prefill tokens <lo>-<hi>` or `<lo>+`, its token count's band over
 `step_linear_fit.TOKEN_BANDS`; a batch in a band it holds no factor for is
 refused, naming the member and the band. Only the selected members load, so an
 error in one the residual does not select fails nothing, and an error in a
@@ -64,8 +64,8 @@ bound the others, in the kind's feature order, as `a . x + c <= 0` inside. A
 step outside it is answered by the same members, and `factor` names how far
 outside (`Hull.excess`), as the step linear law extrapolates. A step where a
 member's output or the factor is not finite and positive is refused, naming
-that member or the factor. Nothing else answers: no renormalising over the
-other members, no other kind's fit, and no lookup alone.
+that member or the factor, and falls to the step roofline: no renormalising
+over the other members, no other kind's fit, and no lookup alone.
 
 A kind's `held_out` is the hull, as `hull` is written, of the coordinates in
 their grid (`step_grid.coordinates`: B, T and c in prefill, B and c in decode)
