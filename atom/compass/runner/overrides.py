@@ -1106,6 +1106,8 @@ class NonAllocatingRunner(
         The reply's `predicted_s` is the step's duration: this rank's batch
         priced by the installed cost backend, then its DP group target, on TP
         rank 0; the engine reads no other rank's reply, and it reports 0 s.
+        Its `out_s` and `group_out` are `_group_step_seconds`'s `_out_s` and
+        `_group_out`, which `clock.charge` advances after the return.
         A runner with no backend refuses the step rather than report one that
         took no time. ATOM's `dummy_execution` answers with this reply too, so
         an idle DP rank's dummy batch is priced and joins the group's targets.
@@ -1176,6 +1178,8 @@ class NonAllocatingRunner(
             predicted_s=seconds,
             group_targets=getattr(self, "_group_targets", None),
         )
+        out.out_s = getattr(self, "_out_s", None)
+        out.group_out = getattr(self, "_group_out", None)
         out.pp_send = self._pp_send(batch, seconds)
         if out.pp_send is not None:
             out.predicted_s -= out.pp_send[1]
@@ -1198,7 +1202,10 @@ def _group_step_seconds(
     cross-rank collectives, and every rank leaves at its own charge. With no
     `compass_host`, a rank with output, not the DP dummy, leaves at the group's
     max, any other at its own seconds. `_group_targets` holds all,
-    by rank, or None with one rank.
+    by rank, or None with one rank. `_out_s` is the host's ``out_s`` for this
+    step, the seconds from its return to the engine's next input pull, or
+    None; `_group_out` holds each rank's target plus its ``out_s``, for the
+    ranks with one, or None.
 
     A pipeline stage runs only its own layers, so it is refused unless its
     backend states the `stage_share` it prices; any other backend prices the
@@ -1275,16 +1282,22 @@ def _group_step_seconds(
         charge_s = charge(batch, device_s, refuse=False)
     if refused:
         vars(runner).setdefault("_refused_commands", []).append(refused)
-    group_s, targets = charge_s, None
+    group_s, targets, pulls = charge_s, None, None
+    out_s = getattr(host, "out_s", None)
     if group is not None:
         waits = host is None and batch.produces_output() and not batch.is_dummy_run
-        mine = torch.tensor([charge_s, waits], dtype=torch.float64)
+        out = math.nan if out_s is None else out_s
+        mine = torch.tensor([charge_s, waits, out], dtype=torch.float64)
         rows = [torch.empty_like(mine) for _ in range(group.size())]
         torch.distributed.all_gather(rows, mine, group=group)
         top = max(r[0].item() for r in rows)
-        targets = tuple(top if w else s for s, w in (r.tolist() for r in rows))
+        rows = [r.tolist() for r in rows]
+        targets = tuple(top if w else s for s, w, _ in rows)
+        ends = zip(targets, (o for *_, o in rows))
+        pulls = tuple(t + o for t, o in ends if not math.isnan(o)) or None
         group_s = targets[group.rank()]
     vars(runner)["_group_targets"] = targets
+    vars(runner)["_out_s"], vars(runner)["_group_out"] = out_s, pulls
     record = getattr(runner, "_parity_record", None)
     if record is None:
         return group_s

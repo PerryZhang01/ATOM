@@ -620,8 +620,9 @@ stage's channels by its stage, has a downstream stage's loop leave on
 the `+inf` grant, moves the lmcache_mp lookup defer, lookup timeout,
 transfer deadlines and deferred-save restamp to the LP clock, and gives
 lmcache_mp's lookup poll sleep, transfer start stamps and scheduler adapter a
-simulated run's LP clock, and runs the simulated P/D connector inside a `multi`;
-none of these changes a real run's host time. Its
+simulated run's LP clock, runs the simulated P/D connector inside a `multi`,
+and has `clock.charge` advance a reply's `out_s` and stamp a recording's
+input pulls and output puts; none of these changes a real run's host time. Its
 engine key also states the fields the records predate, as their `server.log`
 engine arguments and the capture's environment give them: DP width 1, no DP
 attention, expert parallelism or TBO, and `AITER_LOG_LEVEL=WARNING`; the law

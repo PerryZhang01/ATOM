@@ -256,3 +256,81 @@ def test_a_member_returns_at_its_own_release_after_the_groups_device_end(
     hosts = [r.compass_host for r in ranks]
     assert [h.ends[-1] for h in hosts] == [0.05, 0.05]
     assert hosts[1].output_end == 0.05
+
+
+def test_a_member_returns_at_its_own_pull_with_what_arrived_before_it(
+    monkeypatch, collectives
+):
+    # dp1 pulls 30 ms after its release, dp0 10 ms after its own; a request
+    # sent at 0.1 s is inside dp1's window from its release to its pull.
+    pulls = (TARGETS[0] + 0.03, TARGETS[1] + 0.01)
+    sends = (0.05, 0.1)
+    endpoint = f"inproc:test-dp-pull-{uuid.uuid4().hex}"
+    server = clock_transport.serve(
+        ClockAuthority(TABLE, members=compass_run._members(TABLE, 2)), endpoint
+    )
+    clock_transport.connect(LpId("traffic"), endpoint).send(
+        (NER, math.inf, [], math.inf)
+    )
+    ctx, address = zmq.Context(), f"inproc://dp-pull-{uuid.uuid4().hex}"
+    push, pull = ctx.socket(zmq.PUSH), ctx.socket(zmq.PULL)
+    push.bind(address)
+    pull.connect(address)
+    returned, intake = [], queue.Queue()
+
+    def frontend():
+        rt = LPRuntime(FRONTEND, TABLE, clock_transport.connect(FRONTEND, endpoint))
+        rt.start_run()
+        sock = WrappedSocket(rt, push, REQUEST)
+        for t in sends:
+            rt.advance_to(t)
+            sock.send(str(t).encode())
+        rt.next_event(math.inf)
+
+    def dp0():  # asks the same rounds as `clock.charge` on dp1
+        rt = LPRuntime(ENGINE, TABLE, clock_transport.connect(ENGINE, endpoint, "dp0"))
+        rt.start_run()
+        rt.advance_group((*TARGETS, *pulls), pulls[1])
+        returned.append(rt.now)
+        rt.next_event(math.inf)
+
+    rt = LPRuntime(ENGINE, TABLE, clock_transport.connect(ENGINE, endpoint, "dp1"))
+    rt.start_run()
+    monkeypatch.setattr(clock, "_installed", rt)
+    clock.settle_before_collectives()
+    sock = WrappedSocket(rt, pull, REQUEST)
+
+    def receive():
+        for _ in sends:
+            intake.put(sock.recv())
+        rt.back_at_wait_point()
+
+    threads = [_thread(receive), _thread(frontend), _thread(dp0)]
+    reply = SimpleNamespace(
+        predicted_s=TARGETS[0], out_s=0.03, group_targets=TARGETS, group_out=pulls
+    )
+
+    clock.charge(reply)
+
+    assert rt.now == pulls[0]
+    assert [intake.get(timeout=10), intake.get(timeout=10)] == [b"0.05", b"0.1"]
+    dist.all_reduce(None)
+    assert collectives == [pulls[1]]
+    rt.next_event(math.inf)
+    for t in threads:
+        t.join(timeout=10)
+    assert returned == [pulls[1]]
+    server.close()
+    ctx.destroy(linger=0)
+
+
+def test_each_rank_gathers_its_pull_beside_its_release(dp2):  # noqa: F811
+    ranks = [runner(StepStubBackend(), dp_size=2, dp_rank=r) for r in (0, 1)]
+    for r, (charge_s, out_s) in zip(ranks, [(0.05, 0.002), (0.001, None)]):
+        r.compass_host = SimpleNamespace(charge=lambda *_, s=charge_s: s, out_s=out_s)
+
+    busy, idle = dp2(lambda: ranks[0].forward(prefill(40)), ranks[1].dummy_execution)
+
+    assert busy.group_targets == idle.group_targets == (0.05, 0.001)
+    assert busy.group_out == idle.group_out == (0.05 + 0.002,)
+    assert [busy.out_s, idle.out_s] == [0.002, None]
