@@ -17,7 +17,7 @@ has no `exclusive` value (D19).
 **Revised 2026-10-18 by the owner's
 [bench, band and capture ruling on #1489](https://github.com/jgong5/ATOM/issues/1489#issuecomment-6249950252):**
 capture is concrete, one graph per decode width and prefill (T, B) of the
-`shape_population` (D17, D18, D19); each leaf carries a contract, its arguments by schema
+shape population (D17, D18, D19); each leaf carries a contract, its arguments by schema
 slot with each tensor's stride and role, and a raw Triton or FlyDSL launch lifts to its
 innermost ATOM function (D20).
 
@@ -138,7 +138,8 @@ and chunked prefill. The prior one-point rule is a weaker version of the same th
 concrete shapes.** Revised 2026-10-18 by the owner's
 [capture ruling on #1489](https://github.com/jgong5/ATOM/issues/1489#issuecomment-6249950252),
 which replaces option A's symbolic capture. One graph is captured per decode width and per
-prefill (T, B) that a `shape_population` names (`07` D38, Phase 1a), device-free, and no
+prefill (T, B) that `trace ops` is given or that a record directory's steps hold (`07`
+D38, Phase 1a), device-free, and no
 graph answers a shape it was not captured at, so route D's synthesis is never needed.
 `torch.export` is recorded as an unverified alternative in D18.1.
 

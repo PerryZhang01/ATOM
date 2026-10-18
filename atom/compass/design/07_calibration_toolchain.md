@@ -222,7 +222,7 @@ also run lazily inside a simulated run (doc `02`).
 
 | | |
 |---|---|
-| **Input** | the decode widths and prefill (T, B) of a `shape_population`; the model config; the engine config |
+| **Input** | the decode widths and prefill (T, B) it is given, and the steps of the record directories it is given, from `record` or `trace steps --out`; the model config; the engine config |
 | **Output** | one `op_graph` artifact per shape, keyed by the structure's discrete key and the shape (`04` D19) |
 | **Cost** | 7.6 s per shape on Qwen3.8-27B TP1, 2.2 s of it the traced forward ([#1489](https://github.com/jgong5/ATOM/issues/1489#issuecomment-6249950252)'s PoC) |
 | **Needs a GPU** | **no** — but see the caveat below |
@@ -558,8 +558,9 @@ each server in steps 2, 3 and 6 serves the client runs a client started apart se
           the memory terms, one at a time
 
  Ops half: the op-level backend (16 Stage 3d), after the steps half's 1, 2, 3 and 5
- 1.  compass trace ops --population <populations> ...      [CPU, seconds per shape]
-       -> op_graph per decode width and prefill (T, B) of the steps half's 3
+ 1.  compass trace ops --population <records> ...          [CPU, seconds per shape]
+       -> op_graph per decode width and prefill (T, B) of the steps in the
+          steps half's 3 --out, or 2's records
  2.  compass measure ops --plan <populations> ...          [GPU, every rank]
        -> the op-level planner over the steps half's 3 (D37); one cold
           measurement per planned point, with the kernels each leaf launched,
