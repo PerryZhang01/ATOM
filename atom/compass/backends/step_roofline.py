@@ -199,6 +199,13 @@ class StepRooflineBackend(CostBackend):
                     "which the machine spec does not state"
                 )
                 continue
+            domain = self.machine.value("interconnect.intra_node.domain_devices")
+            if m.ranks > domain:
+                refuse.append(
+                    f"a {m.kind} collective over {m.ranks} ranks leaves the "
+                    f"scale-up domain of {domain} devices"
+                )
+                continue
             b = bounds(work, self.machine)
             kernel = max(("floor", "compute", "memory"), key=b.get)
             won = [kernel, "comm"] if b["comm"] else [kernel]

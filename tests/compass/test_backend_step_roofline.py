@@ -135,7 +135,7 @@ def test_an_unclassified_module_refuses_every_step_by_name():
         ("gemm", (32, 16)),
         ("unclassified", ()),
     ]
-    with pytest.raises(CostRefused, match="unclassified modules: Dropout at 1.0$"):
+    with pytest.raises(CostRefused, match=r"unclassified modules: Dropout at 1\.0\)$"):
         StepRooflineBackend(MACHINE, modules).price(view((1, 9, True)))
 
 
@@ -146,6 +146,13 @@ def test_a_spec_field_a_module_reads_and_the_spec_lacks_refuses_naming_it():
 
     with pytest.raises(CostRefused, match="gemm reads device.kernel_floor_s, which"):
         lacking.price(view((1, 9, True)))
+
+
+def test_a_collective_wider_than_the_scale_up_domain_refuses_naming_it():
+    wide = StepRooflineBackend(MACHINE, [Module("o_proj", "gemm", (64, 8), ranks=16)])
+
+    with pytest.raises(CostRefused, match="over 16 ranks leaves the scale-up domain"):
+        wide.price(view((1, 9, True)))
 
 
 def _spec(origin, origins=None):
