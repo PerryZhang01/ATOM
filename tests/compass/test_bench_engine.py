@@ -11,8 +11,10 @@ logging them, its workers agreeing over a gloo group.
 
 import itertools
 import multiprocessing
+import os
 import signal
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -29,6 +31,7 @@ from aiter_stub import stubbed_aiter
 with stubbed_aiter():
     from atom.compass.bench import engine
     from atom.model_engine import async_proc
+    from atom.utils import init_exit_handler
 
 BLOCKS = 7
 
@@ -156,6 +159,11 @@ def manager(monkeypatch):
     monkeypatch.setattr(async_proc, "get_mp_context", _Spawn)
     # The manager would take the test process's SIGINT and SIGTERM.
     monkeypatch.setattr(async_proc, "init_exit_handler", lambda self: None)
+    # The bench takes them too.
+    handlers = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+    yield
+    for s, handler in handlers.items():
+        signal.signal(s, handler)
 
 
 @pytest.mark.parametrize("tp, eager", [(2, False), (1, True)])
@@ -244,6 +252,38 @@ def test_a_worker_that_dies_in_a_call_stops_the_bench_naming_the_call(
             bench.measure(batch())
         finally:
             bench.exit()
+
+
+class Signals(Dies):
+    """A worker that, in the call its config's `dies_in` names, sends SIGTERM to
+    the process that started the bench twice, the second while the bench tears
+    down, as GNU `timeout`'s second delivery can, then outlasts the teardown."""
+
+    def die(self, *args):
+        for _ in range(2):
+            os.kill(os.getppid(), signal.SIGTERM)
+            time.sleep(0.5)
+        time.sleep(60)
+
+
+@pytest.mark.parametrize("call", ["allocate_kv_cache", "bench_step"])
+def test_a_sigterm_stops_the_bench_naming_it_and_a_repeat_leaves_the_teardown_whole(
+    manager, monkeypatch, call
+):
+    """With the manager's own SIGTERM handler installed, which stops the
+    workers as a dead worker does."""
+    monkeypatch.setattr(engine, "RUNNER", f"{__name__}.Signals")
+    monkeypatch.setattr(async_proc, "init_exit_handler", init_exit_handler)
+    monkeypatch.setenv("ATOM_SHUTDOWN_TIMEOUT_S", "2")
+    config = _config(eager=True)
+    config.dies_in = call
+    with pytest.raises(engine.Signalled, match="its process was sent SIGTERM$"):
+        bench = engine.Bench(config, BLOCKS)
+        try:
+            bench.measure(batch())
+        finally:
+            bench.exit()
+    assert not multiprocessing.active_children()
 
 
 def test_a_stop_from_the_keyboard_reaches_the_process_that_started_the_bench(

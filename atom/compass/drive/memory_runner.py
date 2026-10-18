@@ -14,9 +14,12 @@ from torch._dynamo.utils import compilation_time_metrics
 
 from atom.compass.artifacts import member_name
 from atom.compass.drive.measure_memory import OUT_ENV
+from atom.compass.parity import key_memory_formats_by_name
 from atom.compass.run import memory
 from atom.compass.run.step_grid import BOUNDS, keyed
 from atom.model_engine.model_runner import ModelRunner
+
+key_memory_formats_by_name()
 
 #: What inductor times each kernel's autotuning under.
 AUTOTUNE = "CachingAutotuner.benchmark_all_configs"
