@@ -15,8 +15,8 @@ quantity is a positive real, a derate is a fraction in (0, 1].
 
 Every field is required except the provenance fields `merge` fills in,
 `fp4_flops`, the pipeline send terms, a link's `link_setup_s` (zero when
-absent), the `host.http_intake` pair, the `host_link` pair and `device.ptl`,
-the cards' PTL state (`disabled` when absent). An engine
+absent), the `host_link` pair and `device.ptl`, the cards' PTL state
+(`disabled` when absent). An engine
 start's memory readings are no field here: `compass measure memory` publishes
 them per configuration, as a `memory_readings` entry.
 
@@ -107,8 +107,8 @@ FIELDS = (
     Field("host.ipc.zmq_roundtrip_s", Kind.QUANTITY),
     Field("host.ipc.shm_broadcast_s", Kind.QUANTITY),
     # The frontend event loop's time to take in one HTTP request.
-    Field("host.http_intake.fixed_s", Kind.QUANTITY, required=False),
-    Field("host.http_intake.per_byte_s", Kind.QUANTITY, required=False),
+    Field("host.http_intake.fixed_s", Kind.QUANTITY),
+    Field("host.http_intake.per_byte_s", Kind.QUANTITY),
     Field("device.name", Kind.TEXT),
     Field("device.arch", Kind.TEXT),
     Field("device.count_per_node", Kind.COUNT),

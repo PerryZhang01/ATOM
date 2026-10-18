@@ -375,7 +375,7 @@ clock reaching `now_r`) and asks the runner for `t_recv_posted`: the forward's p
 then `W_recv`, the part of the launch `run_model` runs before that call (#1451).
 With non-negative host segments it is never before the call, so the `pp_ack` lookahead derivation above holds. If any gloo
 part of the send is rendezvous it registers `(pp_ack, n)` stamped their `done` (K4). The
-forward's host runs from the call, its launch waits for the metadata's arrival and its
+forward's host runs from the call, its launch after `W_recv` waits for the metadata's arrival and its
 device start for the end of the receive, below (`01` D4, R7).
 
 **The idle flushes are channel receives (`01` D4, K5).** At both idle call sites the loop
