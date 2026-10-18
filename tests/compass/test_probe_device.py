@@ -26,7 +26,10 @@ probe = _load("probe_device")
 #: Samples as a probe writes them: GEMM seconds per shape, copy seconds per
 #: size moved, whose rate dips on the plateau, and the banded fields' samples.
 RECORD = {
-    "gemm": {"bf16": {"4096": [1e-3] * 3, "8192": [4e-3] * 3}, "fp8": {"8192": [2e-3]}},
+    "gemm": {
+        "bf16": {"4096x4096x4096": [1e-3] * 3, "8192x4096x8192": [2e-3] * 3},
+        "fp8": {"8192x8192x8192": [2e-3]},
+    },
     "copy": {"4096": [4e-6], "8192": [4e-6], "16384": [8.2e-6]},
     "link": [3.2e10, 3.0e10, 3.4e10],
     "floor": [2e-6, 1e-6, 3e-6, 4e-6, 5e-6],
@@ -36,7 +39,7 @@ RECORD = {
 
 def test_readings_take_the_best_shape_and_keep_the_curve_monotone():
     found = probe.readings(RECORD)
-    assert found["bf16"] == 2 * 8192**3 / 4e-3  # the larger shape's rate is best
+    assert found["bf16"] == 2 * 8192 * 4096 * 8192 / 2e-3  # the second shape is best
     assert [r for _, r in found["bandwidth_curve"]] == [1.024e9, 2.048e9, 2.048e9]
     assert found["link"] == 3.2e10
     assert found["device.kernel_floor_s"][0] == 3e-6
@@ -74,11 +77,11 @@ def test_a_rate_above_its_peak_is_refused():
     assert "device.compute.derate.bf16" in str(refused.value)
 
 
-def _card(drm, name, bdf, used, ptl=None):
+def _card(drm, name, bdf, used, ptl=None, busy=0):
     device = drm / "devices" / bdf
     device.mkdir(parents=True)
     (device / "mem_info_vram_used").write_text(f"{used}\n")
-    (device / "gpu_busy_percent").write_text("0\n")
+    (device / "gpu_busy_percent").write_text(f"{busy}\n")
     if ptl:
         (device / "ptl").mkdir()
         (device / "ptl" / "ptl_enable").write_text(f"{ptl}\n")
@@ -86,15 +89,21 @@ def _card(drm, name, bdf, used, ptl=None):
     (drm / name / "device").symlink_to(device)
 
 
-def test_cards_disagreeing_with_the_spec_ptl_or_holding_vram_are_refused(tmp_path):
+def test_cards_disagreeing_with_the_spec_ptl_holding_vram_or_busy_are_refused(tmp_path):
     _card(tmp_path, "card1", "0000:0a:00.0", 3 * 10**8, "enabled")
     _card(tmp_path, "card9", "0000:80:00.0", 3 * 10**8)
     _card(tmp_path, "card17", "0000:a4:00.0", 9 * 10**9, "enabled")
-    read = probe.cards(["0000:0a:00.0", "0000:80:00.0", "0000:a4:00.0"], tmp_path)
-    assert [c["ptl"] for c in read] == ["enabled", "disabled", "enabled"]
+    _card(tmp_path, "card25", "0000:c8:00.0", 3 * 10**8, "enabled", busy=37)
+    read = probe.cards(
+        ["0000:0a:00.0", "0000:80:00.0", "0000:a4:00.0", "0000:c8:00.0"], tmp_path
+    )
+    assert [c["ptl"] for c in read] == ["enabled", "disabled", "enabled", "enabled"]
     probe.refuse_unfit(read[:1], "enabled")
     with pytest.raises(SpecRefusal) as refused:
         probe.refuse_unfit(read, "enabled")
     assert "0000:0a" not in str(refused.value)
     assert "0000:80:00.0 (ptl disabled" in str(refused.value)
     assert "0000:a4:00.0 (ptl enabled, 9000000000 B used" in str(refused.value)
+    assert "0000:c8:00.0 (ptl enabled, 300000000 B used, 37% busy)" in str(
+        refused.value
+    )

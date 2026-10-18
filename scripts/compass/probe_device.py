@@ -7,11 +7,11 @@ SPEC is the machine file the peaks belong to. Card 0 runs the one-card probes,
 cards 0 and 1 the link. Every sample is device time between two events queued
 behind a spin kernel, so no host time is in it.
 
-- Compute: per format, the median of `REPS` GEMMs ``x @ w.T`` at each of
-  `SHAPES`, BF16 through `torch.matmul` and FP8 through `torch._scaled_mm`;
-  the best shape's rate over SPEC's ``*_flops`` is the format's derate. Each
-  GEMM follows a spin, so the rate is a burst's: with PTL enabled a sustained
-  GEMM slows within a second or two.
+- Compute: per format, the median of `REPS` GEMMs ``x @ w.T``, x m by k and
+  w n by k, at each of `SHAPES`, BF16 through `torch.matmul` and FP8 through
+  `torch._scaled_mm`; the best shape's rate over SPEC's ``*_flops`` is the
+  format's derate. Each GEMM follows a spin, so the rate is a burst's: with PTL
+  enabled a sustained GEMM slows within a second or two.
 - Bandwidth: per size in `SIZES`, the bytes read plus written, a graph of up
   to `GRAPH` copies through consecutive slices of two `POOL`-byte buffers,
   replayed `REPS` times. Copies that together fit in the last-level cache run
@@ -29,7 +29,7 @@ behind a spin kernel, so no host time is in it.
 
 The run is refused unless every card is idle (under `IDLE_BYTES` of VRAM used,
 0% busy) and reads SPEC's ``device.ptl`` from
-``ptl/ptl_enable`` under its sysfs device (``disabled`` where it has none). OUT
+``ptl/ptl_enable`` under its sysfs device (`NO_PTL` where it has none). OUT
 is the record: the cards, every sample and this file's text; the fragment
 printed names its sha256.
 """
@@ -38,6 +38,7 @@ import datetime
 import hashlib
 import itertools
 import json
+import math
 import statistics
 import sys
 import time
@@ -50,10 +51,13 @@ import triton.language as tl
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from atom.compass.artifacts.keys import NO_PTL
 from atom.compass.spec import Fragment, MachineSpec, SpecRefusal
 from atom.compass.spec.rules import Rule
 
-SHAPES = (4096, 8192, 16384)
+#: GEMM shapes (m, n, k), every format timed at each: hipBLASLt's rate moves by
+#: up to 2.7x between neighbouring large shapes, and each format peaks at another.
+SHAPES = tuple(itertools.product((8192, 10240, 12288, 16384), repeat=3))
 SIZES = tuple(2**k for k in range(12, 33))  # 4 KiB to 4 GiB moved
 POOL, COPY_BLOCK = 2**31, 4096  # bytes in each copy buffer, floats a program
 GRAPH, ROUNDS, LINK_BYTES = 1000, 1000, 2**30
@@ -107,7 +111,7 @@ def cards(bdfs: list[str], drm: str = DRM) -> list[dict]:
                 "bdf": bdf,
                 "vram_used": int((device / "mem_info_vram_used").read_text()),
                 "busy": int((device / "gpu_busy_percent").read_text()),
-                "ptl": ptl.read_text().strip() if ptl.exists() else "disabled",
+                "ptl": ptl.read_text().strip() if ptl.exists() else NO_PTL,
             }
         )
     return out
@@ -151,14 +155,17 @@ def probe(torch) -> dict:
     if torch.cuda.get_device_properties(0).gcnArchName.startswith("gfx942"):
         fp8 = torch.float8_e4m3fnuz
     one = torch.ones((), device="cuda")
-    gemm = {"bf16": {}, "fp8": {}}
-    for n in SHAPES:
-        x, w = (torch.randn(n, n, device="cuda", dtype=torch.bfloat16) for _ in "xw")
-        gemm["bf16"][n] = _timed(torch, partial(torch.matmul, x, w.T))
+    gemm = {f: {} for f in FORMATS}
+    for m, n, k in SHAPES:
+        x = torch.randn(m, k, device="cuda", dtype=torch.bfloat16)
+        w = torch.randn(n, k, device="cuda", dtype=torch.bfloat16)
+        shape = f"{m}x{n}x{k}"
+        gemm["bf16"][shape] = _timed(torch, partial(torch.matmul, x, w.T))
+        time.sleep(1)  # let a PTL card recover before the next burst
         x, w = x.to(fp8), w.to(fp8)
         scaled = partial(torch._scaled_mm, x, w.T, one, one, out_dtype=torch.bfloat16)
-        gemm["fp8"][n] = _timed(torch, scaled)
-        time.sleep(1)  # let a PTL card recover before the next burst
+        gemm["fp8"][shape] = _timed(torch, scaled)
+        time.sleep(1)
     src = torch.empty(POOL // 4, device="cuda")
     dst = torch.empty_like(src)
     copy = {}
@@ -215,7 +222,10 @@ def readings(record: dict) -> dict:
         return [med(samples), cut[0], cut[8]]
 
     found = {
-        f: max(2 * int(n) ** 3 / med(t) for n, t in record["gemm"][f].items())
+        f: max(
+            2 * math.prod(map(int, s.split("x"))) / med(t)
+            for s, t in record["gemm"][f].items()
+        )
         for f in FORMATS
     }
     rates = itertools.accumulate(
@@ -274,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
 
     spec_path, out = (Path(a) for a in (argv or sys.argv[1:]))
     spec = MachineSpec.from_mapping(json.loads(spec_path.read_text()))
-    ptl = spec.values.get("device.ptl", "disabled")
+    ptl = spec.values.get("device.ptl", NO_PTL)
     props = [torch.cuda.get_device_properties(i) for i in (0, 1)]
     bdfs = [
         f"{p.pci_domain_id:04x}:{p.pci_bus_id:02x}:{p.pci_device_id:02x}.0"
