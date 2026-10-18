@@ -243,6 +243,7 @@ def test_a_population_loads_under_its_runs_readings_and_not_another_engine(
         software_stack="any",
         torch="any",
         device="any",
+        ptl="any",
         host_cpu="any",
         atom_src=Reading(source["revision_kind"], source["revision"]),
         model=IDENTITY["host_key"]["model"],

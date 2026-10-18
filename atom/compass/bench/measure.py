@@ -113,7 +113,7 @@ def main(argv: list[str]) -> None:
     configuration = run_fields(run)
     readings = conditions(
         {**configuration, "engine_config": engine}
-        | {k: run[k] for k in ("stack", "host_key")}
+        | {k: run[k] for k in ("stack", "host_key", "ptl")}
     )
     todo = _todo(points, configuration, engine, sampling, store, readings)
     held = len(points) - len(todo)

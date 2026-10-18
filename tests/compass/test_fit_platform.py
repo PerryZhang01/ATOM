@@ -57,6 +57,7 @@ CARD = {
     "Node ID": "2",
     "GUID": "63420",
     "GFX Version": "gfx942",
+    "PCI Bus": "0000:0A:00.0",
 }
 
 
@@ -80,6 +81,7 @@ def compass_next(tmp_path, monkeypatch):
     monkeypatch.setattr(torch.cuda.nccl, "version", lambda: (2, 27, 7))
     monkeypatch.setattr(torch, "__version__", "2.10.0+rocm7.2.4.git3d3aa833")
     monkeypatch.setattr(drive, "_commit", lambda root: "9205e1059")
+    monkeypatch.setattr(drive, "PCI", str(tmp_path / "pci"))
 
 
 def test_a_law_fitted_from_identity_s_record_loads_under_the_spec_it_ran_on(

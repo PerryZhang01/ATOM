@@ -60,6 +60,7 @@ def record(tmp_path, monkeypatch, name="a", groups=((0, 1), (2, 3)), **run):
         "host_key": {**HOST, "engine": keyed},
         "device": [DEVICE],
         "stack": STACK,
+        "ptl": "disabled",
         "profiled": False,
     }
     (directory / "run.json").write_text(json.dumps({**identity, **run}))
@@ -206,6 +207,7 @@ def test_each_sample_copies_its_input_s_provenance_and_the_traces_it_served(
         ],
         "source_root": "tree-67c176f0",
         "stack": STACK,
+        "ptl": "disabled",
         "sampling": SAMPLING,
         "host_key": {"host_cpu": "planted cpu", "atom": "0" * 64},
     }

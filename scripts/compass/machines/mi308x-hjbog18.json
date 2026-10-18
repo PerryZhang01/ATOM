@@ -3,7 +3,7 @@
   "name": "mi308x-hjbog18",
   "provenance": {
     "authored_by": "compass agent for jgong5",
-    "date": "2026-10-14",
+    "date": "2026-10-18",
     "origin": "mixed",
     "origins": {
       "host.cpu.cores_physical": {
@@ -119,6 +119,9 @@
       "interconnect.inter_node.derate": {
         "origin": "assumed"
       },
+      "device.ptl": {
+        "origin": "probed"
+      },
       "host.tokenizers[qwen3.8-27b fast]": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B"
@@ -127,9 +130,10 @@
     "fragments": [
       "tokenizer",
       "device",
-      "assumed"
+      "assumed",
+      "ptl"
     ],
-    "notes": "one Qwen3.8-27B TP1 start at 983e42973 | no probe fills these"
+    "notes": "one Qwen3.8-27B TP1 start at 983e42973 | no probe fills these | ptl_enable"
   },
   "host": {
     "cpu": {
@@ -162,6 +166,7 @@
     "name": "MI308X",
     "arch": "gfx942",
     "count_per_node": 8,
+    "ptl": "enabled",
     "memory": {
       "capacity_bytes": 206141652992,
       "bandwidth_bytes_per_s": 5300000000000.0,
