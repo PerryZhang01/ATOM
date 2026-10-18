@@ -36,6 +36,7 @@ DATA = "engine-pp0->engine-pp1:pp_data#dp0"
 E, PRE, LAUNCH, POST = 2.0**-6, 2.0**-7, 2.0**-1, 2.0**-5
 LAWS = {"prefill": {"E": (E, 0, 0), "W_pre": (PRE, 0, 0), "W_launch": (LAUNCH, 0, 0)}}
 LAWS["prefill"]["W_post"] = (POST, 0, 0)
+LAWS["prefill"]["W_recv"] = (0, 0, 0)  # a later stage receives at its launch start
 #: Stands in for aiter's, whose import needs a driver.
 TensorMetadata = collections.namedtuple("TensorMetadata", "device dtype size")
 
