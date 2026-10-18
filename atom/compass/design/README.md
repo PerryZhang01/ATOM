@@ -320,7 +320,8 @@ every term it returns carries a **method** (`backends/provenance.py::Method`), a
 reports its seconds by method (`08` D50.1). Fallback runs only along method inside one
 granularity: an op-level backend answers an unpriced leaf by its analytical law, a
 step-level run falls to the step roofline only where its run file composes
-`StepFallbackBackend`, and nothing falls from op-level to step-level (#952).
+`StepFallbackBackend`, as every step grid run does, and nothing falls from op-level to
+step-level (#952).
 
 One step-level backend goes beyond its "used for" line by ruling: `17`'s step grid is
 graded as a candidate for #627's stage 2 (`17` D96, `07` D36).
@@ -477,14 +478,14 @@ The documents use these precisely; a reader will bounce off without them.
 | **declared** | the method of a term some input of which is assumed, or was observed on another subject (another platform, width, model or engine config). Its note states the origin, and the successor or why there is none. A declared memory term can fail its gate but cannot pass it; declared cost seconds are reported apart and not gated. The word is reserved for the method; for anything else these documents say *stated*. |
 | **subject** | what an empirical term observes: the model, the deployment config, the source root, and the platform the run's machine spec describes, device and software stack, host driver, firmware and power settings included. There is no machine-identity mechanism. |
 | **source** | one thing a resolver asks for a price (`backends/resolver.py::CostSource`). A term's provenance names the source that answered, every one that declined before it, and the algorithm behind an estimated answer. |
-| **analytical fallback** | the analytical law that answers what an empirical source declines, inside one granularity: an op-level backend's law for an unpriced leaf, always on, or the step roofline a run file composes with `StepFallbackBackend`. Its terms carry their own method, declared while an input is assumed, and its share of seconds is always reported. |
+| **analytical fallback** | the analytical law that answers what an empirical source declines, inside one granularity: an op-level backend's law for an unpriced leaf, always on, or the step roofline a run file composes with `StepFallbackBackend`, as every step grid run does (`17` D102). Its terms carry their own method, declared while an input is assumed, and its share of seconds is always reported. |
 | **opaque leaf** | an operator the tracer records as one node whose internal kernels are invisible, because ATOM deliberately registers a whole subsystem as a single dispatcher op. ~20 of them hold 60–75% of step time. |
 | **logical process (LP)** | the unit the Clock Authority coordinates. *Not* an OS process — a TP group is one LP, a DP group is one LP, because both already have a hardware barrier. |
 | **structure** | a distinct operator list, independent of shape. Prefill has two (chunked, unchunked); decode has one across all CUDA-graph rungs. Traces are cached per structure, not per shape. |
 | **treatment** | a factor that moves cost and is invisible to every feature in the model. Uniform MoE routing under DP is one. Decode **row order** is one to the op-level IR. The step linear law prices it with `rowmod(k)` (`09` D61); the step grid's residual reads it (`17` D100). |
 | **refusal** | a declined answer with a named reason. Refusals are results, not errors, and are preferred to guesses everywhere. A **refused step** is one with some term still unanswered after method fallback, its reasons listed per term: it costs 0 s, the run continues, and any refusal makes the run a coverage report (`08` D50.1). A source that declines while a later one answers is a fall-through, and an answer of any method, unvalidated included, is reported by its method; neither is a refusal. |
 | **step grid** | the step-level backend of `17`, run-file key `step_grid`: a grid of step measurements looked up per batch, plus a residual, fitted on real-run step times, bench replays or both, for what the grid's coordinates cannot see (row order, raggedness). |
-| **complete cell** | a cell of the step grid whose every corner was measured. The step grid answers only inside one, by exact hit or interpolation; anywhere else it refuses. |
+| **complete cell** | a cell of the step grid whose every corner was measured. The step grid interpolates only inside one; it extrapolates a decode cell past the KV pool, and anywhere else declines to the step roofline (`17` D99, D102). |
 | **recipe** | the step grid's feature functions and the constants frozen with them. Configuration supplies geometry and hardware values, a fit supplies coefficients, and a recipe's version changes only when a function does. |
 | **bundle** | the step grid's artifact: a grid, a recipe and the residual fitted with them, identified by a `07` D41 key and a digest, never by a path. |
 

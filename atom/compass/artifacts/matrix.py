@@ -52,6 +52,7 @@ class Axis(enum.Enum):
     ATOM_SRC = "ATOM src"
     MODEL = "model"
     DEVICE = "device"
+    PTL = "PTL"
     HOST_CPU = "host CPU"
     ENGINE_CONFIG = "engine cfg"
 
@@ -118,6 +119,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: DEPENDS,
         Axis.DEVICE: INDEPENDENT,
+        Axis.PTL: INDEPENDENT,
         Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: Cell(True, "level, cudagraph mode"),
     },
@@ -127,6 +129,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: Cell(False, "shape-parametric"),
         Axis.DEVICE: DEPENDS,
+        Axis.PTL: DEPENDS,
         Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: INDEPENDENT,
     },
@@ -136,6 +139,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: DEPENDS,
         Axis.DEVICE: DEPENDS,
+        Axis.PTL: DEPENDS,
         Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: DEPENDS,
     },
@@ -145,6 +149,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: INDEPENDENT,
         Axis.MODEL: INDEPENDENT,
         Axis.DEVICE: DEPENDS,
+        Axis.PTL: INDEPENDENT,
         Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: INDEPENDENT,
     },
@@ -154,6 +159,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: INDEPENDENT,
         Axis.MODEL: Cell(True, "tokenizer"),
         Axis.DEVICE: Cell(False, "host CPU"),
+        Axis.PTL: INDEPENDENT,
         Axis.HOST_CPU: Cell(False, "untested: assumed to transfer by derate"),
         Axis.ENGINE_CONFIG: INDEPENDENT,
     },
@@ -163,6 +169,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: DEPENDS,
         Axis.DEVICE: DEPENDS,
+        Axis.PTL: DEPENDS,
         Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: DEPENDS,
     },
@@ -172,6 +179,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: DEPENDS,
         Axis.DEVICE: DEPENDS,
+        Axis.PTL: DEPENDS,
         Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: DEPENDS,
     },
@@ -181,6 +189,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: DEPENDS,
         Axis.DEVICE: INDEPENDENT,
+        Axis.PTL: INDEPENDENT,
         Axis.HOST_CPU: DEPENDS,
         Axis.ENGINE_CONFIG: DEPENDS,
     },
@@ -190,6 +199,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: DEPENDS,
         Axis.DEVICE: DEPENDS,
+        Axis.PTL: DEPENDS,
         Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: DEPENDS,
     },
@@ -199,6 +209,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: DEPENDS,
         Axis.DEVICE: INDEPENDENT,
+        Axis.PTL: INDEPENDENT,
         Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: DEPENDS,
     },

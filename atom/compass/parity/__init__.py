@@ -49,6 +49,7 @@ schedules them in the other order names them the other way round, and `compare`
 may then report a step where the twins' rows differ.
 """
 
+import bisect
 import collections
 import copy
 import functools
@@ -81,6 +82,8 @@ TIMESTAMPS = (
     "d_gap_ns",
     "d_target_ns",
     "d_recv_ns",
+    "t_pull_ns",
+    "t_put_ns",
 )
 
 
@@ -435,6 +438,9 @@ def read(directory, stage: int = 0) -> dict[int, list[dict]]:
     the steps entered before the first send are the engine's start, not the
     workload's: they are left out and the rest renumbered from 0. A step
     naming requests with response ids holds them by key in `response_ids`.
+    A real rank's ``dp<rank>.pulls.jsonl`` (`clock.PullStamps`) gives each
+    step the first ``t_pull_ns`` and ``t_put_ns`` at or after its
+    ``t_exit_ns`` and before the next step's ``t_enter_ns``, where there is one.
     """
     directory, record, start = pathlib.Path(directory), {}, None
     if (directory / ARRIVALS).exists():
@@ -443,6 +449,8 @@ def read(directory, stage: int = 0) -> dict[int, list[dict]]:
     prefix = f"pp{stage}." if stage else ""
     for path in sorted(directory.glob(f"{prefix}dp*[0-9].jsonl")):
         steps = [json.loads(line) for line in path.read_text().splitlines()]
+        if (pulls := path.with_suffix(".pulls.jsonl")).exists():
+            _join_stamps(steps, pulls)
         keys = {}
         for step in steps:
             for req_id, key, *response_id in step.pop("named"):
@@ -458,6 +466,21 @@ def read(directory, stage: int = 0) -> dict[int, list[dict]]:
                 row[0] = keys.get(row[0], row[0])
         record[int(path.stem[len(prefix) + 2 :])] = steps
     return record
+
+
+def _join_stamps(steps: list[dict], path) -> None:
+    """Put into each step the first stamp of each key in `path` at or after
+    its exit and before the next step's entry."""
+    times = collections.defaultdict(list)
+    for line in path.read_text().splitlines():
+        for key, ns in json.loads(line).items():
+            times[key].append(ns)
+    ends = [s["t_enter_ns"] for s in steps[1:]] + [float("inf")]
+    for step, end in zip(steps, ends):
+        for key, ts in times.items():
+            i = bisect.bisect_left(ts, step["t_exit_ns"])
+            if i < len(ts) and ts[i] < end:
+                step[key] = ts[i]
 
 
 def _request_ranks(name: str, record: dict[int, list[dict]]) -> dict[str, int]:

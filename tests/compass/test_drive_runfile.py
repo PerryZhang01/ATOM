@@ -111,7 +111,7 @@ def test_a_step_grid_and_host_laws_by_token_install_both(monkeypatch, tmp_path):
 
     install(tmp_path, monkeypatch, run, r)
 
-    assert isinstance(r.compass_backend, StepGridBackend)
+    assert isinstance(r.compass_backend.first, StepGridBackend)
     assert r.compass_host.laws == LAWS
     store = str((tmp_path / "store").resolve())
     assert run["step_grid"] == {"store": store, **KEY} and run["store"] == store

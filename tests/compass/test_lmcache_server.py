@@ -368,12 +368,12 @@ def test_an_unmodelled_request_type_is_refused_by_name(op):
         _call(server, op, 1)
 
 
-def _native_store(server, worker_id, end, state_at):
+def _native_store(server, worker_id, end, state_at, **kw):
     """A store of chunks [0, `end`) as ATOM's native-state layout sends it:
     attention blocks on every chunk, recurrent state on chunks `state_at`."""
     n = end // CHUNK
     ids = [[7] * n, [5 if i in state_at else -1 for i in range(n)]]
-    return _do(server, "store", _key(worker_id, 0, end), 1, ids, b"")
+    return _do(server, "store", _key(worker_id, 0, end, **kw), 1, ids, b"")
 
 
 @pytest.mark.parametrize(
@@ -390,3 +390,84 @@ def test_a_hit_ends_at_a_chunk_that_keeps_its_recurrent_state(separate, hits):
     for w in (0, 1):
         _native_store(server, w, 2 * CHUNK, {1})
     assert got + [_hit(server, "c", end=3 * CHUNK)] == hits
+
+
+def test_a_hit_ends_below_a_chunk_whose_state_only_one_rank_lost():
+    flags = FLAGS + ["--null-block-id", "-1", "--separate-object-groups"]
+    server = LMCacheServer(flags, chunk_bytes=1)
+    _native_store(server, 0, WHOLE, {1, 3})
+    _native_store(server, 1, WHOLE, {1})  # rank 1's chunk-3 state evicted alone
+    assert _hit(server, "a") == 2
+
+
+def _copied(server, op, *payloads):
+    """Serve one request and apply its effect; the chunks its copy is priced at."""
+    frames = [b"id", msgspec.msgpack.encode(7), encode_operation(op)]
+    frames += [msgspec.msgpack.encode(p) for p in payloads]
+    _, at_end, chunks = server.handle(frames, 0.0)
+    at_end(0.0)
+    return chunks
+
+
+@pytest.mark.parametrize(
+    "separate, state, copied, hit",
+    [(True, GIB // 8, 6, 4), (False, GIB // 8, 12, 4), (True, GIB, 4, 0)],
+    ids=["its-own-object", "in-every-chunk", "does-not-fit"],
+)
+def test_a_recurrent_state_takes_its_bytes_in_the_budget_and_the_copy(
+    separate, state, copied, hit
+):
+    flags = FLAGS + ["--null-block-id", "-1"] + ["--separate-object-groups"] * separate
+    server = LMCacheServer(flags, chunk_bytes=GIB // 16, state_bytes=state)
+    ids = [[7] * 4, [-1, -1, -1, 5]]
+    assert _copied(server, "store", _key(0, world=1), 1, ids, b"") == copied
+    assert _hit(server, "a", world=1) == hit
+    if hit:
+        key = _key(0, rid="a", world=1)
+        assert _copied(server, "retrieve", key, 1, ids, b"", 0) == copied
+
+
+def test_a_recurrent_state_is_evicted_apart_from_its_chunk_and_ends_a_hit_earlier():
+    flags = FLAGS + ["--null-block-id", "-1", "--separate-object-groups"]
+    server = LMCacheServer(
+        flags + ["--eviction-ratio", "0.2"],
+        chunk_bytes=GIB // 16,
+        state_bytes=GIB // 10,
+    )
+    for end, state_at in ((2 * CHUNK, {1}), (WHOLE, {3})):
+        for w in (0, 1):
+            _native_store(server, w, end, state_at)
+    assert _hit(server, "a") == 4
+    assert _hit(server, "b", end=2 * CHUNK) == 2  # chunk 1's state is now newer
+    for rid in ("a", "b"):
+        _do(server, "free_lookup_locks", _key(rid=rid), 2)
+    last = server._hashes(_key(), 0, WHOLE)[3]
+    states = {(*server._okey(_key(), r, last), 1) for r in (0, 1)}
+    assert set(server.evict(0.0)) == states  # 90% full: two of twelve objects
+    assert _hit(server, "c") == 2  # every attention chunk is still here
+
+
+def test_end_session_makes_its_recurrent_states_most_recent_too():
+    flags = FLAGS + ["--null-block-id", "-1", "--separate-object-groups"]
+    server = LMCacheServer(
+        flags + ["--eviction-ratio", "0.5"], chunk_bytes=GIB // 8, state_bytes=GIB // 8
+    )
+    for rid, salt in (("r0", ""), ("r1", "x")):
+        for w in (0, 1):
+            _native_store(server, w, CHUNK, {0}, rid=rid, salt=salt)
+    _do(server, "end_session", "r0")
+    assert {k[4] for k in server.evict(0.0)} == {"x"}  # full: four of eight
+
+
+def test_an_eviction_says_when_and_how_many_objects(capsys):
+    server = LMCacheServer(FLAGS, chunk_bytes=GIB // 8)  # eight objects fit
+    _store(server, 0, end=2 * CHUNK)
+    _store(server, 1)
+    server.evict(1.0)
+    assert capsys.readouterr().err == ""  # six objects, below the 0.8 watermark
+    _store(server, 0)
+    server.evict(2.0)
+    assert capsys.readouterr().err == (
+        "lmcache stand-in at 2.000000 s: L1 memory usage 1.00 above watermark "
+        "0.80; triggering eviction of 1 objects\n"
+    )

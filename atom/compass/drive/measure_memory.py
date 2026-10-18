@@ -6,14 +6,13 @@ its configuration's `memory_readings` entry.
 
 ATOM's engine starts from ATOM's arguments (`EngineArgs`) on the GPUs `--gpu`
 names, through `MemoryReadingModelRunner`, and stops once it has started: its
-weights loaded, its warmup run a second time on a warm compile cache, its KV
-cache sized and its graphs captured. `gpu.quiet` checks those GPUs before the
+weights loaded, its one warmup run, its KV cache sized and its graphs captured. `gpu.quiet` checks those GPUs before the
 start and after it. Each rank writes its readings and the key it read off its
 resolved config, and the ranks must agree on the key. The entry's key is that
 one with the digest of the machine spec `--machine` names; its conditions are
 that spec's device and stack, torch included. A start under a stack the
 spec does not pin, as run.json's identity states it, refuses before it
-publishes. A `--gpu` whose device is not the spec's refuses before the
+publishes. A `--gpu` whose device or PTL state is not the spec's refuses before the
 start, so no entry measured on another card is keyed by that spec. `non_torch`
 refuses a spread across the ranks above `SPREAD_LIMIT`. One member per rank
 holds `memory.ENTRY_FIELDS`, its `record` the digest of the engine's log.
@@ -56,8 +55,8 @@ from atom.compass.artifacts import (
     roots_for,
 )
 from atom.compass.drive import serve
-from atom.compass.drive.gpu import add_gpu_flag, quiet
-from atom.compass.drive.identity import _device, identity
+from atom.compass.drive.gpu import add_gpu_flag, hip_visible, quiet
+from atom.compass.drive.identity import _device, _ptl, identity
 from atom.compass.run import CLOCK_ENV, ENV, _write_whole, memory
 from atom.compass.spec import MachineSpec, across_ranks
 from atom.compass.spec.fields import PINNED
@@ -103,16 +102,21 @@ def main(argv: list[str], again: bool = False) -> None:
             )
     model = serve._model(atom_args)
     machine = MachineSpec.from_mapping(json.loads(Path(args.machine).read_text()))
-    stated = machine_spec_key(machine).values["device"]
+    stated = machine_spec_key(machine).values
     other = [
         f"GPU {gpu['index']} is {gpu['name']} {gpu['arch']}"
         for gpu in _device(args.gpu)
-        if f"{gpu['name']} {gpu['arch']}" != stated
+        if f"{gpu['name']} {gpu['arch']}" != stated["device"]
     ]
     if other:
         raise ValueError(
-            f"{', '.join(other)}, and {args.machine} states {stated}; "
+            f"{', '.join(other)}, and {args.machine} states {stated['device']}; "
             "name the machine spec of the device the start runs on"
+        )
+    if (ptl := _ptl(args.gpu)) != stated["ptl"]:
+        raise ValueError(
+            f"the cards read ptl {ptl!r}, and {args.machine} states "
+            f"{stated['ptl']!r}; name the machine spec of the cards' PTL state"
         )
     out = Path(args.out)
     if out.exists() and any(out.iterdir()):
@@ -120,7 +124,7 @@ def main(argv: list[str], again: bool = False) -> None:
     (out / READINGS).mkdir(parents=True)
     env = {k: v for k, v in os.environ.items() if k not in (ENV, CLOCK_ENV, parity.ENV)}
     env[OUT_ENV] = str(out / READINGS)
-    env["HIP_VISIBLE_DEVICES"] = ",".join(map(str, args.gpu))
+    env["HIP_VISIBLE_DEVICES"] = hip_visible(args.gpu)
     env["ATOM_DP_MASTER_PORT"] = str(serve._free_ports(1)[0])
     if args.beside:
         env[BESIDE_ENV] = args.beside

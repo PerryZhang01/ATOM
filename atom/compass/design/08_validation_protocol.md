@@ -508,8 +508,9 @@ into as many iterations as there are gaps.
 threshold on refused seconds would gate on a number that is zero by construction.
 Steps answered by any method are priced, so their shares of seconds are real, and each
 method is reported apart so none reads as measured. At step level the roofline answers
-only in a run whose run file composes it (`step_roofline`, `13` D80); at op level the
-analytical fallback is always on. Either way its share sits beside the verdict, so it
+under the step grid, which always composes it below the grid (`17` D102), or in a run
+whose run file composes it (`step_roofline`, `13` D80); at op level the analytical
+fallback is always on. Either way its share sits beside the verdict, so it
 cannot become a silent fallback — the exact failure the *refuse rather than guess*
 principle exists to prevent. No cap on that share: an analytical law is expected to differ
 from the hardware, and no fraction of seconds says by how much; the cell's error against

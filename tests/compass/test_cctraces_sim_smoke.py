@@ -35,6 +35,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from test_drive_gpu import SHOWHW
 from test_memory_readings import DOCUMENT
 
 from atom.compass import run as compass_run
@@ -157,7 +158,12 @@ def test_a_real_cell_warms_up_on_the_simulated_cells_requests(cells, tmp_path):
     )
     stub = tmp_path / "bin/rocm-smi"
     stub.parent.mkdir()
-    stub.write_text(f"#!/bin/sh\ncat <<'EOF'\n{listing}EOF\n")
+    (tmp_path / "showhw").write_text(SHOWHW)
+    (tmp_path / "listing").write_text(listing)
+    stub.write_text(
+        f'#!/bin/sh\ncase "$*" in *--showhw*) cat {tmp_path}/showhw;;\n'
+        f"*) cat {tmp_path}/listing;;\nesac\n"
+    )
     stub.chmod(0o755)
     env = dict(
         os.environ,

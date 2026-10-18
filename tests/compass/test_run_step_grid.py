@@ -61,9 +61,13 @@ from atom.compass.artifacts import (
     rows_for,
 )
 from atom.compass.backends import StepGridBackend
+from atom.compass.backends.provenance import Refusal
 from atom.compass.backends.resolver import CostRefused
 from atom.compass.backends.step_grid_fit import VALUE
-from atom.compass.backends.step_roofline import StepFallbackBackend
+from atom.compass.backends.step_roofline import (
+    StepFallbackBackend,
+    StepRooflineBackend,
+)
 from atom.compass.run import step_grid
 from atom.compass.spec import MachineSpec
 from atom.utils import clock
@@ -179,7 +183,7 @@ def test_a_run_file_bundle_prices_the_runs_steps_and_the_summary_names_it(
 
     compass_run.runner(r, META_8B)
 
-    assert isinstance(r.compass_backend, StepGridBackend)
+    assert isinstance(r.compass_backend.first, StepGridBackend)
     # Rung 48's cell, as `test_backend_step_grid` reads it from the same grid.
     assert r.forward(decode(B37)).predicted_s == 8897.5e-6
     out = summary(monkeypatch, run, r)
@@ -190,7 +194,8 @@ def test_a_run_file_bundle_prices_the_runs_steps_and_the_summary_names_it(
             "describe": (
                 f"step grid, bundle {entry.key}; replay decode grid, "
                 "timing scope forward; recipe step-grid-residual v2, members "
-                "decode: unit; prefill_output: unit; prefill_no_output: unit"
+                "decode: unit; prefill_output: unit; prefill_no_output: unit; "
+                "below it, step roofline; 8000000000 parameters"
             ),
         }
     }
@@ -199,10 +204,11 @@ def test_a_run_file_bundle_prices_the_runs_steps_and_the_summary_names_it(
 
 
 def test_a_run_ended_by_abort_still_names_its_bundle(monkeypatch, tmp_path):
-    """The grid has no prefill point, so under ``on_refusal: abort`` the first
-    step ends the run, and the summary written at that early end names the
-    bundle."""
+    """The grid has no prefill point, and the roofline below it refuses here, so
+    under ``on_refusal: abort`` the first step ends the run, and the summary
+    written at that early end names the bundle."""
     monkeypatch.setattr(torch.distributed, "all_reduce", None)
+    monkeypatch.setattr(StepRooflineBackend, "price", refuse)
     r = deployment(tmp_path)
     entry = publish(tmp_path, r)
     run = run_file(
@@ -231,6 +237,42 @@ def test_a_run_ended_by_abort_still_names_its_bundle(monkeypatch, tmp_path):
     assert out["step_grid"]["engine"]["digest"] == entry.digest
     [[reason, _]] = out["schedule"]["refusals"]["reasons"]
     assert reason.startswith("ended:engine raised CostRefused(")
+
+
+def refuse(backend, view):
+    raise CostRefused(view, [Refusal("step-roofline", "refused here")])
+
+
+def test_the_step_roofline_prices_below_the_step_grid_and_the_summary_counts_both(
+    monkeypatch, tmp_path
+):
+    """With no ``step_roofline`` and no ``parameter_count``, the roofline below
+    the grid counts the meta build's parameters. The grid has no prefill point
+    and no rung below 32, so the roofline prices every step `drive` takes;
+    under a residual whose decode hull is tokens <= 1/2^10, one decode row,
+    rung 48's step of 37 rows is extrapolated past it, at its lookup."""
+    monkeypatch.setattr(torch.distributed, "all_reduce", None)
+    r = deployment(tmp_path)
+    member = copy.deepcopy(BUNDLE)
+    hull = {"facets": [[1, 0, 0, 0, -(2**-10)]]}
+    member["residual"]["kinds"]["decode"]["hull"] = hull
+    publish(tmp_path, r, member=member)
+    run = run_file(tmp_path, monkeypatch, parameter_count=None)
+
+    compass_run.runner(r, META_8B)
+    assert r.compass_backend.roofline.parameters == sum(
+        p.numel() for p in META_8B.parameters()
+    )
+    drive(r)
+    assert r.forward(decode(B37)).predicted_s == 8897.5e-6
+
+    assert r.refused_commands() == ()
+    schedule = summary(monkeypatch, run, r)["schedule"]
+    priced = r.priced_steps()
+    assert schedule["fallback_steps"] == priced["fallback_steps"] > 0
+    assert priced["fallback_steps"] == priced["declared_steps"] == priced["steps"] - 1
+    assert schedule["extrapolated_steps"] == priced["extrapolated_steps"] == 1
+    assert schedule["refusals"]["count"] == 0
 
 
 def test_a_step_roofline_still_prices_below_step_grid(monkeypatch, tmp_path):
@@ -308,7 +350,7 @@ def test_a_bundle_measured_on_another_host_cpu_loads(monkeypatch, tmp_path):
 
     compass_run.runner(r, META_8B)
 
-    assert isinstance(r.compass_backend, StepGridBackend)
+    assert isinstance(r.compass_backend.first, StepGridBackend)
 
 
 def test_a_bundle_is_checked_against_the_specs_torch_not_the_simulators(
@@ -321,7 +363,7 @@ def test_a_bundle_is_checked_against_the_specs_torch_not_the_simulators(
 
     compass_run.runner(r, META_8B)
 
-    assert isinstance(r.compass_backend, StepGridBackend)
+    assert isinstance(r.compass_backend.first, StepGridBackend)
 
 
 def test_the_runs_readings_take_the_stack_from_the_spec_and_the_host_cpu_as_host_key(
@@ -469,7 +511,7 @@ def test_a_capture_size_past_max_num_seqs_is_not_on_the_ladder(monkeypatch, tmp_
 
     compass_run.runner(r, META_8B)
 
-    assert isinstance(r.compass_backend, StepGridBackend)
+    assert isinstance(r.compass_backend.first, StepGridBackend)
 
 
 def test_a_timing_scope_narrower_than_the_forward_refuses(monkeypatch, tmp_path):

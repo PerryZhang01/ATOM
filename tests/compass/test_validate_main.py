@@ -401,3 +401,21 @@ def test_a_run_file_of_a_law_per_engine_config_costs_real_runs_at_their_own(
         (cell / real / "steps" / "dp0.engine.json").write_text(json.dumps(engine))
 
     assert _graded(capsys, cell) == rows
+
+
+def test_the_steps_extrapolated_or_priced_by_a_fallback_are_stated_and_graded(
+    capsys, tmp_path
+):
+    _rows(capsys, tmp_path)
+    law = tmp_path / "c4" / "step_linear"
+    summary = json.loads((law / "summary.json").read_text())
+    summary["schedule"].update(extrapolated_steps=3, fallback_steps=2)
+    (law / "summary.json").write_text(json.dumps(summary))
+
+    main([str(tmp_path / "c4")])
+    out = capsys.readouterr().out.splitlines()
+    rows = {tuple(r.split(" | ")[1:3]): r.split(" | ")[3:] for r in out[1:]}
+
+    assert rows["cell", "verdict"] == ["3 real runs", "graded"]
+    assert rows["summary step_linear", "extrapolated steps"] == ["3 of 20", "not gated"]
+    assert rows["summary step_linear", "fallback steps"] == ["2 of 20", "not gated"]

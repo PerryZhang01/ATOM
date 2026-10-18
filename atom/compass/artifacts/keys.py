@@ -9,9 +9,9 @@ source-root digest)**, and a bare or merged price file states no layout, so it
 silently prices nothing while looking layered.
 
 The machine-spec digest (`machine_spec_digest`) is the digest of the spec's own
-key, its device and software stack, so an entry keyed by it that was measured
-on one platform does not answer on another, and a spec edit outside those two
-(an interconnect field, a re-probed constant) moves no key.
+key, its device, software stack and PTL state, so an entry keyed by it that was
+measured on one platform does not answer on another, and a spec edit outside
+those three (an interconnect field, a re-probed constant) moves no key.
 
 The parallel layout (`LAYOUT`) is the rank widths (`AXES`) plus the settings
 that change kernels and groups at a fixed rank count: the switches
@@ -79,7 +79,7 @@ LAYOUT = (*AXES, *SWITCHES, "decode_context_parallel_size")
 
 #: What keys each artifact, in the order a key reads.
 KEY_FIELDS: Mapping[Kind, tuple[str, ...]] = {
-    Kind.MACHINE_SPEC: ("device", "software_stack"),
+    Kind.MACHINE_SPEC: ("device", "software_stack", "ptl"),
     # `workload` is the digest of the requests its steps name; `backend` the
     # pricing backend's digest, so another backend addresses another entry.
     Kind.SHAPE_POPULATION: ("model", "workload", "engine_config", "backend"),
@@ -259,25 +259,30 @@ class Key:
         return f"{self.kind}({stated})"
 
 
-def platform_key(device: str, stack: Mapping[str, str]) -> Key:
+#: The PTL state of a card with no `ptl` directory, and of a spec that states none.
+NO_PTL = "disabled"
+
+
+def platform_key(device: str, stack: Mapping[str, str], ptl: str) -> Key:
     """The machine-spec key of `device`, `<name> <arch>`, running `stack`,
     {component: version} as a spec pins it: its ROCm, AITER and RCCL, in that
-    order; its torch is an axis of its own. A spec's key and the readings of a
-    record taken on it are both this join."""
+    order; its torch is an axis of its own; with its cards' PTL state `ptl`. A
+    spec's key and the readings of a record taken on it are both this join."""
     from atom.compass.spec.fields import PINNED
 
-    pins = (f"{c} {stack[c]}" for c in PINNED if c != "torch")
-    return Key.of(Kind.MACHINE_SPEC, device=device, software_stack=" / ".join(pins))
+    pins = " / ".join(f"{c} {stack[c]}" for c in PINNED if c != "torch")
+    return Key.of(Kind.MACHINE_SPEC, device=device, software_stack=pins, ptl=ptl)
 
 
 def machine_spec_key(machine) -> Key:
-    """A `MachineSpec`'s own key: the `platform_key` of the device and the
-    software stack it states."""
+    """A `MachineSpec`'s own key: the `platform_key` of the device, the
+    software stack and the PTL state it states, `NO_PTL` when it states none."""
     from atom.compass.spec.fields import PINNED
 
     return platform_key(
         f"{machine.value('device.name')} {machine.value('device.arch')}",
         {c: machine.value(f"device.software_pinned_to.{c}") for c in PINNED},
+        machine.values.get("device.ptl", NO_PTL),
     )
 
 

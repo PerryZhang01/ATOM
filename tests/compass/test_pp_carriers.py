@@ -3,12 +3,14 @@
 pricing a stage's input in the recurrence gate."""
 
 import copy
+import hashlib
 import importlib.util
 import json
+import math
 from pathlib import Path
 
 import pytest
-from test_pp_stage_input import MS, pp2_record
+from test_pp_stage_input import MS, pp2_record, staged
 
 from atom.compass.parity import recurrence
 from atom.compass.runner.pp_send import CarrierModel, carrier_models
@@ -29,27 +31,33 @@ MODELS = {
 }
 
 
-def _late(steps, x):
-    """The last stage of `pp2_record` with its input arriving `x` ns after
-    the head's device end: its first device wait, and everything after, later."""
-    first, *rest = (copy.deepcopy(s) for s in steps)
-    first["t_recv_ns"][1] += x
-    for k in ("t_exit_ns", "d_busy_ns", "d_recv_ns"):
-        first[k] += x
-    for s in rest:
+def _shift(steps, x):
+    """`steps` copied, every host stamp `x` ns later."""
+    steps = copy.deepcopy(steps)
+    for s in steps:
         for k, v in s.items():
             if k.startswith("t_"):
                 s[k] = [t + x for t in v] if isinstance(v, list) else v + x
-    return [first, *rest]
+    return steps
+
+
+def _late(steps, x):
+    """The last stage of `pp2_record` with its input arriving `x` ns after
+    the head's device end: its first device wait, and everything after, later."""
+    first = copy.deepcopy(steps[0])
+    first["t_recv_ns"][1] += x
+    for k in ("t_exit_ns", "d_busy_ns", "d_recv_ns"):
+        first[k] += x
+    return [first, *_shift(steps[1:], x)]
 
 
 def test_the_last_stage_waits_for_the_heads_tensors_on_the_carriers():
     head, last = pp2_record()
-    sends = recurrence.check(head, (0, 2))["sends"]
+    _, sends = staged(head, (0, 2))
     late = _late(last, MS)
-    priced = recurrence.check(late, (1, 2), sends, (MODELS, 500))
+    priced = staged(late, (1, 2), sends, (MODELS, 500))[0]
     assert priced["pass"] and priced["total"] == pytest.approx(0, abs=1e-9)
-    assert not recurrence.check(late, (1, 2), sends)["pass"]
+    assert not staged(late, (1, 2), sends)[0]["pass"]
 
 
 def test_the_last_stage_launches_when_the_heads_metadata_arrives():
@@ -58,7 +66,7 @@ def test_the_last_stage_launches_when_the_heads_metadata_arrives():
     only the launch moves. A 10 ms launch from there leaves the first step
     host-bound, exiting at 22 ms where its device ends at 20."""
     head, last = pp2_record()
-    sends = recurrence.check(head, (0, 2))["sends"]
+    _, sends = staged(head, (0, 2))
     late = _late(last, 2 * MS)
     late[0] |= {
         "t_pp_recv_ns": [MS, 11 * MS],
@@ -68,16 +76,21 @@ def test_the_last_stage_launches_when_the_heads_metadata_arrives():
         "d_busy_ns": 19 * MS,
     }
     slow = MODELS | {"gloo": CarrierModel(10**9, 0.0, 9e-3, 0.0, 0.0)}
-    priced = recurrence.check(late, (1, 2), sends, (slow, 500))
+    priced = staged(late, (1, 2), sends, (slow, 500))[0]
     assert priced["pass"] and priced["total"] == pytest.approx(0, abs=1e-9)
-    assert not recurrence.check(late, (1, 2), sends, (MODELS, 500))["pass"]
+    assert not staged(late, (1, 2), sends, (MODELS, 500))[0]["pass"]
 
 
 def test_the_script_prices_the_send_on_a_machine_specs_carriers(tmp_path):
     """`MODELS` written in a spec, each zero as 1e-15: the schema takes only
-    positive times."""
+    positive times. The head's third and fourth forwards enter at the late
+    stage's exits, which return their tokens, so the last stage's input
+    arrives a further 1 ms later."""
     head, last = pp2_record()
-    for name, steps in (("dp0", head), ("pp1.dp0", _late(last, MS))):
+    head[2:] = _shift(head[2:], MS)
+    last = _late(last, MS)
+    last[2:] = _shift(last[2:], MS)
+    for name, steps in (("dp0", head), ("pp1.dp0", last)):
         (tmp_path / f"{name}.jsonl").write_text(
             "".join(json.dumps(s) + "\n" for s in steps)
         )
@@ -144,3 +157,81 @@ def test_the_probe_recovers_the_carriers_it_was_sampled_from():
     assert probe.fit(samples)["rccl"]["rendezvous_fixed_s"] == pytest.approx(
         fixed, rel=0.01
     )
+
+
+def _samples(truth):
+    return [
+        _sample(c, n, late, *truth[c])
+        for c in probe.SIZES
+        for n in probe.SIZES[c]
+        for late in (False, True)
+    ]
+
+
+TRUTH = {"rccl": (1024, 1e-5, 2e-6, 1e-11, 5e-5), "gloo": (0, 0, 0, 1e-9, 3e-5)}
+
+
+def test_a_late_size_is_eager_only_if_its_sender_completes_before_the_post():
+    """Each late receive posted 1 ms before `LATE`, as a device-timed RCCL
+    send's is: rendezvous sizes that complete before `LATE` stay rendezvous."""
+    samples = _samples(TRUTH)
+    for s in samples:
+        if s["late"]:
+            rdv = s["bytes"] > TRUTH[s["carrier"]][0]
+            for k in ("post", "end", "done") if rdv else ("post", "end"):
+                s[k] -= 1e-3
+    fit = probe.fit(samples)
+    assert [fit[c]["eager_threshold_bytes"] for c in TRUTH] == [1024, 0]
+
+
+def test_a_carrier_threshold_is_no_bool():
+    document = json.loads(SPEC.read_text())
+    document["interconnect"]["intra_node"]["pp"]["gloo"]["eager_threshold_bytes"] = True
+    with pytest.raises(SpecRefusal, match="eager_threshold_bytes"):
+        MachineSpec.from_mapping(document)
+
+
+def test_the_probe_fits_how_late_a_blocked_gloo_sender_wakes():
+    """A sender blocked `b` before the post completes `W (1 - exp(-b / rise))`
+    past the rendezvous price; the late order's sender, blocked `LATE`, too. A
+    block sample is no late-order sample: its receive lands 10 us after it."""
+    wake = (1.5e-4, 0.05)
+    samples = _samples(TRUTH)
+    for s in samples:
+        if s["carrier"] == "gloo" and s["late"]:
+            s["done"] = s["end"] = s["end"] + wake[0] * -math.expm1(-probe.LATE / 0.05)
+    _, _, _, g, fixed = TRUTH["gloo"]
+    for b in probe.BLOCKS:
+        done = b + fixed + 8 * g + wake[0] * -math.expm1(-b / wake[1])
+        stamps = {"send": 0.0, "done": done, "post": b, "end": done + 1e-5}
+        samples.append(
+            {"carrier": "gloo", "bytes": 8, "late": True, "block": b} | stamps
+        )
+    gloo = probe.fit(samples)["gloo"]
+    assert (gloo["wake_s"], gloo["wake_rise_s"]) == pytest.approx(wake, rel=1e-4)
+    assert gloo["late"] == pytest.approx([0] * 5, abs=1e-9)
+    assert gloo["rendezvous_fixed_s"] == pytest.approx(fixed, rel=1e-6)
+    assert "wake_s" not in probe.fit(_samples(TRUTH))["gloo"]
+
+
+def test_the_probe_pools_the_records_it_wrote(tmp_path):
+    """Two runs' wakes differ; their pooled fit takes every block's median
+    over both, and names each run's record by its digest."""
+    runs = []
+    for k, level in enumerate((1e-4, 2e-4)):
+        samples = _samples(TRUTH)
+        for b in probe.BLOCKS:
+            done = b + level * -math.expm1(-b / 0.5)
+            stamps = {"send": 0.0, "done": done, "post": b, "end": done}
+            samples.append(
+                {"carrier": "gloo", "bytes": 8, "late": True, "block": b} | stamps
+            )
+        runs.append(tmp_path / f"run{k}.json")
+        runs[-1].write_text(json.dumps({"samples": samples}) + "\n")
+    probe.main(str(tmp_path / "pooled.json"), *map(str, runs))
+    pooled = json.loads((tmp_path / "pooled.json").read_text())
+    both = [s for r in runs for s in json.loads(r.read_text())["samples"]]
+    assert pooled["carriers"] == probe.fit(both)
+    assert pooled["records"] == [
+        hashlib.sha256(r.read_bytes()).hexdigest() for r in runs
+    ]

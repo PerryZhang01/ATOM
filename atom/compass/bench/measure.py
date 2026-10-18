@@ -29,7 +29,9 @@ in a token band of `step_linear_fit.TOKEN_BANDS`), or all of them by `--sample
 all`. `--grid` runs the step grid's planner over its inputs' lines for the
 engine they state and the nodes and margin `--grid-definition` states, and its
 points are measured with origin `plan`, the digest of the plan, which
-`<out>/plan.json` holds, and the `--grid` inputs as their sources.
+`<out>/plan.json` holds, and the `--grid` inputs as their sources. A planned
+point that is also a replayed view is measured once, as that replay alone: its
+origin, sources and traces are the replay's, and it names no plan.
 
 A measurement's key is the configuration (model, device,
 `keyed` engine, source root, `--sampling`), the step kind and the view's
@@ -70,8 +72,8 @@ from atom.compass.artifacts import (
 )
 from atom.compass.backends.step_grid_plan import plan
 from atom.compass.backends.step_labels import digest as file_digest
-from atom.compass.backends.step_linear_fit import TOKEN_BANDS
-from atom.compass.drive.gpu import add_gpu_flag, quiet
+from atom.compass.backends.step_linear_fit import token_band
+from atom.compass.drive.gpu import add_gpu_flag, hip_visible, quiet
 from atom.compass.drive.identity import identity, phase
 from atom.compass.fit.publish import conditions
 from atom.compass.fit.samples import MEMBER, run_fields
@@ -89,7 +91,7 @@ def main(argv: list[str]) -> None:
     args = _parser().parse_args(argv[:cut])
     _check(args)
     sampling = _sampling(args.sampling)
-    os.environ["HIP_VISIBLE_DEVICES"] = ",".join(map(str, args.gpu))
+    os.environ["HIP_VISIBLE_DEVICES"] = hip_visible(args.gpu)
     config = atom_config(argv[cut + 1 :])
     if config.tensor_parallel_size > 1:
         raise ValueError(
@@ -111,7 +113,7 @@ def main(argv: list[str]) -> None:
     configuration = run_fields(run)
     readings = conditions(
         {**configuration, "engine_config": engine}
-        | {k: run[k] for k in ("stack", "host_key")}
+        | {k: run[k] for k in ("stack", "host_key", "ptl")}
     )
     todo = _todo(points, configuration, engine, sampling, store, readings)
     held = len(points) - len(todo)
@@ -404,9 +406,11 @@ def _add(points: dict, line: dict, origin: str, sources, traces, plan=None):
         _digest(view),
         {"view": view, "origin": origin, "sources": set(), "traces": set()},
     )
+    if point["origin"] != origin:
+        return  # a replayed view the plan also places stays the replay's alone
     point["sources"].update(sources)
     point["traces"].update(traces)
-    if plan and point["origin"] == "plan":
+    if plan:
         point["plan"] = plan
 
 
@@ -427,10 +431,7 @@ def _stratum(view: dict) -> str:
     kind = _kind(view)
     if kind.startswith("decode"):
         return kind
-    tokens = sum(query for query, *_ in view["rows"])
-    low = max([0, *(b for b in TOKEN_BANDS if b <= tokens)])
-    high = min((b for b in TOKEN_BANDS if b > tokens), default="")
-    return f"{kind} tokens {low}-{high}"
+    return f"{kind} tokens {token_band(sum(query for query, *_ in view['rows']))}"
 
 
 def _measure(bench, config, sampling, store, command, readings, todo) -> list[str]:

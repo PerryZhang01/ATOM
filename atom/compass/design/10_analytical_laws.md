@@ -148,8 +148,8 @@ A second projection, independent of capture, as hedge and cross-check.
 
 **The step roofline.** `backends/step_roofline.py::StepRooflineBackend` is the step-level
 projection. A run reaches it as the step-level fallback its run file composes
-(`StepFallbackBackend`, `07` D36), turned on by the run-file key `step_roofline`. Its
-method counts the inputs it reads (owner ruling on
+(`StepFallbackBackend`, `07` D36), turned on by the run-file key `step_roofline`, and
+always on under `step_grid` (`17` D102). Its method counts the inputs it reads (owner ruling on
 [#1011](https://github.com/jgong5/ATOM/issues/1011), 2026-10-15): spec fields by their
 origin, analytical from a datasheet or a probe, declared if assumed; the run file's stated
 inputs declared unless they carry an origin.
