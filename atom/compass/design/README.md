@@ -83,8 +83,8 @@ one most often assumed to be the second.
 
 ### Not modelled at all
 
-Fragmentation. Neighbour contention. A device that has never been measured (except by
-roofline, whose assumed derates make its terms declared). See **Scope and non-goals**
+Fragmentation. Neighbour contention. A device that has never been measured (except by the
+analytical projection, whose peaks carried from a probed device make its terms declared). See **Scope and non-goals**
 below for where each is recorded.
 
 ---
@@ -339,8 +339,9 @@ graded as a candidate for #627's stage 2 (`17` D96, `07` D36).
 | Generalization | predict beyond the configurations used for calibration |
 | Simulation speed | aim ≥ 5×; negotiable, but **faster than a real run** is the floor |
 
-A roofline backend has its own, looser goals, stated in advance, with **configuration ranking** as
-its primary gate rather than latency error (`10` D67.1).
+The analytical method has its own gate, stated in advance: on every measured step, at both
+granularities, it prices **at most the measured time**; configuration ranking and the
+method's error are reported, not gated (`10` D67.1, #1392).
 
 Final proof is **paired simulated and real execution of cc-traces proper**.
 
@@ -363,7 +364,7 @@ Stated here so they are not discovered at review.
 
 | Not in scope | Where it is recorded |
 |---|---|
-| A device that has never been measured — except by roofline, which is derate-dominated and declared while its derates are assumed | `10` D69 |
+| A device that has never been measured — except by the analytical projection, declared while its peaks are carried from a probed device | `10` D69 |
 | Neighbour contention. Compass models a **dedicated** device, so it will not predict an OOM a shared box produces | `03` D14 |
 | Memory fragmentation — not modelled, not planned, and nobody models it | `03` D16 |
 | **Cancellation** — `status` is `"completed"` on all 1,697 subagent wrappers in both corpora. There is nothing to replay. | `06` D35 |
@@ -532,7 +533,7 @@ The documents use these precisely; a reader will bounce off without them.
 | [`05`](05_machine_spec_and_probes.md) | Machine Specification and its Probes | The one input artifact describing device, host, interconnect and the software stack it is pinned to. Read this before `03` and `04`, both of which consume it. Probe tools and their contamination refusals. |
 | [`03`](03_memory_and_kv_model.md) | Memory Model and the KV Pool | **Do not simulate the KV pool** — ATOM's real one is pure arithmetic. Substitute the five device readings, never the arithmetic. How a prefix-cache hit reaches the cost model. Validate per term, never as a sum. |
 | [`04`](04_model_capture_and_cost_ir.md) | Model Capture and the Cost IR | Capture with `TorchDispatchMode` + `FakeTensorMode` + `ShapeEnv`. A hierarchical, symbolic, stream-annotated IR whose `Repeat` nests and tolerates non-contiguous layer patterns. **Opaque leaves** are priced, not decomposed. |
-| [`10`](10_analytical_laws.md) | Analytical Laws | Cost and memory from device parameters and model geometry, with no observation of the subject. Three classes: exact from geometry, device-parameterised, policy-determined. The analytical fallback, the step roofline and the MI455 projection. Accuracy goals stated in advance with **ranking** as the primary gate. **The most speculative document here.** |
+| [`10`](10_analytical_laws.md) | Analytical Laws | Cost and memory from device parameters and model geometry, with no observation of the subject. Three classes: exact from geometry, device-parameterised, policy-determined. The analytical fallback, the step roofline and the MI455 projection. Its gate is a **bound**, at most the measured time on every measured step; ranking is reported. **The most speculative document here.** |
 | [`17`](17_step_grid_backend.md) | Step Grid Backend | A measured grid of whole forwards, answered only from complete cells, plus a residual fitted on real-run step times, bench replays or both. A stage-2 candidate, graded by stage 2's protocol and off the stage-2 path for now (#627). |
 
 ### Part III — How the data is made
@@ -614,4 +615,4 @@ The documents use these precisely; a reader will bounce off without them.
 | D3.2 | Always-on causality detectors: a straggler, checked on receipt and at each drain, fails the run rather than warning; a stall the Clock Authority cannot see waits for ever and prints one `DIAG_S` diagnostic, never aborting; a CI clock-source lint |
 | D3.3 | The Clock Authority ships two deployment forms from one implementation: co-hosted by default, standalone for multi-container runs |
 | D43.1 | ATOM's suite is a merge gate on every Compass change, unmodified, in two gates: a CPU gate (every test file outside `tests/plugin/` and `cpu_gate_exclude.txt`, driver-free as a batch, held to green) per change, a GPU gate, a superset judged as a delta per wave against `gate_gpu.sh`'s recorded baseline, by an equality on a per-tree expectation rather than "no worse than". The CPU gate **exits 98** rather than reporting "GPU not required" when it cannot tell |
-| D67.1 | A roofline backend's goals are graded against real runs, **configuration ranking** first; its latency goals are diagnostics for that, not the result |
+| D67.1 | The analytical method's gate is a **bound**: on every measured step, at both granularities, analytical is at most measured; configuration ranking and measured over analytical are reported, not gated |
