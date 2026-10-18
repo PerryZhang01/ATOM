@@ -4472,6 +4472,43 @@
    "mechanism_why": "the op bench times leaves on a real device for the measure ops command, and no simulated run starts one"
   },
   {
+   "id": "atom/compass/bench/ops.py::_child::ProcessPoolExecutor(1, mp_context=spawn)::thread_start#0",
+   "file": "atom/compass/bench/ops.py",
+   "symbol": "_child",
+   "call": "ProcessPoolExecutor",
+   "expr": "ProcessPoolExecutor(1, mp_context=spawn)",
+   "shape": "thread_start",
+   "peer": "none",
+   "lp": "none",
+   "why": "measure ops --plan runs each round's bench, and each capture, in one spawned process",
+   "mechanism": "K9",
+   "mechanism_why": "starting a process cannot park; the measuring command is no LP, and a GPU command serves no simulated run"
+  },
+  {
+   "id": "atom/compass/bench/ops.py::_child::child.submit(fn, *args)::executor_handoff#0",
+   "file": "atom/compass/bench/ops.py",
+   "symbol": "_child",
+   "call": "child.submit",
+   "expr": "child.submit(fn, *args)",
+   "shape": "executor_handoff",
+   "peer": "process",
+   "why": "measure ops --plan hands a round's points, or a capture's shapes, to that process",
+   "mechanism": "K9",
+   "mechanism_why": "the op bench times leaves on a real device for the measure ops command, and no simulated run starts one"
+  },
+  {
+   "id": "atom/compass/bench/ops.py::_child::child.submit(fn, *args).result()::event_wait#0",
+   "file": "atom/compass/bench/ops.py",
+   "symbol": "_child",
+   "call": "child.submit(fn, *args).result",
+   "expr": "child.submit(fn, *args).result()",
+   "shape": "event_wait",
+   "peer": "process",
+   "why": "measure ops --plan waits for that process to return the round's points or finish the capture",
+   "mechanism": "K9",
+   "mechanism_why": "the op bench times leaves on a real device for the measure ops command, and no simulated run starts one"
+  },
+  {
    "id": "atom/compass/kv/lmcache_server.py::LMCacheLP._pull::self.sock.recv_multipart(self.zmq.NOBLOCK)::socket_recv#0",
    "file": "atom/compass/kv/lmcache_server.py",
    "symbol": "LMCacheLP._pull",

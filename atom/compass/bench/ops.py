@@ -773,7 +773,7 @@ def plan(store, key, config, run, args, command: str, out: Path) -> None:
                     found[sig] = op, instances
             todo += [(shape, context, found)] if found else []
         print(f"round {n}: {sum(len(f) for *_, f in todo)} points to measure")
-        results = _bench(config, todo, args.llc_mib << 20) if todo else []
+        results = _child(measure, config, todo, args.llc_mib << 20) if todo else []
         (out / f"round{n}").mkdir(exist_ok=True)
         publish(store, key, config, run, command, results, out / f"round{n}")
         done.update(((r["shape"], r["context"], r["leaf"]), r) for r in results)
@@ -982,7 +982,7 @@ def _load(store, config, root, shapes, graphs: dict) -> None:
     from atom.compass.artifacts import ArtifactRefusal
 
     missing = []
-    for shape in shapes - graphs.keys():
+    for shape in sorted(shapes - graphs.keys()):
         try:
             graphs[shape] = leaves(graph(store, config, shape)["region"])
         except ArtifactRefusal:
@@ -1002,18 +1002,13 @@ def _capture(config, shapes, root) -> None:
     for s in shapes:
         argv += ["--prefill", str(s.tokens)] if s.phase == "prefill" else ["--width"]
         argv.append(str(s.seqs))
-    child = multiprocessing.get_context("spawn").Process(
-        target=capture.main, args=([*argv, "--store", str(root)],)
-    )
     with patch.dict(os.environ, HIP_VISIBLE_DEVICES="", CUDA_VISIBLE_DEVICES=""):
-        child.start()
-    child.join()
-    if child.exitcode:
-        raise ValueError(f"trace ops of {len(shapes)} shapes exited {child.exitcode}")
+        _child(capture.main, [*argv, "--store", str(root)])
 
 
-def _bench(config, todo, llc: int) -> list[dict]:
-    """`measure` in a process of its own, so the device is free at its end."""
+def _child(fn, *args):
+    """`fn(*args)` in a spawned process of its own: the device is free again
+    at its end, and a capture's process-wide patches end with it."""
     spawn = multiprocessing.get_context("spawn")
-    with ProcessPoolExecutor(1, mp_context=spawn) as bench:
-        return bench.submit(measure, config, todo, llc).result()
+    with ProcessPoolExecutor(1, mp_context=spawn) as child:
+        return child.submit(fn, *args).result()

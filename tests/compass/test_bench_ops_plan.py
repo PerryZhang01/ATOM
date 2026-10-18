@@ -40,9 +40,10 @@ def _graph_at(store, config, shape):
     return _graph(attn, gemm, layers=2)
 
 
-def _bench(config, todo, llc):
-    """Each point timed as a device would: the GEMM by its tokens, the
+def _bench(fn, config, todo, llc):
+    """`measure` as a device would time each point: the GEMM by its tokens, the
     attention by its context, each kernel switching at its threshold."""
+    assert fn is ops.measure
     _bench.calls += 1
     got = []
     for shape, context, found in todo:
@@ -95,7 +96,7 @@ def bench(tmp_path, monkeypatch):
     monkeypatch.setattr("atom.compass.run.memory.key_fields", lambda c: layout)
     monkeypatch.setattr("atom.compass.run.step_grid.keyed", lambda c: {"level": 0})
     monkeypatch.setattr(ops, "graph", _graph_at)
-    monkeypatch.setattr(ops, "_bench", _bench)
+    monkeypatch.setattr(ops, "_child", _bench)
     _bench.calls = 0
     root = str(tmp_path / "store")
     return ArtifactStore(root), root, ops.keys(None, run), run
