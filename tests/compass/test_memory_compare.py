@@ -345,10 +345,9 @@ def live_readings(spec, qwen, tp_width=1):
         spec,
         memory=measured(tp_width),
         tp_width=tp_width,
-        model=ModelTerms.from_config(
-            qwen,
+        model=ModelTerms.from_tree(
+            meta_tree(PARAMETERS * element_bytes(qwen.dtype) // tp_width),
             activations=measured(tp_width).activations(WARMUP_TOKENS),
-            tree=meta_tree(PARAMETERS * element_bytes(qwen.dtype) // tp_width),
         ),
         cudagraph_overhead=reserved(qwen, total_bytes),
     )
@@ -407,7 +406,6 @@ def test_a_term_the_run_does_not_record_refuses_and_carries_its_own_reason(
     message = str(refused["buffers"])
     assert "records no 'buffers'" in message
     assert "not a term of zero bytes" in message
-    assert "positions x rotary_dim elements" in message
     assert "buffers" not in {t.name for t in comparison.compared}
 
 
@@ -943,10 +941,8 @@ def _hand_in(tmp_path, qwen, record):
     document["provenance"] |= {"origin": "probed", "subject": {"record": record}}
     spec = MachineSpec.from_mapping(document)
     entry = measured(1, record=record, activation_bytes=WARMUP_TOKENS * 180_480)
-    model = ModelTerms.from_config(
-        qwen,
-        activations=entry.activations(WARMUP_TOKENS),
-        tree=meta_tree(PARAMETERS * 2),
+    model = ModelTerms.from_tree(
+        meta_tree(PARAMETERS * 2), activations=entry.activations(WARMUP_TOKENS)
     )
     readings = device_readings(
         spec,
@@ -956,7 +952,7 @@ def _hand_in(tmp_path, qwen, record):
         cudagraph_overhead=reserved(qwen, int(spec.value(CAPACITY))),
     )
     path = tmp_path / "lp-engine.json"
-    hand_in = check.record(readings, tokens=WARMUP_TOKENS, pool=None)
+    hand_in = check.record(readings, tokens=WARMUP_TOKENS, memory=entry)
     path.write_text(json.dumps({"memory": hand_in}))
     return path, readings
 

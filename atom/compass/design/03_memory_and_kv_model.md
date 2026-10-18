@@ -161,7 +161,8 @@ probed per request. Whether that is 0.1 ms or 10 ms is unmeasured. Recorded as *
   - The Compass runner reaches none of these: its `forward` and `capture_cudagraph`
     replace ATOM's and run none of `prepare_inputs`, the model, the drafter or a
     capture. Its `_build_and_load_model` also sets the model to an `UnbuiltModel`,
-    whose `forward` refuses, and refuses a speculative config.
+    whose `forward` refuses, and builds a speculative config's drafter on the meta device
+    with no checkpoint read.
 - `BlockManager.hash_block_size = block_size * dcp_world_size`
   (`block_manager.py`) — decode context parallelism changes the hash granularity.
   Out of scope now; noted so it is not discovered later.
@@ -441,7 +442,7 @@ source per term; the bullets below say why each is what it is.
 | Term | Source | Issue |
 |---|---|---|
 | weights | the meta build the simulated runner's `_build_and_load_model` already makes for the KV-pool walk: the model class under `torch.device("meta")` with ATOM's own quantisation config and groups at the deployment's widths, bytes summed over unique parameter storages, so a tied `lm_head`, which shares the embedding's storage, counts once | [#699](https://github.com/jgong5/ATOM/issues/699) |
-| buffers | the formula over fields the model's `config.json` states, analytical, or declared where it assumes `partial_rotary_factor`, until a recording exists | [#701](https://github.com/jgong5/ATOM/issues/701) |
+| buffers | the same meta build, bytes summed over unique buffer storages that no parameter holds: the split `compass measure memory` takes the load residue against | [#701](https://github.com/jgong5/ATOM/issues/701), [#1166](https://github.com/jgong5/ATOM/issues/1166) |
 | activations | the run's `memory_readings` entry: one start's warmup `peak - current` over its warmup tokens, on a warm compile cache, times the deployment's warmup tokens, measured at the entry's own. The liveness walk replaces it once capture lands | [#704](https://github.com/jgong5/ATOM/issues/704), [#705](https://github.com/jgong5/ATOM/issues/705), [#965](https://github.com/jgong5/ATOM/issues/965) |
 | invisible scratch | inside the activations reading; a term of its own only under the liveness walk (`04` T4) | [#704](https://github.com/jgong5/ATOM/issues/704) |
 | persistent | `persistent_forward_buffer_bytes` in the run's `memory_readings` entry | — |
@@ -466,10 +467,12 @@ term against the same term of a recorded real run, wired for stage 2's paired ru
   and bf16 parameters, and under DP-attention TP is 1 while the experts shard over the
   DP group, so at the nightly DeepSeek-V4-Pro DPA cell it was refused at 10.76x the card
   (#545).
-- **Buffers** — the formula over fields `config.json` states, analytical, or declared
-  where it assumes `partial_rotary_factor`, until a recording exists (`ModelTerms.from_config`,
-  [#701](https://github.com/jgong5/ATOM/issues/701)). The assumption is named because the
-  first formula, which matched the 0.6B exactly, was 4x wrong on the 27B (partial rotary).
+- **Buffers** — ask the same meta build, deduped by storage (`ModelTerms.from_tree`,
+  [#1166](https://github.com/jgong5/ATOM/issues/1166)). A rotary-table formula over
+  `config.json` stood here first; it was 4x wrong on the 27B (partial rotary) until it
+  read `partial_rotary_factor`, and on DeepSeek-V4-Pro it counted the one table V4 keeps
+  as a plain attribute, which the load residue already holds, and missed the indexer's
+  1.9 GiB warmup cache, which is a buffer.
 - **Activations** — until capture lands, the entry's reading (the table above): the
   scaling in tokens is validated (`10` D67), and the reading is the one ATOM's
   `_estimate_cudagraph_overhead` takes, so the scratch is inside it. After that, a

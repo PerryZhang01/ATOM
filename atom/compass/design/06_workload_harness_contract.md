@@ -512,8 +512,9 @@ scales with prompt length while a constant does not. At 256 clients with sub-age
 requests will queue for the executor, and that queueing is a real serving effect worth
 reproducing rather than averaging away.
 
-`host.admission_fixed_s` covers what is left: everything between HTTP arrival and the
-request appearing in `scheduler.waiting`, **excluding** tokenize.
+`ADMISSION_DELAY_S` (`atom/compass/clock/channels.py`) covers what is left, per admission
+path: the request channel's lookahead from the traffic source into the serving stack,
+**excluding** tokenize.
 
 **HTTP intake is a serial cost on the event loop** (revised 2026-10-16, #1103). The real
 loop takes a burst in one request at a time: at c=256 first turn, about 3 ms each, so the
@@ -526,7 +527,7 @@ stamped request it takes in, a cancel excepted, once the body is read and before
 runs: an event cost, as a tokenizer call on the loop is. The clock stands still until every
 open encode job is placed and the callbacks due by then have run, so an encode that
 completes inside an intake hands its result on when the intake ends, whatever wall time
-its real thread took. A spec that states neither term
+its real thread took. A run file with no machine spec
 charges nothing. The client's own send spread is not modelled. The `http` channel's
 admission delay (`channels.py::ADMISSION_DELAY_S`) stays the channel's lookahead; it was
 measured at low load, so it overlaps one request's intake.

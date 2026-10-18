@@ -19,8 +19,9 @@ this price. The step's one term is named by the bound that won. It is
 is stated, and `analytical` otherwise: compute reads `parameter_count` and
 `device.compute` (`FIELDS`), memory `device.memory`. A spec field from a
 datasheet or probe is not stated, the run file's numbers always are, and the
-weights never are: they are read off a meta build. A step with image tokens is
-refused: nothing here prices the vision encoder that fills them.
+weights never are: they are read off a meta build, as P is when the run file
+states none (`parameters_stated`). A step with image tokens is refused: nothing
+here prices the vision encoder that fills them.
 
 `StepFallbackBackend` asks a backend first and the roofline only for a step
 that backend refuses, so a law with no vector for a step still prices it. The
@@ -66,6 +67,7 @@ class StepRooflineBackend(CostBackend):
         parameters: int,
         weight_bytes: int,
         kv_token_bytes: int,
+        parameters_stated: bool = True,
     ) -> None:
         # ponytail: bf16 peak and GEMM flops only; attention flops, a
         # quantized model's rate and TP collectives are left out until a
@@ -85,7 +87,9 @@ class StepRooflineBackend(CostBackend):
         self.weight_bytes = weight_bytes
         self.kv_token_bytes = kv_token_bytes
         origins = {path: machine.origin(path)["origin"] for path in FIELDS}
-        stated = {"compute": ["parameter_count stated in the run file"], "memory": []}
+        stated = {"compute": [], "memory": []}
+        if parameters_stated:
+            stated["compute"].append("parameter_count stated in the run file")
         spec = f"in the machine spec {machine.value('name')}"
         for p, o in origins.items():
             if _method(o) is Method.DECLARED:  # p is device.<bound>.<field>

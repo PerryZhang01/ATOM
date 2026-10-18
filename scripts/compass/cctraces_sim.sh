@@ -33,10 +33,13 @@
 #                   e.g. `--trajectory-start-min-ratio 0
 #                   --trajectory-start-max-ratio 0` to start every trajectory
 #                   at its first turn, with no warmup
-#   DECODE_EXEC, ATOMESH  as pd_sim.sh takes them, for a 1P1D cell
+#   DECODE_EXEC, ATOMESH, PREFILL_ARGS, DECODE_ARGS, PREFILL_ENV, DECODE_ENV
+#                   as pd_sim.sh takes them, for a 1P1D cell
 #   WAIT_S          seconds the deployment has to start, and to leave once
 #                   aiperf has; seconds aiperf has to finish once the
 #                   deployment has left (default 600)
+#   HTTP_INTAKE     a file: a TP1 cell's server runs under http_intake.py,
+#                   which stamps each request its event loop takes in there
 #
 # A run file with `router_s` and `kv_write_req_s` makes the cell 1P1D: the
 # deployment is pd_sim.sh's, and aiperf drives its atomesh router.
@@ -54,7 +57,8 @@
 # A TP1 cell also writes its step record to steps/. A real cell writes no step
 # table or summary; it saves rocm-smi's process listing before and after it in
 # gpu_before.txt and gpu_after.txt, and its result names the processes on its
-# GPUs (each in HIP_VISIBLE_DEVICES, default 0), with their VRAM bytes.
+# GPUs (HIP_VISIBLE_DEVICES, default 0, as rocm-smi indexes them), with their
+# VRAM bytes.
 # It keeps Triton's autotune results in TRITON_CACHE_DIR (Triton's default
 # ~/.triton/cache), so a kernel tuned by one real run of that directory loads
 # its choice in the next instead of tuning inside it.
@@ -161,6 +165,7 @@ gpu=${HIP_VISIBLE_DEVICES:-0}
 gpu_processes() { rocm-smi --showpids --showpidgpus >"$OUT/gpu_$1.txt"; }
 if ((REAL)); then
     [[ $MODE == tp1 ]] || { echo "cctraces_sim: a real cell is TP1, and the run file is 1P1D" >&2; exit 2; }
+    gpu=$(compass_gpus smi "$gpu")
     gpu_processes before
 fi
 if [[ $MODE == 1p1d ]]; then
@@ -171,7 +176,7 @@ if [[ $MODE == 1p1d ]]; then
     # router is the --dp-aware router LP, which draws from the cell's seed, and
     # its dp_sticky keys off X-Session-ID, which the real cell's aiperf sends.
     export BENCHMARK_KIND=aiperf_agentic SEED=${SEED:-20260707}
-    [[ " $SERVER_ARGS " == *" --enable-dp-attention "* ]] && export AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID=true
+    [[ " $SERVER_ARGS ${PREFILL_ARGS:-} ${DECODE_ARGS:-} " == *" --enable-dp-attention "* ]] && export AIPERF_HTTP_X_SESSION_ID_FROM_CORRELATION_ID=true
     PREFILL_PORT=$PORT bash "$ROOT/scripts/compass/pd_sim.sh" "$OUT/run.json" >"$OUT/pd_sim.log" 2>&1 &
     ready=("pd_sim: ready" "$OUT/pd_sim.log")
     PORT=$ROUTER_PORT
@@ -180,10 +185,15 @@ else
     ((REAL)) && compass=()
     record=$OUT/steps
     ((${RECORD:-1})) || record=
+    main=(-m atom.entrypoints.openai.api_server)
+    [[ -z ${HTTP_INTAKE:-} ]] || main=("$ROOT/scripts/compass/http_intake.py" serve "$HTTP_INTAKE")
     # The keep-alive timeout as in pd_sim.sh, aiperf's pool in the router's place.
-    # Its own process group, so a real server's workers stop with it.
+    # Its own process group, so a real server's workers stop with it. A free
+    # DP master port, as `compass record` gives one: the port keys ATOM's
+    # compiled-graph cache, and the first start that loads it autotunes again.
     # shellcheck disable=SC2086 # SERVER_ARGS is a word list
-    ATOM_COMPASS_PARITY_RECORD=$record setsid python3 -m atom.entrypoints.openai.api_server \
+    ATOM_DP_MASTER_PORT=$(compass_free_port) ATOM_COMPASS_PARITY_RECORD=$record setsid \
+        python3 "${main[@]}" \
         --model "$MODEL" --host 127.0.0.1 --server-port "$PORT" --timeout-keep-alive 1000000 \
         $SERVER_ARGS "${compass[@]}" >"$OUT/server.log" 2>&1 &
     # Ready once uvicorn listens; the frontend answers /health from then on,

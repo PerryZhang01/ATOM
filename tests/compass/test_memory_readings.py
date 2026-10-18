@@ -69,10 +69,8 @@ from atom.compass.memory import (
     predicts,
     reserves,
 )
-from atom.compass.run import _config_json
 from atom.compass.run import memory as entry
 from atom.compass.spec import MachineSpec
-from atom.config import get_hf_config
 
 # The package as the suite actually imported it, never as a walk up from this
 # file: if `atom` ever resolves from another root -- a PYTHONPATH ahead of the
@@ -93,10 +91,14 @@ PARAMETERS = 27_000_000_000
 
 
 def meta_tree(nbytes):
-    """A meta build whose parameter storages hold `nbytes`, none of it resident."""
+    """A meta build whose parameter storages hold `nbytes` and whose buffers are
+    the 27B's rotary table, none of it resident."""
     tree = torch.nn.Module()
     tree.weight = torch.nn.Parameter(
         torch.empty(nbytes, dtype=torch.uint8, device="meta"), requires_grad=False
+    )
+    tree.register_buffer(
+        "cos_sin", torch.empty(262_144, 64, dtype=torch.bfloat16, device="meta")
     )
     return tree
 
@@ -132,7 +134,7 @@ DOCUMENT = {
         "cpu": {"cores_physical": 96, "cores_logical": 192},
         "tokenizers": [TOKENIZER],
         "ipc": {"zmq_roundtrip_s": 5.0e-5, "shm_broadcast_s": 2.0e-5},
-        "admission_fixed_s": 9.0e-3,
+        "http_intake": {"fixed_s": 2.0e-3, "per_byte_s": 2.0e-8},
     },
     "device": {
         "name": "MI355X",
@@ -296,8 +298,8 @@ def qwen():
 #: 4-byte dtype. With bfloat16 alone, a size that collapsed to the literal 2
 #: would read exactly like the right one; float32 is every term doubled.
 MODEL_TERMS_BY_DTYPE = {
-    "bfloat16": {"weights": 54_000_000_000, "buffers": 33_554_432},
-    "float32": {"weights": 108_000_000_000, "buffers": 67_108_864},
+    "bfloat16": {"weights": 54_000_000_000},
+    "float32": {"weights": 108_000_000_000},
 }
 GRAPH_POOL_BY_DTYPE = {"bfloat16": 1_877_213_184, "float32": 3_754_426_368}
 
@@ -338,13 +340,10 @@ def reserved(qwen, total_bytes):
     )
 
 
-def model_terms(config, tree=META_8B, config_json=None):
-    """`config`'s model terms, the activations off the TP1 entry."""
-    return ModelTerms.from_config(
-        config,
-        activations=measured(1).activations(WARMUP_TOKENS),
-        config_json=config_json,
-        tree=tree,
+def model_terms(tree=META_8B):
+    """`tree`'s model terms, the activations off the TP1 entry."""
+    return ModelTerms.from_tree(
+        tree, activations=measured(1).activations(WARMUP_TOKENS)
     )
 
 
@@ -355,7 +354,7 @@ def readings_at(spec, qwen, tp_width):
         memory=measured(tp_width),
         tp_width=tp_width,
         model=model_terms(
-            qwen, meta_tree(PARAMETERS * element_bytes(qwen.dtype) // tp_width)
+            meta_tree(PARAMETERS * element_bytes(qwen.dtype) // tp_width)
         ),
         cudagraph_overhead=reserved(qwen, total_bytes),
     )
@@ -476,7 +475,7 @@ def test_a_configuration_that_does_not_fit_refuses_rather_than_clamping(spec, qw
             spec,
             memory=measured(1),
             tp_width=1,
-            model=model_terms(qwen, meta_tree(800_000_000_000)),
+            model=model_terms(meta_tree(800_000_000_000)),
             cudagraph_overhead=reserved(qwen, 288.0e9),
         )
     assert "clean box is negative" in str(refusal.value)
@@ -493,7 +492,7 @@ def test_the_predicting_function_cannot_be_spent_as_the_reserving_one(spec, qwen
             spec,
             memory=measured(1),
             tp_width=1,
-            model=model_terms(qwen),
+            model=model_terms(),
             cudagraph_overhead=predicts(measured(1, cudagraph_pool_bytes=420_000_000)),
         )
     assert "4-19x" in str(refusal.value)
@@ -564,30 +563,6 @@ def test_the_total_follows_the_terms_rather_than_being_stored():
 # --- the assumptions this module makes, shown rather than held ---------------
 
 
-def test_an_absent_partial_rotary_factor_says_so_in_the_table(qwen):
-    # The one field whose absence produced the recorded 4x. 1.0 is the
-    # right reading for a full-rotary model, so it is not refused -- but the
-    # row must not look the same as a config that states 1.0.
-    full = copy.deepcopy(qwen)
-    del full.partial_rotary_factor
-    stated, assumed = model_terms(qwen), model_terms(full)
-    assert "absent from config, assumed" in assumed.buffers.source
-    assert "absent from config, assumed" not in stated.buffers.source
-    assert assumed.buffers.nbytes == 4 * stated.buffers.nbytes
-    assert stated.buffers.method is Method.ANALYTICAL
-    assert assumed.buffers.method is Method.DECLARED
-    assert "1.0 is assumed" in assumed.buffers.note
-
-
-def test_the_model_dtype_sizes_the_model_terms(qwen):
-    # Read off the config, not a module constant: a term sized in fp32 where
-    # the tensors are resident in bf16 is twice what the model holds.
-    assert str(qwen.dtype).endswith("bfloat16")
-    terms = model_terms(qwen)
-    assert terms.buffers.nbytes == 262_144 * 64 * 2
-    assert " x 2 B" in terms.buffers.source
-
-
 def test_the_model_terms_follow_the_element_size(spec, resident):
     name, config = resident
     peak = readings_at(spec, config, 1).peak_torch
@@ -641,10 +616,9 @@ def test_an_assumed_member_declares_every_term_built_on_it(qwen):
         spec_of("probed"),
         memory=measured(1, assumed=ASSUMED),
         tp_width=1,
-        model=ModelTerms.from_config(
-            qwen,
+        model=ModelTerms.from_tree(
+            META_8B,
             activations=measured(1, assumed=ASSUMED).activations(WARMUP_TOKENS),
-            tree=META_8B,
         ),
         cudagraph_overhead=reserved(qwen, 288.0e9),
     )
@@ -668,25 +642,6 @@ def test_an_assumption_that_names_nothing_is_refused(assumed):
         measured(1, assumed=assumed)
 
 
-def test_a_config_with_no_dtype_refuses_rather_than_assuming_one(qwen):
-    nameless = copy.deepcopy(qwen)
-    del nameless.dtype
-    with pytest.raises(MemoryRefusal, match="states no `dtype`, and every byte"):
-        model_terms(nameless)
-
-
-@pytest.mark.parametrize("field", ["head_dim", "max_position_embeddings"])
-def test_a_config_missing_a_geometry_field_refuses_naming_that_field(qwen, field):
-    shapeless = copy.deepcopy(qwen)
-    delattr(shapeless, field)
-    with pytest.raises(MemoryRefusal) as refusal:
-        model_terms(shapeless)
-    assert refusal.value.what == (
-        f"this config states no `{field}`, and the memory model reads it"
-    )
-    assert "through ATOM's own config classes" in refusal.value.remedy
-
-
 def test_the_negative_box_refusal_carries_its_decomposition(spec, qwen):
     # A refusal carries its decomposition too: the reader has to see which of the
     # six terms does not fit, and three of them are declared coefficients.
@@ -695,7 +650,7 @@ def test_the_negative_box_refusal_carries_its_decomposition(spec, qwen):
             spec,
             memory=measured(1),
             tp_width=1,
-            model=model_terms(qwen, meta_tree(800_000_000_000)),
+            model=model_terms(meta_tree(800_000_000_000)),
             cudagraph_overhead=reserved(qwen, 288.0e9),
         )
     message = str(refusal.value)
@@ -707,112 +662,6 @@ def test_the_negative_box_refusal_carries_its_decomposition(spec, qwen):
 def test_the_eager_branch_mirrors_atom_and_is_analytical():
     # ATOM reserves nothing under enforce_eager; mirroring that is exact.
     assert reserves(enforce_eager=True).terms[0].method is Method.ANALYTICAL
-
-
-# --- fields the model's config.json does not state ---------------------------
-
-#: DeepSeek-V4-Pro's config.json: the fields the model terms read, and the
-#: model type that routes it through `DeepseekV3Config`. It states no
-#: `intermediate_size`, which that class defaults to 18432.
-V4_PRO = {
-    "architectures": ["DeepseekV4ForCausalLM"],
-    "model_type": "deepseek_v4",
-    "hidden_size": 7168,
-    "head_dim": 512,
-    "qk_rope_head_dim": 64,
-    "max_position_embeddings": 1048576,
-    "moe_intermediate_size": 3072,
-    "num_experts_per_tok": 6,
-    "n_shared_experts": 1,
-    "n_routed_experts": 384,
-    "num_hidden_layers": 61,
-    "torch_dtype": "bfloat16",
-}
-
-
-def loaded(tmp_path, raw):
-    """`raw` written as a model's config.json and loaded as `run.runner` sees
-    it: ATOM's own config, and the file it came from."""
-    (tmp_path / "config.json").write_text(json.dumps(raw))
-    return (
-        get_hf_config(str(tmp_path)),
-        PretrainedConfig.get_config_dict(str(tmp_path))[0],
-    )
-
-
-def terms_of(config, config_json):
-    return model_terms(config, config_json=config_json)
-
-
-def test_v4_pro_terms_name_only_fields_its_config_json_states(tmp_path):
-    config, config_json = loaded(tmp_path, V4_PRO)
-    assert type(config).__name__ == "DeepseekV3Config"
-    assert config.intermediate_size == 18432  # the class default, still there
-    terms = terms_of(config, config_json)
-    assert terms.buffers.nbytes == 1_048_576 * 64 * 2
-    assert terms.buffers.source == "1048576 positions x 64 qk_rope_head_dim x 2 B"
-
-
-@pytest.mark.parametrize("dropped,named", [("max_position_embeddings",) * 2])
-def test_a_field_only_the_config_class_supplies_is_refused_by_name(
-    tmp_path, dropped, named
-):
-    config, config_json = loaded(
-        tmp_path, {k: v for k, v in V4_PRO.items() if k != dropped}
-    )
-    assert getattr(config, named) is not None  # the class filled it in
-    with pytest.raises(MemoryRefusal) as refusal:
-        terms_of(config, config_json)
-    assert refusal.value.what == (
-        f"this config states no `{named}`, and the memory model reads it"
-    )
-
-
-def test_without_its_config_json_a_class_default_cannot_count_as_stated(tmp_path):
-    config, _ = loaded(tmp_path, V4_PRO)
-    with pytest.raises(MemoryRefusal, match="states no `max_position_embeddings`"):
-        terms_of(config, None)
-
-
-def test_a_dense_model_through_atoms_loader_keeps_its_terms(tmp_path, qwen):
-    # Qwen3.8-27B loads as a text config class that has a default for every
-    # field read here; its config.json states them all, under `text_config`.
-    config, config_json = loaded(tmp_path, json.loads(CONFIG_JSON.read_text()))
-    assert type(config).__name__ != "PretrainedConfig"
-    assert terms_of(config, config_json) == terms_of(qwen, None)
-
-
-def overridden(tmp_path, raw, overrides):
-    """`raw` as a model's config.json under `hf_overrides`: the config as
-    `Config` applies them, and the file as `run.runner` reads it."""
-    (tmp_path / "config.json").write_text(json.dumps(raw))
-    config = get_hf_config(str(tmp_path))
-    config.update(overrides)
-    deployment = SimpleNamespace(model=str(tmp_path), hf_overrides=overrides)
-    return config, _config_json(deployment)
-
-
-def without_positions(raw):
-    raw = copy.deepcopy(raw)
-    raw.get("text_config", raw).pop("max_position_embeddings")
-    return raw
-
-
-@pytest.mark.parametrize("name", ["v4_pro", "qwen3_5_text_config"])
-def test_a_field_only_hf_overrides_sets_is_read_from_the_override(tmp_path, name):
-    raw = V4_PRO if name == "v4_pro" else json.loads(CONFIG_JSON.read_text())
-    config, config_json = overridden(
-        tmp_path, without_positions(raw), {"max_position_embeddings": 65536}
-    )
-    assert terms_of(config, config_json).buffers.source.startswith("65536 positions")
-
-
-def test_a_field_neither_the_file_nor_hf_overrides_states_is_refused(tmp_path):
-    config, config_json = overridden(
-        tmp_path, without_positions(V4_PRO), {"num_hidden_layers": 4}
-    )
-    with pytest.raises(MemoryRefusal, match="states no `max_position_embeddings`"):
-        terms_of(config, config_json)
 
 
 # --- no device, structurally -------------------------------------------------

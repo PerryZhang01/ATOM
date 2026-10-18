@@ -6,17 +6,25 @@ its configuration's `memory_readings` entry.
 
 ATOM's engine starts from ATOM's arguments (`EngineArgs`) on the GPUs `--gpu`
 names, through `MemoryReadingModelRunner`, and stops once it has started: its
-weights loaded, its warmup run a second time on a warm compile cache, its KV
-cache sized and its graphs captured. `gpu.quiet` checks those GPUs before the
+weights loaded, its one warmup run, its KV cache sized and its graphs captured. `gpu.quiet` checks those GPUs before the
 start and after it. Each rank writes its readings and the key it read off its
 resolved config, and the ranks must agree on the key. The entry's key is that
 one with the digest of the machine spec `--machine` names; its conditions are
 that spec's device and stack, torch included. A start under a stack the
 spec does not pin, as run.json's identity states it, refuses before it
-publishes. A `--gpu` whose device is not the spec's refuses before the
+publishes. A `--gpu` whose device or PTL state is not the spec's refuses before the
 start, so no entry measured on another card is keyed by that spec. `non_torch`
 refuses a spread across the ranks above `SPREAD_LIMIT`. One member per rank
 holds `memory.ENTRY_FIELDS`, its `record` the digest of the engine's log.
+`--beside` names a command the start runs first in the engine's session, such
+as the lmcache server an offload connector reaches, so the GPU checks hold it
+to the engine's rule.
+
+Each start takes a free `ATOM_DP_MASTER_PORT`, which keys ATOM's compiled-graph
+cache, as a parity run's server does. A start in which inductor autotuned a
+kernel moves its files to `<out>.cold` and starts once more, on the cache it
+warmed: the configs autotuning tried stay loaded and read in `non_torch`. A
+second start that autotunes refuses.
 
 ``--out`` gets the engine's log, run.json's identity from the rank-0 engine
 file, and ``memory_readings.json``, the entry's readable copy. ATOM's
@@ -28,6 +36,7 @@ import datetime
 import hashlib
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -46,8 +55,8 @@ from atom.compass.artifacts import (
     roots_for,
 )
 from atom.compass.drive import serve
-from atom.compass.drive.gpu import add_gpu_flag, quiet
-from atom.compass.drive.identity import _device, identity
+from atom.compass.drive.gpu import add_gpu_flag, hip_visible, quiet
+from atom.compass.drive.identity import _device, _ptl, identity
 from atom.compass.run import CLOCK_ENV, ENV, _write_whole, memory
 from atom.compass.spec import MachineSpec, across_ranks
 from atom.compass.spec.fields import PINNED
@@ -55,6 +64,8 @@ from atom.compass.spec.fields import PINNED
 PROG = "compass measure memory"
 #: Where each rank writes its readings: a directory this command names.
 OUT_ENV = "ATOM_COMPASS_MEMORY_OUT"
+#: The command `--beside` names, which the start runs before the engine.
+BESIDE_ENV = "ATOM_COMPASS_MEMORY_BESIDE"
 RUNNER = "atom.compass.drive.memory_runner.MemoryReadingModelRunner"
 #: ATOM's dummy weights flag; its parser reads `_` in a flag as `-`.
 LOAD_DUMMY = "--load-dummy"
@@ -65,6 +76,8 @@ LOG, READINGS = "engine.log", "readings"
 def start(argv: list[str]) -> None:
     """Start ATOM's engine from ATOM's arguments `argv` through the reading
     runner, and stop it once it has started."""
+    if beside := os.environ.get(BESIDE_ENV):
+        subprocess.Popen(shlex.split(beside))
     from atom.model_engine.arg_utils import EngineArgs
     from atom.model_engine.llm_engine import LLMEngine
     from atom.utils.arg_parser import FlexibleArgumentParser
@@ -76,7 +89,7 @@ def start(argv: list[str]) -> None:
     LLMEngine(args.model, runner_qualname=RUNNER, **kwargs).close()
 
 
-def main(argv: list[str]) -> None:
+def main(argv: list[str], again: bool = False) -> None:
     cut = argv.index("--") if "--" in argv else len(argv)
     args = _parser().parse_args(argv[:cut])
     atom_args = argv[cut + 1 :]
@@ -89,16 +102,21 @@ def main(argv: list[str]) -> None:
             )
     model = serve._model(atom_args)
     machine = MachineSpec.from_mapping(json.loads(Path(args.machine).read_text()))
-    stated = machine_spec_key(machine).values["device"]
+    stated = machine_spec_key(machine).values
     other = [
         f"GPU {gpu['index']} is {gpu['name']} {gpu['arch']}"
         for gpu in _device(args.gpu)
-        if f"{gpu['name']} {gpu['arch']}" != stated
+        if f"{gpu['name']} {gpu['arch']}" != stated["device"]
     ]
     if other:
         raise ValueError(
-            f"{', '.join(other)}, and {args.machine} states {stated}; "
+            f"{', '.join(other)}, and {args.machine} states {stated['device']}; "
             "name the machine spec of the device the start runs on"
+        )
+    if (ptl := _ptl(args.gpu)) != stated["ptl"]:
+        raise ValueError(
+            f"the cards read ptl {ptl!r}, and {args.machine} states "
+            f"{stated['ptl']!r}; name the machine spec of the cards' PTL state"
         )
     out = Path(args.out)
     if out.exists() and any(out.iterdir()):
@@ -106,7 +124,10 @@ def main(argv: list[str]) -> None:
     (out / READINGS).mkdir(parents=True)
     env = {k: v for k, v in os.environ.items() if k not in (ENV, CLOCK_ENV, parity.ENV)}
     env[OUT_ENV] = str(out / READINGS)
-    env["HIP_VISIBLE_DEVICES"] = ",".join(map(str, args.gpu))
+    env["HIP_VISIBLE_DEVICES"] = hip_visible(args.gpu)
+    env["ATOM_DP_MASTER_PORT"] = str(serve._free_ports(1)[0])
+    if args.beside:
+        env[BESIDE_ENV] = args.beside
     code = f"import sys; from {__name__} import start; start(sys.argv[1:])"
     with quiet(args.gpu, out), (out / LOG).open("w") as log:
         engine = subprocess.Popen(
@@ -129,11 +150,30 @@ def main(argv: list[str]) -> None:
             engine.wait()
     if exited != 0:
         raise ValueError(f"the engine did not start ({exited}); see {out / LOG}")
+    if missed := _cold(out):
+        if again:
+            raise ValueError(
+                f"{', '.join(missed)} autotuned kernels again on a second start; "
+                "non_torch on a cold inductor cache reads high, so nothing is published"
+            )
+        # The configs inductor's autotuning tried stay loaded and read in
+        # `non_torch`; the next start finds their best configs cached.
+        out.rename(f"{out}.cold")
+        return main(argv, again=True)
     first = json.loads(min((out / READINGS).iterdir()).read_text())
     (out / "engine.json").write_text(json.dumps(first["engine"]))
     identified = identity(out / "engine.json", model, sys.argv, args.gpu)
     _write_whole(out / "run.json", json.dumps(identified))
     publish(out, machine, args.store, " ".join([PROG, *argv]), identified["stack"])
+
+
+def _cold(out: Path) -> list[str]:
+    """The ranks' files in `out` whose start autotuned a kernel."""
+    return [
+        p.name
+        for p in sorted((out / READINGS).iterdir())
+        if json.loads(p.read_text()).get("autotuned_kernels")
+    ]
 
 
 def publish(out: Path, machine, store: str, command: str, stack: dict) -> None:
@@ -165,7 +205,7 @@ def publish(out: Path, machine, store: str, command: str, stack: dict) -> None:
     reserve = [
         r["readings"]["driver_and_collective_reserve_bytes"] for r in ranks.values()
     ]
-    across_ranks("non_torch", len(reserve), reserve)
+    across_ranks("non_torch", reserve)
     key = Key.of(
         Kind.MEMORY_READINGS, machine_spec=machine_spec_digest(machine), **fields
     )
@@ -196,4 +236,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--machine", required=True, help="this platform's machine spec")
     p.add_argument("--store", required=True, help="the artifact store's root")
     p.add_argument("--out", required=True, help="an empty directory for the logs")
+    p.add_argument(
+        "--beside", help="a command to run beside the engine, such as a server"
+    )
     return p

@@ -63,11 +63,15 @@ class CostTerm:
     Terms are flat. A backend that wants a hierarchy spells it in the name --
     `attention.decode` under `attention` -- rather than nesting, because the
     consumers of a breakdown want to group and sum, not to walk a tree.
+
+    `draft` tags a speculative drafter's device work, which runs after the
+    target's; every other term is the target's.
     """
 
     name: str
     seconds: float
     provenance: Provenance
+    draft: bool = False
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -167,6 +171,16 @@ class StepCost:
         return fold_seconds(term.seconds for term in _checked(self.terms))
 
     @property
+    def target_seconds(self) -> float:
+        """The fold of the terms not tagged `draft`."""
+        return fold_seconds(t.seconds for t in _checked(self.terms) if not t.draft)
+
+    @property
+    def draft_seconds(self) -> float:
+        """The fold of the terms tagged `draft`."""
+        return fold_seconds(t.seconds for t in _checked(self.terms) if t.draft)
+
+    @property
     def refusals(self) -> tuple[Refusal, ...]:
         """Every refusal behind this step, term order then chain order."""
         return tuple(r for term in self.terms for r in term.refusals)
@@ -239,6 +253,8 @@ class ProvenanceMix:
         self.seconds = 0.0
         self.refused_steps = 0
         self.refused_seconds = 0.0
+        #: Steps with a term its source extrapolated past its support domain.
+        self.extrapolated_steps = 0
         self._method_seconds: dict[tuple[Method, bool], float] = {}
         self._method_steps: dict[tuple[Method, bool], int] = {}
         self._reasons: dict[tuple[str, str], int] = {}
@@ -249,6 +265,7 @@ class ProvenanceMix:
         self.steps += 1
         self.treatments.update(step.treatments)
         self.seconds = fold_step(self.seconds, step.seconds)
+        self.extrapolated_steps += any(t.provenance.extrapolated for t in step.terms)
         if step.is_refused:
             self.refused_steps += 1
             self.refused_seconds = fold_step(self.refused_seconds, step.refused_seconds)

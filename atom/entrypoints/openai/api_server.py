@@ -3032,6 +3032,7 @@ def main():
         if (
             args.spec_decode_acceptance_length is not None
             or args.spec_decode_acceptance_rate is not None
+            or args.spec_decode_acceptance_rates is not None
         )
         else None
     )
@@ -3041,7 +3042,7 @@ def main():
             "delivered as %r instead of its decoded text. Token counts, timings "
             "and throughput are unaffected; the text was already meaningless. "
             "Unset --spec-decode-acceptance-length / --spec-decode-acceptance-rate "
-            "to read the model's own output again.",
+            "/ --spec-decode-acceptance-rates to read the model's own output again.",
             SYNTHETIC_TOKEN_TEXT,
         )
     _stream_batch_dispatcher = StreamBatchDispatcher(

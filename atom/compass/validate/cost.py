@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Cost accuracy: a law priced on a real run's own step sequence.
+"""Cost accuracy: a law, or a step grid, priced on a real run's own step sequence.
 
     python -m atom.compass.validate.cost RECORD LAW
 
@@ -7,19 +7,20 @@ RECORD is a real run's step record directory (`ATOM_COMPASS_PARITY_RECORD`,
 `OUT_DIR/steps` of a `REAL=1 cctraces_sim.sh` cell); LAW is a law file as
 `step_linear_fit` writes it. Pricing the real run's own steps separates cost error
 from schedule error: both sides run the same batches. The command prices every
-step; `python -m atom.compass.validate` prices only those of the client run it
-grades, its warmup left out.
+step with a law; `python -m atom.compass.validate` prices only those of the client
+run it grades, its warmup left out, with the backend the simulated run priced with.
 
 Each step is labelled as the fit labels it, by its device time
 (`step_labels.label`, which also says which steps carry no label and refuses a
-record without device windows), and priced by `StepLinearBackend`. The
+record without device windows), and priced by `StepLinearBackend` or `StepGridBackend`. The
 error of a step is `priced / real - 1`. Per kind the report gives the error
 on totals, on totals holding out the step that contributes most to their error,
 and the median per step; per decode rung or prefill token band, the p10, p50
 and p90 of the per-step error and the fraction of steps within 10%.
 
 A step whose terms are not validated (outside the hull of the law's held-out
-steps, every step of a law that records none) is priced, but its error was
+steps, every step of a law that records none; for the grid, outside its
+residual's held-out hull) is priced, but its error was
 not measured where the law's was: those steps are reported apart, with their
 real and priced seconds, and enter none of the validated figures. A step that ran more
 than `step_linear_fit.WARM_FACTOR` times its price is warm, a one-off first touch the
@@ -27,13 +28,16 @@ law does not model: it is named with its seconds and enters no figure. So are
 the steps that lead a vector's priced steps, each slower than its price by more
 than `step_linear_fit.MAD_K` scaled MADs of the errors the law's vector was fitted
 on, as the fit names them; of that vector's errors here if the law records no
-`fit.mad`. A step the law refuses is counted with its real seconds.
+`fit.mad`, as the grid never does. A step the law or the grid refuses is
+counted with its real seconds, as one the grid declines to the step roofline
+below it in a run; one it extrapolated, past its support domain, is counted too.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
@@ -45,20 +49,24 @@ from atom.compass.backends import (
     step_labels,
     step_linear_fit,
 )
-from atom.compass.backends.step_linear_fit import WARM_FACTOR, _band, _features
+from atom.compass.backends.step_linear_fit import WARM_FACTOR, _band, _groups
 
 WITHIN = 0.10
 
 
-def _leading_slow(priced: list[tuple], law: dict) -> set[int]:
-    """Steps leading their vector's (vector, band, step, seconds, cost) rows, each slow."""
+def _leading_slow(priced: list[tuple], law: dict | None) -> set[int]:
+    """Steps leading their vector's (vector, band, step, seconds, price) rows, each
+    slow by the scatter `law` fitted the vector on, or by the scatter here where
+    `law` records none or is None, as for a step grid."""
     out = set()
     for key in sorted({p[0] for p in priced}):
         mine = [p for p in priced if p[0] == key]
-        error = np.array([p[4].seconds / p[3] - 1.0 for p in mine])
+        error = np.array([p[4] / p[3] - 1.0 for p in mine])
         centre = np.median(error)
         mad = 1.4826 * np.median(np.abs(error - centre))
-        vector = law["prefill"] if key == "prefill" else law["decode"][key]
+        vector = {}
+        if law is not None:
+            vector = law["prefill"] if key == "prefill" else law["decode"][key]
         if "mad" in vector.get("fit", {}):
             centre, mad = vector["fit"]["centre"], vector["fit"]["mad"]
         slow = (error < 0) & (
@@ -104,57 +112,79 @@ def _summary(steps: list[tuple]) -> dict:
     }
 
 
-def cost_accuracy(record, law, steps=None) -> dict:
-    """The report for `law`, a mapping `StepLinearLaw` reads, on the record
-    directory `record`: on its steps whose numbers are in `steps`, every step
-    when None."""
+def cost_accuracy(record, backend, steps=None) -> dict:
+    """The report for `backend`, a `CostBackend` or a law mapping
+    `StepLinearLaw` reads, on the record directory `record`: on its steps whose
+    numbers are in `steps`, every step when None. Its ``law`` names the law's
+    provenance, or the backend's `describe()` line.
+
+    The ranks' records (`dp0.jsonl` up) are joined as `step_linear_fit` joins
+    them: a step is its ranks' lines of one step index, measured as the
+    smallest rank label and priced and banded as its costliest rank's batch, a
+    term validated only if every rank's is; a step the law refuses is banded as
+    its rank of most tokens. A step some rank lacks or cut, or whose
+    ranks fall to different vectors, is counted under `cut.ranks`. Ranks whose
+    records differ in length by more than the one step a stopped run leaves on
+    some ranks only are refused.
+    """
     ranks = sorted(Path(record).glob("dp*[0-9].jsonl"))
-    if len(ranks) != 1:
+    lines = {r.name: len(r.read_text().splitlines()) for r in ranks}
+    if not ranks or max(lines.values()) - min(lines.values()) > 1:
         raise ValueError(
-            f"{record} holds {len(ranks)} DP ranks' records; this prices one rank's"
+            f"{record} holds rank records of {lines} lines; one run's ranks "
+            "differ by at most the step a stopped run leaves on some"
         )
-    got = [
-        s for s in step_labels.label(ranks[0])[0] if steps is None or s.step in steps
+    run = [
+        [s for s in step_labels.label(r)[0] if steps is None or s.step in steps]
+        for r in ranks
     ]
-    labelled, cut = _features(got, "base", 1)
-    views = {s.step: s.view for s in got}
-    backend = StepLinearBackend(StepLinearLaw(law))
+    joined, cut, _ = _groups(run, "base")
+    views = [{s.step: s.view for s in rank} for rank in run]
+    law = backend if isinstance(backend, Mapping) else None
+    if law is not None:
+        backend = StepLinearBackend(StepLinearLaw(law))
     groups = {"validated": {}, "unvalidated": {}}
     refused: dict[str, dict] = {}
-    warm, priced = [], []
-    for key, counts, seconds, step, _ in labelled:
-        band = _band(key, counts)
+    warm, priced, extrapolated = [], [], 0
+    for group in joined:
+        key, _, seconds, step, _ = group[0]
         try:
-            cost = backend.price(views[step])
+            costs = [backend.price(views[i][step]) for i in range(len(group))]
         except CostRefused:
+            band = _band(key, max((r[1] for r in group), key=lambda c: c[1]))
             r = refused.setdefault(band, {"steps": 0, "real_s": 0.0})
             r["steps"] += 1
             r["real_s"] += seconds
             continue
-        priced.append((key, band, step, seconds, cost))
+        validated = all(t.provenance.validated for c in costs for t in c.terms)
+        extrapolated += any(t.provenance.extrapolated for c in costs for t in c.terms)
+        top = max(range(len(costs)), key=lambda i: costs[i].seconds)
+        band, price = _band(key, group[top][1]), costs[top].seconds
+        priced.append((key, band, step, seconds, price, validated))
     leading = _leading_slow(priced, law)
-    for key, band, step, seconds, cost in priced:
-        if step in leading or seconds > WARM_FACTOR * cost.seconds:
+    for key, band, step, seconds, price, validated in priced:
+        if step in leading or seconds > WARM_FACTOR * price:
             warm.append(
                 {
                     "step": step,
                     "band": band,
                     "real_s": seconds,
-                    "priced_s": cost.seconds,
+                    "priced_s": price,
                 }
             )
             continue
-        validated = all(t.provenance.validated for t in cost.terms)
         group = "validated" if validated else "unvalidated"
         kind = "prefill" if key == "prefill" else "decode"
-        groups[group].setdefault(kind, []).append((band, step, seconds, cost.seconds))
-    report = {"record": str(record), "law": backend.law.fitted_on, "cut": cut}
+        groups[group].setdefault(kind, []).append((band, step, seconds, price))
+    name = backend.describe() if law is None else backend.law.fitted_on
+    report = {"record": str(record), "law": name, "cut": cut}
     for group, kinds in groups.items():
         report[group] = {
             kind: _summary(rows) for kind, rows in sorted(kinds.items(), reverse=True)
         }
     report["warm"] = warm
     report["refused"] = refused
+    report["extrapolated"] = extrapolated
     return report
 
 

@@ -15,6 +15,18 @@ written against it yet; implementation follows the execution plan in `16`.
 metric is admissible on stability alone; grading's ×0.97 sensitivity control is dropped
 until a need appears (D45, `12` T101).
 
+**Revised 2026-10-17 by the owner's ruling on
+[#1392](https://github.com/jgong5/ATOM/issues/1392):** the MI455 projection's first check is
+the analytical bound, at most the measured time on every measured step at both
+granularities, priced at attainable peaks probed on the device; the method's error and the
+configuration ranking are reported, not gated (D50.2).
+
+**Revised 2026-10-18 by the owner's ruling on
+[#1489](https://github.com/jgong5/ATOM/issues/1489):** the op-level empirical backend is
+graded by this protocol as the step-level backends are, on the same real runs, with its
+fallback share, its composed-over-measured gap and warm-over-cold reported beside it
+(D50.3).
+
 **Scope.** What counts as evidence: which results are reported, how each is measured, what
 tolerance applies and where that tolerance comes from, and what invalidates a run.
 Acceptance is paired simulated and real execution of cc-traces proper, so every rule here
@@ -427,7 +439,9 @@ Each of these voided real percentages before.
    functional form are fitting questions and are argued there, with the measurements.
    Named here because a validation run applies both: a step outside the hull is priced
    `estimated`, unvalidated, and reported apart (D50.1), not refused, and a law whose family was
-   chosen by LOO alone is not admissible evidence.
+   chosen by LOO alone is not admissible evidence. An op-level leaf is not extrapolated:
+   with no same-kernel bracket it is priced by its analytical law, counted in D50.3's
+   fallback share (`09` D60; revised 2026-10-18, #1489).
 7. **A speculative acceptance cell run at an assumed acceptance is not acceptance
    evidence.** It is exploration. Acceptance cells use the *measured* per-position
    distribution from the paired real run (`14` D84); the run summary reports the acceptance input's method.
@@ -439,7 +453,7 @@ Each of these voided real percentages before.
 ### Problem
 
 Several documents emit refusals — an unpriced leaf, a missing runtime constant, an
-unmatched tokenizer, a guard domain no binding satisfies, a refused control command — and
+unmatched tokenizer, a shape no graph holds with lazy trace off, a refused control command — and
 none of them says what happens next. Abort the run? Continue and mark the step? And which
 declines are refusals at all, when a later source or the analytical fallback can still answer?
 The answer changes what a result *is*, so it belongs here rather than in any one of them.
@@ -496,8 +510,9 @@ into as many iterations as there are gaps.
 threshold on refused seconds would gate on a number that is zero by construction.
 Steps answered by any method are priced, so their shares of seconds are real, and each
 method is reported apart so none reads as measured. At step level the roofline answers
-only in a run whose run file composes it (`step_roofline`, `13` D80); at op level the
-analytical fallback is always on. Either way its share sits beside the verdict, so it
+under the step grid, which always composes it below the grid (`17` D102), or in a run
+whose run file composes it (`step_roofline`, `13` D80); at op level the analytical
+fallback is always on. Either way its share sits beside the verdict, so it
 cannot become a silent fallback — the exact failure the *refuse rather than guess*
 principle exists to prevent. No cap on that share: an analytical law is expected to differ
 from the hardware, and no fraction of seconds says by how much; the cell's error against
@@ -577,9 +592,10 @@ cc-traces e2e and by the per-step error spread (D47), never by a total. TBO unde
 and op-level pricing for V4-Pro are prerequisites, so neither cell is acceptance evidence
 before both exist.
 
-The mechanism tests run device-free on a CPU fake-model DP2: both ranks report the same
-step seconds, equal to the larger of the two; an idle rank's dummy batch is priced and
-enters the `max`; the batch view refuses a DP run that states no `num_tokens_across_dp`
+The mechanism tests run device-free on a CPU fake-model DP2: with no host time both
+output ranks report the same step seconds, equal to the larger of the two; with host
+time two members share the later device end and each returns at its own release; an
+idle rank's dummy batch is priced and enters the `max`; the batch view refuses a DP run that states no `num_tokens_across_dp`
 (#470); and the CA refuses members whose call counts differ (#528).
 
 ### Repeats
@@ -594,45 +610,74 @@ N≥3 **spaced** real runs per cell to establish the noise floor.
 
 ### Problem
 
-M2's MI455 roofline projection (`16` D95) has no real side. D45's tolerance has no
+M2's MI455 projection (`16` D95) has no real side. D45's tolerance has no
 real-vs-real spread to measure and D44's results have nothing to compare against, so any
 error bar quoted on the projection would be invented.
 
 ### Decision
 
-**The projection is held to three checks instead of an error bar.** A projection that
-fails the first two, or ships without the third's measurement, is not M2's result.
+**Revised 2026-10-17 by the owner's ruling on
+[#1392](https://github.com/jgong5/ATOM/issues/1392).** **The projection is held to the
+checks below instead of an error bar.** A projection that fails item 1 or 2, or ships
+without item 3's measurement, is not M2's result.
 
-1. **The roofline is a lower bound on every measured MI355X step.** The bound prices each
-   leaf by `10` D64 at the spec's peaks, every derate at 1, with no host floor, and
-   composes the leaves the way the step composes them: each `Par` through its own join
-   (`04`, `Par`: concurrency) and TBO's two micro-batches through `16` W4.6's overlap,
-   never summed across concurrent work. D64's flat `Σ t_leaf` is not a lower bound on a
-   step that overlaps work, such as V4's compressor and indexer on side streams or the DPA
-   prefill side's TBO. The `max` join, the `resource_bound` join at derate 1 and the
-   `exclusive` sum each still are. The step roofline's own price is not the bound: it is derated and
-   floored, a central estimate (`10` D67.1). Applied as D47 applies cost accuracy, on the
-   real runs' own unprofiled steps (D49): no step's bound may exceed its measured time. One
-   that does is a defect in a law or in the spec, reported with its operator family; it is
-   a bound, not a statistic, so none is tolerated. The implementation efficiency is
-   reported per operator family as a distribution, never as a mean alone: a step's measured
-   time has no per-family split, so a family's implementation efficiency is its leaves' roofline time over
-   their measured time in `16` W4.4's MI355X calibration tables. `16` W5.3 runs this check.
+1. **On every measured step, at both granularities, analytical is at most measured.** The
+   step-level and op-level projections of `10` D64 price each step at the attainable peaks
+   probed on the device that ran it, composed by the joins of
+   [topic 10](10_analytical_laws.md#d64-the-attainable-peak-roofline-at-step-and-op-level).
+   Applied as D47 applies cost accuracy, on the real runs'
+   own unprofiled steps (D49), the stage-2 MI308X record and the stage-3 MI355X records: no
+   step's analytical price may exceed its measured time. One that does is a defect in an
+   extractor, a join or the spec, reported with its op kind or module; it is a bound, not a
+   statistic, so none is tolerated. Beside it, not gated: the measured-over-analytical
+   report of `10` D68.
 2. **Every MI455 input is sourced or marked assumed.** A machine-spec field's origin is
    recorded per field across save, `MachineSpec.origin()` (`05` D26); which fields
-   are assumed is rule 5 of `05` D25's schema rules. The projection artifact lists the assumed
-   fields an analytical law reads, and a term that reads one is declared. A field no
-   fragment supplies is refused (principle 6). `16`
-   W5.1 and W5.4 carry it.
-3. **The procedure's error is measured where both sides exist.** The same procedure —
-   implementation efficiencies carried from a measured device onto a target spec, declared there —
-   projects Qwen3.8-27B from MI308X to MI355X and is scored against real MI355X runs by
-   D44's three results (`16` W5.5). That score is the error estimate quoted with the MI455
-   projection. It estimates the procedure, not MI455: it is taken on another model and another
-   device pair, because DeepSeek-V4-Pro's FP4 experts do not run on gfx942.
+   are assumed is rule 5 of `05` D25's schema rules. MI455's attainable peaks are its
+   datasheet times the ratios probed on MI355X, assumed (`10` D69). The projection artifact
+   lists the assumed fields it reads, and a term that reads one is declared. A field no
+   fragment supplies is refused (principle 6).
+3. **The method's error is measured where both sides exist.** The same method, an MI355X
+   spec carried from MI308X's probed ratios as MI455's is carried from MI355X's, projects
+   Qwen3.8-27B onto MI355X and is reported against real MI355X runs by item 1's reports,
+   not gated. That error is quoted with the MI455 projection. It estimates the method, not
+   MI455: it is taken on another model and another device pair, because
+   DeepSeek-V4-Pro's FP4 experts do not run on gfx942.
 
-Where a claim about MI455 can be a ranking rather than an absolute, prefer the ranking
-(`10` D69).
+**Reported, not gated:** configuration ranking, top-1 and top-3, over M2's four P/D cells
+(`10` D67.1). Where a claim about MI455 can be a ranking rather than an absolute, prefer
+the ranking (`10` D69). `16` *Wave 5* carries all of it.
+
+---
+
+## D50.3. The op-level empirical backend is graded as the step-level ones are
+
+### Problem
+
+The op-level backend prices each leaf from measurements on the device (`07` D38) and
+composes the step by the IR's joins, with no residual. A composed step can be wrong in
+ways a step-level fit absorbs, so its grade needs the reports that say where its error
+sits.
+
+### Decision
+
+**Owner's ruling on [#1489](https://github.com/jgong5/ATOM/issues/1489), 2026-10-18.**
+**Graded by this protocol as the step-level backends are, on the same real runs:** D44's
+three results inside D45's tolerance, D47's cost accuracy on the real runs' own steps, and
+D50's cells. Qwen3.8-27B TP1 on MI308X is graded on
+[#974](https://github.com/jgong5/ATOM/issues/974)'s real runs, then DeepSeek-V4-Pro's four
+nightly configurations on MI355X and the DPA two at EP8, with D50's ranking gate. A refused
+step is D50.1's. Faster than real is gated; 5× is reported (D51).
+
+**Reported beside the grade, not gated:**
+
+1. the analytical fallback's share of priced seconds, per phase (D50.1);
+2. the per-step gap of the composed step over its measured one, per phase and op kind, on
+   the real runs' unprofiled steps (D49);
+3. the step-level backend's D47 table on the same steps, beside it;
+4. `measure ops`'s warm-over-cold ratio, per op kind (`07` D38).
+
+`16` *Stage 3d* carries it.
 
 ---
 
@@ -705,10 +750,11 @@ claims there are not.
 | D46 | Three metric families ordered by robustness, as an extensible registry: counting invariants (exact; prefill tokens over the requests both runs issued, within the real spread), distributional (weighted most), event timing (most diagnostic). Policy agreement is a regression guard, not a discriminator. | 2026-09-18; revised 2026-10-13 (#897) |
 | D47 | Cost accuracy on the real run's own step sequence; report totals, held-out-worst, and median per step together. | 2026-09-18 |
 | D48 | Memory per term, never as a sum. The gate is whether the top-1 configuration choice survives, not the byte error. | 2026-09-18 |
-| D49 | Seven hygiene refusals, each with a prior incident behind it. | 2026-09-18 |
+| D49 | Seven hygiene refusals, each with a prior incident behind it. An op-level leaf is not extrapolated: with no same-kernel bracket it falls to its analytical law. | 2026-09-18; op-level leaf 2026-10-18 (#1489) |
 | D50.1 | A step is refused only when some term is still unanswered after method fallback, its reasons listed per term; a fall-through and an answer of any method are not refusals, and the priced seconds are reported by method (analytical, declared, measured, estimated, unvalidated) with their steps and share of predicted seconds. A refused step costs 0 s and the run continues; `--on-refusal abort` stops at the first, and the summary is written either way. Any refusal, of any source, makes the run a coverage report: no refused-seconds fraction, no threshold, and no answered step invalidates a run, whatever its method or share. | 2026-09-19; revised 2026-10-11 (#765, and again to drop the analytical cap); 2026-10-14 (#952) |
 | D50 | Everything registered and hashed before evaluation; the case set never shrinks. One simulated run plus a reproducibility assertion; N≥3 spaced real runs. The cells are stage 2's Qwen3.8-27B TP1 on MI308X and M2's four nightly P/D configurations of DeepSeek-V4-Pro on MI355X at their concurrencies, then the DPA two at EP8. M2's ranking gate: the same best configuration as hardware at each concurrency, and rank correlation across all cells, per end-to-end metric, each inside its real-vs-real spread, with Spearman's ρ also at least 0.9. DP mechanism tests run on a CPU fake-model DP2. | 2026-09-18; revised 2026-10-01, 2026-10-09, 2026-10-10 |
-| D50.2 | The MI455 projection is sound, not graded: the roofline at the spec's peaks, derates at 1, no host floor, composed by the step's own joins and never summed across concurrent work, is a lower bound on every measured MI355X step; every MI455 input is sourced or marked assumed; the procedure's error is measured by projecting Qwen3.8-27B from MI308X to MI355X. | 2026-10-09 |
+| D50.2 | The MI455 projection is sound, not graded: on every measured step, at both granularities, the analytical price at attainable peaks probed on the device, composed by the IR's own joins, is at most the measured time, with measured over analytical per op kind and phase reported beside it; every MI455 input is sourced or marked assumed, its peaks the datasheet times MI355X's probed ratios; the method's error, MI308X to MI355X on Qwen3.8-27B, and the configuration ranking are reported, not gated. Replaces the bound first stated at the spec's peaks with derates at 1, and the method that carried implementation efficiencies onto the target. | 2026-10-09; revised 2026-10-17 (#1392) |
+| D50.3 | The op-level empirical backend is graded by this protocol as the step-level backends are, on the same real runs: Qwen3.8-27B TP1 on MI308X on #974's runs, then M2's cells with the ranking gate. Faster than real is gated; 5× is reported. Reported, not gated: the analytical fallback's share of priced seconds, the per-step composed-over-measured gap per phase and op kind, the step-level backend's table beside it, and warm-over-cold. | 2026-10-18 (#1489) |
 | D51 | Measure a saturated cell early. Account cold costs once; report the simulator's own per-step CPU cost alongside the ratio. | 2026-09-18 |
 | D52 | Fail-closed invalidation conditions; any refusal is one, an answered step is not, whatever its method or share (D50.1). Scheduling claims require slack; throughput claims at saturation are fine. | 2026-09-18; revised 2026-10-11 twice |
 

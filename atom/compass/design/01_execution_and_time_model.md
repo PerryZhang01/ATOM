@@ -389,7 +389,7 @@ one LP:
 | ATOM group | OS processes | LPs | Why |
 |---|---|---|---|
 | TP group | 1 EngineCore + N workers | **1** | Workers are slaved by a blocking RPC (`async_proc.py::AsyncIOProcManager.call_func`) and hold no clock. Rank-0 authority validated at 0.06% (D0). |
-| DP group | N EngineCores | **1** | Already `all_reduce`s every step for lockstep (`DPEngineCoreProc._sync_dp_state`) and runs `dummy_execution` on idle ranks (`DPEngineCoreProc._execute_dummy_batch`). A step costs the `max` over ranks of each rank's own cost (below). |
+| DP group | N EngineCores | **1** | Already `all_reduce`s every step for lockstep (`DPEngineCoreProc._sync_dp_state`) and runs `dummy_execution` on idle ranks (`DPEngineCoreProc._execute_dummy_batch`). Every rank prices its own forward; with host time the ranks share one device end, the latest over ranks, and each leaves at its own release (below). |
 | API server | 1 process: uvicorn, `CoreManager` and its threads | **1** (frontend) | Its asyncio event loop is a clock owner of its own: it tokenizes and streams while the engine runs a forward, so it overlaps the step loop in simulated time and cannot be folded into it. Offline, the owner is the loop that calls `get_output`. |
 | PD container (prefill or decode) | one full ATOM deployment | **2** | its frontend LP and its engine LP |
 | Traffic source | — | **1** | |
@@ -433,10 +433,11 @@ constraints.
    A startup assertion enforces the collective case: creating a process group whose ranks
    map to more than one LP raises.
 
-**A DP group is one LP, and its step costs the `max` over ranks** of each rank's own cost
-(owner ruling 2026-10-01, `15` D90). Every rank prices its own batch, and the predicted
-forward exchanges the step seconds by one `all_gather` on the DP group after
-pricing; `15` D90 owns the `T_moe` and uniform-routing argument. Every rank then calls
+**A DP group is one LP, and its ranks share one device end per forward** (owner ruling
+2026-10-01, `15` D90; revised 2026-10-16, #1267). Every rank prices its own batch; with
+host time one `all_reduce(MAX)` takes the latest device end over ranks, each rank leaves
+at its own release from it, and one `all_gather` on the DP group carries every rank's
+step target (the rule is below); `15` D90 owns the `T_moe` and uniform-routing argument. Every rank then calls
 the CA as a member of the LP (below). No operator-level TAR/NER. Per-rank LPs are right only if the ranks decouple at step level (no per-step
 collective) and interact only with lookahead > 0.
 
@@ -457,11 +458,22 @@ frames. The CA completes the LP's request only when every member has called:
 
 With `lmcache_mp` above DP width 1, a park request amends rules 1, 2 and 5 (D6.1).
 
-Every member's step end is a round (owner ruling 2026-10-15, #988). A rank whose forward
+Every member's step end is a round, and so is every member's input pull (owner ruling
+2026-10-15, #988; revised 2026-10-16, #1267, and 2026-10-18, #1345).
+With host time, one `all_reduce(MAX)` over the DP group, which every forward kind joins, the DP
+dummy included, gives each forward the group's device end on the LP clock, as per-layer
+collectives hold every rank's device until the slowest, and under MTP the latest target
+end beside it. Each rank writes the device end back as its last device end and, on an
+output forward, as its output end, the target end in its place under MTP; its forward ends
+at its own
+release, as a real rank returns at its own launch end. A replay rank's forward ends at its
+own replayed return. With no host time, a rank whose forward
 waits on its device, one with output other than the DP dummy, ends at the group's `max`;
-any other ends at its own seconds, as a real idle rank takes in arrivals when its own
-forward returns. Each member asks one TAR per distinct end, ascending, returns at its own
-and owes the rest. Until they are paid its sends are stamped at its own end; a TAR before
+any other ends at its own seconds, as a real idle rank's forward returns on its own. Where
+`out_s` is set, each member then returns at its own pull, its end plus its `out_s`, and
+takes in arrivals there before `_sync_dp_state`; the pulls join the ends as rounds
+(`group_out`). Each member asks one TAR per distinct round, ascending, returns at its own
+pull (its own end where there is no `out_s`) and owes the rest. Until they are paid its sends are stamped at its own end; a TAR before
 the last owed round and any NER are refused; and every host collective on its clock owner
 thread, a `torch.distributed` collective whose tensors are all on the CPU or that has none,
 pays them first, as it returns at the latest arrival. A device collective returns once
@@ -1164,7 +1176,7 @@ undecided**.
 | K3 | Idle point | NER: `next_event(t, t_daemon)` | the step loops' spin, the PP bounded polls, offline `get_output`, a step-loop wait on an lmcache reply (D6.1) |
 | K4 | Channel send | timestamped send, logged on the clock owner | PD direct sends, PP sends, output sends through the relay queue |
 | K5 | Channel receive | counted at the wait point, then TSO delivery | the engine input thread, the frontend output thread, the PD handler threads, the PP receives and zero-bound drains, the PP `flush_pp_send` |
-| K6 | Wait inside one LP | LP aggregation: never reported to the CA | TP worker RPC and barriers, frontend coroutines awaiting their own process's data, control commands' calls to workers, the DP group's reductions (the `PrefillDelayer` all_reduce, and the step-seconds `all_gather` in the predicted forward) |
+| K6 | Wait inside one LP | LP aggregation: never reported to the CA | TP worker RPC and barriers, frontend coroutines awaiting their own process's data, control commands' calls to workers, the DP group's reductions (the `PrefillDelayer` all_reduce, and the device-end `all_reduce(MAX)` and step-target `all_gather` in the predicted forward) |
 | K7 | Virtual timer | the timer runs on the LP clock | idle KV drain, metrics push and refresh, Anthropic ping, keep-alive, the silence warning |
 | K8 | Real bound | the CA cannot reach it, or it stays real on purpose: configuration | the Rust router's bounds and health check, process-death detection, the control-command reply deadline |
 | K9 | Outside the model | outside the simulation window, inside replaced code, cannot park, or a timing only a log line reads | startup and shutdown, the replaced runner and RDMA backends, collectives inside the real forward, text scanners, the step-loop timings that only feed a log line |
@@ -1192,15 +1204,19 @@ The rules that settle the boundaries #53's categories left in the wrong place:
   sizes both). So the TP workers and every rank of a lockstep DP group sit in the engine
   LP, and a startup assertion refuses a process group whose ranks map to more than one
   LP.
-- **A DP step is one TAR per member step end, an output rank's the `max`** (D3, #988). Each rank
-  charges its own forward by the recurrence below, the ranks exchange the step seconds
-  by one `all_gather` inside the predicted forward, and every rank calls the CA as a member of the LP (D3). The exchange
-  is K6 and carries no cost (`15` D90). The lockstep `all_reduce`
+- **A DP step is one TAR per member release and per member pull; each member returns at
+  its own pull** (D3, #988, #1267, #1345). Each rank charges its own forward by the recurrence below, from the group's
+  device end, the `max` over ranks of each rank's absolute device end by one
+  `all_reduce(MAX)`; the ranks exchange the step targets by one `all_gather` inside the
+  predicted forward, and every rank calls the CA as a member of the LP (D3). With no host
+  time an output rank's target is the `max` of the step seconds (D3). Both collectives
+  are K6 and carry no cost (`15` D90). The lockstep `all_reduce`
   (`DPEngineCoreProc._sync_dp_state`, `atom/model_engine/engine_core.py`) keeps its payload; it is K1 rather than ignored because it has a cost of its own, not
-  because the step is decided there. **Second-order bound:** a fast rank's output is
-  stamped at the end of the whole step, late by at most the difference between its own
-  cost and the `max`; the step is split with in-step TAR only if that is measured to
-  affect TPOT.
+  because the step is decided there. **Second-order bound:** the shared device end
+  leaves out each rank's own tail after its last cross-rank collective; with no host
+  time a fast rank's output is stamped at the group's `max`, late by at most the
+  difference between its own cost and the `max`. The step is split with in-step TAR
+  only if that is measured to affect TPOT.
 - **A bound in Python is a virtual timer; only what the CA cannot reach is a real
   bound.** #53 split bounded waits by purpose, failure detector (C1) against pacing (C2).
   Both run on the LP clock now (K7, D5). The K8 row above lists what stays real. The C1 bounds inside the TP group
@@ -1303,8 +1319,8 @@ thread declares anything:
   message is held at the wait point until the clock owner's `advance_to` walks past its
   arrival time, and released one at a time in arrival order.
 - **K5**, the PP idle flush, `flush_pp_send` in `PPEngineCoreProc._pp_head_step` and
-  `_downstream_busy_loop`: it waits for the stage's previous send, whose completion a
-  rendezvous (large) send learns from the next stage. The stage loop receives that send's
+  `_downstream_busy_loop`: it waits on the host for the gloo parts of the stage's
+  previous send, whose completion a rendezvous gloo part learns from the next stage. The stage loop receives that send's
   `stage(k+1)->stage(k):pp_ack#dp0` inline before the call; an eager (small) send has a
   local completion and no ack, and the loop advances to it by K1's rule. The forward's
   own wait for the previous send is the same receive, made at the forward call site after
@@ -1367,6 +1383,10 @@ stage and per DP rank, with a TP group modelled on its rank 0.
   `prepare_inputs` and the drafter's staging. A run without MTP never runs it; an MTP
   run whose law lacks it is refused by name.
 - `W_launch`: the launch (`ModelRunner.run_model`).
+- `W_recv`: on a pipeline stage after the first, the part of `W_launch` that
+  `run_model` runs before `recv_intermediate_tensors`; the stage posts its receive
+  after it (`15`). It is inside `W_launch`, never charged beside it. A first stage
+  never runs it; a later stage whose law lacks it is refused by name.
 - `W_post`: the sampler launch and the output (`ModelRunner.postprocess`).
 
 **The recurrence**, for forward `n`, where `now` is the clock owner's time when the
@@ -1377,9 +1397,9 @@ forward is called (the previous forward's exit, or the grant that ended an idle 
 entry      = now + E
 h          = max(entry, R4) + W_pre
 h          = max(h, R1) + W_inputs             # MTP only: R1 waits before launch
-h          = max(h, R7)                        # non-first PP stage: the metadata
-launch_end = h + W_launch
-start      = max(end[n-1], h)
+launch_end = max(h, R7 - W_recv) + W_launch    # non-first PP stage: R7, the metadata,
+                                               # holds the launch after W_recv
+start      = max(end[n-1], h, R7)
 target_end = start + D_target
 end        = max(target_end + D_draft, launch_end)
 exit       = max(launch_end, R1) + W_post      # no MTP: R1 for an output forward
@@ -1389,6 +1409,20 @@ charge     = exit - now                        # the K1 TAR: advance_to(exit)
 `end` and `target_end` are the runner's device state, kept across forwards; they never
 touch the clock. A device-bound forward charges device time and a host-bound one host
 time.
+
+**After the return: `E_out`** (owner ruling on
+[#1345](https://github.com/jgong5/ATOM/issues/1345), 2026-10-18). `Scheduler.postprocess`,
+the output put and the loop's way back to `pull_and_process_input_queue` run after the
+forward returns. `clock.charge` advances the reply's `predicted_s`, the forward's exit,
+then its `out_s`, `E_out`, so the engine's input pull and output send sit at
+`exit + E_out`; the forward's charge stays the forward. `E` stays the recurrence's first
+term and, where `out_s` is set, covers the pull to the next entry, `E_in`. A replay sends
+a real record's `t_pull_ns - t_exit_ns`; predict sends none until an `E_out` host law is
+fitted ([#1480](https://github.com/jgong5/ATOM/issues/1480)), so `E` stays whole and the
+pull sits at the exit. Under DP each member's pull, its own release plus its `out_s`,
+joins the group's rounds (`group_out`), never the device-end `max`; the member returns
+at its own pull and `group_targets` keeps releases only. The put lands at the pull,
+after the real put: the records' `t_put_ns` measure that gap.
 
 **What the ruled order implies.**
 
@@ -1420,10 +1454,24 @@ KV transfer keeps its own model (D6).
 Stage 2 builds R1 and R4 ([#825](https://github.com/jgong5/ATOM/issues/825)). R6 and R8
 come with the stage sends ([#468](https://github.com/jgong5/ATOM/issues/468)), R7 with
 [#1200](https://github.com/jgong5/ATOM/issues/1200): a simulated stage loop receives `pp_data`
-at the forward's call, its launch waits for the metadata's arrival and its device start for
+at the forward's call, its launch after `W_recv` waits for the metadata's arrival (#1529) and its device start for
 the tensors', and a non-last stage sends at its launch end (#1324).
-The gate charges a PP record's stages together. A simulated run refuses a
-speculative config until [#1090](https://github.com/jgong5/ATOM/issues/1090).
+The gate charges a PP record's stages together, step by step, and predicts both waits
+between them that ATOM's stage loops hold outside the recurrence: the head's
+`recv_tokens` before it schedules, released at the last stage's exit of forward `n - pp`
+or of a later output forward holding a request it schedules, and a downstream stage's
+`recv_metadata`, released at the head's call ([#1325](https://github.com/jgong5/ATOM/issues/1325)).
+On a machine spec's carriers it prices each send as `StageSends` does (`15` D91): the
+receive posted at the prepare end plus `W_recv`, the RCCL parts behind the previous
+frame's, the receiver's device end and its own send's hold, and a sender's device start
+behind the send it last settled. The record does not stamp idle flushes, so the gate
+infers them: the head flushes whenever it waits for tokens, a later stage once
+`recv_metadata`'s 100 ms poll times out (#1449, #1450, #1457).
+A simulated run prices a speculative step with `D_target` and `D_draft` from the cost
+backend, its terms tagged `draft` making the latter, and R1 holds its launch with MTP
+([#1090](https://github.com/jgong5/ATOM/issues/1090)). Under DP, each forward's
+`target_end` joins the device end's `all_reduce(MAX)` under MTP, and each rank writes the
+group's latest back as its output end. Its accepted drafts are `14` D83's draw.
 
 **What-ifs.** The run-file key `host.skip` zeroes the named segments. Such a run is a
 what-if: never graded, and refused by the graders.
@@ -1434,7 +1482,11 @@ and the R1 wait (with MTP also the draft copy wait; on a non-first PP stage also
 receive, and on the last stage its own token read), and records device events at
 `run_model` entry, with MTP at the target's end, on a non-first PP stage where the
 received tensors are in, and at the forward's exit, drained with `query()`, never `synchronize()`
-([#824](https://github.com/jgong5/ATOM/issues/824)). It edits no ATOM file.
+([#824](https://github.com/jgong5/ATOM/issues/824)). It edits no ATOM file. The
+recording's engine process stamps the first input pull (`clock.idle`) and output put
+(`clock.relay_queue`'s queue) after each reply, `t_pull_ns` and `t_put_ns`, into
+`dp<rank>.pulls.jsonl` on the same monotonic clock; `parity.read` joins them to the
+steps (#1345).
 
 **The recurrence's own check, provisional.** Fed each real record's measured device
 windows and host segments, the recurrence must reproduce the measured host period from
@@ -1449,7 +1501,8 @@ copy stream, staging and `prep_stream`. One more follows from #815's ruling 2, w
 makes `E` the recurrence's first term: `E` is charged inside forward `n`'s TAR, but
 `scheduler.postprocess()` and `schedule()` run before the forward is called, at `now`, so
 their clock reads (the first-token stamps, the waiting-prefill age, the arrivals a
-`schedule()` admits) sit up to `E` early. **Detected, not modelled:** implicit waits on
+`schedule()` admits) sit up to `E` early. Where the reply carries an `out_s` they run at
+the pull: `postprocess()`'s reads up to `E_out` late, `schedule()`'s up to `E_in` early. **Detected, not modelled:** implicit waits on
 pageable copies, and launches blocking on a full hardware queue. The check names each
 failing step with its residual against the device work queued at its launch.
 
@@ -2494,7 +2547,7 @@ Ordered by how much they could cost.
 | D3.3 | CA deploys two ways from one implementation: co-hosted in the API-server process by default, standalone server via `--compass-clock-endpoint` for multi-container runs (1P+1D in M1 and M2) | 2026-09-19 |
 | D3.4 | Wall-clock interleaving may vary between runs; the `(LP, virtual time, event)` sequence may not. Thread scheduling inside an LP is irrelevant only under in-transit counting and TSO delivery; ties break by **(time, LP id, channel, sequence number), never arrival order**; the cost backend is a pure function of its batch view; **no `set` iteration on the simulated path** - string ids are hashed under `PYTHONHASHSEED` randomisation, so a set of request ids iterates differently in every process. Test is a byte-diff of two step tables, CPU-only, in CI. | 2026-09-20; revised 2026-09-28 |
 | D3.5 | The CA owns three outputs: an opt-in timeline log, a stall diagnostic (a stall the CA can see is resolved by deadlock detection and recovery; one it cannot see gets a diagnostic, never an abort), and a run summary written always, an early end included, carrying grants, speed ratio, lazy-trace cost, detector state, the refusals with their reasons, the predicted seconds by method, and `coverage_report` (`08` D50.1). Each quantity is counted in one place, which the summary, the step table and the timeline read; the simulated system's latency and throughput (TTFT, ITL, request counts) stay in the benchmark's output and ATOM's metrics, not the summary. | 2026-09-20; revised 2026-09-28, 2026-10-11 and 2026-10-14 (#952) |
-| D4 | Every synchronization site maps to one of the PDES mechanisms K1-K9, none undecided; the boundary is the LP, not the process; a DP step is one TAR costing the `max` over ranks, exchanged inside the forward by a K6 wait with no cost, and the lockstep `all_reduce` is K1 for its own cost; handler threads stay and TSO delivery runs them at their message's timestamp. A forward's K1 charge is one recurrence per runner over the backend's device busy time and host segments (`E`, `W_pre`, `W_launch`, `W_post`, and under MTP `W_inputs` after R1), with wait rules R1, R4 and R6 to R8; `host.skip` makes a what-if; ATOM's sync stalls are fixed in ATOM and listed with their issues | 2026-09-18; revised 2026-09-28, 2026-10-01, 2026-10-11 (#815) and 2026-10-16 (#829) |
+| D4 | Every synchronization site maps to one of the PDES mechanisms K1-K9, none undecided; the boundary is the LP, not the process; a DP member's step is one TAR at its own release from the group's device end, the `max` over ranks by an `all_reduce(MAX)` (with no host time, an output rank's at the `max` of the step seconds), exchanged inside the forward by K6 waits with no cost, and the lockstep `all_reduce` is K1 for its own cost; handler threads stay and TSO delivery runs them at their message's timestamp. A forward's K1 charge is one recurrence per runner over the backend's device busy time and host segments (`E`, `W_pre`, `W_launch`, `W_post`, and under MTP `W_inputs` after R1), with wait rules R1, R4 and R6 to R8; after the return the engine LP advances the host's `out_s` (`E_out`) to its input pull, a DP member's pull joining the group rounds; `host.skip` makes a what-if; ATOM's sync stalls are fixed in ATOM and listed with their issues | 2026-09-18; revised 2026-09-28, 2026-10-01, 2026-10-11 (#815), 2026-10-16 (#829, #1267) and 2026-10-18 (#1345) |
 | D5 | Every timer and clock read the CA can reach runs on the LP clock, except the out-of-band control-command reply deadline; only what it cannot reach is configured or left real; metric cadence is virtual time (revising `11` D72); the profiler and RL control commands are refused by the simulated runner with a reply, counted, and make the run a coverage report; a synchronous command from the frontend's clock owner is refused by the frontend | 2026-09-18; revised 2026-09-28, 2026-10-09, 2026-10-14, 2026-10-15 |
 | D5.1 | The simulated run uses stdlib asyncio, not uvloop: only a Python event loop can host virtual time | 2026-09-28 |
 | D6 | KV transfer is simulated through a connector registered in the existing factory, reproducing Mooncake (what ATOM's PD CI deploys) through scheduler-side hooks only; a rank pair's writes queue on its link | 2026-09-18; revised 2026-09-28; link sharing 2026-10-16 (#1157); first-write setup 2026-10-16 (#1172) |

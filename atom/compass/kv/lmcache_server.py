@@ -19,9 +19,10 @@ which wakes every `EVICTION_INTERVAL_S`.
 server's start and every `SESSION_SWEEP_INTERVAL_S` after it, and drops each
 session created more than `SESSION_TTL_S` earlier.
 
-What it does not reproduce. Every object group of a chunk is one entry, so
-`--separate-object-groups` and sliding-window groups price and hit as full
-attention, and all-null chunks are stored. The byte budget is
+What it does not reproduce. Under `--separate-object-groups`, where a chunk's
+recurrent state (`state_bytes` a rank) is an object of its own, sliding-window
+groups price and hit as full attention, and all-null attention chunks are
+stored. The byte budget is
 `--l1-size-gb` taken whole, so a lazy pool's growth and allocator alignment
 are not modelled. Stores and retrieves need no prior REGISTER_KV_CACHE,
 because a simulated worker registers no device memory. The session sweep's
@@ -70,11 +71,10 @@ def _flag_parser() -> argparse.ArgumentParser:
     a("--eviction-trigger-watermark", type=float, default=0.8)
     a("--eviction-ratio", type=float, default=0.2)
     a("--supported-transfer-mode", choices=["lmcache_driven"], default="lmcache_driven")
-    # Accepted, and read by nothing here: the index keeps one entry per chunk
-    # (null blocks, object groups), the budget is the configured size (lazy
-    # pool), and the rest set workers and endpoints no reply depends on.
     a("--null-block-id", type=int, default=0)
     a("--separate-object-groups", action="store_true")
+    # Accepted, and read by nothing here: the budget is the configured size
+    # (lazy pool), and the rest set workers and endpoints no reply depends on.
     a("--l1-use-lazy", action=argparse.BooleanOptionalAction, default=True)
     a("--max-workers", type=int, default=1)
     a("--max-gpu-workers", type=int)
@@ -118,7 +118,7 @@ def _noop(now: float) -> None:
 class LMCacheServer:
     """The state and replies of one `lmcache server` process."""
 
-    def __init__(self, argv: list[str], *, chunk_bytes: int) -> None:
+    def __init__(self, argv: list[str], *, chunk_bytes: int, state_bytes=0) -> None:
         # lmcache brings torch with it, so importing this module stays free of both.
         from lmcache.v1.multiprocess.rpc import get_rpc_spec
         from lmcache.v1.multiprocess.token_hasher import TokenHasher
@@ -127,7 +127,8 @@ class LMCacheServer:
         self._spec, self._mq, self._wire = get_rpc_spec, mq, wire
         self.args = parse_server_flags(argv)
         self.chunk_size = self.args.chunk_size
-        self.chunk_bytes = chunk_bytes
+        self.chunk_bytes, self.state_bytes = chunk_bytes, state_bytes
+        self._recurrent = False  # a store has carried recurrent state
         self.capacity = int(self.args.l1_size_gb * (1 << 30))
         self._ttl = self.args.l1_read_ttl_seconds
         self._hasher = TokenHasher(self.chunk_size, self.args.hash_algorithm)
@@ -171,19 +172,24 @@ class LMCacheServer:
     def evict(self, now: float) -> list[tuple]:
         """One eviction-loop tick: above the watermark, drop the configured
         share of tracked objects, resident and staged, least recently used
-        first, skipping read-locked and staged ones."""
+        first, skipping read-locked and staged ones, and say so on stderr as
+        lmcache logs it."""
         tracked = len(self.objects) + len(self._staged)
-        if (
-            not self.capacity
-            or tracked * self.chunk_bytes / self.capacity
-            < self.args.eviction_trigger_watermark
-        ):
+        mark = self.args.eviction_trigger_watermark
+        used = self._size(self.objects) + self._size(self._staged)
+        if not self.capacity or (usage := used / self.capacity) < mark:
             return []
         ratio = min(1.0, max(0.0, self.args.eviction_ratio))
         target = int(tracked * ratio) or int(ratio > 0)
         victims = [k for k, o in self.objects.items() if not o.locked(now)][:target]
         for k in victims:
             del self.objects[k]
+        print(
+            f"lmcache stand-in at {now:.6f} s: L1 memory usage {usage:.2f} above "
+            f"watermark {mark:.2f}; triggering eviction of {len(victims)} objects",
+            file=sys.stderr,
+            flush=True,
+        )
         return victims
 
     def expire_sessions(self, now: float) -> None:
@@ -212,6 +218,11 @@ class LMCacheServer:
     @staticmethod
     def _okey(key: Any, rank: int, h: bytes) -> tuple:
         return (key.model_name, key.world_size, rank, h, key.cache_salt)
+
+    def _size(self, keys) -> int:  # a recurrent state's key is the longer
+        s = self.state_bytes
+        c = self.chunk_bytes + (0 if self.args.separate_object_groups else s)
+        return sum(s if len(k) > 5 else c for k in keys)
 
     def _ranks(self, key: Any) -> range:
         if key.worker_id is None:
@@ -255,7 +266,17 @@ class LMCacheServer:
             self._okey(key, r, hashes[hit]) in self.objects for r in ranks
         ):
             hit += 1
+        while (
+            self._recurrent
+            and hit
+            and not all(
+                (*self._okey(key, r, hashes[hit - 1]), 1) in self.objects for r in ranks
+            )
+        ):
+            hit -= 1
         held = [self._okey(key, r, h) for r in ranks for h in hashes[:hit]]
+        if self._recurrent and hit:  # and the recurrent state at its last chunk
+            held += [(*self._okey(key, r, hashes[hit - 1]), 1) for r in ranks]
         self._lock(held, readers, now)
         self._touch(held)
         s = self._session(key.request_id, now)
@@ -280,9 +301,13 @@ class LMCacheServer:
         hit = self._session(key.request_id, now).hit
         first = key.start // self.chunk_size
         hashes = self._hashes(key, key.start, key.end)
+        # A hit's recurrent state, when its last chunk is in this range.
+        state = hashes[hit - 1 - first : hit - first] if hit > first else []
         if hit >= 0:
             hashes = hashes[: max(0, hit - first)]
-        held = [self._okey(key, r, h) for h in hashes for r in self._ranks(key)]
+        ranks = self._ranks(key)
+        held = [self._okey(key, r, h) for h in hashes for r in ranks]
+        held += [(*self._okey(key, r, h), 1) for h in state for r in ranks]
         self._unlock(held, key.require_num_kv_readers())
         return None, _noop
 
@@ -292,7 +317,8 @@ class LMCacheServer:
         if s.key is not None:
             hashes = self._hasher.compute_chunk_hashes(list(s.tokens))
             ranks = range(s.key.world_size)
-            self._touch([self._okey(s.key, r, h) for h in hashes for r in ranks])
+            keys = [self._okey(s.key, r, h) for h in hashes for r in ranks]
+            self._touch(keys + [(*k, 1) for k in keys])
         return None, _noop
 
     def _worker_keys(self, key: Any, now: float) -> list[tuple]:
@@ -314,14 +340,19 @@ class LMCacheServer:
         *,
         now: float,
     ) -> tuple[Any, Callable]:
-        wanted = [
-            k
-            for k in self._worker_keys(key, now)
-            if k not in self.objects and k not in self._staged
-        ]
-        used = (len(self.objects) + len(self._staged) + len(wanted)) * self.chunk_bytes
-        if used > self.capacity:
-            wanted = []  # one allocation for the whole store: all or nothing
+        keys = self._worker_keys(key, now)
+        # Under --separate-object-groups the block-id groups after the first
+        # hold recurrent state, one block a chunk, as ATOM's native-state layout
+        # sends it: lmcache keeps it where a block is not the null block.
+        state = block_ids[1:] if self.args.separate_object_groups else []
+        self._recurrent |= bool(state)
+        null = self.args.null_block_id
+        states = [(*k, 1) for k, *ids in zip(keys, *state) if set(ids) - {null}]
+        used, wanted = self._size(self.objects) + self._size(self._staged), []
+        for group in (keys, states):  # one allocation a group: all or nothing
+            new = [k for k in group if k not in self.objects and k not in self._staged]
+            if used + self._size(new) <= self.capacity:
+                used, wanted = used + self._size(new), wanted + new
         self._staged.update(wanted)
 
         def admit(now: float) -> None:
@@ -332,7 +363,7 @@ class LMCacheServer:
             for k in reversed(fresh):
                 self.objects.move_to_end(k)
 
-        return (b"", True), admit, len(wanted)
+        return (b"", True), admit, self._size(wanted) / self.chunk_bytes
 
     def _retrieve(
         self,
@@ -345,13 +376,15 @@ class LMCacheServer:
         now: float,
     ) -> tuple[Any, Callable]:
         keys = self._worker_keys(key, now)
+        keys += [(*keys[-1], 1)] if self._recurrent and keys else []
         readable = [
             k for k in keys if k in self.objects and self.objects[k].locked(now)
         ]
         if len(readable) < len(keys):
             self._unlock(readable, 1)
             return (b"", False), _noop
-        return (b"", True), lambda now: self._unlock(readable, 1), len(keys)
+        size = self._size(keys) / self.chunk_bytes
+        return (b"", True), lambda now: self._unlock(readable, 1), size
 
 
 #: The request types the copy engine serves; the request loop serves the rest.

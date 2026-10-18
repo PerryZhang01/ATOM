@@ -29,6 +29,9 @@
 #   PREFILL_ARGS DECODE_ARGS
 #                       more API server flags for that side only, after
 #                       SERVER_ARGS, e.g. its DP width
+#   PREFILL_ENV DECODE_ENV
+#                       NAME=VALUE words set in that side's servers only, e.g.
+#                       `ATOM_NUMA_BIND=1 GPU_MAX_HW_QUEUES=5`
 #   ATOMESH             the router binary (default: atomesh)
 #   ATOM_COMPASS_PARITY_RECORD
 #                       when set, each server records its steps
@@ -47,7 +50,8 @@
 # move, which makes it LP `router` of the run, and RUN_FILE gains `router_in_s`
 # unless it has one already, and `router`, the binary that runs it, refused unless built from this tree's
 # atom/mesh (`router_binary` in atom/compass/run). Several servers of a side
-# make it LP `router` too, as it chooses among them. Otherwise
+# make it LP `router` too, as it chooses among them. As LP `router` it lists
+# each side's workers in RUN_FILE's `worker_order`, else sorted. Otherwise
 # the router has one worker per side, and ATOM's own DP dispatch picks the rank.
 #
 # It runs its own tree, as the gates do. Logs go beside RUN_FILE. It prints
@@ -96,10 +100,10 @@ server() { # role port kv_role dp_port instance count [exec]
     # uvicorn's keep-alive timeout runs on the LP clock, the router drops idle
     # connections on the wall clock: which comes first, and with it whether the
     # timeout takes a grant, would differ between runs. Only the router closes.
-    local extra=${DECODE_ARGS:-}
-    [[ $1 == prefill ]] && extra=${PREFILL_ARGS:-}
-    # shellcheck disable=SC2086 # DECODE_EXEC and the server flags are word lists
-    ${7:-} env "${passed[@]}" ${ATOM_COMPASS_PARITY_RECORD:+"ATOM_COMPASS_PARITY_RECORD=$ATOM_COMPASS_PARITY_RECORD/$name"} python3 -m atom.entrypoints.openai_server \
+    local extra=${DECODE_ARGS:-} vars=${DECODE_ENV:-}
+    [[ $1 == prefill ]] && extra=${PREFILL_ARGS:-} vars=${PREFILL_ENV:-}
+    # shellcheck disable=SC2086 # DECODE_EXEC, the side's variables and the server flags are word lists
+    ${7:-} env "${passed[@]}" $vars ${ATOM_COMPASS_PARITY_RECORD:+"ATOM_COMPASS_PARITY_RECORD=$ATOM_COMPASS_PARITY_RECORD/$name"} python3 -m atom.entrypoints.openai_server \
         --model "$MODEL" --host 127.0.0.1 --server-port "$2" --timeout-keep-alive 1000000 \
         --data-parallel-master-port "$4" \
         $SERVER_ARGS $extra \
@@ -148,25 +152,29 @@ if ((${#dp_aware[@]} || PREFILLS > 1 || DECODES > 1)); then
     # The hop into the router takes the run's ipc_s, its declared floor for one
     # hop between two local processes; the rest of each path's lookahead stays
     # on the hop out.
-    lookaheads=$(python3 - "$RUN_FILE" "$ATOMESH" <<'EOF'
+    # Its lookaheads, then the run file's worker_order as (URL, DP rank) pairs.
+    lp=$(python3 - "$RUN_FILE" "$ATOMESH" "$PREFILL_PORT" "$DECODE_PORT" <<'EOF'
 import json, sys
 from pathlib import Path
-from atom.compass.run import ROUTER, channel_table, router_binary
+from atom.compass.run import ROUTER, channel_table, router_binary, worker_order
 
 path = Path(sys.argv[1])
 run = json.loads(path.read_text())
 try:
     run["router"] = router_binary(sys.argv[2])
+    order = worker_order(run)
 except Exception as e:
     sys.exit(f"pd_sim: {e}")
 run.setdefault("router_in_s", run["ipc_s"])
 path.write_text(json.dumps(run))
 table = channel_table(run)
 print(json.dumps({c.name: table.lookahead(c.name) for c in table.channels_from(ROUTER)}))
+port = {"P": int(sys.argv[3]), "D": int(sys.argv[4])}
+print(json.dumps([[f"http://127.0.0.1:{port[s] + k}", r] for s in order for k, r in order[s]]))
 EOF
 )
     router_env=(ATOM_COMPASS_CLOCK_ENDPOINT="$CLOCK" ATOM_COMPASS_SEED="${SEED:-20260707}"
-        ATOM_COMPASS_ROUTER_LOOKAHEADS="$lookaheads"
+        ATOM_COMPASS_ROUTER_LOOKAHEADS="${lp%%$'\n'*}" ATOM_COMPASS_ROUTER_ORDER="${lp#*$'\n'}"
         ATOM_COMPASS_ROUTER_WORKERS="{$(IFS=,; echo "${workers[*]}")}")
 fi
 

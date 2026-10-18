@@ -22,8 +22,8 @@ definition and the residual's sources, which loading does not read.
 Its publisher states the readings `conditions` takes. The engine-config reading
 is `keyed`, as JSON: the ladder the runner replays (none under
 ``enforce_eager``), the KV block size and dtype, the quantization, the TP and
-DP widths, DP attention, expert parallelism, TBO and the performance
-environment. Loading refuses, naming what differs:
+DP widths, DP attention, expert parallelism, TBO, the performance
+environment and, under speculation, its method and draft width. Loading refuses, naming what differs:
 
 - a run at data-parallel width above one, since every bundle is measured at one;
 - a keyed condition, the grid's graph mode, a timing scope other than the
@@ -34,12 +34,20 @@ environment. Loading refuses, naming what differs:
   that was not measured;
 - a configured bound above the one the grid was planned for.
 
-A cell past the KV capacity is incomplete, so it refuses at lookup and needs no
-check here. The residual's recipe reads no chunk size, so none is keyed.
+A decode corner past the KV pool the grid records is extrapolated at lookup,
+and any other unmeasured corner refuses there, so neither needs a check here;
+the run composes the step roofline below the backend for the steps it refuses.
+The residual's recipe reads no chunk size, so none is keyed.
+
+Grading a run reads its bundle with `read` instead, checking nothing against
+the grading process: the run checked it against its own as it started, and its
+summary records the digest of the bundle it priced with.
 """
 
 import json
 from collections.abc import Mapping
+from hashlib import sha256
+from pathlib import Path
 
 from atom.benchmarks.results.metadata import performance_env
 from atom.compass.artifacts import (
@@ -54,8 +62,10 @@ from atom.compass.artifacts import (
     Topology,
     git_tree_root,
     machine_spec_key,
+    member_name,
     module_root,
 )
+from atom.compass.artifacts.store import ENTRY_FILE
 from atom.compass.backends.step_grid import StepGrid, StepGridBackend
 from atom.compass.backends.step_grid_fit import VALUE
 from atom.compass.backends.step_grid_plan import BOUNDS, SCOPE, keyed_of  # noqa: F401
@@ -69,8 +79,10 @@ MEMBER = ("params", Topology().ranks()[0], "json")
 def keyed(config) -> dict:
     """The conditions a bundle is measured under, as the resolved config holds them,
     and the performance environment of this process less the client's and the
-    device selection."""
-    return {
+    device selection, and under speculation its method and draft width."""
+    spec = getattr(config, "speculative_config", None)
+    drafts = {"speculative": [spec.method, spec.num_speculative_tokens]} if spec else {}
+    return drafts | {
         "ladder": [] if config.enforce_eager else schedulable_ladder(config),
         "kv_cache_block_size": config.kv_cache_block_size,
         "kv_cache_dtype": config.kv_cache_dtype,
@@ -182,3 +194,33 @@ def load(spec: Mapping, config, machine) -> tuple[StepGridBackend, dict]:
         "key": key.values,
         "digest": entry.digest,
     }
+
+
+def read(spec: Mapping, digest: str) -> StepGridBackend:
+    """The backend of the bundle a run priced with: the entry in the store the
+    run file names whose key is the run file's and whose digest is `digest`,
+    the one the run summary records, and its member read back at the digest
+    the entry states. The key is compared as the run file states it, so a
+    bundle keyed by another tree's key fields reads. Refused, naming the key,
+    when the store holds no such entry or its member has changed."""
+    fields = dict(spec)
+    folder = Path(fields.pop("store")) / Kind.STEP_GRID_BUNDLE.value
+    named = f"{Kind.STEP_GRID_BUNDLE} {json.dumps(fields, sort_keys=True)}"
+    found = {}
+    for path in folder.glob(f"*/{ENTRY_FILE}"):
+        raw = path.read_bytes()
+        if (document := json.loads(raw))["key"] == fields:
+            found[f"sha256:{sha256(raw).hexdigest()}"] = path.parent, document
+    if digest not in found:
+        raise ValueError(
+            f"{folder} holds {len(found)} entries keyed {named}, digesting "
+            f"{sorted(found)}; the run priced with the one digesting {digest}"
+        )
+    directory, document = found[digest]
+    path = directory / member_name(*MEMBER)
+    payload = path.read_bytes()
+    if f"sha256:{sha256(payload).hexdigest()}" != document["members"].get(path.name):
+        raise ValueError(f"{path} is not the member the entry of {named} digests")
+    member = json.loads(payload)
+    grid, residual = StepGrid(member["grid"]), Residual(member["residual"])
+    return StepGridBackend(grid, residual, bundle=named)

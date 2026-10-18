@@ -15,8 +15,13 @@ machine document.
 import contextlib
 import copy
 import hashlib
+import importlib.util
 import json
+import os
 import subprocess
+import sys
+import types
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -28,10 +33,10 @@ from test_memory_readings import (
     READINGS,
     STACK,
     meta_tree,
+    publish_readings,
 )
 from test_run_step_grid import deployment
 from test_vertical_slice import _run_file
-from transformers import PretrainedConfig
 
 from atom.compass import cli
 from atom.compass import run as compass_run
@@ -114,6 +119,7 @@ def a_start(tmp_path, monkeypatch, stack):
         pid = 0
 
         def __init__(self, *args, **kwargs):
+            (tmp_path / "hip").write_text(kwargs["env"]["HIP_VISIBLE_DEVICES"])
             ranks_wrote(out, r.config, [READINGS[2]] * 2)
 
         def wait(self, timeout=None):
@@ -131,11 +137,20 @@ def a_start(tmp_path, monkeypatch, stack):
     monkeypatch.setattr(measure_memory, "subprocess", started_by)
     monkeypatch.setattr(measure_memory.os, "killpg", gone)
     monkeypatch.setattr(measure_memory, "_device", lambda gpus: [MI355X])
+    monkeypatch.setattr(measure_memory, "_ptl", lambda gpus: "disabled")
+    # rocm-smi GPU 5 as HIP device 2.
+    monkeypatch.setattr(measure_memory, "hip_visible", {(5,): "2"}.get)
     monkeypatch.setattr(measure_memory, "identity", lambda *a: {"stack": stack})
     machine = tmp_path / "machine.json"
     machine.write_text(json.dumps(DOCUMENT))
     flags = ["--gpu", "5", "--machine", str(machine), "--store", str(tmp_path / "s")]
     return r, [*flags, "--out", str(out), "--", "--model", r.config.model]
+
+
+def test_the_engine_starts_on_the_hip_device_of_its_rocm_smi_gpu(tmp_path, monkeypatch):
+    _, argv = a_start(tmp_path, monkeypatch, STACK)
+    measure_memory.main(argv)
+    assert (tmp_path / "hip").read_text() == "2"
 
 
 def test_the_command_publishes_under_the_stack_the_spec_pins(tmp_path, monkeypatch):
@@ -199,6 +214,149 @@ def test_a_start_under_another_stack_than_the_spec_pins_publishes_nothing(
         "torch '2.9.1' in the start and '2.10.0' in the spec"
     )
     assert not (tmp_path / "s").exists()
+
+
+def test_the_engine_session_starts_the_command_beside_before_the_engine(
+    tmp_path, monkeypatch
+):
+    r, argv = a_start(tmp_path, monkeypatch, STACK)
+    envs = []
+    engine = measure_memory.subprocess.Popen
+
+    def recorded(command, **kwargs):
+        envs.append(kwargs["env"])
+        return engine(command, **kwargs)
+
+    monkeypatch.setattr(measure_memory.subprocess, "Popen", recorded)
+    cut = argv.index("--")
+    measure_memory.main([*argv[:cut], "--beside", "lmcache server -p 1", *argv[cut:]])
+    assert envs[0][measure_memory.BESIDE_ENV] == "lmcache server -p 1"
+
+    class Started(Exception):
+        pass
+
+    def beside(command, **kwargs):
+        raise Started(command, kwargs)
+
+    monkeypatch.setenv(measure_memory.BESIDE_ENV, envs[0][measure_memory.BESIDE_ENV])
+    monkeypatch.setattr(measure_memory.subprocess, "Popen", beside)
+    with pytest.raises(Started) as started:
+        measure_memory.start(["--model", r.config.model])
+    # No session, group or env of its own: the engine's killpg stops it.
+    assert started.value.args == (["lmcache", "server", "-p", "1"], {})
+
+
+def starts_autotuning(monkeypatch, r, out, autotuned):
+    """Engine starts that write each rank's file with the next count of kernels
+    inductor autotuned in `autotuned`, `non_torch` 12 MiB high when it is not
+    0; the environment each start was given."""
+    left, envs = list(autotuned), []
+
+    class Engine:
+        pid = 0
+
+        def __init__(self, *args, env, **kwargs):
+            envs.append(env)
+            tuned = left.pop(0)
+            high = 12_582_912 if tuned else 0
+            reserve = READINGS[2]["driver_and_collective_reserve_bytes"] + high
+            read = dict(READINGS[2], driver_and_collective_reserve_bytes=reserve)
+            ranks_wrote(out, r.config, [read] * 2)
+            for rank in (out / measure_memory.READINGS).iterdir():
+                held = json.loads(rank.read_text())
+                rank.write_text(json.dumps(held | {"autotuned_kernels": tuned}))
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(measure_memory.subprocess, "Popen", Engine)
+    return envs
+
+
+def test_a_start_that_autotuned_publishes_the_next_starts_readings(
+    tmp_path, monkeypatch
+):
+    r, argv = a_start(tmp_path, monkeypatch, STACK)
+    monkeypatch.setenv("ATOM_DP_MASTER_PORT", "29500")
+    envs = starts_autotuning(monkeypatch, r, tmp_path / "out", [6, 0])
+
+    measure_memory.main(argv)
+
+    read = memory.load(tmp_path / "s", r.config, MACHINE, 0).values
+    assert read["driver_and_collective_reserve_bytes"] == (
+        READINGS[2]["driver_and_collective_reserve_bytes"]
+    )
+    assert (tmp_path / "out.cold" / measure_memory.LOG).exists()
+    # A port an earlier start used would load its compiled graphs, which
+    # autotune again on their first load.
+    assert [env["ATOM_DP_MASTER_PORT"] != "29500" for env in envs] == [True, True]
+
+
+def test_a_second_start_that_autotunes_publishes_nothing(tmp_path, monkeypatch):
+    r, argv = a_start(tmp_path, monkeypatch, STACK)
+    starts_autotuning(monkeypatch, r, tmp_path / "out", [6, 6])
+
+    with pytest.raises(ValueError) as refused:
+        measure_memory.main(argv)
+
+    assert str(refused.value) == (
+        "readings.dp0of1.pp0of1.pcp0of1.tp0of2.json, "
+        "readings.dp0of1.pp0of1.pcp0of1.tp1of2.json autotuned kernels again on a "
+        "second start; non_torch on a cold inductor cache reads high, so nothing is "
+        "published"
+    )
+    assert not (tmp_path / "s").exists()
+
+
+def test_the_reading_runner_warms_up_once_as_a_serving_start_does(monkeypatch):
+    # A second warmup's peak counts what the first left allocated, and the
+    # KV pool a serving start sizes reads the first's.
+    warmups = []
+
+    class ModelRunner:
+        def forward(self, batch):
+            return batch
+
+        def _maybe_warmup(self):
+            warmups.append(self.forward(SimpleNamespace(total_tokens_num=16_384)))
+
+    engine = types.ModuleType("atom.model_engine.model_runner")
+    engine.ModelRunner = ModelRunner
+    monkeypatch.setitem(sys.modules, engine.__name__, engine)
+    path = Path(measure_memory.__file__).with_name("memory_runner.py")
+    spec = importlib.util.spec_from_file_location("reading_runner", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    runner = module.MemoryReadingModelRunner()
+    runner._read = {}
+
+    runner._maybe_warmup()
+
+    assert len(warmups) == 1
+    assert runner._read == {"warmup_tokens": 16_384}
+
+
+def test_readings_taken_without_the_offload_connector_refuse_a_run_that_offloads(
+    tmp_path,
+):
+    r = deployment(tmp_path)
+    assert "kv_offload" not in memory.key_fields(r.config)["engine_config"]
+    r.config.kv_transfer_config = {"kv_connector": "lmcache_mp", "kv_role": "offload"}
+
+    with pytest.raises(ArtifactRefusal) as refused:
+        memory.load(tmp_path / "store", r.config, MACHINE, 0)
+    assert '"kv_offload": ["lmcache_mp"]' in str(refused.value)
+    assert "the nearest entry differs in engine_config" in str(refused.value)
+
+    publish_readings(tmp_path / "store", r.config, readings=READINGS[2])
+    assert memory.load(tmp_path / "store", r.config, MACHINE, 0).values == READINGS[2]
+
+
+def test_a_pd_connector_reads_the_readings_measured_without_one(tmp_path):
+    r = deployment(tmp_path)
+    measured = memory.load(tmp_path / "store", r.config, MACHINE, 0).values
+    r.config.kv_transfer_config = {"kv_connector": "moriio", "kv_role": "kv_producer"}
+    assert memory.load(tmp_path / "store", r.config, MACHINE, 0).values == measured
 
 
 def test_ranks_whose_reserves_spread_past_the_limit_publish_nothing(tmp_path):
@@ -341,13 +499,9 @@ FROM_THE_SPEC = {
 def test_the_mi308x_entry_gives_the_readings_its_spec_gave():
     path = CONFIG_JSON.parents[2] / "scripts/compass/machines/mi308x-hjbog18.json"
     spec = MachineSpec.from_mapping(json.loads(path.read_text()))
-    raw = json.loads(CONFIG_JSON.read_text())
     entry = MemoryReadings.from_member(MI308X_READINGS, "memory_readings mi308x")
-    model = ModelTerms.from_config(
-        PretrainedConfig.from_dict(raw["text_config"]),
-        activations=entry.activations(16_384),
-        config_json=raw,
-        tree=meta_tree(54_713_457_120),
+    model = ModelTerms.from_tree(
+        meta_tree(54_713_457_120), activations=entry.activations(16_384)
     )
     readings = device_readings(
         spec,
@@ -358,3 +512,40 @@ def test_the_mi308x_entry_gives_the_readings_its_spec_gave():
     )
     assert {k: v.total for k, v in readings.as_dict().items()} == FROM_THE_SPEC
     assert readings.declared == ()
+
+
+#: Prints the FX graph cache's hash of a weight's metadata, as a real runner's
+#: process keys it; with `first`, a module reaching `torch` sits ahead of
+#: torch's own in `sys.modules`, as an API server's imports put one.
+_WEIGHT_KEY = """
+import sys, types
+if sys.argv[1] == "first":
+    sys.modules["a_first"] = first = types.ModuleType("a_first")
+import torch
+from torch._inductor.codecache import FxGraphCachePickler
+from torch._inductor.codecache import extract_tensor_metadata_for_cache_key
+from atom.compass.parity import key_memory_formats_by_name
+
+if sys.argv[1] == "first":
+    first.torch = torch
+key_memory_formats_by_name()
+gm = torch.fx.GraphModule(torch.nn.Module(), torch.fx.Graph())
+meta = extract_tensor_metadata_for_cache_key(torch.empty(4))
+print(FxGraphCachePickler(gm).get_hash(meta))
+"""
+
+
+def test_a_weights_compile_key_is_the_same_whatever_the_import_order():
+    root = CONFIG_JSON.parents[2]
+    keys = {
+        subprocess.run(
+            [sys.executable, "-c", _WEIGHT_KEY, order],
+            cwd=root,
+            env=os.environ | {"PYTHONPATH": str(root)},
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        for order in ("first", "torch")
+    }
+    assert len(keys) == 1, keys

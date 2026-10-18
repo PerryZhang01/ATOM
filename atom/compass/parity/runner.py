@@ -9,9 +9,11 @@ import time
 
 import torch
 
-from atom.compass.parity import StepRecording
+from atom.compass.parity import StepRecording, key_memory_formats_by_name
 from atom.compass.run import host_key
 from atom.model_engine.model_runner import ModelRunner
+
+key_memory_formats_by_name()
 
 
 class RecordingModelRunner(StepRecording, ModelRunner):

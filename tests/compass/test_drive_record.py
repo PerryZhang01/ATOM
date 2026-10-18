@@ -17,7 +17,7 @@ import shutil
 import sys
 
 import pytest
-from test_drive_gpu import FREE
+from test_drive_gpu import FREE, SHOWHW
 from test_drive_identity import CARD, GIT, _checkout, _git
 from test_fit_samples import HOST, RUNS, edit
 from test_fit_samples import record as planted_out
@@ -184,9 +184,11 @@ def planted_gpu(tmp_path, monkeypatch):
     bindir.mkdir()
     (bindir / "listing").write_text(FREE)
     (bindir / "cards.json").write_text(json.dumps({"card7": CARD}))
+    (bindir / "showhw").write_text(SHOWHW)
     (bindir / "rocm-smi").write_text(
-        f'#!/bin/sh\ncase "$*" in *--showproductname*) cat {bindir}/cards.json;;\n'
-        f"*--showpids*) cat {bindir}/listing;;\nesac\n"
+        f'#!/bin/sh\ncase "$*" in *--showproductname*|*--showbus*) cat {bindir}/cards.json;;\n'
+        f"*--showpids*) cat {bindir}/listing;;\n"
+        f"*--showhw*) cat {bindir}/showhw;;\nesac\n"
     )
     (bindir / "rocminfo").write_text("#!/bin/sh\nexit 0\n")
     for tool in ("rocm-smi", "rocminfo"):
@@ -196,6 +198,7 @@ def planted_gpu(tmp_path, monkeypatch):
         m: _checkout(tmp_path / m, tag) for m, tag in (("atom", None), ("aiter", "v0"))
     }
     monkeypatch.setattr(identity, "module_root", lambda module: str(trees[module]))
+    monkeypatch.setattr(identity, "PCI", str(tmp_path / "pci"))
     (tmp_path / "rocm" / ".info").mkdir(parents=True)
     (tmp_path / "rocm" / ".info" / "version").write_text("7.2.4\n")
     monkeypatch.setenv("ROCM_PATH", str(tmp_path / "rocm"))
@@ -218,7 +221,7 @@ def test_a_record_s_out_directory_loads_through_the_fit_s_loader(tmp_path, plant
     ]
     run = json.loads((out / "run.json").read_text())
     assert run.keys() == {
-        *("format_version", "argv", "source", "host_key", "device", "stack"),
+        *("format_version", "argv", "source", "host_key", "device", "ptl", "stack"),
         *("profiled", "env", "engine"),
     }
     assert (run["profiled"], run["engine"]) == (False, ENGINE)

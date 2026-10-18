@@ -1,14 +1,16 @@
 # SPDX-License-Identifier: MIT
-"""The weights term a simulated run installs is read off its meta build.
+"""The weights and buffers a simulated run installs are read off its meta build.
 
 `NonAllocatingRunner._build_and_load_model` builds the model class on the meta
 device and hands the tree to `run.runner`; the weights term in the readings it
-installs is then the bytes of the tree's parameter storages, each once.
+installs is then the bytes of the tree's parameter storages, each once, and the
+buffers term those of its buffer storages.
 """
 
 import json
 from types import SimpleNamespace
 
+import pytest
 import torch
 from test_memory_readings import CONFIG_JSON, MAX_NUM_BATCHED_TOKENS, with_readings
 from test_vertical_slice import _run_file
@@ -16,7 +18,8 @@ from transformers import PretrainedConfig
 
 from atom.compass import run as compass_run
 from atom.compass.backends.provenance import Method
-from atom.compass.runner.overrides import NonAllocatingRunner
+from atom.compass.runner.overrides import NonAllocatingRunner, RunnerRefusal
+from atom.model_ops.base_config import QuantizeMethodBase
 
 VOCAB, HIDDEN = 64, 16
 EXPERTS, ROWS, COLS = 4, 8, 32
@@ -40,7 +43,32 @@ class TiedPacked(torch.nn.Module):
         )
 
 
-def _built(monkeypatch, tmp_path):
+class Buffered(torch.nn.Module):
+    """Buffers held the ways ATOM's models hold them, and a table held as none."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.weight = torch.nn.Parameter(
+            torch.empty(VOCAB, HIDDEN, dtype=torch.bfloat16), requires_grad=False
+        )
+        # One rotary module every layer shares, as `get_rope` caches it.
+        rope = torch.nn.Module()
+        rope.register_buffer("cos_sin", torch.empty(ROWS, COLS, dtype=torch.bfloat16))
+        self.layers = torch.nn.ModuleList(torch.nn.Module() for _ in range(2))
+        for layer in self.layers:
+            layer.rope = rope
+        # A warmup placeholder, as DeepSeek-V4's indexer registers its cache.
+        self.register_buffer(
+            "kv_cache", torch.zeros(1, ROWS, HIDDEN, dtype=torch.float32)
+        )
+        # A buffer over a parameter's storage is resident once, as the parameter.
+        self.register_buffer("row", self.weight.data[0])
+        # DeepSeek-V4's rotary table: a plain attribute, so the load residue
+        # holds it and the buffers do not.
+        self.cos_cache = torch.empty(ROWS, COLS)
+
+
+def _built(monkeypatch, tmp_path, model_class=TiedPacked):
     """A worker's runner after `_build_and_load_model` under a run file."""
     monkeypatch.setenv(compass_run.ENV, str(_run_file(tmp_path)))
     (tmp_path / "config.json").write_text(CONFIG_JSON.read_text())
@@ -58,7 +86,7 @@ def _built(monkeypatch, tmp_path):
         ),
     )
     with_readings(runner, tmp_path / "store")
-    NonAllocatingRunner._build_and_load_model(runner, TiedPacked)
+    NonAllocatingRunner._build_and_load_model(runner, model_class)
     return runner
 
 
@@ -71,3 +99,73 @@ def test_the_weights_are_the_meta_builds_storages_each_counted_once(
     assert weights.method is Method.ANALYTICAL
     assert weights.nbytes == VOCAB * HIDDEN * 2 + EXPERTS * ROWS * COLS // 2
     assert all(p.is_meta for p in runner.model.parameters())
+
+
+def test_the_buffers_are_the_meta_builds_buffer_storages_each_counted_once(
+    monkeypatch, tmp_path
+):
+    runner = _built(monkeypatch, tmp_path, Buffered)
+    weights, buffers = runner.compass_readings.peak_torch.terms[:2]
+    assert buffers.name == "buffers"
+    assert buffers.method is Method.ANALYTICAL
+    assert buffers.nbytes == ROWS * COLS * 2 + ROWS * HIDDEN * 4
+    assert buffers.source == "2 buffer storages of a meta build of Buffered"
+    assert weights.nbytes == VOCAB * HIDDEN * 2
+
+
+class PaddedScale(QuantizeMethodBase):
+    """Re-lays a scale after load, as the MXFP4 MoE pads its 12 columns to 16."""
+
+    def create_weights(self, layer, *args, **kwargs):
+        pass
+
+    def apply(self, layer, *args, **kwargs):
+        pass
+
+    def process_weights_after_loading(self, layer):
+        layer.scale = torch.nn.Parameter(
+            torch.empty(EXPERTS, ROWS, 16, dtype=torch.uint8), requires_grad=False
+        )
+
+
+class PostLoaded(torch.nn.Module):
+    """A scale its quant method pads after load, under a module that fuses two."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.experts = torch.nn.Module()
+        self.experts.quant_method = PaddedScale()
+        self.experts.scale = torch.nn.Parameter(
+            torch.empty(EXPERTS, ROWS, 12, dtype=torch.uint8), requires_grad=False
+        )
+        self.gate = torch.nn.Parameter(torch.empty(ROWS, dtype=torch.bfloat16))
+        self.up = torch.nn.Parameter(torch.empty(ROWS, dtype=torch.bfloat16))
+
+    def process_weights_after_loading(self):
+        self.gate_up = torch.nn.Parameter(torch.cat([self.gate, self.up]))
+        del self.gate, self.up
+
+
+class OnDevice(torch.nn.Module):
+    """A post-load hook that copies a weight to the GPU."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.empty(ROWS, dtype=torch.bfloat16))
+
+    def process_weights_after_loading(self):
+        self.weight.data = self.weight.data.to(torch.device("cpu"))
+
+
+def test_the_weights_are_what_the_post_load_hooks_leave(monkeypatch, tmp_path):
+    runner = _built(monkeypatch, tmp_path, PostLoaded)
+    weights = runner.compass_readings.peak_torch.terms[0]
+    assert weights.nbytes == EXPERTS * ROWS * 16 + 2 * ROWS * 2
+    assert weights.source == "2 parameter storages of a meta build of PostLoaded"
+
+
+def test_a_hook_that_cannot_run_on_meta_refuses_the_start_by_name(
+    monkeypatch, tmp_path
+):
+    with pytest.raises(RunnerRefusal, match="OnDevice.process_weights_after_loading"):
+        _built(monkeypatch, tmp_path, OnDevice)

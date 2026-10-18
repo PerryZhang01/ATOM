@@ -113,12 +113,27 @@ class DeferredTokenStream:
     processor holds: the last batch that produced output. The lag is a property
     of the step sequence rather than of any request in it; only the id each
     request is reported with depends on the request.
+
+    Under speculation, `rates` is the per-position unconditional acceptance
+    ATOM's forced acceptance resolves to, one per draft. Each row of a decode
+    batch that verifies drafts accepts `a` of them, drawn from a stream seeded
+    by `seed`: `a >= i + 1` with probability `rates[i]`, the distribution
+    ATOM's synthetic rejection kernel draws. Every row reports one draft id per
+    rate.
     """
 
-    def __init__(self, token_ids: list[int], deferred: bool = True) -> None:
+    def __init__(
+        self,
+        token_ids: list[int],
+        deferred: bool = True,
+        rates: list[float] | None = None,
+        seed: int = 0,
+    ) -> None:
         self.token_ids = token_ids
         self.deferred = deferred
         self.prev_batch: Any = None
+        self.rates = rates
+        self.rng = np.random.default_rng(seed)
 
     @staticmethod
     def is_pure_middle_chunk(batch: Any) -> bool:
@@ -155,19 +170,24 @@ class DeferredTokenStream:
         """One token per request of *source*, which may be no batch at all."""
         req_ids = [] if source is None else list(source.req_ids)
         # Sized by the batch whose tokens these are, since that is the batch
-        # the scheduler indexes them with. Zero throughout: nothing was
-        # drafted, so nothing was rejected and nothing is a bonus. That is a
-        # true description of a run with no speculation and a silent lie about
-        # one with it, which is why `overrides.forward` refuses a speculative
-        # config rather than reporting these zeros for it.
+        # the scheduler indexes them with. Zero on a row that verified nothing.
         width = 0 if source is None else int(source.total_seqs_num)
+        accepted, rejected = np.zeros((2, width), dtype=np.int32)
+        k = 0 if self.rates is None or source is None else source.num_spec_step
+        if k and not source.total_tokens_num_prefill:  # ATOM verifies no prefill
+            u = self.rng.random((width, 1))
+            accepted[:] = (u < np.asarray(self.rates[:k])).sum(axis=1)
+            rejected[:] = k - accepted
         # Picked by request id: requests fewer than len(ids) apart never share one.
-        ids = self.token_ids
+        ids = [self.token_ids[int(r) % len(self.token_ids)] for r in req_ids]
+        drafts = None
+        if self.rates:
+            drafts = np.tile(np.array(ids, np.int32)[:, None], (1, len(self.rates)))
         return {
             "req_ids": req_ids,
-            "token_ids": [(ids[int(r) % len(ids)],) for r in req_ids],
-            "num_rejected": np.zeros(width, dtype=np.int32),
-            "num_bonus": np.zeros(width, dtype=np.int32),
-            "draft_token_ids": None,
+            "token_ids": [(i,) * (a + 1) for i, a in zip(ids, accepted)],
+            "num_rejected": rejected,
+            "num_bonus": accepted,
+            "draft_token_ids": drafts,
             "is_deferred_out": deferred,
         }

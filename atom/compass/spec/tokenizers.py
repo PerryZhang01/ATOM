@@ -1,41 +1,15 @@
 # SPDX-License-Identifier: MIT
 """Tokenizer rates, keyed by the tokenizer rather than by the model.
 
-Keying by model is the obvious design and the wrong one. Models share
-tokenizers routinely -- every size in a family ships the same one, and
-distillations and fine-tunes inherit it -- so a model-keyed table measures one
-tokenizer once per model and stores N copies of one number. The copies then
-drift, and the drift is invisible, because nothing ever compares them. Keying by
-the tokenizer stores the number once and lists the architectures that resolve to
-it, so there is nothing to disagree.
+Models share tokenizers, so the rates are stored once per tokenizer and list the
+architectures that resolve to them. The key is `id` (author-chosen), `backend`
+(fast and slow run an order of magnitude apart on one `tokenizer.json`),
+`fingerprint` (the sha256 of the file probed) and `applies_to`.
 
-Four fields carry the identity, and each earns its place:
-
-* `id` is author-chosen, stable and human-readable. It is what two specs being
-  combined conflict on, so it has to be a name a person picked rather than a
-  hash they would not recognise.
-* `backend` is in the key because the Rust and Python implementations run an
-  order of magnitude apart on the same `tokenizer.json`, and which one loads is
-  decided by the environment, not by the model. A spec probed on one says
-  nothing about the other, so resolution takes the backend that actually loaded
-  and refuses when only the other was probed -- falling back to whichever
-  entry exists would report a tenfold-wrong number with no indication.
-* `fingerprint` is the sha256 of the `tokenizer.json` that was probed. It is
-  the check that the rates belong to this tokenizer and not to a revision of it.
-* `applies_to` is the list of model architectures that resolve to this entry.
-  One entry, many models: this is where the sharing is written down.
-
-Resolution refuses rather than defaulting, and the size of the error is why. A
-p50 prompt in the traces this is calibrated against is 88,768 tokens; at a
-couple of million tokens a second that is tens of milliseconds, several times
-the whole admission constant, and all of it lands inside time to first token.
-A default would be wrong by an amount that scales with prompt length while
-looking like a constant.
-
-A fingerprint mismatch warns instead of refusing: the rates are still the right
-tokenizer's, probed against a different revision of its file, so the number is
-usable and the discrepancy is the user's to judge. A missing architecture is not
-usable at all.
+Resolution refuses an architecture no entry names on the loaded backend, rather
+than defaulting: the error would land inside time to first token and grow with
+the prompt. A fingerprint mismatch only warns, since the rates are still that
+tokenizer's.
 """
 
 import enum

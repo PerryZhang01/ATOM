@@ -15,9 +15,10 @@ import pytest
 from test_spec_schema import DOCUMENT
 from test_spec_verbs import CLASS0, CLASS1, LINKS, fragment
 
-from atom.compass.spec import MachineSpec, Rule, SpecRefusal, explain, merge
+from atom.compass.spec import MachineSpec, SpecRefusal, explain, merge
 from atom.compass.spec.fields import SCHEMA, Kind
 from atom.compass.spec.machine import entry_label
+from atom.compass.spec.rules import Rule
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CARD = {"model": "Qwen/Qwen3.8-27B", "width": 1, "source_root": "commit:983e42973"}
@@ -113,7 +114,7 @@ def test_a_mixed_document_without_its_map_is_refused_by_name():
     assert refused.value.rule is Rule.TOTALITY
     assert "records no origin for `device.memory.capacity_bytes`" in str(refused.value)
     with pytest.raises(SpecRefusal, match="records no origin"):
-        explain(spec, "kv_blocks")
+        explain(spec, "device.memory.capacity_bytes")
     with pytest.raises(SpecRefusal, match="records no origin"):
         merge(
             [fragment("machine.json", {"device": document["device"]}, origin="mixed")]
@@ -124,7 +125,7 @@ def test_a_document_of_one_origin_answers_without_the_map():
     stanza = dict(DOCUMENT["provenance"], subject={"model": "Qwen/Qwen3-8B"})
     spec = MachineSpec.from_mapping(dict(DOCUMENT, provenance=stanza))
     assert "provenance.origins" not in spec.values
-    assert spec.origin("host.admission_fixed_s") == {
+    assert spec.origin("host.ipc.zmq_roundtrip_s") == {
         "origin": "probed",
         "model": "Qwen/Qwen3-8B",
     }
@@ -148,7 +149,7 @@ def test_one_field_is_never_mixed_and_only_a_probed_one_has_a_subject():
     ):
         broken = copy.deepcopy(document)
         broken["provenance"]["origins"] = dict(
-            origins, **{"host.admission_fixed_s": entry}
+            origins, **{"host.ipc.zmq_roundtrip_s": entry}
         )
         with pytest.raises(SpecRefusal, match=wanted):
             MachineSpec.from_mapping(broken)
@@ -156,30 +157,22 @@ def test_one_field_is_never_mixed_and_only_a_probed_one_has_a_subject():
         fragment("links", LINKS, origin="assumed", subject={"model": "m"})
 
 
-def test_the_old_key_is_refused_naming_the_new_one():
-    document = saved(merge(three_origins()).document)
-    document["provenance"]["method"] = document["provenance"].pop("origin")
-    with pytest.raises(
-        SpecRefusal, match="`provenance.method` is now `provenance.origin`"
-    ):
-        MachineSpec.from_mapping(document)
-
-
 def test_origin_is_asked_per_tokenizer_entry():
     spec = MachineSpec.from_mapping(saved(merge(three_origins()).document))
-    for path in ("host.tokenizers", "host.tokenizers[nope fast]"):
-        with pytest.raises(SpecRefusal, match="not one tokenizer entry"):
+    for e in spec.tokenizers.entries:
+        assert spec.origin(entry_label(e.key.id, e.key.backend.value)) == {
+            "origin": "probed",
+            "model": "Qwen/Qwen3-8B",
+        }
+    for path in ("host.tokenizers[nope fast]", "device.memory.colour"):
+        with pytest.raises(SpecRefusal, match="not a field of this schema"):
             spec.origin(path)
-    with pytest.raises(SpecRefusal, match="describes the document"):
-        spec.origin("provenance.date")
-    with pytest.raises(SpecRefusal, match="not a field of this schema"):
-        spec.origin("device.memory.colour")
 
 
 def test_explain_names_each_contributions_origin():
     combination = merge(three_origins())
     spec = MachineSpec.from_mapping(saved(combination.document))
-    rows = {row.path: row for row in explain(spec, "kv_blocks").contributions}
+    rows = {row.path: row for row in explain(spec, "device").contributions}
     assert rows["device.memory.capacity_bytes"].origin == {"origin": "probed", **CARD}
     assert str(rows["device.memory.capacity_bytes"]).endswith(
         "probed on model Qwen/Qwen3.8-27B, width 1, source_root commit:983e42973"
@@ -204,11 +197,13 @@ def test_the_checked_in_specs_say_where_each_field_came_from(monkeypatch, name):
     spec = MachineSpec.from_mapping(saved(json.loads(path.read_text())))
     answered = {label: spec.origin(label) for label in labels(spec)}
     for label, found in answered.items():
-        if label.startswith("device.") and found["origin"] == "probed":
+        engine = label.startswith("device.") and label != "device.ptl"
+        if engine and found["origin"] == "probed":
             assert found == {"origin": "probed", **script.SUBJECT}, label
-    # A core count is the host's own, read with no model or width under it.
-    for count in ("cores_physical", "cores_logical"):
-        assert answered[f"host.cpu.{count}"] == {"origin": "probed"}
+    # A core count is the host's own, read with no model or width under it, and
+    # so is the cards' PTL state, read from sysfs.
+    for label in ("host.cpu.cores_physical", "host.cpu.cores_logical", "device.ptl"):
+        assert answered[label] == {"origin": "probed"}
     for label, found in answered.items():
         if found["origin"] != "probed" or label.endswith(".derate"):
             assert found == {"origin": "assumed"}, label
