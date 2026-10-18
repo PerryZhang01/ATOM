@@ -9,15 +9,13 @@ frontend's `frontend_done` writes ``summary.json``.
 """
 
 import json
-import math
 import sys
-import time
 from types import SimpleNamespace
 
 import pytest
 import test_speculative_step
 from test_dp_step_max import prefill, runner
-from test_run_refusal_summary import STAGE1
+from test_run_refusal_summary import STAGE1, summary
 from test_runner_control_refusals import Worker
 
 from atom.compass import run as compass_run
@@ -78,27 +76,6 @@ def _run(monkeypatch, tmp_path):
     return run
 
 
-def _summary(monkeypatch, tmp_path, scheduler):
-    """The run summary after one engine, whose scheduler is `scheduler`, hands in."""
-    run = _run(monkeypatch, tmp_path)
-    table = compass_run.channel_table(run)
-    authority = compass_run._RecordingAuthority(run)
-    authority.started = authority.finished = time.monotonic()
-    r = runner(StepStubBackend(STAGE1))
-    r.forward(prefill(8))
-    engine = LPRuntime(compass_run.ENGINE, table, None)
-    engine.now = math.inf
-    monkeypatch.setattr(clock, "_installed", engine)
-    compass_run.engine_done(SimpleNamespace(runner_mgr=Worker(r), scheduler=scheduler))
-    monkeypatch.setattr(compass_run, "_authority", authority)
-    frontend = LPRuntime(compass_run.FRONTEND, table, None)
-    frontend.now = math.inf
-    frontend.loop = SimpleNamespace(executor=SimpleNamespace(refusals=[]))
-    monkeypatch.setattr(clock, "_installed", frontend)
-    assert compass_run.frontend_done(SimpleNamespace(close=lambda: None))
-    return json.loads((tmp_path / compass_run.SUMMARY_FILE).read_text())
-
-
 @pytest.mark.parametrize(
     "knobs, flag, value",
     [
@@ -113,7 +90,9 @@ def test_a_speculative_run_names_its_input_its_method_and_its_histogram(
     spec = _stated(monkeypatch, 3, **knobs)
     scheduler = _served(monkeypatch, spec)
 
-    out = _summary(monkeypatch, tmp_path, scheduler)
+    out = summary(
+        monkeypatch, tmp_path, StepStubBackend(STAGE1), 8, scheduler=scheduler
+    )
 
     stats = scheduler.engine_stats
     said = out["speculative"]["engine"]
@@ -133,7 +112,9 @@ def test_a_speculative_run_names_its_input_its_method_and_its_histogram(
 
 def test_a_run_with_no_drafter_names_no_acceptance(monkeypatch, tmp_path):
     scheduler = SimpleNamespace(engine_stats=EngineStats())
-    assert "speculative" not in _summary(monkeypatch, tmp_path, scheduler)
+    assert "speculative" not in summary(
+        monkeypatch, tmp_path, StepStubBackend(STAGE1), 8, scheduler=scheduler
+    )
 
 
 def test_a_client_run_counts_only_the_drafts_its_own_steps_accepted(
