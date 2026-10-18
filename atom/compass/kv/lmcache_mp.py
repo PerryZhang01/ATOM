@@ -129,6 +129,7 @@ class LMCacheMPShell:
         return getattr(inner, name)
 
     def bind_block_manager(self, block_manager) -> None:
+        from atom.compass.run import spec
         from atom.kv_transfer.disaggregation.aggregator import KVOutputAggregator
         from atom.kv_transfer.offload.mp.deployment import _tp_replication_factor
         from atom.kv_transfer.offload.mp.native_state_scheduler import (
@@ -144,6 +145,13 @@ class LMCacheMPShell:
             return
         impl, config = self._inner._impl, self._config
         native = isinstance(impl, NativeStateLMCacheMPConnectorScheduler)
+        checkpoints = block_manager.paged_state_checkpoints
+        image = checkpoints.store.spec.image_bytes if native else 0
+        if (declared := spec()["lmcache"].get("state_bytes", 0)) != image:
+            raise ValueError(
+                f"the run file's lmcache state_bytes is {declared}; this deployment "
+                f"offloads a recurrent-state image of {image} bytes a rank"
+            )
         tp, group = config.tensor_parallel_size, _tp_replication_factor(config)
         dp = config.parallel_config.data_parallel_rank
         for k in range(tp):

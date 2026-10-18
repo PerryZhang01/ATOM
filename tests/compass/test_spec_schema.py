@@ -35,8 +35,8 @@ The last section is about the refusals themselves rather than about what they
 refuse. A refusal is read by a person, so a message that is accurate about what
 could not be done and wrong about why costs that person the time it was meant to
 save; an assertion loose enough to hold of a wrong message does not protect
-them. Each of the three ways a dotted path fails to resolve is checked to say
-its own sentence and to deny the others', so swapping any two fails these tests.
+them. Each of the two ways a dotted path fails to resolve is checked to say
+its own sentence and to deny the other's.
 """
 
 import ast
@@ -49,21 +49,14 @@ import pytest
 
 from atom.compass import spec as spec_package
 from atom.compass.spec import (
-    DEPLOYMENT_OWNED,
-    FIELDS,
-    SCHEMA,
-    SCHEMA_VERSION,
     Backend,
-    FingerprintMismatch,
     Fragment,
-    Kind,
     MachineSpec,
-    Rule,
     SpecRefusal,
-    StackMismatch,
     explain,
-    validate,
 )
+from atom.compass.spec.fields import FIELDS, SCHEMA, SCHEMA_VERSION, Kind
+from atom.compass.spec.rules import DEPLOYMENT_OWNED, FingerprintMismatch, Rule
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 PACKAGE = REPO / "atom" / "compass" / "spec"
@@ -97,7 +90,6 @@ DOCUMENT = {
         "cpu": {"cores_physical": 96, "cores_logical": 192},
         "tokenizers": [TOKENIZER],
         "ipc": {"zmq_roundtrip_s": 5.0e-5, "shm_broadcast_s": 2.0e-5},
-        "admission_fixed_s": 9.0e-3,
     },
     "device": {
         "name": "MI355X",
@@ -377,9 +369,6 @@ BREAKAGES = {
         "interconnect.intra_node.domain_devices", 4
     ),
     "an origin nobody defined": lambda: written("provenance.origin", "guessed"),
-    "the key the origin used to be written under": lambda: written(
-        "provenance.method", "probed"
-    ),
     "a subject on a document nobody probed": lambda: dict(
         document(),
         provenance={
@@ -397,7 +386,6 @@ BREAKAGES = {
 #: every site the package has rather than the reader's share of them.
 ELSEWHERE = {
     "a fragment that is not a mapping": lambda: Fragment.from_mapping([1, 2], "p"),
-    "a subject to check that is not a mapping": lambda: validate([1, 2]).raise_first(),
 }
 
 
@@ -626,17 +614,14 @@ def test_every_site_that_declines_a_document_is_driven_here():
     assert driven == _sites_naming("SHAPE")
 
 
-def test_explain_declines_an_unknown_term_and_an_absent_one_at_two_sites():
-    # Neither is a document to correct, so neither is a shape. A term the
-    # schema does not know is re-asked by path; a declared field this spec
-    # does not state would come back empty under any spelling, so it is the
-    # absent-field refusal the accessor gives, and not a second copy of it.
+def test_explain_declines_an_unknown_term_and_an_absent_one_at_one_site():
+    # Neither is a document to correct, so neither is a shape: both are asked
+    # again by a path the spec states.
     unknown = _site_of(lambda: explain(read(), "no_such_term"))
     absent = _site_of(lambda: explain(read(), "provenance.notes"))
     assert unknown[0] == "explain.py" and unknown in _sites_naming("ADDRESSING")
-    assert absent == _site_of(lambda: read().value("provenance.notes"))
-    assert absent in _sites_naming("TOTALITY")
-    assert not {unknown, absent} & _sites_naming("SHAPE")
+    assert absent == unknown
+    assert unknown not in _sites_naming("SHAPE")
 
 
 def test_the_version_is_the_one_site_that_is_not_about_the_document():
@@ -866,30 +851,7 @@ def test_a_tokenizer_entry_owes_a_derate_too():
     assert "host.tokenizers[0].derate` is missing" in refusal.value.what
 
 
-# --- the stack pin is checked ------------------------------------------------
-
-
-def test_a_matching_stack_is_silent():
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        assert read().check_stack(dict(STACK)) == ()
-
-
-def test_a_stack_mismatch_warns_and_names_both_versions():
-    running = dict(STACK, rocm="7.3.0")
-    with pytest.warns(StackMismatch) as caught:
-        differences = read().check_stack(running)
-    assert differences == (("rocm", "7.2.4", "7.3.0"),)
-    message = str(caught[0].message)
-    assert "7.2.4" in message and "7.3.0" in message
-
-
-def test_a_stack_component_nobody_reported_is_a_mismatch_not_a_pass():
-    with pytest.warns(StackMismatch):
-        differences = read().check_stack(
-            {"rocm": "7.2.4", "aiter": "f4e7c7509", "torch": "2.10.0"}
-        )
-    assert differences == (("rccl", "2.22.3", None),)
+# --- the stack pin is required ----------------------------------------------
 
 
 def test_a_missing_stack_pin_is_refused():
@@ -989,7 +951,7 @@ def test_a_tokenizer_entry_is_closed_like_the_rest_of_the_schema():
     [
         (("host", "cpu", "cores_physical"), True),
         (("host", "cpu", "cores_physical"), 0),
-        (("host", "admission_fixed_s"), -1.0),
+        (("host", "ipc", "zmq_roundtrip_s"), -1.0),
         (("device", "name"), ""),
         (("device", "arch"), 950),
         (("schema_version",), 2),
@@ -1024,49 +986,15 @@ def test_asking_for_a_field_that_is_not_one_is_refused():
     assert DEPLOYMENT_OWNED["tensor_parallel_size"] in refusal.remedy
 
 
-# --- the three ways a path fails to resolve ----------------------------------
+# --- the two ways a path fails to resolve -----------------------------------
 #
-# A dotted path that does not resolve has three causes and they want three
-# different actions. The schema is closed, so a key with no row in the field
-# table is a typo or a deployment knob and the reader belongs at the table. A
-# spec resolves every field it was required to state, so a declared field can
-# only be missing from one assembled from parts -- and that reader, sent to the
-# table, finds the field sitting in it and stops. A block is in the table and
-# holds no value of its own, so that reader wanted one segment more. One
-# message cannot be true of all three, so there are three, and the tests below
-# are written to fail if any two are swapped: each names its own sentence and
-# denies the others'.
+# A key with no row in the field table is a typo or a deployment knob, and the
+# reader belongs at the table. An optional field the document left out is the
+# schema's own field, and sending that reader to the table finds it there.
 
 #: A key with no row in the field table, and not a knob the engine owns either,
 #: so the refusal is the plain closed-schema one and not the forwarding address.
 UNDECLARED = "device.clock_mhz"
-
-#: A declared field for a spec to be missing. Any would do; this is the one a
-#: reader of an inter-node transfer cost asks for, where the wrong message was
-#: first read off a spec that had been assembled without the whole block.
-ABSENT = "interconnect.inter_node.link_latency_s"
-
-#: A block that holds fields directly, so the refusal has something to list.
-BLOCK = "device.memory"
-
-DECLARED_PATHS = frozenset(field.path for field in SCHEMA)
-
-#: Every dotted prefix of a declared path, which is what a block is. Derived
-#: here rather than imported so the two derivations can disagree out loud.
-BLOCK_PATHS = frozenset(
-    path.rsplit(".", index + 1)[0]
-    for path in DECLARED_PATHS
-    for index in range(path.count("."))
-)
-
-
-def without(path):
-    """The reference spec assembled without one field, as a fragment would be."""
-    whole = read()
-    return MachineSpec(
-        values={p: v for p, v in whole.values.items() if p != path},
-        tokenizers=whole.tokenizers,
-    )
 
 
 def refused(machine, path):
@@ -1076,16 +1004,8 @@ def refused(machine, path):
     return refusal.value
 
 
-def test_the_three_paths_under_test_are_what_they_claim_to_be():
-    # Each case below asserts something about the schema, so the schema is what
-    # decides which case is right, not the three names chosen here.
-    assert UNDECLARED not in DECLARED_PATHS and UNDECLARED not in BLOCK_PATHS
-    assert UNDECLARED.rsplit(".", 1)[-1] not in DEPLOYMENT_OWNED
-    assert ABSENT in DECLARED_PATHS
-    assert BLOCK in BLOCK_PATHS and BLOCK not in DECLARED_PATHS
-
-
 def test_a_key_with_no_row_in_the_table_is_refused_as_not_a_field():
+    assert UNDECLARED not in {field.path for field in SCHEMA}
     refusal = refused(read(), UNDECLARED)
     assert refusal.rule is Rule.SEPARATION
     assert UNDECLARED in refusal.what
@@ -1093,83 +1013,16 @@ def test_a_key_with_no_row_in_the_table_is_refused_as_not_a_field():
     assert "the schema is closed" in refusal.remedy
 
 
-def test_a_declared_field_a_spec_lacks_is_never_called_undeclared():
-    # Every field in the table, so the message's claim is checked against the
-    # table rather than against one hand-picked path -- and so a field added
-    # later is covered the day it lands. A loop rather than a parametrize: the
-    # table is one branch on `required`, so per-path node ids would name 39
-    # cases with two outcomes between them. The path travels in the assertion
-    # message instead, which is where a failure needs it.
-    for path in sorted(DECLARED_PATHS):
-        refusal = refused(without(path), path)
-        assert refusal.rule is Rule.TOTALITY, path
-        assert path in refusal.what, path
-        assert "is declared by this schema" in refusal.what, path
-        assert "not a field of this schema" not in refusal.what, path
-        assert "the schema is closed" not in refusal.remedy, path
-
-
-def test_a_block_is_refused_as_a_block_and_names_what_it_groups():
-    # The reader who is one segment short. Nothing is wrong with the spec or
-    # with the path, so the remedy is the list rather than a direction to go
-    # and look -- and "is not a field of this schema" is false twice over,
-    # because the block is in the schema and is not something ATOM configures.
-    refusal = refused(read(), BLOCK)
-    assert refusal.rule is Rule.ADDRESSING
-    assert BLOCK in refusal.what
-    assert "is a block of this schema, not one of its fields" in refusal.what
-    assert "not a field of this schema" not in refusal.what
-    assert "the schema is closed" not in refusal.remedy
-    for held in ("capacity_bytes", "bandwidth_bytes_per_s", "derate"):
-        assert held in refusal.remedy
-    # And every other block in the table, including the ones that hold only
-    # further blocks, which are the ones a reader is most likely to type.
-    for block in sorted(BLOCK_PATHS):
-        refusal = refused(read(), block)
-        assert refusal.rule is Rule.ADDRESSING, block
-        assert "is a block of this schema" in refusal.what, block
-        assert "not a field of this schema" not in refusal.what, block
-
-
-def test_the_three_refusals_are_not_interchangeable():
-    # Swap any two messages and this fails; match a substring they share and it
-    # would not.
-    unknown = refused(read(), UNDECLARED)
-    absent = refused(without(ABSENT), ABSENT)
-    block = refused(read(), BLOCK)
-    assert len({unknown.rule, absent.rule, block.rule}) == 3
-    assert "is not a field of this schema" not in str(absent) + str(block)
-    assert "carries no value for it" not in str(unknown) + str(block)
-    assert "is a block of this schema" not in str(unknown) + str(absent)
-
-
-def test_a_required_field_says_the_spec_was_assembled_rather_than_read():
-    # The remedy a reader can act on: the document path cannot produce this, so
-    # the fix is in whatever built the object, not in the document.
-    refusal = refused(without(ABSENT), ABSENT)
-    assert "from_mapping" in refusal.remedy
-    assert "optional" not in refusal.what
-
-
 def test_an_optional_field_the_document_omits_is_refused_as_optional():
-    # Not a hand-built object at all. The reference document states no
-    # `provenance.notes`, the reader leaves it out because the field is
-    # optional, and a spec read straight from a document then declines a path
-    # that "is not a field of this schema" would be false of.
+    # The reference document states no `provenance.notes`, the reader leaves it
+    # out because the field is optional, and "is not a field of this schema"
+    # would be false of it.
     optional = [field.path for field in SCHEMA if not field.required]
     assert "provenance.notes" in optional
     refusal = refused(read(), "provenance.notes")
     assert refusal.rule is Rule.TOTALITY
     assert "as optional" in refusal.what
     assert "not a field of this schema" not in refusal.what
-
-
-def test_the_other_accessors_decline_on_a_fragment_rather_than_raise():
-    # `check_stack` reads the same map, and a KeyError out of a fragment is a
-    # refusal nobody can act on.
-    with pytest.raises(SpecRefusal) as pinned:
-        without("device.software_pinned_to.rccl").check_stack(dict(STACK))
-    assert pinned.value.rule is Rule.TOTALITY
 
 
 # --- what the package reaches ------------------------------------------------

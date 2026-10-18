@@ -52,6 +52,7 @@ class Axis(enum.Enum):
     ATOM_SRC = "ATOM src"
     MODEL = "model"
     DEVICE = "device"
+    PTL = "PTL"
     HOST_CPU = "host CPU"
     ENGINE_CONFIG = "engine cfg"
 
@@ -70,7 +71,6 @@ class Row(enum.Enum):
 
     OP_GRAPH = "op_graph"
     PRICE_LIST = "price_list"
-    REGION_TERMS = "region_terms"
     MEMORY_READINGS = "memory_readings"
     MACHINE_SPEC_CAPACITY = "machine_spec: capacity"
     MACHINE_SPEC_TOKENIZER_TERMS = "machine_spec: tokenizer terms"
@@ -119,6 +119,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: DEPENDS,
         Axis.DEVICE: INDEPENDENT,
+        Axis.PTL: INDEPENDENT,
         Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: Cell(True, "level, cudagraph mode"),
     },
@@ -128,17 +129,9 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: Cell(False, "shape-parametric"),
         Axis.DEVICE: DEPENDS,
+        Axis.PTL: DEPENDS,
         Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: INDEPENDENT,
-    },
-    Row.REGION_TERMS: {
-        Axis.SOFTWARE_STACK: DEPENDS,
-        Axis.TORCH: DEPENDS,
-        Axis.ATOM_SRC: DEPENDS,
-        Axis.MODEL: DEPENDS,
-        Axis.DEVICE: DEPENDS,
-        Axis.HOST_CPU: INDEPENDENT,
-        Axis.ENGINE_CONFIG: DEPENDS,
     },
     Row.MEMORY_READINGS: {
         Axis.SOFTWARE_STACK: DEPENDS,
@@ -146,6 +139,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: DEPENDS,
         Axis.DEVICE: DEPENDS,
+        Axis.PTL: DEPENDS,
         Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: DEPENDS,
     },
@@ -155,6 +149,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: INDEPENDENT,
         Axis.MODEL: INDEPENDENT,
         Axis.DEVICE: DEPENDS,
+        Axis.PTL: INDEPENDENT,
         Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: INDEPENDENT,
     },
@@ -164,6 +159,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: INDEPENDENT,
         Axis.MODEL: Cell(True, "tokenizer"),
         Axis.DEVICE: Cell(False, "host CPU"),
+        Axis.PTL: INDEPENDENT,
         Axis.HOST_CPU: Cell(False, "untested: assumed to transfer by derate"),
         Axis.ENGINE_CONFIG: INDEPENDENT,
     },
@@ -173,6 +169,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: DEPENDS,
         Axis.DEVICE: DEPENDS,
+        Axis.PTL: DEPENDS,
         Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: DEPENDS,
     },
@@ -182,6 +179,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: DEPENDS,
         Axis.DEVICE: DEPENDS,
+        Axis.PTL: DEPENDS,
         Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: DEPENDS,
     },
@@ -191,6 +189,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: DEPENDS,
         Axis.DEVICE: INDEPENDENT,
+        Axis.PTL: INDEPENDENT,
         Axis.HOST_CPU: DEPENDS,
         Axis.ENGINE_CONFIG: DEPENDS,
     },
@@ -200,6 +199,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: DEPENDS,
         Axis.DEVICE: DEPENDS,
+        Axis.PTL: DEPENDS,
         Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: DEPENDS,
     },
@@ -209,6 +209,7 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
         Axis.ATOM_SRC: DEPENDS,
         Axis.MODEL: DEPENDS,
         Axis.DEVICE: INDEPENDENT,
+        Axis.PTL: INDEPENDENT,
         Axis.HOST_CPU: INDEPENDENT,
         Axis.ENGINE_CONFIG: DEPENDS,
     },
@@ -220,7 +221,6 @@ MATRIX: Mapping[Row, Mapping[Axis, Cell]] = {
 ROWS_OF: Mapping[Kind, tuple[Row, ...]] = {
     Kind.OP_GRAPH: (Row.OP_GRAPH,),
     Kind.PRICE_LIST: (Row.PRICE_LIST,),
-    Kind.REGION_TERMS: (Row.REGION_TERMS,),
     Kind.MEMORY_READINGS: (Row.MEMORY_READINGS,),
     Kind.MACHINE_SPEC: (Row.MACHINE_SPEC_CAPACITY, Row.MACHINE_SPEC_TOKENIZER_TERMS),
     Kind.STEP_MEASUREMENT: (Row.STEP_MEASUREMENT,),

@@ -3,7 +3,7 @@
   "name": "mi355x-gpu45",
   "provenance": {
     "authored_by": "compass agent for jgong5",
-    "date": "2026-10-16",
+    "date": "2026-10-18",
     "origin": "mixed",
     "origins": {
       "host.cpu.cores_physical": {
@@ -96,9 +96,6 @@
       "host.ipc.shm_broadcast_s": {
         "origin": "assumed"
       },
-      "host.admission_fixed_s": {
-        "origin": "assumed"
-      },
       "interconnect.intra_node.topology": {
         "origin": "assumed"
       },
@@ -126,6 +123,9 @@
       "interconnect.inter_node.derate": {
         "origin": "assumed"
       },
+      "device.ptl": {
+        "origin": "probed"
+      },
       "host.tokenizers[deepseek-v4-pro fast]": {
         "origin": "probed",
         "model": "/models/DeepSeek-V4-Pro",
@@ -136,9 +136,10 @@
       "tokenizer",
       "device",
       "datasheet",
-      "assumed"
+      "assumed",
+      "ptl"
     ],
-    "notes": "one DeepSeek-V4-Pro -tp 8 --enable-dp-attention --enable-tbo start at 409bedc98 | MI355X datasheet | no probe fills these"
+    "notes": "one DeepSeek-V4-Pro -tp 8 --enable-dp-attention --enable-tbo start at 409bedc98 | MI355X datasheet | no probe fills these | no card has a ptl directory"
   },
   "host": {
     "cpu": {
@@ -164,13 +165,13 @@
     "ipc": {
       "zmq_roundtrip_s": 5e-05,
       "shm_broadcast_s": 2e-05
-    },
-    "admission_fixed_s": 0.009
+    }
   },
   "device": {
     "name": "MI355X",
     "arch": "gfx950",
     "count_per_node": 8,
+    "ptl": "disabled",
     "memory": {
       "capacity_bytes": 309220868096,
       "bandwidth_bytes_per_s": 8000000000000.0,

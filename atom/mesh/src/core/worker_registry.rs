@@ -26,12 +26,19 @@ use crate::{
     observability::metrics::MeshMetrics,
 };
 
-/// Under [`determinism::enable`], `workers` sorted by base URL, then DP rank,
+/// Under [`determinism::enable`], `workers` in [`determinism::worker_order`]'s
+/// order, then the ones it does not list sorted by base URL, then DP rank,
 /// instead of the order the host hashed or registered them in, which the
 /// policies' tie-breaks read.
 fn fixed_order(mut workers: Vec<Arc<dyn Worker>>) -> Vec<Arc<dyn Worker>> {
     if determinism::simulated() {
-        workers.sort_by(|a, b| (a.base_url(), a.dp_rank()).cmp(&(b.base_url(), b.dp_rank())));
+        let order = determinism::worker_order();
+        workers.sort_by_cached_key(|w| {
+            let (url, rank) = (w.base_url(), w.dp_rank());
+            let at = (url, rank.unwrap_or(0));
+            let listed = order.iter().position(|(u, r)| (u.as_str(), *r) == at);
+            (listed.unwrap_or(order.len()), url.to_string(), rank)
+        });
     }
     workers
 }

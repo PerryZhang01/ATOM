@@ -29,6 +29,7 @@ from atom.compass.backends import (
     CostRefused,
     Granularity,
     Method,
+    Refusal,
     RequestShape,
     StepGrid,
     StepGridBackend,
@@ -383,6 +384,93 @@ def test_a_replay_bundle_refuses_a_rung_it_has_no_grid_for():
         replay().price(view(*[(1, 601, True)] * 10, rung=16))
     with pytest.raises(CostRefused, match="replays no graph"):
         replay().price(view(*INSIDE))
+
+
+# A pool of 2304 16-token blocks holds 48 rows to c = 767, 40 to 911 and 32 to
+# 1151; each B is measured at every c node it fits, so (40, 1024), (48, 911)
+# and (48, 1024) are past the pool. f is linear in c, so a B side read along c
+# from its two highest nodes inside the pool extends to f exactly.
+POOL = {"block_size": 16, "blocks": 2304}
+POOLED = {
+    (b, c) for b in EAGER_B for c in (512, 767, 911, 1024) if c <= 16 * (2304 // b) - 1
+}
+
+
+def pooled(pool=POOL, gone=(), times=None):
+    times = times or {}
+    grid = bundle(
+        "eager",
+        [point(*at, time=times.get(at, f(*at))) for at in sorted(POOLED - set(gone))],
+    )
+    grid["decode"]["nodes"]["c"] = [512, 767, 911, 1024]
+    if pool:
+        grid["decode"]["pool"] = pool
+    return StepGridBackend(StepGrid(grid), UNIT, "pooled")
+
+
+@pytest.mark.parametrize(
+    "b,c,past",
+    [
+        (48, 800, "c 33 past 767, the pool's edge at B=48"),
+        (44, 850, "c 83 past 767, the pool's edge at B=48"),
+        (40, 1000, "c 89 past 911, the pool's edge at B=40"),
+    ],
+)
+def test_a_decode_cell_past_the_kv_pool_is_extended_from_its_edge_naming_how_far(
+    b, c, past
+):
+    (term,) = pooled().price(view(*[(1, c + 1, True)] * b)).terms
+
+    assert term.seconds == pytest.approx(f(b, c) * 1e-6, rel=1e-12)
+    assert term.provenance.source == f"step-grid-extrapolated: {past}"
+    assert (term.provenance.validated, term.provenance.extrapolated) == (False, True)
+    assert ", extrapolated;" in term.provenance.detail
+
+
+@pytest.mark.parametrize(
+    "backend,missing",
+    [
+        (pooled(gone=[(40, 767)]), "B=40, c=767"),
+        (pooled(pool=None), "B=48, c=911"),
+    ],
+    ids=["hole-inside-the-pool", "no-pool"],
+)
+def test_a_cell_missing_a_corner_inside_the_pool_or_with_no_pool_still_refuses(
+    backend, missing
+):
+    with pytest.raises(CostRefused, match=f"has no measurement at .*{missing}"):
+        backend.price(view(*[(1, 851, True)] * 44))
+
+
+# B=48's edge read along c from 512 and 767 and extended: falling 60% it reaches
+# -908.16 at c = 1023 and -665.28 at c = 1000, where B=44's other side, B=40,
+# reads 5700; from 5110 to 2560 it reaches exactly 0 at c = 1023.
+@pytest.mark.parametrize(
+    "b,c,at_512,at_767",
+    [
+        (48, 1023, f(48, 512), 0.4 * f(48, 512)),
+        (48, 1023, 5110.0, 2560.0),
+        (44, 1000, f(48, 512), 0.4 * f(48, 512)),
+    ],
+    ids=["negative", "zero", "one-b-side"],
+)
+def test_a_falling_in_pool_edge_prices_the_past_pool_step_by_the_roofline(
+    b, c, at_512, at_767
+):
+    falling = pooled(times={(48, 512): at_512, (48, 767): at_767})
+    rows = [(1, c + 1, True)] * b
+
+    (term,) = StepFallbackBackend(falling, roofline()).price(view(*rows)).terms
+    (floor,) = roofline().price(view(*rows)).terms
+    assert (term.name, term.seconds) == (floor.name, floor.seconds)
+    assert term.provenance.refusals == (
+        Refusal(
+            "step-grid",
+            f"the decode cell holding B={b}, c={c} is past the KV pool, and "
+            "B=48's in-pool edge falls from c=512 to 767, reaching no positive "
+            f"time at c={c}",
+        ),
+    )
 
 
 def test_a_negative_count_never_reaches_the_backend():

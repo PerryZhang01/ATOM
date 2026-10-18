@@ -35,16 +35,16 @@ The declared scope boundary that follows, stated so it is not discovered as a
 gap: Compass models a **dedicated** device. It will not predict the OOM a shared
 box produces and will not reproduce a neighbour-induced admission cliff.
 
-**The weights are not derivable here.** They are exact from a meta build
-deduped by storage, which needs a module tree, which needs the engine, which
-this package does not import; the simulated runner builds one and hands it in,
-and `from_config` reads the weights off that tree's parameter storages. Each term
-carries its own method: the buffers are analytical unless the rotary fraction
-is assumed, and the capacity takes its method from the origin the spec records
-for it. The run's `memory_readings` entry's readings, the activations among
-them, are measured, since the entry is keyed by the configuration the run is,
-and declared when its member states `assumed`: a platform no engine has
-started on, its readings copied from another's.
+**The weights and buffers are not derivable here.** They are read off a meta
+build deduped by storage, which needs a module tree, which needs the engine,
+which this package does not import; the simulated runner builds one and hands
+it in, and `from_tree` reads the weights off that tree's parameter storages and
+the buffers off its buffer storages. Each term carries its own method, and the
+capacity takes its method from the origin the spec records for it. The run's
+`memory_readings` entry's readings, the activations among them, are measured,
+since the entry is keyed by the configuration the run is, and declared when its
+member states `assumed`: a platform no engine has started on, its readings
+copied from another's.
 """
 
 from __future__ import annotations
@@ -52,7 +52,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from atom.compass.backends.geometry import dtype_bytes as element_bytes
 from atom.compass.backends.provenance import Method
 from atom.compass.memory import graph_pool
 from atom.compass.memory.terms import Reading, Term, spec_term
@@ -87,46 +86,13 @@ class MemoryRefusal(Exception):
         super().__init__(f"{what}. {remedy}")
 
 
-def _stated(config, file, name: str):
-    """One field off a HF config, or None when the model does not state it.
+def _storages(tensors) -> dict[int, int]:
+    """The bytes of each storage `tensors` hold, keyed by the storage.
 
-    A model's config class fills in its own default for a field the
-    checkpoint's config.json leaves out, and the object cannot tell the two
-    apart, so a field the class has a default for counts only when `file`,
-    the keys of that config.json, names it. DeepSeek-V4 loads through
-    `DeepseekV3Config`, whose `intermediate_size` default is not V4's geometry.
+    Tensors that share a storage (a tied head, a view) are one allocation;
+    `_cdata` names the storage even on meta, where every data pointer is zero.
     """
-    text = getattr(config, "text_config", config)
-    value = getattr(text, name, None)
-    if value is not None and hasattr(type(text), name) and name not in file:
-        return None
-    return value
-
-
-def _geometry(config, file, name: str):
-    """One stated field off a HF config, refusing by name rather than defaulting."""
-    value = _stated(config, file, name)
-    if value is None:
-        raise MemoryRefusal(
-            f"this config states no `{name}`, and the memory model reads it",
-            "state it in the model's config.json, and build the config through "
-            "ATOM's own config classes with that file beside it; a config class "
-            "default is not the model's geometry",
-        )
-    return value
-
-
-def _dtype(config):
-    """The dtype a model's tensors are resident at."""
-    text = getattr(config, "text_config", config)
-    value = getattr(text, "dtype", None)
-    if value is None:
-        raise MemoryRefusal(
-            "this config states no `dtype`, and every byte of the model-side "
-            "terms is twice or half what it should be without it",
-            "name the dtype on the config, or pass `dtype_bytes` explicitly",
-        )
-    return value
+    return {t.untyped_storage()._cdata: t.untyped_storage().nbytes() for t in tensors}
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,95 +109,44 @@ class ModelTerms:
     activations: Term
 
     @classmethod
-    def from_config(
-        cls,
-        config,
-        *,
-        activations: Term,
-        dtype_bytes: int | None = None,
-        config_json: dict | None = None,
-        tree,
-    ) -> ModelTerms:
+    def from_tree(cls, tree, *, activations: Term) -> ModelTerms:
         """All three, each labelled with where its bytes came from.
 
-        `config_json` is the model's config.json as loaded; without it, a
-        field `config`'s class has a default for is refused, since the
-        default cannot be told from a stated value.
-
         `tree` is the model's module tree built on the meta device, with
-        ATOM's own quantisation config and process groups; the weights are the
-        bytes of its parameter storages, each storage once, so a tied
-        `lm_head` that shares the embedding's storage counts once, as it is
-        resident once.
+        ATOM's own quantisation config and process groups. The weights are the
+        bytes of its parameter storages and the buffers those of its buffer
+        storages, each storage once and one a buffer shares with a parameter as
+        a parameter: the split `compass measure memory` takes a real start's
+        load residue against. A tied `lm_head` that shares the embedding's
+        storage counts once, as it is resident once, and a table a model keeps
+        as a plain attribute rather than a buffer is inside the load residue.
 
         `activations` is what `MemoryReadings.activations` gives: a real run's
         warmup peak, the invisible scratch inside it. No form in the model's
         geometry stands in for it; 0.1 KB/token of scratch on the 0.6B
         against 39.6 KB/token on the 27B is the difference between -35.0% and
-        +3.4% held out. Assumed buffers are owed a config that states the
-        rotary fraction.
+        +3.4% held out.
         """
-        file = config_json or {}
-        file = file.get("text_config", file)
-        positions = int(_geometry(config, file, "max_position_embeddings"))
-        if dtype_bytes is None:
-            dtype_bytes = element_bytes(_dtype(config))
-        rope = _stated(config, file, "qk_rope_head_dim")
-        assumed = ""
-        if rope is not None:
-            # An MLA model rotates only this slice of each head.
-            rotary_dim = int(rope)
-            rotary = f"{rotary_dim} qk_rope_head_dim"
-        else:
-            head_dim = int(_geometry(config, file, "head_dim"))
-            # 1.0 is the right reading for a model with full rotary, so an
-            # absent field is not refused here. But a config that states 1.0
-            # and one that states nothing must not render the same row: the
-            # second is the absence the recorded 4x came from, and an
-            # assumption that does not appear in the table is not an
-            # assumption a reader can see.
-            stated = _stated(config, file, "partial_rotary_factor")
-            partial = 1.0 if stated is None else float(stated)
-            assumed = "" if stated is not None else " (absent from config, assumed)"
-            rotary_dim = int(head_dim * partial)
-            rotary = (
-                f"int({head_dim} head_dim x {partial} "
-                f"partial_rotary_factor{assumed})"
-            )
-        # Parameters that share a storage (a tied head, a view) are one
-        # allocation; `_cdata` names the storage even on meta, where every
-        # data pointer is zero.
-        storages = {
-            p.untyped_storage()._cdata: p.untyped_storage().nbytes()
-            for p in tree.parameters()
+        parameters = _storages(tree.parameters())
+        buffers = {
+            k: v for k, v in _storages(tree.buffers()).items() if k not in parameters
         }
-        weights = Term(
-            "weights",
-            sum(storages.values()),
-            Method.ANALYTICAL,
-            f"{len(storages)} parameter storages of a meta build of "
-            f"{type(tree).__name__}",
+        built = f"of a meta build of {type(tree).__name__}"
+        return cls(
+            Term(
+                "weights",
+                sum(parameters.values()),
+                Method.ANALYTICAL,
+                f"{len(parameters)} parameter storages {built}",
+            ),
+            Term(
+                "buffers",
+                sum(buffers.values()),
+                Method.ANALYTICAL,
+                f"{len(buffers)} buffer storages {built}",
+            ),
+            activations,
         )
-        buffers = Term(
-            "buffers",
-            positions * rotary_dim * dtype_bytes,
-            Method.DECLARED if assumed else Method.ANALYTICAL,
-            f"{positions} positions x {rotary} x {dtype_bytes} B",
-            (
-                "partial_rotary_factor 1.0 is assumed; a config that states it "
-                "replaces this. "
-                if assumed
-                else ""
-            )
-            + "cos and sin together are "
-            "positions x rotary_dim elements, because inv_freq holds "
-            "rotary_dim/2 of them (RotaryEmbedding._compute_inv_freq in "
-            "atom/model_ops/rotary_embedding.py), and "
-            "they are resident at the model dtype they are cast to, not the "
-            "fp32 they are computed in (RotaryEmbedding.__init__, with the "
-            "default dtype set in ModelRunner.__init__)",
-        )
-        return cls(weights, buffers, activations)
 
 
 @dataclass(frozen=True, slots=True)

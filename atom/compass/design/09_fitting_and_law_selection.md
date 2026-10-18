@@ -13,6 +13,12 @@ linear law (`backends/step_linear.py::StepLinearBackend`), its terms `estimated`
 validated only inside the hull of its held-out steps, with its support domain stated
 (D54, D58); a treatment Compass assumes is an assumed treatment (D61).
 
+**Revised 2026-10-18 by the owner's
+[band ruling on #1489](https://github.com/jgong5/ATOM/issues/1489#issuecomment-6249950252):**
+at the op level, `measure ops` records each point's kernel identity, and a leaf query with
+no same-kernel bracket is declined by the price list and answered by the leaf's analytical
+law, counted (D60).
+
 **Scope.** How measurements become a model: objective, feature construction, outlier
 handling, guards, and how a functional form is chosen and shown to be right. This is a
 separate concern from the toolchain that produces the data and from the protocol that
@@ -87,8 +93,8 @@ is wrong in direction, not just in magnitude.
 
 Owner's DP ruling, 2026-10-01
 ([#470](https://github.com/jgong5/ATOM/issues/470#issuecomment-5933154215)). The step linear law covers
-DP and EP with a **per-rank** law: it prices one rank's step, and the group's step is the
-`max` over ranks (`15` D90).
+DP and EP with a **per-rank** law: it prices one rank's step, and the group's device end is
+the `max` over ranks (`15` D90).
 
 - **Key.** The engine config, the one source of the parallel layout (owner ruling on
   [#973](https://github.com/jgong5/ATOM/issues/973#issuecomment-6210598012), 2026-10-16):
@@ -97,13 +103,15 @@ DP and EP with a **per-rank** law: it prices one rank's step, and the group's st
   is refused, and no store key holding the engine config states `parallel`.
 - **Features.** The rank's own batch features (D55), plus two the group decides: the
   DP-unified rung every rank shares, settled by `ForwardMode.decide`, and the MoE row
-  count, which the MoE terms read alone. With EP off that count is `T_moe`, the rows the
-  group's MoE gather carries; with EP on it is open (`15` D90).
+  count, which the MoE terms read alone. That count is `T_moe` (`BatchView.moe_rows`)
+  with EP on or off: with EP off the rows the group's MoE gather carries, with EP on the
+  rows the group dispatches to MORI (`15` D90).
 - **The capture.** Full-engine steps on a real deployment at the law's layout,
   logging per forward each rank's batch features and the MoE row count beside the
   measured step seconds. Under DP-attention the local segment runs at TP 1, as in the
   TP1-only full-engine calibration of `07` D38; with EP off the MoE segment does not,
-  since `flatten_tp_across_dp` shards every expert `dp` ways.
+  since `flatten_tp_across_dp` shards every expert `dp` ways; with EP on it does, each
+  rank running its own experts whole on the rows MORI delivers.
 - **The fit: alternating max-affine regression.** The ranks wait for each other inside the
   forward, so a rank's measured step is the group's step and its own cost is never seen:
   the observation is `y = max_r f(x_r)`. The fit alternates two moves until no step
@@ -385,6 +393,15 @@ Prefill steps do not interpolate either, even averaged over hundreds of kernels:
 recorded kernel identity, not inferred from a residual. A query between bands with no
 bracket **refuses** rather than interpolating.
 
+**At the op level**, revised 2026-10-18 by the owner's
+[band ruling on #1489](https://github.com/jgong5/ATOM/issues/1489#issuecomment-6249950252):
+`measure ops` records the kernels each leaf launched at each point, and `fit ops`
+interpolates a leaf only between two neighbours that launched the same kernel (`07`
+D38). The refusal is the price list's: the leaf falls to its analytical law, and that
+share of priced seconds is counted (`08` D50.3). The cost is the larger analytical share
+the measurements above predict, 8 of 10 held-out GEMM shapes with no same-kernel bracket,
+and it is reported rather than hidden.
+
 ---
 
 ## D61. Assumed treatments
@@ -433,12 +450,21 @@ the gfx942 decode attention grid places workgroups so that the rows `i mod 16` s
 dispatch class; the fit found 16 from the data alone.
 
 **Assumed treatment: uniform routing** (owner's DP ruling, 2026-10-01). Under DP the
-MoE segment is priced as if routing spread tokens evenly over the experts, at every
-granularity, from `T_moe` with EP off; with EP on its row count is open (`15` D90). Real
+MoE segment is priced under independent uniform routing over the experts, at every
+granularity, from `T_moe` with EP on or off (`15` D90); the analytical laws price it in
+expectation, under EP at the expected maximum rank load (`10` D64). Real
 routing is data-dependent (`15` D92 Q2) and no feature carries it, so whatever skew a
 capture's routing has is folded into the fitted MoE terms. `max` over ranks is the
 per-layer critical path, by construction with EP off and under this treatment with EP on
 (`15` D90); where routing is not uniform under EP, `max` underestimates the step.
+Stage 3 keeps this treatment at EP8 (owner ruling on
+[#627](https://github.com/jgong5/ATOM/issues/627#issuecomment-6194442788), 2026-10-15):
+the step linear law fitted under the EP8 engine config absorbs MORI dispatch and combine
+through its prefill `moe_rows` term and its intercepts, and no received-rows feature is
+fitted. A decode vector needs no `moe_rows` term, since at a replayed rung `T_moe` is
+fixed by the rung and the rung's intercept holds it. The measured received-row
+imbalance, whose size `15` D90 states, is reported beside the law's accuracy
+([#1108](https://github.com/jgong5/ATOM/issues/1108)).
 
 **Suspected treatments to check before fitting:** raggedness (workload-dependent, and it
 was a zero column for 2,997 samples), cached fraction, and the prefill chunk's position in
@@ -484,13 +510,13 @@ choice that must be visible.
 | # | Decision | Date |
 |---|---|---|
 | D53 | Fit relative error, not absolute seconds. MAD outlier test on the same relative residuals. | 2026-09-18 |
-| D54 | Prefill and decode fitted separately; decode per CUDA-graph rung with both coefficients per rung. Under DP and EP, the step linear law is one per-rank law per engine config, which states the parallel layout, with the DP-unified rung and the MoE row count as features (`T_moe` with EP off; open with EP on), captured on a real deployment at that layout and fitted by alternating max-affine regression. Its label is one forward's device busy time, plus the device gap before it on a decode, with launch-exposed decodes cut and no prefill cut; host laws (`E`, `W_pre`, `W_launch`, `W_post`, and under MTP `W_inputs`, `W_pre` split at the MTP status wait), each `(1, tokens, seqs)` per decode, output prefill and pure middle chunk (a middle chunk has no sampler launch, output or R1 wait, so its `W_post` is zero and not fitted), are fitted beside it, keyed by host CPU, `atom` digest, model and engine config, with no transfer. | 2026-09-18; revised 2026-10-01, 2026-10-09 (`T_moe`, #502) and 2026-10-11 (#815); label per step kind 2026-10-12 (#843); named 2026-10-14 (#952); `W_inputs` 2026-10-16 (#829); engine config as the key 2026-10-16 (#973) |
+| D54 | Prefill and decode fitted separately; decode per CUDA-graph rung with both coefficients per rung. Under DP and EP, the step linear law is one per-rank law per engine config, which states the parallel layout, with the DP-unified rung and the MoE row count as features (`T_moe`, EP on or off), captured on a real deployment at that layout and fitted by alternating max-affine regression. Its label is one forward's device busy time, plus the device gap before it on a decode, with launch-exposed decodes cut and no prefill cut; host laws (`E`, `W_pre`, `W_launch`, `W_post`, and under MTP `W_inputs`, `W_pre` split at the MTP status wait), each `(1, tokens, seqs)` per decode, output prefill and pure middle chunk (a middle chunk has no sampler launch, output or R1 wait, so its `W_post` is zero and not fitted), are fitted beside it, keyed by host CPU, `atom` digest, model and engine config, with no transfer. | 2026-09-18; revised 2026-10-01, 2026-10-09 (`T_moe`, #502) and 2026-10-11 (#815); label per step kind 2026-10-12 (#843); named 2026-10-14 (#952); `W_inputs` 2026-10-16 (#829); EP on 2026-10-15 (#627, #1106); engine config as the key 2026-10-16 (#973) |
 | D55 | Attention terms summed per request; the padding term is the rung's rectangle, not the batch's. A decode rung may add `rowmod(k)` (D61). | 2026-09-18; revised 2026-10-14 (#941) |
 | D56 | Distinguish rank deficiency from coverage gap: drop zero-variance features explicitly, report the condition number, and treat "widening the evidence does not move the error" as evidence the feature is wrong. | 2026-09-18 |
 | D57 | Every fit reports provenance, sample count, dropped count, condition number and validity hull. Report an interval or report nothing. | 2026-09-18 |
 | D58 | Refuse rather than fall back on a step kind with no samples. The extrapolation guard is a convex hull or k-NN distance, never a per-feature bounding box; an out-of-hull step is priced `estimated` and unvalidated, its source naming the extrapolation, and reported apart, not refused. The step linear law refuses a discrete value it has no vector for, extrapolates outside its fitted hull, and is validated only inside the hull of its held-out steps. | 2026-09-18; revised 2026-10-11 (#765) and 2026-10-14 (#952) |
 | D59 | A family is validated on independently gathered data, never by LOO. Rank at least three candidates and report all held-out errors. A law that fits one axis is tested on a second before it ships. | 2026-09-18 |
-| D60 | Laws are piecewise over dispatch bands read from recorded kernel identity. A query with no same-band bracket refuses. | 2026-09-18 |
+| D60 | Laws are piecewise over dispatch bands read from recorded kernel identity. A query with no same-band bracket refuses. At the op level `measure ops` records each point's kernels and `fit ops` interpolates only between same-kernel neighbours; a declined leaf falls to its analytical law, counted. | 2026-09-18; op level 2026-10-18 (#1489) |
 | D61 | Treatments are stated and the calibration population matched; an assumed treatment is a property of the query, recorded in the run summary. Decode row order, worth 1.77× at a fixed multiset, is a decode feature, `rowmod(k)` in scheduled order, adopted per rung by a four-condition rule. Uniform routing of the MoE segment under DP and EP is an assumed treatment, at every granularity. | 2026-09-18; revised 2026-10-01, 2026-10-14 (#941, #952) |
 | D62 | Leading warmth is measured and reported, never charged. Error is reported stratified by the axes the law is linear in. | 2026-09-18 |
 
@@ -506,5 +532,5 @@ load-bearing assumptions and their check plans, is [`12_open_items.md`](12_open_
 | T29 | Choose the hull implementation (convex hull vs k-NN distance threshold) and its threshold | needs one calibration corpus to tune against |
 | T30 | Enumerate candidate laws per leaf family, with their held-out validation shapes | needs the leaf list frozen (`04` T3) |
 | T31 | Test raggedness, cached fraction and chunk-position for treatment status | each needs a controlled experiment like the row-order one |
-| T32 | Decide whether the step linear law is derived from the op level's symbolic expression or fitted independently | `04` T8; if derived, most of this document applies only to leaves |
+| T32 | Decide whether the step linear law is derived from the op level's composed prices or fitted independently | `04` T8; if derived, most of this document applies only to leaves |
 | T33 | Establish `warmup_seconds` for Qwen3.8-27B under the current stack | per-deployment constant, currently defaulting to 0 |

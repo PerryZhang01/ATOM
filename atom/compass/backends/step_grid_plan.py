@@ -32,7 +32,8 @@ c, so `max_model_len` below the token budget is refused. Each decode rung has
 B nodes at the previous rung + 1, at the rung, and at each B between them that
 a step on the rung reaches past the rung's KV limit; its c nodes add each B
 node's KV limit, `block size * (num_kvcache_blocks // B) - 1`, and
-`max_model_len - 1`.
+`max_model_len - 1`; the decode grid records that pool, which a lookup
+extrapolates past.
 
 It then plans every corner of each step's cell, widened by `margin` nodes on
 every axis and to `margin` rungs either side, each such rung at all its B
@@ -175,7 +176,7 @@ def _layout(definition: dict, b_nodes: dict) -> dict:
     nodes past a bound dropped and the bounds added: the token budget T's top,
     ``max_num_seqs`` B's and ``max_model_len`` less the budget c's for
     prefill; per decode rung, each B node's KV limit and ``max_model_len - 1``
-    as c nodes."""
+    as c nodes, and the KV pool they come from."""
     budget = definition["max_num_batched_tokens"]
     tops = {
         "B": definition["max_num_seqs"],
@@ -201,6 +202,10 @@ def _layout(definition: dict, b_nodes: dict) -> dict:
                 },
             },
             "points": [],
+            "pool": {
+                "block_size": definition["kv_cache_block_size"],
+                "blocks": definition["num_kvcache_blocks"],
+            },
         },
     }
 
@@ -335,50 +340,53 @@ def plan(definition: dict, steps, engines: dict) -> dict:
 
 
 def coverage(backend, steps) -> dict:
-    """Per step, whether every corner of its cell was measured and the
-    residual answers it, inside its hull, over the grid and residual of
-    `backend`, a `StepGridBackend`.
+    """How the grid and residual of `backend`, a `StepGridBackend`, answer
+    each step: inside the cells and the residual's hull (`covered`), past the
+    KV pool or the hull (`extrapolated`), or not at all, the step roofline
+    below the grid answering at run time (`fallback`). The roofline refuses
+    only a step with image tokens, which no step-record line holds, so no
+    step goes unanswered.
 
-    It returns `steps`, `covered` and `share`; `uncovered`, the name of each
-    step not covered; `missing`, each grid's unmeasured corners, keyed
-    `prefill output`, `prefill no_output` or `decode rung <R>`; `refused`, each
-    step the grid cannot place or the residual does not answer, with the
-    reasons; and, apart, `prefill_above_top_c`, how many prefill steps are
-    cached past prefill's top c node, which refuse: a prefix hit near
-    `max_model_len`, or a long prompt's last chunk when `max_model_len` is not
-    a multiple of the token budget.
+    It returns `steps`, `covered`, `share` (covered over steps),
+    `extrapolated` and `fallback`, each a count; `declined`, each step the
+    grid does not answer, with its reasons; `missing`, the unmeasured corners
+    of their cells by grid, keyed `prefill output`, `prefill no_output` or
+    `decode rung <R>`; and, apart, `prefill_above_top_c`, how many prefill
+    steps are cached past prefill's top c node, which fall back: a prefix hit
+    near `max_model_len`, or a long prompt's last chunk when `max_model_len`
+    is not a multiple of the token budget.
     """
     steps = _views(steps)
-    uncovered, missing, refused, above = [], defaultdict(set), [], 0
+    extrapolated, above, declined, missing = 0, 0, [], defaultdict(set)
     for where, view in steps:
-        gaps, reasons = (), []
+        gaps = None
         try:
             cells, at = backend.grid.locate(view)
             above += bool(view.prefill) and at[-1] > cells.nodes[-1][-1]
             corners = cells.corners(view, at)
-            gaps = {c for c, _ in corners if c not in cells.points}
-            missing[cells.name] |= gaps
-        except CostRefused as r:
-            reasons.append(_reason(r))
+            gaps = cells.name, {c for c, _ in corners if c not in cells.points}
+        except CostRefused:
+            pass
         try:
-            backend.residual.factor(view)
+            cost = backend.price(view)
         except CostRefused as r:
-            reasons.append(_reason(r))
-        if reasons:
-            refused.append({"step": where, "reasons": reasons})
-        if gaps or reasons:
-            uncovered.append(where)
-    covered = len(steps) - len(uncovered)
+            declined.append({"step": where, "reasons": [_reason(r)]})
+            if gaps:
+                missing[gaps[0]] |= gaps[1]
+            continue
+        extrapolated += cost.terms[0].provenance.extrapolated
+    covered = len(steps) - extrapolated - len(declined)
     return {
         "steps": len(steps),
         "covered": covered,
         "share": covered / len(steps),
-        "uncovered": uncovered,
+        "extrapolated": extrapolated,
+        "fallback": len(declined),
+        "declined": declined,
         "missing": {
             name: sorted([int(x) for x in corner] for corner in corners)
             for name, corners in sorted(missing.items())
             if corners
         },
-        "refused": refused,
         "prefill_above_top_c": above,
     }

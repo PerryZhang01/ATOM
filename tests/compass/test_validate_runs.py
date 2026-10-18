@@ -295,14 +295,17 @@ def test_a_cell_record_and_run_wrote_grades_as_the_one_cctraces_sim_wrote(tmp_pa
         ),
         (
             {"run_file": {"step_grid": {}, "host": {}}},
-            "it ran the step grid without a passed coverage check",
+            "it ran the step grid without a coverage check",
         ),
+        # The step grid prices below it by the roofline, switch or none, and a
+        # check that counts steps extrapolated or falling to it refuses none.
         (
             {
                 "run_file": {"step_grid": {}, "host": {}},
-                "coverage": {"uncovered": ["s"]},
+                "step_roofline": True,
+                "coverage": {"extrapolated": 3, "fallback": 2, "declined": [{}] * 2},
             },
-            "it ran the step grid without a passed coverage check",
+            None,
         ),
         (
             {
@@ -315,7 +318,7 @@ def test_a_cell_record_and_run_wrote_grades_as_the_one_cctraces_sim_wrote(tmp_pa
             r"its backend was fitted on profiled inputs: \['p'\]",
         ),
         (
-            {"run_file": {"step_grid": {}, "host": {}}, "coverage": {"uncovered": []}},
+            {"run_file": {"step_grid": {}, "host": {}}, "coverage": {"declined": []}},
             None,
         ),
         ({"provenance": {"digest": "sha256:stub", "provenance": None}}, None),
@@ -333,6 +336,22 @@ def test_a_simulated_run_grading_does_not_take_is_refused_naming_why(
         grade(real, simulated)
 
 
+def test_the_command_states_the_steps_extrapolated_and_priced_by_a_fallback(
+    tmp_path, capsys
+):
+    *real, simulated = (_recorded(c) for c in _four(tmp_path))
+    _recorded(simulated, **GRADED)
+    schedule = {"refusals": {"steps": 9}, "extrapolated_steps": 3, "fallback_steps": 2}
+    first = simulated / compass_run.CLIENT_DIR.format(0)
+    first.mkdir()
+    (first / compass_run.SUMMARY_FILE).write_text(json.dumps({"schedule": schedule}))
+
+    main([str(simulated), *map(str, real)])
+
+    out = capsys.readouterr().out.splitlines()
+    assert out[-1] == "of 9 steps priced: extrapolated 3, fallback 2"
+
+
 def test_a_simulated_run_fitted_on_a_trace_the_cell_served_is_refused_naming_it(
     tmp_path,
 ):
@@ -344,6 +363,33 @@ def test_a_simulated_run_fitted_on_a_trace_the_cell_served_is_refused_naming_it(
     fitted = r"its backend was fitted on traces it served: \['trace-kb'\]"
     with pytest.raises(ValueError, match=f"the step roofline was on; {fitted}$"):
         main([str(simulated), *map(str, real)])
+
+
+@pytest.mark.parametrize("target", ["trace-kz", "trace-kb"])
+def test_a_step_grid_planned_on_the_traces_a_run_served_grades_unless_a_target_did(
+    tmp_path, target
+):
+    """The provenance `fit steps --backend step-grid` reports: a residual
+    target, a replay that served `target`, and the plan, whose points were
+    placed from shapes of every trace the cell served."""
+    *real, simulated = (_recorded(c) for c in _four(tmp_path))
+    plan = {
+        "source": "plan",
+        "run": "sha256:plan",
+        "inputs": ["grid"],
+        "traces": [*GIVEN, "trace-kz"],
+    }
+    replay = {"source": "replay", "run": "sha256:replay", "traces": [target]}
+    provenance = {"digest": "sha256:0", "provenance": {"inputs": [replay, plan]}}
+    grid = {"run_file": {"step_grid": {}, "host": {}}, "coverage": {"uncovered": []}}
+    _recorded(simulated, **(GRADED | grid | {"provenance": provenance}))
+
+    if target == "trace-kz":
+        grade(real, simulated)
+        return
+    fitted = r"its backend was fitted on traces it served: \['trace-kb'\]"
+    with pytest.raises(ValueError, match=f"sim is not graded: {fitted}$"):
+        grade(real, simulated)
 
 
 def test_a_client_run_its_server_served_after_another_is_refused(tmp_path):

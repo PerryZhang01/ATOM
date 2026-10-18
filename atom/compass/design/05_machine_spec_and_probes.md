@@ -39,6 +39,13 @@ optional `host.http_intake` pair, the frontend event loop's charge per HTTP requ
 drops `device.activations` and the `transferred-from:<spec>` origin with the runtime
 constants; the activation coefficient is a `memory_readings` reading (D25).
 
+**Revised 2026-10-17 by the owner's ruling on
+[#1392](https://github.com/jgong5/ATOM/issues/1392):** the analytical method reads
+attainable peaks probed on the device: one compute rate per format, a bandwidth curve
+`BW(bytes)`, an empty-kernel floor and link latency and bandwidth (D25), filled by the
+class-1 and class-2 probes (D26). A `derate` is attainable over datasheet, probed; a device
+with no hardware carries a probed device's, assumed.
+
 **Scope.** The single input artifact that tells Compass what machine it is simulating,
 its schema, and the tools that fill it in. A project requirement is that compute, memory
 size, bandwidth and interconnect are **configured and not read from a device runtime**, so
@@ -126,7 +133,6 @@ host:
   ipc:
     zmq_roundtrip_s:           5.0e-5
     shm_broadcast_s:           2.0e-5
-  admission_fixed_s:           9.0e-3   # HTTP arrival -> `waiting`, EXCLUDING tokenize
   http_intake:                 # optional: the event loop's time to take in one HTTP request
     fixed_s:                   2.1e-3
     per_byte_s:                1.9e-8   # per body byte
@@ -138,12 +144,19 @@ device:
   memory:
     capacity_bytes:            288.0e9
     bandwidth_bytes_per_s:     8.0e12
-    derate:                    0.85
+    bandwidth_curve:                     # bytes -> attainable bytes/s, STREAM copy, monotone
+      - [4096,        1.1e11]
+      - [4294967296,  6.4e12]
+    derate:                    0.80
   compute:
     bf16_flops:                2.5e15
     fp8_flops:                 5.0e15
     fp4_flops:                 10.0e15  # optional: absent where there is no FP4 matrix core
-    derate:                    0.70
+    derate:                    # attainable over datasheet, one per format
+      bf16:                    0.70
+      fp8:                     0.65
+      fp4:                     0.60
+  kernel_floor_s:              2.0e-6   # an empty kernel, replayed in a graph
   # no memory readings, activations included: they are `compass measure memory`'s
   # entries (07 D38, Phase 2)
   software_pinned_to:          # the stack this spec's numbers were taken on
@@ -187,15 +200,17 @@ mapping so a reader can follow the term into ATOM's code without guessing. The
 | `ipc.*`, `interconnect.*_latency_s` | **Clock Authority lookahead floors** (doc 01 D3) | a zero lookahead serializes the whole simulation |
 | `compute.fp4_flops` | the roofline (`10` D64) for an FP4 leaf | DeepSeek-V4-Pro's routed experts are FP4 (`16` D95), and MI455X's dense FP4 peak is twice its FP8 peak ([#504](https://github.com/jgong5/ATOM/issues/504#issuecomment-6080974531)); priced at the FP8 rate they would read twice as slow |
 | `intra_node.domain_devices` | the link a collective group rides (`10` D66) | MI455X's UALoE fabric joins 72 GPUs across compute trays of 4 (#504), so a TP8 or EP8 group spans two trays without touching the NICs; `count_per_node` alone would send it over `inter_node` |
+| `memory.bandwidth_curve` | `BW(M)` in the analytical price (`10` D64) | the attainable bandwidth depends on the bytes moved; one rate would price a small transfer at the large-transfer rate (#1392) |
+| `kernel_floor_s` | `t0` in the analytical price (`10` D64) | the device's floor on one kernel, below which no pricing unit runs (#1392); the host's launch time is a host law, not this (`10` D64) |
 | `*.link_setup_s` | a rank pair's first KV write (`01` D6) | on node 18 Mooncake TCP a pair's first write of 2 to 7 blocks took 9.0 to 28.1 ms longer than its later writes ([#1172](https://github.com/jgong5/ATOM/issues/1172)); absent is zero |
-| every `derate` | cost model | no kernel reaches spec peak; the gap between datasheet and achievable is the user's to state |
+| every `derate` | the analytical price (`10` D64) | no kernel reaches spec peak; the attainable fraction is probed on the device (D26), compute per format, and assumed only where carried from a probed device (`10` D69) |
 
 **On `derate`.** The name was kept deliberately after considering `achievable_fraction`
-and `efficiency`. It is a fraction in `(0, 1]` multiplying a spec-peak number, it appears
-in five places with identical meaning, and it is the term the schema rules make
-*mandatory* so that nobody quietly uses a datasheet FLOP as an achievable one. A name
-that reads like a neutral measurement would undercut that; `derate` reads like what it is
-— a stated haircut the author is responsible for.
+and `efficiency`. It is a fraction in `(0, 1]` multiplying a spec-peak number, and it is
+the term the schema rules make *mandatory* so that nobody quietly uses a datasheet FLOP as
+an attainable one. On a device it is attainable over datasheet, probed where the device was
+run (D26). It is not ATOM's implementation efficiency, which is never an input (`10` D68);
+`efficiency` would read as that, and `derate` reads like what it is.
 
 **Precisions and links.** Each `*_flops` is the dense matrix-core peak at one operand
 precision, never a structured-sparsity figure: `fp8_flops` covers OCP FP8 and MXFP8,
@@ -213,10 +228,11 @@ Mooncake's KV transfer between the prefill and the decode node (`01` D6).
    **refuses and names it** (`07` D38). These are the terms with no law behind them; a
    silent default is the worst kind of wrong.
 2. **`derate` is mandatory wherever a spec-peak number appears**, so nobody can quietly
-   use a datasheet FLOP as an achievable one.
+   use a datasheet FLOP as an achievable one. `memory.derate` is derived, not probed: the
+   bandwidth curve's largest point over `bandwidth_bytes_per_s`.
 3. **`software_pinned_to` is checked, not decorative.** Device numbers track the
-   ROCm/RCCL/AITER build as well as the die (`07` D43). A stack mismatch warns loudly by
-   default and refuses under `validate(strict=True)`; constants moved across stacks by a
+   ROCm/RCCL/AITER build as well as the die (`07` D43). `compass measure memory` refuses a
+   start under a stack the spec does not pin, and constants moved across stacks by a
    merge always refuse. It is the target's stack: a step grid bundle's
    stack, torch included, is checked against it, never against the stack of the process
    that simulates (`17` D101).
@@ -239,8 +255,8 @@ Mooncake's KV transfer between the prefill and the decode node (`01` D6).
    that states a method in place of an origin. The origin is not the method: the term that reads a field
    decides that (`02` D11, #952), so a datasheet value used as a parameter is analytical,
    a probed one used as the answer is measured, and an assumed one makes the term
-   declared. A derate for a device never run is assumed (`10` D69): a vendor's
-   measured fraction of peak informs the choice and does not source it. `08` D50.2 says
+   declared. A derate for a device never run is assumed: MI455's are the ratios probed on
+   MI355X (`10` D69, #1392). `08` D50.2 says
    how the projection reports its assumed fields.
 
 ### `host.tokenizer` is keyed by tokenizer identity, not by model
@@ -301,7 +317,7 @@ fragment supplied each field. `validate` refuses an incomplete or inconsistent o
 a probe                  -> a fragment
 merge(fragments)         -> the machine spec, recording which fragment supplied each field
 validate(spec or merge)  -> the refusals below
-explain(spec, term)      -> the fields behind one quantity, and how much each contributed
+explain(spec, term)      -> each field under a field or block path, with its value and origin
 ```
 
 Each is a function of the `spec` package, and a per-machine script runs them:
@@ -326,14 +342,16 @@ configuration into a `memory_readings` entry (`07` D38, Phase 2).
 | Probe | Fills | Notes |
 |---|---|---|
 | `device-memory`, at TP1 | `capacity_bytes` | the device's capacity; the readings of an engine start are `measure memory`'s |
-| `device-compute` | `bandwidth_bytes_per_s`, `*_flops`, their `derate`s | GEMM and bandwidth sweeps; derate is achieved/datasheet |
+| `device-compute` | `compute.derate`, one per format | per format (BF16, FP8, FP4 where the device has it), the best large-GEMM rate the vendor library reaches; derate is attainable over the datasheet `*_flops` (#1392) |
+| `device-bandwidth` | `memory.bandwidth_curve` | a STREAM copy sweep over transfer sizes; `memory.derate` is derived from it (schema rule 2) |
+| `kernel-floor` | `kernel_floor_s` | an empty kernel replayed in a graph, so the host's launch time is not in it |
 | `http-intake` | `host.http_intake.*` | one real c=256 first-turn burst with the API server's loop stamped; fit `fixed + bytes x per_byte` to each request's chat-template start on the loop against its index and the body bytes taken in before it. Needs a real server, so it runs on a card of the target; one burst does not separate the two terms well (0.9 ms + 54 ns/B to 3.2 ms + 0 across bursts) |
 
 **Class 2 — N GPUs of the target type.**
 
 | Probe | Fills | Notes |
 |---|---|---|
-| `interconnect-intra` | `intra_node.*` | collectives in **real groups**, several sizes |
+| `interconnect-intra` | `intra_node.*` | link latency as half a small-message round trip (one hop), link bandwidth and its `derate` from a large peer copy (#1392); collectives in **real groups**, several sizes, for the empirical pricing of `07` D40 |
 
 **Class 3 — two nodes.**
 
@@ -372,14 +390,14 @@ with them.
 
 - a missing required field
 - a `derate` missing beside a spec-peak number
-- `software_pinned_to` not matching the running stack (warn, or refuse under a strict flag)
 
 ### `explain`
 
-Given a spec and a predicted quantity, print which spec fields contributed and by how
-much. This is not a nicety: the KV gate is 5%, memory validation is **per term and never
-as a sum**, and a prior summed check read **+13.8%** while hiding three errors two of
-which cancelled — the largest being 25% of a single term.
+Given a spec and the dotted path of a field or a block of fields, print each field under it
+with its value and origin, one row per field and never a sum. This is not a nicety: the KV
+gate is 5%, memory validation is **per term and never as a sum**, and a prior summed check
+read **+13.8%** while hiding three errors two of which cancelled — the largest being 25% of
+a single term.
 
 ### Open issues
 
@@ -395,9 +413,10 @@ which cancelled — the largest being 25% of a single term.
   were lost or degraded by other tenants — two refused to start with a negative KV budget
   at 141 GB of neighbour, one ran 64% slow. **Any probe run needs the machine checked
   before and after, not only before.**
-- Nothing yet decides what a developer does with no card of the target type. Today the
-  answer is "assume it and accept the error", the memory readings in an entry marked
-  assumed (`07` D38), which is honest but unguided.
+- With no card of the target type, the peaks are its datasheet times the ratios probed on
+  a card that was run, assumed, as MI455 takes MI355X's (`10` D69, #1392). For the memory readings nothing yet
+  decides it: the answer is "assume it and accept the error", an entry marked assumed
+  (`07` D38), which is honest but unguided.
 - The `http-intake` probe is not yet committed: hjbog-srdc-39's reading came from a scratch
   stamp hook, and no other host has one, so `host.http_intake` stays optional
   ([#1230](https://github.com/jgong5/ATOM/issues/1230)).
@@ -409,6 +428,6 @@ which cancelled — the largest being 25% of a single term.
 | # | Decision | Date |
 |---|---|---|
 | D24 | The spec describes the machine; ATOM's config describes the deployment. Thread-pool width becomes an ATOM config option, not a Compass one. | 2026-09-18 |
-| D25 | Four-section schema: `provenance`, `host`, `device`, `interconnect`. Mandatory derates, no memory readings (`measure memory`'s entries, 2026-10-14), activations included (2026-10-16), `software_pinned_to` checked, torch included, as the target's stack, whole spec echoed into every artifact. Revised for the MI455 projection: an optional dense `fp4_flops`, `intra_node.domain_devices` for a scale-up fabric wider than a node, and every field given an origin, `datasheet`, `probed` or `assumed`, `provenance.origin` and per field `provenance.origins` with a probe's subject, kept across a save. Revised: an optional `host.http_intake` pair, the event loop's charge per HTTP request taken in. An optional per-link `link_setup_s`, charged once on a rank pair's first KV write. | 2026-09-18; revised 2026-10-10; torch 2026-10-13 (#851); origin 2026-10-14 (#952); intake 2026-10-16 (#1103); link setup 2026-10-16 (#1172); activations and the transfer origin dropped 2026-10-16 (#1226) |
-| D26 | Probes emit fragments; `merge` / `validate` / `explain` combine and check them. Four hardware probe classes plus a datasheet path; the transfer path dropped 2026-10-14 (#937). Every hardware probe implements the contamination refusals. All are the `spec` package's functions, run by per-machine scripts, with no `compass` command. Machine specs are developers', one per supported machine, passed by `--machine`; an engine start's memory readings are `measure memory`'s, not the spec's. | 2026-09-18; revised 2026-10-13 and 2026-10-14 (#851) |
+| D25 | Four-section schema: `provenance`, `host`, `device`, `interconnect`. Mandatory derates, no memory readings (`measure memory`'s entries, 2026-10-14), activations included (2026-10-16), `software_pinned_to` checked, torch included, as the target's stack, whole spec echoed into every artifact. Revised for the MI455 projection: an optional dense `fp4_flops`, `intra_node.domain_devices` for a scale-up fabric wider than a node, and every field given an origin, `datasheet`, `probed` or `assumed`, `provenance.origin` and per field `provenance.origins` with a probe's subject, kept across a save. Revised: an optional `host.http_intake` pair, the event loop's charge per HTTP request taken in. An optional per-link `link_setup_s`, charged once on a rank pair's first KV write. Revised for the attainable-peak roofline: a `derate` is attainable over datasheet, probed, one per compute format; `memory.bandwidth_curve` and `kernel_floor_s` added; a device never run carries a probed device's derates, assumed. | 2026-09-18; revised 2026-10-10; torch 2026-10-13 (#851); origin 2026-10-14 (#952); intake 2026-10-16 (#1103); link setup 2026-10-16 (#1172); activations and the transfer origin dropped 2026-10-16 (#1226); attainable peaks 2026-10-17 (#1392); `host.admission_fixed_s` dropped 2026-10-17 (#1000) |
+| D26 | Probes emit fragments; `merge` / `validate` / `explain` combine and check them. Four hardware probe classes plus a datasheet path; the transfer path dropped 2026-10-14 (#937). Every hardware probe implements the contamination refusals. All are the `spec` package's functions, run by per-machine scripts, with no `compass` command. Machine specs are developers', one per supported machine, passed by `--machine`; an engine start's memory readings are `measure memory`'s, not the spec's. Revised: class 1 probes the per-format GEMM rate, the bandwidth curve and the kernel floor; class 2 the link latency and bandwidth. | 2026-09-18; revised 2026-10-13 and 2026-10-14 (#851); 2026-10-17 (#1392) |
 | D25.1 | Runtime-constant fields renamed to say what they are; ATOM's own term recorded as a mapping column. `host.tokenizer` becomes `host.tokenizers[]`, keyed by tokenizer identity (id + backend + fingerprint) with `applies_to` model architectures. | 2026-09-19 |

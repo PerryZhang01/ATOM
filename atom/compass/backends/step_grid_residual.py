@@ -38,7 +38,9 @@ A residual is a mapping, as a bundle holds it, of one or more kinds:
     KIND = {"hull": {"equal": {<feature>: value, ...},
                      "facets": [[a_1, ..., a_k, c], ...]},
             "members": {<name>: MEMBER, ...},
-            "selected": {<name>: <weight>, ...}}
+            "selected": {<name>: <weight>, ...},
+            "held_out": {"equal": {<axis>: value, ...},  # optional
+                         "facets": [[a_1, ..., a_k, c], ...]}}
 
     MEMBER = {"form": "linear", "transform": "identity" | "exp",
               "intercept": z_0, "coefficients": {<feature>: z_f, ...}}
@@ -49,7 +51,7 @@ other step is answered by its kind's members alone. A linear member outputs its
 transform of z_0 + Sum z_f.feature_f, naming every feature of its kind. A band
 member outputs the factor of the batch's band (`band`): a batch of decode rows
 only is in `decode rung <rung>`, `eager` when it replays no graph, and any
-other in `prefill tokens <lo>-<hi>`, its token count's band over
+other in `prefill tokens <lo>-<hi>` or `<lo>+`, its token count's band over
 `step_linear_fit.TOKEN_BANDS`; a batch in a band it holds no factor for is
 refused, naming the member and the band. Only the selected members load, so an
 error in one the residual does not select fails nothing, and an error in a
@@ -59,10 +61,16 @@ Sum weight.output over the kind's selected members.
 A kind's hull is its features' range over its fit, read as `hull.py` reads a
 law's: `equal` holds each feature that was constant and its value, and `facets`
 bound the others, in the kind's feature order, as `a . x + c <= 0` inside. A
-step outside it is refused, naming the hull; so is a step where a member's
-output or the factor is not finite and positive, naming that member or the
-factor. Nothing else answers: no renormalising over the other members, no other
-kind's fit, and no lookup alone.
+step outside it is answered by the same members, and `factor` names how far
+outside (`Hull.excess`), as the step linear law extrapolates. A step where a
+member's output or the factor is not finite and positive is refused, naming
+that member or the factor, and falls to the step roofline: no renormalising
+over the other members, no other kind's fit, and no lookup alone.
+
+A kind's `held_out` is the hull, as `hull` is written, of the coordinates in
+their grid (`step_grid.coordinates`: B, T and c in prefill, B and c in decode)
+of the batches its members were held out on. `validated` is true iff a batch
+lies inside its kind's; a kind without one validates nothing.
 
 `fit(triples, seed)` makes that mapping from (batch view, lookup seconds,
 measured seconds) triples; its target is measured over lookup, whatever timed
@@ -76,7 +84,9 @@ residuals more than `MAD_K` scaled MADs from their median, floored at
 band left with no triple is named and holds no factor. The member with the
 lowest median absolute relative error on the held-out triples is selected with
 weight 1, a held-out triple in a band the fit holds no factor for counting as
-an error of 1; the hull is that of its kept views' features. The report gives,
+an error of 1; the hull is that of its kept views' features, and `held_out`
+that of the held-out views' coordinates, absent when they span none (too few
+or flat in their varying axes). The report gives,
 per kind, the held-out triples' indices and, per member, the kept and dropped
 counts, the centre and scaled MAD of the relative residuals, the condition
 number of the column-scaled design, the zeroed features or bands and the
@@ -106,7 +116,7 @@ from atom.compass.backends.shape import (
     sum_query_square,
     sum_tokens,
 )
-from atom.compass.backends.step_grid import _refused
+from atom.compass.backends.step_grid import _refused, coordinates
 from atom.compass.backends.step_linear_fit import (
     MAD_FLOOR,
     MAD_K,
@@ -195,6 +205,11 @@ def kind(view: BatchView) -> str:
     return "prefill_output" if view.produces_output else "prefill_no_output"
 
 
+def axes(kind: str) -> tuple[str, ...]:
+    """The axes of a kind's grid, which `coordinates` gives."""
+    return ("B", "c") if kind == "decode" else ("B", "T", "c")
+
+
 class _Linear:
     """A transform of an intercept plus a coefficient on each feature."""
 
@@ -264,6 +279,10 @@ class _Kind:
     def __init__(self, kind: str, fitted: Mapping) -> None:
         self.kind, self.names = kind, RECIPE.names[kind]
         self.hull = Hull(f"the residual's {kind} hull", self.names, fitted["hull"])
+        held = fitted.get("held_out")
+        self.held_out = held and Hull(
+            f"the residual's {kind} held-out hull", axes(kind), held
+        )
         if not fitted["selected"]:
             raise ValueError(f"the residual selects no {kind} member")
         self.members = []
@@ -284,15 +303,11 @@ class _Kind:
                 ) from error
             self.members.append((name, float(weight), form))
 
-    def factor(self, view: BatchView) -> tuple[float, str]:
+    def factor(self, view: BatchView) -> tuple[float, str, str]:
         x = tuple(float(v) for v in RECIPE(self.kind, view.requests))
+        past = ""
         if not self.hull.contains(x):
-            named = ", ".join(f"{f}={v:g}" for f, v in zip(self.names, x))
-            raise _refused(
-                view,
-                f"the step at {named} is outside the residual's hull of "
-                f"{self.kind} steps",
-            )
+            past = f"{self.hull.excess(x):.3g} past the residual's {self.kind} hull"
         outputs = []
         for name, weight, member in self.members:
             try:
@@ -316,7 +331,7 @@ class _Kind:
                 "positive finite factor",
             )
         summed = " + ".join(f"{w!r} x {name} {out!r}" for name, w, out in outputs)
-        return factor, summed
+        return factor, summed, past
 
 
 class Residual:
@@ -339,9 +354,9 @@ class Residual:
             )
         self.kinds = {k: _Kind(k, kinds[k]) for k in RECIPE.names if k in kinds}
 
-    def factor(self, view: BatchView) -> tuple[float, str]:
-        """The factor for this batch's rows under its kind's fit, and how it was
-        summed; or a refusal."""
+    def factor(self, view: BatchView) -> tuple[float, str, str]:
+        """The factor for this batch's rows under its kind's fit, how it was
+        summed, and how far past its kind's hull, '' inside; or a refusal."""
         try:
             k = kind(view)
         except ValueError as error:
@@ -349,6 +364,12 @@ class Residual:
         if k not in self.kinds:
             raise _refused(view, f"the residual fits no {k} step")
         return self.kinds[k].factor(view)
+
+    def validated(self, view: BatchView, at: Sequence[Fraction]) -> bool:
+        """Whether a batch this residual answers, at `at` in its grid, lies
+        inside its kind's held-out hull."""
+        held = self.kinds[kind(view)].held_out
+        return bool(held and held.contains(tuple(map(float, at))))
 
     def describe(self) -> str:
         kinds = "; ".join(
@@ -448,14 +469,26 @@ def _fit(
     best = min(members, key=lambda t: report["members"][t]["held_out_error"])
     kept = x[dev[solved[best]["keep"]], 1:]
     try:
-        hull = _hull(kept, names)
+        hull = _span(kept, names)
     except QhullError as e:
         raise ValueError(
             f"the kept views' features span no hull: {str(e).splitlines()[0]}"
         ) from e
-    # `_hull` writes a constant feature as an integer count; these are fractions.
-    hull["equal"] = {f: float(kept[0, names.index(f)]) for f in hull["equal"]}
-    return {"hull": hull, "members": members, "selected": {best: 1.0}}, report
+    out = {"hull": hull, "members": members, "selected": {best: 1.0}}
+    shapes = [coordinates(triples[i][0].requests, kind != "decode") for i in held]
+    try:
+        out["held_out"] = _span(np.array(shapes, dtype=np.float64), axes(kind))
+    except QhullError:
+        pass
+    return out, report
+
+
+def _span(points: np.ndarray, names: tuple[str, ...]) -> dict:
+    """`_hull` of `points`, a constant coordinate kept as the float it is;
+    `_hull` writes it as an integer count."""
+    hull = _hull(points, names)
+    hull["equal"] = {f: float(points[0, names.index(f)]) for f in hull["equal"]}
+    return hull
 
 
 def fit(

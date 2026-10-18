@@ -4,7 +4,8 @@ consumer can tell two runs' source, host, device and stack apart and refuse a
 mix of them.
 
 The device and the stack are recorded as a machine spec states them: each GPU's
-name and arch, and ROCm's version, aiter's commit, RCCL's version and torch's.
+name and arch, the cards' one PTL state, and ROCm's version, aiter's commit,
+RCCL's version and torch's.
 
 It holds no workload: no command starts the client, and which requests a server
 served is read from its step record.
@@ -19,6 +20,7 @@ from pathlib import Path
 
 import torch
 
+from atom.compass.artifacts.keys import NO_PTL
 from atom.compass.artifacts.provenance import _run, git_tree_root, module_root
 from atom.compass.drive.gpu import GpuRefusal, smi
 from atom.compass.run import host_key_of
@@ -33,6 +35,8 @@ MODELS = {"0x75a3": "MI355X"}
 #: The hex digits of aiter's commit a machine spec pins; git's own default
 #: follows the checkout's object count, and a shallow clone reads fewer.
 AITER_ABBREV = 9
+#: Where a card's PCI device is, by bus; `/sys/class/drm/card<n>/device` links here.
+PCI = "/sys/bus/pci/devices"
 
 
 def identity(
@@ -51,6 +55,7 @@ def identity(
         "source": git_tree_root("atom", module_root("atom")).as_json(),
         "host_key": host_key_of(model, keyed),
         "device": _device(gpus),
+        "ptl": _ptl(gpus),
         "stack": {
             "rocm": rocm.read_text().strip(),
             "aiter": _commit(module_root("aiter")),
@@ -80,6 +85,21 @@ def _device(gpus: tuple[int, ...]) -> list[dict]:
         }
         for gpu in gpus
     ]
+
+
+def _ptl(gpus: tuple[int, ...]) -> str:
+    """The PTL state of `gpus`' cards, each read from `ptl_enable` under its
+    PCI device, as rocm-smi's bus names it, and `NO_PTL` for a card with no
+    `ptl` directory; cards that disagree refuse, naming each."""
+    buses = json.loads(smi("--showbus", "--json")) if gpus else {}
+    read = {}
+    for gpu in gpus:
+        ptl = Path(PCI) / buses[f"card{gpu}"]["PCI Bus"].lower() / "ptl"
+        read[gpu] = (ptl / "ptl_enable").read_text().strip() if ptl.is_dir() else NO_PTL
+    if len(set(read.values())) > 1:
+        cards = ", ".join(f"GPU {gpu} {ptl}" for gpu, ptl in read.items())
+        raise GpuRefusal(f"the cards of this run disagree on PTL: {cards}")
+    return next(iter(read.values()), NO_PTL)
 
 
 def _model(gpu: int, card: dict) -> str:

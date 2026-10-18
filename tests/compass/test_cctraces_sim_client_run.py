@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from test_drive_gpu import SHOWHW
 from test_parity_client_run import ARGUMENTS, CONFIG, PARAMETERS, raw, sse
 
 from atom.compass.parity.client_run import NAME, RAW
@@ -73,7 +74,10 @@ def test_a_cell_writes_its_client_run_s_export(tmp_path, ids, cell_rc):
         f"mkdir -p artifacts && cp {export} artifacts/profile_export_aiperf.json\n"
         f"cp {records} artifacts/{RAW}\n"
     )
-    (bin_ / "rocm-smi").write_text("#!/bin/sh\nexit 0\n")
+    (tmp_path / "showhw").write_text(SHOWHW)
+    (bin_ / "rocm-smi").write_text(
+        f'#!/bin/sh\ncase "$*" in *--showhw*) cat {tmp_path}/showhw;; esac\n'
+    )
     for f in bin_.iterdir():
         f.chmod(0o755)
     # Sessions 1 and 2 of three.

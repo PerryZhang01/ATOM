@@ -70,25 +70,16 @@ def _reading(name: str, rows: list[dict]) -> Reading:
     )
 
 
-def record(
-    readings: DeviceReadings,
-    *,
-    tokens: int,
-    pool: Reading | None,
-    assumed: str | None = None,
-) -> dict:
-    """What a simulated run writes for this command.
-
-    `pool` is `graph_pool.predicts` of the run's `memory_readings` member,
-    None when its start captured nothing, and `assumed` the assumption that
-    member states, None for a measured one.
-    """
+def record(readings: DeviceReadings, *, tokens: int, memory) -> dict:
+    """What a simulated run writes for this command, from the readings it
+    installed and the run's `memory_readings` member `memory`."""
+    pool = graph_pool.predicts(memory)
     return {
         "label": f"spec {readings.spec_digest} at TP{readings.tp_width}",
         "tokens": tokens,
         "readings": {name: _rows(readings.as_dict()[name]) for name in SUBTRACTED},
         "predicts": None if pool is None else _rows(pool),
-        "assumed": assumed,
+        "assumed": memory.assumed,
     }
 
 

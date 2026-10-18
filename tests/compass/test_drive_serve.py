@@ -17,7 +17,7 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
-from test_drive_gpu import FREE, LISTING, _plant
+from test_drive_gpu import FREE, GPU45, LISTING, _plant
 
 from atom.compass.drive import serve
 from atom.compass.drive.gpu import GpuRefusal
@@ -181,6 +181,15 @@ def test_a_server_is_real_or_simulated_exactly_one(planted, monkeypatch, kind):
     with pytest.raises(serve.ServeError, match="exactly one"):
         serve.serve(ARGS, planted / "out", **kind)
     assert not (planted / "argv.json").exists()
+
+
+def test_a_server_on_rocm_smi_gpus_0_and_1_runs_on_their_hip_devices(
+    planted, monkeypatch
+):
+    monkeypatch.setenv("PLANTED_EXIT", "late:0")
+    (planted / "bin" / "showhw").write_text(GPU45)
+    serve.serve(ARGS, planted / "out", (0, 1))
+    assert _seen(planted)["env"]["HIP_VISIBLE_DEVICES"] == "1,3"
 
 
 def test_a_process_on_a_named_gpu_refuses_before_the_server_starts(
