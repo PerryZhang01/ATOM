@@ -231,14 +231,19 @@ def test_a_population_names_each_step_s_shape(tmp_path):
             {"rows": [[7, 0, False]], "is_dummy_run": True},
         ],
     )
-    shapes = population_shapes([record], ArtifactStore(str(tmp_path / "store")))
+    shapes = population_shapes([record])
     assert list(map(str, shapes)) == ["decode B=4", "decode B=2", "prefill T=101 B=2"]
 
 
 def test_a_speculative_decode_step_is_refused_by_name(tmp_path):
     record = _record(tmp_path, [{"rows": [[1, 9, True], [3, 9, True]]}])
     with pytest.raises(ValueError, match="step 0 decodes 3 tokens in a row"):
-        population_shapes([record], ArtifactStore(str(tmp_path / "store")))
+        population_shapes([record])
+
+
+def test_a_population_is_a_record_directory_not_a_token():
+    with pytest.raises(ValueError, match="not a record directory"):
+        population_shapes(["shape_population:0123abcd"])
 
 
 # --- the published 27B, captured ----------------------------------------------

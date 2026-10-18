@@ -6,11 +6,11 @@ published as an `op_graph`.
                       [--population P ...] --store S
 
 A shape is a decode width (`--width`), a prefill of T tokens over B sequences
-(`--prefill`), or every shape the steps of a record directory or
-`shape_population` hold (`--population`): a decode step at its CUDA-graph rung
-when it ran at one, else at its width, and any other step as a prefill of its
-query tokens over its rows. Each is traced at that concrete shape (`forward`),
-decoder layers folded into `Repeat` and forked streams into `Par` (`graph`).
+(`--prefill`), or every shape the steps of a record directory hold
+(`--population`): a decode step at its CUDA-graph rung when it ran at one, else
+at its width, and any other step as a prefill of its query tokens over its
+rows. Each is traced at that concrete shape (`forward`), decoder layers folded
+into `Repeat` and forked streams into `Par` (`graph`).
 
 An `op_graph` is keyed by structure, the model's architecture and config.json
 digest, the TP width, the phase and eager, and by shape. Its members are
@@ -48,7 +48,7 @@ def main(argv: list[str]) -> None:
         "--population",
         action="append",
         default=[],
-        help="a record directory or shape_population token; every shape it holds",
+        help="a record directory; every shape its steps hold",
     )
     p.add_argument("--store", required=True, help="the artifact store")
     args = p.parse_args(argv)
@@ -59,7 +59,7 @@ def main(argv: list[str]) -> None:
 
     store = a.ArtifactStore(args.store)
     shapes = [decode(w) for w in args.width] + [prefill(*s) for s in args.prefill]
-    shapes += population_shapes(args.population, store)
+    shapes += population_shapes(args.population)
     if not shapes:
         p.error("name a shape: --width, --prefill or --population")
     shapes = list(dict.fromkeys(shapes))
@@ -74,22 +74,17 @@ def main(argv: list[str]) -> None:
             began = time.perf_counter()
 
 
-def population_shapes(names, store):
-    """The shape of each step the record directories or `shape_population`
-    tokens `names` hold, DP's dummy runs aside."""
-    from atom.compass.artifacts import Kind
-
+def population_shapes(names):
+    """The shape of each step the record directories `names` hold, DP's dummy
+    runs aside."""
     from .forward import decode, prefill
 
     shapes = []
     for name in names:
         path = pathlib.Path(name)
-        if (path / "run.json").is_file():
-            texts = [p.read_text() for p in (path / "steps").glob("dp*[0-9].jsonl")]
-        else:
-            entry = store.read(store.key_from_token(Kind.SHAPE_POPULATION, name))
-            ranks = entry.topology.ranks()
-            texts = [entry.read_member("steps", r, "jsonl").decode() for r in ranks]
+        if not (path / "run.json").is_file():
+            raise ValueError(f"{name} is not a record directory: it has no run.json")
+        texts = [p.read_text() for p in (path / "steps").glob("dp*[0-9].jsonl")]
         for line in (json.loads(t) for text in texts for t in text.splitlines()):
             rows = line["rows"]
             if line["is_dummy_run"]:
