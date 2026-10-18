@@ -176,7 +176,8 @@ compass trace steps    <backend> --machine M  --out D --store S -- <ATOM args>
 compass trace ops      --model M [--tp N] [--width W] --store S
 compass measure steps  [<batches>...] [--grid <population>... --grid-definition F] \
                        <sample> --sampling P --out D --store S -- <ATOM args> [GPU]
-compass measure ops               (ops half)                                  [GPU]
+compass measure ops    GRAPH (--points F | --width W... --context C) \
+                       --gpu G --out D --store S -- <ATOM args>               [GPU]
 compass measure memory           --machine M  --out D --store S -- <ATOM args> [GPU]
 compass fit steps      --backend step-linear [--form FORM] [--seed SEED] \
                        RECORD... --client-run RECORD EXPORT... --machine M \
