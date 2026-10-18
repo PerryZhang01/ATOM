@@ -11,6 +11,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+import torch
 from test_bench_ops import KEY, TREE, _graph, _leaf, _t
 
 from atom.compass import ir
@@ -220,3 +221,26 @@ def test_a_ladder_keeps_values_a_step_apart_and_the_largest():
         16383,
         16384,
     ]
+
+
+def test_a_kind_depends_on_context_when_its_times_or_its_kernels_move():
+    def point(op, context, ns, kernel):
+        record = {"shape": "decode B=2", "context": context, "op": op, "leaf": op}
+        return record | {"cold_ns": ns, "kernels": [kernel]}
+
+    records = [
+        *(point("state", c, ns, "s") for c, ns in ((1, 10.0), (9, 20.0))),
+        *(point("attn", c, 10.0, k) for c, k in ((1, "a"), (9, "b"))),
+        *(point("gemm", c, ns, "g") for c, ns in ((1, 10.0), (9, 10.5))),
+        point("once", 1, 1.0, "o"),
+    ]
+
+    assert ops._dependent(records) == {"state": True, "attn": True, "gemm": False}
+
+
+def test_an_integer_activation_indexes_a_dimension_of_one():
+    spec = {"shape": [64], "dtype": "torch.int32", "stride": [1]}
+
+    index = ops._random(spec, "cpu")
+
+    assert torch.zeros(1, 3)[index].shape == (64, 3)

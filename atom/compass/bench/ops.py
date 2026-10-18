@@ -599,13 +599,14 @@ def _text(spec: dict) -> str:
 
 
 def _random(spec, device) -> torch.Tensor:
-    """A tensor of `spec`'s shape, dtype and stride, random over its span."""
+    """A tensor of `spec`'s shape, dtype and stride, random over its span when
+    floating, else zero: an integer one may index a dimension of one."""
     dtype = _dtype(spec["dtype"])
     n = _span(spec["shape"], spec["stride"])
     if dtype.is_floating_point:
         flat = torch.randn(n, device=device).mul_(0.1).to(dtype)
     else:
-        flat = torch.randint(0, 2, (n,), device=device).to(dtype)
+        flat = torch.zeros(n, device=device, dtype=dtype)
     return flat.as_strided(spec["shape"], spec["stride"])
 
 
