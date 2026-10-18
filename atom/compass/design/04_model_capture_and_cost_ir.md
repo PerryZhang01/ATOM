@@ -730,8 +730,10 @@ run-length scan finds nothing to group.
 
 ### Open issues
 
-- Whether `resource_bound`'s `peak` should come from the device spec's derated compute or
-  be fitted.
+- ~~Whether `resource_bound`'s `peak` should come from the device spec's derated compute or
+  be fitted.~~ Answered for the analytical method on
+  [#1392](https://github.com/jgong5/ATOM/issues/1392): the join sums the branches' work and
+  takes one roofline at the attainable peaks probed on the device (`10` D64).
 - Nothing yet validates that a `Par` reconstructed from stream ids matches the real
   fork/join structure.
 
