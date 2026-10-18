@@ -4291,6 +4291,18 @@
    "mechanism_why": "the server is stopping; serve refuses a run file and a clock, in ATOM's arguments and in the environment, so its server is a real one and the command is no LP, and the bound only decides when SIGTERM gives way to SIGKILL"
   },
   {
+   "id": "atom/compass/capture/driverless.py::_group.broadcast::functional.broadcast(tensor, src, group or dist.group.WORLD)::collective#0",
+   "file": "atom/compass/capture/driverless.py",
+   "symbol": "_group.broadcast",
+   "call": "functional.broadcast",
+   "expr": "functional.broadcast(tensor, src, group or dist.group.WORLD)",
+   "shape": "collective",
+   "peer": "none",
+   "why": "trace ops routes ATOM's legacy broadcast to its functional form under a fake tensor mode, on a fake process group of one process, so the capture records its shapes and nothing is sent",
+   "mechanism": "K9",
+   "mechanism_why": "a capture runs in the trace ops command, which is no LP and serves no simulated run, and its group has no peer to wait for"
+  },
+  {
    "id": "atom/compass/bench/engine.py::Bench.__init__::self.runner_mgr.call_func(\"get_num_blocks\", wait_out=True)::worker_rpc#0",
    "file": "atom/compass/bench/engine.py",
    "symbol": "Bench.__init__",
