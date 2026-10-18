@@ -51,7 +51,9 @@ def _graph() -> dict:
         items += [(i, _op(f"{kind}_attention", [(B, 8)], [(B, 8)], KEY))]
     tail = ir.SymDim("B + 1", "t"), ir.SymDim("512 - B", "t")
     items += [(None, _op("aten.copy_.default", [tail[:1], tail[1:]], [tail[:1]]))]
-    return json.loads(to_json(build(items, Traced("x tp=1 decode eager", ()))))
+    return json.loads(
+        to_json(build(items, Traced("x tp=1 decode eager", ("B <= 17",))))
+    )
 
 
 def _sig(graph, name):
@@ -205,6 +207,7 @@ def _publish(root, graph) -> str:
     [
         (["--width", "4", "--context", "9", "--gpu", "0,1"], "names 2 GPUs"),
         (["--width", "4", "--gpu", "0"], "names no context"),
+        (["--width", "18", "--context", "9", "--gpu", "0"], "guard B <= 17"),
         (["--points", "{points}", "--gpu", "0"], "the graph has no leaf"),
     ],
 )

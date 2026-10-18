@@ -87,6 +87,9 @@ def main(argv: list[str]) -> None:
     )
     for point in points:
         concrete(point, instances)  # refuses a point the graph cannot answer
+        for guard in graph["guards"]:
+            if not sympy.sympify(guard).subs(point["bind"]):
+                raise ValueError(f"{point['bind']} breaks the graph's guard {guard}")
 
     from atom.compass.bench.measure import atom_config
     from atom.compass.drive.gpu import quiet
