@@ -37,7 +37,7 @@ import numpy as np
 
 from atom.compass.parity import read
 from atom.compass.runner.overrides import FORWARD_KINDS, HostDeviceRecurrence
-from atom.compass.runner.pp_send import arrivals, carrier_models
+from atom.compass.runner.pp_send import carrier_models, recv_done
 from atom.compass.spec import MachineSpec
 
 STEP_BAND, TOTAL_BAND, SHOWN = 2, 0.5, 10  # bands in percent
@@ -47,6 +47,9 @@ KINDS = ("decode", "prefill", "middle", "idle")
 # ponytail: one length for every batch; it moves by a few bytes, about a
 # nanosecond on gloo, so pickle aiter's metadata here only if that changes.
 META = [("gloo", 8), ("gloo", 179)]
+#: A later stage flushes its last send once `recv_metadata` has waited this
+#: long (`_downstream_busy_loop`'s poll); the head flushes whenever it waits.
+IDLE_FLUSH_S = 0.1
 
 
 def _kind(step, prev) -> str:
@@ -85,8 +88,8 @@ def pipeline(stages: list[list[dict]], carriers=None) -> list[dict]:
     pp, head, tail = len(stages), stages[0], stages[-1]
     out, held = [[] for _ in stages], [[] for _ in stages]
     runs = [
-        _charged(s, (i, pp), out[i - 1] if i else None, held[i], carriers)
-        for i, s in enumerate(stages)
+        _charged(s, (i, pp), out[i - 1] if i else None, held[i], carriers, nxt)
+        for i, (s, nxt) in enumerate(zip(stages, [*out[1:], None]))
     ]
     for n in range(len(head)):
         w = _waited(head, n, pp)
@@ -106,18 +109,23 @@ def check(steps: list[dict]) -> dict:
     return report
 
 
-def _charged(steps, stage, upstream, held, carriers=None):
-    """`check`, yielding each step's predicted send, device end, call and exit
-    before the report. On pipeline stage `stage = (rank, pp)`, the launch
+def _charged(steps, stage, upstream, held, carriers=None, downstream=None):
+    """`check`, yielding each step's predicted send, device end, call, exit and
+    received tensors' end before the report. On pipeline stage `stage = (rank, pp)`, the launch
     waits for the stage before's predicted send in `upstream[n]` and the
     device for its end, in place of the measured `t_pp_recv_ns` and
     `d_recv_ns`. With `carriers`, ``(models, row_bytes)``, the send's
-    `hidden_states` and `residual` ride the carriers from the entry: the
-    launch waits for the metadata's arrival and the device for the tensors'.
+    `hidden_states` and `residual` ride the carriers, posted at the prepare
+    end plus `W_recv`: the launch waits for the metadata's arrival and the
+    device for the tensors', which leave once the previous frame's are done
+    and are taken once this stage's device work and its own send's hold are.
+    A stage's device starts no earlier than that hold, the tensors' end of
+    its send before last in `downstream`, or of its last if it waited idle
+    to flush it: the head for its tokens, a later stage `IDLE_FLUSH_S`.
     Step `n` is called no earlier than `held[n] = (measured, predicted)`'s
     `predicted`, its `E` from `measured` if after the last exit; a step
     entered before `measured` is refused."""
-    now, prev, rows = 0.0, None, []
+    now, prev, rows, done = 0.0, None, [], -math.inf
     origin = steps[0]["t_enter_ns"]
     mtp = any("d_target_ns" in s for s in steps)
     rec = HostDeviceRecurrence({}, (), lambda: now, stage, mtp=mtp)
@@ -141,13 +149,21 @@ def _charged(steps, stage, upstream, held, carriers=None):
         pre = l0 - s["t_enter_ns"] - (g1 - g0) - (m1 - m0)
         post = s["t_exit_ns"] - l1 - (r1 - r0) - (d1 - d0)
         entry = max(called + e * 1e-9, rec.ends[0])
+        # The last send settled: the one before the last, or the last if flushed.
+        settled = n - 2 + (called - now > (IDLE_FLUSH_S if stage and stage[0] else 0))
+        hold = -math.inf
+        if downstream and settled >= 0:
+            hold = (downstream[settled][4] - origin) * 1e-9
+        ready = -math.inf
         if upstream:  # the stage before's send holds the launch
             sent, ready = ((t - origin) * 1e-9 for t in upstream[n][:2])
             if carriers:
                 models, width = carriers
-                part = ("rccl", sum(r[0] for r in s["rows"]) * width)
-                frame = {"t_send": sent, "t_ready": ready, "parts": [*META, part, part]}
-                _, sent, ready = arrivals(models, frame, entry)
+                posted = entry + (pre + p0 - l0) * 1e-9  # prepare end, then W_recv
+                sent = recv_done(models, sent, posted, META)[1]
+                tensors = [("rccl", sum(r[0] for r in s["rows"]) * width)] * 2
+                posted = max(sent, rec.ends[-1], hold)
+                done, ready = recv_done(models, max(ready, done), posted, tensors)
             pre += max(sent - entry - pre * 1e-9, 0.0) * 1e9
         launch = l1 - l0 - (p1 - p0)
         law = {"E": e, "W_pre": pre - (l0 - m1), "W_launch": launch, "W_post": post}
@@ -168,13 +184,13 @@ def _charged(steps, stage, upstream, held, carriers=None):
             # A stage's host may trail its device, so the gap may be idle: it
             # follows the last forward's device end. The tensors' arrival holds it too.
             start = rec.ends[-1] + gap * 1e-9
-            batch.compass_pp_release = max(ready, start) if upstream else start
+            batch.compass_pp_release = max(ready, start, hold)
             gap = 0
         busy = s["d_busy_ns"]
         target = s.get("d_target_ns", busy)
         own = gap + target - s.get("d_recv_ns", 0)  # the receive is a wait, not work
         charge = rec.charge(batch, own * 1e-9, (busy - target) * 1e-9)
-        times = (now + charge - post * 1e-9, rec.ends[-1], called, now + charge)
+        times = (now + charge - post * 1e-9, rec.ends[-1], called, now + charge, done)
         period = (s["t_exit_ns"] - last) * 1e-9
         r1_ms = None
         if "t_mtp_ns" in s:  # released before the launch
@@ -186,7 +202,7 @@ def _charged(steps, stage, upstream, held, carriers=None):
             (s["step"], _kind(s, prev), 100 * (charge / period - 1), res, queued, r1_ms)
         )
         now, prev = now + charge, s
-        yield [origin + round(t * 1e9) for t in times]
+        yield [origin + round(t * 1e9) if t > -math.inf else t for t in times]
     kinds = {}
     for k in KINDS:
         if err := [r[2] for r in rows if r[1] == k]:
