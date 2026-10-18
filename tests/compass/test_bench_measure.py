@@ -220,7 +220,7 @@ def test_sample_n_draws_n_views_from_each_stratum_by_its_seed(run):
             "prefill without output tokens 512-2048",
         ),
         ([[2048, 2048, False]], None, True, "prefill with output tokens 2048-8192"),
-        ([[4096, 4096, False]] * 2, None, True, "prefill with output tokens 8192-"),
+        ([[4096, 4096, False]] * 2, None, True, "prefill with output tokens 8192+"),
     ],
 )
 def test_a_batch_is_drawn_by_its_kind_and_rung_or_its_prefill_token_band(

@@ -341,6 +341,19 @@ def test_the_cost_report_names_the_leading_warm_steps_the_law_names(tmp_path):
     assert sorted(named) == sorted(law["warm_steps"][1])
 
 
+def test_an_8192_token_prefill_is_priced_in_the_open_top_band(tmp_path):
+    law = _fit([_record(tmp_path / "dp0-fit.jsonl", _steps(14))])
+    top = ([(8192, 8192, False)], None)
+    decode = [s for s in _steps(15) if s[0][0][2]]
+    (tmp_path / "steps").mkdir()
+    _record(tmp_path / "steps" / "dp0.jsonl", [*decode, (*top, _price(*top))])
+    # A law with no held-out errors validates no step.
+    prefill = cost_accuracy(tmp_path / "steps", law)["unvalidated"]["prefill"]
+
+    assert prefill["steps"] == 1
+    assert list(prefill["bands"]) == ["prefill tokens 8192+"]
+
+
 # Host laws, ns-exact on (1, tokens, seqs). Decode's seqs equal its tokens, so
 # its law is written on tokens alone, as the fit returns it.
 HOST = {

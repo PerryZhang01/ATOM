@@ -72,7 +72,7 @@ from atom.compass.artifacts import (
 )
 from atom.compass.backends.step_grid_plan import plan
 from atom.compass.backends.step_labels import digest as file_digest
-from atom.compass.backends.step_linear_fit import TOKEN_BANDS
+from atom.compass.backends.step_linear_fit import token_band
 from atom.compass.drive.gpu import add_gpu_flag, quiet
 from atom.compass.drive.identity import identity, phase
 from atom.compass.fit.publish import conditions
@@ -431,10 +431,7 @@ def _stratum(view: dict) -> str:
     kind = _kind(view)
     if kind.startswith("decode"):
         return kind
-    tokens = sum(query for query, *_ in view["rows"])
-    low = max([0, *(b for b in TOKEN_BANDS if b <= tokens)])
-    high = min((b for b in TOKEN_BANDS if b > tokens), default="")
-    return f"{kind} tokens {low}-{high}"
+    return f"{kind} tokens {token_band(sum(query for query, *_ in view['rows']))}"
 
 
 def _measure(bench, config, sampling, store, command, readings, todo) -> list[str]:
