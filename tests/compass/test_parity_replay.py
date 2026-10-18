@@ -175,13 +175,20 @@ def test_a_real_workload_is_sent_in_order_and_its_send_times_written(tmp_path):
 
 
 def test_a_real_workload_writes_when_each_request_was_admitted(tmp_path):
+    arrived = [threading.Event() for _ in range(3)]
+    ended = [0] * 3  # just before each stream's end was written
+
     class Server(http.server.BaseHTTPRequestHandler):
         def do_POST(self):
-            self.rfile.read(int(self.headers["content-length"]))
+            body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+            k = int(body["prompt"].split()[0])
+            arrived[k].set()
             time.sleep(0.02)  # the admission
             self.send_response(200)
             self.end_headers()
-            time.sleep(0.2)  # the stream, after the headers
+            if k < 2:  # the stream, open until request k + 1 arrives, or 10 s
+                arrived[k + 1].wait(10)
+            ended[k] = time.monotonic_ns()
             self.wfile.write(b"data: [DONE]\n\n")
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Server)
@@ -189,8 +196,11 @@ def test_a_real_workload_writes_when_each_request_was_admitted(tmp_path):
     traffic.real(server.server_port, traffic.bodies("m", 3), 0.0, tmp_path)
     server.shutdown()
     arrivals = json.loads((tmp_path / ARRIVALS).read_text())
-    waits = [a - s for s, a in zip(arrivals["sent_ns"], arrivals["admitted_ns"])]
-    assert len(waits) == 3 and all(0.02e9 <= w < 0.2e9 for w in waits), waits
+    sent, admitted = arrivals["sent_ns"], arrivals["admitted_ns"]
+    assert len(admitted) == 3, admitted
+    assert all(s + 0.02e9 <= a for s, a in zip(sent, admitted)), (sent, admitted)
+    # request k + 1 is sent only once k is admitted, and k's stream outlives that
+    assert all(a < e for a, e in zip(admitted, ended[:2])), (admitted, ended)
 
 
 @pytest.mark.parametrize("alone", [[], ["0", "0", "1"]], ids=["default", "alone"])

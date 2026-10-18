@@ -6,9 +6,9 @@ run builds. This records them where both runs can be read the same way, at the
 model runner's `forward`: one JSON line per call, built before the call runs,
 because a real forward rewrites some batch fields in place. Each line carries
 the batch as the `BatchView` a simulated runner prices it from (`rows`, `rung`,
-and above DP width 1 `moe_rows`); a real runner settles that view from the
-`ForwardMode` its own forward settled, so recording adds no DP collective. Its
-line also carries `t_enter_ns` and `t_exit_ns`, the worker's
+and above DP width 1 `moe_rows`, with an MTP drafter `draft_moe_rows` too); a
+real runner settles that view from the `ForwardMode` its own forward settled,
+so recording adds no DP collective. Its line also carries `t_enter_ns` and `t_exit_ns`, the worker's
 monotonic clock around its forward, and is written once the forward returns.
 Inside the forward it carries `[enter, exit]` on that clock around the staging
 gate (`t_gate_ns`), the launch (`t_launch_ns`) and the wait for the previous
@@ -123,10 +123,10 @@ class StepRecord:
         per request, and as the `BatchView` `runner` prices it from: `rows`
         (query tokens, context tokens, decode), `rung`, the graph width the
         step replays or None, and `moe_rows`, the rows the DP group's MoE
-        gather carries, absent at DP width 1. The view's mode is the one
-        `forward` settled, stamped by `run_model` under `forward_mode`;
-        without one it is `forward_mode`'s, which runs the DP collective
-        itself. Each prefill window is added to its request's
+        gather carries, absent at DP width 1, and `draft_moe_rows` where the
+        view has it. The view's mode is the one `forward` settled, stamped by
+        `run_model` under `forward_mode`; without one it is `forward_mode`'s,
+        which runs the DP collective itself. Each prefill window is added to its request's
         digest; the line holding a request's final chunk names it under
         `named`. A dummy batch is fabricated for DP synchronisation and names
         no request, so its `batch` is empty; its `rows` are what it runs.
@@ -205,6 +205,8 @@ class StepRecord:
         line["rung"] = view.capture_rung
         if view.moe_rows is not None:
             line["moe_rows"] = view.moe_rows
+        if view.draft_moe_rows is not None:
+            line["draft_moe_rows"] = view.draft_moe_rows
         self.pending.append((line, window))
         self.flush()
         self.step += 1
