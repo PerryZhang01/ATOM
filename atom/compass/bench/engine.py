@@ -9,8 +9,9 @@ becomes `config.num_kvcache_blocks`, `capture_cudagraph` unless the engine
 runs eagerly, and `freeze_gc_heap`. The pool is the one the batches ran on,
 not the count `get_num_blocks` reports: that count reads the device's memory
 outside torch, which moves from one start to the next, so a pool sized by it
-can be smaller than the one a batch filled. A device that cannot hold the pool
-stops the bench, naming both counts.
+can be smaller than the one a batch filled. A worker that dies stops the
+bench, naming the call that got no reply; a device that cannot hold the pool
+stops it naming both counts.
 `measure(batch)` runs `bench_step` on every worker and returns rank 0's reply,
 the window's result (`window.py`). Data parallelism above one, expert
 parallelism and pipeline parallelism refuse.
@@ -61,7 +62,7 @@ class Bench:
         )
         signal.signal(signal.SIGINT, signal.default_int_handler)
         try:
-            budget = self.runner_mgr.call_func("get_num_blocks", wait_out=True)
+            budget = self._call("get_num_blocks")
             try:
                 allocated = self.runner_mgr.call_func(
                     "allocate_kv_cache", num_blocks, wait_out=True
@@ -76,17 +77,25 @@ class Bench:
             assert allocated, "Failed to allocate kv cache"
             config.num_kvcache_blocks = num_blocks
             if not config.enforce_eager:
-                self.runner_mgr.call_func("capture_cudagraph", wait_out=True)
+                self._call("capture_cudagraph")
             # Unfrozen, a worker's collections walk its startup heap, and their
             # pauses would discard repeats.
-            self.runner_mgr.call_func("freeze_gc_heap", wait_out=True)
+            self._call("freeze_gc_heap")
         except BaseException:
             self.exit()
             raise
 
     def measure(self, batch) -> dict:
         """`batch`'s step, measured on every worker."""
-        return self.runner_mgr.call_func("bench_step", batch, wait_out=True)
+        return self._call("bench_step", batch)
+
+    def _call(self, name: str, *args):
+        """Rank 0's reply to `name`, called on every worker."""
+        try:
+            return self.runner_mgr.call_func(name, *args, wait_out=True)
+        except SystemExit as stop:
+            # The manager stops, with a bare SystemExit, when a worker dies.
+            raise ValueError(f"a bench worker died, so {name} got no reply") from stop
 
     def exit(self) -> None:
         """Stop every worker; the manager calls it too, when a worker dies."""
