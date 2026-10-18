@@ -26,6 +26,7 @@ import itertools
 import pathlib
 import pickle
 import queue
+import types
 
 import numpy as np
 import pytest
@@ -389,7 +390,7 @@ def test_reporting_a_step_from_something_that_is_not_a_batch_refuses():
         _Runner(MockConfig(pipeline_parallel_size=1)).forward(object())
 
 
-def test_a_speculative_config_is_refused_before_the_drafter_is_built(run):
+def test_a_speculative_config_declaring_no_acceptance_is_refused_before_the_drafter():
     """Refused while the model is being built, so the base never builds a drafter.
 
     Constructing `CompassModelRunner` needs a driver, because importing ATOM's
@@ -422,14 +423,10 @@ def test_a_speculative_config_is_refused_before_the_drafter_is_built(run):
     class _Composed(NonAllocatingRunner, _Base):
         pass
 
-    with pytest.raises(RunnerRefusal, match="drafts no tokens"):
-        _Composed(MockConfig(speculative_config=object()))
+    spec = types.SimpleNamespace(synthetic_acceptance_rates=None)
+    with pytest.raises(RunnerRefusal, match="declares none"):
+        _Composed(MockConfig(speculative_config=spec))
     assert ran == []
-    # What the refusal is instead of: a reply nothing rejects, describing a run
-    # in which nothing was drafted.
-    reply = DeferredTokenStream([0])._reply(run.batches[-1], deferred=True)
-    assert reply["draft_token_ids"] is None
-    assert not reply["num_rejected"].any() and not reply["num_bonus"].any()
     assert "if self.mtp_k > 0 and draft_token_ids is not None:" in SCHEDULER
 
 

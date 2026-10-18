@@ -20,12 +20,10 @@
 # OUT_DIR/c<C>/ is the cell's cctraces_sim.sh directory, its step record in
 # steps/; OUT_DIR/c<C>.log holds the tree's commit, the host load (`uptime`),
 # the GPUs' processes, VRAM and use at the cell's start and end, and the cell's
-# exit status, 143 for a stopped cell: aiperf, stopped by SIGTERM, writes no
-# export, and cctraces_sim.sh exits with aiperf's status. Fit the
-# records with
-#   python -m atom.compass.backends.step_linear_fit --form history \
-#       OUT_DIR/c{1,4,16,64,256}/steps/dp0.jsonl --out LAW --machine-spec DIGEST
-# DIGEST as scripts/compass/README.md (step_linear_fit) prints it.
+# exit status, aiperf's: on SIGINT aiperf writes its export, or, stopped in its
+# warmup, none and exits 1. The cell's run.json gains a `compass record` identity.
+#   compass fit steps --backend step-linear OUT_DIR/c<C>... --client-run OUT_DIR/c<C> \
+#       OUT_DIR/c<C>/artifacts/client_run.json... --machine SPEC --store S --out D
 set -uo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/_lib.sh"
 
@@ -61,9 +59,16 @@ for c in ${CELLS:-1 4 16 64 256}; do
         # Wakes each 10 s, so a cell that ends on its own is not held to STEPS_S.
         for ((t = 0; t < ${STEPS_S:-1800}; t += 10)); do kill -0 $sim 2>/dev/null && sleep 10; done
         # aiperf runs as a child of cctraces_sim.sh, which runs under timeout.
-        pkill -TERM -P "$(pgrep -P $sim)" -f "^aiperf system_controller" && echo "stopped aiperf $(date -u +%FT%TZ)" >>"$log"
+        pkill -INT -P "$(pgrep -P $sim)" -f "^aiperf system_controller" && echo "stopped aiperf $(date -u +%FT%TZ)" >>"$log"
     fi
     wait $sim
     echo "CELL_RC=$?" >>"$log"
+    # The identity `compass record` writes, so `compass fit` reads the cell.
+    (cd / && PYTHONPATH=$ROOT python3 -c 'import json, sys; from pathlib import Path
+from atom.compass.drive.identity import identity
+o, model, gpus, *argv = sys.argv[1:]; run = Path(o, "run.json")
+ids = identity(Path(o, "steps/dp0.engine.json"), model, argv, tuple(map(int, gpus.split(","))))
+run.write_text(json.dumps(json.loads(run.read_text()) | ids))' "$o" "${MODEL-}" "$SMI_GPUS" \
+        "$ROOT/scripts/compass/cctraces_sim.sh" "$RUN_FILE" "$o") 2>>"$log" || echo "no identity" >>"$log"
     state end >>"$log"
 done
