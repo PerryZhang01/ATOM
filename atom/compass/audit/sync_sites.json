@@ -4303,9 +4303,9 @@
    "mechanism_why": "the server is stopping; serve refuses a run file and a clock, in ATOM's arguments and in the environment, so its server is a real one and the command is no LP, and the bound only decides when SIGTERM gives way to SIGKILL"
   },
   {
-   "id": "atom/compass/capture/driverless.py::_group.broadcast::functional.broadcast(tensor, src, group or dist.group.WORLD)::collective#0",
+   "id": "atom/compass/capture/driverless.py::group.broadcast::functional.broadcast(tensor, src, group or dist.group.WORLD)::collective#0",
    "file": "atom/compass/capture/driverless.py",
-   "symbol": "_group.broadcast",
+   "symbol": "group.broadcast",
    "call": "functional.broadcast",
    "expr": "functional.broadcast(tensor, src, group or dist.group.WORLD)",
    "shape": "collective",
