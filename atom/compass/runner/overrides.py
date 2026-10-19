@@ -137,15 +137,13 @@ logger = logging.getLogger(__name__)
 # do reach this runner: `AsyncLLMEngine.__init__` (`atom/rollout/async_engine.py`)
 # installs its own runner with `kwargs.setdefault`, so a caller that names this
 # one gets it, and `RefusedControlCommands` answers each with a refusal.
-# The RapidServe names are kept out by `Config`, not by
-# this module: `enable_rapidserve` picks `PrefillEngineCore` /
-# `DecodeEngineCore` (`LLMEngine.__init__`), those classes broadcast all of
-# them with `wait_out=True` without consulting `runner_qualname`, and the
-# substitution that installs a RapidServe runner (`Config.__post_init__`) fires
-# only while `runner_qualname` is still ATOM's default -- which Compass
-# overwrites. `Config` therefore raises `ValueError` for
-# `enable_rapidserve=True` with any runner not in `RAPIDSERVE_RUNNERS`, this
-# one included.
+# The RapidServe names are answered by `RapidServeRpcs`, not by this
+# table: `enable_rapidserve` picks `PrefillEngineCore` / `DecodeEngineCore`
+# (`LLMEngine.__init__`), those classes broadcast all of them with
+# `wait_out=True` without consulting `runner_qualname`, so a simulated
+# RapidServe run names the runner that adds them, and `Config` raises
+# `ValueError` for `enable_rapidserve=True` with any runner not in
+# `RAPIDSERVE_RUNNERS`, this one included.
 #
 # Call sites below are in `atom/model_engine/`.
 RPC_SURFACE: dict[str, bool] = {
@@ -1402,3 +1400,61 @@ def _group_step_seconds(
     with record.path.with_suffix(".cost.jsonl").open("a") as f:
         f.write(json.dumps(line) + "\n")
     return group_s
+
+
+class SampledIds(list):
+    """A prefill forward's reply: a sampled token id per request, and as
+    attributes the step's price that `clock.charge` reads off a reply."""
+
+
+class RapidServeRpcs:
+    """The RPCs RapidServe's engine cores wait on (`atom.config.RAPIDSERVE_RPCS`),
+    on a runner that holds no weights and no KV tensors; it goes before
+    `NonAllocatingRunner` in the bases.
+
+    The IPC exports hand over nothing, the imports take nothing in, and no
+    stream is made. Decode sizes no pool: it answers as ATOM's
+    `RapidServeModelRunner.get_num_blocks` does and allocates nothing, then
+    takes prefill's block count with the pool's import.
+    """
+
+    def get_num_blocks(self) -> dict[str, object]:
+        if self.config.disagg_is_decode:
+            from atom.model_engine.model_runner import RapidServeModelRunner
+
+            return RapidServeModelRunner.get_num_blocks(self)
+        return super().get_num_blocks()
+
+    def allocate_kv_cache(self, num_kvcache_blocks: int) -> bool:
+        if self.config.disagg_is_decode:
+            return True
+        return super().allocate_kv_cache(num_kvcache_blocks)
+
+    def import_kv_cache_ipc_handle(self, paths: Any, num_kvcache_blocks: int) -> bool:
+        return super().allocate_kv_cache(num_kvcache_blocks)
+
+    def export_kv_cache_ipc_handle(self) -> list:
+        return []
+
+    def export_model_weight_ipc_handles(self) -> list:
+        return []
+
+    def import_model_weight_ipc_handles(self, paths: Any) -> bool:
+        return True
+
+    def create_prefill_stream_pool(self) -> bool:
+        return True
+
+    def create_decode_stream_pool(self) -> bool:
+        return True
+
+    def prefill_forward(self, batch: Any) -> SampledIds:
+        """`forward`'s step, replied as ATOM's prefill replies: a token id per
+        request in batch order, picked by request id as `DeferredTokenStream`
+        picks them, since prefill reports its tokens at once."""
+        out = self.forward(batch)
+        ids = self._token_stream.token_ids
+        sampled = SampledIds(ids[int(r) % len(ids)] for r in batch.req_ids)
+        for name in ("predicted_s", "out_s", "group_targets", "group_out"):
+            setattr(sampled, name, getattr(out, name, None))
+        return sampled
