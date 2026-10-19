@@ -19,8 +19,8 @@ then sets ``out_dir`` and ``clock_endpoint`` and hands it to the server.
   and ``backend``'s digest is over every law's in any order, their provenance
   ``entries``.
 - ``--machine``, the spec; ``--store``'s root as ``store``; ``--on-refusal``;
-  ``--step-roofline``, which reads ``parameter_count`` from the model
-  directory's safetensors index and refuses when it states none.
+  ``--step-roofline``; ``--padding none``, which prices a replayed graph's
+  real rows.
 - Not flags: `FIXED`, and ``data_parallel_size``, read from ATOM's arguments.
   The server serves client runs until it is stopped.
 """
@@ -43,7 +43,6 @@ FIXED = {
     "stream_s": 2.0**-12,
     "bound_s": 1e7,
 }
-INDEX = "model.safetensors.index.json"
 
 
 def add_arguments(parser) -> None:
@@ -60,6 +59,7 @@ def add_arguments(parser) -> None:
     parser.add_argument("--store", required=True, help="the artifact store's root")
     parser.add_argument("--on-refusal", choices=("mark", "abort"), default="mark")
     parser.add_argument("--step-roofline", action="store_true")
+    parser.add_argument("--padding", choices=("none",))
 
 
 def build(args, atom_args) -> dict:
@@ -123,8 +123,8 @@ def build(args, atom_args) -> dict:
             for k in args.host_laws
         ]
         out["host"] = hosts if len(hosts) > 1 else hosts[0]
-    if args.step_roofline:
-        out["parameter_count"] = _parameter_count(engine.model)
+    if args.padding:
+        out["padding"] = args.padding
     return out
 
 
@@ -141,20 +141,3 @@ def _engine_args(atom_args):
     parser = FlexibleArgumentParser(add_help=False)
     EngineArgs.add_cli_args(parser)
     return parser.parse_known_args(atom_args)[0]
-
-
-def _parameter_count(model: str) -> int:
-    """The ``total_parameters`` `model`'s safetensors index states, resolved
-    as loading resolves it."""
-    from transformers.utils import cached_file
-
-    why = f"the step roofline reads the model's parameter count from its {INDEX}"
-    try:
-        path = cached_file(model, INDEX, local_files_only=True)
-    except OSError as missing:
-        raise ValueError(f"{why}, and {model} has none") from missing
-    metadata = json.loads(Path(path).read_text()).get("metadata", {})
-    count = metadata.get("total_parameters")
-    if type(count) is not int:
-        raise ValueError(f"{why}, and {path} states no metadata.total_parameters")
-    return count

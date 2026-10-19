@@ -281,7 +281,7 @@ carries a method, as cost terms do (#952, `memory/terms.py`):
 
 | Term | Class | Form | Method | Evidence |
 |---|---|---|---|---|
-| **weights** | A | ask a meta build, dedupe by storage; the run file's `parameter_count` where the runner hands in no meta build | analytical from the meta build; declared from `parameter_count` | **exact at every width** — the existence proof |
+| **weights** | A | ask a meta build, dedupe by storage | analytical from the meta build | **exact at every width** — the existence proof |
 | **KV bytes/token** | A | layers × kv_heads/TP × head_dim × 2 × dtype | analytical | arithmetic |
 | **buffers** | A | the same meta build, dedupe by buffer storage ([`03` D16's source table](03_memory_and_kv_model.md#the-source-of-each-term)) | analytical | **exact** against DeepSeek-V4-Pro's real buffer storages at DPA-TP8 (#1166); a rotary formula before it was **4× wrong** on the 27B |
 | **activations** | B | `k_model × tokens`, k read on one real start per configuration (`07` D38) | measured at the entry's warmup tokens, estimated at others; declared from an assumed entry | linear scaling holds — a 3,494-token trace scaled to an independently measured 4,096-token peak at **+0.0% at TP=1/2/4**. `k` is not derivable from geometry within 25% (T34). |

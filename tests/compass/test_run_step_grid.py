@@ -35,6 +35,7 @@ from test_backend_step_grid import (
     linear,
     point,
 )
+from test_backend_step_roofline import ROOFLINE
 from test_dp_slice import _deployment
 from test_memory_readings import CONFIG_JSON, DOCUMENT, META_8B, publish_readings
 from test_refused_step_continues import drive
@@ -195,7 +196,7 @@ def test_a_run_file_bundle_prices_the_runs_steps_and_the_summary_names_it(
                 f"step grid, bundle {entry.key}; replay decode grid, "
                 "timing scope forward; recipe step-grid-residual v2, members "
                 "decode: unit; prefill_output: unit; prefill_no_output: unit; "
-                "below it, step roofline; 8000000000 parameters"
+                "below it, step roofline; 1 modules"
             ),
         }
     }
@@ -246,8 +247,9 @@ def refuse(backend, view):
 def test_the_step_roofline_prices_below_the_step_grid_and_the_summary_counts_both(
     monkeypatch, tmp_path
 ):
-    """With no ``step_roofline`` and no ``parameter_count``, the roofline below
-    the grid counts the meta build's parameters. The grid has no prefill point
+    """With no ``step_roofline``, the roofline below the grid prices the
+    modules the meta build holds, on a spec stating the kernel floor and the
+    bandwidth curve it reads. The grid has no prefill point
     and no rung below 32, so the roofline prices every step `drive` takes;
     under a residual whose decode hull is tokens <= 1/2^10, one decode row,
     rung 48's step of 37 rows is extrapolated past it, at its lookup."""
@@ -256,13 +258,16 @@ def test_the_step_roofline_prices_below_the_step_grid_and_the_summary_counts_bot
     member = copy.deepcopy(BUNDLE)
     hull = {"facets": [[1, 0, 0, 0, -(2**-10)]]}
     member["residual"]["kinds"]["decode"]["hull"] = hull
-    publish(tmp_path, r, member=member)
-    run = run_file(tmp_path, monkeypatch, parameter_count=None)
-
-    compass_run.runner(r, META_8B)
-    assert r.compass_backend.roofline.parameters == sum(
-        p.numel() for p in META_8B.parameters()
+    machine = MachineSpec.from_mapping(ROOFLINE)
+    publish_readings(tmp_path / "store", r.config, document=ROOFLINE)
+    publish(
+        tmp_path, r, member=member, conditions=step_grid.conditions(r.config, machine)
     )
+    run = run_file(tmp_path, monkeypatch, machine=ROOFLINE)
+    tree = torch.nn.Linear(5120, 5120, dtype=torch.bfloat16, device="meta")
+
+    compass_run.runner(r, tree)
+    assert r.compass_backend.roofline.count == 1
     drive(r)
     assert r.forward(decode(B37)).predicted_s == 8897.5e-6
 
