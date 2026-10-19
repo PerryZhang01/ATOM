@@ -53,7 +53,7 @@ def test_a_step_is_one_roofline_per_leaf_composed_by_the_graph_s_joins():
             g(2, 64, 64),
             view_leaf,
             {"repeat": g(2, 128, 64), "count": 3, "index": "l0", "start": 0, "step": 1},
-            {"par": [g(2, 32, 64), {"seq": [g(2, 4096, 64)]}], "join": "max"},
+            {"par": [g(2, 2048, 4096), {"seq": [g(2, 4096, 4096)]}], "join": "max"},
             {"par": [g(512, 512, 512), g(512, 256, 512)], "join": "resource_bound"},
         ]
     }
@@ -62,7 +62,7 @@ def test_a_step_is_one_roofline_per_leaf_composed_by_the_graph_s_joins():
 
     assert by_name(cost) == {
         f"op.{GEMM}": fold_seconds([one, body, body, body]),
-        "par.max": max(price(gemm(2, 32, 64), SPEC), price(gemm(2, 4096, 64), SPEC)),
+        "par.max": price(gemm(2, 4096, 4096), SPEC),
         "par.resource_bound": price(gemm(512, 512, 512) + gemm(512, 256, 512), SPEC),
     }
 
