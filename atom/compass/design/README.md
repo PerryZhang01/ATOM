@@ -307,7 +307,7 @@ rather than answering from stale data.
   |  step-level   one whole forward per answer: the step stub,   |
   |               linear law and grid; the step roofline         |
   |               needs: measured steps; the roofline only the   |
-  |               machine spec, model geometry, parameter_count  |
+  |               machine spec and the meta build's modules      |
   |               used for: structure discovery, sweeps,         |
   |               plumbing; day zero, a device never measured    |
   +--------------------------------------------------------------+

@@ -4,8 +4,8 @@
     python -m atom.compass.validate.runs SIMULATED REAL...
 
 Each argument is a run directory: its step record in `steps/` and aiperf's
-export in `artifacts/profile_export_aiperf.json`. SIMULATED is the cell at the
-law, and REAL two or more real runs of it, spaced in time.
+export in `artifacts/profile_export_aiperf.json`. SIMULATED is the cell at its
+backend, and REAL two or more real runs of it, spaced in time.
 
 A directory `cctraces_sim.sh` wrote is graded whole, and refused when its
 run.json skips host segments. In one `record` or `run` wrote, whose run.json
@@ -18,9 +18,11 @@ export names as its warmup's (`warmup`) is its warmup, and not graded. It is
 refused, naming every reason, when steps of any other request precede its own:
 it is then not its server's first client run, and meets the prefix cache an
 earlier one left; when its export names no warmup, since its first steps may
-then be cold; when no step up to its own first, that one included, holds a
-request the export names as the warmup's, since its graded steps may then
-precede it; and when its export lacks traces or arguments. A simulated run, whose
+then be cold; when no step before its own first holds a request the export
+names as the warmup's, since its graded steps may then precede it; when any
+step from its own first on, its own or not, holds such a request, since its
+warmup has then not ended when it starts; and when its export lacks traces or
+arguments. A simulated run, whose
 run.json holds `run_file`, is also refused when it skips host segments, or its
 run file has no host laws and so prices no host time; when the step roofline
 was on in a run of another backend than the step grid, which always prices
@@ -193,13 +195,20 @@ def _client_run(cell, run) -> tuple[list[dict], list[str], dict]:
     warm = [bool(names) and names <= warmup_names for names in held]
     mine = [s["client_run"] == 0 for s in split]
     traces = sorted({t for s, m in zip(split, mine) if m for t in s["traces"]})
-    before = warm[: mine.index(True)]
+    first = mine.index(True)
+    before = warm[:first]
     why = [] if all(before) else ["steps of requests it did not send precede its own"]
     if not warmup_names:
         why.append("its export names no warmup, so its first steps may be cold")
-    elif not any(names & warmup_names for names in held[: mine.index(True) + 1]):
+    elif not any(names & warmup_names for names in held[:first]):
         why.append(
-            "no step up to its own first holds its warmup, so its first steps may be cold"
+            "no step before its own first holds its warmup, so its first steps may be cold"
+        )
+    late = [s["step"] for s, n in zip(split[first:], held[first:]) if n & warmup_names]
+    if late:
+        why.append(
+            "steps from its own first on hold a request of its warmup, "
+            f"{len(late)} from step {late[0]}, so its warmup has not ended when it starts"
         )
     if "traces" not in export:
         why.append("its export names no traces its client was given")
@@ -366,7 +375,7 @@ def main(argv=None) -> None:
         prog="python -m atom.compass.validate.runs",
         description=__doc__.split("\n\n")[0],
     )
-    parser.add_argument("simulated", help="the simulated cell at the law")
+    parser.add_argument("simulated", help="the simulated cell at its backend")
     parser.add_argument("real", nargs="+", help="two or more real runs of the cell")
     args = parser.parse_args(argv)
     print(_text(grade(args.real, args.simulated)))

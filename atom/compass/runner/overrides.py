@@ -137,15 +137,13 @@ logger = logging.getLogger(__name__)
 # do reach this runner: `AsyncLLMEngine.__init__` (`atom/rollout/async_engine.py`)
 # installs its own runner with `kwargs.setdefault`, so a caller that names this
 # one gets it, and `RefusedControlCommands` answers each with a refusal.
-# The RapidServe names are kept out by `Config`, not by
-# this module: `enable_rapidserve` picks `PrefillEngineCore` /
-# `DecodeEngineCore` (`LLMEngine.__init__`), those classes broadcast all of
-# them with `wait_out=True` without consulting `runner_qualname`, and the
-# substitution that installs a RapidServe runner (`Config.__post_init__`) fires
-# only while `runner_qualname` is still ATOM's default -- which Compass
-# overwrites. `Config` therefore raises `ValueError` for
-# `enable_rapidserve=True` with any runner not in `RAPIDSERVE_RUNNERS`, this
-# one included.
+# The RapidServe names are answered by `RapidServeRpcs`, not by this
+# table: `enable_rapidserve` picks `PrefillEngineCore` / `DecodeEngineCore`
+# (`LLMEngine.__init__`), those classes broadcast all of them with
+# `wait_out=True` without consulting `runner_qualname`, so a simulated
+# RapidServe run names the runner that adds them, and `Config` raises
+# `ValueError` for `enable_rapidserve=True` with any runner not in
+# `RAPIDSERVE_RUNNERS`, this one included.
 #
 # Call sites below are in `atom/model_engine/`.
 RPC_SURFACE: dict[str, bool] = {
@@ -707,7 +705,7 @@ class PricedSteps:
             "seconds": mix.seconds,
             "extrapolated_steps": mix.extrapolated_steps,
             # A priced step that carries refusals fell through to a later source.
-            "fallback_steps": mix.refused_steps,
+            "fallback_steps": mix.fallback_steps,
             **{f"{g}_steps": steps.get(g, 0) for g in GROUPS},
             **{f"{g}_seconds": seconds.get(g, 0.0) for g in GROUPS},
             "treatments": dict(mix.treatments),
@@ -741,7 +739,10 @@ class PipelineFrames:
         stage loop charges after its send, left out of `predicted_s`; and its parts as
         ``(carrier, bytes)`` in the order the next receives them, the size and
         the pickled metadata on gloo, then each tensor on RCCL, as ATOM splits
-        `_pp_output`'s `_PP_PROXY_KEYS`; a key it does not size is refused."""
+        `_pp_output`'s `_PP_PROXY_KEYS`; a key it does not size is refused.
+        With ATOM's `pp_send_allgather_group`, a tensor whose element count the
+        group's width divides is sent as this rank's shard,
+        ``(carrier, bytes / width, True)``."""
         pp = int(_config_field(self, "pipeline_parallel_size") or 1)
         if pp == 1 or self.config.parallel_config.pipeline_parallel_rank == pp - 1:
             return None
@@ -753,7 +754,16 @@ class PipelineFrames:
         sent = {k: out[k] for k in pp_comm._PP_PROXY_KEYS if out[k] is not None}
         # A "meta" device pickles to the length of ATOM's "cuda".
         meta, device_tensors = pp_comm._split_tensor_dict(sent)
-        tensors = [("rccl", t.nbytes) for t in device_tensors]
+        tp = getattr(self.config, "tensor_parallel_size", 1)
+        ag = pp_comm.pp_send_allgather_group() if tp > 1 else None
+        tensors = [
+            (
+                ("rccl", t.nbytes // ag.world_size, True)
+                if ag is not None and t.numel() % ag.world_size == 0
+                else ("rccl", t.nbytes)
+            )
+            for t in device_tensors
+        ]
         host = getattr(self, "compass_host", None)
         post = 0.0
         if isinstance(host, HostDeviceRecurrence) and self.rank == 0:
@@ -778,6 +788,11 @@ class PipelineFrames:
             return called, -math.inf
         end, seg = host.prepare_end(called, kind, x)
         return end + seg[PP_RECV_SEGMENT], host.ends[-1]
+
+    def pp_all_gather_s(self, rows: int) -> float:
+        """The all-gather this stage runs over its TP group on each sharded
+        tensor of `rows` rows it receives, priced by the installed backend."""
+        return _installed_backend(self).all_gather_s(rows)
 
     def send_pp_frame(self, kind: str, frame: dict) -> bool:
         """Post one stage-loop frame to the next stage (``pp_data``) or the one
@@ -1402,3 +1417,61 @@ def _group_step_seconds(
     with record.path.with_suffix(".cost.jsonl").open("a") as f:
         f.write(json.dumps(line) + "\n")
     return group_s
+
+
+class SampledIds(list):
+    """A prefill forward's reply: a sampled token id per request, and as
+    attributes the step's price that `clock.charge` reads off a reply."""
+
+
+class RapidServeRpcs:
+    """The RPCs RapidServe's engine cores wait on (`atom.config.RAPIDSERVE_RPCS`),
+    on a runner that holds no weights and no KV tensors; it goes before
+    `NonAllocatingRunner` in the bases.
+
+    The IPC exports hand over nothing, the imports take nothing in, and no
+    stream is made. Decode sizes no pool: it answers as ATOM's
+    `RapidServeModelRunner.get_num_blocks` does and allocates nothing, then
+    takes prefill's block count with the pool's import.
+    """
+
+    def get_num_blocks(self) -> dict[str, object]:
+        if self.config.disagg_is_decode:
+            from atom.model_engine.model_runner import RapidServeModelRunner
+
+            return RapidServeModelRunner.get_num_blocks(self)
+        return super().get_num_blocks()
+
+    def allocate_kv_cache(self, num_kvcache_blocks: int) -> bool:
+        if self.config.disagg_is_decode:
+            return True
+        return super().allocate_kv_cache(num_kvcache_blocks)
+
+    def import_kv_cache_ipc_handle(self, paths: Any, num_kvcache_blocks: int) -> bool:
+        return super().allocate_kv_cache(num_kvcache_blocks)
+
+    def export_kv_cache_ipc_handle(self) -> list:
+        return []
+
+    def export_model_weight_ipc_handles(self) -> list:
+        return []
+
+    def import_model_weight_ipc_handles(self, paths: Any) -> bool:
+        return True
+
+    def create_prefill_stream_pool(self) -> bool:
+        return True
+
+    def create_decode_stream_pool(self) -> bool:
+        return True
+
+    def prefill_forward(self, batch: Any) -> SampledIds:
+        """`forward`'s step, replied as ATOM's prefill replies: a token id per
+        request in batch order, picked by request id as `DeferredTokenStream`
+        picks them, since prefill reports its tokens at once."""
+        out = self.forward(batch)
+        ids = self._token_stream.token_ids
+        sampled = SampledIds(ids[int(r) % len(ids)] for r in batch.req_ids)
+        for name in ("predicted_s", "out_s", "group_targets", "group_out"):
+            setattr(sampled, name, getattr(out, name, None))
+        return sampled

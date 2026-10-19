@@ -71,6 +71,10 @@ DP_MACHINE["interconnect"]["intra_node"]["pp"]["gloo"] |= {
     "wake_s": 2.0**-40,
     "wake_rise_s": 1.0,
 }
+#: The run test's machine: an HTTP intake of about a picosecond, so the four
+#: requests reach the engine together and each rank batches two.
+BATCHED = copy.deepcopy(DP_MACHINE)
+BATCHED["host"]["http_intake"] = {"fixed_s": 2.0**-40, "per_byte_s": 2.0**-60}
 DONE = "data: [DONE]"
 #: The slice's parallelism: two DP ranks at TP 1, with expert parallelism.
 DP_WIDTH = ["-tp", "2", "--enable-dp-attention", "--enable-expert-parallel"]
@@ -113,7 +117,9 @@ class Requests(Traffic):
         self.open = set(range(done, len(MAX_TOKENS)))
 
 
-def run_dp_slice(out: Path, seed: str, width=DP_WIDTH, dp=2, pp=1) -> dict:
+def run_dp_slice(
+    out: Path, seed: str, width=DP_WIDTH, dp=2, pp=1, machine=DP_MACHINE
+) -> dict:
     """One run in its own process tree: its step table, summary, parity record.
 
     `width` is the server's parallelism flags, `dp` the DP ranks and `pp` the
@@ -124,7 +130,7 @@ def run_dp_slice(out: Path, seed: str, width=DP_WIDTH, dp=2, pp=1) -> dict:
         data_parallel_size=dp,
         pipeline_parallel_size=pp,
         step_stub=CONSTANT,
-        machine=DP_MACHINE,
+        machine=machine,
     )
     port = _free_port()
     env = dict(
@@ -171,7 +177,9 @@ def run_dp_slice(out: Path, seed: str, width=DP_WIDTH, dp=2, pp=1) -> dict:
 @pytest.fixture(scope="module")
 def runs(tmp_path_factory):
     root = tmp_path_factory.mktemp("dp_slice")
-    return [run_dp_slice(root / f"seed{seed}", seed) for seed in ("1", "2")]
+    return [
+        run_dp_slice(root / f"seed{seed}", seed, machine=BATCHED) for seed in ("1", "2")
+    ]
 
 
 @NEEDS_A_RUN
@@ -186,6 +194,7 @@ def test_four_requests_meet_every_scenario_check_on_both_ranks(runs):
     )
     assert not failed, "\n".join(failed)
     steps = run["parity"]
+    assert [len(steps[rank][0]["batch"]) for rank in (0, 1)] == [2, 2]
     # Both ranks served requests, and in some step one rank ran a request
     # while the other ran its dummy batch.
     assert all(any(s["batch"] for s in steps[rank]) for rank in (0, 1))

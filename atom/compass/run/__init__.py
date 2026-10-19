@@ -11,7 +11,10 @@ drives, over `single_engine_table`. At data-parallel width above one, each DP
 rank's engine process is a member ``dp<rank>`` of the one engine LP and owns
 its rank's channels. Each pipeline stage's engine process is an engine LP of
 its own, ``engine-pp<stage>``, and each stage's forward waits for the stage
-before it on ``pp_data`` (`atom.compass.runner.pp_send`). The Clock Authority is co-hosted in the frontend's
+before it on ``pp_data`` (`atom.compass.runner.pp_send`). Under RapidServe,
+which a run file states as ``rapidserve: true``, the prefill and decode engine
+processes are engine LPs ``engine-P`` and ``engine-D``, which send each other
+``block_assignment`` and ``prefill_done``. The Clock Authority is co-hosted in the frontend's
 process and served at the run file's ``clock_endpoint``, which every LP and
 member, the frontend's included, connects to.
 
@@ -64,7 +67,10 @@ any other, and a law missing either refuses; a list of them is one per engine co
 bundle's key, priced by `StepGridBackend`; see `step_grid`),
 ``step_roofline`` (optional, ``true`` or ``false``: with ``true`` a
 `StepRooflineBackend` prices the steps the backend refuses, through
-`StepFallbackBackend`, as it always does under ``step_grid``),
+`StepFallbackBackend`, as it always does under ``step_grid``, from the
+modules `run.modules.walk` reads off the meta build), ``padding`` (optional:
+``none`` prices a replayed graph's real rows in place of the rows it pads to,
+which ``executed``, the default, prices),
 ``on_refusal`` (optional: ``mark``, the default, prices a step no cost source
 answers at 0 s, hands in its ``cost:`` reason and continues; ``abort`` ends
 the run there, which still writes the summary),
@@ -80,11 +86,11 @@ were fitted on, which a run with laws must match; ``skip``, segments zeroed for
 a what-if run, which the graders refuse; a list of them as ``step_linear``'s),
 or in its place ``replay`` (a real run's parity record directory, or for a
 prefill-decode run one holding each deployment's as ``prefill/`` and
-``decode/``, ``prefill<k>/`` and ``decode<k>/`` above one of a side: each step
+``decode/``, ``prefill<k>/`` and ``decode<k>/`` above one of a side, and for a
+RapidServe run each engine's as ``prefill/`` and ``decode/``: each step
 ends when the real one did, by `atom.compass.parity.replay`, and the cost
 backend's price reaches only the cost record),
-``machine`` (a machine spec mapping), ``parameter_count`` (read by the
-roofline, which without it counts the meta build's), ``store`` (the artifact
+``machine`` (a machine spec mapping), ``store`` (the artifact
 store's root, where `memory` reads the configuration's memory readings) and
 ``backend`` (the backend's ``digest``
 and its fit ``provenance``, which nothing here reads), both written by
@@ -209,7 +215,7 @@ from atom.compass.clock import (
 from atom.compass.clock.channels import add_lmcache
 from atom.compass.clock_transport import connect, serve
 from atom.compass.detect.determinism import StepTable
-from atom.compass.runner import COMPASS_RUNNER_QUALNAME
+from atom.compass.runner import COMPASS_RAPIDSERVE_QUALNAME, COMPASS_RUNNER_QUALNAME
 from atom.utils import clock
 
 ENV = "ATOM_COMPASS_RUN"
@@ -228,6 +234,9 @@ INSTANCE_KEY = "compass_instance"
 #: The run-file key of each side's worker order in the router, a per-run outcome.
 WORKER_ORDER = "worker_order"
 ATOM_RUNNER = "atom.model_engine.model_runner.ModelRunner"
+RAPIDSERVE_RUNNER = "atom.model_engine.model_runner.RapidServeModelRunner"
+#: The run-file key that says the deployment runs RapidServe.
+RAPIDSERVE = "rapidserve"
 #: Keys that differ between two runs of one configuration, kept out of its name.
 #: The store is a place: the memory readings a run reads from it are keyed by
 #: the configuration and the machine spec, which the name holds.
@@ -453,7 +462,13 @@ def _engines_table(run: dict):
         from atom.compass.runner.pp_send import carrier_models, lookaheads
 
         links = lookaheads(carrier_models(_machine(run)))
-    return single_engine_table(**common, dp=_widths(run), pp=_pp(run), pp_links=links)
+    return single_engine_table(
+        **common,
+        dp=_widths(run),
+        pp=_pp(run),
+        pp_links=links,
+        rapidserve=run.get(RAPIDSERVE, False),
+    )
 
 
 def _machine(run: dict):
@@ -526,6 +541,14 @@ def _pd_name(config, run: dict) -> str | None:
             "index, from 0"
         )
     return side if n == 1 else f"{side}{k}"
+
+
+def _engine_name(config, run: dict) -> str | None:
+    """The suffix of this engine's LP: RapidServe's ``P`` or ``D`` engine,
+    else `_pd_name`."""
+    if getattr(config, "enable_rapidserve", False):
+        return "D" if config.disagg_is_decode else "P"
+    return _pd_name(config, run)
 
 
 def _bind_transfer(config, run: dict) -> None:
@@ -898,36 +921,43 @@ def frontend(config):
     run = spec()
     if run is None:
         if os.environ.get(parity.ENV):
-            if config.runner_qualname != ATOM_RUNNER:
+            recording = {ATOM_RUNNER: parity.RUNNER, RAPIDSERVE_RUNNER: parity.RAPID}
+            if config.runner_qualname not in recording:
                 raise ValueError(
                     f"{parity.ENV} is set and runner {config.runner_qualname!r} "
-                    f"is named; only {ATOM_RUNNER} has a recording runner"
+                    f"is named; only {' and '.join(recording)} each has a "
+                    "recording runner"
                 )
-            config.runner_qualname = parity.RUNNER
+            config.runner_qualname = recording[config.runner_qualname]
         return contextlib.nullcontext()
     _refuse_unserved()
     pc = config.parallel_config
-    if config.enable_rapidserve:
-        raise ValueError("a simulated run here is an engine LP without RapidServe")
+    rapid = config.enable_rapidserve
+    if rapid != run.get(RAPIDSERVE, False):
+        raise ValueError(
+            f"the deployment's enable_rapidserve is {rapid} and the run file's "
+            f"{RAPIDSERVE} is {run.get(RAPIDSERVE, False)}; the channel table "
+            "every LP reads would declare the wrong engines"
+        )
+    if rapid and config.disagg_constrained:
+        raise ValueError(
+            "--disagg-constrained has decode write its decode tokens to shared "
+            "memory that prefill reads on wall time, off the clock; run RapidServe "
+            "without it"
+        )
     if config.pipeline_parallel_size != _pp(run):
         raise ValueError(
             f"the deployment runs {config.pipeline_parallel_size} pipeline stages "
             f"and the run file's pipeline_parallel_size is {_pp(run)}; the "
             "channel table every LP reads would declare the wrong stages"
         )
-    if config.pipeline_parallel_size > 1 and config.tensor_parallel_size > 1:
-        from atom.utils import envs
-
-        if envs.ATOM_PP_SEND_ALLGATHER:
-            raise ValueError(
-                "a pipeline stage at TP above 1 sends its shard of each tensor and "
-                "the next stage all-gathers it, which nothing prices; set "
-                "ATOM_PP_SEND_ALLGATHER=0"
-            )
-    if config.runner_qualname not in (ATOM_RUNNER, COMPASS_RUNNER_QUALNAME):
+    atom_runner, ours = ATOM_RUNNER, COMPASS_RUNNER_QUALNAME
+    if rapid:
+        atom_runner, ours = RAPIDSERVE_RUNNER, COMPASS_RAPIDSERVE_QUALNAME
+    if config.runner_qualname not in (atom_runner, ours):
         raise ValueError(
             f"runner {config.runner_qualname!r} is named, and a simulated run "
-            f"prices its steps with {COMPASS_RUNNER_QUALNAME}"
+            f"prices its steps with {ours}"
         )
     side, standalone = _pd_side(config), CLOCK_ENV in os.environ
     if side is not None and not standalone:
@@ -954,7 +984,7 @@ def frontend(config):
             "--fake-eplb may start fewer engines than the data-parallel ranks "
             "the channel table declares, and a rank that never joins holds the run"
         )
-    config.runner_qualname = COMPASS_RUNNER_QUALNAME
+    config.runner_qualname = ours
     if pc.data_parallel_rank > 0:
         # A worker node of a multi-node group: engines only, each a member.
         return contextlib.nullcontext()
@@ -1095,10 +1125,11 @@ def engine(config):
 
         record = os.environ.get(parity.ENV)
         if record and getattr(config, "pipeline_parallel_size", 1) == 1:
-            Path(record).mkdir(parents=True, exist_ok=True)
+            record = parity.record_dir(record, config)
+            record.mkdir(parents=True, exist_ok=True)
             rank = config.parallel_config.data_parallel_rank
             # The worker's step timestamps read the same host clock.
-            pulls = Path(record) / f"dp{rank}.pulls.jsonl"
+            pulls = record / f"dp{rank}.pulls.jsonl"
             clock.stamp_pulls(pulls, time.monotonic_ns)
         return contextlib.nullcontext()
     from atom.utils.distributed import utils
@@ -1107,8 +1138,9 @@ def engine(config):
     pc = config.parallel_config
     if getattr(config, "pipeline_parallel_size", 1) > 1:
         lp = LpId(f"{ENGINE.name}-pp{pc.pipeline_parallel_rank}")
+    if (name := _engine_name(config, run)) is not None:
+        lp = LpId(f"{ENGINE.name}-{name}")
     if side is not None:
-        lp = LpId(f"{ENGINE.name}-{_pd_name(config, run)}")
         _bind_transfer(config, run)
     if "lmcache" in run:
         from atom.compass.kv.lmcache_mp import substitute
@@ -1191,7 +1223,7 @@ def runner(model_runner, tree) -> None:
     if run is None:
         return
     from atom.compass.artifacts import machine_spec_digest, machine_spec_key
-    from atom.compass.backends.geometry import KvGeometry, Parallelism
+    from atom.compass.backends.geometry import Parallelism
     from atom.compass.backends.step_linear import StepLinearBackend, StepLinearLaw
     from atom.compass.backends.step_roofline import (
         StepFallbackBackend,
@@ -1235,8 +1267,8 @@ def runner(model_runner, tree) -> None:
         from atom.compass.parity.replay import ReplayHost
 
         dp_rank = config.parallel_config.data_parallel_rank
-        # This deployment's record: prefill/, or prefill1/ for engine-P1.
-        name = _pd_name(config, run) or ""
+        # This engine's record: prefill/, or prefill1/ for engine-P1.
+        name = _engine_name(config, run) or ""
         side = {"P": "prefill", "D": "decode"}.get(name[:1], "") + name[1:]
         replay = ReplayHost(Path(run["replay"]) / side, dp_rank)
     if STEP_LINEAR in run:
@@ -1341,25 +1373,28 @@ def runner(model_runner, tree) -> None:
             f"the run file's step_roofline is {fallback!r}; it is true, which "
             "prices the steps the backend refuses by the step roofline, or false"
         )
+    padding = run.get("padding", "executed")
+    if padding not in ("executed", "none"):
+        raise ValueError(
+            f"the run file's padding is {padding!r}; it is none, which prices a "
+            "replayed graph's real rows, or executed or absent, which prices the "
+            "rows it pads to"
+        )
     if fallback or STEP_GRID in run:
-        kv = KvGeometry.from_hf_config(
-            config.hf_config,
-            block_size=config.kv_cache_block_size,
-            parallelism=Parallelism(tp_size=tp),
-            kv_dtype=config.kv_cache_dtype,
-        )
-        # A run file without it, as a step grid's may be, counts the meta build's.
-        stated = run.get("parameter_count")
-        roofline = StepRooflineBackend(
-            machine,
-            parameters=(
-                stated // tp if stated else sum(p.numel() for p in tree.parameters())
-            ),
-            weight_bytes=model.weights.nbytes,
-            kv_token_bytes=kv.layers * kv.bytes_per_token_per_layer,
-            parameters_stated=bool(stated),
-        )
+        from atom.compass.run.modules import walk
+
+        roofline = StepRooflineBackend(machine, walk(tree), padded=padding != "none")
         backend = StepFallbackBackend(backend, roofline)
+    pp = getattr(config, "pipeline_parallel_size", 1)
+    if pp > 1 and tp > 1 and not hasattr(backend, "all_gather_s"):
+        from atom.utils import envs
+
+        if envs.ATOM_PP_SEND_ALLGATHER:
+            raise ValueError(
+                "a pipeline stage at TP above 1 all-gathers each sharded tensor it "
+                f"receives, and {type(backend).__name__} prices no all-gather; "
+                "set ATOM_PP_SEND_ALLGATHER=0"
+            )
     install_cost_backend(model_runner, backend)
     if NOW_ENV in os.environ:
         now = Path(os.environ[NOW_ENV])

@@ -241,6 +241,36 @@ def test_each_placement_keeps_its_own_forward_context_and_metadata():
         assert snap.context.positions.tolist() == [2 * p] * 2
 
 
+def test_a_shape_the_pool_cannot_place_refuses_its_leaves_and_the_next_is_measured(
+    monkeypatch,
+):
+    runner = _Runner()
+    runner.exit = lambda: runner.batches.append("exit")
+    monkeypatch.setattr(ops, "_runner", lambda config: runner)
+    monkeypatch.setattr("atom.compass.bench.replay.ReplayRule", lambda config: None)
+
+    def point(self, _rule, shape, context, found):
+        if shape.seqs == 2:
+            raise ValueError("no room for 2 rows")
+        return [{"shape": str(shape), "leaf": sig} for sig in found]
+
+    monkeypatch.setattr(ops.Stub, "point", point)
+    x = ("self", _t([2, 3], "activation"))
+    found = ops.leaves(
+        _graph(_leaf("aten.add.Tensor", x), _leaf("aten.mul.Tensor", x))["region"]
+    )
+
+    got = ops.measure(None, [(decode(2), 20, found), (decode(4), 20, found)], 10_000)
+
+    assert [(r["op"], r["refused"]) for r in got[:2]] == [
+        ("aten.add.Tensor", "ValueError: no room for 2 rows"),
+        ("aten.mul.Tensor", "ValueError: no room for 2 rows"),
+    ]
+    assert {r["shape"] for r in got[:2]} == {str(decode(2))}
+    assert got[2:] == [{"shape": str(decode(4)), "leaf": sig} for sig in found]
+    assert runner.batches == ["exit"]
+
+
 def test_an_embedding_reads_the_token_ids_the_forward_was_given():
     runner = _Runner()
     # An index buffer whose name holds the slot's, which the name rule picks.

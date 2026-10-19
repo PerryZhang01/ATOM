@@ -22,6 +22,7 @@
 # the GPUs' processes, VRAM and use at the cell's start and end, and the cell's
 # exit status, aiperf's: on SIGINT aiperf writes its export, or, stopped in its
 # warmup, none and exits 1. The cell's run.json gains a `compass record` identity.
+# The capture exits 1 naming each cell left without artifacts/client_run.json.
 #   compass fit steps --backend step-linear OUT_DIR/c<C>... --client-run OUT_DIR/c<C> \
 #       OUT_DIR/c<C>/artifacts/client_run.json... --machine SPEC --store S --out D
 set -uo pipefail
@@ -71,4 +72,6 @@ ids = identity(Path(o, "steps/dp0.engine.json"), model, argv, tuple(map(int, gpu
 run.write_text(json.dumps(json.loads(run.read_text()) | ids))' "$o" "${MODEL-}" "$SMI_GPUS" \
         "$ROOT/scripts/compass/cctraces_sim.sh" "$RUN_FILE" "$o") 2>>"$log" || echo "no identity" >>"$log"
     state end >>"$log"
+    [[ -s $o/artifacts/client_run.json ]] || unexported+=" c$c"
 done
+[[ -z ${unexported-} ]] || { echo "calib_capture: no client-run export:$unexported" >&2; exit 1; }
