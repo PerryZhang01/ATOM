@@ -284,3 +284,16 @@ def test_the_probe_refuses_late_reads_whose_eager_sizes_are_not_a_prefix():
     ]
     with pytest.raises(SystemExit, match=r"rccl: eager late sizes \[8, .*1024, 1536\]"):
         probe.fit(samples)
+
+
+def test_the_probe_refuses_a_carrier_eager_at_every_power_of_two():
+    """RCCL eager up to 640 MiB: the bisection past 512 MiB reads late sizes
+    rendezvous, but no power of two is left to fit the rendezvous line."""
+    truth = TRUTH | {"rccl": (2**29 + 2**27, *TRUTH["rccl"][1:])}
+    samples = []
+    for c, sizes in probe.SIZES.items():
+        late = probe.threshold(sizes, lambda n, c=c: n <= truth[c][0])
+        samples += [_sample(c, n, False, *truth[c]) for n in sizes]
+        samples += [_sample(c, n, True, *truth[c]) for n in late]
+    with pytest.raises(SystemExit, match=r"rccl: .* not a prefix below 536870912"):
+        probe.fit(samples)

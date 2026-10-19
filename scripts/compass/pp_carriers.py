@@ -111,8 +111,10 @@ def fit(samples: list[dict]) -> dict:
         eager = [n for n in sizes if med[n, True]["done"] < med[n, True]["post"]]
         late = sorted(n for k, n, lt in got if k == c and lt)
         seen = [n for n in late if _eager(got[c, n, True])]
-        if seen != late[: len(seen)] or seen == late:
-            raise SystemExit(f"{c}: eager late sizes {seen} are not a proper prefix")
+        if seen != late[: len(seen)] or eager == sizes:
+            raise SystemExit(
+                f"{c}: eager late sizes {seen} are not a prefix below {sizes[-1]}"
+            )
         rdv = sizes[len(eager) :]
         early = {n: med[n, False] for n in sizes}
         t = np.array([early[n]["end"] for n in rdv])
