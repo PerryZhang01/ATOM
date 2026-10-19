@@ -40,8 +40,12 @@ rc=$?
 echo "c=$CONCURRENCY done" >> "$2/../order"
 exit $rc
 """
-#: `identity` as a stub returns what it was given.
-IDENTITY = """def identity(engine_file, model, argv, gpus):
+#: `identity` as a stub returns what it was given, and raises for a cell named in
+#: NO_IDENTITY.
+IDENTITY = """import os
+def identity(engine_file, model, argv, gpus):
+    if engine_file.parent.parent.name in os.environ.get("NO_IDENTITY", "").split():
+        raise ValueError("no engine file")
     return {"format_version": 2, "engine": str(engine_file), "model": model,
             "argv": argv, "gpus": list(gpus)}
 """
@@ -107,6 +111,17 @@ def test_the_capture_fails_naming_each_cell_left_without_its_export(tmp_path):
     assert r.returncode == 1
     assert "no client-run export: c4 c1" in r.stderr
     assert (cap / "order").read_text() == "c=4 done\nc=1 done\n"
+
+
+@pytest.mark.skipif(BASH is None, reason="no bash on PATH")
+def test_the_capture_fails_naming_each_cell_left_without_its_identity(tmp_path):
+    r, cap = _capture(tmp_path, FREE, "4 1", NO_IDENTITY="c4")
+    assert r.returncode == 1
+    assert "no record identity: c4\n" in r.stderr
+    assert "no client-run export" not in r.stderr
+    assert (cap / "order").read_text() == "c=4 done\nc=1 done\n"
+    assert "no identity" in (cap / "c4.log").read_text()
+    assert "gpus" in json.loads((cap / "c1" / "run.json").read_text())
 
 
 @pytest.mark.skipif(BASH is None, reason="no bash on PATH")

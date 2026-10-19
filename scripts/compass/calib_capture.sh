@@ -22,7 +22,8 @@
 # the GPUs' processes, VRAM and use at the cell's start and end, and the cell's
 # exit status, aiperf's: on SIGINT aiperf writes its export, or, stopped in its
 # warmup, none and exits 1. The cell's run.json gains a `compass record` identity.
-# The capture exits 1 naming each cell left without artifacts/client_run.json.
+# The capture exits 1 naming each cell left without artifacts/client_run.json
+# or without that identity.
 #   compass fit steps --backend step-linear OUT_DIR/c<C>... --client-run OUT_DIR/c<C> \
 #       OUT_DIR/c<C>/artifacts/client_run.json... --machine SPEC --store S --out D
 set -uo pipefail
@@ -70,8 +71,10 @@ from atom.compass.drive.identity import identity
 o, model, gpus, *argv = sys.argv[1:]; run = Path(o, "run.json")
 ids = identity(Path(o, "steps/dp0.engine.json"), model, argv, tuple(map(int, gpus.split(","))))
 run.write_text(json.dumps(json.loads(run.read_text()) | ids))' "$o" "${MODEL-}" "$SMI_GPUS" \
-        "$ROOT/scripts/compass/cctraces_sim.sh" "$RUN_FILE" "$o") 2>>"$log" || echo "no identity" >>"$log"
+        "$ROOT/scripts/compass/cctraces_sim.sh" "$RUN_FILE" "$o") 2>>"$log" || { echo "no identity" >>"$log"; unidentified+=" c$c"; }
     state end >>"$log"
     [[ -s $o/artifacts/client_run.json ]] || unexported+=" c$c"
 done
-[[ -z ${unexported-} ]] || { echo "calib_capture: no client-run export:$unexported" >&2; exit 1; }
+[[ -z ${unexported-} ]] || echo "calib_capture: no client-run export:$unexported" >&2
+[[ -z ${unidentified-} ]] || echo "calib_capture: no record identity:$unidentified" >&2
+[[ -z ${unexported-}${unidentified-} ]] || exit 1
