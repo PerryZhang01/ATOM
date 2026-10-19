@@ -404,6 +404,11 @@ class StepStubBackend(CostBackend):
                 )
         return StepCost(terms)
 
+    def all_gather_s(self, rows: int) -> float:
+        """One TP all-gather of a `rows`-row tensor, as a pipeline stage runs on
+        each sharded tensor it receives: one collective on one layer."""
+        return rows * self.coefficients.collective_token_layer
+
     def describe(self) -> str:
         """One line for the run record, including what the number is not."""
         pricing = "constant bring-up" if self.coefficients.shape_blind else "shape-read"

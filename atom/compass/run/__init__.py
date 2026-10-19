@@ -951,15 +951,6 @@ def frontend(config):
             f"and the run file's pipeline_parallel_size is {_pp(run)}; the "
             "channel table every LP reads would declare the wrong stages"
         )
-    if config.pipeline_parallel_size > 1 and config.tensor_parallel_size > 1:
-        from atom.utils import envs
-
-        if envs.ATOM_PP_SEND_ALLGATHER:
-            raise ValueError(
-                "a pipeline stage at TP above 1 sends its shard of each tensor and "
-                "the next stage all-gathers it, which nothing prices; set "
-                "ATOM_PP_SEND_ALLGATHER=0"
-            )
     atom_runner, ours = ATOM_RUNNER, COMPASS_RUNNER_QUALNAME
     if rapid:
         atom_runner, ours = RAPIDSERVE_RUNNER, COMPASS_RAPIDSERVE_QUALNAME
@@ -1394,6 +1385,16 @@ def runner(model_runner, tree) -> None:
 
         roofline = StepRooflineBackend(machine, walk(tree), padded=padding != "none")
         backend = StepFallbackBackend(backend, roofline)
+    pp = getattr(config, "pipeline_parallel_size", 1)
+    if pp > 1 and tp > 1 and not hasattr(backend, "all_gather_s"):
+        from atom.utils import envs
+
+        if envs.ATOM_PP_SEND_ALLGATHER:
+            raise ValueError(
+                "a pipeline stage at TP above 1 all-gathers each sharded tensor it "
+                f"receives, and {type(backend).__name__} prices no all-gather; "
+                "set ATOM_PP_SEND_ALLGATHER=0"
+            )
     install_cost_backend(model_runner, backend)
     if NOW_ENV in os.environ:
         now = Path(os.environ[NOW_ENV])
