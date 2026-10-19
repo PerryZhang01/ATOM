@@ -21,9 +21,10 @@ builds its metadata and forward context, and the stub calls each leaf from its
 contract: an activation is random at its shape, dtype and stride; a weight is
 a tensor of the model of that shape, dtype and stride; a metadata tensor is a
 view of ATOM's live metadata (`meta`), whose name the point records, or of
-the token ids ATOM passes the forward (`TOKEN_IDS`); a module or context key
-is the one each instance names. A leaf whose operator cannot run so refuses
-by name, a KV tensor argument among them.
+the token ids ATOM passes the forward (`TOKEN_IDS`); an integer the capture
+found affine in a decode step's context is taken at the point's; a module or
+context key is the one each instance names. A leaf whose operator cannot run so
+refuses by name, a KV tensor argument among them.
 
 Cold, by copies. A call's bytes are its tensor arguments' spans, the tensors
 of each module it names and, for a leaf that names a context key, the KV and
@@ -375,7 +376,7 @@ class Stub:
             s: self._plan(op, i, kv, blocks, len(rows)) for s, (op, i) in found.items()
         }
         need = max(p for _, _, p in plans.values())
-        self.leaves, self.placed = found, []
+        self.leaves, self.placed, self.context = found, [], context
         for p in range(max(min(need, *room), 1)):
             self.runner.forward(rule.batch(view, p * blocks, p * len(rows)))
         got = []
@@ -460,6 +461,8 @@ class Stub:
                 return _module_copy(module) if fresh else module
             if _ref(value):
                 return instance[path]
+            if isinstance(value, dict) and "affine" in value:
+                return ir.Affine(*value["affine"]).at(self.context)
             if isinstance(value, dict):
                 return self._tensor(value, meta.get((sig, path)), c, fresh)
             if isinstance(value, str) and value.startswith("torch."):

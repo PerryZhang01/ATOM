@@ -425,6 +425,45 @@ def test_each_tensor_argument_carries_where_its_storage_came_from(tmp_path_facto
     )
 
 
+def test_a_decode_integer_derived_from_the_context_is_affine_in_it(
+    tmp_path_factory,
+):
+    graphs = capture(1, WIDTHS, tmp_path_factory)
+
+    for width in (2, 16):
+        ops = _ops(graphs[f"decode B={width}"][0]["region"])
+        affine = {
+            (op["op"], slot): value["affine"]
+            for op in ops
+            for slot, value in op["args"].items()
+            if isinstance(value, dict) and "affine" in value
+        }
+        # ATOM passes it its rows' longest context.
+        assert affine == {(KV_INDICES, "max_ctx_len"): [1, 0]}
+
+
+def _at(n):
+    """A decode step of one leaf taking `n`, beside an integer that holds."""
+    return [(0, ir.Op("aiter.leaf", "opaque_leaf", (("n", n), ("ratio", 1)), ()))]
+
+
+def test_an_integer_that_moves_with_the_context_is_affine_or_refused_by_slot():
+    c0, c1 = forward.CONTEXTS
+
+    [(_, op)] = forward._affine("decode B=2", _at(3 * c0 + 5), _at(3 * c1 + 5))
+
+    assert dict(op.args) == {"n": ir.Affine(3, 5), "ratio": 1}
+    blocks = [-(-c // 16) for c in (c0, c1)]
+    with pytest.raises(
+        ValueError,
+        match=rf"aiter.leaf at decode B=2 takes n={blocks[0]} at context {c0} and "
+        rf"{blocks[1]} at {c1}: not affine",
+    ):
+        forward._affine("decode B=2", *map(_at, blocks))
+    with pytest.raises(ValueError, match="dispatches 1 operators at context"):
+        forward._affine("decode B=2", _at(1), [])
+
+
 def test_a_prefill_is_captured_at_its_tokens_and_sequences(tmp_path_factory):
     graphs = capture(1, "--prefill 512 2 --prefill 300 3", tmp_path_factory)
 

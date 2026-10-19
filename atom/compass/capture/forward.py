@@ -5,6 +5,9 @@ ATOM's `ModelRunner` runs its own step through the model's own classes under
 `TorchDispatchMode` over `FakeTensorMode`, the Python dispatcher on, at one
 concrete shape: a decode width, or a prefill of T tokens over B sequences. One
 runner steps through every shape of a capture, as it steps through a run.
+A decode shape is traced twice, its rows holding each of `CONTEXTS` tokens: an
+integer argument that differs between the two is affine in the context
+(`ir.Affine`), or the shape is refused by operator and slot.
 
 Each leaf carries its contract: its arguments by schema slot, a tensor as its
 shape, dtype, stride and role. A tensor's role is where its storage came from:
@@ -22,6 +25,7 @@ host query (`HOST_QUERIES`), is refused by name.
 
 import ast
 import contextlib
+import dataclasses
 import inspect
 import pathlib
 import re
@@ -44,6 +48,11 @@ from .graph import LAYER, Fork, Join, Traced, _json, build
 
 #: The fewest KV blocks a capture allocates; a shape that needs more gets more.
 KV_BLOCKS = 64
+#: The two contexts a decode shape is traced at, each row holding that many
+#: tokens. An integer argument that differs between them is affine in the
+#: context or refused; 997 apart, a prime, so a count rounded to blocks or
+#: divided moves by less than the context and is refused.
+CONTEXTS = (1, 998)
 #: Torch's own namespaces; an operator in any other hides its kernels.
 TORCH_NAMESPACES = ("aten", "prim", "prims", "_c10d_functional", "c10d")
 #: ATOM's H2D publication copies the runner's host-staged inputs to the device:
@@ -378,10 +387,10 @@ def _weights(model):
                 yield value
 
 
-def _batch(shape, block_size):
+def _batch(shape, block_size, context=1):
     """`shape.seqs` sequences of `shape.tokens` new tokens between them, the
     first `tokens % seqs` one longer, each in blocks of its own; and the
-    blocks they take."""
+    blocks they take. A decode sequence holds `context` tokens."""
     from atom.model_engine import sequence
     from atom.model_engine.scheduler import ScheduledBatch
 
@@ -389,11 +398,13 @@ def _batch(shape, block_size):
     counts = [per + (i < extra) for i in range(shape.seqs)]
     seqs, blocks = {}, 0
     for index, count in enumerate(counts):
+        held = context if shape.phase == "decode" else count
         # An id of 0 would draw one from the class counter instead.
-        seq = sequence.Sequence([0] * count, block_size=block_size, id=index + 1)
+        seq = sequence.Sequence([0] * held, block_size=block_size, id=index + 1)
         seq.status = sequence.SequenceStatus.RUNNING
         seq.type = sequence.SequenceType[shape.phase.upper()]
-        taken = -(-count // block_size)
+        seq.num_cached_tokens = held - count
+        taken = -(-held // block_size)
         seq.block_table = sequence.new_block_table(list(range(blocks, blocks + taken)))
         seqs[seq.id], blocks = seq, blocks + taken
     batch = ScheduledBatch(
@@ -406,6 +417,45 @@ def _batch(shape, block_size):
         is_dummy_run=True,
     )
     return batch, blocks
+
+
+def _affine(shape: str, first, second):
+    """`first`, a decode step traced at the first of `CONTEXTS`, each integer
+    argument that differs in `second`, the step at the second, as an
+    `ir.Affine`; refused by operator and slot when it is not affine, and when
+    the two differ otherwise."""
+    (c0, c1), out = CONTEXTS, []
+
+    def bind(name, slot, u, v):
+        if u == v:
+            return u
+        slope, rest = divmod(v - u, c1 - c0) if type(u) is type(v) is int else (0, 1)
+        if rest:
+            raise ValueError(
+                f"{name} at {shape} takes {slot}={u!r} at context {c0} and {v!r} "
+                f"at {c1}: not affine in the context"
+            )
+        return ir.Affine(slope, u - slope * c0)
+
+    if len(first) != len(second):
+        raise ValueError(
+            f"{shape} dispatches {len(first)} operators at context {c0} and "
+            f"{len(second)} at {c1}"
+        )
+    for (layer, a), (other, b) in zip(first, second):
+        ops = isinstance(a, ir.Op) and isinstance(b, ir.Op)
+        if ops and [s for s, _ in a.args] == [s for s, _ in b.args]:
+            args = [
+                (s, bind(a.name, s, u, v)) for (s, u), (_, v) in zip(a.args, b.args)
+            ]
+            a, b = (dataclasses.replace(op, args=args) for op in (a, b))
+        if (layer, a) != (other, b):
+            raise ValueError(
+                f"{shape} differs at contexts {c0} and {c1} past an integer "
+                f"argument: {getattr(a, 'name', a)} against {getattr(b, 'name', b)}"
+            )
+        out.append((layer, a))
+    return out
 
 
 def capture(model: str, tp: int, shapes, tmpdir: str):
@@ -453,21 +503,28 @@ def capture(model: str, tp: int, shapes, tmpdir: str):
         weights = map(_storage, _weights(runner.model))
         recorder.roles = dict.fromkeys(weights, ir.Role.WEIGHT)
         recorder.creating = ir.Role.KV
-        blocks = max(_batch(shape, block_size)[1] for shape in shapes)
+        blocks = max(_batch(s, block_size, max(CONTEXTS))[1] for s in shapes)
         with fake_mode, recorder:
             runner.allocate_kv_cache(max(KV_BLOCKS, blocks))
         for shape in shapes:
-            recorder.creating = ir.Role.METADATA
-            with fake_mode, torch._C._EnablePythonDispatcher(), recorder:
-                # A runner's first step takes its own path, so the traced step
-                # follows one of its own shape: no graph depends on another's.
-                runner.forward(_batch(shape, block_size)[0])
-                recorder.start()
-                recorder.creating, recorder.on = ir.Role.METADATA, True
-                runner.forward(_batch(shape, block_size)[0])
-            recorder.creating, recorder.on = None, False
+            traces = []
+            for context in CONTEXTS if shape.phase == "decode" else CONTEXTS[:1]:
+                recorder.creating = ir.Role.METADATA
+                with fake_mode, torch._C._EnablePythonDispatcher(), recorder:
+                    # A runner's first step takes its own path, so the traced
+                    # step follows one of its own shape: no graph depends on
+                    # another's.
+                    runner.forward(_batch(shape, block_size, context)[0])
+                    recorder.start()
+                    recorder.creating, recorder.on = ir.Role.METADATA, True
+                    runner.forward(_batch(shape, block_size, context)[0])
+                recorder.creating, recorder.on = None, False
+                traces.append((recorder.items, recorder.left_out))
+            items, left_out = traces[0]
+            if len(traces) > 1:
+                items = _affine(str(shape), items, traces[1][0])
             crossing, traced = [], Traced(structure(config, shape.phase), str(shape))
-            graph = build(recorder.items, traced, crossing)
-            left_out = [*recorder.left_out, *(("step-crossing", op) for op in crossing)]
+            graph = build(items, traced, crossing)
+            left_out = [*left_out, *(("step-crossing", op) for op in crossing)]
             declared["left_out"] = [{"why": why, **_json(op)} for why, op in left_out]
             yield graph, digest, dict(declared)

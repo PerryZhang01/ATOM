@@ -9,7 +9,8 @@
 
 An `Op` holds its arguments by schema slot, which is what calling it again
 needs: a tensor as a `Tensor` (shape, dtype, stride, role), a module as a
-`ModuleRef`, anything else as its value.
+`ModuleRef`, an integer affine in a decode step's context as an `Affine`,
+anything else as its value.
 
 An operator's cost-deciding per-step state (block tables, context lengths) is
 ambient, not an argument, so an `Op` names where to find it again
@@ -65,6 +66,18 @@ class Tensor:
         object.__setattr__(self, "shape", as_shape(self.shape))
         object.__setattr__(self, "stride", as_shape(self.stride))
         object.__setattr__(self, "role", Role(self.role))
+
+
+@dataclass(frozen=True, slots=True)
+class Affine:
+    """An integer argument that is `slope * context + intercept` at a decode
+    step whose rows hold `context` tokens."""
+
+    slope: int
+    intercept: int
+
+    def at(self, context: int) -> int:
+        return self.slope * context + self.intercept
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,9 +169,10 @@ class Op(Region):
     """One operator: what ran, with which arguments, on which stream.
 
     `args` holds each argument by its slot, in the order the operator takes
-    them: a `Tensor`, a `ModuleRef`, a `ContextRef`, a number, str, bytes, enum
-    member, `None` or a tuple of those. Anything else, a live symbolic value
-    among it, is refused by its type, without being asked anything.
+    them: a `Tensor`, a `ModuleRef`, a `ContextRef`, an `Affine`, a number, str,
+    bytes, enum member, `None` or a tuple of those. Anything else, a live
+    symbolic value among it, is refused by its type, without being asked
+    anything.
     """
 
     name: str
@@ -198,15 +212,15 @@ def _as_args(args: Any) -> tuple[tuple[str, Any], ...]:
 
 def _as_value(slot: str, value: Any) -> Any:
     if value is None or isinstance(
-        value, (bool, int, float, str, bytes, enum.Enum, Tensor, ContextRef)
+        value, (bool, int, float, str, bytes, enum.Enum, Tensor, ContextRef, Affine)
     ):
         return value
     if isinstance(value, tuple):
         return tuple(_as_value(slot, item) for item in value)
     raise TypeError(
         f"argument {slot!r} is a {type(value).__name__}. An argument is a Tensor, "
-        "ModuleRef, ContextRef, number, str, bytes, enum member, None, or a tuple "
-        "of those."
+        "ModuleRef, ContextRef, Affine, number, str, bytes, enum member, None, or a "
+        "tuple of those."
     )
 
 

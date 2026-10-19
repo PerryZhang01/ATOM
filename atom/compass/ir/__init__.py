@@ -7,6 +7,7 @@ machine with no device runtime.
 
 from .graph import Applicability, Graph
 from .nodes import (
+    Affine,
     ContextRef,
     JoinPolicy,
     ModuleRef,
@@ -21,6 +22,7 @@ from .nodes import (
 )
 
 __all__ = [
+    "Affine",
     "Applicability",
     "ContextRef",
     "Graph",

@@ -25,6 +25,7 @@ from atom.compass.capture.forward import decode
 from atom.compass.capture.graph import Traced, build, to_json
 from atom.compass.spec import MachineSpec
 from atom.compass.spec.fields import PINNED
+from atom.utils import block_convert
 from atom.utils import forward_context as fctx
 
 F32 = "torch.float32"
@@ -269,6 +270,59 @@ def test_a_shape_the_pool_cannot_place_refuses_its_leaves_and_the_next_is_measur
     assert {r["shape"] for r in got[:2]} == {str(decode(2))}
     assert got[2:] == [{"shape": str(decode(4)), "leaf": sig} for sig in found]
     assert runner.batches == ["exit"]
+
+
+class _Launches:
+    """A Triton kernel that records the grid of each launch and runs nothing."""
+
+    def __init__(self):
+        self.grids = []
+
+    def __getitem__(self, grid):
+        self.grids.append(grid)
+        return lambda *args, **kwargs: None
+
+
+def test_a_decode_point_takes_an_integer_affine_in_the_context_at_its_own(
+    monkeypatch,
+    rule,  # noqa: F811
+):
+    kernel = _Launches()
+    monkeypatch.setattr(block_convert, "kv_indices_generate_kernel", kernel)
+    monkeypatch.setattr(fctx._forward_kv_cache_context, "kv_cache_data", {})
+
+    def call(stub, op, sig, instances, n):
+        kwargs, _ = stub._copy(op, sig, instances, 0)
+        ops._function(op["op"])(**kwargs)
+        return {}
+
+    monkeypatch.setattr(ops.Stub, "_time", call)
+    runner = _Runner()
+    stub = ops.Stub(runner, 10_000)
+    ints = [_t(shape, "metadata", dtype="torch.int32") for shape in ([2, 8], [16], [3])]
+    leaf = _leaf(
+        "atom.utils.block_convert:kv_indices_generate_triton",
+        *zip(("block_tables", "kv_indices_convert", "kv_indptr_convert"), ints),
+        ("ratio", 1),
+        ("max_ctx_len", ir.Affine(1, 0)),
+    )
+    found = ops.leaves(_graph(leaf, layers=1)["region"])
+    placed = SimpleNamespace(
+        block_size=16, batch=lambda view, block, slot: (block, slot)
+    )
+
+    with patch.object(runner.model, "forward", stub):
+        [record] = stub.point(placed, decode(2), 8192, found)
+
+    # ATOM's own step at decode B = 2, context 8192 passes its rows' longest
+    # context.
+    batch = rule().batch(_line([[1, 8192, True]] * 2))
+    tables = torch.zeros(2, 8, dtype=torch.int32)
+    block_convert.kv_indices_generate_triton(
+        tables, tables, tables, 1, batch.context_lens.max()
+    )
+    assert "refused" not in record
+    assert kernel.grids == [(2, 2), (2, 2)]
 
 
 def test_an_embedding_reads_the_token_ids_the_forward_was_given():

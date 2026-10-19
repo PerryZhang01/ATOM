@@ -215,7 +215,10 @@ def to_json(graph: ir.Graph) -> str:
 
 
 def _arg(value):
-    """An argument as JSON: a tensor, module or context key as an object."""
+    """An argument as JSON: a tensor, module, context key or integer affine in
+    the context as an object."""
+    if isinstance(value, ir.Affine):
+        return {"affine": [value.slope, value.intercept]}
     if isinstance(value, ir.Tensor):
         return {
             "shape": list(value.shape),
