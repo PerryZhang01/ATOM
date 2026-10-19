@@ -8,6 +8,7 @@ from __future__ import annotations
 from atom.compass.runner.overrides import (
     RPC_SURFACE,
     NonAllocatingRunner,
+    RapidServeRpcs,
     RunnerRefusal,
     start_on_host,
     unanswered_rpc_names,
@@ -102,3 +103,8 @@ if _UNANSWERED:
         + ". Dispatched with no reader, so a hole is skipped and the worker "
         "carries on without it: " + (", ".join(_UNREAD) or "none") + "."
     )
+
+
+class CompassRapidServeModelRunner(RapidServeRpcs, CompassModelRunner):
+    """`CompassModelRunner` in RapidServe's prefill and decode engines, with the
+    RPCs their engine cores wait on (`RapidServeRpcs`)."""

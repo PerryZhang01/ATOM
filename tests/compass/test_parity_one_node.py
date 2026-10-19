@@ -213,3 +213,20 @@ def test_under_lmcache_the_measurement_offloads_to_a_server_of_its_own(
     server = json.loads(run.read_text())["lmcache"]["server"]
     assert beside == ["lmcache", "server", *server]
     assert (tmp_path / "servers.log.offload").read_text() == "lmcache_mp\n"
+
+
+def test_rapidserve_measures_a_plain_engine_and_compares_each_engine(tmp_path):
+    r, servers, run = _parity(tmp_path, CONFIG="rapidserve", STORE=None)
+    assert r.returncode == 0, r.stderr
+    measure, real, sim = servers
+    flags = "-tp 1 --enforce-eager --level 0 --max-model-len 8192"
+    assert f" {flags} " in measure and "--enable-rapidserve" not in measure
+    for line in (real, sim):
+        assert f" {flags} " in line and " --enable-rapidserve" in line
+    assert json.loads(run.read_text())["rapidserve"] is True
+    record = tmp_path / "out" / "real" / "record"
+    assert all((record / e / "arrivals.json").exists() for e in ("prefill", "decode"))
+    assert r.stdout.splitlines()[-2:] == [
+        f"parity_one_node: {e} dp0 compared=3 identical=3 first_divergence=None"
+        for e in ("decode", "prefill")
+    ]
