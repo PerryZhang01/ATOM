@@ -642,7 +642,7 @@ Each side's cells are concurrency 1, 4, 16, 64 and 256 at `cctraces_sim.sh`'s
 default `SEED` and 64 and 256 at `SEED=20260708`; the decode side adds 64 at
 `SEED=20260709`, the prefill side two more at 64 and `SEED=20260708`. At DP
 width 8 only steps every rank ran are fitted, and only the cells at 64 and
-above supply them; each decode rung a law fits has such steps in two or more
+above supply decode steps; each decode rung a law fits has such steps in two or more
 cells, so each carries a held-out hull. Their host keys carry the `atom`
 digest of the tree they were last re-keyed at; `provenance` names the
 capture tree's.
