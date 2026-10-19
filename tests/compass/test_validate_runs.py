@@ -336,28 +336,34 @@ def test_a_simulated_run_grading_does_not_take_is_refused_naming_why(
         grade(real, simulated)
 
 
+HOST = {"host": {"laws": {}}}
+NO_HOST = "its run file has no host laws, so it prices no host time"
+ROOFLINE = "the step roofline was on"
+
+
 @pytest.mark.parametrize(
-    "backend, roofline, refused",
+    "run, reason",
     [
-        ("step_linear", True, True),
-        ("step_stub", True, True),
-        ("step_linear", False, False),
+        (HOST | {"step_linear": {}, "step_roofline": True}, ROOFLINE),
+        (HOST | {"step_stub": {}, "step_roofline": True}, ROOFLINE),
+        ({"step_linear": {}}, NO_HOST),
+        ({"step_linear": {}, "step_roofline": True}, f"{NO_HOST}; {ROOFLINE}"),
+        (HOST | {"step_linear": {}, "step_roofline": False}, None),
         # The step grid prices below it by the roofline, switch or none.
-        ("step_grid", True, False),
+        (HOST | {"step_grid": {}, "step_roofline": True}, None),
     ],
+    ids=["law-roofline", "stub-roofline", "no-host", "both", "law", "grid-roofline"],
 )
-def test_a_cctraces_sim_cell_with_the_step_roofline_on_and_no_step_grid_is_refused(
-    tmp_path, backend, roofline, refused
+def test_a_cctraces_sim_cell_grading_does_not_take_is_refused_naming_why(
+    tmp_path, run, reason
 ):
     *real, simulated = _four(tmp_path)
     report = grade(real, simulated)
-    run = {backend: {}, "step_roofline": roofline, "host": {"laws": {}}}
     (simulated / "run.json").write_text(json.dumps(run))
 
-    if not refused:
+    if reason is None:
         assert grade(real, simulated) == report
         return
-    reason = "the step roofline was on"
     with pytest.raises(ValueError, match=f"sim is not graded: {reason}$"):
         grade(real, simulated)
 

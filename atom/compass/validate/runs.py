@@ -8,8 +8,8 @@ export in `artifacts/profile_export_aiperf.json`. SIMULATED is the cell at its
 backend, and REAL two or more real runs of it, spaced in time.
 
 A directory `cctraces_sim.sh` wrote is graded whole, and refused when its
-run.json skips host segments, or turns the step roofline on beside another
-backend than the step grid. In one `record` or `run` wrote, whose run.json
+run.json skips host segments, has no host laws, or turns the step roofline
+on with no step grid. In one `record` or `run` wrote, whose run.json
 states a `format_version`, the graded client run is the one whose export is
 `artifacts/client_run.json`, split from the record by `parity.served`: only
 its steps are graded, and every run's client must have been given the same
@@ -223,16 +223,24 @@ def _client_run(cell, run) -> tuple[list[dict], list[str], dict]:
     return [s for s, m in zip(steps, mine) if m], export["traces"], warmup
 
 
+def _run_file_not_graded(run_file, roofline) -> list[str]:
+    """Why a simulated run of `run_file`, the step roofline on if `roofline`,
+    is not graded, as its run file says."""
+    why = []
+    if "host" not in run_file:
+        why.append("its run file has no host laws, so it prices no host time")
+    if roofline and STEP_GRID not in run_file:
+        why.append("the step roofline was on")
+    return why
+
+
 def _not_graded(run, traces) -> list[str]:
     """Why a simulated run, `run` its run.json, whose client run served
     `traces`, is not graded."""
     why, refused, coverage = [], run.get("refusals"), run["coverage"]
     if run["skip"]:
         why.append(f"it skips host segments {run['skip']}, a what-if run")
-    if "host" not in run["run_file"]:
-        why.append("its run file has no host laws, so it prices no host time")
-    if run["step_roofline"] and STEP_GRID not in run["run_file"]:
-        why.append("the step roofline was on")
+    why += _run_file_not_graded(run["run_file"], run["step_roofline"])
     if refused is None:
         why.append("its first client run has no summary, so its refusals are unknown")
     elif refused["count"]:
@@ -258,8 +266,9 @@ def graded(cell) -> tuple[list[dict], list[str] | None, dict | None]:
         return _client_run(cell, run)
     if any(h.get("skip") for h in entries(run, "host")):
         raise ValueError(f"{cell} skips host segments; a what-if run is not graded")
-    if run.get("step_roofline") and STEP_GRID not in run:
-        raise ValueError(f"{cell} is not graded: the step roofline was on")
+    why = _run_file_not_graded(run, run.get("step_roofline")) if path.exists() else []
+    if why:
+        raise ValueError(f"{cell} is not graded: " + "; ".join(why))
     return _steps(cell), None, None
 
 

@@ -126,7 +126,7 @@ def _as_grid(tmp_path, monkeypatch, missing=(), digest=None, parallel=None, **ke
         run["run_file"] = grid | {"host": {"laws": {}}, "machine": DOCUMENT}
         run["coverage"] = {"inputs": ["planted"], "uncovered": []}
     else:
-        run = {"workload": run["workload"], **grid}
+        run = {"workload": run["workload"], "host": run["host"], **grid}
     (sim / "run.json").write_text(json.dumps(run))
     summary = json.loads((sim / "summary.json").read_text())
     digest = digest or f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"

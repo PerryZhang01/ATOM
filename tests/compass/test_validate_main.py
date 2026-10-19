@@ -63,7 +63,9 @@ def _run(
         )
     )
     (d / "run.json").write_text(
-        json.dumps({"workload": {"traces": workload}, "step_linear": LAW})
+        json.dumps(
+            {"workload": {"traces": workload}, "step_linear": LAW, "host": {"laws": {}}}
+        )
     )
     if refusals is None:
         _log(d / "server.log", peak=50 * GIB, non_torch=non_torch * GIB)
