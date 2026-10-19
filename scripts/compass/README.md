@@ -635,11 +635,13 @@ rather than the host it was captured on.
 `scripts/compass/laws/deepseek-v4-pro-dpa8-mi355x-gpu45-{prefill,decode}.json`
 are DeepSeek-V4-Pro's DPA-TP8 laws on mi355-gpu-45, one per side of a 1P1D
 deployment: the `base` form with host laws, each fitted alone on its side's
-capture (calibration cells at concurrency 1, 4, 16, 64 and 256, at ATOM
-8f1d8ef6e). The records predate the engine key's parallel layout, TBO and
-environment, so each law's `--engine` file states them from the cells'
-`server.log` engine arguments and the capture script's environment for that
-side; the law's `provenance` names both. Their host keys carry the `atom`
+capture at ATOM 2d4044b15, fitted by `compass fit steps` and `compass fit
+host`: calibration cells at concurrency 1, 4, 16, 64 and 256 at
+`cctraces_sim.sh`'s default `SEED`, 64 and 256 again at `SEED=20260708`, and,
+for the decode side, 64 at `SEED=20260709`. At DP width 8 only steps every rank
+ran are fitted, and only the cells at 64 and above supply them; each decode
+rung a law fits has such steps in two cells, so a law fitted without either
+cell still prices that cell's decode steps. Their host keys carry the `atom`
 digest of the tree they were last re-keyed at; `provenance` names the
 capture tree's.
 
