@@ -15,19 +15,20 @@ work (`op_work.work`): its own tensors at the captured shape, the state it
 reads at the step's rows, attention's context in `kv`, the run's KV cache
 format. A leaf that launches no kernel costs nothing. Regions compose by the
 IR's joins: a `Seq` adds its items in order, a `Repeat` re-emits its body's
-prices once per instance, a `max` `Par` costs its longest branch, and a
+prices once per instance, a `max` `Par` emits its longest branch's prices, and a
 `resource_bound` `Par` one roofline over its branches' summed work. The price
 is one rank's device busy time: the runner takes a DP group's max and
 composes host time.
 
-Terms. One per op kind, ``op.<kind>``, and one per join, ``par.<join>``, each
+Terms. One per op kind, ``op.<kind>``, and ``par.resource_bound``, each
 the fold of its prices in run order. A term is `declared`, its note naming
 each input, when a spec field the winning bound of one of its prices read is
 neither from a datasheet nor probed, and `analytical` otherwise.
 
 Refused: a step with image tokens, since no graph holds the vision encoder; a
 two-batch-overlap step, since no graph holds a micro-batch or the MoE
-exchanges its comm stream carries; a speculative decode step; a shape with no
+exchanges its comm stream carries; a data-parallel step (`moe_rows`), since
+capture runs one rank; a speculative decode step; a shape with no
 graph; and, each reason once, a leaf whose kind has no extractor, whose price
 reads a spec field the spec lacks, or whose collective leaves the scale-up
 domain.
@@ -47,10 +48,6 @@ from atom.compass.backends.step_roofline import _reads
 from atom.compass.backends.work import Work, bounds
 
 SOURCE = "op-graph"
-TBO = (
-    "a two-batch-overlap step: no captured graph holds a micro-batch, nor the "
-    "MoE exchanges its comm stream carries"
-)
 NONE = "; no successor: the analytical law is the last op-level source"
 
 
@@ -81,7 +78,7 @@ class OpGraphBackend(CostBackend):
         graph: Callable[[str, int, int], dict | None],
         *,
         tp: int = 1,
-        kv: str | None = None,
+        kv: str,
         padded: bool = True,
     ) -> None:
         self.machine = machine
@@ -126,7 +123,16 @@ class OpGraphBackend(CostBackend):
         if view.image_tokens:
             reason = IMAGES.format(view.image_tokens)
         elif view.tbo_tokens is not None:
-            reason = TBO
+            reason = (
+                "a two-batch-overlap step: no captured graph holds a micro-batch, "
+                "nor the MoE exchanges its comm stream carries"
+            )
+        elif view.moe_rows is not None:
+            reason = (
+                f"a data-parallel step whose MoE gathers {view.moe_rows} rows: "
+                "capture runs one rank, so no graph holds the gather, the "
+                "reduce-scatter or the experts at the group's rows"
+            )
         else:
             try:
                 rung = view.capture_rung if self.padded else None
@@ -145,8 +151,9 @@ class OpGraphBackend(CostBackend):
         raise CostRefused(view, [Refusal(SOURCE, reason)])
 
     def _priced(self, region: dict, view: BatchView, refused: list) -> list:
-        """`region`'s prices in run order, each ``(term, seconds, stated, work)``;
-        what refuses goes to `refused`."""
+        """`region`'s prices in run order, each ``(term, seconds, stated, work)``,
+        `work` what it adds to an enclosing resource_bound; what refuses goes to
+        `refused`."""
         if "op" in region:
             leaf = self._leaf(region, view, refused)
             return [(f"op.{region['op']}", *leaf)] if leaf else []
@@ -156,11 +163,15 @@ class OpGraphBackend(CostBackend):
             return [p for i in region["seq"] for p in self._priced(i, view, refused)]
         branches = [self._priced(b, view, refused) for b in region["par"]]
         summed = sum((p[3] for b in branches for p in b), Work())
-        name = f"par.{region['join']}"
         if region["join"] == "max":
             each = [fold_seconds(p[1] for p in b) for b in branches]
             longest = branches[each.index(max(each))]
-            return [(name, max(each), [n for p in longest for n in p[2]], summed)]
+            # The longest branch's prices stay under their own terms; the
+            # first carries every branch's work for an enclosing resource_bound.
+            return [
+                (*p[:3], summed if i == 0 else Work()) for i, p in enumerate(longest)
+            ]
+        name = f"par.{region['join']}"
         unit = self._unit(name, summed, refused)
         return [(name, *unit, summed)] if unit else []
 

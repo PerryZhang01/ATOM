@@ -38,8 +38,8 @@ def g(m, n, k):
     return leaf(GEMM, [[m, n]], A=t([m, k]), B=t([n, k], role="weight"), bias=None)
 
 
-def backend(region, machine=SPEC, **kwargs):
-    return OpGraphBackend(machine, lambda *shape: region, **kwargs)
+def backend(region, machine=SPEC, kv="bf16", **kwargs):
+    return OpGraphBackend(machine, lambda *shape: region, kv=kv, **kwargs)
 
 
 def by_name(cost):
@@ -54,16 +54,23 @@ def test_a_step_is_one_roofline_per_leaf_composed_by_the_graph_s_joins():
             view_leaf,
             {"repeat": g(2, 128, 64), "count": 3, "index": "l0", "start": 0, "step": 1},
             {"par": [g(2, 2048, 4096), {"seq": [g(2, 4096, 4096)]}], "join": "max"},
-            {"par": [g(512, 512, 512), g(512, 256, 512)], "join": "resource_bound"},
+            {
+                "par": [
+                    {"par": [g(512, 512, 512), g(512, 256, 512)], "join": "max"},
+                    g(512, 128, 512),
+                ],
+                "join": "resource_bound",
+            },
         ]
     }
     cost = backend(region).price(DECODE)
     one, body = price(gemm(2, 64, 64), SPEC), price(gemm(2, 128, 64), SPEC)
+    longest = price(gemm(2, 4096, 4096), SPEC)
+    summed = gemm(512, 512, 512) + gemm(512, 256, 512) + gemm(512, 128, 512)
 
     assert by_name(cost) == {
-        f"op.{GEMM}": fold_seconds([one, body, body, body]),
-        "par.max": price(gemm(2, 4096, 4096), SPEC),
-        "par.resource_bound": price(gemm(512, 512, 512) + gemm(512, 256, 512), SPEC),
+        f"op.{GEMM}": fold_seconds([one, body, body, body, longest]),
+        "par.resource_bound": price(summed, SPEC),
     }
 
 
@@ -84,7 +91,7 @@ def test_a_step_reads_the_graph_captured_at_its_shape(batch, padded, shape):
         asked.append(at)
         return g(1, 8, 8)
 
-    OpGraphBackend(SPEC, graph, padded=padded).price(batch)
+    OpGraphBackend(SPEC, graph, kv="bf16", padded=padded).price(batch)
 
     assert asked == [shape]
 
@@ -104,8 +111,13 @@ def test_a_step_reads_the_graph_captured_at_its_shape(batch, padded, shape):
             g(1, 8, 8),
             "5 image tokens",
         ),
+        (
+            BatchView((RequestShape(9, 9, False),), moe_rows=18),
+            g(1, 8, 8),
+            "a data-parallel step whose MoE gathers 18 rows",
+        ),
     ],
-    ids=["speculative", "uncaptured", "tbo", "images"],
+    ids=["speculative", "uncaptured", "tbo", "images", "data-parallel"],
 )
 def test_a_step_with_no_graph_to_price_it_is_refused_by_name(batch, graph, named):
     with pytest.raises(CostRefused, match=named):
@@ -149,7 +161,7 @@ def test_a_collective_wider_than_the_scale_up_domain_refuses_naming_it():
         backend(reduce, tp=16).price(DECODE)
 
 
-@pytest.mark.parametrize("kv", [None, "fp8"])
+@pytest.mark.parametrize("kv", ["bf16", "fp8"])
 def test_attention_reads_its_context_in_the_run_s_kv_format(kv):
     attn = leaf(ATTENTION, [[2, 6144]], q=t([2, 24, 256]), k=t([2, 4, 256]))
     long = view((1, 200_000, True), (1, 100_000, True), rung=2)
@@ -188,7 +200,7 @@ def test_the_27b_s_captured_decode_step_prices_leaf_by_leaf(tmp_path_factory):
     cost = backend(graph["region"]).price(DECODE)
     flat: dict = {}
     for op in _ops(graph["region"]):
-        w = work(op, DECODE, 1)
+        w = work(op, DECODE, 1, "bf16")
         if w is not None:
             flat.setdefault(f"op.{op['op']}", []).append(price(w, SPEC))
 
