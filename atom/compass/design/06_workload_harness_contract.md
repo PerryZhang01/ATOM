@@ -491,7 +491,10 @@ width subtracts it. **Anything unregistered is refused by name** and counted in 
 summary's refusals, so a job ATOM later adds to the pool is reported rather than silently
 charged zero. A service job runs for real to get its
 result, takes a server in submission order, and its result reaches the coroutine at its
-completion time. Service jobs run for real one at a time, in submission order: jobs
+completion time. Results due at one instant reach their coroutines in submission order:
+each is set as a timer when its job is placed, in submission order, and a `_Timer`
+(`atom/utils/compass_loop.py`) fires timers due at one instant in the order they were set
+(`01` D3.4; #1338). Service jobs run for real one at a time, in submission order: jobs
 submitted at one instant share side effects, such as the request id each `Sequence` draws
 from a process-wide counter, and run side by side those would follow thread scheduling
 (`01` D3.4; #889). On the decode side, each frame an output thread takes is one job on

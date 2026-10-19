@@ -1031,6 +1031,7 @@ runs.
 | **`dict` iteration** over request or block ids | **yes** | insertion-ordered since Python 3.7, and insertion order is the schedule's order, which is itself deterministic |
 | **`set` iteration** | **NO — and this is the trap** | see below |
 | **Thread scheduling inside an LP** | irrelevant **only under D3's delivery rules** | without in-transit counting and TSO delivery (D3 grant rule), a race inside the LP decides which drain sees a message and at what logical time a handler thread runs; with them, a handler runs only on a released message, at its timestamp, while the owner waits |
+| **Timers due at one instant on the frontend's event loop** (D5.1) | **not by default** — asyncio's timer heap compares deadlines only, so equal ones fire in an order the heap's history decides, which a timer that changes nothing else, such as a cancelled keep-alive timeout, can change (#1338) | **They fire in the order they were set.** `CompassEventLoop.call_at` (`atom/utils/compass_loop.py`) pushes each timer as a `_Timer`, ordered by deadline, then by a counter it takes when set; `call_later` and `asyncio.sleep` go through it. A tokenizer result is one such timer (`06` D33). |
 | **Deliberately-real clock reads** (transport; bounds the CA cannot reach) | irrelevant | they never enter the virtual schedule. Metrics are not in this row (D1 detector (3)) |
 
 ### `set` is the trap, and it is worse than "unordered"
