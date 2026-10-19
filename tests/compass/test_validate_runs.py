@@ -444,15 +444,10 @@ def test_a_client_run_whose_export_names_no_warmup_is_refused(tmp_path, warmup):
         grade(real, simulated)
 
 
-#: Request `kw` warms the server up only after the client run's first step.
-LATE = [_schedule()[0], [(6, 30, 30, False)], *_schedule()[1:]]
-
-
-@pytest.mark.parametrize("schedule", [_schedule(), LATE], ids=["none", "late"])
 def test_a_client_run_whose_warmup_no_step_before_its_first_holds_is_refused(
-    tmp_path, schedule
+    tmp_path,
 ):
-    cells = _four(tmp_path, schedule, {6: "kw", 7: "ka", 8: "kb"})
+    cells = _four(tmp_path, _schedule(), {6: "kw", 7: "ka", 8: "kb"})
     *real, simulated = (_recorded(c, held=False) for c in cells)
 
     unheld = "no step before its own first holds its warmup, so its first steps"
@@ -464,31 +459,32 @@ def test_a_client_run_whose_warmup_no_step_before_its_first_holds_is_refused(
 SHARED = [[(6, 30, 30, False), *_schedule()[0]], *_schedule()[1:]]
 #: Request `kw` prefills alone first, and decodes on into the client run's second step.
 LONG = [WARMED[0], _schedule()[0], [WARMED[1][0], *_schedule()[1]], *_schedule()[2:]]
+#: Request `kw` prefills alone first, and decodes alone after the client run's first step.
+APART = [WARMED[0], _schedule()[0], WARMED[1], *_schedule()[1:]]
+#: Request `kw` warms the server up only after the client run's first step.
+LATE = [_schedule()[0], [(6, 30, 30, False)], *_schedule()[1:]]
 
 
 @pytest.mark.parametrize(
-    "schedule, reasons",
-    [
-        (
-            SHARED,
-            (
-                "no step before its own first holds its warmup, so its first steps "
-                "may be cold; a request of its warmup is in 1 of its own steps, from "
-                "step 0"
-            ),
-        ),
-        (LONG, "a request of its warmup is in 1 of its own steps, from step 2"),
-    ],
-    ids=["first", "later"],
+    "schedule, unheld, step",
+    [(SHARED, True, 0), (LONG, False, 2), (APART, False, 2), (LATE, True, 1)],
+    ids=["first", "later", "warmup-only-after-first-own", "late"],
 )
-def test_a_client_run_any_of_whose_own_steps_holds_its_warmup_is_refused(
-    tmp_path, schedule, reasons
+def test_a_client_run_whose_warmup_runs_on_past_its_first_own_step_is_refused(
+    tmp_path, schedule, unheld, step
 ):
     keys = {6: "kw", 7: "ka", 8: "kb"}
     cells = [_recorded(c, warmup={"kw"}) for c in _four(tmp_path, schedule, keys)]
 
-    into = "so its warmup runs on into the steps it grades"
-    with pytest.raises(ValueError, match=f"r0 is not graded: {reasons}, {into}$"):
+    cold = (
+        "no step before its own first holds its warmup, so its first steps may be cold"
+    )
+    why = [cold] if unheld else []
+    why.append(
+        f"steps from its own first on hold a request of its warmup, 1 from step {step}, "
+        "so its warmup has not ended when it starts"
+    )
+    with pytest.raises(ValueError, match=f"r0 is not graded: {'; '.join(why)}$"):
         grade(cells[:3], cells[3])
 
 
