@@ -272,3 +272,15 @@ def test_the_probe_bisects_a_threshold_to_a_32nd_of_the_power_below_it():
     assert fit["gloo"]["eager_threshold_bytes"] == 0
     gloo = sorted(s["bytes"] for s in samples if s["carrier"] == "gloo" and s["late"])
     assert gloo[:4] == [1, 2, 4, 8]
+
+
+def test_the_probe_refuses_late_reads_whose_eager_sizes_are_not_a_prefix():
+    """Pooled records whose bisections differ can read 1100 bytes rendezvous
+    beside 1536 eager: the fit refuses, stating no threshold above a
+    rendezvous size."""
+    samples = _samples(TRUTH) + [
+        _sample("rccl", 1100, True, *TRUTH["rccl"]),
+        _sample("rccl", 1536, True, 2047, *TRUTH["rccl"][1:]),
+    ]
+    with pytest.raises(SystemExit, match=r"rccl: eager late sizes \[8, .*1024, 1536\]"):
+        probe.fit(samples)

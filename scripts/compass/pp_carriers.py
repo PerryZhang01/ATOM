@@ -108,14 +108,12 @@ def fit(samples: list[dict]) -> dict:
             for n in sizes
             for late in (False, True)
         }
-        eager = [n for n in sizes if med[n, True]["done"] < med[n, True]["post"]]
-        if eager != sizes[: len(eager)] or len(eager) == len(sizes):
-            raise SystemExit(f"{c}: eager sizes {eager} are not a proper prefix")
+        late = sorted(n for k, n, lt in got if k == c and lt)
+        seen = [n for n in late if _eager(got[c, n, True])]
+        if seen != late[: len(seen)] or seen == late:
+            raise SystemExit(f"{c}: eager late sizes {seen} are not a proper prefix")
+        eager = [n for n in sizes if n in seen]
         rdv = sizes[len(eager) :]
-        top = max(
-            (n for (k_, n, lt), v in got.items() if k_ == c and lt and _eager(v)),
-            default=0,
-        )
         early = {n: med[n, False] for n in sizes}
         t = np.array([early[n]["end"] for n in rdv])
         g, fixed = np.polyfit(rdv, t, 1, w=1 / t)
@@ -125,7 +123,7 @@ def fit(samples: list[dict]) -> dict:
         o = np.median([early[n]["done"] - n * g for n in base])
         lat = np.median([early[n]["end"] - early[n]["done"] for n in base])
         out[c] = {
-            "eager_threshold_bytes": top,
+            "eager_threshold_bytes": seen[-1] if seen else 0,
             "latency_s": float(lat),
             "overhead_s": float(o),
             "per_byte_s": float(g),
