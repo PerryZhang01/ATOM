@@ -3,9 +3,10 @@
 
     compass measure ops (--width W | --prefill T B)... [--context C] --llc-mib M
         --gpu G --store S --out DIR -- <ATOM args>
-    compass measure ops --plan RECORD... --llc-mib M --gpu G --store S
+    compass measure ops --plan RECORD [--plan RECORD]... --llc-mib M --gpu G
+        --store S --out DIR -- <ATOM args>
+    compass measure ops --coverage RECORD [--coverage RECORD]... --store S
         --out DIR -- <ATOM args>
-    compass measure ops --coverage RECORD... --store S --out DIR -- <ATOM args>
 
 Each shape names the `op_graph` `compass trace ops` published in S for the
 model and TP width ATOM's arguments resolve. A point is one leaf of that graph,
@@ -200,7 +201,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     add_gpu_flag(p)
     p.add_argument("--store", required=True, help="the artifact store's root")
-    p.add_argument("--out", required=True, help="where run.json and ops.jsonl go")
+    p.add_argument(
+        "--out",
+        required=True,
+        help="where run.json and ops.jsonl go; with --plan, each round's "
+        "ops.jsonl goes in round<n> and every point held in plan.jsonl",
+    )
     return p
 
 
