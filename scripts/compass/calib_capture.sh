@@ -5,13 +5,13 @@
 # to 392 on a real TP1 server through `REAL=1 cctraces_sim.sh`, at each
 # concurrency in CELLS, one cell at a time, since a cell run beside another
 # moves the host time the host laws measure. Each cell is stopped STEPS_S
-# seconds after aiperf's profiling phase starts: aiperf exports that phase
-# only, and at concurrency 64 and above its warmup alone can outlast STEPS_S.
+# seconds after its first recorded step: at concurrency 64 and above aiperf's
+# warmup alone outlasts the benchmark duration.
 #
 # Usage: calib_capture.sh RUN_FILE OUT_DIR
 #   RUN_FILE, MODEL, TRACES, HARNESS_PYTHON  as cctraces_sim.sh takes them
 #   CELLS        concurrencies, in run order (default: 1 4 16 64 256)
-#   STEPS_S      wall seconds of aiperf's profiling phase per cell (default 1800)
+#   STEPS_S      wall seconds recorded per cell (default 1800)
 #   SERVER_ARGS  API server flags (default: --max-model-len 262144, so decode
 #                runs on captured graphs)
 #   HIP_VISIBLE_DEVICES  the GPUs as HIP numbers them (default 0); a cell refuses
@@ -20,7 +20,8 @@
 # OUT_DIR/c<C>/ is the cell's cctraces_sim.sh directory, its step record in
 # steps/; OUT_DIR/c<C>.log holds the tree's commit, the host load (`uptime`),
 # the GPUs' processes, VRAM and use at the cell's start and end, and the cell's
-# exit status, aiperf's. The cell's run.json gains a `compass record` identity.
+# exit status, aiperf's: on SIGINT aiperf writes its export, or, stopped in its
+# warmup, none and exits 1. The cell's run.json gains a `compass record` identity.
 # The capture exits 1 naming each cell left without artifacts/client_run.json.
 #   compass fit steps --backend step-linear OUT_DIR/c<C>... --client-run OUT_DIR/c<C> \
 #       OUT_DIR/c<C>/artifacts/client_run.json... --machine SPEC --store S --out D
@@ -53,9 +54,9 @@ for c in ${CELLS:-1 4 16 64 256}; do
     gpu=$(busy | grep -xFm1 -f <(tr , '\n' <<<"$SMI_GPUS")) && { echo "calib_capture: rocm-smi GPU $gpu is in use" | tee -a "$log" >&2; exit 3; }
     CONCURRENCY=$c timeout 7200 bash "$ROOT/scripts/compass/cctraces_sim.sh" "$RUN_FILE" "$o" >"$o.out" 2>&1 &
     sim=$!
-    until grep -qs 'Phase .* (profiling) started' "$o/aiperf.log" || ! kill -0 $sim 2>/dev/null; do sleep 10; done
+    until [[ -s $o/steps/dp0.jsonl ]] || ! kill -0 $sim 2>/dev/null; do sleep 10; done
     if kill -0 $sim 2>/dev/null; then
-        echo "profiling started $(date -u +%FT%TZ)" >>"$log"
+        echo "first step $(date -u +%FT%TZ)" >>"$log"
         # Wakes each 10 s, so a cell that ends on its own is not held to STEPS_S.
         for ((t = 0; t < ${STEPS_S:-1800}; t += 10)); do kill -0 $sim 2>/dev/null && sleep 10; done
         # aiperf runs as a child of cctraces_sim.sh, which runs under timeout.

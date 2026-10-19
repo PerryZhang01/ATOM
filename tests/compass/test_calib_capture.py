@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: MIT
-"""`calib_capture.sh`: one cell at a time, stopped once aiperf profiles, never on
-a GPU that holds a process.
+"""`calib_capture.sh`: one cell at a time, stopped after its first recorded step,
+never on a GPU that holds a process.
 
 `cctraces_sim.sh` and `rocm-smi` are stubbed, so these run with no GPU: the stub
-cell runs a process named as aiperf's controller is, which writes a step, warms
-up for WARMUP_S seconds, logs its profiling phase's start and waits. As aiperf
-does, SIGINT in profiling ends it with status 0 and its export, SIGINT in warmup
-with status 1 and none, and SIGTERM with 143. A negative WARMUP_S fails the
-warmup. The cell exits with its status, as cctraces_sim.sh exits with aiperf's.
+cell runs a process named as aiperf's controller is, which writes a step and
+waits; as aiperf does, SIGINT ends it with status 0 and its export, or, with
+IN_WARMUP set, with status 1 and none; SIGTERM ends it with 143. The cell exits
+with its status, as cctraces_sim.sh exits with aiperf's.
 """
 
 import json
@@ -27,17 +26,12 @@ BUSY = "PID 1 is using 1 DRM device(s):\n6\n"
 AIPERF = """import os, signal, sys, time
 cell = sys.argv[1]
 def stop(*_):
-    if not os.path.exists(cell + "/aiperf.log"):
-        sys.exit(1)
+    os.environ.get("IN_WARMUP") and sys.exit(1)
     os.mkdir(cell + "/artifacts")
     open(cell + "/artifacts/client_run.json", "w").write("{}")
     sys.exit(0)
 signal.signal(signal.SIGINT, stop)
 open(cell + "/steps/dp0.jsonl", "w").write("{}")
-warmup = float(os.environ.get("WARMUP_S", 0))
-warmup < 0 and sys.exit(1)
-time.sleep(warmup)
-open(cell + "/aiperf.log", "w").write("Phase profiling (profiling) started\\n")
 time.sleep(60)"""
 CELL = f"""#!/bin/bash
 mkdir -p "$2/steps" && echo '{{"workload": 1}}' > "$2/run.json"
@@ -108,17 +102,8 @@ def test_each_cell_is_stopped_and_logged_in_turn(tmp_path):
 
 
 @pytest.mark.skipif(BASH is None, reason="no bash on PATH")
-def test_a_warmup_outlasting_steps_s_still_ends_with_the_export(tmp_path):
-    # Longer than one 10 s poll, so a stop timed from the first step lands in it.
-    r, cap = _capture(tmp_path, FREE, "1", WARMUP_S="12")
-    assert r.returncode == 0, r.stderr
-    assert "CELL_RC=0" in (cap / "c1.log").read_text()
-    assert (cap / "c1" / "artifacts" / "client_run.json").exists()
-
-
-@pytest.mark.skipif(BASH is None, reason="no bash on PATH")
 def test_the_capture_fails_naming_each_cell_left_without_its_export(tmp_path):
-    r, cap = _capture(tmp_path, FREE, "4 1", WARMUP_S="-1")
+    r, cap = _capture(tmp_path, FREE, "4 1", IN_WARMUP="1")
     assert r.returncode == 1
     assert "no client-run export: c4 c1" in r.stderr
     assert (cap / "order").read_text() == "c=4 done\nc=1 done\n"
