@@ -29,8 +29,9 @@ Cold, by copies. A call's bytes are its tensor arguments' spans, the tensors
 of each module it names and, for a leaf that names a context key, the KV and
 per-request state its layer holds for the batch. One graph runs the leaf K =
 `CALLS` times, cycling over N copies, N the least whose bytes pass `COLD`
-times the last-level cache and, for a context key, at least its I instances
-(at most K). Copy c takes fresh activations,
+times the last-level cache, at least the model's weights of each weight
+argument's spec and, for a context key, at least its I instances (at most K).
+Copy c takes fresh activations,
 the c-th of the model's weights of that spec (a clone past the last), and
 instance c mod I at placement (c div I) mod P, its metadata and module
 tensors cloned past the first round: a placement is the point's batch on KV
@@ -412,8 +413,14 @@ class Stub:
             elif key in self.modules:
                 size += sum(t.nbytes for t in _own(self.modules[key]))
         n = min(CALLS, COLD * self.llc // size + 1) if size else 1
-        if need is None:  # cycle over every instance's state, which is held anyway
-            n = min(CALLS, max(n, len(instances)))
+        # cycle over every instance's state and every weight of the model, all
+        # held anyway: one weight can read a few percent off another of its spec
+        held = [
+            len(self.weights.get(_spec_of(s), ()))
+            for _, s in _specs(op["args"])
+            if s["role"] == "weight"
+        ]
+        n = min(CALLS, max([n, *held, len(instances) if need is None else 0]))
         return n, size, need or -(-n // len(instances))
 
     def _time(self, op, sig, instances, n) -> dict:

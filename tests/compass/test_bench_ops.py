@@ -306,6 +306,16 @@ def test_a_call_counts_its_module_s_tensors_and_cycles_over_every_layer():
     assert stub._plan(rope, [{"rope": "0"}], kv, 4, 2) == (3, 48, 1)
 
 
+def test_a_call_cycles_over_every_weight_the_model_holds_of_its_spec():
+    # The two Linear(3, 3) weights: one copy already passes twice a 1-byte
+    # cache, and the call still reads each.
+    stub = ops.Stub(_Runner(), 1)
+    gemm = {"op": "x", "args": {"w": {"shape": [3, 3], "dtype": F32}}}
+    gemm["args"]["w"] |= {"stride": [3, 1], "role": "weight"}
+
+    assert stub._plan(gemm, [{}], {}, 4, 2) == (2, 36, 1)
+
+
 def test_copy_c_rotates_weights_and_instances_and_clones_past_the_first_round():
     runner = _Runner()
     stub = ops.Stub(runner, 10_000)
