@@ -149,20 +149,37 @@ def test_fit_ops_publishes_its_points_key_and_their_held_out_error(measured, tmp
     fields = key("decode B=2", 1024, _leaf(2, 128)).values
     assert got["key"] == {k: v for k, v in fields.items() if k != "point"}
     assert got["report"]["by_op"] == {
-        "decode aiter.gemm": {
-            "held_out": 4,
-            "declined": 2,
-            "median_error": pytest.approx(0.04),
-            "max_error": pytest.approx(0.04),
-            "hidden_bands": 1,
-            "hidden_max_error": pytest.approx(11 / 9),
-        }
+        "decode aiter.gemm": {"held_out": 4, "declined": 2, "on_declined_lines": 4}
     }
     declined = [r["declined"] for r in got["report"]["held_out"] if "declined" in r]
     assert declined == [
         "B = 8 lies between 4 and 12, which launched different kernels: k and x",
         "B = 16 lies between 12 and 32, which launched different kernels: x and b",
     ]
+    (f,) = got["params"]["families"].values()
+    assert f["declined"] == [
+        ["B", [1024], "B = 12 launched other kernels than its neighbours"]
+    ]
+
+
+def test_a_line_holding_an_error_over_5pct_declines_what_it_would_price():
+    # held out along B, B = 4 reads 4% off at context 1024 and 20% off at 2048
+    points = [_point(2, 10.0), _point(4, 12.5), _point(8, 16.0)]
+    points += [_point(b, ns, context=2048) for b, ns in ((2, 20), (4, 30), (8, 32))]
+    params = ops.fit(points)
+    rows = ops.held_out(params)
+    (f,) = params["families"].values()
+    grid = {tuple(c): (ns, k) for c, ns, k in f["points"]}
+    declined = {(d, tuple(r)): why for d, r, why in f["declined"]}
+
+    assert f["declined"] == [["B", [2048], "B = 4 reads -20.0% off its neighbours"]]
+    assert ops.summary(rows)["decode aiter.gemm"]["max_error"] == pytest.approx(0.04)
+    assert ops.interpolate(grid, (3, 1024), f["dims"], declined) == (11.25, ["k"])
+    assert ops.interpolate(grid, (4, 2048), f["dims"], declined) == (30, ["k"])
+    assert ops.interpolate(grid, (4, 1536), f["dims"], declined) == (21.25, ["k"])
+    for at in [(3, 2048), (3, 1536)]:
+        with pytest.raises(ops.Declined, match="along B declines: B = 4 reads -20.0%"):
+            ops.interpolate(grid, at, f["dims"], declined)
 
 
 @pytest.mark.parametrize(

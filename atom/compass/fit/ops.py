@@ -26,10 +26,13 @@ neighbours and their first differing kernel.
 
 The report holds, for each point and dimension along which the point has a
 measured neighbour on both sides, the price the other points of that line
-give it and its error, and per phase and operator the median and largest
-error inside a band. A point that launched other kernels than the neighbours
-it is priced from is a hidden band, counted apart: no check of the neighbours'
-kernels can see it.
+give it and its error. A point that launched other kernels than the neighbours
+it is priced from is a hidden band: no check of the neighbours' kernels can
+see it. A line holding a hidden band or an error over `LIMIT` does not
+interpolate: its family lists it under `declined` with its reason, its
+measured points still answer, and a query priced along it declines. Per phase
+and operator the report gives the median and largest error on the lines that
+interpolate.
 """
 
 import argparse
@@ -46,6 +49,8 @@ from atom.compass.fit.samples import run_fields
 PROG = "compass fit ops"
 #: What a masked integer reads as in a family's signature.
 MASK = "#"
+#: The largest held-out error a line that interpolates may hold.
+LIMIT = 0.05
 
 
 class Declined(ValueError):
@@ -176,10 +181,17 @@ def fit(points) -> dict:
     return {"free": free_of, "families": families}
 
 
-def interpolate(points: dict, at: tuple, dims) -> tuple[float, list]:
+def interpolate(points: dict, at: tuple, dims, declined=None, _path=()):
     """The time at `at` over `points`, {coordinates: (ns, kernels)}, and the
-    kernels it was priced from, multilinear over `dims` in order."""
+    kernels it was priced from, multilinear over `dims` in order. A corner
+    priced along a line in `declined`, {(dimension, the other coordinates):
+    reason}, declines with that reason."""
     if not dims:
+        corner = tuple(v for _, v, _ in _path)
+        for k, (dim, _, moved) in enumerate(_path):
+            why = moved and (declined or {}).get((dim, corner[:k] + corner[k + 1 :]))
+            if why:
+                raise Declined(f"the line along {dim} declines: {why}")
         return points[()]
     x, values = at[0], sorted({c[0] for c in points})
     lo = max((v for v in values if v <= x), default=None)
@@ -192,7 +204,8 @@ def interpolate(points: dict, at: tuple, dims) -> tuple[float, list]:
     for v in sorted({lo, hi}):
         line = {c[1:]: p for c, p in points.items() if c[0] == v}
         try:
-            ends.append(interpolate(line, at[1:], dims[1:]))
+            step = _path + ((dims[0], v, lo != hi),)
+            ends.append(interpolate(line, at[1:], dims[1:], declined, step))
         except Declined as why:
             raise Declined(f"at {dims[0]} = {v}, {why}") from None
     if len(ends) == 1:
@@ -211,10 +224,13 @@ def interpolate(points: dict, at: tuple, dims) -> tuple[float, list]:
 def held_out(params) -> list[dict]:
     """Each point priced along each dimension by the other points of its line,
     where it has a neighbour on both sides; a hidden band is a point whose
-    kernels are not the ones its neighbours launched."""
+    kernels are not the ones its neighbours launched. Each family gets its
+    `declined` lines, [dimension, the other coordinates, reason]: those
+    holding a hidden band or an error over `LIMIT`."""
     rows = []
     for name, f in params["families"].items():
         points = {tuple(c): (ns, k) for c, ns, k in f["points"]}
+        mine, why = [], {}
         for c, (ns, own) in points.items():
             for i, dim in enumerate(f["dims"]):
                 rest = c[:i] + c[i + 1 :]
@@ -235,28 +251,38 @@ def held_out(params) -> list[dict]:
                         "error": priced / ns - 1 if ns else None,
                         "hidden_band": kernels != own,
                     }
-                except Declined as why:
-                    row["declined"] = str(why)
-                rows.append(row)
+                except Declined as e:
+                    row["declined"] = str(e)
+                bad = row.get("hidden_band") and "launched other kernels than"
+                if not bad and abs(row.get("error") or 0) > LIMIT:
+                    bad = f"reads {row['error']:+.1%} off"
+                if bad:
+                    why.setdefault((dim, rest), []).append(
+                        f"{dim} = {c[i]} {bad} its neighbours"
+                    )
+                mine.append((row, (dim, rest)))
+        rows += [row | {"line_declined": line in why} for row, line in mine]
+        f["declined"] = [[d, list(r), "; ".join(w)] for (d, r), w in why.items()]
     return rows
 
 
 def summary(rows) -> dict:
-    """Per phase and operator: points held out, how many were declined, the
-    median and largest absolute error inside a band, and the hidden bands with
-    their largest absolute error."""
+    """Per phase and operator: points held out, how many were declined between
+    kernels or sit on a declined line, and the median and largest absolute
+    error on the lines that interpolate."""
     by: dict[str, list] = {}
     for r in rows:
         by.setdefault(f"{r['phase']} {r['op']}", []).append(r)
     out = {}
     for name, rs in sorted(by.items()):
-        priced = [r for r in rs if r.get("error") is not None]
-        inside = [abs(r["error"]) for r in priced if not r["hidden_band"]]
-        hidden = [abs(r["error"]) for r in priced if r["hidden_band"]]
+        kept = [
+            abs(r["error"])
+            for r in rs
+            if r.get("error") is not None and not r["line_declined"]
+        ]
         out[name] = {"held_out": len(rs), "declined": sum("declined" in r for r in rs)}
-        if inside:
-            out[name] |= {"median_error": statistics.median(inside)}
-            out[name] |= {"max_error": max(inside)}
-        if hidden:
-            out[name] |= {"hidden_bands": len(hidden), "hidden_max_error": max(hidden)}
+        out[name] |= {"on_declined_lines": sum(r["line_declined"] for r in rs)}
+        if kept:
+            out[name] |= {"median_error": statistics.median(kept)}
+            out[name] |= {"max_error": max(kept)}
     return out
