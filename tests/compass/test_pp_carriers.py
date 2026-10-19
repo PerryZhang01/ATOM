@@ -243,3 +243,15 @@ def test_the_probe_pools_the_records_it_wrote(tmp_path):
     assert pooled["records"] == [
         hashlib.sha256(r.read_bytes()).hexdigest() for r in runs
     ]
+
+
+def test_the_probe_prices_a_late_rendezvous_receive_with_its_threshold_moved():
+    """Posted `LATE` after the send, a rendezvous RCCL receive ends its
+    threshold's bytes sooner than one posted first, and the fit's late error
+    on those samples is nil."""
+    eager, _, _, g, _ = TRUTH["rccl"]
+    samples = _samples(TRUTH)
+    for s in samples:
+        if s["carrier"] == "rccl" and s["late"] and s["bytes"] > eager:
+            s["done"] = s["end"] = s["end"] - eager * g
+    assert probe.fit(samples)["rccl"]["late"] == pytest.approx([0] * 5, abs=1e-15)

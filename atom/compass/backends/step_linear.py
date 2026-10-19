@@ -42,9 +42,8 @@ none, a step mixing prefill and decode rows, or one with image tokens.
 
 A law fitted on an MTP record holds a draft law of its own form under `draft`.
 Its terms, named `draft.<kind>.<feature>`, are tagged `draft` and priced from the
-same features. A step that produces no output (`produces_output` False) gets one
-zero `draft` term: a record stamps no target end on it, so its target label
-holds whatever the drafter ran there.
+same features, on a step that produces no output too: there the draft is the
+pass that fills the drafter's KV over the chunk.
 
 The law is a mapping, as a run file holds it, `prefill` and `draft` optional:
 
@@ -189,17 +188,8 @@ class StepLinearBackend(CostBackend):
                 "the law prices a step of one kind",
             )
         terms = self._terms(self.law, batch_view, "")
-        draft = self.law.draft
-        if draft is not None and batch_view.produces_output is False:
-            made = Provenance(
-                Method.ESTIMATED,
-                "in the target label of a step with no output, priced by a prefill"
-                f" vector fitted with final chunks that hold none; {draft.fitted_on}",
-                SOURCE,
-            )
-            terms.append(CostTerm("draft", 0.0, made, draft=True))
-        elif draft is not None:
-            terms += self._terms(draft, batch_view, "draft ")
+        if self.law.draft is not None:
+            terms += self._terms(self.law.draft, batch_view, "draft ")
         return StepCost(terms, self.treatments)
 
     def _terms(self, law: StepLinearLaw, batch_view: BatchView, what: str) -> list:

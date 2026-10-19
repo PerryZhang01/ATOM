@@ -9,6 +9,8 @@ forward's launch and exit events land at known device times, and an event
 completes once the device clock has passed it.
 """
 
+from types import SimpleNamespace
+
 import numpy as np
 from test_parity_record import GRAPHABLE, LADDER, _config, _drive
 
@@ -55,12 +57,13 @@ class _Processor:
         return []
 
 
-TARGET, DRAFT = 60_000, 9_000  # ns
+TARGET, SAMPLE, DRAFT = 60_000, 2_000, 9_000  # ns
 
 
 def _recorded(warmup, drafter=False):
-    """With `drafter`, an output forward also waits for the MTP status before
-    its launch, then calls `prepare_sampled_ids` right after
+    """With `drafter`, every forward calls the drafter's `compute_draft_kv`
+    after its target, and an output forward also waits for the MTP status
+    before its launch, then samples, calls `prepare_sampled_ids` right after
     `forward_done_event` and waits for the draft copy, as ATOM does."""
     device = _Device()
     clock = iter(range(1, 10**9))
@@ -74,7 +77,10 @@ def _recorded(warmup, drafter=False):
             self.attn_metadata_builder = GRAPHABLE
             self.tokenID_processor = _Processor()
             if drafter:
-                self.drafter = "mtp"
+                # The draft-KV pass queues the draft's device time.
+                self.drafter = SimpleNamespace(
+                    compute_draft_kv=lambda *a: setattr(self, "next", "exit")
+                )
             self.exited = False
             self.forward(warmup)
 
@@ -92,12 +98,15 @@ def _recorded(warmup, drafter=False):
             self.next = "launch"
             assert self.run_model([], batch) == "logits"
             self.next = "target"
+            if drafter:
+                self.drafter.compute_draft_kv([], "hidden", None)
             if drafter and output:
+                self.next = "sample"
                 p.prepare_sampled_ids(batch)
                 p.recv_async_output_draft()
             elif output:
                 assert p.prepare_sampled_ids(batch) == []
-            self.next = "exit" if drafter and output else "busy"
+            self.next = "exit" if drafter else "busy"
             # The previous forward's exit event has completed, this one's has not.
             device.now = device.times[-2] if len(device.times) > 1 else -1
             return "ran"
@@ -113,7 +122,7 @@ def _recorded(warmup, drafter=False):
         def device_event(self):
             # Launch after the previous exit, exit after the launch.
             last = device.times[-1] if device.times else 0
-            step = {"launch": GAP, "target": TARGET, "exit": DRAFT}
+            step = {"launch": GAP, "target": TARGET, "sample": SAMPLE, "exit": DRAFT}
             device.times.append(last + step.get(self.next, BUSY + len(device.times)))
             return _Event(device, device.times[-1])
 
@@ -155,9 +164,11 @@ def test_each_line_carries_its_host_stamps_and_device_window(tmp_path, monkeypat
     }
 
 
-def test_with_a_drafter_an_output_line_splits_its_device_window_at_the_target(
+def test_with_a_drafter_each_line_splits_its_device_window_at_the_target(
     tmp_path, monkeypatch
 ):
+    """A middle chunk's target ends where `compute_draft_kv` starts; an output
+    forward's where it samples, after that."""
     batches = _drive(tmp_path / "simulated", monkeypatch, {0: [0, 1]})[0][0]
     recorded, device = _recorded(batches[-1], drafter=True)
     device.tick = 10**12
@@ -170,10 +181,11 @@ def test_with_a_drafter_an_output_line_splits_its_device_window_at_the_target(
     outputs = [b.produces_output() for b in batches]
     assert any(outputs) and not all(outputs)
     for step, output in zip(read(tmp_path / "real")[0], outputs):
-        keys = {"t_mtp_ns", "t_recv_ns", "t_draft_recv_ns", "d_target_ns"}
+        keys = {"t_mtp_ns", "t_recv_ns", "t_draft_recv_ns"}
         assert keys <= step.keys() if output else not keys & step.keys()
+        target = TARGET + SAMPLE * output
+        assert (step["d_target_ns"], step["d_busy_ns"]) == (target, target + DRAFT)
         if output:
-            assert (step["d_target_ns"], step["d_busy_ns"]) == (TARGET, TARGET + DRAFT)
             stamps = [step["t_enter_ns"], *step["t_gate_ns"], *step["t_mtp_ns"]]
             stamps += [*step["t_launch_ns"], *step["t_recv_ns"]]
             stamps += [*step["t_draft_recv_ns"], step["t_exit_ns"]]
