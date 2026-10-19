@@ -302,9 +302,10 @@ identity.
 **The price.** `fit ops` publishes a `price_list`: per leaf, piecewise-linear
 interpolation between same-kernel neighbours only, as `09` D60 requires. A query at a
 measured point takes that point's price; one between two points that launched the same
-kernel is interpolated; any other query, outside the measured range or between two
-kernels, is declined with its reason (the leaf, the dimension, the neighbours and their
-kernels), and the leaf falls to its analytical law, its share counted (D42, `08` D50.3).
+kernel is interpolated; any other query, outside the measured range, between two
+kernels, or along a line whose held-out points show a hidden band or an error over 5%
+(`09` D60), is declined with its reason, and the leaf falls to its analytical law, its
+share counted (D42, `08` D50.3).
 
 ### Phase 1c — and the one extra run
 

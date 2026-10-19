@@ -400,7 +400,12 @@ interpolates a leaf only between two neighbours that launched the same kernel (`
 D38). The refusal is the price list's: the leaf falls to its analytical law, and that
 share of priced seconds is counted (`08` D50.3). The cost is the larger analytical share
 the measurements above predict, 8 of 10 held-out GEMM shapes with no same-kernel bracket,
-and it is reported rather than hidden.
+and it is reported rather than hidden. Revised 2026-10-19 by the
+[ruling on #1493](https://github.com/jgong5/ATOM/issues/1493#issuecomment-6260357438):
+a line whose held-out points show a hidden band (a point that launched other kernels
+than the neighbours it is priced from) or an error over 5% does not interpolate. Its
+measured points still answer; every other query along it goes to the analytical law,
+and the price list names each such line with its reason.
 
 ---
 
@@ -516,7 +521,7 @@ choice that must be visible.
 | D57 | Every fit reports provenance, sample count, dropped count, condition number and validity hull. Report an interval or report nothing. | 2026-09-18 |
 | D58 | Refuse rather than fall back on a step kind with no samples. The extrapolation guard is a convex hull or k-NN distance, never a per-feature bounding box; an out-of-hull step is priced `estimated` and unvalidated, its source naming the extrapolation, and reported apart, not refused. The step linear law refuses a discrete value it has no vector for, extrapolates outside its fitted hull, and is validated only inside the hull of its held-out steps. | 2026-09-18; revised 2026-10-11 (#765) and 2026-10-14 (#952) |
 | D59 | A family is validated on independently gathered data, never by LOO. Rank at least three candidates and report all held-out errors. A law that fits one axis is tested on a second before it ships. | 2026-09-18 |
-| D60 | Laws are piecewise over dispatch bands read from recorded kernel identity. A query with no same-band bracket refuses. At the op level `measure ops` records each point's kernels and `fit ops` interpolates only between same-kernel neighbours; a declined leaf falls to its analytical law, counted. | 2026-09-18; op level 2026-10-18 (#1489) |
+| D60 | Laws are piecewise over dispatch bands read from recorded kernel identity. A query with no same-band bracket refuses. At the op level `measure ops` records each point's kernels and `fit ops` interpolates only between same-kernel neighbours, and along no line holding a hidden band or a held-out error over 5%; a declined leaf falls to its analytical law, counted. | 2026-09-18; op level 2026-10-18 (#1489); declined lines 2026-10-19 (#1493) |
 | D61 | Treatments are stated and the calibration population matched; an assumed treatment is a property of the query, recorded in the run summary. Decode row order, worth 1.77× at a fixed multiset, is a decode feature, `rowmod(k)` in scheduled order, adopted per rung by a four-condition rule. Uniform routing of the MoE segment under DP and EP is an assumed treatment, at every granularity. | 2026-09-18; revised 2026-10-01, 2026-10-14 (#941, #952) |
 | D62 | Leading warmth is measured and reported, never charged. Error is reported stratified by the axes the law is linear in. | 2026-09-18 |
 
