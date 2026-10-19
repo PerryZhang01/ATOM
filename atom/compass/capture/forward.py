@@ -86,13 +86,14 @@ def prefill(tokens: int, seqs: int) -> Shape:
     return Shape("prefill", tokens, seqs)
 
 
-def structure(config, phase: str) -> str:
+def structure(config, phase: str, eager: bool | None = None) -> str:
     """The structure an `op_graph` of `config` at a `phase` step is keyed by: the
-    architecture, the config.json digest, the TP width, the phase and the mode."""
+    architecture, the config.json digest, the TP width, the phase and the mode,
+    `config`'s unless `eager` names it."""
     from atom.compass.run import _file_digest
 
     digest = _file_digest(config.model, "config.json")
-    mode = "eager" if config.enforce_eager else "graph"
+    mode = "eager" if (config.enforce_eager if eager is None else eager) else "graph"
     arch = config.hf_config.architectures[0]
     return f"{arch} {digest} tp={config.tensor_parallel_size} {phase} {mode}"
 

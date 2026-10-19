@@ -77,7 +77,9 @@ def main(argv: list[str]) -> None:
 def population_shapes(names):
     """The shape of each step the record directories `names` hold, DP's dummy
     runs aside."""
-    from .forward import decode, prefill
+    from atom.compass.backends.op_graph import step_shape
+
+    from .forward import Shape
 
     shapes = []
     for name in names:
@@ -86,18 +88,13 @@ def population_shapes(names):
             raise ValueError(f"{name} is not a record directory: it has no run.json")
         texts = [p.read_text() for p in (path / "steps").glob("dp*[0-9].jsonl")]
         for line in (json.loads(t) for text in texts for t in text.splitlines()):
-            rows = line["rows"]
             if line["is_dummy_run"]:
                 continue
-            if not all(row[2] for row in rows):
-                shapes.append(prefill(sum(row[0] for row in rows), len(rows)))
-            elif wide := [row[0] for row in rows if row[0] != 1]:
-                raise ValueError(
-                    f"{name} step {line['step']} decodes {wide[0]} tokens in a row: "
-                    "a speculative decode step is not captured"
-                )
-            else:
-                shapes.append(decode(line["rung"] or len(rows)))
+            rows = [(row[0], row[2]) for row in line["rows"]]
+            try:
+                shapes.append(Shape(*step_shape(rows, line["rung"])))
+            except ValueError as exc:
+                raise ValueError(f"{name} step {line['step']} {exc}") from None
     return shapes
 
 

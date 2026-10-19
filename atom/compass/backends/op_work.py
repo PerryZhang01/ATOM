@@ -111,11 +111,11 @@ def _gemm(op, view, tp) -> Work:
     return work + Work({}, bias)
 
 
-def _attention(op, view, tp) -> Work:
+def _attention(op, view, tp, kv=None) -> Work:
     """Causal attention over the view's rows: Q read and O written, each row's
-    K and V over its context read once, the new tokens' among them. F and M
-    take heads times head dim only, so each side counts as one head of its
-    width."""
+    K and V over its context read once, the new tokens' among them, in `kv`,
+    the KV cache's format, else `k`'s. F and M take heads times head dim only,
+    so each side counts as one head of its width."""
     q, k = op["args"]["q"], op["args"]["k"]
     rows = view.requests
     return attention(
@@ -125,7 +125,7 @@ def _attention(op, view, tp) -> Work:
         1,
         math.prod(k["shape"][1:]),
         _fmt(q["dtype"]),
-        _fmt(k["dtype"]),
+        kv or _fmt(k["dtype"]),
     )
 
 
@@ -238,12 +238,16 @@ EXTRACTORS = {
 }
 
 
-def work(op: dict, view: BatchView, tp: int) -> Work | None:
+def work(op: dict, view: BatchView, tp: int, kv: str | None = None) -> Work | None:
     """`op`'s work on a step of `view`'s rows in a TP group of `tp` ranks, or
-    None when it launches no kernel. A kind with no extractor is refused."""
+    None when it launches no kernel. `kv` is the KV cache's format, which
+    attention reads its context in; without it, the `k` argument's. A kind with
+    no extractor is refused."""
     name = op["op"]
     extract = EXTRACTORS.get(name) or (name.startswith("aten.") and _aten)
     if not extract:
         reason = f"no extractor for the op kind {name}"
         raise CostRefused(view, [Refusal(SOURCE, reason)])
+    if extract is _attention:
+        return _attention(op, view, tp, kv)
     return extract(op, view, tp)
