@@ -7,8 +7,9 @@ Each argument is a run directory: its step record in `steps/` and aiperf's
 export in `artifacts/profile_export_aiperf.json`. SIMULATED is the cell at its
 backend, and REAL two or more real runs of it, spaced in time.
 
-A directory `cctraces_sim.sh` wrote is graded whole, and refused when its
-run.json skips host segments. In one `record` or `run` wrote, whose run.json
+A directory `cctraces_sim.sh` wrote is refused when its run.json skips host
+segments, and else graded as below when it holds `artifacts/client_run.json`,
+whole when it does not. In one `record` or `run` wrote, whose run.json
 states a `format_version`, the graded client run is the one whose export is
 `artifacts/client_run.json`, split from the record by `parity.served`: only
 its steps are graded, and every run's client must have been given the same
@@ -248,22 +249,23 @@ def _not_graded(run, traces) -> list[str]:
 
 
 def graded(cell) -> tuple[list[dict], list[str] | None, dict | None]:
-    """The steps `cell` grades; the traces its client was given, None for a
-    directory `cctraces_sim.sh` wrote; and its warmup as `_client_run` gives
-    it, None where it is graded whole."""
+    """The steps `cell` grades; the traces its client was given, and its
+    warmup, as `_client_run` gives them, both None where it is graded whole."""
     path = Path(cell) / "run.json"
     run = json.loads(path.read_text()) if path.exists() else {}
     if "format_version" in run:
         return _client_run(cell, run)
     if any(h.get("skip") for h in entries(run, "host")):
         raise ValueError(f"{cell} skips host segments; a what-if run is not graded")
+    if (Path(cell) / CLIENT_RUN).is_file():
+        return _client_run(cell, run)
     return _steps(cell), None, None
 
 
 def _read(cell) -> dict:
     steps, traces, _warmup = graded(cell)
     export = json.loads((Path(cell) / EXPORT).read_text())
-    # A run `cctraces_sim.sh` wrote, graded whole, states its arguments in run.json.
+    # A run graded whole states its arguments in run.json.
     client = {} if traces is None else json.loads((Path(cell) / CLIENT_RUN).read_text())
     return {
         "counts": _counts(steps, export),

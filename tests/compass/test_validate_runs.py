@@ -417,6 +417,28 @@ def test_a_client_run_s_warmup_steps_precede_its_own_and_are_not_graded(tmp_path
     assert grade(real, simulated) == report
 
 
+def test_a_cell_cctraces_sim_wrote_with_its_export_grades_its_profiling_steps_alone(
+    tmp_path,
+):
+    *real, simulated = _four(tmp_path / "whole")
+    report = grade(real, simulated)
+
+    def cells(name, schedule):
+        out = _four(tmp_path / name, schedule, {6: "kw", 7: "ka", 8: "kb"})
+        for cell in out:
+            _recorded(cell, warmup={"kw"})
+            # run.json as `cctraces_sim.sh` writes it: a run file, no `format_version`
+            (cell / "run.json").write_text(json.dumps({"client_runs": 1}))
+        return out
+
+    warmed = cells("warmed", WARMED)
+    assert grade(warmed[:3], warmed[3]) == report
+    # A warmup still running past its first own step refuses it.
+    late = cells("late", LATE)
+    with pytest.raises(ValueError, match="r0 is not graded: .* has not ended"):
+        grade(late[:3], late[3])
+
+
 @pytest.mark.parametrize(
     "step", [[(9, 30, 30, False)], [(6, 1, 31, True), (9, 30, 30, False)]]
 )
