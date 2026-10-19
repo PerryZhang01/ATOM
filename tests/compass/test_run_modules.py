@@ -23,7 +23,8 @@ BUILD = """
 import json, pathlib, sys, torch
 tp, root = int(sys.argv[1]), pathlib.Path(sys.argv[2])
 from atom.compass.capture import driverless
-driverless.install(tp, str(root))
+driverless.install(str(root), "gfx942")
+driverless.group(tp, 1)
 from atom.config import Config, set_current_atom_config
 config = Config(model=str(root / "model"), tensor_parallel_size=tp, load_dummy="empty")
 set_current_atom_config(config)
