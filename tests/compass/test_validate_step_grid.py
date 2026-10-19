@@ -157,7 +157,7 @@ def test_a_step_grid_cell_grades_every_row_the_step_linear_cell_does(
     assert rows["summary step_grid", "refusals"][1] == "none"
 
 
-def test_a_real_step_the_grid_refuses_is_counted_apart_and_priced_nowhere(
+def test_a_real_step_the_grid_declines_is_counted_apart_as_a_fallback(
     capsys, tmp_path, monkeypatch
 ):
     _rows(capsys, tmp_path)
@@ -167,9 +167,28 @@ def test_a_real_step_the_grid_refuses_is_counted_apart_and_priced_nowhere(
 
     rows = _graded(capsys, tmp_path / "c4")
     for real in ("real0", "real1", "real2"):
-        steps, value = rows[f"cost {real}", "refused decode rung 1"][0].split(", ")
+        steps, value = rows[f"cost {real}", "fallback decode rung 1"][0].split(", ")
         assert steps == "1 steps" and value.startswith("real ")
         assert rows[f"cost {real}", "decode validated"][0].startswith("9 steps")
+
+
+def test_a_step_the_grid_declines_is_a_fallback_and_one_a_law_declines_refused(
+    tmp_path,
+):
+    """A run prices a step the grid declines by the step roofline below it; a
+    graded run has nothing below a law."""
+    member = _bundle(_steps(), missing={15})
+    grid = StepGridBackend(StepGrid(member["grid"]), Residual(member["residual"]), "b")
+    record = _record(tmp_path / "steps", _steps())
+
+    by_grid = cost_accuracy(record, grid)
+    by_law = cost_accuracy(record, {**LAW, "decode": {}})
+
+    assert by_grid["backend"] == grid.describe()
+    assert by_law["backend"] == "planted"
+    assert by_grid["refused"] == by_law["fallback"] == {}
+    assert by_grid["fallback"]["decode rung 1"]["steps"] == 1
+    assert by_law["refused"]["decode rung 1"]["steps"] == 10
 
 
 def test_a_cell_cctraces_sim_wrote_grades_with_no_argv_as_its_step_linear_cell(
@@ -252,6 +271,6 @@ def test_a_real_step_past_the_residuals_hull_is_priced_unvalidated_and_counted(
         _record(tmp_path / "steps", _steps()), StepGridBackend(grid, residual, "b")
     )
 
-    assert (report["extrapolated"], report["refused"]) == (8, {})
+    assert (report["extrapolated"], report["fallback"]) == (8, {})
     assert report["unvalidated"]["decode"]["steps"] == 8
     assert report["validated"]["decode"]["steps"] == 2
