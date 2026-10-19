@@ -259,7 +259,7 @@ def test_a_record_no_client_run_names_refuses_naming_it(tmp_path):
         ("step-grid", "{b} is named by no --client-run"),
     ],
 )
-def test_sessions_refuse_off_step_grid_and_for_a_grid_input_no_client_run_names(
+def test_sessions_refuse_off_step_grid_and_an_unnamed_grid_input_refuses_under_them(
     tmp_path, backend, named
 ):
     a, b = record(tmp_path / "a", 19), tmp_path / "b"
