@@ -255,3 +255,20 @@ def test_the_probe_prices_a_late_rendezvous_receive_with_its_threshold_moved():
         if s["carrier"] == "rccl" and s["late"] and s["bytes"] > eager:
             s["done"] = s["end"] = s["end"] - eager * g
     assert probe.fit(samples)["rccl"]["late"] == pytest.approx([0] * 5, abs=1e-15)
+
+
+def test_the_probe_bisects_a_threshold_to_a_32nd_of_the_power_below_it():
+    """RCCL eager up to 37.5 MiB: the late order's bisection past 32 MiB
+    states it to the MiB below. gloo, eager at no size, bisects to the byte."""
+    limit = 75 * 2**19
+    truth = TRUTH | {"rccl": (limit, *TRUTH["rccl"][1:])}
+    samples = []
+    for c, sizes in probe.SIZES.items():
+        late = probe.threshold(sizes, lambda n, c=c: n <= truth[c][0])
+        samples += [_sample(c, n, False, *truth[c]) for n in sizes]
+        samples += [_sample(c, n, True, *truth[c]) for n in late]
+    fit = probe.fit(samples)
+    assert fit["rccl"]["eager_threshold_bytes"] == 37 * 2**20
+    assert fit["gloo"]["eager_threshold_bytes"] == 0
+    gloo = sorted(s["bytes"] for s in samples if s["carrier"] == "gloo" and s["late"])
+    assert gloo[:4] == [1, 2, 4, 8]
