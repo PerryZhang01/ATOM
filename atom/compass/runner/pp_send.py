@@ -13,6 +13,9 @@ posts each part's receive when the part before it has arrived. The ``gloo``
 parts leave at ``t_send``, the sender's host send; the ``rccl`` parts at
 ``t_ready``, when the sender's device work ends, or when the previous send's
 ``rccl`` parts are done, whichever is later; their receive waits for the receiver's device end.
+At TP above 1 a tensor sent as its shard is a part ``(carrier, bytes, True)``:
+the receiver all-gathers it over its TP group before it posts the next
+part's receive.
 
 `StageSends` is the stage loop's side. Before a downstream stage's forward it
 receives that forward's input on ``pp_data``, the call and the metadata's arrival
@@ -91,14 +94,15 @@ def woken(wake, block: float) -> float:
 
 
 def is_rendezvous(models, parts) -> bool:
-    return any(not models[c].eager(n) for c, n in parts)
+    return any(not models[c].eager(n) for c, n, *_ in parts)
 
 
-def recv_done(models, t_send: float, t_recv_posted: float, parts):
+def recv_done(models, t_send: float, t_recv_posted: float, parts, gather=0.0):
     """``(done, end)``: the send's latest sender-side completion, and the
-    receive's end, folding the parts in the receiver's order."""
+    receive's end, folding the parts in the receiver's order; a sharded part's
+    all-gather takes `gather` seconds after it arrives."""
     r, done = t_recv_posted, -math.inf
-    for c, n in parts:
+    for c, n, *sharded in parts:
         m = models[c]
         if m.eager(n):
             sent = t_send + m.overhead_s + n * m.per_byte_s
@@ -108,6 +112,8 @@ def recv_done(models, t_send: float, t_recv_posted: float, parts):
             pushed = m.eager_threshold_bytes * m.per_byte_s
             r = max(t_send, done, r - pushed) + m.rendezvous_s(n)
             done = max(done, r)
+        if sharded:
+            r += gather
     return done, r
 
 
@@ -182,7 +188,8 @@ class StageSends:
     def receive(self, batch) -> tuple:
         """``(called, meta)`` and the tensors' arrival, posted at `batch`'s prepare end.
         The tensors wait for the stage's device end, and leave once the previous
-        frame's are done: one stream sends both."""
+        frame's are done: one stream sends both. Each sharded tensor's
+        all-gather is priced by the worker's cost backend."""
         from atom.compass.runner.overrides import forward_shape
 
         seq, called = self.received, self.rt.now
@@ -194,7 +201,11 @@ class StageSends:
         sent, meta = recv_done(self.models, frame["t_send"], posted, gloo)
         ready = max(frame["t_ready"], self.tensors_done)
         posted = max(meta, device, self.held)
-        self.tensors_done, end = recv_done(self.models, ready, posted, tensors)
+        gather = 0.0
+        if any(len(p) > 2 for p in tensors):
+            rows = batch.total_tokens_num
+            gather = self.call("pp_all_gather_s", rows, wait_out=True)
+        self.tensors_done, end = recv_done(self.models, ready, posted, tensors, gather)
         if is_rendezvous(self.models, gloo):
             ack = {"seq": seq, "tensors_done": self.tensors_done}
             self.call("send_pp_frame", "pp_ack", ack, wait_out=True)
