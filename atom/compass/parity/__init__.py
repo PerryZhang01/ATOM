@@ -16,8 +16,9 @@ output's token copy (`t_recv_ns`, only on a forward that reaches it), and with
 a drafter its MTP status (`t_mtp_ns`) and draft copy (`t_draft_recv_ns`). Its device
 window is `d_busy_ns`, from an event recorded at the launch's entry to one
 recorded at the forward's exit (`d_target_ns` to one recorded just after
-`postprocess` records `forward_done_event`, or on a forward that samples
-nothing, before the drafter's `compute_draft_kv`), and `d_gap_ns`, from the previous forward's
+`postprocess` records `forward_done_event`, less the drafter's `compute_draft_kv`
+pass before it, or on a forward that samples nothing, to the start of its first
+drafter pass, that one or `propose_draft_token_ids`), and `d_gap_ns`, from the previous forward's
 exit event to this launch's entry event, absent on the first line; summed in
 order they lay every forward on one device timeline. A later pipeline stage's
 receive of its input is `t_pp_recv_ns`, its device part `d_recv_ns`; an idle
@@ -378,7 +379,7 @@ class StepRecording:
             )
             draft_kv = self.drafter.compute_draft_kv
             self.drafter.compute_draft_kv = functools.partial(
-                self._target_done, draft_kv
+                self._draft_pass, "draft_kv_end", draft_kv
             )
         self._recording = True
 
@@ -417,11 +418,27 @@ class StepRecording:
 
     def _target_done(self, call, *args):
         """`call(*args)` after a device event where `postprocess` has just
-        recorded `forward_done_event`, or where `compute_draft_kv` starts: the
-        target's end, before the draft. The later of the two wins."""
+        recorded `forward_done_event`: the target's end, sampling included."""
         if getattr(self, "_parity_record", None) is not None:
             self._stamps["target_event"] = self.device_event()
         return call(*args)
+
+    def _draft_pass(self, end, call, *args, **kwargs):
+        """`call`, a drafter pass. The first one's start ends the target of a
+        forward that samples nothing; with `end`, a device event where it ends
+        is kept under that name."""
+        if getattr(self, "_parity_record", None) is None:
+            return call(*args, **kwargs)
+        if "draft_event" not in self._stamps:
+            self._stamps["draft_event"] = self.device_event()
+        reply = call(*args, **kwargs)
+        if end:
+            self._stamps[end] = self.device_event()
+        return reply
+
+    def propose_draft_token_ids(self, *args, **kwargs):
+        call = super().propose_draft_token_ids
+        return self._draft_pass(None, call, *args, **kwargs)
 
     def _gate_staging_reuse(self):
         return self._stamped("t_gate_ns", super()._gate_staging_reuse)
@@ -440,7 +457,15 @@ class StepRecording:
         stamps, self._stamps = self._stamps, {}
         launch = stamps.pop("launch_event", None)
         names = {"d_target_ns": "target_event", "d_recv_ns": "recv_event"}
-        marks = {k: stamps.pop(e) for k, e in names.items() if e in stamps}
+        marks = {k: [stamps.pop(e)] for k, e in names.items() if e in stamps}
+        first = stamps.pop("draft_event", None)
+        kv_end = stamps.pop("draft_kv_end", None)
+        if "d_target_ns" in marks and kv_end is not None:
+            # It sampled after its draft-KV pass, the first drafter pass a
+            # forward runs, and that pass is not the target's work.
+            marks["d_target_ns"] += [first, kv_end]
+        elif first is not None:
+            marks.setdefault("d_target_ns", [first])
         window = None
         if launch is not None:
             done, previous = self.device_event(), self._last_exit
@@ -461,8 +486,9 @@ def _window(previous, launch, done, marks, wait: bool):
             return None
         time.sleep(1e-3)
     fields = {"d_busy_ns": round(launch.elapsed_time(done) * 1e6)}
-    for key, event in marks.items():
-        fields[key] = round(launch.elapsed_time(event) * 1e6)
+    for key, (event, *less) in marks.items():
+        ms = launch.elapsed_time(event) - (less[0].elapsed_time(less[1]) if less else 0)
+        fields[key] = round(ms * 1e6)
     if previous is not None:
         fields["d_gap_ns"] = round(previous.elapsed_time(launch) * 1e6)
     return fields

@@ -12,8 +12,10 @@ completes once the device clock has passed it.
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from test_parity_record import GRAPHABLE, LADDER, _config, _drive
 
+from atom.compass.backends.step_labels import label
 from atom.compass.parity import ENV, TIMESTAMPS, StepRecording, compare, read
 
 GAP, BUSY = 7_000, 100_000  # ns
@@ -57,14 +59,19 @@ class _Processor:
         return []
 
 
-TARGET, SAMPLE, DRAFT = 60_000, 2_000, 9_000  # ns
+TARGET, SAMPLE, KV, PROPOSE = 60_000, 2_000, 9_000, 5_000  # ns
+#: `eagle-dp` is EAGLE under DP lockstep; DSpark writes its draft KV on every forward.
+DRAFTERS = ("eagle", "eagle-dp", "dspark")
 
 
-def _recorded(warmup, drafter=False):
-    """With `drafter`, every forward calls the drafter's `compute_draft_kv`
-    after its target, and an output forward also waits for the MTP status
-    before its launch, then samples, calls `prepare_sampled_ids` right after
-    `forward_done_event` and waits for the draft copy, as ATOM does."""
+def _recorded(warmup, drafter=None):
+    """With `drafter` (`DRAFTERS`), a forward calls the drafter's
+    `compute_draft_kv` after its target, except an `eagle-dp` middle chunk,
+    which runs an align-only `propose_draft_token_ids` instead. An output
+    forward also waits for the MTP status before its launch, then samples,
+    calls `prepare_sampled_ids` right after `forward_done_event`, proposes and
+    waits for the draft copy, as ATOM does. Each pass's device time lands on
+    the next event recorded."""
     device = _Device()
     clock = iter(range(1, 10**9))
 
@@ -77,10 +84,13 @@ def _recorded(warmup, drafter=False):
             self.attn_metadata_builder = GRAPHABLE
             self.tokenID_processor = _Processor()
             if drafter:
-                # The draft-KV pass queues the draft's device time.
-                self.drafter = SimpleNamespace(
-                    compute_draft_kv=lambda *a: setattr(self, "next", "exit")
-                )
+
+                def draft_kv(positions, hidden, next_token_ids):
+                    # EAGLE's returns early where a row samples (-1).
+                    if drafter == "dspark" or -1 not in next_token_ids:
+                        self.next = "kv"
+
+                self.drafter = SimpleNamespace(compute_draft_kv=draft_kv)
             self.exited = False
             self.forward(warmup)
 
@@ -98,18 +108,26 @@ def _recorded(warmup, drafter=False):
             self.next = "launch"
             assert self.run_model([], batch) == "logits"
             self.next = "target"
-            if drafter:
-                self.drafter.compute_draft_kv([], "hidden", None)
+            align = drafter == "eagle-dp" and not output
+            if drafter and not align:
+                self.drafter.compute_draft_kv([], "hidden", [-1] if output else [7])
+            if align:
+                self.propose_draft_token_ids(batch, align_only=True)
             if drafter and output:
                 self.next = "sample"
                 p.prepare_sampled_ids(batch)
+                self.propose_draft_token_ids(batch)
                 p.recv_async_output_draft()
             elif output:
                 assert p.prepare_sampled_ids(batch) == []
-            self.next = "exit" if drafter else "busy"
+            if not drafter:
+                self.next = "busy"
             # The previous forward's exit event has completed, this one's has not.
             device.now = device.times[-2] if len(device.times) > 1 else -1
             return "ran"
+
+        def propose_draft_token_ids(self, batch, align_only=False):
+            self.next = "propose"
 
         def exit(self):
             self.exited = True
@@ -122,8 +140,10 @@ def _recorded(warmup, drafter=False):
         def device_event(self):
             # Launch after the previous exit, exit after the launch.
             last = device.times[-1] if device.times else 0
-            step = {"launch": GAP, "target": TARGET, "sample": SAMPLE, "exit": DRAFT}
+            step = {"launch": GAP, "target": TARGET, "sample": SAMPLE}
+            step |= {"kv": KV, "propose": PROPOSE, "idle": 0}
             device.times.append(last + step.get(self.next, BUSY + len(device.times)))
+            self.next = "idle"
             return _Event(device, device.times[-1])
 
     return _Recorded, device
@@ -164,13 +184,14 @@ def test_each_line_carries_its_host_stamps_and_device_window(tmp_path, monkeypat
     }
 
 
+@pytest.mark.parametrize("drafter", DRAFTERS)
 def test_with_a_drafter_each_line_splits_its_device_window_at_the_target(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, drafter
 ):
-    """A middle chunk's target ends where `compute_draft_kv` starts; an output
-    forward's where it samples, after that."""
+    """A middle chunk's target ends where its first drafter pass starts; an
+    output forward's where it samples, less a draft-KV pass before that."""
     batches = _drive(tmp_path / "simulated", monkeypatch, {0: [0, 1]})[0][0]
-    recorded, device = _recorded(batches[-1], drafter=True)
+    recorded, device = _recorded(batches[-1], drafter=drafter)
     device.tick = 10**12
     monkeypatch.setenv(ENV, str(tmp_path / "real"))
     runner = recorded(0, _config())
@@ -184,9 +205,13 @@ def test_with_a_drafter_each_line_splits_its_device_window_at_the_target(
         keys = {"t_mtp_ns", "t_recv_ns", "t_draft_recv_ns"}
         assert keys <= step.keys() if output else not keys & step.keys()
         target = TARGET + SAMPLE * output
-        assert (step["d_target_ns"], step["d_busy_ns"]) == (target, target + DRAFT)
+        kv = KV * (drafter == "dspark" or drafter == "eagle" and not output)
+        draft = kv + PROPOSE * (output or drafter == "eagle-dp")
+        assert (step["d_target_ns"], step["d_busy_ns"]) == (target, target + draft)
         if output:
             stamps = [step["t_enter_ns"], *step["t_gate_ns"], *step["t_mtp_ns"]]
             stamps += [*step["t_launch_ns"], *step["t_recv_ns"]]
             stamps += [*step["t_draft_recv_ns"], step["t_exit_ns"]]
             assert stamps == sorted(stamps)
+    # No step of the record is left without its target end.
+    assert {s.cut for s in label(tmp_path / "real" / "dp0.jsonl")[0]} <= {None, "mixed"}
