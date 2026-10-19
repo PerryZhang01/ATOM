@@ -143,7 +143,7 @@ def test_a_cell_is_graded_from_every_source_and_its_method_shares_grade_nothing(
     )
     # Every step the cost rows leave out is named, a warm one with its real seconds.
     assert rows["cost real0", "left out"][0] == (
-        'not labelled {"exposed": 0, "mixed": 0}; warm steps, real s {5: 0.81}'
+        'not labelled {"exposed": 0, "mixed": 0, "unsplit": 0}; warm steps, real s {5: 0.81}'
     )
     assert rows["cost real0", "prefill validated"][0].startswith("9 steps")
     assert rows["cost real1", "left out"][0].endswith("warm steps, real s {}")
