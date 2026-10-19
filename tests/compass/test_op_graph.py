@@ -115,6 +115,7 @@ def test_a_step_with_no_graph_to_price_it_is_refused_by_name(batch, graph, named
 def test_each_reason_a_graph_refuses_is_named_once():
     region = {
         "seq": [
+            leaf("foo.bar.default"),
             {
                 "repeat": {"seq": [leaf("foo.bar.default"), g(2, 8, 8)]},
                 "count": 4,
