@@ -1,12 +1,15 @@
 # SPDX-License-Identifier: MIT
 """Work primitives and the attainable-peak roofline price.
 
-Each primitive matches a hand count on one shape; the price is monotone in each
+Each primitive matches a hand count on one shape, and the MoE expectations
+under uniform routing a closed form and a simulation; the price is monotone in each
 of its terms, takes a mixed pair's wider rate, reads the bandwidth curve and the
 links the spec states, and refuses by name a format the spec has no rate for,
 a missing curve, and a collective wider than the scale-up domain.
 The named result prices one TP2 decode layer by hand and by `price`.
 """
+
+import random
 
 import pytest
 from test_spec_schema import document
@@ -14,13 +17,18 @@ from test_spec_schema import document
 from atom.compass.backends.work import (
     Collective,
     Work,
+    activated_experts,
+    all_to_all,
     allgather,
     allreduce,
     attention,
     bounds,
     elementwise,
     gemm,
+    grouped_gemm,
+    max_rank_load,
     price,
+    reduce_scatter,
 )
 from atom.compass.spec import MachineSpec
 from atom.compass.spec.rules import SpecRefusal
@@ -53,6 +61,8 @@ SPEC = machine()
 def test_each_primitive_matches_a_hand_count():
     # [4, 8] bf16 @ [8, 6] fp8 -> [4, 6] bf16: 2*4*6*8 flops at the bf16 rate.
     assert gemm(4, 6, 8, "bf16", "fp8") == Work({"bf16": 384}, 64 + 48 + 48)
+    # 3 rows of 5 fp8 through 2 fp4 [5, 4] weights, out bf16.
+    assert grouped_gemm(3, 4, 5, 2, "fp8", "fp4") == Work({"fp8": 120}, 15 + 20 + 24)
     # Rows (q=1, kv=5) and (q=3, kv=4): 5 + (2 + 3 + 4) = 14 query-key pairs.
     # Q and O: 4 queries * 4 heads * 8 * 2 B each; K and V: 9 keys * 2 heads * 8 * 1 B each.
     assert attention([1, 3], [5, 4], 4, 8, kv_heads=2, kv_fmt="fp8") == Work(
@@ -63,13 +73,41 @@ def test_each_primitive_matches_a_hand_count():
 
 def test_each_collective_sends_the_least_any_algorithm_sends():
     assert allreduce(4, 1000).comm == (Collective(4, 1500),)
-    assert allgather(4, 1000).comm == (Collective(4, 750),)
+    for collective in (allgather, reduce_scatter, all_to_all):
+        assert collective(4, 1000).comm == (Collective(4, 750),)
     assert allreduce(1, 1000) == Work()
 
 
 def test_works_add_by_format():
     total = gemm(1, 1, 1) + gemm(1, 1, 1, "fp8", "fp8") + allreduce(2, 8)
     assert total == Work({"bf16": 2, "fp8": 2}, 6 + 4, (Collective(2, 8),))
+
+
+def test_moe_routing_in_expectation():
+    # Two rows, two of eight experts each: an expert escapes both with (6/8)^2.
+    assert activated_experts(8, 2, 2) == pytest.approx(8 * (1 - (6 / 8) ** 2))
+    # One row to one of two experts on two ranks: the busiest rank always has
+    # it, and the bound from independent marginals is 1 - (1/2)^2.
+    assert max_rank_load(1, 1, 2, 2) == pytest.approx(0.75)
+    assert max_rank_load(64, 8, 256, 1) == pytest.approx(64 * 8)
+    with pytest.raises(ValueError, match="do not split evenly"):
+        max_rank_load(4, 2, 10, 4)
+
+
+def test_the_expected_busiest_rank_is_bounded_below_and_close():
+    rows, top_k, experts, ranks = 64, 8, 256, 8
+    draw = random.Random(0)
+    loads = []
+    for _ in range(2000):
+        counts = [0] * ranks
+        for _ in range(rows):
+            for e in draw.sample(range(experts), top_k):
+                counts[e // (experts // ranks)] += 1
+        loads.append(max(counts))
+    simulated = sum(loads) / len(loads)
+    bound = max_rank_load(rows, top_k, experts, ranks)
+    assert rows * top_k / ranks < bound <= simulated
+    assert bound > 0.97 * simulated
 
 
 def test_a_mixed_pair_takes_the_wider_rate():

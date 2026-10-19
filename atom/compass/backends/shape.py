@@ -196,9 +196,11 @@ class BatchView:
     gather carries, which the MoE segment is priced from. It is None on one
     rank. `draft_moe_rows` is the rows the same gather carries on an MTP
     draft's first pass, which runs each rank's own token count; None on one
-    rank or with no such drafter. `produces_output` says whether the step
-    samples, which a pure middle prefill chunk does not; None when the caller
-    did not say.
+    rank or with no such drafter. `moe_tokens` is the real tokens among
+    `moe_rows`: a padded gather fills the rest with pad rows that all carry
+    token 0 at position 0. None on one rank. `produces_output` says whether
+    the step samples, which a pure middle prefill chunk does not; None when
+    the caller did not say.
     `tbo_tokens` is the two-batch-overlap split the data-parallel group
     agreed: per micro-batch, each rank's token count. It is None when the
     step is not split, and on one rank. `image_tokens` counts the scheduled
@@ -217,6 +219,7 @@ class BatchView:
     produces_output: bool | None = None
     tbo_tokens: tuple[tuple[int, ...], ...] | None = None
     image_tokens: int = 0
+    moe_tokens: int | None = None
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)

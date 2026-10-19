@@ -17,13 +17,21 @@ must send under any algorithm, over its link bandwidth. A matrix product takes
 the rate of its wider operand format. A format the spec states no rate for is
 refused by the spec, naming the field. A collective wider than the scale-up
 domain is refused.
+
+MoE work is priced in expectation under independent uniform routing:
+`activated_experts` is how many of the experts a batch touches, and
+`max_rank_load` the busiest expert-parallel rank's routed rows.
 """
 
 from __future__ import annotations
 
 import bisect
 import dataclasses
+import functools
 from collections.abc import Mapping, Sequence
+from math import comb
+
+import numpy as np
 
 #: Bytes per element, and so the width that decides a mixed pair's rate.
 ELEMENT_BYTES = {"fp32": 4, "bf16": 2, "fp8": 1, "fp4": 0.5}
@@ -71,6 +79,15 @@ def gemm(m: int, n: int, k: int, a="bf16", b="bf16", out="bf16") -> Work:
     return Work({_wider(a, b): 2 * m * n * k}, moved)
 
 
+def grouped_gemm(
+    rows: float, n: int, k: int, groups: float, a="bf16", b="bf16", out="bf16"
+) -> Work:
+    """`rows` routed rows, each through one of `groups` `[k, n]` weights that
+    are read once each."""
+    moved = rows * k * _size(a) + groups * k * n * _size(b) + rows * n * _size(out)
+    return Work({_wider(a, b): 2 * rows * n * k}, moved)
+
+
 def attention(
     q_lens: Sequence[int],
     kv_lens: Sequence[int],
@@ -113,8 +130,47 @@ def allreduce(ranks: int, nbytes: float) -> Work:
 
 
 def allgather(ranks: int, nbytes: float) -> Work:
-    """A gathered output of `nbytes` on every rank, `1/N` of it from each."""
+    """A rank sends `(N-1)/N` of `nbytes`: a gathered output of `nbytes` on
+    every rank, `1/N` of it from each (all-gather); each rank's `nbytes`
+    reduced into `1/N` of it per rank (reduce-scatter); each rank's `nbytes`
+    spread evenly over the group (all-to-all)."""
     return _collective(ranks, (ranks - 1) / ranks * nbytes)
+
+
+reduce_scatter = all_to_all = allgather
+
+
+def activated_experts(experts: int, top_k: int, rows: float) -> float:
+    """The expected number of experts `rows` rows touch, each routed to
+    `top_k` distinct experts of `experts`."""
+    return experts * (1 - (1 - top_k / experts) ** rows)
+
+
+@functools.lru_cache(maxsize=256)
+def max_rank_load(rows: int, top_k: int, experts: int, ranks: int) -> float:
+    """The busiest of `ranks` expert-parallel ranks' routed rows, in
+    expectation, the experts split evenly over the ranks.
+
+    One rank's load is a sum of `rows` independent hypergeometric counts, its
+    distribution exact by FFT. The ranks' loads are negatively associated (they
+    sum to `rows * top_k`), so the product of the marginals bounds the chance
+    that every load is at most `t` from above, and the value returned is a
+    lower bound on the expected maximum, at least the mean.
+    """
+    held, rest = divmod(experts, ranks)
+    if rest:
+        raise ValueError(f"{experts} experts do not split evenly over {ranks} ranks")
+    per_row = np.array(
+        [
+            comb(held, c) * comb(experts - held, top_k - c)
+            for c in range(min(held, top_k) + 1)
+        ],
+        dtype=float,
+    ) / comb(experts, top_k)
+    size = rows * (len(per_row) - 1) + 1
+    load = np.fft.irfft(np.fft.rfft(per_row, size) ** rows, size)
+    cdf = np.clip(np.cumsum(load), 0.0, 1.0)
+    return float(np.sum(1.0 - cdf**ranks))
 
 
 def _memory_seconds(nbytes: float, machine) -> float:

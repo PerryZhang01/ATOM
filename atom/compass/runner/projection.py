@@ -235,9 +235,9 @@ def batch_view(batch: Any, mode: ForwardMode, runner: Any) -> BatchView:
     always the variable-length one (`EagleProposer.propose`); a block drafter
     pads its passes to the group and is left out.
     """
-    draft_moe_rows = None
+    draft_moe_rows = moe_tokens = None
     if mode.sync is not None:
-        gathered = int(mode.sync.num_tokens_across_dp.sum())
+        gathered = moe_tokens = int(mode.sync.num_tokens_across_dp.sum())
         if mode.running_tokens_are_unified:
             moe_rows = _data_parallel_size(runner) * mode.running_tokens
         else:
@@ -265,6 +265,7 @@ def batch_view(batch: Any, mode: ForwardMode, runner: Any) -> BatchView:
         produces_output=batch.produces_output(),
         tbo_tokens=None if mode.sync is None else mode.sync.ub_tokens_across_dp,
         image_tokens=image_tokens(batch, runner),
+        moe_tokens=moe_tokens,
     )
 
 
