@@ -3,7 +3,7 @@
   "name": "mi308x-hjbog18",
   "provenance": {
     "authored_by": "compass agent for jgong5",
-    "date": "2026-10-18",
+    "date": "2026-10-19",
     "origin": "mixed",
     "origins": {
       "host.cpu.cores_physical": {
@@ -125,42 +125,42 @@
       },
       "device.memory.bandwidth_curve": {
         "origin": "probed",
-        "source_root": "commit:347f5bcdd",
-        "record": "sha256:774ab13e538536628e55aa65a5522e5f1fdd945243a367a87b75d546bf57e9c6"
+        "source_root": "commit:eaffcf3c3",
+        "record": "sha256:9b748288296ed1eedbf93539fb902ddbd5abe4418a768e2da5b452f658676497"
       },
       "device.kernel_floor_s": {
         "origin": "probed",
-        "source_root": "commit:347f5bcdd",
-        "record": "sha256:774ab13e538536628e55aa65a5522e5f1fdd945243a367a87b75d546bf57e9c6",
-        "p10": 1.754871070384979e-06,
-        "p90": 1.7566190481185917e-06
+        "source_root": "commit:eaffcf3c3",
+        "record": "sha256:9b748288296ed1eedbf93539fb902ddbd5abe4418a768e2da5b452f658676497",
+        "p10": 1.7572400808334351e-06,
+        "p90": 1.7589370131492615e-06
       },
       "interconnect.intra_node.link_latency_s": {
         "origin": "probed",
-        "source_root": "commit:347f5bcdd",
-        "record": "sha256:774ab13e538536628e55aa65a5522e5f1fdd945243a367a87b75d546bf57e9c6",
-        "p10": 8.71745502948761e-07,
-        "p90": 9.11213505268097e-07
+        "source_root": "commit:eaffcf3c3",
+        "record": "sha256:9b748288296ed1eedbf93539fb902ddbd5abe4418a768e2da5b452f658676497",
+        "p10": 9.642005503177643e-07,
+        "p90": 1.0060350775718689e-06
       },
       "device.memory.derate": {
         "origin": "probed",
-        "source_root": "commit:347f5bcdd",
-        "record": "sha256:774ab13e538536628e55aa65a5522e5f1fdd945243a367a87b75d546bf57e9c6"
+        "source_root": "commit:eaffcf3c3",
+        "record": "sha256:9b748288296ed1eedbf93539fb902ddbd5abe4418a768e2da5b452f658676497"
       },
       "device.compute.derate.bf16": {
         "origin": "probed",
-        "source_root": "commit:347f5bcdd",
-        "record": "sha256:774ab13e538536628e55aa65a5522e5f1fdd945243a367a87b75d546bf57e9c6"
+        "source_root": "commit:eaffcf3c3",
+        "record": "sha256:9b748288296ed1eedbf93539fb902ddbd5abe4418a768e2da5b452f658676497"
       },
       "device.compute.derate.fp8": {
         "origin": "probed",
-        "source_root": "commit:347f5bcdd",
-        "record": "sha256:774ab13e538536628e55aa65a5522e5f1fdd945243a367a87b75d546bf57e9c6"
+        "source_root": "commit:eaffcf3c3",
+        "record": "sha256:9b748288296ed1eedbf93539fb902ddbd5abe4418a768e2da5b452f658676497"
       },
       "interconnect.intra_node.derate": {
         "origin": "probed",
-        "source_root": "commit:347f5bcdd",
-        "record": "sha256:774ab13e538536628e55aa65a5522e5f1fdd945243a367a87b75d546bf57e9c6"
+        "source_root": "commit:eaffcf3c3",
+        "record": "sha256:9b748288296ed1eedbf93539fb902ddbd5abe4418a768e2da5b452f658676497"
       },
       "host.tokenizers[qwen3.8-27b fast]": {
         "origin": "probed",
@@ -188,7 +188,7 @@
       "intake",
       "peaks"
     ],
-    "notes": "one Qwen3.8-27B TP1 start at 0f045543d | no probe fills these | ptl_enable | one real c=256 first-turn cc-traces burst at 19c5ab09e | probe_device.py: GEMM, copy, graph and link samples"
+    "notes": "one Qwen3.8-27B TP1 start at 0f045543d | no probe fills these | ptl_enable | one real c=256 first-turn cc-traces burst at 19c5ab09e | probe_device.py: GEMM, read, write, copy, graph and link samples"
   },
   "host": {
     "cpu": {
@@ -231,100 +231,100 @@
       "bandwidth_curve": [
         [
           4096,
-          2158866473.8772497
+          2157591017.973134
         ],
         [
           8192,
-          4315776622.192016
+          4314727534.59131
         ],
         [
           16384,
-          8629823253.168003
+          8631725902.179707
         ],
         [
           32768,
-          17253108088.676807
+          17251459506.302498
         ],
         [
           65536,
-          30279711843.07834
+          32561657201.013557
         ],
         [
           131072,
-          60502955989.42115
+          65099377650.37368
         ],
         [
           262144,
-          120815151122.93721
+          121042698643.03157
         ],
         [
           524288,
-          237295158987.3701
+          236769959534.4069
         ],
         [
           1048576,
-          453325655440.997
+          514468364461.06976
         ],
         [
           2097152,
-          861892287454.4998
+          960227821598.1946
         ],
         [
           4194304,
-          1395942726835.2988
+          1597709578251.726
         ],
         [
           8388608,
-          1963114394487.7944
+          2353751070196.3853
         ],
         [
           16777216,
-          2500722601013.529
+          3105836933027.4946
         ],
         [
           33554432,
-          2844669467186.9067
+          3722686166247.507
         ],
         [
           67108864,
-          3213380400772.1265
+          4106764512558.646
         ],
         [
           134217728,
-          3459254565659.331
+          4334992270505.327
         ],
         [
           268435456,
-          3580129945166.3345
+          4453203007262.494
         ],
         [
           536870912,
-          3657820717750.111
+          4500899228486.505
         ],
         [
           1073741824,
-          3662186989091.235
+          4513857792377.843
         ],
         [
           2147483648,
-          3670512192504.261
+          4517180955398.616
         ],
         [
           4294967296,
-          3670512192504.261
+          4528993979676.667
         ]
       ],
-      "derate": 0.6925494702838229
+      "derate": 0.8545271659767296
     },
     "compute": {
       "bf16_flops": 344000000000000.0,
       "fp8_flops": 688000000000000.0,
       "derate": {
-        "bf16": 0.7808511019148736,
-        "fp8": 0.7140390336983675
+        "bf16": 0.7815410656452395,
+        "fp8": 0.7196465118716714
       }
     },
-    "kernel_floor_s": 1.7559914588928222e-06,
+    "kernel_floor_s": 1.7582520246505738e-06,
     "software_pinned_to": {
       "rocm": "7.2.4",
       "aiter": "9205e1059",
@@ -337,8 +337,8 @@
       "topology": "fully_connected",
       "domain_devices": 8,
       "link_bandwidth_bytes_per_s": 64000000000.0,
-      "link_latency_s": 8.984059989452361e-07,
-      "derate": 0.791361815985565
+      "link_latency_s": 9.83337014913559e-07,
+      "derate": 0.79356309701275
     },
     "inter_node": {
       "link_bandwidth_bytes_per_s": 50000000000.0,
