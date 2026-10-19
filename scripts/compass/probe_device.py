@@ -94,18 +94,13 @@ def _pingpong(mine, theirs, rounds, serve: tl.constexpr):
 
 @triton.jit
 def _stream(src, dst, n, BLOCK: tl.constexpr, READ: tl.constexpr, WRITE: tl.constexpr):
-    """Read `n` floats of `src`, write `n` of `dst`, or copy one to the other,
-    `BLOCK` a program. A read alone stores only negative floats, of which a
-    zeroed `src` has none, so the loads stay and nothing is written."""
+    """Copy `n` floats, `BLOCK` a program, or only read or only write them. A
+    read alone stores the negative floats of a zeroed `src`: none."""
     offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
-    mask = offs < n
+    x = tl.zeros([BLOCK], tl.float32)
     if READ:
-        x = tl.load(src + offs, mask=mask)
-        if not WRITE:
-            mask = mask & (x < 0)
-    else:
-        x = tl.zeros([BLOCK], dtype=tl.float32)
-    tl.store(dst + offs, x, mask=mask)
+        x = tl.load(src + offs, mask=offs < n)
+    tl.store(dst + offs, x, mask=(offs < n) & ((x < 0) | WRITE))
 
 
 def cards(bdfs: list[str], drm: str = DRM) -> list[dict]:
@@ -180,27 +175,17 @@ def probe(torch) -> dict:
         gemm["fp8"][shape] = _timed(torch, scaled)
         time.sleep(1)
     pool = torch.zeros(2 * POOL // 4, device="cuda")
-    streams = {}
-    for kind, (read, write) in KINDS.items():
+    streams = {kind: {} for kind in KINDS}
+    for (kind, (read, write)), size in itertools.product(KINDS.items(), SIZES):
         src, dst = pool.chunk(2) if read and write else (pool, pool)
-        streams[kind] = {}
-        for size in SIZES:
-            n = size // 4 // (read + write)  # floats a side
-            k = min(GRAPH, 2 * POOL // size)  # kernels in the graph
-            run = partial(
-                _stream[(triton.cdiv(n, COPY_BLOCK),)],
-                n=n,
-                BLOCK=COPY_BLOCK,
-                READ=read,
-                WRITE=write,
-                num_warps=8,
-            )
-            run(src, dst)  # compiles uncaptured
-            graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph):
-                for i in range(k):
-                    run(src[i * n :], dst[i * n :])
-            streams[kind][size] = [t / k for t in _timed(torch, graph.replay)]
+        n, k = size // 4 // (read + write), min(GRAPH, 2 * POOL // size)
+        grid, flags = (triton.cdiv(n, COPY_BLOCK),), (COPY_BLOCK, read, write)
+        _stream[grid](src, dst, n, *flags, num_warps=8)  # compiles uncaptured
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            for i in range(k):
+                _stream[grid](src[i * n :], dst[i * n :], n, *flags, num_warps=8)
+        streams[kind][size] = [t / k for t in _timed(torch, graph.replay)]
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
         for _ in range(GRAPH):
