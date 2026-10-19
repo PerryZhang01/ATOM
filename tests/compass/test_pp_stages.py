@@ -70,12 +70,12 @@ def test_a_pipeline_meets_the_run_properties_and_uses_every_stage_channel(pipeli
     # Every stage priced its forwards.
     assert {r[0] for r in rows if r[3] == "TAR"} >= {f"engine-pp{k}" for k in range(pp)}
     # The head keeps up to pp batches in flight, so it starts forward n + pp
-    # only after forward n's tokens are back, which takes every stage's
-    # compute: those two are no closer than the whole model's step.
+    # only once forward n's tokens are back: after every stage's compute of
+    # forward n, the whole model's step, and the tokens' IPC to the head.
     starts = sorted(float(r[2]) - IPC for r in rows if r[4].endswith(":meta#pp1"))
     gaps = [b - a for a, b in zip(starts, starts[pp:])]
     print(f"pp{pp} head forward n to n + pp: {gaps}")
-    assert min(gaps) >= CONSTANT["decode_step"]
+    assert min(gaps) >= CONSTANT["decode_step"] + IPC
     # Each rendezvous send from the head: t_send, t_recv_posted, now_r, done.
     data, ack = ({int(r[5]): r for r in rows if r[4] == ch} for ch in (DATA, ACK))
     sends = []
