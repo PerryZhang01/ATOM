@@ -212,6 +212,36 @@ def _pipeline(pp: int, ipc_s: float, links=()) -> tuple[tuple[str, ...], list]:
     return stages, rows
 
 
+def _rapidserve(ipc_s: float) -> tuple[tuple[str, ...], list]:
+    """RapidServe's prefill engine LP ``engine-P`` and decode engine LP
+    ``engine-D`` and their channels.
+
+    Each is an engine of its own to the frontend, tagged with the index ATOM's
+    disaggregated core manager gives it, ``#dp0`` and ``#dp1``. Decode sends
+    prefill each request's blocks on ``block_assignment`` and prefill sends
+    decode each prefill's end on ``prefill_done``; a thread on each side takes
+    them. These are ZMQ IPC messages, so each takes `ipc_s`, which must be
+    positive: the two engines send to each other, a cycle.
+    """
+    if not ipc_s > 0.0:
+        raise ValueError(
+            f"ipc_s is {ipc_s!r}; RapidServe's two engines send to each other, "
+            "a cycle that needs a positive lookahead"
+        )
+    engines = ("engine-P", "engine-D")
+    rows = [
+        ("engine-P", "engine-D", "prefill_done", ipc_s, "thread"),
+        ("engine-D", "engine-P", "block_assignment", ipc_s, "thread"),
+    ]
+    for k, engine in enumerate(engines):
+        rows += [
+            ("frontend", engine, f"request#dp{k}", ipc_s, "thread"),
+            ("frontend", engine, f"control#dp{k}", ipc_s, "thread"),
+            (engine, "frontend", f"output#dp{k}", ipc_s, "thread"),
+        ]
+    return engines, rows
+
+
 def single_engine_table(
     *,
     admission_path: str,
@@ -220,10 +250,12 @@ def single_engine_table(
     dp: int = 1,
     pp: int = 1,
     pp_links=(),
+    rapidserve: bool = False,
 ) -> ChannelTable:
     """Traffic, one frontend, one engine, and the channels of each of its `dp`
     data-parallel ranks, ``#dp<rank>``; above pipeline width one, an engine
-    LP per stage instead (`_pipeline`).
+    LP per stage instead (`_pipeline`), and under `rapidserve` its prefill and
+    decode engine LPs (`_rapidserve`).
 
     The request channel's lookahead is the measured admission delay of
     `admission_path` (``serving`` or ``offline_batch``). The other lookaheads
@@ -232,6 +264,8 @@ def single_engine_table(
     engines, rows = ("engine",), _frontend_engine("frontend", "engine", ipc_s, dp)
     if pp > 1:
         engines, rows = _pipeline(pp, ipc_s, pp_links)
+    if rapidserve:
+        engines, rows = _rapidserve(ipc_s)
     return _table(
         ("traffic", "frontend", *engines),
         [

@@ -1993,7 +1993,7 @@ class DisaggCoreManager(CoreManager):
             proc.start()
             self.engine_core_processes.append(proc)
             clock.name_endpoints(
-                0,
+                len(self.engine_core_processes) - 1,
                 input_address=in_addr,
                 control_address=ctrl_addr,
                 output_address=out_addr,

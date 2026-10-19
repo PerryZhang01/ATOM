@@ -46,7 +46,7 @@ from atom.compass.artifacts import Key, Kind
 from atom.compass.backends.step_stub import Coefficients
 from atom.compass.clock import RefusalTally
 from atom.compass.drive import run as drive_run
-from atom.compass.drive import runfile, serve, trace_steps
+from atom.compass.drive import serve, trace_steps
 
 #: `test_drive_trace_steps`'s planted server, which first copies the summary
 #: `PLANTED_SUMMARY` names as client run 0's into the out_dir of the run file it
@@ -240,8 +240,6 @@ def test_run_json_records_the_summarys_refusals_the_roofline_and_the_backend(
     summary = refused_summary(tmp_path / "authority", monkeypatch)
     directory = recorded(tmp_path, monkeypatch, MIXED)
     plant(tmp_path, monkeypatch, directory / serve.STEPS, summary)
-    index = {"metadata": {"total_parameters": 8_000_000_000}}
-    (tmp_path / runfile.INDEX).write_text(json.dumps(index))
 
     drive_run.main(flags(tmp_path, "--step-stub", stub(tmp_path), "--step-roofline"))
 

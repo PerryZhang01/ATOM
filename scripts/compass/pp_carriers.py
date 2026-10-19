@@ -40,7 +40,7 @@ from pathlib import Path
 
 import numpy as np
 
-from atom.compass.runner.pp_send import woken
+from atom.compass.runner.pp_send import CarrierModel, recv_done, woken
 
 LATE, WARM, REPS = 0.05, 3, 20
 BLOCKS = (0.002, 0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0, 5.0)
@@ -109,6 +109,7 @@ def fit(samples: list[dict]) -> dict:
             "per_byte_s": float(g),
             "rendezvous_fixed_s": float(fixed),
         }
+        priced = {c: CarrierModel(**out[c])}
         wake = (0.0, 1.0)
         if c == "gloo" and blocked:
             wake = fit_wake(blocked, fixed + 8 * g)
@@ -117,11 +118,8 @@ def fit(samples: list[dict]) -> dict:
         for late in (False, True):
             m = [med[n, late] for n in sizes]
             model = [
-                (
-                    max(s["post"], o + n * g + lat)
-                    if n in eager
-                    else max(0.0, s["post"]) + fixed + n * g + woken(wake, s["post"])
-                )
+                recv_done(priced, 0.0, s["post"], [(c, n)])[1]
+                + (0.0 if n in eager else woken(wake, s["post"]))
                 for n, s in zip(sizes, m)
             ]
             err = [p - s["end"] for p, s in zip(model, m)]

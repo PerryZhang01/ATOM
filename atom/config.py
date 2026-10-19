@@ -2795,7 +2795,12 @@ RAPIDSERVE_RPCS = (
 # because importing a runner module initialises the GPU runtime and loads
 # AITER, and on a host with no driver the import raises. A subclass of
 # RapidServeModelRunner is accepted once its qualname is added here.
-RAPIDSERVE_RUNNERS = frozenset({"atom.model_engine.model_runner.RapidServeModelRunner"})
+RAPIDSERVE_RUNNERS = frozenset(
+    {
+        "atom.model_engine.model_runner.RapidServeModelRunner",
+        "atom.compass.runner.model_runner.CompassRapidServeModelRunner",
+    }
+)
 
 
 _current_atom_config: Config | None = None

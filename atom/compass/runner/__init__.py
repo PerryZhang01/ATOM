@@ -54,5 +54,9 @@ class needs no change to ATOM.
 """
 
 COMPASS_RUNNER_QUALNAME = "atom.compass.runner.model_runner.CompassModelRunner"
+#: Its RapidServe form, which a simulated RapidServe run names.
+COMPASS_RAPIDSERVE_QUALNAME = (
+    "atom.compass.runner.model_runner.CompassRapidServeModelRunner"
+)
 
-__all__ = ["COMPASS_RUNNER_QUALNAME"]
+__all__ = ["COMPASS_RAPIDSERVE_QUALNAME", "COMPASS_RUNNER_QUALNAME"]
