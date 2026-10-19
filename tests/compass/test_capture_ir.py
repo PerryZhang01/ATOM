@@ -462,6 +462,21 @@ def test_an_integer_that_moves_with_the_context_is_affine_or_refused_by_slot():
         forward._affine("decode B=2", *map(_at, blocks))
     with pytest.raises(ValueError, match="dispatches 1 operators at context"):
         forward._affine("decode B=2", _at(1), [])
+    other = [(0, ir.Op("aiter.other", "opaque_leaf", (("n", 1), ("ratio", 1)), ()))]
+    with pytest.raises(
+        ValueError,
+        match=rf"decode B=2 differs at contexts {c0} and {c1} past an integer "
+        r"argument: aiter.leaf against aiter.other",
+    ):
+        forward._affine("decode B=2", _at(1), other)
+    # A float that moves by a whole slope per token is still not an integer.
+    u, v = float(3 * c0 + 5), float(3 * c1 + 5)
+    with pytest.raises(
+        ValueError,
+        match=rf"aiter.leaf at decode B=2 takes n={u} at context {c0} and "
+        rf"{v} at {c1}: not affine",
+    ):
+        forward._affine("decode B=2", _at(u), _at(v))
 
 
 def test_a_prefill_is_captured_at_its_tokens_and_sequences(tmp_path_factory):

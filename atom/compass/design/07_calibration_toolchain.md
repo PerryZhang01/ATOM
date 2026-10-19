@@ -224,7 +224,7 @@ also run lazily inside a simulated run (doc `02`).
 |---|---|
 | **Input** | the decode widths and prefill (T, B) it is given, and the steps of the record directories it is given, from `record` or `trace steps --out`; the model config; the engine config |
 | **Output** | one `op_graph` artifact per shape, keyed by the structure's discrete key and the shape (`04` D19) |
-| **Cost** | 7.6 s per shape on Qwen3.8-27B TP1, 2.2 s of it the traced forward ([#1489](https://github.com/jgong5/ATOM/issues/1489#issuecomment-6249950252)'s PoC) |
+| **Cost** | 7.6 s per shape on Qwen3.8-27B TP1, 2.2 s of it the traced forward ([#1489](https://github.com/jgong5/ATOM/issues/1489#issuecomment-6249950252)'s PoC); a decode shape traces two forwards, one per context its integer arguments are read at (`04` D20) |
 | **Needs a GPU** | **no** — but see the caveat below |
 
 **The caveat that makes this phase less free than it looks.** "Device-free" means no GPU
