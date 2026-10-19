@@ -159,11 +159,7 @@ def main(argv: list[str]) -> None:
                     held += 1
         print(f"{held} points already in the store", flush=True)
         todo = [point for point in todo if point[2]]
-        # Its own process, so the device is free again at quiet's last check.
-        spawn = multiprocessing.get_context("spawn")
-        with ProcessPoolExecutor(1, mp_context=spawn) as bench:
-            job = bench.submit(measure, config, todo, args.llc_mib << 20)
-            results = job.result()
+        results = _child(measure, config, todo, args.llc_mib << 20)
     publish(store, key, config, run, " ".join(command), results, out)
     refused = [
         f"{r['op']} at {r['shape']}: {r['refused']}" for r in results if "refused" in r
@@ -809,7 +805,8 @@ def coverage(store, root, config, names, records) -> dict:
     kind the steps it left out by why. A step is covered when each leaf of its
     `op_graph` lies on a point or between two of one kernel (`_bracket`): a
     decode leaf of a kind that depends on context over its rows' mean to max
-    context, any other decode leaf at its width, and a prefill leaf at its
+    context (a padded or uneven step's `rowmod(k)` context can lie below the
+    mean), any other decode leaf at its width, and a prefill leaf at its
     tokens, unless its kind depends on context and a row was cached: the
     bench's prefill rows are fresh."""
     from atom.compass.capture import population_steps

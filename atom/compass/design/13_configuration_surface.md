@@ -187,6 +187,9 @@ compass measure steps  [<batches>...] [--grid <population>... --grid-definition 
                        <sample> --sampling P --out D --store S -- <ATOM args> [GPU]
 compass measure ops    [--width W]... [--prefill T B]... [--context C] --llc-mib M \
                        --gpu G --out D --store S -- <ATOM args>               [GPU]
+compass measure ops    --plan RECORD... --llc-mib M --gpu G --out D --store S \
+                       -- <ATOM args>                                         [GPU]
+compass measure ops    --coverage RECORD... --out D --store S -- <ATOM args>
 compass measure memory [--beside CMD] --machine M --out D --store S -- <ATOM args> [GPU]
 compass fit steps      --backend step-linear [--form FORM] [--seed SEED] \
                        RECORD... --client-run RECORD EXPORT... --machine M \
