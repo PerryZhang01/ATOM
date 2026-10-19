@@ -38,9 +38,14 @@ from atom.compass.backends.step_grid_residual import Residual
 from atom.compass.drive import run as drive_run
 from atom.compass.run import step_grid
 from atom.compass.validate.__main__ import main
-from atom.compass.validate.cost import cost_accuracy
+from atom.compass.validate.cost import cost_accuracy, declined_text
 
 ATOM_ARGS = ["--model", "planted", "--max-model-len", "2048"]
+# The grid's reason for a decode step at context c + 1 whose node holds no point.
+NO_POINT = (
+    "step-grid: the decode rung 1 cell holding B=1, c={0} has no measurement at "
+    "B=1, c={0}"
+)
 
 
 def _box(n):
@@ -168,9 +173,29 @@ def test_a_real_step_the_grid_declines_is_counted_apart_as_a_fallback(
 
     rows = _graded(capsys, tmp_path / "c4")
     for real in ("real0", "real1", "real2"):
-        steps, value = rows[f"cost {real}", "fallback decode rung 1"][0].split(", ")
+        value = rows[f"cost {real}", "fallback decode rung 1"][0]
+        steps, value = value.split(", ", 1)
         assert steps == "1 steps" and value.startswith("real ")
+        assert value.endswith(f'; reasons {{"{NO_POINT.format(26999)}": 1}}')
         assert rows[f"cost {real}", "decode validated"][0].startswith("9 steps")
+
+
+def test_a_fallback_row_names_its_most_frequent_reasons_and_counts_the_rest(tmp_path):
+    """The grid names a declined step's cell, so a band declines for as many
+    reasons as it has steps: its row names the most frequent first."""
+    steps = _steps()
+    member = _bundle(steps, missing={12, 13, 14, 15})
+    grid = StepGridBackend(StepGrid(member["grid"]), Residual(member["residual"]), "b")
+    record = _record(tmp_path / "steps", steps + [steps[15]] * 2)
+
+    (row,) = cost_accuracy(record, grid)["fallback"].values()
+
+    assert row["steps"] == 6
+    reasons = {
+        NO_POINT.format(26999): 3,
+        **{NO_POINT.format(c): 1 for c in (11999, 16999)},
+    }
+    assert declined_text(row).endswith(f"; reasons {json.dumps(reasons)} and 1 more")
 
 
 def test_a_step_the_grid_declines_is_a_fallback_and_one_a_law_declines_refused(

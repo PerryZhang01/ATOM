@@ -32,16 +32,17 @@ the steps that lead a vector's priced steps, each slower than its price by more
 than `step_linear_fit.MAD_K` scaled MADs of the errors the law's vector was fitted
 on, as the fit names them; of that vector's errors here if the law records no
 `fit.mad`, as the grid never does. A step the backend declines is counted with
-its real seconds: under `fallback` for the grid, since its run prices the step by
-the step roofline below it, and under `refused` for a law, since a run grading
-takes has nothing below the law. A step it extrapolated, past its support domain,
-is counted too.
+its real seconds and its reasons, the most frequent named: under `fallback` for
+the grid, since its run prices the step by the step roofline below it, and under
+`refused` for a law, since a run grading takes has nothing below the law. A step
+it extrapolated, past its support domain, is counted too.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -58,6 +59,7 @@ from atom.compass.backends import (
 from atom.compass.backends.step_linear_fit import WARM_FACTOR, _band, _groups
 
 WITHIN = 0.10
+REASONS = 3  # a declined band names this many of its most frequent reasons
 
 
 def _leading_slow(priced: list[tuple], law: dict | None) -> set[int]:
@@ -157,11 +159,15 @@ def cost_accuracy(record, backend, steps=None) -> dict:
         key, _, seconds, step, _ = group[0]
         try:
             costs = [backend.price(views[i][step]) for i in range(len(group))]
-        except CostRefused:
+        except CostRefused as refused:
             band = _band(key, max((r[1] for r in group), key=lambda c: c[1]))
-            r = declined.setdefault(band, {"steps": 0, "real_s": 0.0})
+            r = declined.setdefault(
+                band, {"steps": 0, "real_s": 0.0, "reasons": Counter()}
+            )
             r["steps"] += 1
             r["real_s"] += seconds
+            why = "; ".join(f"{d.source}: {d.reason}" for d in refused.declined)
+            r["reasons"][why] += 1
             continue
         terms = [t for c in costs for t in c.terms if not t.draft]
         validated = all(t.provenance.validated for t in terms)
@@ -205,6 +211,14 @@ def cost_accuracy(record, backend, steps=None) -> dict:
     return report
 
 
+def declined_text(r: dict) -> str:
+    """A declined band's steps, real seconds and most frequent reasons."""
+    reasons = r["reasons"].most_common()
+    named = json.dumps(dict(reasons[:REASONS]))
+    more = f" and {len(reasons) - REASONS} more" if len(reasons) > REASONS else ""
+    return f"{r['steps']} steps, real {r['real_s']:.2f} s; reasons {named}{more}"
+
+
 def _text(report: dict) -> str:
     out = [f"record {report['record']}", f"law {report['backend']}"]
     out.append(f"not labelled: {json.dumps(report['cut'])}")
@@ -236,7 +250,7 @@ def _text(report: dict) -> str:
             f" priced {w['priced_s']:.2f} s"
         )
     for band, r in report["refused"].items():
-        out.append(f"\nrefused {band}: {r['steps']} steps, real {r['real_s']:.2f} s")
+        out.append(f"\nrefused {band}: {declined_text(r)}")
     return "\n".join(out)
 
 

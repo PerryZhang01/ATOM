@@ -138,7 +138,11 @@ def test_unvalidated_and_refused_steps_are_reported_apart(tmp_path):
     assert fitted["steps"] == 10
     assert fitted["on_totals"] == pytest.approx(0.0, abs=1e-9)
     assert report["refused"] == {
-        "decode rung 2": {"steps": 1, "real_s": pytest.approx(_price(rung2[0]))}
+        "decode rung 2": {
+            "steps": 1,
+            "real_s": pytest.approx(_price(rung2[0])),
+            "reasons": {"step-linear: no decode vector for rung 2": 1},
+        }
     }
 
 
