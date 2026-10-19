@@ -11,11 +11,13 @@ owns its process because the driverless declarations are process-global.
 
 import collections
 import copy
+import functools
 import json
 import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 from math import comb
 from types import SimpleNamespace
 
@@ -38,7 +40,6 @@ from atom.compass.backends.work import (
     grouped_gemm,
     max_rank_load,
 )
-from atom.compass.run.modules import walk
 from atom.compass.runner import projection
 from atom.compass.spec import MachineSpec
 
@@ -246,70 +247,87 @@ def test_the_batch_view_states_the_real_tokens_among_the_gathered_rows():
     assert (view.moe_rows, view.moe_tokens) == (8, 5)
 
 
+WALK = """
+import json, os, sys, torch
+from types import SimpleNamespace
+from atom.compass.capture import driverless
+driverless.install(1, sys.argv[1])
+from atom.model_ops.fused_moe import mori_prepare_finalize as mori
+from atom.compass.run.modules import walk
+
 class Mxfp4MoEMethod:
     act_quant = SimpleNamespace(value="bf16")
-
 
 class MegaMxfp4MoEMethod(Mxfp4MoEMethod):
     pass
 
-
 class FusedMoE(torch.nn.Module):
     pass
-
 
 # The walk matches ATOM's classes by name.
 for cls in Mxfp4MoEMethod, MegaMxfp4MoEMethod, FusedMoE:
     cls.__module__ = "atom.model_ops.moe"
 
-
-def _walk_ep2(method=Mxfp4MoEMethod, backend="auto"):
-    """An EP2 MoE over two data-parallel ranks of TP1 attention, walked."""
+walked = {}
+for case, (method, backend, off, combine, fp4) in json.loads(sys.argv[2]).items():
+    os.environ.update(ATOM_DISABLE_MORI_EP=off, ATOM_MORI_COMBINE_QUANT=combine)
+    mori._FP4_DISPATCH = fp4
+    # EP2 over two data-parallel ranks of TP1 attention.
     moe = FusedMoE()
-    moe.quant_method, moe._comm_fused_moe = method(), None
+    moe.quant_method, moe._comm_fused_moe = globals()[method](), None
     moe.w13_weight = torch.empty(4, 64, 32, dtype=torch.bfloat16, device="meta")
     moe.global_num_experts, moe.top_k, moe.hidden_size = 8, 2, 32
     moe.moe_config = SimpleNamespace(in_dtype=torch.bfloat16)
     moe.moe_parallel_config = SimpleNamespace(
-        use_ep=True,
-        ep_size=2,
-        tp_size=1,
-        low_latency=False,
+        use_ep=True, ep_size=2, tp_size=1, low_latency=False,
         requested_all2all_backend=backend,
     )
     block = torch.nn.Module()
     block.tp_size, block.experts = 1, moe
-    return walk(block)
+    walked[case] = [[m.kind, m.name, *m.wire] for m in walk(block)]
+print(json.dumps(walked))
+"""
+#: Method, all-to-all backend, ATOM_DISABLE_MORI_EP, ATOM_MORI_COMBINE_QUANT,
+#: ATOM_MORI_FP4_DISPATCH.
+WALKS = {
+    "mori": ("Mxfp4MoEMethod", "auto", "0", "none", False),
+    "mori-quantized": ("Mxfp4MoEMethod", "mori", "0", "fp8_blockwise", True),
+    "rccl": ("Mxfp4MoEMethod", "rccl", "0", "none", False),
+    "none": ("Mxfp4MoEMethod", "none", "0", "none", False),
+    "mori-disabled": ("Mxfp4MoEMethod", "auto", "1", "none", False),
+    "mega": ("MegaMxfp4MoEMethod", "mori", "0", "none", False),
+}
 
 
-def test_mori_sends_at_the_formats_atom_resolves(monkeypatch):
-    (default,) = _walk_ep2()
-    monkeypatch.setattr(
-        "atom.model_ops.fused_moe.mori_prepare_finalize._FP4_DISPATCH", True
-    )
-    monkeypatch.setenv("ATOM_MORI_COMBINE_QUANT", "fp8_blockwise")
-    (quantized,) = _walk_ep2()
+@functools.cache
+def _walked():
+    """Each case of `WALKS` walked in one process of its own: resolving MoRI's
+    wire format imports aiter, which reads the arch the driverless
+    declarations supply."""
+    with tempfile.TemporaryDirectory() as root:
+        done = subprocess.run(
+            [sys.executable, "-c", WALK, root, json.dumps(WALKS)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=600,
+            cwd=TREE,
+            env={**os.environ, "PYTHONPATH": str(TREE)},
+        )
+    assert done.returncode == 0, done.stderr[-4000:]
+    return json.loads(done.stdout.splitlines()[-1])
 
-    assert (default.kind, default.dims, default.wire) == ("moe", EP2, ("bf16",) * 2)
-    assert quantized.wire == ("fp4", "fp8")
+
+def test_mori_sends_at_the_formats_atom_resolves():
+    assert _walked()["mori"] == [["moe", "experts", "bf16", "bf16"]]
+    assert _walked()["mori-quantized"] == [["moe", "experts", "fp4", "fp8"]]
 
 
-@pytest.mark.parametrize(
-    "backend,disabled,method",
-    [
-        ("rccl", "0", Mxfp4MoEMethod),
-        ("none", "0", Mxfp4MoEMethod),
-        ("auto", "1", Mxfp4MoEMethod),
-        ("mori", "0", MegaMxfp4MoEMethod),
-    ],
-    ids=["rccl", "none", "mori-disabled", "mega"],
-)
-def test_an_ep_moe_off_moris_exchange_is_unclassified(
-    backend, disabled, method, monkeypatch
-):
-    monkeypatch.setenv("ATOM_DISABLE_MORI_EP", disabled)
+@pytest.mark.parametrize("case", ["rccl", "none", "mori-disabled", "mega"])
+def test_an_ep_moe_off_moris_exchange_is_unclassified(case):
+    refused = ["unclassified", "FusedMoE at experts", "bf16", "bf16"]
 
-    assert _walk_ep2(method, backend) == [Module("FusedMoE at experts", "unclassified")]
+    assert _walked()[case] == [refused]
 
 
 BUILD = """

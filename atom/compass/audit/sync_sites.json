@@ -42,11 +42,11 @@
    "mechanism_why": "arithmetic inside the cost backend, which cannot park"
   },
   {
-   "id": "atom/compass/backends/step_roofline.py::_moe::all_to_all(ranks, sent * ELEMENT_BYTES[m.act])::collective#0",
+   "id": "atom/compass/backends/step_roofline.py::_moe::all_to_all(ranks, sent * ELEMENT_BYTES[m.wire[0]])::collective#0",
    "file": "atom/compass/backends/step_roofline.py",
    "symbol": "_moe",
    "call": "all_to_all",
-   "expr": "all_to_all(ranks, sent * ELEMENT_BYTES[m.act])",
+   "expr": "all_to_all(ranks, sent * ELEMENT_BYTES[m.wire[0]])",
    "shape": "collective",
    "peer": "none",
    "why": "a work primitive that counts the bytes MoRI's dispatch sends, so the step roofline can price it; nothing is sent",
@@ -54,11 +54,11 @@
    "mechanism_why": "arithmetic inside the cost backend, which cannot park"
   },
   {
-   "id": "atom/compass/backends/step_roofline.py::_moe::all_to_all(ranks, sent * act)::collective#0",
+   "id": "atom/compass/backends/step_roofline.py::_moe::all_to_all(ranks, sent * ELEMENT_BYTES[m.wire[1]])::collective#0",
    "file": "atom/compass/backends/step_roofline.py",
    "symbol": "_moe",
    "call": "all_to_all",
-   "expr": "all_to_all(ranks, sent * act)",
+   "expr": "all_to_all(ranks, sent * ELEMENT_BYTES[m.wire[1]])",
    "shape": "collective",
    "peer": "none",
    "why": "a work primitive that counts the bytes MoRI's combine sends, so the step roofline can price it; nothing is sent",
