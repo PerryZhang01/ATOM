@@ -561,8 +561,9 @@ each server in steps 2, 3 and 6 serves the client runs a client started apart se
  1.  compass trace ops --population <records> ...          [CPU, seconds per shape]
        -> op_graph per decode width and prefill (T, B) of the steps in the
           steps half's 3 --out, or 2's records
- 2.  compass measure ops --plan <populations> ...          [GPU, every rank]
-       -> the op-level planner over the steps half's 3 (D37); one cold
+ 2.  compass measure ops --plan <record> [--plan <record>]... ...  [GPU, every rank]
+       -> the op-level planner over the steps in the steps half's 3 --out,
+          or 2's records (D37); one cold
           measurement per planned point, with the kernels each leaf launched,
           collectives included (D40)
  3.  compass fit ops ...                                   [CPU]
