@@ -121,11 +121,11 @@ PUBLIC_READERS = sorted(
 
 
 def test_every_reader_is_covered_not_just_the_obvious_one():
-    """`is_refused` is the dangerous one: hiding it empties the refused count."""
+    """`fell_back` is the dangerous one: hiding it empties the fallback count."""
     assert set(PUBLIC_READERS) >= {
-        "is_refused",
+        "fallback_seconds",
+        "fell_back",
         "refusals",
-        "refused_seconds",
         "rows",
         "seconds",
         "seconds_by_method",
@@ -140,16 +140,16 @@ def test_no_reader_can_be_shadowed_by_a_subclass(reader):
         type("Drifting", (StepCost,), {reader: property(lambda self: None)})
 
 
-def test_hiding_the_refusal_flag_would_empty_the_refused_count():
+def test_hiding_the_fallback_flag_would_empty_the_fallback_count():
     """The defect the derived set exists to stop, stated as the thing it breaks."""
     mix = ProvenanceMix()
     mix.record(StepCost([CostTerm("step", 0.096, STOOD_IN)]))
-    assert mix.refused_step_fraction == 1.0
-    with pytest.raises(TypeError, match="redefines is_refused"):
+    assert mix.fallback_step_fraction == 1.0
+    with pytest.raises(TypeError, match="redefines fell_back"):
 
         class Quiet(StepCost):
             @property
-            def is_refused(self):
+            def fell_back(self):
                 return False
 
 
@@ -180,10 +180,10 @@ def test_a_zero_term_is_fine_when_nothing_refused():
     assert StepCost([term("mlp", 0.006), term("collective", 0.0)]).seconds == 0.006
 
 
-def test_a_step_reports_its_mixture_and_its_refused_share():
+def test_a_step_reports_its_mixture_and_its_fallback_share():
     step = StepCost([term("mlp", 0.006), CostTerm("attention", 0.004, STOOD_IN)])
-    assert step.is_refused
-    assert step.refused_seconds == pytest.approx(0.004)
+    assert step.fell_back
+    assert step.fallback_seconds == pytest.approx(0.004)
     assert step.seconds_by_method() == {
         (Method.MEASURED, False): pytest.approx(0.006),
         (Method.ANALYTICAL, False): pytest.approx(0.004),
@@ -200,7 +200,7 @@ def test_a_step_reports_every_refusal_behind_it():
     assert [r.source for r in step.refusals] == ["price_list", "nearest_key"]
 
 
-def test_refusals_are_counted_three_ways_over_a_run():
+def test_fallback_steps_are_counted_three_ways_over_a_run():
     """Few steps can be most of the time, so both fractions are reported."""
     clean = StepCost([term("step", 0.001)])
     refused = StepCost([CostTerm("step", 0.096, STOOD_IN)])
@@ -210,28 +210,28 @@ def test_refusals_are_counted_three_ways_over_a_run():
 
     assert not mix.is_empty
     assert mix.steps == 4
-    assert mix.refused_steps == 1
-    assert mix.refused_step_fraction == pytest.approx(0.25)
+    assert mix.fallback_steps == 1
+    assert mix.fallback_step_fraction == pytest.approx(0.25)
     assert mix.seconds == pytest.approx(0.099)
-    assert mix.refused_seconds == pytest.approx(0.096)
-    assert mix.refused_second_fraction == pytest.approx(0.096 / 0.099)
+    assert mix.fallback_seconds == pytest.approx(0.096)
+    assert mix.fallback_second_fraction == pytest.approx(0.096 / 0.099)
     assert mix.reasons() == {("price_list", "unpriced leaf"): 1}
 
 
 def test_a_run_with_no_steps_refuses_its_fractions():
-    """0.0 would make "recorded nothing" read as "refused nothing"."""
+    """0.0 would make "recorded nothing" read as "nothing fell back"."""
     mix = ProvenanceMix()
     assert mix.is_empty
     with pytest.raises(ValueError, match="no steps were recorded"):
-        _ = mix.refused_step_fraction
+        _ = mix.fallback_step_fraction
     with pytest.raises(ValueError, match="no predicted seconds"):
-        _ = mix.refused_second_fraction
+        _ = mix.fallback_second_fraction
 
 
 def test_a_run_of_free_steps_refuses_the_seconds_fraction_only():
     """Steps exist, so their fraction is answerable; the seconds are not."""
     mix = ProvenanceMix()
     mix.record(StepCost([term("step", 0.0)]))
-    assert mix.refused_step_fraction == 0.0
+    assert mix.fallback_step_fraction == 0.0
     with pytest.raises(ValueError, match="over 1 step"):
-        _ = mix.refused_second_fraction
+        _ = mix.fallback_second_fraction

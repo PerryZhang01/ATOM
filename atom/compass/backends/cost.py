@@ -14,8 +14,8 @@ An empty breakdown is refused outright. The failure behind that is the mean of
 an empty sample, which is not an error, is not approximately zero, and is
 exactly 0.0 -- a precise and entirely fictional answer that reads as a fast
 step rather than as a missing model. The same shape is refused one layer up:
-`ProvenanceMix` will not divide by an empty run, because "nothing refused" and
-"nothing recorded" would otherwise be the same number, and it is the
+`ProvenanceMix` will not divide by an empty run, because "nothing fell back"
+and "nothing recorded" would otherwise be the same number, and it is the
 reassuring one.
 
 Every addition of seconds in this module goes through `fold_seconds`: a left
@@ -143,10 +143,9 @@ class StepCost:
 
         Overriding a reader needs no bypass and defeats every check here: the
         object is valid, the breakdown is real, and the answer returned has
-        nothing to do with it. `seconds` is the obvious one; `is_refused` is
-        the dangerous one, because hiding it makes a run report no refused
-        steps over steps that refused, at the layer that reads that fraction
-        to decide whether the run is evidence.
+        nothing to do with it. `seconds` is the obvious one; `fell_back` is
+        the dangerous one, because hiding it makes a run report no fallback
+        steps over steps a fallback priced.
 
         The protected set is read off this class rather than listed, so a
         reader added later is covered the day it is added and not the day
@@ -186,15 +185,16 @@ class StepCost:
         return tuple(r for term in self.terms for r in term.refusals)
 
     @property
-    def is_refused(self) -> bool:
+    def fell_back(self) -> bool:
+        """Whether a fallback priced some term after a source declined it."""
         return any(t.provenance.is_refused for t in self.terms)
 
     @property
-    def refused_seconds(self) -> float:
-        """Seconds priced by a stand-in after something declined.
+    def fallback_seconds(self) -> float:
+        """Seconds priced by a fallback after something declined.
 
         Reported alongside the count because they answer different questions:
-        a run can refuse 2% of its steps and 40% of its time.
+        a run can fall back on 2% of its steps and 40% of its time.
         """
         return fold_seconds(t.seconds for t in self.terms if t.provenance.is_refused)
 
@@ -236,23 +236,21 @@ def group(method: Method, validated: bool) -> str:
 class ProvenanceMix:
     """The mixture a run reports, accumulated one step at a time.
 
-    Refusals are counted the three ways they are read: how many, what fraction
-    of steps, and what fraction of predicted seconds. The seconds fraction is
-    the one that decides whether a run is worth anything, and the reason counts
-    are what say which measurement would close the gap.
+    Steps a fallback priced after a source declined are counted three ways:
+    how many, what fraction of steps, and what fraction of predicted seconds.
+    The reason counts say which measurement would close the gap.
 
     A mix with nothing in it has no fractions. Returning 0.0 would make a run
-    that recorded no steps indistinguishable from one that refused none, at
-    exactly the layer that reads the fraction to decide whether a run counts as
-    evidence -- and of the two readings the wrong one is the reassuring one.
-    Ask `is_empty` first, or let the refusal say so.
+    that recorded no steps indistinguishable from one no fallback priced, and
+    of the two readings the wrong one is the reassuring one. Ask `is_empty`
+    first, or let the refusal say so.
     """
 
     def __init__(self) -> None:
         self.steps = 0
         self.seconds = 0.0
-        self.refused_steps = 0
-        self.refused_seconds = 0.0
+        self.fallback_steps = 0
+        self.fallback_seconds = 0.0
         #: Steps with a term its source extrapolated past its support domain.
         self.extrapolated_steps = 0
         self._method_seconds: dict[tuple[Method, bool], float] = {}
@@ -266,9 +264,11 @@ class ProvenanceMix:
         self.treatments.update(step.treatments)
         self.seconds = fold_step(self.seconds, step.seconds)
         self.extrapolated_steps += any(t.provenance.extrapolated for t in step.terms)
-        if step.is_refused:
-            self.refused_steps += 1
-            self.refused_seconds = fold_step(self.refused_seconds, step.refused_seconds)
+        if step.fell_back:
+            self.fallback_steps += 1
+            self.fallback_seconds = fold_step(
+                self.fallback_seconds, step.fallback_seconds
+            )
         for key, seconds in step.seconds_by_method().items():
             self._method_seconds[key] = fold_step(
                 self._method_seconds.get(key, 0.0), seconds
@@ -283,23 +283,23 @@ class ProvenanceMix:
         return self.steps == 0
 
     @property
-    def refused_step_fraction(self) -> float:
+    def fallback_step_fraction(self) -> float:
         if self.steps == 0:
             raise ValueError(
-                "no steps were recorded, so there is no refused fraction of them; "
-                "0.0 here would read as a run that refused nothing"
+                "no steps were recorded, so there is no fallback fraction of them; "
+                "0.0 here would read as a run no fallback priced"
             )
-        return self.refused_steps / self.steps
+        return self.fallback_steps / self.steps
 
     @property
-    def refused_second_fraction(self) -> float:
+    def fallback_second_fraction(self) -> float:
         if self.seconds <= 0.0:
             raise ValueError(
                 f"no predicted seconds were recorded over {self.steps} step(s), so "
-                "there is no refused fraction of them; 0.0 here would read as a run "
-                "that refused nothing"
+                "there is no fallback fraction of them; 0.0 here would read as a "
+                "run no fallback priced"
             )
-        return self.refused_seconds / self.seconds
+        return self.fallback_seconds / self.seconds
 
     def seconds_by_method(self) -> Mapping[tuple[Method, bool], float]:
         """Seconds by (method, validated)."""

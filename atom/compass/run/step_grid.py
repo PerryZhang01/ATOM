@@ -46,8 +46,6 @@ summary records the digest of the bundle it priced with.
 
 import json
 from collections.abc import Mapping
-from hashlib import sha256
-from pathlib import Path
 
 from atom.benchmarks.results.metadata import performance_env
 from atom.compass.artifacts import (
@@ -62,10 +60,8 @@ from atom.compass.artifacts import (
     Topology,
     git_tree_root,
     machine_spec_key,
-    member_name,
     module_root,
 )
-from atom.compass.artifacts.store import ENTRY_FILE
 from atom.compass.backends.step_grid import StepGrid, StepGridBackend
 from atom.compass.backends.step_grid_fit import VALUE
 from atom.compass.backends.step_grid_plan import BOUNDS, SCOPE, keyed_of  # noqa: F401
@@ -198,29 +194,13 @@ def load(spec: Mapping, config, machine) -> tuple[StepGridBackend, dict]:
 
 def read(spec: Mapping, digest: str) -> StepGridBackend:
     """The backend of the bundle a run priced with: the entry in the store the
-    run file names whose key is the run file's and whose digest is `digest`,
-    the one the run summary records, and its member read back at the digest
-    the entry states. The key is compared as the run file states it, so a
-    bundle keyed by another tree's key fields reads. Refused, naming the key,
-    when the store holds no such entry or its member has changed."""
+    run file names that `ArtifactStore.read_recorded` finds by the run file's
+    key and `digest`, the one the run summary records, and its member read back
+    at the digest the entry states. Refused, naming the key, when the store
+    holds no such entry or its member is missing or has changed."""
     fields = dict(spec)
-    folder = Path(fields.pop("store")) / Kind.STEP_GRID_BUNDLE.value
-    named = f"{Kind.STEP_GRID_BUNDLE} {json.dumps(fields, sort_keys=True)}"
-    found = {}
-    for path in folder.glob(f"*/{ENTRY_FILE}"):
-        raw = path.read_bytes()
-        if (document := json.loads(raw))["key"] == fields:
-            found[f"sha256:{sha256(raw).hexdigest()}"] = path.parent, document
-    if digest not in found:
-        raise ValueError(
-            f"{folder} holds {len(found)} entries keyed {named}, digesting "
-            f"{sorted(found)}; the run priced with the one digesting {digest}"
-        )
-    directory, document = found[digest]
-    path = directory / member_name(*MEMBER)
-    payload = path.read_bytes()
-    if f"sha256:{sha256(payload).hexdigest()}" != document["members"].get(path.name):
-        raise ValueError(f"{path} is not the member the entry of {named} digests")
-    member = json.loads(payload)
+    store = ArtifactStore(fields.pop("store"))
+    entry = store.read_recorded(Kind.STEP_GRID_BUNDLE, fields, digest)
+    member = json.loads(entry.read_member(*MEMBER))
     grid, residual = StepGrid(member["grid"]), Residual(member["residual"])
-    return StepGridBackend(grid, residual, bundle=named)
+    return StepGridBackend(grid, residual, bundle=str(entry.key))

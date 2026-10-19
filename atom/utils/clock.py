@@ -654,7 +654,9 @@ def name_endpoints(
     stage's own channels carry the index ATOM's engine core manager gives it,
     its stage, as the frontend names them (ATOM runs no pipeline beside DP),
     and the head's batch to
-    stage ``k`` goes on ``meta#pp<k>``.
+    stage ``k`` goes on ``meta#pp<k>``. A RapidServe decode engine's channels carry
+    index 1, its place after the prefill engine in ATOM's disaggregated core
+    manager.
     """
     rt = _installed
     if rt is None:
@@ -663,6 +665,7 @@ def name_endpoints(
     if config is not None:
         pc = config.parallel_config
         dp += getattr(pc, "pipeline_parallel_rank", 0)
+        dp += getattr(config, "disagg_is_decode", False)
         kinds |= {a: f"meta#pp{k}" for k, a in enumerate(pc.pp_meta_addrs)}
         kinds |= {
             pc.pp_token_addr: "tokens",

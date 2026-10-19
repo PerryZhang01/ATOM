@@ -31,9 +31,11 @@ law does not model: it is named with its seconds and enters no figure. So are
 the steps that lead a vector's priced steps, each slower than its price by more
 than `step_linear_fit.MAD_K` scaled MADs of the errors the law's vector was fitted
 on, as the fit names them; of that vector's errors here if the law records no
-`fit.mad`, as the grid never does. A step the law or the grid refuses is
-counted with its real seconds, as one the grid declines to the step roofline
-below it in a run; one it extrapolated, past its support domain, is counted too.
+`fit.mad`, as the grid never does. A step the backend declines is counted with
+its real seconds: under `fallback` for the grid, since its run prices the step by
+the step roofline below it, and under `refused` for a law, since a run grading
+takes has nothing below the law. A step it extrapolated, past its support domain,
+is counted too.
 """
 
 from __future__ import annotations
@@ -47,6 +49,7 @@ import numpy as np
 
 from atom.compass.backends import (
     CostRefused,
+    StepGridBackend,
     StepLinearBackend,
     StepLinearLaw,
     step_labels,
@@ -118,8 +121,8 @@ def _summary(steps: list[tuple]) -> dict:
 def cost_accuracy(record, backend, steps=None) -> dict:
     """The report for `backend`, a `CostBackend` or a law mapping
     `StepLinearLaw` reads, on the record directory `record`: on its steps whose
-    numbers are in `steps`, every step when None. Its ``law`` names the law's
-    provenance, or the backend's `describe()` line.
+    numbers are in `steps`, every step when None. Its ``backend`` names the
+    law's provenance, or the backend's `describe()` line.
 
     The ranks' records (`dp0.jsonl` up) are joined as `step_linear_fit` joins
     them: a step is its ranks' lines of one step index, measured as the
@@ -148,7 +151,7 @@ def cost_accuracy(record, backend, steps=None) -> dict:
     if law is not None:
         backend = StepLinearBackend(StepLinearLaw(law))
     groups = {"validated": {}, "unvalidated": {}}
-    refused: dict[str, dict] = {}
+    declined: dict[str, dict] = {}
     warm, priced, extrapolated = [], [], 0
     for group in joined:
         key, _, seconds, step, _ = group[0]
@@ -156,7 +159,7 @@ def cost_accuracy(record, backend, steps=None) -> dict:
             costs = [backend.price(views[i][step]) for i in range(len(group))]
         except CostRefused:
             band = _band(key, max((r[1] for r in group), key=lambda c: c[1]))
-            r = refused.setdefault(band, {"steps": 0, "real_s": 0.0})
+            r = declined.setdefault(band, {"steps": 0, "real_s": 0.0})
             r["steps"] += 1
             r["real_s"] += seconds
             continue
@@ -190,19 +193,20 @@ def cost_accuracy(record, backend, steps=None) -> dict:
             group = "validated" if draft[2] else "unvalidated"
             groups[group].setdefault("draft", []).append((band, step, *draft[:2]))
     name = backend.describe() if law is None else backend.law.fitted_on
-    report = {"record": str(record), "law": name, "cut": cut}
+    report = {"record": str(record), "backend": name, "cut": cut}
     for group, kinds in groups.items():
         report[group] = {
             kind: _summary(rows) for kind, rows in sorted(kinds.items(), reverse=True)
         }
     report["warm"] = warm
-    report["refused"] = refused
+    grid = isinstance(backend, StepGridBackend)
+    report["fallback"], report["refused"] = (declined, {}) if grid else ({}, declined)
     report["extrapolated"] = extrapolated
     return report
 
 
 def _text(report: dict) -> str:
-    out = [f"record {report['record']}", f"law {report['law']}"]
+    out = [f"record {report['record']}", f"law {report['backend']}"]
     out.append(f"not labelled: {json.dumps(report['cut'])}")
     for group, title in (
         ("validated", "validated: inside the held-out hull"),
