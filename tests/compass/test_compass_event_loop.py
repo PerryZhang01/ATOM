@@ -881,3 +881,38 @@ def test_a_tokenizer_result_due_when_an_intake_starts_runs_before_its_charge(
     assert [t for _, t in sorted(done)] == pytest.approx(
         [arrival + 2e-3, arrival + 4e-3]
     )
+
+
+@pytest.mark.parametrize("tick", [None, 0.1, 9.0, 20.0], ids=lambda t: f"tick{t}")
+@pytest.mark.parametrize("probes", [0, 1, 2], ids=lambda n: f"{n}probes")
+def test_tokenizer_results_due_at_one_instant_resume_in_submission_order(
+    run, probes, tick
+):
+    # Jobs 1 and 3 are charged alike, so their results are due at one instant.
+    # A server tick may be pending, and each health probe served before the
+    # burst leaves its keep-alive timer, cancelled when its connection closed,
+    # in the loop's heap. Neither may decide which of the two resumes first.
+    _idle_traffic(run)
+    loop = CompassEventLoop()
+    entry = SimpleNamespace(encode_fixed_s=0.0, encode_tokens_per_s=1.0, derate=1.0)
+    encode, tokens, resumed = wrap_encode(list, entry), [5, 2, 3, 2, 4, 1, 6, 7], []
+
+    async def request(k):
+        def do_preprocess():
+            encode(range(tokens[k]))
+
+        await loop.run_in_executor(None, do_preprocess)
+        resumed.append(k)
+
+    async def burst():
+        pending = tick and loop.call_later(tick, lambda: None)
+        for _ in range(probes):
+            loop.call_later(1e6, lambda: None).cancel()
+        await asyncio.gather(*map(request, range(len(tokens))))
+        if pending:
+            pending.cancel()
+
+    loop.run_until_complete(burst())
+    loop.run_forever()
+    loop.close()
+    assert resumed == sorted(range(len(tokens)), key=lambda k: (tokens[k], k))

@@ -212,7 +212,6 @@ def _run_file(out: Path, **overrides) -> Path:
         "step_stub": dataclasses.asdict(Coefficients()),
         "machine": DOCUMENT,
         "store": str(out / "store"),
-        "parameter_count": 8_000_000_000,
         "out_dir": str(out),
     } | overrides
     (out / "run.json").write_text(json.dumps(run))

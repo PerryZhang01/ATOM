@@ -16,7 +16,8 @@ output's token copy (`t_recv_ns`, only on a forward that reaches it), and with
 a drafter its MTP status (`t_mtp_ns`) and draft copy (`t_draft_recv_ns`). Its device
 window is `d_busy_ns`, from an event recorded at the launch's entry to one
 recorded at the forward's exit (`d_target_ns` to one recorded just after
-`postprocess` records `forward_done_event`), and `d_gap_ns`, from the previous forward's
+`postprocess` records `forward_done_event`, or on a forward that samples
+nothing, before the drafter's `compute_draft_kv`), and `d_gap_ns`, from the previous forward's
 exit event to this launch's entry event, absent on the first line; summed in
 order they lay every forward on one device timeline. A later pipeline stage's
 receive of its input is `t_pp_recv_ns`, its device part `d_recv_ns`; an idle
@@ -29,7 +30,8 @@ the first step where they part; timestamps are not part of a step's decision.
 
 Setting `ATOM_COMPASS_PARITY_RECORD` to a directory turns recording on: TP rank 0
 of each DP rank writes `dp<rank>.jsonl` there, replacing any earlier file
-(pipeline stage `k` above 0: `pp<k>.dp<rank>.jsonl`, its other files alike).
+(pipeline stage `k` above 0: `pp<k>.dp<rank>.jsonl`, its other files alike;
+a RapidServe engine in its `record_dir`).
 Unset, nothing is recorded. On its first step it also writes the engine its
 runner resolved to `dp<rank>.engine.json` (`README.md` says what it holds), and
 a runner with a `host_key` writes that to `dp<rank>.key.json`. The simulated
@@ -69,6 +71,8 @@ ENV = "ATOM_COMPASS_PARITY_RECORD"
 #: and when the server admitted each request.
 ARRIVALS = "arrivals.json"
 RUNNER = "atom.compass.parity.runner.RecordingModelRunner"
+#: The recording runner of a real RapidServe run.
+RAPID = "atom.compass.parity.runner.RecordingRapidServeModelRunner"
 #: Line keys that time a step rather than describe its decision.
 TIMESTAMPS = (
     "t_enter_ns",
@@ -254,12 +258,23 @@ def record_kv(runner, meta) -> None:
         runner._parity_record.note_kv(meta)
 
 
+def record_dir(directory, config) -> pathlib.Path:
+    """Where the engine of `config` records under `directory`: RapidServe's
+    prefill and decode engines in ``prefill/`` and ``decode/``, any other there."""
+    if not getattr(config, "enable_rapidserve", False):
+        return pathlib.Path(directory)
+    return pathlib.Path(directory) / (
+        "decode" if config.disagg_is_decode else "prefill"
+    )
+
+
 def _record(runner):
     """`runner`'s record, made on its first call; None unless recorded."""
     if not hasattr(runner, "_parity_record"):
         directory = os.environ.get(ENV)
         record = None
         if directory and runner.rank == 0:
+            directory = record_dir(directory, runner.config)
             from atom.compass.run.step_grid import BOUNDS, keyed
 
             pc = runner.config.parallel_config
@@ -375,6 +390,10 @@ class StepRecording:
             processor.prepare_sampled_ids = functools.partial(
                 self._target_done, sampled
             )
+            draft_kv = self.drafter.compute_draft_kv
+            self.drafter.compute_draft_kv = functools.partial(
+                self._target_done, draft_kv
+            )
         self._recording = True
 
     def forward(self, batch):
@@ -412,7 +431,8 @@ class StepRecording:
 
     def _target_done(self, call, *args):
         """`call(*args)` after a device event where `postprocess` has just
-        recorded `forward_done_event`: the target's end, before the draft."""
+        recorded `forward_done_event`, or where `compute_draft_kv` starts: the
+        target's end, before the draft. The later of the two wins."""
         if getattr(self, "_parity_record", None) is not None:
             self._stamps["target_event"] = self.device_event()
         return call(*args)

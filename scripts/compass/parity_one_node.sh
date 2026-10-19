@@ -14,6 +14,9 @@
 #                    parallelism off: -tp 8 --enable-dp-attention --enable-tbo with
 #                    the nightly's flags and environment; it needs MACHINE.
 #                    Under DP-attention the DP width is the -tp width.
+#                    rapidserve: -tp 1 --enable-rapidserve, eager at compile
+#                    level 0; each engine records, and is compared, in its own
+#                    prefill/ and decode/.
 #   MODEL            model directory with its weights (required)
 #   REQUESTS         requests in the workload (default 64)
 #   GAP_S            seconds between sends, each also waiting for the server to
@@ -68,7 +71,7 @@ compass_env "$ROOT"
 compass_require_tree "$ROOT" || exit $?
 OUT=${1:?usage: parity_one_node.sh OUT_DIR}
 MODEL=${MODEL:?MODEL names the model directory}
-DPA=--enable-dp-attention
+DPA=--enable-dp-attention SIDES=.
 case ${CONFIG:=tp2} in
 tp2 | tp2-plain)
     TP=2 ARGS="--enforce-eager --max-model-len 8192 --no-enable_prefix_caching"
@@ -81,7 +84,12 @@ dsv4-dpa8)
     MACHINE=${MACHINE:?CONFIG=dsv4-dpa8 needs MACHINE, the MI355X machine spec}
     export AITER_BF16_FP8_MOE_BOUND=0 ATOM_MOE_GU_ITLV=1 GPU_MAX_HW_QUEUES=5 ATOM_NUMA_BIND=1
     ;;
-*) echo "parity_one_node: CONFIG is tp2, tp2-plain or dsv4-dpa8, not $CONFIG" >&2; exit 2 ;;
+rapidserve)
+    TP=1 DPA= ARGS="--enforce-eager --level 0 --max-model-len 8192 --no-enable_prefix_caching"
+    ARGS+=" --enable-rapidserve" SIDES="prefill decode"
+    MACHINE=${MACHINE:-$ROOT/scripts/compass/machines/mi308x-hjbog18.json}
+    ;;
+*) echo "parity_one_node: CONFIG is tp2, tp2-plain, dsv4-dpa8 or rapidserve, not $CONFIG" >&2; exit 2 ;;
 esac
 SERVER_ARGS=${SERVER_ARGS:-$ARGS}
 WAIT_S=${WAIT_S:-1800}
@@ -102,6 +110,8 @@ fi
 if [[ -z ${STORE:-} ]]; then
     STORE=$OUT/store
     # measure memory takes rocm-smi's indexes of the real run's HIP devices.
+    # A RapidServe engine reads a plain engine's readings at its flags: their key
+    # states no RapidServe, and ATOM refuses the measuring runner under it.
     gpus=$(compass_gpus smi "${HIP_VISIBLE_DEVICES:-$(seq -s, 0 $((TP - 1)))}")
     # shellcheck disable=SC2086 # SERVER_ARGS is a word list
     ATOM_DP_MASTER_PORT=$(compass_free_port) python3 -c \
@@ -109,7 +119,7 @@ if [[ -z ${STORE:-} ]]; then
         --gpu "$gpus" --machine "$MACHINE" \
         ${LM_FLAGS:+--beside "lmcache server $LM_FLAGS"} \
         --store "$STORE" --out "$OUT/memory" -- --model "$MODEL" -tp "$TP" \
-        $DPA $SERVER_ARGS
+        $DPA ${SERVER_ARGS//--enable-rapidserve/}
 fi
 
 server= lmcache=
@@ -159,14 +169,20 @@ if [[ -n $lmcache ]]; then
     kill -KILL -- -$lmcache
     { wait $lmcache; } 2>/dev/null || true  # LP lmcache binds its port next
 fi
+# Each engine's record is a whole record, as the replay reads it.
+for side in $SIDES; do
+    [[ $side == . ]] && continue
+    mkdir -p "$OUT/real/record/$side"
+    cp "$OUT/real/record/arrivals.json" "$OUT/real/record/$side"
+done
 
 RUN=$OUT/sim/run.json
 python3 - "$RUN" "$OUT" "$MACHINE" "$MODEL" "$STORE" "$(compass_free_port)" "${DPA:+$TP}" \
-    "$LM_FLAGS" "${IMAGE_S:-0.01}" "$TP" <<'EOF'
+    "$LM_FLAGS" "${IMAGE_S:-0.01}" "$TP" "$SIDES" <<'EOF'
 import json, re, sys
 from pathlib import Path
 
-run, out, machine, model, store, port, width, lmcache, image_s, tp = sys.argv[1:]
+run, out, machine, model, store, port, width, lmcache, image_s, tp, sides = sys.argv[1:]
 machine = json.loads(Path(machine).read_text())
 # ponytail: a spec that measured no tokenizer for the model prices it as its
 # first entry; only arrival latency reads it. Measure the model's own to drop this.
@@ -181,6 +197,8 @@ spec = {
     "data_parallel_size": int(width or 1), "out_dir": f"{out}/sim",
     "image_preprocess_s": float(image_s),
 }
+if sides != ".":
+    spec["rapidserve"] = True
 if lmcache:
     # Declared, not measured: a LOOKUP 2^-13 s plus 2^-17 s a prompt chunk,
     # any other request 2^-14 s.
@@ -208,23 +226,29 @@ elif [[ -n ${sim_rc:-} ]]; then
     exit 1
 fi
 
-python3 -m atom.compass.parity "$OUT/real/record" "$OUT/sim/record" >"$OUT/compare.json"
+# compare.json, or for each RapidServe engine compare-<engine>.json.
+for side in $SIDES; do
+    to=$OUT/compare.json
+    [[ $side == . ]] || to=$OUT/compare-$side.json
+    python3 -m atom.compass.parity "$OUT/real/record/$side" "$OUT/sim/record/$side" >"$to"
+done
 python3 - "$OUT" <<'EOF'
 import json, statistics, sys
+from pathlib import Path
 from atom.compass.parity import read
 
 out = sys.argv[1]
-report, arrivals = (
-    json.loads(open(f"{out}/{path}").read())
-    for path in ("compare.json", "real/record/arrivals.json")
-)
+arrivals = json.loads(Path(f"{out}/real/record/arrivals.json").read_text())
 ms = [(a - s) / 1e6 for s, a in zip(arrivals["sent_ns"], arrivals["admitted_ns"])]
 print(f"parity_one_node: real admission ms min={min(ms):.2f} "
       f"median={statistics.median(ms):.2f} max={max(ms):.2f}")
-for rank, n in report["steps"].items():
-    first = report["first_divergence"][rank]
-    print(f"parity_one_node: dp{rank} compared={n['compared']} "
-          f"identical={n['identical']} first_divergence={first and first['step']}")
+for path in sorted(Path(out).glob("compare*.json")):
+    report, engine = json.loads(path.read_text()), path.stem[len("compare-") :]
+    for rank, n in report["steps"].items():
+        first = report["first_divergence"][rank]
+        label = f"{engine} " if engine else ""
+        print(f"parity_one_node: {label}dp{rank} compared={n['compared']} "
+              f"identical={n['identical']} first_divergence={first and first['step']}")
 decisions = []  # per record: request key -> its offload loads and saves, in order
 for side in ("real", "sim"):
     mine = {}

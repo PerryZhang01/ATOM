@@ -52,7 +52,8 @@ transform of z_0 + Sum z_f.feature_f, naming every feature of its kind. A band
 member outputs the factor of the batch's band (`band`): a batch of decode rows
 only is in `decode rung <rung>`, `eager` when it replays no graph, and any
 other in `prefill tokens <lo>-<hi>` or `<lo>+`, its token count's band over
-`step_linear_fit.TOKEN_BANDS`; a batch in a band it holds no factor for is
+`step_linear_fit.TOKEN_BANDS`, a member's `<lo>-` read as `<lo>+`, the top
+band's spelling before; a batch in a band it holds no factor for is
 refused, naming the member and the band. Only the selected members load, so an
 error in one the residual does not select fails nothing, and an error in a
 selected one fails loading, naming its kind and it. The factor is
@@ -248,11 +249,20 @@ def band(view: BatchView) -> str:
     return _band(_rung_key(view.capture_rung), ())
 
 
+def _spelled(key) -> str:
+    """A band as `band` spells it: a residual fitted before the top prefill band
+    was spelled `<lo>+` holds it as `<lo>-`."""
+    key = str(key)
+    return key[:-1] + "+" if key.endswith("-") else key
+
+
 class _Band:
     """A factor per band."""
 
     def __init__(self, member: Mapping, features: tuple[str, ...]) -> None:
-        self.values = {str(k): float(v) for k, v in member["values"].items()}
+        self.values = {_spelled(k): float(v) for k, v in member["values"].items()}
+        if len(self.values) != len(member["values"]):
+            raise ValueError("a band held as both <lo>- and <lo>+")
         if not self.values:
             raise ValueError("no band")
         if any(map(_bad, self.values.values())):

@@ -1180,9 +1180,11 @@ class PrefillEngineCore(EngineCore):
         EngineCore._setup_engine_process("PrefillEngineCore")
         engine = None
         try:
-            engine = PrefillEngineCore(config, input_address, output_address)
-            engine._init_disagg()
-            engine.busy_loop()
+            with compass_run.engine(config):
+                engine = PrefillEngineCore(config, input_address, output_address)
+                engine._init_disagg()
+            with compass_run.engine_loop(engine):
+                engine.busy_loop()
         except Exception:
             logger.exception("PrefillEngineCore.run_engine failed")
             raise
@@ -1444,9 +1446,11 @@ class DecodeEngineCore(EngineCore):
         EngineCore._setup_engine_process("DecodeEngineCore")
         engine = None
         try:
-            engine = DecodeEngineCore(config, input_address, output_address)
-            engine._init_disagg()
-            engine.busy_loop()
+            with compass_run.engine(config):
+                engine = DecodeEngineCore(config, input_address, output_address)
+                engine._init_disagg()
+            with compass_run.engine_loop(engine):
+                engine.busy_loop()
         except Exception:
             logger.exception("DecodeEngineCore.run_engine failed")
             raise

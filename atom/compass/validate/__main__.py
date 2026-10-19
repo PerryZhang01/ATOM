@@ -11,7 +11,7 @@ as `run_file`, and `validate.runs` decides which client run of theirs is graded,
 whether one is. Rows: `validate.runs`' grades, TTFT p50 per band of uncached prompt
 tokens graded alike; per run `record` or `run` wrote, its warmup: how many requests
 its export names as such and how many steps hold only those; `validate.cost` on the
-steps graded (with the steps it leaves out, refuses or extrapolates) and
+steps graded (with the steps it leaves out, declines or extrapolates) and
 `memory.check` per real run; and the simulated run's refusals by source, its steps
 extrapolated and priced by a fallback, shares and speed. Any refusal makes a
 `cctraces_sim.sh` cell a coverage report; the shares grade nothing, and neither do the
@@ -26,6 +26,7 @@ from pathlib import Path
 from statistics import median
 
 from atom.compass.backends.cost import GROUPS
+from atom.compass.backends.step_linear_fit import TOKEN_BANDS, token_band
 from atom.compass.memory.check import MemoryRefusal, parts
 from atom.compass.run import (
     LP_FILE,
@@ -38,7 +39,7 @@ from atom.compass.run import (
 from atom.compass.run.step_grid import keyed_of, read
 from atom.compass.validate import cost, runs
 
-BANDS = {0: "0-512", 512: "512-2048", 2048: "2048-8192", 8192: "8192+"}
+BANDS = [token_band(edge) for edge in (0, *TOKEN_BANDS)]
 HULL = {"validated": ("validated", "-"), "unvalidated": ("unvalidated", "not gated")}
 GATED_COUNTS = {"preemptions", "prefill tokens"}
 
@@ -51,8 +52,7 @@ def _ttft(run: Path) -> dict[str, float]:
         if phase == "profiling" and "time_to_first_token" in m:
             n = m["usage_prompt_tokens"]["value"]
             n -= m["usage_prompt_cache_read_tokens"]["value"]
-            band = BANDS[max(e for e in BANDS if e <= n)]
-            by.setdefault(band, []).append(m["time_to_first_token"]["value"])
+            by.setdefault(token_band(n), []).append(m["time_to_first_token"]["value"])
     return {band: median(v) for band, v in by.items()}
 
 
@@ -64,13 +64,13 @@ def _graded(family: str, name: str, g: dict) -> tuple:
     return family, name, value, verdict
 
 
-def _runs(real: list[Path], law: Path):
-    for family, metrics in runs.grade(real, law).items():
+def _runs(real: list[Path], sim: Path):
+    for family, metrics in runs.grade(real, sim).items():
         for name, g in metrics.items():
             yield _graded(family, name, g)
-    every = (*real, law)
+    every = (*real, sim)
     ttft = [_ttft(r) for r in every]
-    for band in BANDS.values():
+    for band in BANDS:
         v, name = [t.get(band) for t in ttft], f"ttft p50 {band} uncached"
         if None in v:
             missing = [r.name for r, x in zip(every, v) if x is None]
@@ -103,16 +103,17 @@ def _cost(run: Path, backend, steps: list[dict]):
                 value = f"{b['steps']} steps; p10 {b['p10']:+.1%} p50 {b['p50']:+.1%} p90 {b['p90']:+.1%}"
                 yield where, f"{band} {hull}", f"{value}; within 10% {b['within_10pct']:.1%}", gated
     yield where, "left out", f"not labelled {json.dumps(report['cut'])}; warm steps, real s { {w['step']: round(w['real_s'], 2) for w in report['warm']} }", "-"
-    for band, r in report["refused"].items():
-        yield where, f"refused {band}", f"{r['steps']} steps, real {r['real_s']:.2f} s", "-"
+    for declined in ("fallback", "refused"):
+        for band, r in report[declined].items():
+            yield where, f"{declined} {band}", f"{r['steps']} steps, real {r['real_s']:.2f} s", "-"
     yield where, "extrapolated", f"{report['extrapolated']} steps", "-"
 
 
-def _memory(law: Path, real: Path):
+def _memory(sim: Path, real: Path):
     where = f"memory {real.name}"
     try:
         comparison, *_, graph = parts(
-            law / LP_FILE.format("engine"), real / "server.log"
+            sim / LP_FILE.format("engine"), real / "server.log"
         )
     except MemoryRefusal as e:
         yield where, "memory", e.what, "refused"

@@ -19,6 +19,7 @@ from atom.compass.backends import (
     StepLinearBackend,
     StepLinearLaw,
 )
+from atom.compass.backends.step_labels import label
 from atom.compass.backends.step_linear_fit import fit, label_records, mark_held_out
 from atom.compass.validate.cost import cost_accuracy
 
@@ -50,10 +51,28 @@ def test_an_mtp_record_fits_a_draft_law_that_prices_each_forward_apart(tmp_path)
         drafts = [t.name for t in cost.terms if t.draft]
         assert drafts and all(n.startswith("draft.") for n in drafts)
 
-    middle = BatchView((RequestShape(512, 512, False),), produces_output=False)
-    cost = backend.price(middle)
-    assert [(t.name, t.seconds) for t in cost.terms if t.draft] == [("draft", 0.0)]
+    # A middle chunk's draft is its draft-KV pass, priced by the draft vector.
+    row = (RequestShape(512, 512, False),)
+    cost = backend.price(BatchView(row, produces_output=False))
+    final = backend.price(BatchView(row, produces_output=True))
+    assert cost.draft_seconds == final.draft_seconds > 0
     assert cost.target_seconds > 0
+
+
+def test_an_mtp_record_s_middle_chunk_without_a_target_end_is_cut_unsplit(tmp_path):
+    """Its device label holds its draft-KV pass, which the draft law prices
+    again: a record from before the stamp, or a pass nothing stamps."""
+    record = _mtp_record(tmp_path / "dp0.jsonl", _steps(3))
+    lines = [json.loads(x) for x in record.read_text().splitlines()]
+    lines[0]["produces_output"] = False
+    del lines[0]["d_target_ns"]
+    record.write_text("".join(json.dumps(x) + "\n" for x in lines))
+
+    samples = label(record)[0]
+    assert [(s.step, s.cut, s.device_s) for s in samples if s.cut] == [
+        (0, "unsplit", None)
+    ]
+    assert _fit([record])["cut"]["unsplit"] == 1
 
 
 def test_a_speculative_run_charges_the_law_s_draft_and_refuses_a_law_without_one(

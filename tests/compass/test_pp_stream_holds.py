@@ -156,5 +156,7 @@ def test_a_middle_stage_takes_its_input_after_the_send_its_stream_waited_for():
     run("flush_pp_send")
     batch = _decode()
     run("forward", batch)
-    assert batch.compass_pp_release == held + T
-    assert calls[-3][2] == {"seq": 1, "tensors_done": held + T}
+    # Up since 1.0, the tensor moved its threshold's 1024 bytes before the post.
+    end = held - 1024 * 2.0**-20 + T
+    assert batch.compass_pp_release == end
+    assert calls[-3][2] == {"seq": 1, "tensors_done": end}
