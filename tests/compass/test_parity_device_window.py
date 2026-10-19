@@ -70,8 +70,8 @@ def _recorded(warmup, drafter=None):
     which runs an align-only `propose_draft_token_ids` instead. An output
     forward also waits for the MTP status before its launch, then samples,
     calls `prepare_sampled_ids` right after `forward_done_event`, proposes and
-    waits for the draft copy, as ATOM does. Each pass's device time lands on
-    the next event recorded."""
+    waits for the draft copy, as ATOM does. The device work each call queues
+    lands on the next event recorded."""
     device = _Device()
     clock = iter(range(1, 10**9))
 
@@ -88,7 +88,7 @@ def _recorded(warmup, drafter=None):
                 def draft_kv(positions, hidden, next_token_ids):
                     # EAGLE's returns early where a row samples (-1).
                     if drafter == "dspark" or -1 not in next_token_ids:
-                        self.next = "kv"
+                        self.queued.append("kv")
 
                 self.drafter = SimpleNamespace(compute_draft_kv=draft_kv)
             self.exited = False
@@ -105,29 +105,27 @@ def _recorded(warmup, drafter=None):
             self._gate_staging_reuse()
             if drafter and output:
                 p.recv_mtp_status_async()
-            self.next = "launch"
+            self.queued = ["launch"]
             assert self.run_model([], batch) == "logits"
-            self.next = "target"
+            self.queued.append("target" if drafter else "busy")
             align = drafter == "eagle-dp" and not output
             if drafter and not align:
                 self.drafter.compute_draft_kv([], "hidden", [-1] if output else [7])
             if align:
                 self.propose_draft_token_ids(batch, align_only=True)
             if drafter and output:
-                self.next = "sample"
+                self.queued.append("sample")
                 p.prepare_sampled_ids(batch)
                 self.propose_draft_token_ids(batch)
                 p.recv_async_output_draft()
             elif output:
                 assert p.prepare_sampled_ids(batch) == []
-            if not drafter:
-                self.next = "busy"
             # The previous forward's exit event has completed, this one's has not.
             device.now = device.times[-2] if len(device.times) > 1 else -1
             return "ran"
 
         def propose_draft_token_ids(self, batch, align_only=False):
-            self.next = "propose"
+            self.queued.append("propose")
 
         def exit(self):
             self.exited = True
@@ -141,9 +139,10 @@ def _recorded(warmup, drafter=None):
             # Launch after the previous exit, exit after the launch.
             last = device.times[-1] if device.times else 0
             step = {"launch": GAP, "target": TARGET, "sample": SAMPLE}
-            step |= {"kv": KV, "propose": PROPOSE, "idle": 0}
-            device.times.append(last + step.get(self.next, BUSY + len(device.times)))
-            self.next = "idle"
+            step |= {"kv": KV, "propose": PROPOSE}
+            busy = BUSY + len(device.times)
+            device.times.append(last + sum(step.get(q, busy) for q in self.queued))
+            self.queued = []
             return _Event(device, device.times[-1])
 
     return _Recorded, device
