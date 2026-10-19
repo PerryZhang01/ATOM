@@ -21,7 +21,7 @@ from test_stop_between_client_runs import CLIENT_RUN as UNREFUSED
 from atom.compass import run as compass_run
 from atom.compass.drive import run as drive_run
 from atom.compass.drive import serve
-from atom.compass.validate.runs import CLIENT_RUN, _requests, grade, graded, main
+from atom.compass.validate.runs import CLIENT_RUN, _requests, grade, main
 
 EXPORT = {
     "request_count": {"unit": "requests", "avg": 3.0},
@@ -444,29 +444,48 @@ def test_a_client_run_whose_export_names_no_warmup_is_refused(tmp_path, warmup):
         grade(real, simulated)
 
 
-#: Request `kw` warms the server up only after the client run's first step.
-LATE = [_schedule()[0], [(6, 30, 30, False)], *_schedule()[1:]]
-
-
-@pytest.mark.parametrize("schedule", [_schedule(), LATE], ids=["none", "late"])
-def test_a_client_run_whose_warmup_no_step_up_to_its_first_holds_is_refused(
-    tmp_path, schedule
+def test_a_client_run_whose_warmup_no_step_before_its_first_holds_is_refused(
+    tmp_path,
 ):
-    cells = _four(tmp_path, schedule, {6: "kw", 7: "ka", 8: "kb"})
+    cells = _four(tmp_path, _schedule(), {6: "kw", 7: "ka", 8: "kb"})
     *real, simulated = (_recorded(c, held=False) for c in cells)
 
-    unheld = "no step up to its own first holds its warmup, so its first steps"
+    unheld = "no step before its own first holds its warmup, so its first steps"
     with pytest.raises(ValueError, match=f"r0 is not graded: {unheld} may be cold$"):
         grade(real, simulated)
 
 
-def test_a_warmup_held_only_in_steps_its_client_run_shares_is_graded(tmp_path):
-    keys = {6: "kw", 7: "ka", 8: "kb"}
-    first, *rest = _schedule()
-    shared = [[(6, 30, 30, False), *first], *rest]
-    cells = [_recorded(c, warmup={"kw"}) for c in _four(tmp_path, shared, keys)]
+#: Request `kw` prefills in the client run's first step.
+SHARED = [[(6, 30, 30, False), *_schedule()[0]], *_schedule()[1:]]
+#: Request `kw` prefills alone first, and decodes on into the client run's second step.
+LONG = [WARMED[0], _schedule()[0], [WARMED[1][0], *_schedule()[1]], *_schedule()[2:]]
+#: Request `kw` prefills alone first, and decodes alone after the client run's first step.
+APART = [WARMED[0], _schedule()[0], WARMED[1], *_schedule()[1:]]
+#: Request `kw` warms the server up only after the client run's first step.
+LATE = [_schedule()[0], [(6, 30, 30, False)], *_schedule()[1:]]
 
-    assert [graded(c)[2] for c in cells] == [{"requests": 1, "steps": 0}] * 4
+
+@pytest.mark.parametrize(
+    "schedule, unheld, step",
+    [(SHARED, True, 0), (LONG, False, 2), (APART, False, 2), (LATE, True, 1)],
+    ids=["first", "later", "warmup-only-after-first-own", "late"],
+)
+def test_a_client_run_whose_warmup_runs_on_past_its_first_own_step_is_refused(
+    tmp_path, schedule, unheld, step
+):
+    keys = {6: "kw", 7: "ka", 8: "kb"}
+    cells = [_recorded(c, warmup={"kw"}) for c in _four(tmp_path, schedule, keys)]
+
+    cold = (
+        "no step before its own first holds its warmup, so its first steps may be cold"
+    )
+    why = [cold] if unheld else []
+    why.append(
+        f"steps from its own first on hold a request of its warmup, 1 from step {step}, "
+        "so its warmup has not ended when it starts"
+    )
+    with pytest.raises(ValueError, match=f"r0 is not graded: {'; '.join(why)}$"):
+        grade(cells[:3], cells[3])
 
 
 def test_the_steps_of_a_later_client_run_are_not_graded(tmp_path):
