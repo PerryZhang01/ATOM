@@ -52,7 +52,8 @@ the law, are its warm steps (shape compiles and first touches), and so is a
 dropped step anywhere that ran more than `WARM_FACTOR` times its price, such as
 the first short chunk on a deep history: counted with their seconds apart from
 the dropped ones, never charged. A feature with no variance gets coefficient
-zero and is named. Each vector reports its samples,
+zero and is named, but prefill holds `output` only where it varies. Each
+vector reports its samples,
 warm and dropped counts, the centre and scaled MAD of its relative residuals,
 the condition number of its column-scaled design and
 the convex hull of its fitted steps, which `StepLinearLaw` reads. A vector with
@@ -139,7 +140,7 @@ def _features(samples, form: str, dp: int) -> tuple[list[tuple], dict]:
     and how many were cut, per reason.
 
     `vector` is `prefill` or a decode rung's key; features are in `StepLinearLaw`'s
-    order, plus `history` for that form and, above `dp` 1, `moe_rows` on prefill;
+    order, plus `history` for that form, above `dp` 1 `moe_rows`, `output` on prefill;
     `context` is the decode rows' N_KV in scheduled order, empty for prefill.
     """
     cut, rows = dict.fromkeys(CUTS, 0), []
@@ -161,6 +162,7 @@ def _features(samples, form: str, dp: int) -> tuple[list[tuple], dict]:
                             "a data-parallel law prices prefill from"
                         )
                     counts += (view.moe_rows,)
+                counts += (int(view.produces_output),)
             else:
                 key = _rung_key(view.capture_rung)
                 counts = (1, sum_context(view.decode), view.graph_padding)
@@ -442,7 +444,7 @@ def fit(samples, options=None, seed: int = 0) -> tuple[dict, dict]:
         for k, v in c.items():
             cut[k] = cut.get(k, 0) + v
     prefill = list(HISTORY if form == "history" else PREFILL) + ["moe_rows"] * (dp > 1)
-    rows, alternation = _slowest(groups, prefill)
+    rows, alternation = _slowest(groups, prefill + ["output"])
     law = {
         "provenance": f"step_linear_fit {form} on {len(runs) * dp} real records "
         f"({', '.join(runs)})",
@@ -475,6 +477,10 @@ def fit(samples, options=None, seed: int = 0) -> tuple[dict, dict]:
             law["unfitted"][key] = f"0 steps for {len(names)} coefficients"
             continue
         counts = np.array([r[2] for r in members], dtype=np.float64)
+        if key == "prefill" and np.ptp(counts[:, -1]) > 0:
+            names = names + ["output"]
+        elif key == "prefill":
+            counts = counts[:, :-1]
         x = counts
         if key is None:
             onehot = [[float(r[1] == k) for k in rungs] for r in members]
@@ -590,16 +596,17 @@ def _held_out(samples, options, seed, warm=None):
             price, error = [c[1] for c, _ in mine], float("nan")
             if vector is not None:
                 c = list(vector["coefficients"].values())
-                price = [
-                    float(np.dot(c, x + _rowmod_count(vector, n))) for x, n in mine
-                ]
+                price = [float(np.dot(c, _counts(vector, x, n))) for x, n in mine]
                 error = max(price) / seconds - 1.0
             top = mine[int(np.argmax(price))][0]
             yield run, key, _band(key, top), mine, error
 
 
-def _rowmod_count(vector: dict, context) -> tuple:
-    return (rowmod(context, vector["rowmod"]),) if "rowmod" in vector else ()
+def _counts(vector: dict, counts: tuple, context) -> tuple:
+    """`counts` as `vector` reads them: plus `rowmod`, or less an unfitted `output`."""
+    if "rowmod" in vector:
+        return counts + (rowmod(context, vector["rowmod"]),)
+    return counts[: len(vector["coefficients"])]
 
 
 def held_out(samples, options=None, seed: int = 0) -> dict:
@@ -638,7 +645,7 @@ def mark_held_out(law: dict, report: dict, samples, options=None, seed: int = 0)
         mine = [r for r in rows if r[1] == key]
         if vector is None or not mine:
             continue
-        points = [c + _rowmod_count(vector, x) for r in mine for c, x in r[3]]
+        points = [_counts(vector, c, x) for r in mine for c, x in r[3]]
         try:
             hull = _hull(
                 np.array(points, dtype=np.float64)[:, 1:],

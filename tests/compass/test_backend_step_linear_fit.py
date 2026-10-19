@@ -459,7 +459,9 @@ def test_device_busy_time_and_host_laws_are_recovered_from_a_timed_record(tmp_pa
     assert labelled[63] == pytest.approx(steps[63][2] + GAP_NS * 1e-9, rel=1e-6)
 
     law = _fit([record])
-    assert law["prefill"]["coefficients"] == pytest.approx(PREFILL, rel=1e-5)
+    assert law["prefill"]["coefficients"] == pytest.approx(
+        PREFILL | {"output": 0.0}, rel=1e-5
+    )
     decode = dict(DECODE["2"], step=DECODE["2"]["step"] + GAP_NS * 1e-9)
     assert law["decode"]["2"]["coefficients"] == pytest.approx(decode, rel=1e-5)
 
@@ -985,3 +987,31 @@ def test_a_dp_law_is_held_out_run_by_run_and_validates_every_rank_inside(
     )
     far = BatchView((RequestShape(1, 10**6, True),) * 4, capture_rung=4)
     assert not any(t.provenance.validated for t in backend.price(far).terms)
+
+
+def test_a_final_chunk_s_own_cost_is_fitted_as_the_output_term(tmp_path):
+    # Every third prefill is a middle chunk; the others pay `extra` more.
+    extra, steps = 0.004, _steps(16, n=300)
+    prefill = [i for i, s in enumerate(steps) if not s[0][0][2]]
+    middle = set(prefill[::3])
+    steps = [
+        (r, g, s + extra * (i in prefill and i not in middle))
+        for i, (r, g, s) in enumerate(steps)
+    ]
+    record = _record(tmp_path / "dp0.jsonl", steps)
+    lines = [json.loads(line) for line in record.read_text().splitlines()]
+    for i in middle:
+        lines[i]["produces_output"] = False
+    record.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+    law = _fit([record])
+    assert law["prefill"]["coefficients"] == pytest.approx(
+        PREFILL | {"output": extra}, rel=1e-6
+    )
+    backend = StepLinearBackend(StepLinearLaw(law))
+    for i in prefill[:6]:
+        rows = tuple(RequestShape(*r) for r in steps[i][0])
+        view = BatchView(rows, produces_output=i not in middle)
+        assert backend.price(view).seconds == pytest.approx(steps[i][2], rel=1e-6)
+    with pytest.raises(CostRefused, match="no produces_output on this step"):
+        backend.price(_view(steps[prefill[0]][0]))

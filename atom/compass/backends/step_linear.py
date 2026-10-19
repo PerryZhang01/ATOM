@@ -12,7 +12,9 @@ decode one per capture rung, each over the features `StepStubBackend` reads:
 A prefill vector may add `history`, Sum (N_KV - N_Q): the KV a chunk reads
 on its cached history, which a short chunk on a deep history pays apart from
 its attention arithmetic, and then `moe_rows`, the rows the data-parallel
-group's MoE gather carries (`BatchView.moe_rows`), which every rank's MoE runs on.
+group's MoE gather carries (`BatchView.moe_rows`), which every rank's MoE runs on,
+and then `output`, 1 on a step that produces output: the logits and sampling a
+middle chunk skips.
 
 A law prices one rank's step; the runner takes the group's step as the max
 over its ranks. Its parallel layout is its `engine_config`'s, which a run
@@ -147,6 +149,7 @@ class StepLinearLaw:
         if "prefill" in law:
             prefill = law["prefill"]
             extra = [f for f in ("history", "moe_rows") if f in prefill["coefficients"]]
+            extra += ["output"] * ("output" in prefill["coefficients"])
             self.prefill = _Vector("prefill", PREFILL + tuple(extra), prefill)
         self.decode = {
             None if rung == EAGER else int(rung): _Vector(
@@ -211,6 +214,10 @@ class StepLinearBackend(CostBackend):
                 if batch_view.moe_rows is None:
                     raise self._refuse(batch_view, "no MoE gather rows on this step")
                 counts += (batch_view.moe_rows,)
+            if "output" in vector.features:
+                if batch_view.produces_output is None:
+                    raise self._refuse(batch_view, "no produces_output on this step")
+                counts += (int(batch_view.produces_output),)
         else:
             rung, kind = batch_view.capture_rung, "decode"
             vector = law.decode.get(rung)
