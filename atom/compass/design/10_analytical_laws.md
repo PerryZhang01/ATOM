@@ -108,7 +108,7 @@ intermediates. All three are Class A.
 ```
 
 The peaks are **attainable peaks probed on the device** (`05` D26): `peak_c`, one compute
-rate per format (BF16, FP8, FP4); `BW(bytes)`, a STREAM bandwidth curve; `t0`, an
+rate per format (BF16, FP8, FP4); `BW(bytes)`, a bandwidth curve, per size the fastest of read-only, write-only and copy; `t0`, an
 empty-kernel floor; and the link latency and bandwidth `t_comm` reads (D66). Probed values
 make a term analytical. MI455, with no hardware, takes its datasheet times the ratio
 probed on MI355X, declared (D69). A mixed-format operand pair takes the rate of the wider

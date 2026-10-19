@@ -138,7 +138,8 @@ FIELDS = (
     Field("device.ptl", Kind.TEXT, required=False),
     Field("device.memory.capacity_bytes", Kind.QUANTITY, exact=True),
     Field("device.memory.bandwidth_bytes_per_s", Kind.QUANTITY, peak=True),
-    # Attainable bytes per second by bytes moved, a STREAM copy sweep.
+    # Attainable bytes per second by bytes moved: the fastest of a read-only,
+    # a write-only and a copy sweep at each size.
     Field("device.memory.bandwidth_curve", Kind.CURVE, required=False),
     Field("device.compute.bf16_flops", Kind.QUANTITY, peak=True),
     Field("device.compute.fp8_flops", Kind.QUANTITY, peak=True),

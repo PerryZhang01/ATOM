@@ -12,14 +12,16 @@ behind a spin kernel, so no host time is in it.
   `torch._scaled_mm`; the best shape's rate over SPEC's ``*_flops`` is the
   format's derate. Each GEMM follows a spin, so the rate is a burst's: with PTL
   enabled a sustained GEMM slows within a second or two.
-- Bandwidth: per size in `SIZES`, the bytes read plus written, a graph of up
-  to `GRAPH` copies through consecutive slices of two `POOL`-byte buffers,
-  replayed `REPS` times. Copies that together fit in the last-level cache run
-  warm, as small operators do, and larger ones from HBM. The kernel is a
-  Triton copy: `copy_` reaches about 2 TB/s on MI308X, a kernel about 3.6. The
-  running maximum of the median rate per size is ``memory.bandwidth_curve``,
-  so noise on the plateau keeps it monotone, and its largest point over SPEC's
-  bandwidth is ``memory.derate``.
+- Bandwidth: per kind in `KINDS` (read-only, write-only, copy) and per size
+  in `SIZES` of bytes moved, a graph of up to `GRAPH` kernels through
+  consecutive slices of one zeroed `2 * POOL`-byte buffer (a copy reads one
+  half and writes the other), replayed `REPS` times. Kernels that together fit
+  in the last-level cache run warm, as small operators do, and larger ones
+  from HBM. The kernels are Triton: `copy_` reaches about 2 TB/s on MI308X, a
+  kernel about 3.6. At each size the fastest kind's median rate bounds any mix
+  of reads and writes; the running maximum of it over sizes is
+  ``memory.bandwidth_curve``, so noise on the plateau keeps it monotone, and
+  its largest point over SPEC's bandwidth is ``memory.derate``.
 - Kernel floor: `GRAPH` empty kernels captured in one graph, replayed `REPS`
   times; ``kernel_floor_s`` is the median per kernel, with its p10 and p90.
 - Link: one kernel per card passes a counter `ROUNDS` times through the other
@@ -59,7 +61,9 @@ from atom.compass.spec.rules import Rule
 #: up to 2.7x between neighbouring large shapes, and each format peaks at another.
 SHAPES = tuple(itertools.product((8192, 10240, 12288, 16384), repeat=3))
 SIZES = tuple(2**k for k in range(12, 33))  # 4 KiB to 4 GiB moved
-POOL, COPY_BLOCK = 2**31, 4096  # bytes in each copy buffer, floats a program
+POOL, COPY_BLOCK = 2**31, 4096  # bytes in each copy half, floats a program
+#: Each bandwidth kind: whether its kernel reads, and whether it writes.
+KINDS = {"read": (True, False), "write": (False, True), "copy": (True, True)}
 GRAPH, ROUNDS, LINK_BYTES = 1000, 1000, 2**30
 REPS = 20
 SPIN = 10**7  # device cycles a sample waits behind, well past its host calls
@@ -89,10 +93,19 @@ def _pingpong(mine, theirs, rounds, serve: tl.constexpr):
 
 
 @triton.jit
-def _copy(src, dst, n, BLOCK: tl.constexpr):
-    """Copy `n` floats, `BLOCK` a program."""
+def _stream(src, dst, n, BLOCK: tl.constexpr, READ: tl.constexpr, WRITE: tl.constexpr):
+    """Read `n` floats of `src`, write `n` of `dst`, or copy one to the other,
+    `BLOCK` a program. A read alone stores only negative floats, of which a
+    zeroed `src` has none, so the loads stay and nothing is written."""
     offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
-    tl.store(dst + offs, tl.load(src + offs, mask=offs < n), mask=offs < n)
+    mask = offs < n
+    if READ:
+        x = tl.load(src + offs, mask=mask)
+        if not WRITE:
+            mask = mask & (x < 0)
+    else:
+        x = tl.zeros([BLOCK], dtype=tl.float32)
+    tl.store(dst + offs, x, mask=mask)
 
 
 def cards(bdfs: list[str], drm: str = DRM) -> list[dict]:
@@ -166,18 +179,28 @@ def probe(torch) -> dict:
         scaled = partial(torch._scaled_mm, x, w.T, one, one, out_dtype=torch.bfloat16)
         gemm["fp8"][shape] = _timed(torch, scaled)
         time.sleep(1)
-    src = torch.empty(POOL // 4, device="cuda")
-    dst = torch.empty_like(src)
-    copy = {}
-    for size in SIZES:
-        n, k = size // 8, min(GRAPH, 2 * POOL // size)  # floats a side, copies
-        grid = (triton.cdiv(n, COPY_BLOCK),)
-        _copy[grid](src, dst, n, COPY_BLOCK, num_warps=8)  # compiles uncaptured
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph):
-            for i in range(k):
-                _copy[grid](src[i * n :], dst[i * n :], n, COPY_BLOCK, num_warps=8)
-        copy[size] = [t / k for t in _timed(torch, graph.replay)]
+    pool = torch.zeros(2 * POOL // 4, device="cuda")
+    streams = {}
+    for kind, (read, write) in KINDS.items():
+        src, dst = pool.chunk(2) if read and write else (pool, pool)
+        streams[kind] = {}
+        for size in SIZES:
+            n = size // 4 // (read + write)  # floats a side
+            k = min(GRAPH, 2 * POOL // size)  # kernels in the graph
+            run = partial(
+                _stream[(triton.cdiv(n, COPY_BLOCK),)],
+                n=n,
+                BLOCK=COPY_BLOCK,
+                READ=read,
+                WRITE=write,
+                num_warps=8,
+            )
+            run(src, dst)  # compiles uncaptured
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                for i in range(k):
+                    run(src[i * n :], dst[i * n :])
+            streams[kind][size] = [t / k for t in _timed(torch, graph.replay)]
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
         for _ in range(GRAPH):
@@ -204,17 +227,24 @@ def probe(torch) -> dict:
         torch.cuda.synchronize(1)
     return {
         "gemm": gemm,
-        "copy": copy,
+        **streams,
         "floor": floor,
         "link": link,
         "one_hop": [t / ROUNDS / 2 for t in trips[1:]],
     }
 
 
+def rates(record: dict) -> dict:
+    """Each bandwidth kind's median rate per size, bytes moved a second."""
+    med = statistics.median
+    return {k: {int(n): int(n) / med(t) for n, t in record[k].items()} for k in KINDS}
+
+
 def readings(record: dict) -> dict:
     """The attainable values a record's samples give: each format's best
-    median rate, the running maximum of the median copy rate per size, the
-    link's median rate, and each banded field's median, p10 and p90."""
+    median rate, the running maximum over sizes of the fastest kind's median
+    rate, the link's median rate, and each banded field's median, p10 and
+    p90."""
     med = statistics.median
 
     def band(samples):
@@ -228,10 +258,10 @@ def readings(record: dict) -> dict:
         )
         for f in FORMATS
     }
-    rates = itertools.accumulate(
-        (int(n) / med(t) for n, t in record["copy"].items()), max
-    )
-    found["bandwidth_curve"] = [[int(n), r] for n, r in zip(record["copy"], rates)]
+    kinds = rates(record)
+    sizes = sorted(kinds["copy"])
+    best = itertools.accumulate((max(r[n] for r in kinds.values()) for n in sizes), max)
+    found["bandwidth_curve"] = [[n, r] for n, r in zip(sizes, best)]
     found["link"] = med(record["link"])
     return found | {path: band(record[key]) for path, key in BANDED.items()}
 
@@ -265,7 +295,7 @@ def fragment(
             "date": date,
             "origin": "mixed",
             "origins": origins,
-            "notes": "probe_device.py: GEMM, copy, graph and link samples",
+            "notes": "probe_device.py: GEMM, read, write, copy, graph and link samples",
         },
     }
     for path, value in values.items():

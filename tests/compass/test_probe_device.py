@@ -23,13 +23,16 @@ def _load(name):
 
 probe = _load("probe_device")
 
-#: Samples as a probe writes them: GEMM seconds per shape, copy seconds per
-#: size moved, whose rate dips on the plateau, and the banded fields' samples.
+#: Samples as a probe writes them: GEMM seconds per shape, read, write and copy
+#: seconds per size moved, copy the fastest and its rate dipping on the
+#: plateau, and the banded fields' samples.
 RECORD = {
     "gemm": {
         "bf16": {"4096x4096x4096": [1e-3] * 3, "8192x4096x8192": [2e-3] * 3},
         "fp8": {"8192x8192x8192": [2e-3]},
     },
+    "read": {"4096": [8e-6], "8192": [8e-6], "16384": [16.4e-6]},
+    "write": {"4096": [8e-6], "8192": [8e-6], "16384": [16.4e-6]},
     "copy": {"4096": [4e-6], "8192": [4e-6], "16384": [8.2e-6]},
     "link": [3.2e10, 3.0e10, 3.4e10],
     "floor": [2e-6, 1e-6, 3e-6, 4e-6, 5e-6],
@@ -43,6 +46,22 @@ def test_readings_take_the_best_shape_and_keep_the_curve_monotone():
     assert [r for _, r in found["bandwidth_curve"]] == [1.024e9, 2.048e9, 2.048e9]
     assert found["link"] == 3.2e10
     assert found["device.kernel_floor_s"][0] == 3e-6
+
+
+def test_the_curve_is_at_least_every_kind_at_every_size():
+    record = RECORD | {
+        "read": {"4096": [2e-6], "8192": [8e-6], "16384": [8e-6]},
+        "write": {"4096": [8e-6], "8192": [2e-6], "16384": [5e-6]},
+    }
+    curve = probe.readings(record)["bandwidth_curve"]
+    # read is the fastest at 4 KiB, write at 8 KiB; 16 KiB keeps 8 KiB's rate
+    assert curve == [
+        [4096, pytest.approx(2.048e9)],
+        [8192, pytest.approx(4.096e9)],
+        [16384, pytest.approx(4.096e9)],
+    ]
+    for kind in probe.rates(record).values():
+        assert all(rate >= kind[size] for size, rate in curve)
 
 
 def test_the_node18_script_publishes_the_probed_fields(monkeypatch, tmp_path):
