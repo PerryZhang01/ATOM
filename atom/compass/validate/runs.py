@@ -8,7 +8,8 @@ export in `artifacts/profile_export_aiperf.json`. SIMULATED is the cell at its
 backend, and REAL two or more real runs of it, spaced in time.
 
 A directory `cctraces_sim.sh` wrote is graded whole, and refused when its
-run.json skips host segments. In one `record` or `run` wrote, whose run.json
+run.json skips host segments, or turns the step roofline on beside another
+backend than the step grid. In one `record` or `run` wrote, whose run.json
 states a `format_version`, the graded client run is the one whose export is
 `artifacts/client_run.json`, split from the record by `parity.served`: only
 its steps are graded, and every run's client must have been given the same
@@ -257,6 +258,8 @@ def graded(cell) -> tuple[list[dict], list[str] | None, dict | None]:
         return _client_run(cell, run)
     if any(h.get("skip") for h in entries(run, "host")):
         raise ValueError(f"{cell} skips host segments; a what-if run is not graded")
+    if run.get("step_roofline") and STEP_GRID not in run:
+        raise ValueError(f"{cell} is not graded: the step roofline was on")
     return _steps(cell), None, None
 
 

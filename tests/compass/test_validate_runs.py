@@ -336,6 +336,32 @@ def test_a_simulated_run_grading_does_not_take_is_refused_naming_why(
         grade(real, simulated)
 
 
+@pytest.mark.parametrize(
+    "backend, roofline, refused",
+    [
+        ("step_linear", True, True),
+        ("step_stub", True, True),
+        ("step_linear", False, False),
+        # The step grid prices below it by the roofline, switch or none.
+        ("step_grid", True, False),
+    ],
+)
+def test_a_cctraces_sim_cell_with_the_step_roofline_on_and_no_step_grid_is_refused(
+    tmp_path, backend, roofline, refused
+):
+    *real, simulated = _four(tmp_path)
+    report = grade(real, simulated)
+    run = {backend: {}, "step_roofline": roofline, "host": {"laws": {}}}
+    (simulated / "run.json").write_text(json.dumps(run))
+
+    if not refused:
+        assert grade(real, simulated) == report
+        return
+    reason = "the step roofline was on"
+    with pytest.raises(ValueError, match=f"sim is not graded: {reason}$"):
+        grade(real, simulated)
+
+
 def test_the_command_states_the_steps_extrapolated_and_priced_by_a_fallback(
     tmp_path, capsys
 ):
