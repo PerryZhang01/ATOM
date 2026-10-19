@@ -18,9 +18,10 @@ export names as its warmup's (`warmup`) is its warmup, and not graded. It is
 refused, naming every reason, when steps of any other request precede its own:
 it is then not its server's first client run, and meets the prefix cache an
 earlier one left; when its export names no warmup, since its first steps may
-then be cold; when no step up to its own first, that one included, holds a
-request the export names as the warmup's, since its graded steps may then
-precede it; and when its export lacks traces or arguments. A simulated run, whose
+then be cold; when no step before its own first holds a request the export
+names as the warmup's, since its graded steps may then precede it; when any of
+its own steps holds such a request, since its warmup then runs on into the
+steps it grades; and when its export lacks traces or arguments. A simulated run, whose
 run.json holds `run_file`, is also refused when it skips host segments, or its
 run file has no host laws and so prices no host time; when the step roofline
 was on in a run of another backend than the step grid, which always prices
@@ -197,9 +198,15 @@ def _client_run(cell, run) -> tuple[list[dict], list[str], dict]:
     why = [] if all(before) else ["steps of requests it did not send precede its own"]
     if not warmup_names:
         why.append("its export names no warmup, so its first steps may be cold")
-    elif not any(names & warmup_names for names in held[: mine.index(True) + 1]):
+    elif not any(names & warmup_names for names in held[: mine.index(True)]):
         why.append(
-            "no step up to its own first holds its warmup, so its first steps may be cold"
+            "no step before its own first holds its warmup, so its first steps may be cold"
+        )
+    mixed = [s["step"] for s, n, m in zip(split, held, mine) if m and n & warmup_names]
+    if mixed:
+        why.append(
+            f"a request of its warmup is in {len(mixed)} of its own steps, from step "
+            f"{mixed[0]}, so its warmup runs on into the steps it grades"
         )
     if "traces" not in export:
         why.append("its export names no traces its client was given")
