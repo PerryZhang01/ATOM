@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+#
+# The `compass` console script, run from the tree this copy belongs to, for an
+# image whose ATOM install has no `compass`: `compass <command> [<args>]`.
+# Neither the working directory nor PYTHONPATH can put another `atom` first.
+. "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/_lib.sh"
+ROOT=$(compass_tree_root) || exit $?
+PYTHONPATH=$ROOT exec python3 -P -c 'from atom.compass.cli import main; main()' "$@"
