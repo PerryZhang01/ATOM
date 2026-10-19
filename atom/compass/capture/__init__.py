@@ -77,9 +77,14 @@ def main(argv: list[str]) -> None:
 def population_shapes(names):
     """The shape of each step the record directories `names` hold, DP's dummy
     runs aside."""
+    return [shape for shape, _ in population_steps(names)]
+
+
+def population_steps(names):
+    """Each step the record directories `names` hold, DP's dummy runs aside,
+    as its shape and its step-record line."""
     from .forward import decode, prefill
 
-    shapes = []
     for name in names:
         path = pathlib.Path(name)
         if not (path / "run.json").is_file():
@@ -90,15 +95,14 @@ def population_shapes(names):
             if line["is_dummy_run"]:
                 continue
             if not all(row[2] for row in rows):
-                shapes.append(prefill(sum(row[0] for row in rows), len(rows)))
+                yield prefill(sum(row[0] for row in rows), len(rows)), line
             elif wide := [row[0] for row in rows if row[0] != 1]:
                 raise ValueError(
                     f"{name} step {line['step']} decodes {wide[0]} tokens in a row: "
                     "a speculative decode step is not captured"
                 )
             else:
-                shapes.append(decode(line["rung"] or len(rows)))
-    return shapes
+                yield decode(line["rung"] or len(rows)), line
 
 
 def publish(store, graph, model, declared, tp, command):
