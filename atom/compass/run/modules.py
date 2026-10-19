@@ -38,7 +38,10 @@ DeepSeek-V4's modules, each priced and then gone into:
 - `FusedMoE`, not gone into: the routed experts, at its quant method's
   activation format, and the exchange around them: the data-parallel group's
   gather and reduce-scatter, MoRI's dispatch and combine under expert
-  parallelism, or the tensor-parallel all-reduce on one data-parallel rank.
+  parallelism, at the formats MoRI sends, or the tensor-parallel all-reduce
+  on one data-parallel rank. An expert-parallel MoE over a data-parallel
+  group whose exchange is not MoRI's (`--all2all-backend rccl` or `none`,
+  `ATOM_DISABLE_MORI_EP`), and the Mega kernel, are unclassified.
 
 A module of any other class is gone into when it has children. One without,
 or a listed one in a format or layout not priced here, is unclassified: the
@@ -180,7 +183,9 @@ def _moe(module, name, parent):
     `dims` are (experts, local experts, top k, intermediate per rank, hidden,
     group ranks, data-parallel ranks, MoRI's split send and receive). The
     data-parallel width is the MoE group's over the attention's TP group,
-    which the parent MoE block holds.
+    which the parent MoE block holds. Under expert parallelism over that
+    group, `wire` is what MoRI's dispatch sends, as ATOM resolves it, and
+    what its combine sends back.
     """
     method, w13 = module.quant_method, module.w13_weight
     act = getattr(getattr(method, "act_quant", None), "value", None)
@@ -195,4 +200,20 @@ def _moe(module, name, parent):
     dims = (module.global_num_experts, w13.shape[0], module.top_k)
     dims += (w13.shape[1] // 2, module.hidden_size, ranks, ranks // attention_tp, split)
     fused = module._comm_fused_moe is not None
-    return Module(name, "moe", dims, fmt, ranks, fused, act=act)
+    if _is(method, OPS + "moe.MegaMxfp4MoEMethod"):
+        return None
+    wire = ("bf16", "bf16")
+    if config.use_ep and dims[6] > 1:
+        from atom.model_ops.fused_moe.mori_prepare_finalize import (
+            resolve_mori_dispatch,
+        )
+        from atom.utils import envs
+
+        mori = config.requested_all2all_backend in ("auto", "mori")
+        mori = mori and not envs.ATOM_DISABLE_MORI_EP
+        sent = resolve_mori_dispatch(module.moe_config.in_dtype, module.hidden_size)
+        sent = FORMATS.get(sent.dtype)
+        if not (mori and sent):
+            return None
+        wire = (sent, "bf16" if envs.ATOM_MORI_COMBINE_QUANT == "none" else "fp8")
+    return Module(name, "moe", dims, fmt, ranks, fused, act=act, wire=wire)

@@ -38,6 +38,7 @@ from atom.compass.backends.work import (
     grouped_gemm,
     max_rank_load,
 )
+from atom.compass.run.modules import walk
 from atom.compass.runner import projection
 from atom.compass.spec import MachineSpec
 
@@ -93,7 +94,7 @@ def test_two_micro_batches_overlap_as_atoms_streams_order_them():
 def test_the_routed_experts_and_their_exchange_by_hand(spec):
     tokens, rows = 3, 10
     ep_off = Module("experts", "moe", EP_OFF, "fp4", ranks=2)
-    ep2 = Module("experts", "moe", EP2, "fp4", ranks=2, act="fp8")
+    ep2 = Module("experts", "moe", EP2, "fp4", ranks=2, act="fp8", wire=("fp4", "fp8"))
     one_rank = Module("experts", "moe", (8, 8, 2, 16, 32, 2, 1, 0), "fp4", ranks=2)
     step = view((tokens, tokens, False), moe_rows=rows)
     # EP off: every expert a row reaches, at a sixteenth of the intermediate;
@@ -116,22 +117,24 @@ def test_the_routed_experts_and_their_exchange_by_hand(spec):
         _module(experts, spec) + gather + scatter
     )
     # EP2: the busiest rank's share at the full intermediate, half the experts
-    # read; each token sent once to each rank holding one of its two experts.
+    # read; each token sent once to each rank holding one of its two experts,
+    # at fp4 and back at fp8.
     load = max_rank_load(rows, 2, 8, 2)
     experts = grouped_gemm(load, 64, 32, hit / 2, "fp8", "fp4")
     experts += grouped_gemm(load, 32, 32, hit / 2, "fp8", "fp4")
     sent = tokens * 32 * 2 * (1 - comb(4, 2) / comb(8, 2))
-    dispatch = 2e-6 + sent / 2 / LINK
-    combine = 2e-6 + sent * 2 / 2 / LINK
+    dispatch = 2e-6 + sent * 0.5 / 2 / LINK
+    combine = 2e-6 + sent / 2 / LINK
     assert _price([ep2], step, spec)["roofline.moe"] == pytest.approx(
         _module(experts, spec) + dispatch + combine
     )
-    # One data-parallel rank: its own rows, the output all-reduced.
-    hit = activated_experts(8, 2, 3)
-    experts = grouped_gemm(6, 32, 32, hit, "bf16", "fp4")
-    experts += grouped_gemm(6, 32, 16, hit, "bf16", "fp4")
-    experts += allreduce(2, tokens * 32 * 2)
-    one = view((tokens, tokens, False))
+    # One data-parallel rank: its graph's 8 rows, the output all-reduced; its
+    # 3 decode tokens and the pad reach the experts.
+    hit = activated_experts(8, 2, 4)
+    experts = grouped_gemm(16, 32, 32, hit, "bf16", "fp4")
+    experts += grouped_gemm(16, 32, 16, hit, "bf16", "fp4")
+    experts += allreduce(2, 8 * 32 * 2)
+    one = BatchView((RequestShape(1, 4, True),) * 3, capture_rung=8)
     assert _price([one_rank], one, spec)["roofline.moe"] == pytest.approx(
         _module(experts, spec)
     )
@@ -175,19 +178,20 @@ def test_a_split_step_lays_each_layers_micro_batches_on_two_streams(spec):
             Module(f"layers.{i}.experts", "moe", EP_OFF, "fp4", ranks=2, layer=i),
         ]
     head = Module("head", "lm_head", (64, 32))
-    # This rank's 6 tokens split 3 and 3, cutting the first request: its last
-    # token attends the first three as history. The peer splits 5 and 5.
-    step = view((4, 4, False), (2, 10, False), tbo=((3, 5), (3, 5)))
-    halves = [([3], [3]), ([1, 2], [4, 10])]
-    hit = activated_experts(8, 2, 8)
-    experts = grouped_gemm(16, 32, 32, hit, "bf16", "fp4")
-    experts += grouped_gemm(16, 32, 16, hit, "bf16", "fp4")
+    # This rank's 7 tokens split 3 then 4, the shorter half first, cutting the
+    # first request: its last token attends the first three as history. The
+    # peer splits 5 and 5, so the halves gather 8 and 9 rows.
+    step = view((4, 4, False), (3, 10, False), tbo=((3, 5), (4, 5)))
+    halves = [([3], [3], 8), ([1, 3], [4, 10], 9)]
     segments = []
-    for q, kv in halves:
+    for q, kv, rows in halves:
+        hit = activated_experts(8, 2, rows)
+        experts = grouped_gemm(2 * rows, 32, 32, hit, "bf16", "fp4")
+        experts += grouped_gemm(2 * rows, 32, 16, hit, "bf16", "fp4")
         compute = _module(attention(q, kv, 4, 8, 1), spec)
         compute += _module(gemm(sum(q), 32, 32), spec)
-        gather = bounds(allgather(2, 8 * 40 * 2), spec)["comm"]
-        scatter = bounds(allgather(2, 8 * 32 * 2), spec)["comm"]
+        gather = bounds(allgather(2, rows * 40 * 2), spec)["comm"]
+        scatter = bounds(allgather(2, rows * 32 * 2), spec)["comm"]
         segments.append([compute, gather, _module(experts, spec), scatter])
     layer = [list(pair) for pair in zip(*segments)]
     by_name = _price(layers + [head], step, spec)
@@ -240,6 +244,72 @@ def test_the_batch_view_states_the_real_tokens_among_the_gathered_rows():
     view = projection.batch_view(decode(3), mode, r)
 
     assert (view.moe_rows, view.moe_tokens) == (8, 5)
+
+
+class Mxfp4MoEMethod:
+    act_quant = SimpleNamespace(value="bf16")
+
+
+class MegaMxfp4MoEMethod(Mxfp4MoEMethod):
+    pass
+
+
+class FusedMoE(torch.nn.Module):
+    pass
+
+
+# The walk matches ATOM's classes by name.
+for cls in Mxfp4MoEMethod, MegaMxfp4MoEMethod, FusedMoE:
+    cls.__module__ = "atom.model_ops.moe"
+
+
+def _walk_ep2(method=Mxfp4MoEMethod, backend="auto"):
+    """An EP2 MoE over two data-parallel ranks of TP1 attention, walked."""
+    moe = FusedMoE()
+    moe.quant_method, moe._comm_fused_moe = method(), None
+    moe.w13_weight = torch.empty(4, 64, 32, dtype=torch.bfloat16, device="meta")
+    moe.global_num_experts, moe.top_k, moe.hidden_size = 8, 2, 32
+    moe.moe_config = SimpleNamespace(in_dtype=torch.bfloat16)
+    moe.moe_parallel_config = SimpleNamespace(
+        use_ep=True,
+        ep_size=2,
+        tp_size=1,
+        low_latency=False,
+        requested_all2all_backend=backend,
+    )
+    block = torch.nn.Module()
+    block.tp_size, block.experts = 1, moe
+    return walk(block)
+
+
+def test_mori_sends_at_the_formats_atom_resolves(monkeypatch):
+    (default,) = _walk_ep2()
+    monkeypatch.setattr(
+        "atom.model_ops.fused_moe.mori_prepare_finalize._FP4_DISPATCH", True
+    )
+    monkeypatch.setenv("ATOM_MORI_COMBINE_QUANT", "fp8_blockwise")
+    (quantized,) = _walk_ep2()
+
+    assert (default.kind, default.dims, default.wire) == ("moe", EP2, ("bf16",) * 2)
+    assert quantized.wire == ("fp4", "fp8")
+
+
+@pytest.mark.parametrize(
+    "backend,disabled,method",
+    [
+        ("rccl", "0", Mxfp4MoEMethod),
+        ("none", "0", Mxfp4MoEMethod),
+        ("auto", "1", Mxfp4MoEMethod),
+        ("mori", "0", MegaMxfp4MoEMethod),
+    ],
+    ids=["rccl", "none", "mori-disabled", "mega"],
+)
+def test_an_ep_moe_off_moris_exchange_is_unclassified(
+    backend, disabled, method, monkeypatch
+):
+    monkeypatch.setenv("ATOM_DISABLE_MORI_EP", disabled)
+
+    assert _walk_ep2(method, backend) == [Module("FusedMoE at experts", "unclassified")]
 
 
 BUILD = """

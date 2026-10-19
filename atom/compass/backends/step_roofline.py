@@ -101,7 +101,8 @@ class Module:
     `run.modules` reads it. `fmt` is its weight, KV or state format, `act` the
     format its matrix products read activations in; `ranks` the group of the
     collective it joins, 1 for none; `fused` that the collective runs in the
-    module's kernel; `layer` the decoder layer it sits in, -1 outside them.
+    module's kernel; `layer` the decoder layer it sits in, -1 outside them;
+    `wire` the formats a `moe`'s all-to-all dispatch and combine send.
     An unclassified module's `name` says what it is.
     """
 
@@ -113,6 +114,7 @@ class Module:
     fused: bool = False
     act: str = ACT
     layer: int = -1
+    wire: tuple[str, str] = (ACT, ACT)
 
 
 def _work(m: Module, view: BatchView, tokens: int, sampled: int) -> Work | None:
@@ -120,8 +122,6 @@ def _work(m: Module, view: BatchView, tokens: int, sampled: int) -> Work | None:
     d, act = m.dims, ELEMENT_BYTES[ACT]
     if m.kind == "gemm":
         return gemm(tokens, *d, m.act, m.fmt) + allreduce(m.ranks, tokens * d[0] * act)
-    if m.kind == "moe":
-        return sum(_moe(m, view, tokens), Work())
     if m.kind == "mhc":
         # Fold the sub-layer's output into the widened residual and reduce it:
         # read and write both, and the mixing weights' fp32 projection.
@@ -188,8 +188,8 @@ def _moe(m: Module, view: BatchView, tokens: int) -> tuple[Work, Work, Work]:
         gather = allgather(dp, rows * (hidden + experts) * act)
         return gather, work, reduce_scatter(dp, rows * hidden * act)
     sent = tokens * hidden * ranks * (1 - comb(experts - local, k) / comb(experts, k))
-    dispatch = all_to_all(ranks, sent * ELEMENT_BYTES[m.act])
-    return dispatch, work, all_to_all(ranks, sent * act)
+    dispatch = all_to_all(ranks, sent * ELEMENT_BYTES[m.wire[0]])
+    return dispatch, work, all_to_all(ranks, sent * ELEMENT_BYTES[m.wire[1]])
 
 
 def _prefix(n: np.ndarray, ratio: int = 1, cap: int | None = None) -> np.ndarray:
