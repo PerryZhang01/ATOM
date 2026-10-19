@@ -97,7 +97,7 @@ def test_the_step_that_moves_the_total_is_held_out_and_the_spread_reported(tmp_p
     record = _record(tmp_path / "steps", _steps(), stretch={4: 0.2})
     report = cost_accuracy(record, LAW)
 
-    assert report["cut"] == {"exposed": 0, "mixed": 0}
+    assert report["cut"] == {"exposed": 0, "mixed": 0, "unsplit": 0}
     assert report["unvalidated"] == {} and report["refused"] == {}
     prefill = report["validated"]["prefill"]
     assert prefill["steps"] == 10
@@ -128,7 +128,7 @@ def test_unvalidated_and_refused_steps_are_reported_apart(tmp_path):
     record = _record(tmp_path / "steps", steps, stretch={3: 2.0})
     report = cost_accuracy(record, LAW)
 
-    assert report["cut"] == {"exposed": 0, "mixed": 0}
+    assert report["cut"] == {"exposed": 0, "mixed": 0, "unsplit": 0}
     (unvalidated,) = report["unvalidated"].values()
     assert unvalidated["steps"] == 1
     assert unvalidated["real_s"] == pytest.approx(2 * _price(wide[0]), rel=1e-9)
@@ -260,7 +260,7 @@ def test_a_group_step_prices_as_its_slowest_rank_against_the_group_s_time(tmp_pa
         _record(tmp_path / "steps", steps, rank=r, group=ranks)
     report = cost_accuracy(tmp_path / "steps", LAW)
 
-    assert report["cut"] == {"exposed": 0, "mixed": 0, "ranks": 0}
+    assert report["cut"] == {"exposed": 0, "mixed": 0, "unsplit": 0, "ranks": 0}
     assert report["warm"] == [] and report["refused"] == {}
     for kind in ("prefill", "decode"):
         s = report["validated"][kind]

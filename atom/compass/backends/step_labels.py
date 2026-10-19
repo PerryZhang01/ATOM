@@ -23,6 +23,8 @@ moves a decode step across the launch-exposed cut, so it is left in the bound
 rather than corrected by a host-specific number with no record or law of its
 own to carry it. A record without device windows is refused. A step mixing
 prefill and decode rows is cut.
+A step of an MTP record without `d_target_ns` is cut as `unsplit`: its device
+label would hold a draft the law prices again.
 
 A step's host labels are its segments: `E` from the previous forward's exit,
 cut as idle when the two batches share no request; `W_pre` to the launch, less
@@ -50,8 +52,8 @@ from atom.compass.backends.shape import BatchView, RequestShape
 
 #: Token copy wait exits whose tightest bound is a step's host clock lead.
 ANCHORS = 32
-#: Why a device label is cut: a launch-exposed decode, or prefill and decode rows mixed.
-CUTS = ("exposed", "mixed")
+#: Why a device label is cut: a launch-exposed decode, mixed rows, no MTP target end.
+CUTS = ("exposed", "mixed", "unsplit")
 HOST_SEGMENTS = ("E", "W_pre", "W_launch", "W_post")
 TABLE_VERSION = 1
 
@@ -61,6 +63,7 @@ class Sample:
     """One real forward, labelled.
 
     `device_s` is its device label, None when cut, and `cut` names why (`CUTS`).
+    `draft_s` is its draft label, None when cut or on a step with no draft.
     `host` holds the segments it has, in seconds: no `W_post` on a middle chunk,
     no `E` on the record's first forward or after an idle engine (`idle`).
     `provenance` holds `source`, `run` (the run's digest), `requests` (the
@@ -76,6 +79,7 @@ class Sample:
     host: dict
     idle: bool
     provenance: dict
+    draft_s: float | None = None
 
 
 def digest(record) -> str:
@@ -144,6 +148,7 @@ def label(record, run: str | None = None) -> tuple[list[Sample], list[dict]]:
             "by its device time"
         )
     exposed = _launch_exposed(lines)
+    mtp = any("d_target_ns" in s for s in steps)
     key = path.with_suffix(".key.json")
     config = json.loads(key.read_text()) if key.exists() else None
     run = run or digest(record)
@@ -163,6 +168,8 @@ def label(record, run: str | None = None) -> tuple[list[Sample], list[dict]]:
             cut = "mixed"
         elif not view.prefill and s["step"] in exposed:
             cut = "exposed"
+        elif mtp and "d_target_ns" not in s:
+            cut = "unsplit"
         gap = 0 if view.prefill else s.get("d_gap_ns", 0)
         device = None if cut else (gap + s["d_busy_ns"]) * 1e-9
         draft = None
@@ -192,7 +199,17 @@ def label(record, run: str | None = None) -> tuple[list[Sample], list[dict]]:
             "config": config,
         }
         samples.append(
-            Sample(s["step"], s["dp_rank"], view, device, cut, host, idle, provenance)
+            Sample(
+                s["step"],
+                s["dp_rank"],
+                view,
+                device,
+                cut,
+                host,
+                idle,
+                provenance,
+                None if cut else draft,
+            )
         )
         gap_ns = s.get("d_gap_ns")
         table.append(

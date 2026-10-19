@@ -46,7 +46,7 @@ ASSUMED = {
     "host": copy.deepcopy(DOCUMENT["host"]),
     "device": {
         "memory": {"derate": 0.86},
-        "compute": {"derate": 0.50},
+        "compute": {"derate": {"bf16": 0.50, "fp8": 0.50, "fp4": 0.50}},
         "software_pinned_to": dict(STACK),
     },
     "interconnect": {
@@ -77,6 +77,7 @@ def mi455():
 def test_a_spec_with_an_fp4_rate_and_a_fabric_width_reads_and_echoes_them():
     written = document()
     written["device"]["compute"]["fp4_flops"] = 10.0e15
+    written["device"]["compute"]["derate"]["fp4"] = 0.70
     spec = MachineSpec.from_mapping(written)
     assert spec.value("device.compute.fp4_flops") == 10.0e15
     assert spec.value("interconnect.intra_node.domain_devices") == 8

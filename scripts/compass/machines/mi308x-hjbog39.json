@@ -77,10 +77,16 @@
       "device.memory.bandwidth_bytes_per_s": {
         "origin": "assumed"
       },
+      "device.memory.bandwidth_curve": {
+        "origin": "assumed"
+      },
       "device.compute.bf16_flops": {
         "origin": "assumed"
       },
       "device.compute.fp8_flops": {
+        "origin": "assumed"
+      },
+      "device.kernel_floor_s": {
         "origin": "assumed"
       },
       "interconnect.intra_node.topology": {
@@ -107,7 +113,10 @@
       "device.memory.derate": {
         "origin": "assumed"
       },
-      "device.compute.derate": {
+      "device.compute.derate.bf16": {
+        "origin": "assumed"
+      },
+      "device.compute.derate.fp8": {
         "origin": "assumed"
       },
       "interconnect.intra_node.derate": {
@@ -124,16 +133,16 @@
         "model": "Qwen/Qwen3.8-27B",
         "source_root": "commit:2d1d223be",
         "record": "sha256:40da90fe439e06efa8aeb8d8b3d5a17a955c507afb6f9aa18401cbbc957739de",
-        "p10": 0.0018067202326291342,
-        "p90": 0.0021858085019923947
+        "p10": 0.0023590643143750166,
+        "p90": 0.0026066054400923915
       },
       "host.http_intake.per_byte_s": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "source_root": "commit:2d1d223be",
         "record": "sha256:40da90fe439e06efa8aeb8d8b3d5a17a955c507afb6f9aa18401cbbc957739de",
-        "p10": 1.2414576986522202e-08,
-        "p90": 2.0502016173860215e-08
+        "p10": 3.576250354791265e-09,
+        "p90": 5.75468059489999e-09
       },
       "interconnect.intra_node.pp.rccl.eager_threshold_bytes": {
         "origin": "probed",
@@ -273,8 +282,8 @@
       "shm_broadcast_s": 2e-05
     },
     "http_intake": {
-      "fixed_s": 0.0021464994614327293,
-      "per_byte_s": 1.869416019632594e-08
+      "fixed_s": 0.002669345165336389,
+      "per_byte_s": 5.603337964226679e-09
     }
   },
   "device": {
@@ -285,13 +294,27 @@
     "memory": {
       "capacity_bytes": 206141652992,
       "bandwidth_bytes_per_s": 5300000000000.0,
+      "bandwidth_curve": [
+        [
+          4096,
+          110000000000.0
+        ],
+        [
+          4294967296,
+          4505000000000.0
+        ]
+      ],
       "derate": 0.85
     },
     "compute": {
       "bf16_flops": 344000000000000.0,
       "fp8_flops": 688000000000000.0,
-      "derate": 0.7
+      "derate": {
+        "bf16": 0.7,
+        "fp8": 0.7
+      }
     },
+    "kernel_floor_s": 2e-06,
     "software_pinned_to": {
       "rocm": "7.2.4",
       "aiter": "9205e1059",

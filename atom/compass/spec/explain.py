@@ -85,7 +85,7 @@ def _row(
 def _rows(spec: MachineSpec, path: str, origin: Merge | None) -> list[Contribution]:
     field = BY_PATH[path]
     value = spec.values[path]
-    derate = spec.values.get(f"{field.block}.derate") if field.peak else None
+    derate = spec.values.get(field.derate) if field.peak else None
     if field.kind is Kind.TOKENIZERS:
         rows = []
         for entry in spec.tokenizers.entries:

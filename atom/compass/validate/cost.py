@@ -13,7 +13,10 @@ run it grades, its warmup left out, with the backend the simulated run priced wi
 Each step is labelled as the fit labels it, by its device time
 (`step_labels.label`, which also says which steps carry no label and refuses a
 record without device windows), and priced by `StepLinearBackend` or `StepGridBackend`. The
-error of a step is `priced / real - 1`. Per kind the report gives the error
+error of a step is `priced / real - 1`, its target price over its target label on
+an MTP record. A step that also carries a draft label is graded again under kind
+`draft`, its draft price over that label, validated only if it has draft terms and
+each is. Per kind the report gives the error
 on totals, on totals holding out the step that contributes most to their error,
 and the median per step; per decode rung or prefill token band, the p10, p50
 and p90 of the per-step error and the fraction of steps within 10%.
@@ -122,7 +125,7 @@ def cost_accuracy(record, backend, steps=None) -> dict:
     them: a step is its ranks' lines of one step index, measured as the
     smallest rank label and priced and banded as its costliest rank's batch, a
     term validated only if every rank's is; a step the law refuses is banded as
-    its rank of most tokens. A step some rank lacks or cut, or whose
+    its rank of most tokens. Its draft is measured and priced the same way. A step some rank lacks or cut, or whose
     ranks fall to different vectors, is counted under `cut.ranks`. Ranks whose
     records differ in length by more than the one step a stopped run leaves on
     some ranks only are refused.
@@ -140,6 +143,7 @@ def cost_accuracy(record, backend, steps=None) -> dict:
     ]
     joined, cut, _ = _groups(run, "base")
     views = [{s.step: s.view for s in rank} for rank in run]
+    drafts = [{s.step: s.draft_s for s in rank} for rank in run]
     law = backend if isinstance(backend, Mapping) else None
     if law is not None:
         backend = StepLinearBackend(StepLinearLaw(law))
@@ -156,13 +160,19 @@ def cost_accuracy(record, backend, steps=None) -> dict:
             r["steps"] += 1
             r["real_s"] += seconds
             continue
-        validated = all(t.provenance.validated for c in costs for t in c.terms)
-        extrapolated += any(t.provenance.extrapolated for c in costs for t in c.terms)
-        top = max(range(len(costs)), key=lambda i: costs[i].seconds)
-        band, price = _band(key, group[top][1]), costs[top].seconds
-        priced.append((key, band, step, seconds, price, validated))
+        terms = [t for c in costs for t in c.terms if not t.draft]
+        validated = all(t.provenance.validated for t in terms)
+        extrapolated += any(t.provenance.extrapolated for t in terms)
+        top = max(range(len(costs)), key=lambda i: costs[i].target_seconds)
+        band, price = _band(key, group[top][1]), costs[top].target_seconds
+        labels = [d[step] for d in drafts]
+        draft = None
+        if None not in labels:
+            mine = [t.provenance.validated for t in costs[top].terms if t.draft]
+            draft = (min(labels), costs[top].draft_seconds, bool(mine) and all(mine))
+        priced.append((key, band, step, seconds, price, validated, draft))
     leading = _leading_slow(priced, law)
-    for key, band, step, seconds, price, validated in priced:
+    for key, band, step, seconds, price, validated, draft in priced:
         if step in leading or seconds > WARM_FACTOR * price:
             warm.append(
                 {
@@ -176,6 +186,9 @@ def cost_accuracy(record, backend, steps=None) -> dict:
         group = "validated" if validated else "unvalidated"
         kind = "prefill" if key == "prefill" else "decode"
         groups[group].setdefault(kind, []).append((band, step, seconds, price))
+        if draft is not None:
+            group = "validated" if draft[2] else "unvalidated"
+            groups[group].setdefault("draft", []).append((band, step, *draft[:2]))
     name = backend.describe() if law is None else backend.law.fitted_on
     report = {"record": str(record), "law": name, "cut": cut}
     for group, kinds in groups.items():

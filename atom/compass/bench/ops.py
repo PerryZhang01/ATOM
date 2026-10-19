@@ -1,0 +1,678 @@
+# SPDX-License-Identifier: MIT
+"""`compass measure ops`: each leaf of an `op_graph` timed alone on one device, cold.
+
+    compass measure ops (--width W | --prefill T B)... [--context C] --llc-mib M
+        --gpu G --store S --out DIR -- <ATOM args>
+
+Each shape names the `op_graph` `compass trace ops` published in S for the
+model and TP width ATOM's arguments resolve. A point is one leaf of that graph,
+its instances grouped (`leaves`), at the shape: a decode step's rows each hold
+`--context` tokens, and a prefill's rows are fresh, split as the capture split
+them.
+
+ATOM's runner is built on the one GPU from ATOM's arguments, its weights a
+dummy, through ATOM's warmup, and a `Stub` takes the place of the model's
+forward. Each point reaches the runner as a batch (`ReplayRule`), so ATOM
+builds its metadata and forward context, and the stub calls each leaf from its
+contract: an activation is random at its shape, dtype and stride; a weight is
+a tensor of the model of that shape, dtype and stride; a metadata tensor is a
+view of ATOM's live metadata (`meta`), whose name the point records, or of
+the token ids ATOM passes the forward (`TOKEN_IDS`); a module or context key
+is the one each instance names. A leaf whose operator cannot run so refuses
+by name, a KV tensor argument among them.
+
+Cold, by copies. A call's bytes are its tensor arguments' spans, the tensors
+of each module it names and, for a leaf that names a context key, the KV and
+per-request state its layer holds for the batch. One graph runs the leaf K =
+`CALLS` times, cycling over N copies, N the least whose bytes pass `COLD`
+times the last-level cache and, for a context key, at least its I instances
+(at most K). Copy c takes fresh activations,
+the c-th of the model's weights of that spec (a clone past the last), and
+instance c mod I at placement (c div I) mod P, its metadata and module
+tensors cloned past the first round: a placement is the point's batch on KV
+blocks and state slots of its own, for which ATOM builds the forward context
+again. A second graph runs copy 0 K times, warm; with one copy there is none.
+Each graph is replayed `WARMUPS` times, then `REPEATS` times timed;
+a repeat is the replay's device time over K, and a graph that captured no
+kernel times 0. The kernels one eager call of copy 0 launches are the point's
+kernel identity.
+
+DIR gets run.json, the run's identity, and ops.jsonl, one line per point. S
+gets each measured point as an `op_measurement`, keyed by the model, the
+parallel layout, the digest of the machine spec of the device, stack and PTL
+state run.json reads, the source root and the point.
+"""
+
+import argparse
+import copy
+import dataclasses
+import datetime
+import hashlib
+import importlib
+import json
+import multiprocessing
+import os
+import statistics
+import warnings
+from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
+from unittest.mock import patch
+
+import torch
+
+from atom.compass import ir
+from atom.compass.artifacts import (
+    ArtifactStore,
+    GateState,
+    Key,
+    Kind,
+    Provenance,
+    Topology,
+    member_name,
+    roots_for,
+)
+from atom.compass.capture.forward import _weights
+from atom.compass.drive.gpu import add_gpu_flag
+
+PROG = "compass measure ops"
+#: The timing protocol's version; it changes whenever a count below does.
+PROTOCOL = 4
+WARMUPS = 3
+REPEATS = 20
+#: Calls every graph holds, and so the copies it cycles over at most. One count
+#: for every leaf: a replay's fixed cost adds the same share to every price.
+CALLS = 256
+#: Times over the last-level cache the copies' bytes pass: just past it, part of
+#: them stays there, and an MI308X GEMM read up to 7% fast.
+COLD = 2
+#: Metadata arguments, by operator and slot, that are the token ids ATOM passes
+#: the model's forward; `_meta`'s name rule binds an embedding's `indices` to
+#: another index buffer.
+TOKEN_IDS = {("aten.embedding.default", "indices")}
+#: The rank every member is written at: the bench is one rank.
+RANK = Topology().ranks()[0]
+
+
+def main(argv: list[str]) -> None:
+    from atom.compass.bench.measure import atom_config
+    from atom.compass.capture.forward import decode, prefill
+    from atom.compass.drive.gpu import hip_visible, quiet
+    from atom.compass.drive.identity import identity
+    from atom.compass.run.step_grid import keyed
+
+    cut = argv.index("--") if "--" in argv else len(argv)
+    args = _parser().parse_args(argv[:cut])
+    if len(args.gpu) != 1:
+        raise ValueError(f"--gpu names {len(args.gpu)} GPUs; the op bench uses one")
+    shapes = [decode(w) for w in args.width] + [prefill(*s) for s in args.prefill]
+    if not shapes:
+        raise ValueError("name a shape: --width or --prefill")
+    if args.context is None and any(s.phase == "decode" for s in shapes):
+        raise ValueError("a decode shape needs --context, each row's tokens")
+    os.environ["HIP_VISIBLE_DEVICES"] = hip_visible(args.gpu)
+    config = atom_config(argv[cut + 1 :])
+    if config.tp_world_size > 1:
+        raise ValueError(
+            f"ATOM's arguments resolve {config.tp_world_size} ranks; the op bench "
+            "starts one"
+        )
+    if config.compilation_config.level:
+        raise ValueError(
+            f"--level {config.compilation_config.level} compiles the model, whose "
+            "forward the bench stubs; measure at --level 0"
+        )
+    store = ArtifactStore(args.store)
+    todo = [
+        (s, args.context, leaves(graph(store, config, s)["region"])) for s in shapes
+    ]
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "engine.json").write_text(json.dumps(keyed(config)))
+    command = [*PROG.split(), *argv]
+    with quiet(args.gpu, out):
+        run = identity(out / "engine.json", config.model, command, args.gpu)
+        (out / "run.json").write_text(json.dumps(run))
+        key, held = keys(config, run), 0
+        for shape, context, found in todo:
+            for sig in list(found):
+                if store.directory_for(key(shape, context, sig)).exists():
+                    del found[sig]
+                    held += 1
+        print(f"{held} points already in the store", flush=True)
+        todo = [point for point in todo if point[2]]
+        # Its own process, so the device is free again at quiet's last check.
+        spawn = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(1, mp_context=spawn) as bench:
+            job = bench.submit(measure, config, todo, args.llc_mib << 20)
+            results = job.result()
+    publish(store, key, config, run, " ".join(command), results, out)
+    refused = [
+        f"{r['op']} at {r['shape']}: {r['refused']}" for r in results if "refused" in r
+    ]
+    print(f"{len(results) - len(refused)} of {len(results)} points measured")
+    if refused:
+        raise ValueError(f"{len(refused)} points refused:\n" + "\n".join(refused))
+
+
+def _parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog=PROG, description=__doc__.split("\n\n")[0])
+    p.add_argument(
+        "--width", type=int, action="append", default=[], help="a decode width"
+    )
+    p.add_argument(
+        "--prefill",
+        type=int,
+        nargs=2,
+        action="append",
+        default=[],
+        metavar=("T", "B"),
+        help="a prefill of T tokens over B sequences",
+    )
+    p.add_argument("--context", type=int, help="each decode row's tokens")
+    p.add_argument(
+        "--llc-mib",
+        type=int,
+        required=True,
+        help="the device's last-level cache in MiB: 256 on MI300X, MI308X and "
+        "MI355X (AMD Infinity Cache, CDNA 3 and CDNA 4 white papers)",
+    )
+    add_gpu_flag(p)
+    p.add_argument("--store", required=True, help="the artifact store's root")
+    p.add_argument("--out", required=True, help="where run.json and ops.jsonl go")
+    return p
+
+
+def graph(store, config, shape) -> dict:
+    """The `op_graph` `trace ops` published for `config` at `shape`, as JSON."""
+    from atom.compass.capture.forward import structure
+
+    key = Key.of(
+        Kind.OP_GRAPH, structure=structure(config, shape.phase), shape=str(shape)
+    )
+    return json.loads(store.read(key).read_member("graph", RANK, "json"))
+
+
+def _ref(value) -> bool:
+    return isinstance(value, dict) and value.keys() in ({"context"}, {"module"})
+
+
+def signature(op: dict) -> str:
+    """A leaf's identity across instances: its operator, arguments and outputs,
+    a context key or module path by its kind alone."""
+    args = {s: {k: None for k in v} if _ref(v) else v for s, v in op["args"].items()}
+    leaf = {"op": op["op"], "args": args, "out": op["out"]}
+    return json.dumps(leaf, sort_keys=True, separators=(",", ":"))
+
+
+def leaves(region: dict, env=None, found=None) -> dict[str, tuple[dict, list]]:
+    """Each leaf of a graph's JSON region by `signature`: one of its ops, and
+    its instances in run order, each the key or path every reference slot binds."""
+    env, found = env or {}, {} if found is None else found
+    if "op" in region:
+        bound = {}
+        for slot, value in region["args"].items():
+            if _ref(value):
+                ref = ir.ContextRef(next(iter(value.values())))
+                bound[slot] = ref.bind(**{n: env[n] for n in ref.index_names}).key
+        instances = found.setdefault(signature(region), (region, []))[1]
+        instances += [bound] if bound not in instances else []
+    elif "repeat" in region:
+        for i in range(region["count"]):
+            index = {region["index"]: region["start"] + region["step"] * i}
+            leaves(region["repeat"], {**env, **index}, found)
+    else:
+        for item in region.get("seq", region.get("par", ())):
+            leaves(item, env, found)
+    return found
+
+
+def measure(config, todo, llc: int) -> list[dict]:
+    """Each point's record, shape by shape: its timing, or why it refused."""
+    from atom.compass.bench.replay import ReplayRule
+
+    runner = _runner(config)
+    try:
+        stub, rule, got = Stub(runner, llc), ReplayRule(config), []
+        with patch.object(runner.model, "forward", stub), torch.inference_mode():
+            for shape, context, found in todo:
+                got += stub.point(rule, shape, context, found)
+        return got
+    finally:
+        runner.exit()
+
+
+def _runner(config):
+    """ATOM's runner on the one visible GPU, warmed up, its KV pool allocated."""
+    from torch.distributed import TCPStore
+
+    from atom.model_engine.model_runner import ModelRunner
+
+    pc = config.parallel_config
+    store = TCPStore(
+        pc.data_parallel_master_ip,
+        pc.data_parallel_base_port,
+        is_master=True,
+        wait_for_workers=False,
+    )
+    pc.data_parallel_base_port, pc._managed_distributed_store = store.port, True
+    runner = ModelRunner(0, config)
+    runner.store = store
+    config.num_kvcache_blocks = runner.get_num_blocks()["num_kvcache_blocks"]
+    runner.allocate_kv_cache(config.num_kvcache_blocks)
+    return runner
+
+
+class Stub:
+    """The model's forward in ATOM's runner, and the leaves timed beside it.
+
+    Each call ATOM makes of the model snapshots the forward context ATOM built
+    and the live metadata each leaf names, and returns zero hidden states.
+    """
+
+    def __init__(self, runner, llc: int) -> None:
+        self.runner, self.llc = runner, llc
+        self.weights, self.leaves, self.placed = {}, {}, []
+        for t in _weights(runner.model):
+            if t.device.type != runner.device.type:
+                continue
+            self.weights.setdefault(_spec(t), {})[t.data_ptr()] = t
+        self.modules = dict(runner.model.named_modules())
+        self.contexts = runner.config.compilation_config.static_forward_context
+
+    def __call__(self, input_ids, positions, *args, **kwargs):
+        from atom.utils.forward_context import get_forward_context
+
+        fc = get_forward_context()
+        live = {"input_ids": input_ids, "positions": positions}
+        for name, buffer in self.runner.forward_vars.items():
+            live[name] = getattr(buffer, "gpu", buffer)
+        for owner in (fc.attn_metadata, fc.context):
+            live |= {k: v for k, v in vars(owner).items() if torch.is_tensor(v)}
+        device = self.runner.device.type
+        live = {
+            k: v
+            for k, v in live.items()
+            if torch.is_tensor(v) and v.device.type == device
+        }
+        meta = {}
+        for sig, (op, _) in self.leaves.items():
+            for path, spec in _specs(op["args"]):
+                if spec["role"] == "metadata":
+                    token = (op["op"], path) in TOKEN_IDS
+                    pool = {"input_ids": input_ids} if token else live
+                    try:
+                        name, view = _meta(spec, path, pool)
+                        meta[sig, path] = name, _clone(view)
+                    except ValueError as error:  # the leaf refuses, not the step
+                        meta[sig, path] = str(error), None
+        memo: dict = {}
+        snap = copy.copy(fc)
+        snap.attn_metadata = _deep(fc.attn_metadata, memo)
+        snap.context = _deep(fc.context, memo)
+        self.placed.append((snap, meta))
+        hidden = self.runner.config.hf_config.get_text_config().hidden_size
+        dtype = self.runner.config.torch_dtype
+        return input_ids.new_zeros((len(input_ids), hidden), dtype=dtype)
+
+    def point(self, rule, shape, context, found) -> list[dict]:
+        """Each leaf of `found` timed at `shape`, rows of `context` tokens."""
+        from atom.utils.forward_context import _forward_kv_cache_context
+
+        if shape.phase == "decode":
+            rows = [[1, context, True]] * shape.seqs
+        else:
+            per, extra = divmod(shape.tokens, shape.seqs)
+            rows = [[per + (i < extra)] * 2 + [False] for i in range(shape.seqs)]
+        view = {"rows": rows, "produces_output": True}
+        blocks = sum(-(-row[1] // rule.block_size) for row in rows)
+        kv = _forward_kv_cache_context.kv_cache_data
+        room = [self.runner.config.num_kvcache_blocks // blocks]
+        room += [t.k_cache.shape[0] // len(rows) for t in kv.values() if _stateful(t)]
+        plans = {
+            s: self._plan(op, i, kv, blocks, len(rows)) for s, (op, i) in found.items()
+        }
+        need = max(p for _, _, p in plans.values())
+        self.leaves, self.placed = found, []
+        for p in range(max(min(need, *room), 1)):
+            self.runner.forward(rule.batch(view, p * blocks, p * len(rows)))
+        got = []
+        for sig, (op, inst) in found.items():
+            n, size, _ = plans[sig]
+            names = {p: m[0] for (s, p), m in self.placed[0][1].items() if s == sig}
+            print(f"{shape}: {op['op']} over {n} copies {names or ''}", flush=True)
+            record = {"shape": str(shape), "context": context, "op": op["op"]}
+            record |= {"leaf": sig, "metadata": names}
+            try:
+                record |= self._time(op, sig, inst, n) | {"footprint_bytes": n * size}
+            except Exception as error:  # noqa: BLE001 - a refusal names what stopped it
+                record["refused"] = f"{type(error).__name__}: {error}"
+            got.append(
+                record | {"instances": len(inst), "placements": len(self.placed)}
+            )
+        self.placed = []
+        return got
+
+    def _plan(self, op, instances, kv, blocks, rows):
+        """A leaf's copies, its bytes per call, and the placements its context
+        keys take."""
+        need, size = 1, sum(
+            _span(s["shape"], s["stride"]) * _dtype(s["dtype"]).itemsize
+            for _, s in _specs(op["args"])
+        )
+        for key in instances[0].values():
+            if key in self.contexts:
+                held = kv.get(f"layer_{self.contexts[key].layer_num}")
+                unit = rows if _stateful(held) else blocks
+                # ponytail: a tensor's first dim is its blocks or its state slots
+                size += sum(t.nbytes // t.shape[0] * unit for t in _fields(held))
+                need = None
+            elif key in self.modules:
+                size += sum(t.nbytes for t in _own(self.modules[key]))
+        n = min(CALLS, COLD * self.llc // size + 1) if size else 1
+        if need is None:  # cycle over every instance's state, which is held anyway
+            n = min(CALLS, max(n, len(instances)))
+        return n, size, need or -(-n // len(instances))
+
+    def _time(self, op, sig, instances, n) -> dict:
+        """`op` timed cold over `n` copies and warm over one, with its kernels."""
+        from atom.utils import forward_context
+
+        fn = _function(op["op"])
+        calls = [self._copy(op, sig, instances, c) for c in range(n)]
+        try:
+            forward_context._forward_context = calls[0][1]
+            fn(**calls[0][0])  # compiles and tunes outside the graphs
+            kernels = _kernels(fn, calls[0][0])
+            cycle = [calls[i % n] for i in range(CALLS)]
+            cold = _replay(fn, cycle)
+            warm = _replay(fn, calls[:1] * len(cycle)) if n > 1 else None
+        finally:
+            forward_context._forward_context = forward_context.ForwardContext()
+        medians = statistics.median(cold), warm and statistics.median(warm)
+        return {
+            "kernels": kernels,
+            "cold_ns": medians[0],
+            "warm_ns": medians[1],
+            "warm_over_cold": medians[1] / medians[0] if warm and medians[0] else None,
+            "cold_repeats": cold,
+            "warm_repeats": warm,
+            "copies": n,
+            "calls": len(cycle),
+            "llc_bytes": self.llc,
+            "protocol": PROTOCOL,
+        }
+
+    def _copy(self, op, sig, instances, c):
+        """Copy `c` of `op`'s call: its keyword arguments and forward context."""
+        instance = instances[c % len(instances)]
+        p = c // len(instances) % len(self.placed)
+        snap, meta = self.placed[p]
+        fresh = c >= len(self.placed) * len(instances)
+
+        def build(path, value):
+            if isinstance(value, list):
+                return [build(f"{path}.{i}", v) for i, v in enumerate(value)]
+            if _ref(value) and "module" in value:
+                module = self.modules[instance[path]]
+                return _module_copy(module) if fresh else module
+            if _ref(value):
+                return instance[path]
+            if isinstance(value, dict):
+                return self._tensor(value, meta.get((sig, path)), c, fresh)
+            if isinstance(value, str) and value.startswith("torch."):
+                return getattr(torch, value[6:], value)
+            return value
+
+        return {s: build(s, v) for s, v in op["args"].items()}, snap
+
+    def _tensor(self, spec, meta, c, fresh):
+        role = spec["role"]
+        if role == "activation":
+            return _random(spec, self.runner.device)
+        if role == "metadata":
+            if meta[1] is None:
+                raise ValueError(meta[0])
+            return _clone(meta[1]) if fresh else meta[1]
+        if role == "weight":
+            held = list(self.weights.get(_spec_of(spec), {}).values())
+            if not held:
+                raise ValueError(f"no tensor of the model is a weight {_text(spec)}")
+            return held[c] if c < len(held) else _clone(held[c % len(held)])
+        raise ValueError(f"a {role} tensor argument {_text(spec)} is not built")
+
+
+def _specs(args, path=""):
+    """Each tensor argument in `args`, by its slot path, `slot` or `slot.i`."""
+    items = args.items() if isinstance(args, dict) else enumerate(args)
+    for slot, value in items:
+        where = f"{path}.{slot}" if path else str(slot)
+        if isinstance(value, list):
+            yield from _specs(value, where)
+        elif isinstance(value, dict) and "role" in value:
+            yield where, value
+
+
+def _meta(spec, slot, live) -> tuple[str, torch.Tensor]:
+    """The live metadata tensor a metadata argument is a view of, and its name:
+    one of its dtype with room for its span: one whose name the slot holds or
+    that holds the slot's first, then one of its shape and stride, then the
+    tightest."""
+    need = _span(spec["shape"], spec["stride"])
+    fits = [
+        (name, t)
+        for name, t in live.items()
+        if str(t.dtype) == spec["dtype"] and _room(t) >= need
+    ]
+    if not fits:
+        raise ValueError(f"ATOM's live metadata has no room for {slot} {_text(spec)}")
+    slot = slot.split(".")[0]
+    name, t = min(
+        fits,
+        key=lambda f: (
+            not (f[0] in slot or slot in f[0]),
+            _spec(f[1]) != _spec_of(spec),
+            _room(f[1]),
+        ),
+    )
+    return name, t.as_strided(spec["shape"], spec["stride"], t.storage_offset())
+
+
+def _function(name: str):
+    """The callable a leaf names: `ns.op.overload`, or a lifted `module:qualname`."""
+    if ":" in name:
+        module, qualname = name.split(":")
+        fn, path = importlib.import_module(module), qualname.split(".")
+    else:
+        namespace, rest = name.split(".", 1)
+        fn, path = getattr(torch.ops, namespace), rest.split(".")
+    for attr in path:
+        fn = getattr(fn, attr)
+    return fn
+
+
+def _kernels(fn, kwargs) -> list[str]:
+    """The device activity one call of `fn` launches, in order."""
+    from torch.profiler import ProfilerActivity, profile
+
+    with profile(activities=[ProfilerActivity.CUDA]) as prof:
+        fn(**kwargs)
+        torch.cuda.synchronize()
+    device = [
+        e for e in prof.events() if e.device_type == torch.autograd.DeviceType.CUDA
+    ]
+    return [e.name for e in sorted(device, key=lambda e: e.time_range.start)]
+
+
+def _replay(fn, calls) -> list[float]:
+    """Each timed replay of one graph of `calls`, in ns per call."""
+    from atom.utils import forward_context
+
+    graph = torch.cuda.CUDAGraph()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with torch.cuda.graph(graph, capture_error_mode="thread_local"):
+            for kwargs, snap in calls:
+                forward_context._forward_context = snap
+                fn(**kwargs)
+    if any("Graph is empty" in str(w.message) for w in caught):
+        return [0.0] * REPEATS
+    start, end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
+    times = []
+    for i in range(WARMUPS + REPEATS):
+        start.record()
+        graph.replay()
+        end.record()
+        end.synchronize()
+        if i >= WARMUPS:
+            times.append(start.elapsed_time(end) * 1e6 / len(calls))
+    return times
+
+
+def _span(shape, stride) -> int:
+    """Elements a view of `shape` and `stride` reaches from its offset."""
+    if 0 in shape:
+        return 0
+    return 1 + sum((n - 1) * s for n, s in zip(shape, stride))
+
+
+def _room(t) -> int:
+    return t.untyped_storage().nbytes() // t.element_size() - t.storage_offset()
+
+
+def _dtype(text: str) -> torch.dtype:
+    return getattr(torch, text.removeprefix("torch."))
+
+
+def _spec(t) -> tuple:
+    return tuple(t.shape), str(t.dtype), tuple(t.stride())
+
+
+def _spec_of(spec: dict) -> tuple:
+    return tuple(spec["shape"]), spec["dtype"], tuple(spec["stride"])
+
+
+def _text(spec: dict) -> str:
+    return f"{spec['shape']} {spec['dtype']} stride {spec['stride']}"
+
+
+def _random(spec, device) -> torch.Tensor:
+    """A tensor of `spec`'s shape, dtype and stride, random over its span."""
+    dtype = _dtype(spec["dtype"])
+    n = _span(spec["shape"], spec["stride"])
+    if dtype.is_floating_point:
+        flat = torch.randn(n, device=device).mul_(0.1).to(dtype)
+    else:
+        flat = torch.randint(0, 2, (n,), device=device).to(dtype)
+    return flat.as_strided(spec["shape"], spec["stride"])
+
+
+def _clone(t) -> torch.Tensor:
+    """`t` on storage of its own, its span copied, its shape and stride kept."""
+    n = _span(t.shape, t.stride())
+    flat = t.as_strided((n,), (1,), t.storage_offset()).clone()
+    return flat.as_strided(t.shape, t.stride())
+
+
+def _deep(x, memo):
+    """`x` with every tensor it reaches through dataclasses, ATOM objects,
+    dicts and lists cloned, aliases kept."""
+    if id(x) in memo:
+        return memo[id(x)]
+    if torch.is_tensor(x):
+        memo[id(x)] = _clone(x)
+    elif isinstance(x, dict):
+        memo[id(x)] = {k: _deep(v, memo) for k, v in x.items()}
+    elif isinstance(x, list):
+        memo[id(x)] = [_deep(v, memo) for v in x]
+    elif dataclasses.is_dataclass(x) or type(x).__module__.startswith("atom.utils"):
+        if not hasattr(x, "__dict__"):
+            return x
+        memo[id(x)] = twin = copy.copy(x)
+        vars(twin).update({k: _deep(v, memo) for k, v in vars(x).items()})
+    else:
+        return x
+    return memo[id(x)]
+
+
+def _own(module):
+    """The tensors `module` holds itself: attributes, parameters and buffers."""
+    held = [*vars(module).values(), *module._parameters.values()]
+    return [t for t in [*held, *module._buffers.values()] if torch.is_tensor(t)]
+
+
+def _module_copy(module):
+    """`module` with its own tensors, parameters and buffers cloned."""
+    twin = copy.copy(module)
+    for name, value in vars(module).items():
+        if torch.is_tensor(value):
+            vars(twin)[name] = _clone(value)
+        elif name in ("_parameters", "_buffers"):
+            vars(twin)[name] = {
+                k: v if v is None else _clone(v) for k, v in value.items()
+            }
+    return twin
+
+
+def _stateful(held) -> bool:
+    return bool(getattr(held, "per_request_state", False))
+
+
+def _fields(held):
+    for value in vars(held).values() if held is not None else ():
+        if torch.is_tensor(value) and value.dim():
+            yield value
+
+
+def keys(config, run: dict):
+    """The `op_measurement` key of a point, `(shape, context, leaf)`, measured
+    under `config` on the platform `run` reads."""
+    from atom.compass.artifacts.keys import LAYOUT, platform_key
+    from atom.compass.fit.samples import run_fields
+    from atom.compass.run.memory import key_fields
+
+    fields = run_fields(run)
+    platform = platform_key(fields["device"], run["stack"], run["ptl"]).canonical()
+    layout = {k: v for k, v in key_fields(config).items() if k in LAYOUT}
+
+    def key(shape, context, leaf) -> Key:
+        point = json.dumps([str(shape), context, leaf]).encode()
+        return Key.of(
+            Kind.OP_MEASUREMENT,
+            model=fields["model"],
+            **layout,
+            machine_spec="sha256:" + hashlib.sha256(platform.encode()).hexdigest(),
+            source_root=fields["source_root"],
+            point="sha256:" + hashlib.sha256(point).hexdigest(),
+        )
+
+    return key
+
+
+def publish(store, key, config, run: dict, command: str, results, out: Path):
+    """Write `results` to ``ops.jsonl`` in `out` and each measured one to
+    `store` at its `key`."""
+    from atom.compass.fit.publish import conditions
+    from atom.compass.fit.samples import run_fields
+    from atom.compass.run.step_grid import keyed
+
+    readings = conditions(
+        {**run_fields(run), "engine_config": keyed(config)}
+        | {k: run[k] for k in ("stack", "host_key", "ptl")}
+    )
+    roots = roots_for({"atom": "atom", "aiter": "aiter"})
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    with (out / "ops.jsonl").open("w") as lines:
+        for record in results:
+            at = key(record["shape"], record["context"], record["leaf"])
+            lines.write(json.dumps(record | {"token": at.token()}) + "\n")
+            if "refused" not in record:
+                store.publish(
+                    at,
+                    provenance=Provenance(command, now, roots),
+                    topology=Topology(),
+                    conditions=readings,
+                    gates=GateState.of(),
+                    members={
+                        member_name("point", RANK, "json"): json.dumps(record).encode()
+                    },
+                )

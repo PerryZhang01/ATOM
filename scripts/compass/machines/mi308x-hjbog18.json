@@ -92,9 +92,6 @@
       "interconnect.intra_node.link_bandwidth_bytes_per_s": {
         "origin": "assumed"
       },
-      "interconnect.intra_node.link_latency_s": {
-        "origin": "assumed"
-      },
       "interconnect.inter_node.link_bandwidth_bytes_per_s": {
         "origin": "assumed"
       },
@@ -104,20 +101,66 @@
       "interconnect.router_relay_s": {
         "origin": "assumed"
       },
-      "device.memory.derate": {
-        "origin": "assumed"
-      },
-      "device.compute.derate": {
-        "origin": "assumed"
-      },
-      "interconnect.intra_node.derate": {
-        "origin": "assumed"
-      },
       "interconnect.inter_node.derate": {
         "origin": "assumed"
       },
       "device.ptl": {
         "origin": "probed"
+      },
+      "host.http_intake.fixed_s": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "source_root": "commit:19c5ab09e",
+        "record": "sha256:dc719c11dd8c45b777cdc1c7fb32ea387adab0f6046aa73b667db6d2b912fd1a",
+        "p10": 0.0023905681113767967,
+        "p90": 0.002818263790208814
+      },
+      "host.http_intake.per_byte_s": {
+        "origin": "probed",
+        "model": "Qwen/Qwen3.8-27B",
+        "source_root": "commit:19c5ab09e",
+        "record": "sha256:dc719c11dd8c45b777cdc1c7fb32ea387adab0f6046aa73b667db6d2b912fd1a",
+        "p10": 3.728040935451147e-09,
+        "p90": 6.552659606331298e-09
+      },
+      "device.memory.bandwidth_curve": {
+        "origin": "probed",
+        "source_root": "commit:347f5bcdd",
+        "record": "sha256:774ab13e538536628e55aa65a5522e5f1fdd945243a367a87b75d546bf57e9c6"
+      },
+      "device.kernel_floor_s": {
+        "origin": "probed",
+        "source_root": "commit:347f5bcdd",
+        "record": "sha256:774ab13e538536628e55aa65a5522e5f1fdd945243a367a87b75d546bf57e9c6",
+        "p10": 1.754871070384979e-06,
+        "p90": 1.7566190481185917e-06
+      },
+      "interconnect.intra_node.link_latency_s": {
+        "origin": "probed",
+        "source_root": "commit:347f5bcdd",
+        "record": "sha256:774ab13e538536628e55aa65a5522e5f1fdd945243a367a87b75d546bf57e9c6",
+        "p10": 8.71745502948761e-07,
+        "p90": 9.11213505268097e-07
+      },
+      "device.memory.derate": {
+        "origin": "probed",
+        "source_root": "commit:347f5bcdd",
+        "record": "sha256:774ab13e538536628e55aa65a5522e5f1fdd945243a367a87b75d546bf57e9c6"
+      },
+      "device.compute.derate.bf16": {
+        "origin": "probed",
+        "source_root": "commit:347f5bcdd",
+        "record": "sha256:774ab13e538536628e55aa65a5522e5f1fdd945243a367a87b75d546bf57e9c6"
+      },
+      "device.compute.derate.fp8": {
+        "origin": "probed",
+        "source_root": "commit:347f5bcdd",
+        "record": "sha256:774ab13e538536628e55aa65a5522e5f1fdd945243a367a87b75d546bf57e9c6"
+      },
+      "interconnect.intra_node.derate": {
+        "origin": "probed",
+        "source_root": "commit:347f5bcdd",
+        "record": "sha256:774ab13e538536628e55aa65a5522e5f1fdd945243a367a87b75d546bf57e9c6"
       },
       "host.tokenizers[qwen3.8-27b fast]": {
         "origin": "probed",
@@ -141,9 +184,11 @@
       "tokenizer",
       "device",
       "assumed",
-      "ptl"
+      "ptl",
+      "intake",
+      "peaks"
     ],
-    "notes": "one Qwen3.8-27B TP1 start at 0f045543d | no probe fills these | ptl_enable"
+    "notes": "one Qwen3.8-27B TP1 start at 0f045543d | no probe fills these | ptl_enable | one real c=256 first-turn cc-traces burst at 19c5ab09e | probe_device.py: GEMM, copy, graph and link samples"
   },
   "host": {
     "cpu": {
@@ -169,6 +214,10 @@
     "ipc": {
       "zmq_roundtrip_s": 5e-05,
       "shm_broadcast_s": 2e-05
+    },
+    "http_intake": {
+      "fixed_s": 0.0026078916675536866,
+      "per_byte_s": 5.082586258228853e-09
     }
   },
   "device": {
@@ -179,13 +228,103 @@
     "memory": {
       "capacity_bytes": 206141652992,
       "bandwidth_bytes_per_s": 5300000000000.0,
-      "derate": 0.85
+      "bandwidth_curve": [
+        [
+          4096,
+          2158866473.8772497
+        ],
+        [
+          8192,
+          4315776622.192016
+        ],
+        [
+          16384,
+          8629823253.168003
+        ],
+        [
+          32768,
+          17253108088.676807
+        ],
+        [
+          65536,
+          30279711843.07834
+        ],
+        [
+          131072,
+          60502955989.42115
+        ],
+        [
+          262144,
+          120815151122.93721
+        ],
+        [
+          524288,
+          237295158987.3701
+        ],
+        [
+          1048576,
+          453325655440.997
+        ],
+        [
+          2097152,
+          861892287454.4998
+        ],
+        [
+          4194304,
+          1395942726835.2988
+        ],
+        [
+          8388608,
+          1963114394487.7944
+        ],
+        [
+          16777216,
+          2500722601013.529
+        ],
+        [
+          33554432,
+          2844669467186.9067
+        ],
+        [
+          67108864,
+          3213380400772.1265
+        ],
+        [
+          134217728,
+          3459254565659.331
+        ],
+        [
+          268435456,
+          3580129945166.3345
+        ],
+        [
+          536870912,
+          3657820717750.111
+        ],
+        [
+          1073741824,
+          3662186989091.235
+        ],
+        [
+          2147483648,
+          3670512192504.261
+        ],
+        [
+          4294967296,
+          3670512192504.261
+        ]
+      ],
+      "derate": 0.6925494702838229
     },
     "compute": {
       "bf16_flops": 344000000000000.0,
       "fp8_flops": 688000000000000.0,
-      "derate": 0.7
+      "derate": {
+        "bf16": 0.7808511019148736,
+        "fp8": 0.7140390336983675
+      }
     },
+    "kernel_floor_s": 1.7559914588928222e-06,
     "software_pinned_to": {
       "rocm": "7.2.4",
       "aiter": "9205e1059",
@@ -198,8 +337,8 @@
       "topology": "fully_connected",
       "domain_devices": 8,
       "link_bandwidth_bytes_per_s": 64000000000.0,
-      "link_latency_s": 2e-06,
-      "derate": 0.8
+      "link_latency_s": 8.984059989452361e-07,
+      "derate": 0.791361815985565
     },
     "inter_node": {
       "link_bandwidth_bytes_per_s": 50000000000.0,

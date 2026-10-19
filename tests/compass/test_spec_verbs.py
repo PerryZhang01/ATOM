@@ -67,6 +67,7 @@ CLASS0 = {
         "cpu": {"cores_physical": 96, "cores_logical": 192},
         "tokenizers": [TOKENIZER],
         "ipc": {"zmq_roundtrip_s": 5.0e-5, "shm_broadcast_s": 2.0e-5},
+        "http_intake": {"fixed_s": 2.0e-3, "per_byte_s": 2.0e-8},
     }
 }
 
@@ -81,7 +82,11 @@ CLASS1 = {
             "bandwidth_bytes_per_s": 8.0e12,
             "derate": 0.85,
         },
-        "compute": {"bf16_flops": 2.5e15, "fp8_flops": 5.0e15, "derate": 0.70},
+        "compute": {
+            "bf16_flops": 2.5e15,
+            "fp8_flops": 5.0e15,
+            "derate": {"bf16": 0.70, "fp8": 0.70},
+        },
         "software_pinned_to": dict(STACK),
     }
 }
@@ -403,7 +408,7 @@ def test_every_missing_field_is_reported_and_not_only_the_first():
 
 
 def test_a_spec_peak_with_no_derate_beside_it_is_refused():
-    thin = without(CLASS1, "device", "compute", "derate")
+    thin = without(CLASS1, "device", "compute", "derate", "bf16")
     checked = validate(merge(fragments(class1=thin)).document)
     assert [refusal.rule for refusal in checked.refusals] == [Rule.DERATE]
 

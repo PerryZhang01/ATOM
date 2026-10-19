@@ -49,7 +49,7 @@ def test_help_lists_every_verb(capsys):
     assert [v for v in VERBS if re.search(rf"^  {v} ", out, re.MULTILINE)] == VERBS
 
 
-@pytest.mark.parametrize("verb", ["trace ops", "measure ops", "fit ops"])
+@pytest.mark.parametrize("verb", ["fit ops"])
 def test_the_ops_verbs_refuse_as_the_ops_half(verb):
     with pytest.raises(SystemExit, match=f"^compass {verb}: the op-level half"):
         cli.main([*verb.split(), "--out", "d"])

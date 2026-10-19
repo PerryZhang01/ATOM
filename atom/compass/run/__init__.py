@@ -11,7 +11,10 @@ drives, over `single_engine_table`. At data-parallel width above one, each DP
 rank's engine process is a member ``dp<rank>`` of the one engine LP and owns
 its rank's channels. Each pipeline stage's engine process is an engine LP of
 its own, ``engine-pp<stage>``, and each stage's forward waits for the stage
-before it on ``pp_data`` (`atom.compass.runner.pp_send`). The Clock Authority is co-hosted in the frontend's
+before it on ``pp_data`` (`atom.compass.runner.pp_send`). Under RapidServe,
+which a run file states as ``rapidserve: true``, the prefill and decode engine
+processes are engine LPs ``engine-P`` and ``engine-D``, which send each other
+``block_assignment`` and ``prefill_done``. The Clock Authority is co-hosted in the frontend's
 process and served at the run file's ``clock_endpoint``, which every LP and
 member, the frontend's included, connects to.
 
@@ -80,7 +83,8 @@ were fitted on, which a run with laws must match; ``skip``, segments zeroed for
 a what-if run, which the graders refuse; a list of them as ``step_linear``'s),
 or in its place ``replay`` (a real run's parity record directory, or for a
 prefill-decode run one holding each deployment's as ``prefill/`` and
-``decode/``, ``prefill<k>/`` and ``decode<k>/`` above one of a side: each step
+``decode/``, ``prefill<k>/`` and ``decode<k>/`` above one of a side, and for a
+RapidServe run each engine's as ``prefill/`` and ``decode/``: each step
 ends when the real one did, by `atom.compass.parity.replay`, and the cost
 backend's price reaches only the cost record),
 ``machine`` (a machine spec mapping), ``parameter_count`` (read by the
@@ -100,7 +104,9 @@ It holds the memory the worker predicts too, for
 ``python -m atom.compass.memory.check``, with the assumption a
 `memory_readings` member it read states, which `compass run` records, and
 under ``step_grid`` the bundle's key, digest and ``describe()`` line, which the
-summary carries. The authority
+summary carries. A speculative engine's holds its acceptance input and its
+scheduler's accepted-draft histogram (`_acceptance`), which the summary carries
+by LP over its steps, with their mean acceptance length. The authority
 removes an earlier run's files there as it starts. At the end of client run
 ``k`` every server LP hands in to ``client-<k>/`` there, and the authority's
 host writes the step table and that client run's summary, its steps taken as
@@ -207,7 +213,7 @@ from atom.compass.clock import (
 from atom.compass.clock.channels import add_lmcache
 from atom.compass.clock_transport import connect, serve
 from atom.compass.detect.determinism import StepTable
-from atom.compass.runner import COMPASS_RUNNER_QUALNAME
+from atom.compass.runner import COMPASS_RAPIDSERVE_QUALNAME, COMPASS_RUNNER_QUALNAME
 from atom.utils import clock
 
 ENV = "ATOM_COMPASS_RUN"
@@ -226,6 +232,9 @@ INSTANCE_KEY = "compass_instance"
 #: The run-file key of each side's worker order in the router, a per-run outcome.
 WORKER_ORDER = "worker_order"
 ATOM_RUNNER = "atom.model_engine.model_runner.ModelRunner"
+RAPIDSERVE_RUNNER = "atom.model_engine.model_runner.RapidServeModelRunner"
+#: The run-file key that says the deployment runs RapidServe.
+RAPIDSERVE = "rapidserve"
 #: Keys that differ between two runs of one configuration, kept out of its name.
 #: The store is a place: the memory readings a run reads from it are keyed by
 #: the configuration and the machine spec, which the name holds.
@@ -237,13 +246,17 @@ LP_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
 )
 #: Each client run's hand-ins and summary, by its index.
 CLIENT_DIR = "client-{}"
+#: A real run's draft width and accepted-draft histogram, by DP rank.
+ACCEPTANCE_FILE = "dp{}.acceptance.json"
+#: The run-file key naming the record that gave the acceptance rates.
+ACCEPTANCE_RECORD = "acceptance_record"
 #: The endpoint a standalone authority serves at, written to its out_dir.
 AUTHORITY_FILE = "authority_endpoint.txt"
 #: Wall seconds the summary's writer waits for the server LPs' refusals.
 HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field is added, changes
 #: meaning or goes.
-SUMMARY_SCHEMA_VERSION = 6
+SUMMARY_SCHEMA_VERSION = 8
 #: Compass source the host-law key leaves out, by path under the package: all
 #: of it (None), or the top-level names (def, class or assigned) only a simulated
 #: run reaches, with the comments above each and the module docstring.
@@ -447,7 +460,13 @@ def _engines_table(run: dict):
         from atom.compass.runner.pp_send import carrier_models, lookaheads
 
         links = lookaheads(carrier_models(_machine(run)))
-    return single_engine_table(**common, dp=_widths(run), pp=_pp(run), pp_links=links)
+    return single_engine_table(
+        **common,
+        dp=_widths(run),
+        pp=_pp(run),
+        pp_links=links,
+        rapidserve=run.get(RAPIDSERVE, False),
+    )
 
 
 def _machine(run: dict):
@@ -520,6 +539,14 @@ def _pd_name(config, run: dict) -> str | None:
             "index, from 0"
         )
     return side if n == 1 else f"{side}{k}"
+
+
+def _engine_name(config, run: dict) -> str | None:
+    """The suffix of this engine's LP: RapidServe's ``P`` or ``D`` engine,
+    else `_pd_name`."""
+    if getattr(config, "enable_rapidserve", False):
+        return "D" if config.disagg_is_decode else "P"
+    return _pd_name(config, run)
 
 
 def _bind_transfer(config, run: dict) -> None:
@@ -892,17 +919,30 @@ def frontend(config):
     run = spec()
     if run is None:
         if os.environ.get(parity.ENV):
-            if config.runner_qualname != ATOM_RUNNER:
+            recording = {ATOM_RUNNER: parity.RUNNER, RAPIDSERVE_RUNNER: parity.RAPID}
+            if config.runner_qualname not in recording:
                 raise ValueError(
                     f"{parity.ENV} is set and runner {config.runner_qualname!r} "
-                    f"is named; only {ATOM_RUNNER} has a recording runner"
+                    f"is named; only {' and '.join(recording)} each has a "
+                    "recording runner"
                 )
-            config.runner_qualname = parity.RUNNER
+            config.runner_qualname = recording[config.runner_qualname]
         return contextlib.nullcontext()
     _refuse_unserved()
     pc = config.parallel_config
-    if config.enable_rapidserve:
-        raise ValueError("a simulated run here is an engine LP without RapidServe")
+    rapid = config.enable_rapidserve
+    if rapid != run.get(RAPIDSERVE, False):
+        raise ValueError(
+            f"the deployment's enable_rapidserve is {rapid} and the run file's "
+            f"{RAPIDSERVE} is {run.get(RAPIDSERVE, False)}; the channel table "
+            "every LP reads would declare the wrong engines"
+        )
+    if rapid and config.disagg_constrained:
+        raise ValueError(
+            "--disagg-constrained has decode write its decode tokens to shared "
+            "memory that prefill reads on wall time, off the clock; run RapidServe "
+            "without it"
+        )
     if config.pipeline_parallel_size != _pp(run):
         raise ValueError(
             f"the deployment runs {config.pipeline_parallel_size} pipeline stages "
@@ -918,10 +958,13 @@ def frontend(config):
                 "the next stage all-gathers it, which nothing prices; set "
                 "ATOM_PP_SEND_ALLGATHER=0"
             )
-    if config.runner_qualname not in (ATOM_RUNNER, COMPASS_RUNNER_QUALNAME):
+    atom_runner, ours = ATOM_RUNNER, COMPASS_RUNNER_QUALNAME
+    if rapid:
+        atom_runner, ours = RAPIDSERVE_RUNNER, COMPASS_RAPIDSERVE_QUALNAME
+    if config.runner_qualname not in (atom_runner, ours):
         raise ValueError(
             f"runner {config.runner_qualname!r} is named, and a simulated run "
-            f"prices its steps with {COMPASS_RUNNER_QUALNAME}"
+            f"prices its steps with {ours}"
         )
     side, standalone = _pd_side(config), CLOCK_ENV in os.environ
     if side is not None and not standalone:
@@ -948,7 +991,7 @@ def frontend(config):
             "--fake-eplb may start fewer engines than the data-parallel ranks "
             "the channel table declares, and a rank that never joins holds the run"
         )
-    config.runner_qualname = COMPASS_RUNNER_QUALNAME
+    config.runner_qualname = ours
     if pc.data_parallel_rank > 0:
         # A worker node of a multi-node group: engines only, each a member.
         return contextlib.nullcontext()
@@ -1089,10 +1132,11 @@ def engine(config):
 
         record = os.environ.get(parity.ENV)
         if record and getattr(config, "pipeline_parallel_size", 1) == 1:
-            Path(record).mkdir(parents=True, exist_ok=True)
+            record = parity.record_dir(record, config)
+            record.mkdir(parents=True, exist_ok=True)
             rank = config.parallel_config.data_parallel_rank
             # The worker's step timestamps read the same host clock.
-            pulls = Path(record) / f"dp{rank}.pulls.jsonl"
+            pulls = record / f"dp{rank}.pulls.jsonl"
             clock.stamp_pulls(pulls, time.monotonic_ns)
         return contextlib.nullcontext()
     from atom.utils.distributed import utils
@@ -1101,8 +1145,9 @@ def engine(config):
     pc = config.parallel_config
     if getattr(config, "pipeline_parallel_size", 1) > 1:
         lp = LpId(f"{ENGINE.name}-pp{pc.pipeline_parallel_rank}")
+    if (name := _engine_name(config, run)) is not None:
+        lp = LpId(f"{ENGINE.name}-{name}")
     if side is not None:
-        lp = LpId(f"{ENGINE.name}-{_pd_name(config, run)}")
         _bind_transfer(config, run)
     if "lmcache" in run:
         from atom.compass.kv.lmcache_mp import substitute
@@ -1229,8 +1274,8 @@ def runner(model_runner, tree) -> None:
         from atom.compass.parity.replay import ReplayHost
 
         dp_rank = config.parallel_config.data_parallel_rank
-        # This deployment's record: prefill/, or prefill1/ for engine-P1.
-        name = _pd_name(config, run) or ""
+        # This engine's record: prefill/, or prefill1/ for engine-P1.
+        name = _engine_name(config, run) or ""
         side = {"P": "prefill", "D": "decode"}.get(name[:1], "") + name[1:]
         replay = ReplayHost(Path(run["replay"]) / side, dp_rank)
     if STEP_LINEAR in run:
@@ -1473,17 +1518,13 @@ def tokenizer(tok, config) -> None:
 
 def http_intake() -> tuple[float, float] | None:
     """``(fixed_s, per_byte_s)``, the frontend loop's time to take in one HTTP
-    request, from the run's machine spec; None on a real run, a run file with no
-    machine spec, or a spec that states neither. A spec that states one of them
-    is refused naming the other."""
+    request, from the run's machine spec; None on a real run or a run file with
+    no machine spec."""
     run = spec()
     if run is None or "machine" not in run:
         return None
-    machine = _machine(run)
-    paths = ("host.http_intake.fixed_s", "host.http_intake.per_byte_s")
-    if not any(p in machine.values for p in paths):
-        return None
-    return tuple(machine.value(p) for p in paths)
+    machine, terms = _machine(run), ("fixed_s", "per_byte_s")
+    return tuple(machine.value(f"host.http_intake.{k}") for k in terms)
 
 
 def _fingerprint(tok) -> str | None:
@@ -1602,7 +1643,7 @@ def _engine_hand_in(run: dict, engine_core, sections: dict, client_run=None) -> 
     each park's clock and the clock it left at. An engine whose offload
     scheduler keeps lookup counters hands in ``lookups``: its tier lookups,
     the prefetches among them, and the deferred prefetches it stopped
-    waiting for."""
+    waiting for. A speculative engine hands in ``speculative``, `_acceptance`."""
     said = _workers_say(engine_core)
     rt = clock.installed()
     lp = rt.me.name if _member is None else f"{rt.me.name}.{_member}"
@@ -1614,7 +1655,35 @@ def _engine_hand_in(run: dict, engine_core, sections: dict, client_run=None) -> 
     if (counts := getattr(kv, "_perf_counters", None)) is not None:
         keys = ("lookup_n", "lookup_prefetched", "lookup_defer_expired")
         sections = sections | {"lookups": {k: counts[k] for k in keys}}
+    scheduler = getattr(engine_core, "scheduler", None)
+    if getattr(getattr(scheduler, "engine_stats", None), "spec_enabled", False):
+        sections = sections | {"speculative": _acceptance(scheduler, run)}
     _hand_in(run, lp, reasons, client_run, **said, **sections)
+
+
+def _acceptance(scheduler, run: dict) -> dict:
+    """A speculative engine's drafter, its draft width, the acceptance input
+    ATOM's flag stated with its method, the per-position rates it resolved to,
+    and the scheduler's accepted-draft histogram (`EngineStats.distribution`).
+    The input is ``measured`` from a run file's `ACCEPTANCE_RECORD`."""
+    spec = scheduler.config.speculative_config
+    # A stated rate also resolves a length, so it is read first.
+    stated = (
+        ("--spec-decode-acceptance-rate", spec.synthetic_acceptance_rate),
+        ("--spec-decode-acceptance-length", spec.synthetic_acceptance_length),
+        ("--spec-decode-acceptance-rates", spec.synthetic_acceptance_rates),
+    )
+    flag, value = next((f, v) for f, v in stated if v is not None)
+    said = {"flag": flag, "value": value, "method": "declared"}
+    if record := run.get(ACCEPTANCE_RECORD):
+        said |= {"method": "measured", "record": record}
+    return {
+        "drafter": spec.method,
+        "draft_tokens": spec.num_speculative_tokens,
+        "input": said,
+        "rates": spec.synthetic_acceptance_rates,
+        "distribution": dict(scheduler.engine_stats.distribution),
+    }
 
 
 def _raised_file(now: Path, rank) -> Path:
@@ -1637,8 +1706,11 @@ def engine_loop(engine_core):
     would stop the workers inside a clock call, before they say what their
     steps cost. A stop reaches the engine as the ``+inf`` grant instead.
 
-    A pipeline stage's runner calls go through `pp_send.install`'s sends."""
-    run, sections = spec(), {}
+    A pipeline stage's runner calls go through `pp_send.install`'s sends. A
+    recorded real run's SIGTERM goes through `_stop_recording`."""
+    from atom.compass import parity
+
+    run, sections, before = spec(), {}, None
     if run is not None and getattr(engine_core, "pp_size", 1) > 1:
         from atom.compass.runner import pp_send
 
@@ -1651,6 +1723,11 @@ def engine_loop(engine_core):
             run, engine_core, sections, k
         )
         before = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    elif os.environ.get(parity.ENV):
+        stop = functools.partial(
+            _stop_recording, engine_core, signal.getsignal(signal.SIGTERM)
+        )
+        before = signal.signal(signal.SIGTERM, stop)
     try:
         yield
         engine_done(engine_core, **sections)
@@ -1675,8 +1752,29 @@ def engine_loop(engine_core):
             _hand_in(run, lp, reasons + [ended], **said, **sections)
         raise
     finally:
-        if run is not None and before is not None:  # None: not set from Python
+        if before is not None:  # None: not set from Python
             signal.signal(signal.SIGTERM, before)
+
+
+def _stop_recording(engine_core, previous, signum, frame) -> None:
+    """A recorded real run's SIGTERM, where its engine stops: a speculative
+    engine writes its draft width and accepted-draft histogram beside the
+    record (`ACCEPTANCE_FILE`), then ATOM's handler, `previous`, takes it,
+    whether or not the write succeeded."""
+    from atom.compass import parity
+
+    scheduler = getattr(engine_core, "scheduler", None)
+    config, stats = getattr(scheduler, "config", None), getattr(
+        scheduler, "engine_stats", None
+    )
+    try:
+        if getattr(stats, "spec_enabled", False):
+            width = config.speculative_config.num_speculative_tokens
+            held = {"draft_tokens": width, "distribution": dict(stats.distribution)}
+            name = ACCEPTANCE_FILE.format(config.parallel_config.data_parallel_rank)
+            _write_whole(Path(os.environ[parity.ENV]) / name, json.dumps(held))
+    finally:
+        previous(signum, frame)
 
 
 def _until_end(run: dict, a: "_RecordingAuthority") -> bool:
@@ -1831,6 +1929,23 @@ def _summary(run: dict, a, record, wall: float, hand_ins: dict, since: dict) -> 
     summary["coverage_report"] = bool(reasons)
     if grids := {n: h["step_grid"] for n, h in hand_ins.items() if "step_grid" in h}:
         summary["step_grid"] = grids
+    # Each speculative engine's acceptance input, and what it accepted over these steps.
+    speculative = {}
+    for n, h in hand_ins.items():
+        if "speculative" in h:
+            gone = since.get(n, {}).get("speculative", {}).get("distribution", {})
+            seen = {
+                a: c - gone.get(a, 0)
+                for a, c in h["speculative"]["distribution"].items()
+            }
+            rows = sum(seen.values())
+            mean = 1 + sum(int(a) * c for a, c in seen.items()) / rows if rows else None
+            speculative[n] = h["speculative"] | {
+                "distribution": seen,
+                "mean_acceptance_length": mean,
+            }
+    if speculative:
+        summary["speculative"] = speculative
     return summary
 
 

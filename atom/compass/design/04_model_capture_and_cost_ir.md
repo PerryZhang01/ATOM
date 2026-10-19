@@ -16,8 +16,8 @@ has no `exclusive` value (D19).
 
 **Revised 2026-10-18 by the owner's
 [bench, band and capture ruling on #1489](https://github.com/jgong5/ATOM/issues/1489#issuecomment-6249950252):**
-capture is concrete, one graph per decode width and prefill (T, B) of the
-`shape_population` (D17, D18, D19); each leaf carries a contract, its arguments by schema
+capture is concrete, one graph per decode width and prefill (T, B) that `trace ops` is
+given or that a record directory's steps hold (D17, D18, D19); each leaf carries a contract, its arguments by schema
 slot with each tensor's stride and role, and a raw Triton or FlyDSL launch lifts to its
 innermost ATOM function (D20).
 
@@ -61,8 +61,9 @@ a refusal.
 ### The composition, which is the point
 
 **The step level is the discovery mechanism for the op level.** Drive ATOM's real scheduler
-device-free with a step-level backend, log the structure key and shape per step, take the
-distinct set, the `shape_population`, and capture exactly those. The step table needed already exists — predict mode records
+device-free with a step-level backend, log the structure key and shape per step in a
+record directory, and capture exactly the distinct shapes its steps hold (`trace ops
+--population`). The step table needed already exists — predict mode records
 `num_scheduled_tokens`, `context_lens`, `req_ids` and the scheduler's own decision per
 step.
 
@@ -86,7 +87,7 @@ expression to take it from; how it would be derived is part of T8.
   all eleven CUDA-graph rungs (*"330 operators, 19 distinct kinds, one identical operator
   multiset at every rung"*). But nobody has enumerated it for the hybrid 27B, and on the
   27B a symbolic decode capture needed five graphs across B = 2 to 512 (D18). The number
-  of graphs is the number of shapes a population names, since capture is concrete.
+  of graphs is the number of distinct shapes captured, since capture is concrete.
 - Whether a step-level backend's fitted coefficients and the op-level priced sum should be required to
   agree, and what to do when they do not.
 
@@ -138,7 +139,8 @@ and chunked prefill. The prior one-point rule is a weaker version of the same th
 concrete shapes.** Revised 2026-10-18 by the owner's
 [capture ruling on #1489](https://github.com/jgong5/ATOM/issues/1489#issuecomment-6249950252),
 which replaces option A's symbolic capture. One graph is captured per decode width and per
-prefill (T, B) that a `shape_population` names (`07` D38, Phase 1a), device-free, and no
+prefill (T, B) that `trace ops` is given or that a record directory's steps hold (`07`
+D38, Phase 1a), device-free, and no
 graph answers a shape it was not captured at, so route D's synthesis is never needed.
 `torch.export` is recorded as an unverified alternative in D18.1.
 
@@ -1239,7 +1241,7 @@ Deferred to future work by decision on 2026-09-18.
 | # | Decision | Date |
 |---|---|---|
 | D17 | Two granularities behind one `CostBackend`; the step level discovers the shapes the op level captures. No fallback crosses granularity: a capture failure fails the run, lazy trace off makes an uncaptured shape a refusal | 2026-09-18; revised 2026-10-14 (#952); per shape 2026-10-18 (#1489) |
-| D18 | Capture with `TorchDispatchMode` + `FakeTensorMode`, on FakeTensor rather than bare meta, at concrete shapes: one graph per decode width and prefill (T, B) a `shape_population` names. The symbolic route A and its four disciplines (the fourth: the engine's host arithmetic asks a symbol for a number, so a symbolic capture keeps the conversion, logs it with its line, and asserts that log against a stated set) are recorded, not built | 2026-09-18, fourth discipline 2026-09-22; concrete 2026-10-18 (#1489) |
+| D18 | Capture with `TorchDispatchMode` + `FakeTensorMode`, on FakeTensor rather than bare meta, at concrete shapes: one graph per decode width and prefill (T, B) that `trace ops` is given or that a record directory's steps hold. The symbolic route A and its four disciplines (the fourth: the engine's host arithmetic asks a symbol for a number, so a symbolic capture keeps the conversion, logs it with its line, and asserts that log against a stated set) are recorded, not built | 2026-09-18, fourth discipline 2026-09-22; concrete 2026-10-18 (#1489) |
 | D18.1 | `torch.export` recorded as an unverified alternative; rejected now on decomposition fidelity and on capturing a model call rather than an engine step | 2026-09-18 |
 | D19 | Hierarchical, concrete, stream-annotated IR: `Seq` / `Repeat` / `Par`, a node's arguments its leaf contract. No branches in the IR — applicability is a discrete key and the captured shape, matched by equality | 2026-09-18; revised 2026-10-18 (#531); concrete 2026-10-18 (#1489) |
 | D20 | Opaque leaves are priced, not decomposed. Each carries a stated parameter extractor and a contract: arguments by schema slot, each tensor's stride and role by provenance (activation, weight, KV, metadata), non-tensor arguments and module references kept; a raw Triton or FlyDSL launch lifts to its innermost ATOM function. FlyDSL and MORI inside `moe_forward` need no IR node. | 2026-09-18; contract 2026-10-18 (#1489) |

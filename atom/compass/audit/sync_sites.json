@@ -4303,6 +4303,18 @@
    "mechanism_why": "the server is stopping; serve refuses a run file and a clock, in ATOM's arguments and in the environment, so its server is a real one and the command is no LP, and the bound only decides when SIGTERM gives way to SIGKILL"
   },
   {
+   "id": "atom/compass/capture/driverless.py::_group.broadcast::functional.broadcast(tensor, src, group or dist.group.WORLD)::collective#0",
+   "file": "atom/compass/capture/driverless.py",
+   "symbol": "_group.broadcast",
+   "call": "functional.broadcast",
+   "expr": "functional.broadcast(tensor, src, group or dist.group.WORLD)",
+   "shape": "collective",
+   "peer": "none",
+   "why": "trace ops routes ATOM's legacy broadcast to its functional form under a fake tensor mode, on a fake process group of one process, so the capture records its shapes and nothing is sent",
+   "mechanism": "K9",
+   "mechanism_why": "a capture runs in the trace ops command, which is no LP and serves no simulated run, and its group has no peer to wait for"
+  },
+  {
    "id": "atom/compass/bench/engine.py::Bench.__init__::self.runner_mgr.call_func(\"get_num_blocks\", wait_out=True)::worker_rpc#0",
    "file": "atom/compass/bench/engine.py",
    "symbol": "Bench.__init__",
@@ -4397,6 +4409,67 @@
    "why": "after each forward the bench's workers agree on the repeat over their CPU group: it counts only where it counts on every worker, at the slowest worker's times",
    "mechanism": "K9",
    "mechanism_why": "the bench measures real forwards on a real runner for a measuring command, and no simulated run starts one"
+  },
+  {
+   "id": "atom/compass/bench/ops.py::_replay::end.synchronize()::device_sync#0",
+   "file": "atom/compass/bench/ops.py",
+   "symbol": "_replay",
+   "call": "end.synchronize",
+   "expr": "end.synchronize()",
+   "shape": "device_sync",
+   "peer": "none",
+   "why": "the op bench waits for each timed replay of one leaf's graph to finish on the device before it reads the replay's events",
+   "mechanism": "K9",
+   "mechanism_why": "the op bench times leaves on a real device for the measure ops command, and no simulated run starts one"
+  },
+  {
+   "id": "atom/compass/bench/ops.py::_kernels::torch.cuda.synchronize()::device_sync#0",
+   "file": "atom/compass/bench/ops.py",
+   "symbol": "_kernels",
+   "call": "torch.cuda.synchronize",
+   "expr": "torch.cuda.synchronize()",
+   "shape": "device_sync",
+   "peer": "none",
+   "why": "the op bench waits for one profiled call of a leaf to finish before it reads the kernels the call launched",
+   "mechanism": "K9",
+   "mechanism_why": "the op bench times leaves on a real device for the measure ops command, and no simulated run starts one"
+  },
+  {
+   "id": "atom/compass/bench/ops.py::main::ProcessPoolExecutor(1, mp_context=spawn)::thread_start#0",
+   "file": "atom/compass/bench/ops.py",
+   "symbol": "main",
+   "call": "ProcessPoolExecutor",
+   "expr": "ProcessPoolExecutor(1, mp_context=spawn)",
+   "shape": "thread_start",
+   "peer": "none",
+   "lp": "none",
+   "why": "measure ops runs its bench in one spawned process, so the GPU is free again when the command checks it after the run",
+   "mechanism": "K9",
+   "mechanism_why": "starting a process cannot park; the measuring command is no LP, and a GPU command serves no simulated run"
+  },
+  {
+   "id": "atom/compass/bench/ops.py::main::bench.submit(measure, config, todo, args.llc_mib << 20)::executor_handoff#0",
+   "file": "atom/compass/bench/ops.py",
+   "symbol": "main",
+   "call": "bench.submit",
+   "expr": "bench.submit(measure, config, todo, args.llc_mib << 20)",
+   "shape": "executor_handoff",
+   "peer": "process",
+   "why": "measure ops hands every shape's points to its bench process at once",
+   "mechanism": "K9",
+   "mechanism_why": "the op bench times leaves on a real device for the measure ops command, and no simulated run starts one"
+  },
+  {
+   "id": "atom/compass/bench/ops.py::main::job.result()::event_wait#0",
+   "file": "atom/compass/bench/ops.py",
+   "symbol": "main",
+   "call": "job.result",
+   "expr": "job.result()",
+   "shape": "event_wait",
+   "peer": "process",
+   "why": "measure ops waits for its bench process to return every point's result",
+   "mechanism": "K9",
+   "mechanism_why": "the op bench times leaves on a real device for the measure ops command, and no simulated run starts one"
   },
   {
    "id": "atom/compass/kv/lmcache_server.py::LMCacheLP._pull::self.sock.recv_multipart(self.zmq.NOBLOCK)::socket_recv#0",
