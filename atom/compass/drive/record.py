@@ -11,7 +11,9 @@ it (``dp<r>.cost.jsonl``, `step_labels.write_table`; a rank that ran only DP's
 dummy forwards gets the version line alone), and run.json its
 ``engine`` entry: the engine's bounds as the record's engine files state them,
 the fields `TARGET` names. DP ranks whose engine files state different bounds
-refuse the entry, naming each. One record spans the server's lifetime, every
+refuse the entry, naming each. A speculative engine's stop writes
+``steps/dp<r>.acceptance.json``, which `compass run --acceptance-record` reads.
+One record spans the server's lifetime, every
 client run it served included; `parity.served` splits it per client run.
 
 The server's environment holds `AUTOTUNE_CACHE` as the command's does, 1 when
