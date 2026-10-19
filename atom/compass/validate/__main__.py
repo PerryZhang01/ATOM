@@ -11,8 +11,8 @@ as `run_file`, and `validate.runs` decides which client run of theirs is graded,
 whether one is. Rows: `validate.runs`' grades, TTFT p50 per band of uncached prompt
 tokens graded alike; per run `record` or `run` wrote, its warmup: how many requests
 its export names as such and how many steps hold only those; `validate.cost` on the
-steps graded (with the steps it leaves out, declines or extrapolates) and
-`memory.check` per real run; and the simulated run's refusals by source, its steps
+steps graded (with the steps it leaves out, declines with their most frequent
+reasons, or extrapolates) and `memory.check` per real run; and the simulated run's refusals by source, its steps
 extrapolated and priced by a fallback, shares and speed. Any refusal makes a
 `cctraces_sim.sh` cell a coverage report; the shares grade nothing, and neither do the
 counts but preemptions and prefill tokens.
@@ -103,9 +103,9 @@ def _cost(run: Path, backend, steps: list[dict]):
                 value = f"{b['steps']} steps; p10 {b['p10']:+.1%} p50 {b['p50']:+.1%} p90 {b['p90']:+.1%}"
                 yield where, f"{band} {hull}", f"{value}; within 10% {b['within_10pct']:.1%}", gated
     yield where, "left out", f"not labelled {json.dumps(report['cut'])}; warm steps, real s { {w['step']: round(w['real_s'], 2) for w in report['warm']} }", "-"
-    for declined in ("fallback", "refused"):
-        for band, r in report[declined].items():
-            yield where, f"{declined} {band}", f"{r['steps']} steps, real {r['real_s']:.2f} s", "-"
+    for kind in ("fallback", "refused"):
+        for band, r in report[kind].items():
+            yield where, f"{kind} {band}", cost.declined_text(r), "-"
     yield where, "extrapolated", f"{report['extrapolated']} steps", "-"
 
 
