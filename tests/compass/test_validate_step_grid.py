@@ -24,7 +24,7 @@ from test_run_step_grid import BOUNDS, deployment, publish, readings
 from test_validate_cost import LAW, _record, _steps
 from test_validate_main import _as_recorded, _graded, _rows
 
-from atom.compass.artifacts import Axis
+from atom.compass.artifacts import ArtifactRefusal, Axis
 from atom.compass.backends import (
     StepGrid,
     StepGridBackend,
@@ -36,6 +36,7 @@ from atom.compass.backends.step_grid import coordinates
 from atom.compass.backends.step_grid_fit import VALUE
 from atom.compass.backends.step_grid_residual import Residual
 from atom.compass.drive import run as drive_run
+from atom.compass.run import step_grid
 from atom.compass.validate.__main__ import main
 from atom.compass.validate.cost import cost_accuracy
 
@@ -202,11 +203,11 @@ def test_a_cell_cctraces_sim_wrote_grades_with_no_argv_as_its_step_linear_cell(
 
 #: The refusals: the summary's digest is not the entry's, the run file's key has
 #: no entry, and the entry's member changed after it was published.
-DIFFERS = r"holds 1 entries keyed .*; the run priced with the one digesting sha256:0$"
+DIFFERS = r"holds 1 entries keyed .*\. the run recorded the one digesting sha256:0$"
 MISSING = (
     r'holds 0 entries keyed step_grid_bundle {.*"grid": "other".*}, digesting \[\]'
 )
-CHANGED = r"params\.\S+\.json is not the member the entry of step_grid_bundle {.*}"
+CHANGED = r"`params\.\S+\.json` digests sha256:\w+, and this entry records sha256:\w+"
 
 
 @pytest.mark.parametrize(
@@ -227,7 +228,54 @@ def test_a_bundle_other_than_the_one_the_run_priced_with_refuses_the_cell(
         path.chmod(0o644)
         path.write_text(json.dumps(_bundle(_steps(), missing={15})))
 
-    with pytest.raises(ValueError, match=refused):
+    with pytest.raises(ArtifactRefusal, match=refused):
+        main([str(tmp_path / "c4")])
+
+
+def _strays(tmp_path):
+    """A malformed neighbour beside the bundle, and the staging directory a
+    publisher killed before its rename leaves, holding a half-written entry."""
+    folder = tmp_path / "store" / "step_grid_bundle"
+    (entry,) = folder.iterdir()
+    for stray, document in (("stray", "{not json"), (f".{entry.name}.k1", '{"key"')):
+        (folder / stray).mkdir()
+        (folder / stray / "entry.json").write_text(document)
+    return folder / "stray", folder / f".{entry.name}.k1"
+
+
+def test_a_malformed_neighbour_or_a_staging_directory_stops_no_grade(
+    capsys, tmp_path, monkeypatch
+):
+    linear_rows = _rows(capsys, tmp_path)
+    _as_grid(tmp_path, monkeypatch)
+    _strays(tmp_path)
+
+    assert _graded(capsys, tmp_path / "c4") == _renamed(linear_rows)
+
+
+def test_a_missing_bundle_names_each_neighbour_that_is_not_an_entry(
+    capsys, tmp_path, monkeypatch
+):
+    _rows(capsys, tmp_path)
+    _as_grid(tmp_path, monkeypatch, digest="sha256:0")
+    stray, staging = _strays(tmp_path)
+
+    named = re.escape(f"; {stray / 'entry.json'} is not an entry document: ")
+    with pytest.raises(ArtifactRefusal, match=f"{named}JSONDecodeError") as refused:
+        main([str(tmp_path / "c4")])
+    assert staging.name not in str(refused.value)
+
+
+def test_a_member_the_bundle_does_not_hold_refuses_naming_what_it_holds(
+    capsys, tmp_path, monkeypatch
+):
+    """A `member_name` change: this tree asks for a name the bundle never had."""
+    _rows(capsys, tmp_path)
+    _as_grid(tmp_path, monkeypatch, parallel="tp1-dp1")
+    monkeypatch.setattr(step_grid, "MEMBER", ("grid", *step_grid.MEMBER[1:]))
+
+    held = r"`grid\.\S+\.json` is not in step_grid_bundle\(.*parallel='tp1-dp1'.*\)"
+    with pytest.raises(ArtifactRefusal, match=rf"{held}\. this entry holds params\."):
         main([str(tmp_path / "c4")])
 
 
