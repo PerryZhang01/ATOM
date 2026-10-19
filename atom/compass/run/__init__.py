@@ -1422,12 +1422,15 @@ def runner(model_runner, tree) -> None:
         mtp = bool(getattr(config, "speculative_config", None)) and (
             model_runner.tokenID_processor.is_deferred_out
         )
+        # RapidServe's prefill_forward synchronizes its stream before it returns.
+        rapid = getattr(config, "enable_rapidserve", False)
         model_runner.compass_host = replay or HostDeviceRecurrence(
             host.get("laws", {}),
             host.get("skip", ()),
             lambda: float(slot[0]),
             stage,
             mtp=mtp,
+            sync=rapid and not config.disagg_is_decode,
         )
         if replay is not None:
             replay.now = lambda: float(slot[0])

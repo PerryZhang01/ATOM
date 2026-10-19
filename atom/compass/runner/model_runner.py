@@ -13,7 +13,7 @@ from atom.compass.runner.overrides import (
     start_on_host,
     unanswered_rpc_names,
 )
-from atom.model_engine.model_runner import ModelRunner
+from atom.model_engine.model_runner import ModelRunner, RapidServeModelRunner
 
 
 class CompassModelRunner(NonAllocatingRunner, ModelRunner):
@@ -105,6 +105,13 @@ if _UNANSWERED:
     )
 
 
-class CompassRapidServeModelRunner(RapidServeRpcs, CompassModelRunner):
+class CompassRapidServeModelRunner(
+    RapidServeRpcs, CompassModelRunner, RapidServeModelRunner
+):
     """`CompassModelRunner` in RapidServe's prefill and decode engines, with the
-    RPCs their engine cores wait on (`RapidServeRpcs`)."""
+    RPCs their engine cores wait on (`RapidServeRpcs`).
+
+    `RapidServeModelRunner` comes last, below every override above it. What it
+    still contributes is its `__init__`, which makes prefill's `forward` its
+    `prefill_forward`, and the reserve its KV budget holds back for the second
+    process on the card, which ATOM's budget arithmetic calls on prefill."""

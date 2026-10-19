@@ -25,9 +25,13 @@ from atom import config as config_module
 from atom.compass import parity
 from atom.compass import run as compass_run
 from atom.compass.clock import LpId, single_engine_table
-from atom.compass.detect.scenario import check_run
+from atom.compass.detect.scenario import check_run, expected_timeline
 from atom.compass.runner import COMPASS_RAPIDSERVE_QUALNAME
-from atom.compass.runner.overrides import RapidServeRpcs, SampledIds
+from atom.compass.runner.overrides import (
+    HostDeviceRecurrence,
+    RapidServeRpcs,
+    SampledIds,
+)
 from atom.model_engine.engine_core_mgr import CoreManager, DisaggCoreManager
 from atom.utils import clock
 from atom.utils.clock import LPRuntime
@@ -191,15 +195,55 @@ def test_decode_takes_its_block_count_with_the_pool_and_allocates_none_before():
     assert prefill.allocate_kv_cache(5) and prefill.allocated == 5
 
 
-def test_a_prefill_reply_is_a_token_per_request_with_the_step_price():
+def test_a_prefill_reply_is_a_token_per_request_with_the_step_price(monkeypatch):
     runner = _Runner(decode=False)
     out = SimpleNamespace(predicted_s=0.25, out_s=None, group_targets=None)
-    runner.forward = lambda batch: out
+    monkeypatch.setattr(_Base, "forward", lambda self, batch: out, raising=False)
+    # As `RapidServeModelRunner.__init__` binds it on a prefill engine.
+    runner.forward = runner.prefill_forward
     runner._token_stream = SimpleNamespace(token_ids=[10, 11, 12])
     reply = runner.prefill_forward(SimpleNamespace(req_ids=[4, 2, 3]))
     sent = pickle.loads(pickle.dumps(reply))
     assert isinstance(sent, SampledIds) and sent == [11, 12, 10]
     assert (sent.predicted_s, sent.out_s, sent.group_out) == (0.25, None, None)
+
+
+def _batch(output):
+    return SimpleNamespace(
+        total_seqs_num_prefill=1,
+        total_tokens_num=8,
+        total_seqs_num=1,
+        produces_output=lambda: output,
+    )
+
+
+@pytest.mark.parametrize(
+    "sync, output, charges",
+    [
+        # The previous output forward's device end, or the launch.
+        (False, True, [0.0, 1.0]),
+        (False, False, [0.0, 0.0]),
+        # Its own device end, output or middle chunk.
+        (True, True, [1.0, 1.0]),
+        (True, False, [1.0, 1.0]),
+    ],
+)
+def test_a_synchronizing_forward_leaves_at_its_own_device_end(sync, output, charges):
+    clock = [0.0]
+    host = HostDeviceRecurrence({}, (), lambda: clock[0], sync=sync)
+    got = []
+    for _ in charges:
+        got.append(host.charge(_batch(output), 1.0, 0.0))
+        clock[0] += got[-1]
+    assert got == charges
+
+
+def test_the_constant_stub_timeline_ends_each_synchronized_forward_at_its_device_end():
+    step = {"rows": [[5, 5, False]], "produces_output": True, "is_dummy_run": False}
+    record = {0: [step, step]}
+    tars = [(0.0, 0.5), (0.5, 1.0)]
+    assert expected_timeline(record, 0.5, 0.25, tars, sync=True) == tars
+    assert expected_timeline(record, 0.5, 0.25, tars) == [(0.0, 0.0), (0.5, 0.5)]
 
 
 # --- with a driver: the run -------------------------------------------------

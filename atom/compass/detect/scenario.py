@@ -39,12 +39,20 @@ from atom.compass.backends.step_stub import Coefficients
 from atom.compass.clock import TAR
 from atom.compass.detect.determinism import CONFIGURATION_PREFIX, compare_step_tables
 from atom.compass.parity import read
-from atom.compass.run import STEP_TABLE_FILE, SUMMARY_FILE, channel_table, entries
+from atom.compass.run import (
+    RAPIDSERVE,
+    STEP_TABLE_FILE,
+    SUMMARY_FILE,
+    channel_table,
+    entries,
+)
 
 DONE = "data: [DONE]"
 
 
-def expected_timeline(record, prefill_s: float, decode_s: float, tars) -> list:
+def expected_timeline(
+    record, prefill_s: float, decode_s: float, tars, sync: bool = False
+) -> list:
     """One engine LP's TAR rows, ``(from, to)``, under a constant step stub.
 
     `record` maps each DP rank to its steps (`atom.compass.parity.read`).
@@ -58,7 +66,9 @@ def expected_timeline(record, prefill_s: float, decode_s: float, tars) -> list:
     forward's device work ends. Above DP width one the group's device end is
     the latest over ranks, which each rank takes as its last device end, and
     as its output end on an output forward; each rank returns at its own exit,
-    and the step is one TAR per distinct return, ascending.
+    and the step is one TAR per distinct return, ascending. With `sync`, every
+    forward returns at the group's device end, as one that synchronizes its
+    stream before it returns does.
 
     Raises ValueError when the ranks hold different step counts, or a step
     starts after the TAR rows end.
@@ -84,6 +94,8 @@ def expected_timeline(record, prefill_s: float, decode_s: float, tars) -> list:
             ends[r] = max(last, host) + busy
             returns.add((max(host, output) if step["produces_output"] else host) - now)
         end = max(ends.values())
+        if sync:
+            returns = {end - now}
         for r in ranks:
             _, last, output = device[r]
             device[r] = (last, end, end if record[r][k]["produces_output"] else output)
@@ -198,8 +210,12 @@ def _timeline(table: str, lp: str, record) -> list[str]:
         for f in map(str.split, lines[1:])
         if f[0] == lp and f[3] == TAR
     ]
+    # RapidServe's prefill_forward synchronizes its stream before it returns.
+    sync = run.get(RAPIDSERVE, False) and lp == "engine-P"
     try:
-        want = expected_timeline(record, stub.prefill_step, stub.decode_step, tars)
+        want = expected_timeline(
+            record, stub.prefill_step, stub.decode_step, tars, sync
+        )
     except ValueError as e:
         return [f"{lp}: {e}"]
     for i, (w, got) in enumerate(zip_longest(want, tars)):

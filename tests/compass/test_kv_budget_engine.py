@@ -263,3 +263,22 @@ def test_the_composed_class_refuses_the_disagg_decode_process(spec, qwen):
     runner.config.disagg_is_decode = True
     with pytest.raises(RunnerRefusal, match="owns no device memory"):
         runner.get_num_blocks()
+
+
+def test_rapidserve_prefill_holds_back_what_atoms_rapidserve_runner_does(spec, qwen):
+    """Prefill's pool is ATOM's RapidServe runner's on the same readings, and
+    smaller than a dedicated card's."""
+    from atom.compass.runner.model_runner import CompassRapidServeModelRunner
+    from atom.model_engine.model_runner import RapidServeModelRunner
+
+    plain = _runner(spec, qwen, 1)
+    rapid = object.__new__(CompassRapidServeModelRunner)
+    real = object.__new__(RapidServeModelRunner)
+    rapid.__dict__.update(vars(plain))
+    real.__dict__.update(vars(plain))
+    real._read_device_memory = rapid._read_device_memory
+    real._estimate_cudagraph_overhead = rapid._estimate_cudagraph_overhead
+    plain_n, rapid_n, real_n = (
+        r.get_num_blocks()["num_kvcache_blocks"] for r in (plain, rapid, real)
+    )
+    assert rapid_n == real_n < plain_n
