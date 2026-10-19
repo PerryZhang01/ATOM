@@ -1382,8 +1382,8 @@ stage and per DP rank, with a TP group modelled on its rank 0.
 - `W_inputs`: under MTP, an output forward's prepare after R1's wait: the input ids,
   `prepare_inputs` and the drafter's staging. A run without MTP never runs it; an MTP
   run whose law lacks it is refused by name.
-- `W_launch`: the launch (`ModelRunner.run_model`), then `ModelRunner.postprocess` up to
-  the token read: the sampler, the TP broadcast of its tokens and the logprobs. A forward
+- `W_launch`: the launch (`ModelRunner.run_model`), under MTP `compute_draft_kv`, then
+  `ModelRunner.postprocess` up to the token read: the sampler, the TP broadcast of its tokens and the logprobs. A forward
   that reads no tokens ends it at `run_model`'s return.
 - `W_recv`: on a pipeline stage after the first, the part of `W_launch` that
   `run_model` runs before `recv_intermediate_tensors`; the stage posts its receive

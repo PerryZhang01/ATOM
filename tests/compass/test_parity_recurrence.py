@@ -66,6 +66,16 @@ def test_an_output_forward_s_sampler_launch_overlaps_the_device_before_its_read(
     assert report["pass"] and not report["failures"]
 
 
+def test_a_host_bound_sampler_launch_delays_the_exit_past_the_device_end():
+    """Step 4 launches its sampler from 34 to 42 ms, after step 3's device end
+    at 41: the read starts at 42, so the exit is 43, not 42."""
+    steps = record(r1=42)
+    steps[4]["t_recv_ns"][0] = 42 * MS
+    report = recurrence.check(steps)
+    assert report["total"] == pytest.approx(0, abs=1e-9)
+    assert report["pass"] and not report["failures"]
+
+
 def test_a_late_r1_release_fails_its_kind_and_names_the_step():
     report = recurrence.check(record(r1=45))
     assert not report["kinds"]["decode"][-1]
