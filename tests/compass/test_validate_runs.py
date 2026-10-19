@@ -368,6 +368,31 @@ def test_a_cctraces_sim_cell_grading_does_not_take_is_refused_naming_why(
         grade(real, simulated)
 
 
+@pytest.mark.parametrize(
+    "run",
+    [
+        {"step_linear": {}},
+        HOST | {"step_linear": {}, "step_roofline": True},
+        {"host": {"skip": ["E"]}},
+    ],
+    ids=["no-host", "law-roofline", "skip"],
+)
+def test_real_cctraces_sim_cells_grade_whatever_run_file_they_were_handed(
+    tmp_path, run
+):
+    """A real cell's server never reads the run file its run.json holds; a
+    simulated cell handed the same one is refused, named."""
+    *real, simulated = _four(tmp_path)
+    report = grade(real, simulated)
+    for cell in real:
+        (cell / "run.json").write_text(json.dumps(run))
+    assert grade(real, simulated) == report
+
+    (simulated / "run.json").write_text(json.dumps(run))
+    with pytest.raises(ValueError, match="/sim (is not graded|skips host segments)"):
+        grade(real, simulated)
+
+
 def test_the_command_states_the_steps_extrapolated_and_priced_by_a_fallback(
     tmp_path, capsys
 ):

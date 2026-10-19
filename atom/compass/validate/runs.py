@@ -7,9 +7,10 @@ Each argument is a run directory: its step record in `steps/` and aiperf's
 export in `artifacts/profile_export_aiperf.json`. SIMULATED is the cell at its
 backend, and REAL two or more real runs of it, spaced in time.
 
-A directory `cctraces_sim.sh` wrote is graded whole, and refused when its
-run.json skips host segments, has no host laws, or turns the step roofline
-on with no step grid. In one `record` or `run` wrote, whose run.json
+A directory `cctraces_sim.sh` wrote is graded whole. SIMULATED is refused
+when its run.json, the run file it ran, skips host segments, has no host laws,
+or turns the step roofline on with no step grid; a real run's server never
+reads the run file it was handed. In one `record` or `run` wrote, whose run.json
 states a `format_version`, the graded client run is the one whose export is
 `artifacts/client_run.json`, split from the record by `parity.served`: only
 its steps are graded, and every run's client must have been given the same
@@ -264,12 +265,22 @@ def graded(cell) -> tuple[list[dict], list[str] | None, dict | None]:
     run = json.loads(path.read_text()) if path.exists() else {}
     if "format_version" in run:
         return _client_run(cell, run)
+    return _steps(cell), None, None
+
+
+def _refuse_by_run_file(cell) -> None:
+    """Refuse the simulated `cell`, a directory `cctraces_sim.sh` wrote, when
+    the run file it ran, its run.json, says it is not graded."""
+    path = Path(cell) / "run.json"
+    if not path.exists():
+        return
+    run = json.loads(path.read_text())
+    if "format_version" in run:  # `_client_run` checks a `record` or `run` cell
+        return
     if any(h.get("skip") for h in entries(run, "host")):
         raise ValueError(f"{cell} skips host segments; a what-if run is not graded")
-    why = _run_file_not_graded(run, run.get("step_roofline")) if path.exists() else []
-    if why:
+    if why := _run_file_not_graded(run, run.get("step_roofline")):
         raise ValueError(f"{cell} is not graded: " + "; ".join(why))
-    return _steps(cell), None, None
 
 
 def _read(cell) -> dict:
@@ -320,6 +331,7 @@ def grade(real_cells, simulated_cell) -> dict:
     """Every metric's grade: {family: {metric: grade}}, as the module says."""
     if len(real_cells) < 2:
         raise ValueError("a real spread needs two or more real runs")
+    _refuse_by_run_file(simulated_cell)
     real = [_read(c) for c in real_cells]
     simulated = _read(simulated_cell)
     given = {str(c): r["traces"] for c, r in zip(real_cells, real)}

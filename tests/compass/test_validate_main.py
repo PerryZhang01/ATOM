@@ -62,11 +62,10 @@ def _run(
             for phase, u, c, ms in lines
         )
     )
-    (d / "run.json").write_text(
-        json.dumps(
-            {"workload": {"traces": workload}, "step_linear": LAW, "host": {"laws": {}}}
-        )
-    )
+    run = {"workload": {"traces": workload}, "step_linear": LAW}
+    if refusals is not None:
+        run["host"] = {"laws": {}}
+    (d / "run.json").write_text(json.dumps(run))
     if refusals is None:
         _log(d / "server.log", peak=50 * GIB, non_torch=non_torch * GIB)
         return

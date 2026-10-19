@@ -359,7 +359,7 @@ def test_each_reader_of_host_reads_every_entry_of_a_list(tmp_path):
     hosts = [{"laws": {}}, {"laws": {"prefill": {}}, "skip": ["E"]}]
     (tmp_path / "run.json").write_text(json.dumps({"host": hosts}))
     with pytest.raises(ValueError, match="skips host segments"):
-        runs.graded(tmp_path)
+        runs._refuse_by_run_file(tmp_path)
 
     constant = dataclasses.asdict(Coefficients.constant(0.1, 0.01))
     table = CONFIGURATION_PREFIX + json.dumps({"step_stub": constant, "host": hosts})
