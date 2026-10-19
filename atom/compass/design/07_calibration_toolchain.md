@@ -699,7 +699,7 @@ hold, so it cannot be replayed from a price list — one operator per step, issu
 `ModelRunner.postprocess` after the sampler. Since the owner's ruling on
 [#815](https://github.com/jgong5/ATOM/issues/815) (2026-10-11) removed the Phase 1c host
 floor, its device time is inside the forward's device busy time, the label the step linear law and
-Phase 1c are fitted to (`09` D54), and its launch is inside the `W_post` host law (`01`
+Phase 1c are fitted to (`09` D54), and its launch is inside the `W_launch` host law (`01`
 D4). Recorded as **T55**.
 
 ---

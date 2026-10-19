@@ -5,8 +5,9 @@
 
 `HostDeviceRecurrence` charges each forward with `d_busy_ns` as its device
 time, plus `d_gap_ns` on a decode, and its line's host segments: `E` from the previous exit to the entry,
-`W_pre` to the launch less the staging gate's and MTP status waits, `W_launch`, and `W_post`
-from the launch to the exit less the recv and draft copy waits; with
+`W_pre` to the launch less the staging gate's and MTP status waits, `W_launch` to the
+recv wait (the sampler's launch included), and `W_post` from the recv wait to the exit
+less the draft copy wait; with
 `d_target_ns`, under MTP, the rest of `d_busy_ns` is draft, `W_inputs` is the part of
 `W_pre` after the MTP status wait, and no `d_gap_ns` is fed. Each forward is called at the
 exit predicted for the one before, so only the waits and device times move it.
@@ -152,7 +153,7 @@ def _charged(steps, stage, upstream, held, carriers=None, downstream=None):
                 )
             called = max(now, (held[n][1] - origin) * 1e-9)
         pre = l0 - s["t_enter_ns"] - (g1 - g0) - (m1 - m0)
-        post = s["t_exit_ns"] - l1 - (r1 - r0) - (d1 - d0)
+        post = s["t_exit_ns"] - r1 - (d1 - d0)
         entry = max(called + e * 1e-9, rec.ends[0])
         # The last send settled: the one before the last, or the last if flushed.
         flushed = called - now > (IDLE_FLUSH_S if stage and stage[0] else 0)
@@ -173,7 +174,7 @@ def _charged(steps, stage, upstream, held, carriers=None, downstream=None):
                 tensors = [("rccl", sum(r[0] for r in s["rows"]) * width)] * 2
                 posted = max(sent, rec.ends[-1], hold)
                 done, ready = recv_done(models, max(ready, done), posted, tensors)
-        launch = l1 - l0 - (p1 - p0)
+        launch = r0 - l0 - (p1 - p0)
         law = {"E": e, "W_pre": pre - (l0 - m1), "W_launch": launch, "W_post": post}
         law |= {"W_inputs": l0 - m1, "W_recv": p0 - l0}
         law = {g: (v * 1e-9, 0, 0) for g, v in law.items()}

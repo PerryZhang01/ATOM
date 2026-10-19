@@ -28,8 +28,10 @@ label would hold a draft the law prices again.
 
 A step's host labels are its segments: `E` from the previous forward's exit,
 cut as idle when the two batches share no request; `W_pre` to the launch, less
-the staging gate's wait; `W_launch`; `W_post` from the launch to the exit, less
-the token copy and draft copy waits, and a middle chunk has none. With an MTP status wait,
+the staging gate's wait; `W_launch` from the launch to the token copy wait,
+the sampler's launch included, or to the launch's end on a forward with no
+such wait; `W_post` from that wait's end to the exit, less the draft copy wait,
+and a middle chunk has none. With an MTP status wait,
 `W_pre` ends at it and `W_inputs` runs from it to the launch. On a later
 pipeline stage, `W_recv` runs from the launch to the receive of its input.
 
@@ -178,16 +180,16 @@ def label(record, run: str | None = None) -> tuple[list[Sample], list[dict]]:
             draft = (s["d_busy_ns"] - s["d_target_ns"]) * 1e-9
         enter, (l0, l1) = s["t_enter_ns"], s["t_launch_ns"]
         g0, g1 = s.get("t_gate_ns", (l0, l0))
-        r0, r1 = s.get("t_recv_ns", (0, 0))
+        r0, r1 = s.get("t_recv_ns", (l1, l1))
         m0, m1 = s.get("t_mtp_ns", (l0, l0))
-        host = {"W_pre": g0 - enter + m0 - g1, "W_launch": l1 - l0}
+        host = {"W_pre": g0 - enter + m0 - g1, "W_launch": r0 - l0}
         if "t_mtp_ns" in s:
             host["W_inputs"] = l0 - m1
         if "t_pp_recv_ns" in s:
             host["W_recv"] = s["t_pp_recv_ns"][0] - l0
         if host_kind(view) != "middle":
             d0, d1 = s.get("t_draft_recv_ns", (0, 0))
-            host["W_post"] = s["t_exit_ns"] - l1 - (r1 - r0) - (d1 - d0)
+            host["W_post"] = s["t_exit_ns"] - r1 - (d1 - d0)
         idle = prev is not None and not _shared(s, prev)
         if prev is not None and not idle:
             host["E"] = enter - prev["t_exit_ns"]

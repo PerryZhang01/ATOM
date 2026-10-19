@@ -379,6 +379,8 @@ KEY = {"host_cpu": "test cpu", "atom": "0" * 64, "model": None, "engine": {}}
 IDLE_NS = 10**9
 #: Device work between forwards, which a decode's label takes and a prefill's does not.
 GAP_NS = 40_000
+#: An output forward's sampler launch, after the model's and before its token read.
+SAMPLE_NS = 20_000
 
 
 def _timed_record(path, steps, idle_after=(), key=KEY, gap=0):
@@ -386,9 +388,10 @@ def _timed_record(path, steps, idle_after=(), key=KEY, gap=0):
 
     Each forward runs the host laws' segments and its price on the device, by
     the recurrence: a device that reaches a forward before its launch ends
-    waits for it, which stretches the window. Every fourth step's prefill is a
-    middle chunk, and `gap` ns of device work runs between forwards. Returns the
-    record and its launch-exposed steps.
+    waits for it, which stretches the window. An output forward launches its
+    sampler for `SAMPLE_NS` after the model, then waits for its token read.
+    Every fourth step's prefill is a middle chunk, and `gap` ns of device work
+    runs between forwards. Returns the record and its launch-exposed steps.
     """
     t, device_end, output_end, owner, lines, exposed = 0, None, None, 0, [], []
     for i, (rows, rung, seconds) in enumerate(steps):
@@ -404,7 +407,8 @@ def _timed_record(path, steps, idle_after=(), key=KEY, gap=0):
         g0 = enter + ns["W_pre"] // 2
         g1 = g0 + 1000
         l0 = g1 + ns["W_pre"] - ns["W_pre"] // 2
-        l1 = l0 + ns["W_launch"]
+        r0 = l0 + ns["W_launch"]
+        l1 = r0 - SAMPLE_NS * output  # the sampler launches after the model
         start = l0 if device_end is None else max(device_end + gap, l0)
         busy = round(seconds * 1e9) + max(0, l1 - start)
         if start < l1:
@@ -426,12 +430,11 @@ def _timed_record(path, steps, idle_after=(), key=KEY, gap=0):
         if device_end is not None:
             line["d_gap_ns"] = start - device_end
         device_end = start + busy
-        t = l1
+        t = r0
         if output:
-            r0 = l1 + ns["W_post"] // 2
             r1 = r0 if output_end is None else max(r0, output_end)
             line["t_recv_ns"] = [r0, r1]
-            t = r1 + ns["W_post"] - ns["W_post"] // 2
+            t = r1 + ns["W_post"]
             output_end = device_end
         line["t_exit_ns"] = t
         lines.append(line)
