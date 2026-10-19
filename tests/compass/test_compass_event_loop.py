@@ -35,6 +35,7 @@ from atom.utils.compass_loop import (
     CompassEventLoop,
     CompassSelector,
     HttpChannel,
+    Station,
     wrap_encode,
 )
 
@@ -896,6 +897,8 @@ def test_tokenizer_results_due_at_one_instant_resume_in_submission_order(
     loop = CompassEventLoop()
     entry = SimpleNamespace(encode_fixed_s=0.0, encode_tokens_per_s=1.0, derate=1.0)
     encode, tokens, resumed = wrap_encode(list, entry), [5, 2, 3, 2, 4, 1, 6, 7], []
+    # A server per job, whatever the host's pool width: every job starts at 0.
+    loop.executor.station = Station(len(tokens))
 
     async def request(k):
         def do_preprocess():
