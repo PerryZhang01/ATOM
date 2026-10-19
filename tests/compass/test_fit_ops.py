@@ -26,20 +26,23 @@ LAYOUT |= {"enable_expert_parallel": False, "enable_dp_attention": False}
 BF16 = "torch.bfloat16"
 
 
-def _leaf(m, n):
-    """A GEMM's signature at `m` rows into `n` outputs, as `measure ops` keys it."""
+def _leaf(m, n, cu=False):
+    """A GEMM's signature at `m` rows into `n` outputs, as `measure ops` keys it;
+    with `cu`, also an `m + 1` offsets vector, as attention's signatures hold."""
     x = {"shape": [m, 64], "stride": [64, 1], "dtype": BF16, "role": "activation"}
     w = {"shape": [n, 64], "stride": [64, 1], "dtype": BF16, "role": "weight"}
     sig = {"op": "aiter.gemm", "args": {"x": x, "w": w}, "out": [[m, n]]}
+    if cu:
+        sig["args"]["cu"] = {"shape": [m + 1], "dtype": "torch.int32"}
     return json.dumps(sig, sort_keys=True, separators=(",", ":"))
 
 
-def _point(b, ns, kernel="k", n=128, context=1024):
+def _point(b, ns, kernel="k", n=128, context=1024, cu=False):
     return {
         "shape": f"decode B={b}",
         "context": context,
         "op": "aiter.gemm",
-        "leaf": _leaf(b, n),
+        "leaf": _leaf(b, n, cu),
         "cold_ns": ns,
         "kernels": [kernel],
     }
@@ -83,11 +86,13 @@ def _families(points):
 
 def test_a_family_masks_the_rows_and_keeps_the_weight():
     points = [_point(2, 10.0), _point(8, 16.0), _point(2, 20.0, n=256)]
-    points += [_point(8, 26.0, n=256)]
+    points += [_point(8, 26.0, n=256), _point(2, 30.0, cu=True)]
+    points += [_point(8, 36.0, cu=True)]
 
     assert _families(points) == [
         (["B", "context"], [[[2, 1024], 10.0], [[8, 1024], 16.0]]),
         (["B", "context"], [[[2, 1024], 20.0], [[8, 1024], 26.0]]),
+        (["B", "context"], [[[2, 1024], 30.0], [[8, 1024], 36.0]]),
     ]
 
 
@@ -162,24 +167,21 @@ def test_fit_ops_publishes_its_points_key_and_their_held_out_error(measured, tmp
     ]
 
 
-def test_a_line_holding_an_error_over_5pct_declines_what_it_would_price():
-    # held out along B, B = 4 reads 4% off at context 1024 and 20% off at 2048
+def test_a_line_holding_an_error_over_5pct_either_way_is_declined_with_its_reason():
+    # held out along B, B = 4 reads -4% at context 1024 and -20% at 2048;
+    # along context at B = 2, context 2048 reads +25%
     points = [_point(2, 10.0), _point(4, 12.5), _point(8, 16.0)]
     points += [_point(b, ns, context=2048) for b, ns in ((2, 20), (4, 30), (8, 32))]
+    points += [_point(2, 40.0, context=3072)]
     params = ops.fit(points)
     rows = ops.held_out(params)
     (f,) = params["families"].values()
-    grid = {tuple(c): (ns, k) for c, ns, k in f["points"]}
-    declined = {(d, tuple(r)): why for d, r, why in f["declined"]}
 
-    assert f["declined"] == [["B", [2048], "B = 4 reads -20.0% off its neighbours"]]
+    assert f["declined"] == [
+        ["context", [2], "context = 2048 reads +25.0% off its neighbours"],
+        ["B", [2048], "B = 4 reads -20.0% off its neighbours"],
+    ]
     assert ops.summary(rows)["decode aiter.gemm"]["max_error"] == pytest.approx(0.04)
-    assert ops.interpolate(grid, (3, 1024), f["dims"], declined) == (11.25, ["k"])
-    assert ops.interpolate(grid, (4, 2048), f["dims"], declined) == (30, ["k"])
-    assert ops.interpolate(grid, (4, 1536), f["dims"], declined) == (21.25, ["k"])
-    for at in [(3, 2048), (3, 1536)]:
-        with pytest.raises(ops.Declined, match="along B declines: B = 4 reads -20.0%"):
-            ops.interpolate(grid, at, f["dims"], declined)
 
 
 @pytest.mark.parametrize(

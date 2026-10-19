@@ -29,8 +29,8 @@ measured neighbour on both sides, the price the other points of that line
 give it and its error. A point that launched other kernels than the neighbours
 it is priced from is a hidden band: no check of the neighbours' kernels can
 see it. A line holding a hidden band or an error over `LIMIT` does not
-interpolate: its family lists it under `declined` with its reason, its
-measured points still answer, and a query priced along it declines. Per phase
+interpolate: its family lists it under `declined` with its reason, for the
+price list's reader to answer only its measured points along it. Per phase
 and operator the report gives the median and largest error on the lines that
 interpolate.
 """
@@ -181,17 +181,10 @@ def fit(points) -> dict:
     return {"free": free_of, "families": families}
 
 
-def interpolate(points: dict, at: tuple, dims, declined=None, _path=()):
+def interpolate(points: dict, at: tuple, dims):
     """The time at `at` over `points`, {coordinates: (ns, kernels)}, and the
-    kernels it was priced from, multilinear over `dims` in order. A corner
-    priced along a line in `declined`, {(dimension, the other coordinates):
-    reason}, declines with that reason."""
+    kernels it was priced from, multilinear over `dims` in order."""
     if not dims:
-        corner = tuple(v for _, v, _ in _path)
-        for k, (dim, _, moved) in enumerate(_path):
-            why = moved and (declined or {}).get((dim, corner[:k] + corner[k + 1 :]))
-            if why:
-                raise Declined(f"the line along {dim} declines: {why}")
         return points[()]
     x, values = at[0], sorted({c[0] for c in points})
     lo = max((v for v in values if v <= x), default=None)
@@ -204,8 +197,7 @@ def interpolate(points: dict, at: tuple, dims, declined=None, _path=()):
     for v in sorted({lo, hi}):
         line = {c[1:]: p for c, p in points.items() if c[0] == v}
         try:
-            step = _path + ((dims[0], v, lo != hi),)
-            ends.append(interpolate(line, at[1:], dims[1:], declined, step))
+            ends.append(interpolate(line, at[1:], dims[1:]))
         except Declined as why:
             raise Declined(f"at {dims[0]} = {v}, {why}") from None
     if len(ends) == 1:
