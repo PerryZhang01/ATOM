@@ -128,10 +128,10 @@ def test_each_reason_a_graph_refuses_is_named_once():
     with pytest.raises(CostRefused) as refused:
         backend(region).price(DECODE)
 
-    assert refused.value.declined == [
+    assert refused.value.declined == (
         Refusal("op-work", "no extractor for the op kind foo.bar.default"),
         Refusal("op-work", "no extractor for the op kind foo.baz.default"),
-    ]
+    )
 
 
 def test_a_spec_field_a_leaf_reads_and_the_spec_lacks_refuses_naming_it():
