@@ -10,9 +10,11 @@ not the ones the device fragment recorded there. The device fragment is what
 ATOM's own `ModelRunner` read at one engine start (Qwen3.8-27B, TP1, CUDA
 graphs and prefix caching on, `--max-model-len 262144`): the device, its
 capacity and the stack; every field no probe fills is assumed, on either host.
-One real burst on each host adds the HTTP intake terms (`INTAKE`). An
-engine start's memory readings are `compass measure memory`'s, not the spec's.
-One fragment per probe or origin. Writes the merged document to `--out` when
+One real burst on each host adds the HTTP intake terms (`INTAKE`), and on
+node 18 `probe_device.py`'s readings (`PEAKS`) the compute and memory derates,
+the bandwidth curve, the kernel floor and the intra-node link's latency and
+derate. An engine start's memory readings are `compass measure memory`'s,
+not the spec's. One fragment per probe or origin. Writes the merged document to `--out` when
 `validate` passes, then prints `explain`'s rows for the host, device and
 interconnect blocks, grouped by origin.
 `--sweep-from` takes the tokenizer sweep from a document this script wrote.
@@ -29,6 +31,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import probe_device
 
 from atom.compass.spec import (
     Fragment,
@@ -164,6 +169,55 @@ PP = {
     ),
 }.get(NAME)
 
+#: `probe_device.py`'s readings on node 18 cards 0001:a5:00.0 and
+#: 0001:c9:00.0, both PTL enabled, at the commit named; the record is its OUT.
+#: Each derate is a reading over `DECLARED`'s peak.
+PEAKS = {
+    "mi308x-hjbog18": (
+        "2026-10-18",
+        "347f5bcdd",
+        {
+            "bf16": 268612779058716.53,
+            "fp8": 491258855184476.9,
+            "bandwidth_curve": [
+                [4096, 2158866473.8772497],
+                [8192, 4315776622.192016],
+                [16384, 8629823253.168003],
+                [32768, 17253108088.676807],
+                [65536, 30279711843.07834],
+                [131072, 60502955989.42115],
+                [262144, 120815151122.93721],
+                [524288, 237295158987.3701],
+                [1048576, 453325655440.997],
+                [2097152, 861892287454.4998],
+                [4194304, 1395942726835.2988],
+                [8388608, 1963114394487.7944],
+                [16777216, 2500722601013.529],
+                [33554432, 2844669467186.9067],
+                [67108864, 3213380400772.1265],
+                [134217728, 3459254565659.331],
+                [268435456, 3580129945166.3345],
+                [536870912, 3657820717750.111],
+                [1073741824, 3662186989091.235],
+                [2147483648, 3670512192504.261],
+                [4294967296, 3670512192504.261],
+            ],
+            "link": 50647156223.07616,
+            "device.kernel_floor_s": [
+                1.7559914588928222e-06,
+                1.754871070384979e-06,
+                1.7566190481185917e-06,
+            ],
+            "interconnect.intra_node.link_latency_s": [
+                8.984059989452361e-07,
+                8.71745502948761e-07,
+                9.11213505268097e-07,
+            ],
+        },
+        "774ab13e538536628e55aa65a5522e5f1fdd945243a367a87b75d546bf57e9c6",
+    ),
+}.get(NAME)
+
 DEVICE = {
     "host": {"cpu": {"cores_physical": 112, "cores_logical": 224}},
     "device": {
@@ -175,10 +229,11 @@ DEVICE = {
     },
 }
 
-#: No probe here fills these. The peaks are MI300X's datasheet scaled by
-#: 80/304 compute units, each derate is the haircut this spec's author chose on
-#: its peak, the bandwidth curve ends at the derated bandwidth, and the rest are
-#: the schema's example values.
+#: No probe here fills these. The compute peaks are MI300X's datasheet scaled
+#: by 80/304 compute units, the bandwidth and link rate are MI300X's unscaled,
+#: each derate is the haircut this spec's author chose on its peak, the
+#: bandwidth curve ends at the derated bandwidth, and the rest are the schema's
+#: example values. Where `PEAKS` is stated, its fields replace these.
 DECLARED = {
     "host": {
         "ipc": {"zmq_roundtrip_s": 5.0e-5, "shm_broadcast_s": 2.0e-5},
@@ -262,11 +317,22 @@ def device_fragments() -> list[Fragment]:
             for k, v in fields.items()
         }
         probes.append(fragment("pp", body, "probed", how, subject, date, band))
-    return [
-        fragment("device", DEVICE, "probed", notes, SUBJECT),
-        fragment("assumed", DECLARED, "assumed", "no probe fills these"),
-        *probes,
-    ]
+    assumed = fragment("assumed", DECLARED, "assumed", "no probe fills these")
+    if PEAKS:
+        date, root, found, record = PEAKS
+        subject = {"source_root": f"commit:{root}", "record": f"sha256:{record}"}
+        document = probe_device.fragment(
+            NAME, found, assumed.values, AUTHOR, date, subject
+        )
+        probes.append(Fragment.from_mapping(document, "peaks"))
+        probed = probes[-1].values.keys() - {"name", "schema_version"}
+        kept = {
+            k: v
+            for k, v in assumed.values.items()
+            if k.startswith("provenance.") or k not in probed
+        }
+        assumed = Fragment(assumed.source, kept)
+    return [fragment("device", DEVICE, "probed", notes, SUBJECT), assumed, *probes]
 
 
 def swept(model: str) -> Fragment:
@@ -311,7 +377,7 @@ def swept(model: str) -> Fragment:
         [entry],
         machine=NAME,
         authored_by=AUTHOR,
-        date=datetime.datetime.now(datetime.UTC).date().isoformat(),
+        date=datetime.datetime.now(datetime.timezone.utc).date().isoformat(),
         origin="probed",
         subject={
             "model": model,

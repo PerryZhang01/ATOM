@@ -246,13 +246,17 @@ LP_FILE, STEP_TABLE_FILE, SUMMARY_FILE = (
 )
 #: Each client run's hand-ins and summary, by its index.
 CLIENT_DIR = "client-{}"
+#: A real run's draft width and accepted-draft histogram, by DP rank.
+ACCEPTANCE_FILE = "dp{}.acceptance.json"
+#: The run-file key naming the record that gave the acceptance rates.
+ACCEPTANCE_RECORD = "acceptance_record"
 #: The endpoint a standalone authority serves at, written to its out_dir.
 AUTHORITY_FILE = "authority_endpoint.txt"
 #: Wall seconds the summary's writer waits for the server LPs' refusals.
 HAND_IN_WAIT_S = 300.0
 #: The format of the run summary; raise it when a field is added, changes
 #: meaning or goes.
-SUMMARY_SCHEMA_VERSION = 7
+SUMMARY_SCHEMA_VERSION = 8
 #: Compass source the host-law key leaves out, by path under the package: all
 #: of it (None), or the top-level names (def, class or assigned) only a simulated
 #: run reaches, with the comments above each and the module docstring.
@@ -1653,14 +1657,15 @@ def _engine_hand_in(run: dict, engine_core, sections: dict, client_run=None) -> 
         sections = sections | {"lookups": {k: counts[k] for k in keys}}
     scheduler = getattr(engine_core, "scheduler", None)
     if getattr(getattr(scheduler, "engine_stats", None), "spec_enabled", False):
-        sections = sections | {"speculative": _acceptance(scheduler)}
+        sections = sections | {"speculative": _acceptance(scheduler, run)}
     _hand_in(run, lp, reasons, client_run, **said, **sections)
 
 
-def _acceptance(scheduler) -> dict:
+def _acceptance(scheduler, run: dict) -> dict:
     """A speculative engine's drafter, its draft width, the acceptance input
     ATOM's flag stated with its method, the per-position rates it resolved to,
-    and the scheduler's accepted-draft histogram (`EngineStats.distribution`)."""
+    and the scheduler's accepted-draft histogram (`EngineStats.distribution`).
+    The input is ``measured`` from a run file's `ACCEPTANCE_RECORD`."""
     spec = scheduler.config.speculative_config
     # A stated rate also resolves a length, so it is read first.
     stated = (
@@ -1669,11 +1674,13 @@ def _acceptance(scheduler) -> dict:
         ("--spec-decode-acceptance-rates", spec.synthetic_acceptance_rates),
     )
     flag, value = next((f, v) for f, v in stated if v is not None)
+    said = {"flag": flag, "value": value, "method": "declared"}
+    if record := run.get(ACCEPTANCE_RECORD):
+        said |= {"method": "measured", "record": record}
     return {
         "drafter": spec.method,
         "draft_tokens": spec.num_speculative_tokens,
-        # ATOM's flags are the only acceptance input, and a flag is a statement.
-        "input": {"flag": flag, "value": value, "method": "declared"},
+        "input": said,
         "rates": spec.synthetic_acceptance_rates,
         "distribution": dict(scheduler.engine_stats.distribution),
     }
@@ -1699,8 +1706,11 @@ def engine_loop(engine_core):
     would stop the workers inside a clock call, before they say what their
     steps cost. A stop reaches the engine as the ``+inf`` grant instead.
 
-    A pipeline stage's runner calls go through `pp_send.install`'s sends."""
-    run, sections = spec(), {}
+    A pipeline stage's runner calls go through `pp_send.install`'s sends. A
+    recorded real run's SIGTERM goes through `_stop_recording`."""
+    from atom.compass import parity
+
+    run, sections, before = spec(), {}, None
     if run is not None and getattr(engine_core, "pp_size", 1) > 1:
         from atom.compass.runner import pp_send
 
@@ -1713,6 +1723,11 @@ def engine_loop(engine_core):
             run, engine_core, sections, k
         )
         before = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    elif os.environ.get(parity.ENV):
+        stop = functools.partial(
+            _stop_recording, engine_core, signal.getsignal(signal.SIGTERM)
+        )
+        before = signal.signal(signal.SIGTERM, stop)
     try:
         yield
         engine_done(engine_core, **sections)
@@ -1737,8 +1752,29 @@ def engine_loop(engine_core):
             _hand_in(run, lp, reasons + [ended], **said, **sections)
         raise
     finally:
-        if run is not None and before is not None:  # None: not set from Python
+        if before is not None:  # None: not set from Python
             signal.signal(signal.SIGTERM, before)
+
+
+def _stop_recording(engine_core, previous, signum, frame) -> None:
+    """A recorded real run's SIGTERM, where its engine stops: a speculative
+    engine writes its draft width and accepted-draft histogram beside the
+    record (`ACCEPTANCE_FILE`), then ATOM's handler, `previous`, takes it,
+    whether or not the write succeeded."""
+    from atom.compass import parity
+
+    scheduler = getattr(engine_core, "scheduler", None)
+    config, stats = getattr(scheduler, "config", None), getattr(
+        scheduler, "engine_stats", None
+    )
+    try:
+        if getattr(stats, "spec_enabled", False):
+            width = config.speculative_config.num_speculative_tokens
+            held = {"draft_tokens": width, "distribution": dict(stats.distribution)}
+            name = ACCEPTANCE_FILE.format(config.parallel_config.data_parallel_rank)
+            _write_whole(Path(os.environ[parity.ENV]) / name, json.dumps(held))
+    finally:
+        previous(signum, frame)
 
 
 def _until_end(run: dict, a: "_RecordingAuthority") -> bool:

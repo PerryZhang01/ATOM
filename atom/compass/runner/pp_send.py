@@ -5,8 +5,10 @@ A send is several parts, each on one carrier: ``gloo`` for the size and the
 pickled metadata, ``rccl`` for each device tensor, in the order the receiver
 takes them. A part up to its carrier's eager threshold completes on the
 sender's clock at ``t_send + o + bytes x G``; a larger one is rendezvous and
-completes on both sides at ``max(t_send, r) + T``, ``r`` the time the receiver
-posts its receive and ``T = rendezvous_fixed_s + bytes x G``. The receiver
+completes on both sides at ``max(t_send, r - E x G) + T``, ``r`` the time the
+receiver posts its receive, ``E`` the threshold and ``T = rendezvous_fixed_s +
+bytes x G``: up to a threshold's bytes leave before the receive is posted. A
+part leaves when the part before it is done on the sender. The receiver
 posts each part's receive when the part before it has arrived. The ``gloo``
 parts leave at ``t_send``, the sender's host send; the ``rccl`` parts at
 ``t_ready``, when the sender's device work ends, or when the previous send's
@@ -60,12 +62,13 @@ def carrier_models(spec) -> dict[str, CarrierModel]:
 
 def lookaheads(models: dict[str, CarrierModel]) -> tuple[float, float]:
     """``(L_data, L_ack)``: the least carrier latency, and the least rendezvous
-    duration, at a carrier's threshold, less it. A non-positive either is refused."""
+    fixed part, which a rendezvous outlasts after its receive is posted, less
+    it. A non-positive either is refused."""
     for c, m in models.items():
         if not m.latency_s > 0:
             raise ValueError(f"the {c} carrier's latency_s is {m.latency_s!r}")
     l_data = min(m.latency_s for m in models.values())
-    t_min = min(m.rendezvous_s(m.eager_threshold_bytes) for m in models.values())
+    t_min = min(m.rendezvous_fixed_s for m in models.values())
     if not t_min > l_data:
         raise ValueError(
             f"T_min {t_min!r} is not above L_data {l_data!r}: a rendezvous would "
@@ -102,7 +105,8 @@ def recv_done(models, t_send: float, t_recv_posted: float, parts):
             r = max(r, sent + m.latency_s)
             done = max(done, sent)
         else:
-            r = max(t_send, r) + m.rendezvous_s(n)
+            pushed = m.eager_threshold_bytes * m.per_byte_s
+            r = max(t_send, done, r - pushed) + m.rendezvous_s(n)
             done = max(done, r)
     return done, r
 

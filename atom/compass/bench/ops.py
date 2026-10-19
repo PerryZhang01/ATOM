@@ -16,16 +16,17 @@ forward. Each point reaches the runner as a batch (`ReplayRule`), so ATOM
 builds its metadata and forward context, and the stub calls each leaf from its
 contract: an activation is random at its shape, dtype and stride; a weight is
 a tensor of the model of that shape, dtype and stride; a metadata tensor is a
-view of ATOM's live metadata (`meta`), whose name the point records; a module
-or context key is the one each instance names. A leaf whose operator cannot
-run so refuses by name, a KV tensor argument among them.
+view of ATOM's live metadata (`meta`), whose name the point records, or of
+the token ids ATOM passes the forward (`TOKEN_IDS`); a module or context key
+is the one each instance names. A leaf whose operator cannot run so refuses
+by name, a KV tensor argument among them.
 
 Cold, by copies. A call's bytes are its tensor arguments' spans, the tensors
 of each module it names and, for a leaf that names a context key, the KV and
 per-request state its layer holds for the batch. One graph runs the leaf K =
-`CALLS` times, cycling over N copies, N the least whose bytes pass the
-last-level cache and, for a context key, at least its I instances (at most
-K). Copy c takes fresh activations,
+`CALLS` times, cycling over N copies, N the least whose bytes pass `COLD`
+times the last-level cache and, for a context key, at least its I instances
+(at most K). Copy c takes fresh activations,
 the c-th of the model's weights of that spec (a clone past the last), and
 instance c mod I at placement (c div I) mod P, its metadata and module
 tensors cloned past the first round: a placement is the point's batch on KV
@@ -75,12 +76,19 @@ from atom.compass.drive.gpu import add_gpu_flag
 
 PROG = "compass measure ops"
 #: The timing protocol's version; it changes whenever a count below does.
-PROTOCOL = 3
+PROTOCOL = 4
 WARMUPS = 3
 REPEATS = 20
 #: Calls every graph holds, and so the copies it cycles over at most. One count
 #: for every leaf: a replay's fixed cost adds the same share to every price.
 CALLS = 256
+#: Times over the last-level cache the copies' bytes pass: just past it, part of
+#: them stays there, and an MI308X GEMM read up to 7% fast.
+COLD = 2
+#: Metadata arguments, by operator and slot, that are the token ids ATOM passes
+#: the model's forward; `_meta`'s name rule binds an embedding's `indices` to
+#: another index buffer.
+TOKEN_IDS = {("aten.embedding.default", "indices")}
 #: The rank every member is written at: the bench is one rank.
 RANK = Topology().ranks()[0]
 
@@ -290,8 +298,10 @@ class Stub:
         for sig, (op, _) in self.leaves.items():
             for path, spec in _specs(op["args"]):
                 if spec["role"] == "metadata":
+                    token = (op["op"], path) in TOKEN_IDS
+                    pool = {"input_ids": input_ids} if token else live
                     try:
-                        name, view = _meta(spec, path, live)
+                        name, view = _meta(spec, path, pool)
                         meta[sig, path] = name, _clone(view)
                     except ValueError as error:  # the leaf refuses, not the step
                         meta[sig, path] = str(error), None
@@ -358,7 +368,7 @@ class Stub:
                 need = None
             elif key in self.modules:
                 size += sum(t.nbytes for t in _own(self.modules[key]))
-        n = min(CALLS, self.llc // size + 1) if size else 1
+        n = min(CALLS, COLD * self.llc // size + 1) if size else 1
         if need is None:  # cycle over every instance's state, which is held anyway
             n = min(CALLS, max(n, len(instances)))
         return n, size, need or -(-n // len(instances))
