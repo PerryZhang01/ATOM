@@ -56,8 +56,8 @@ def test_a_step_is_one_roofline_per_leaf_composed_by_the_graph_s_joins():
             {"par": [g(2, 2048, 4096), {"seq": [g(2, 4096, 4096)]}], "join": "max"},
             {
                 "par": [
-                    {"par": [g(512, 512, 512), g(512, 256, 512)], "join": "max"},
-                    g(512, 128, 512),
+                    {"par": [g(4096, 4096, 4096), g(4096, 2048, 4096)], "join": "max"},
+                    g(4096, 1024, 4096),
                 ],
                 "join": "resource_bound",
             },
@@ -66,7 +66,7 @@ def test_a_step_is_one_roofline_per_leaf_composed_by_the_graph_s_joins():
     cost = backend(region).price(DECODE)
     one, body = price(gemm(2, 64, 64), SPEC), price(gemm(2, 128, 64), SPEC)
     longest = price(gemm(2, 4096, 4096), SPEC)
-    summed = gemm(512, 512, 512) + gemm(512, 256, 512) + gemm(512, 128, 512)
+    summed = gemm(4096, 4096, 4096) + gemm(4096, 2048, 4096) + gemm(4096, 1024, 4096)
 
     assert by_name(cost) == {
         f"op.{GEMM}": fold_seconds([one, body, body, body, longest]),
