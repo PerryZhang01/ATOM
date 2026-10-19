@@ -14,7 +14,7 @@ The entry is published under the readings a run on the spec `--machine` names
 takes, which `publish.inputs` loads each measurement under.
 
 `step-linear` takes real runs only and fits `step_linear_fit.FORMS`' `--form`,
-`base` by default, joining each step's ranks at the engine config's
+`history` by default, joining each step's ranks at the engine config's
 `data_parallel_size`, so a record with a
 rank that gave no sample refuses; it holds out each run on the others when
 there are two or more, as that module's command does; `--seed` fixes
@@ -57,7 +57,7 @@ STUB = "a step stub's coefficients are stated, not fitted; a run takes their fil
 
 
 def _step_linear(samples, config, args) -> tuple[dict, dict, dict]:
-    form = args.form or "base"
+    form = args.form or "history"
     options = {"form": form, "dp": step_linear_fit.join_width(config["engine_config"])}
     law, report = step_linear_fit.fit(samples, options, args.seed)
     if len({s.provenance["run"] for s in samples}) > 1:
@@ -137,7 +137,9 @@ OWN = {
 def main(argv: list[str]) -> None:
     parser = publish.parser(PROG, __doc__.split("\n\n")[0])
     parser.add_argument("--backend", required=True, help=", ".join(BACKENDS))
-    parser.add_argument("--form", choices=step_linear_fit.FORMS, help="base by default")
+    parser.add_argument(
+        "--form", choices=step_linear_fit.FORMS, help="history by default"
+    )
     parser.add_argument(
         "--grid",
         nargs="+",

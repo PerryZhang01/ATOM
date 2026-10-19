@@ -102,7 +102,7 @@ def fit(tmp_path, command, *args):
     cli.main([*command.split(), *map(str, args), *tail])
 
 
-def law_key(form="base") -> Key:
+def law_key(form="history") -> Key:
     return Key.of(
         Kind.STEP_LINEAR_LAW,
         model=HOST["model"],
@@ -144,6 +144,19 @@ def test_the_law_published_is_the_one_step_linear_fits_command_writes_less_its_h
         "params": law,
         "report": report,
     }
+
+
+def test_step_linear_fits_the_history_form_unless_told_another(tmp_path):
+    a, b = record(tmp_path / "a", 19), record(tmp_path / "b", 20)
+    for name, *form in (("default",), ("base", "--form", "base")):
+        (tmp_path / name).mkdir()
+        fit(tmp_path / name, "fit steps", *LINEAR, *form, a, b, *clients(a, b))
+
+    law = member(tmp_path / "default/store", law_key("history"), "params")
+    assert law["form"] == "history"
+    assert list(law["prefill"]["coefficients"]) == list(step_linear_fit.HISTORY)
+    base = member(tmp_path / "base/store", law_key("base"), "params")
+    assert list(base["prefill"]["coefficients"]) == list(step_linear_fit.PREFILL)
 
 
 def test_fit_steps_twice_on_the_same_inputs_refuses_the_second_as_the_same_members(
