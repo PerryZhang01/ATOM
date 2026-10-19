@@ -30,6 +30,42 @@
  "history": "category and why are the first classification, kept as written; rows added since carry none. mechanism and mechanism_why are what a simulated run does at the site: mechanism_why is empty only where the mechanism is the one the row's category named (A K1, B K5, C1 K8, C2 K7, ignore K9) and why already says it.",
  "sites": [
   {
+   "id": "atom/compass/backends/step_roofline.py::_moe::reduce_scatter(dp, rows * hidden * act)::collective#0",
+   "file": "atom/compass/backends/step_roofline.py",
+   "symbol": "_moe",
+   "call": "reduce_scatter",
+   "expr": "reduce_scatter(dp, rows * hidden * act)",
+   "shape": "collective",
+   "peer": "none",
+   "why": "a work primitive that counts the bytes the MoE's reduce-scatter sends, so the step roofline can price it; nothing is sent",
+   "mechanism": "K9",
+   "mechanism_why": "arithmetic inside the cost backend, which cannot park"
+  },
+  {
+   "id": "atom/compass/backends/step_roofline.py::_moe::all_to_all(ranks, sent * ELEMENT_BYTES[m.act])::collective#0",
+   "file": "atom/compass/backends/step_roofline.py",
+   "symbol": "_moe",
+   "call": "all_to_all",
+   "expr": "all_to_all(ranks, sent * ELEMENT_BYTES[m.act])",
+   "shape": "collective",
+   "peer": "none",
+   "why": "a work primitive that counts the bytes MoRI's dispatch sends, so the step roofline can price it; nothing is sent",
+   "mechanism": "K9",
+   "mechanism_why": "arithmetic inside the cost backend, which cannot park"
+  },
+  {
+   "id": "atom/compass/backends/step_roofline.py::_moe::all_to_all(ranks, sent * act)::collective#0",
+   "file": "atom/compass/backends/step_roofline.py",
+   "symbol": "_moe",
+   "call": "all_to_all",
+   "expr": "all_to_all(ranks, sent * act)",
+   "shape": "collective",
+   "peer": "none",
+   "why": "a work primitive that counts the bytes MoRI's combine sends, so the step roofline can price it; nothing is sent",
+   "mechanism": "K9",
+   "mechanism_why": "arithmetic inside the cost backend, which cannot park"
+  },
+  {
    "id": "atom/compass/kv/connector.py::SimulatedKVConnectorScheduler.update_state_after_alloc::self._socks[key].send(pickle.dumps((params[\"transfer_id\"], blocks, a, key[1])))::p2p#0",
    "file": "atom/compass/kv/connector.py",
    "symbol": "SimulatedKVConnectorScheduler.update_state_after_alloc",

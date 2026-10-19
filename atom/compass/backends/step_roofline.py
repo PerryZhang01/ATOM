@@ -349,7 +349,7 @@ class StepRooflineBackend(CostBackend):
             )
             return ""
         own = sum_tokens(view.requests)
-        pairs = {p for p in zip(*view.tbo_tokens) if sum(p) == own}
+        pairs = list(dict.fromkeys(p for p in zip(*view.tbo_tokens) if sum(p) == own))
         if len(pairs) != 1:
             refuse.append(
                 f"the two-batch-overlap split {view.tbo_tokens} names no single "
@@ -358,7 +358,7 @@ class StepRooflineBackend(CostBackend):
             return ""
         # ponytail: the micro-batches run their real rows; a split decode
         # graph's padding is left out of this lower bound.
-        left, halves = next(iter(pairs))[0], ([], [])
+        left, halves = pairs[0][0], ([], [])
         for r in view.requests:
             first = min(left, r.query_tokens)
             left -= first
