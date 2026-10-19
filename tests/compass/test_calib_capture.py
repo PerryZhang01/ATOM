@@ -4,8 +4,9 @@ never on a GPU that holds a process.
 
 `cctraces_sim.sh` and `rocm-smi` are stubbed, so these run with no GPU: the stub
 cell runs a process named as aiperf's controller is, which writes a step and
-waits; as aiperf does, SIGINT ends it with status 0, and SIGTERM with 143. The
-cell exits with its status, as cctraces_sim.sh exits with aiperf's.
+waits; as aiperf does, SIGINT ends it with status 0 and its export, or, with
+IN_WARMUP set, with status 1 and none; SIGTERM ends it with 143. The cell exits
+with its status, as cctraces_sim.sh exits with aiperf's.
 """
 
 import json
@@ -22,13 +23,19 @@ COMPASS = Path(__file__).resolve().parents[2] / "scripts" / "compass"
 BASH = shutil.which("bash")
 FREE = "No KFD PIDs currently running\n"
 BUSY = "PID 1 is using 1 DRM device(s):\n6\n"
-AIPERF = """import signal, sys, time
-signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
-open(sys.argv[1], "w").write("{}")
+AIPERF = """import os, signal, sys, time
+cell = sys.argv[1]
+def stop(*_):
+    os.environ.get("IN_WARMUP") and sys.exit(1)
+    os.mkdir(cell + "/artifacts")
+    open(cell + "/artifacts/client_run.json", "w").write("{}")
+    sys.exit(0)
+signal.signal(signal.SIGINT, stop)
+open(cell + "/steps/dp0.jsonl", "w").write("{}")
 time.sleep(60)"""
 CELL = f"""#!/bin/bash
 mkdir -p "$2/steps" && echo '{{"workload": 1}}' > "$2/run.json"
-(exec -a "aiperf system_controller" {sys.executable} -c '{AIPERF}' "$2/steps/dp0.jsonl")
+(exec -a "aiperf system_controller" {sys.executable} -c '{AIPERF}' "$2")
 rc=$?
 echo "c=$CONCURRENCY done" >> "$2/../order"
 exit $rc
@@ -92,6 +99,14 @@ def test_each_cell_is_stopped_and_logged_in_turn(tmp_path):
         assert log.startswith(f"cafe\nCONCURRENCY={c} GPU=6 ")
         assert "stopped aiperf" in log and "CELL_RC=0" in log
         assert log.count("uptime:") == 2
+
+
+@pytest.mark.skipif(BASH is None, reason="no bash on PATH")
+def test_the_capture_fails_naming_each_cell_left_without_its_export(tmp_path):
+    r, cap = _capture(tmp_path, FREE, "4 1", IN_WARMUP="1")
+    assert r.returncode == 1
+    assert "no client-run export: c4 c1" in r.stderr
+    assert (cap / "order").read_text() == "c=4 done\nc=1 done\n"
 
 
 @pytest.mark.skipif(BASH is None, reason="no bash on PATH")

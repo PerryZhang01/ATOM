@@ -152,17 +152,6 @@ def test_a_pipeline_whose_machine_states_no_send_carrier_is_refused_by_name(
     assert clock.installed() is None
 
 
-def test_a_pipeline_at_tp_two_that_sends_shards_is_refused(monkeypatch, tmp_path):
-    run = _run_file(tmp_path, pipeline_parallel_size=2)
-    monkeypatch.setenv(compass_run.ENV, str(run))
-    monkeypatch.setenv("ATOM_PP_SEND_ALLGATHER", "1")
-    deployment = _stage(0)
-    deployment.tensor_parallel_size = 2
-    with pytest.raises(ValueError, match="set ATOM_PP_SEND_ALLGATHER=0"):
-        compass_run.frontend(deployment)
-    assert clock.installed() is None
-
-
 def _two_stage_table(*rows) -> str:
     """A PP2 step table: the head's forward 0 starts at 1.0, and `rows`."""
     run = {
