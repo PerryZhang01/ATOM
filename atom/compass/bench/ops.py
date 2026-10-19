@@ -10,9 +10,11 @@
 
 Each shape names the `op_graph` `compass trace ops` published in S for the
 model and TP width ATOM's arguments resolve. A point is one leaf of that graph,
-its instances grouped (`leaves`), at the shape: a decode step's rows each hold
-`--context` tokens, and a prefill's rows are fresh, split as the capture split
-them.
+its instances grouped (`leaves`), at the shape and `--context`: a decode
+step's rows each hold `--context` tokens, and a prefill's rows, split as the
+capture split them, follow `--context` cached tokens each, none when it is not
+given. Rows the KV pool cannot hold at once are ragged (`point_rows`), and the
+point records its rows.
 
 ATOM's runner is built on the one GPU from ATOM's arguments, its weights a
 dummy, through ATOM's warmup, and a `Stub` takes the place of the model's
@@ -48,13 +50,15 @@ state run.json reads, the source root and the point.
 
 `--plan` measures, in rounds, the points the steps of record directories call
 for (`record`'s or `trace steps`' output), capturing each `op_graph` S lacks:
-every leaf at every rung of ATOM's decode ladder at the steps' lowest mean and
-highest max row context; then each leaf of a kind those show depends on
+every leaf at every rung of ATOM's decode ladder at the steps' lowest and
+highest row context (`_rows`); then each leaf of a kind those show depends on
 context (`_dependent`) over a ladder (`_ladder`) of the steps' row contexts,
 and each prefill family (`_family`) over a ladder of their token counts, chunk
 remainders among them; then the point halfway between two neighbours of a
-family that launched different kernels, until they are adjacent. DIR gets each
-round's ops.jsonl in `round<n>`, and every point held in plan.jsonl.
+family that launched different kernels or, at a decode width, either side of
+a point off the line through theirs (`_densify`), until they are adjacent.
+DIR gets each round's ops.jsonl in `round<n>`, and every point held in
+plan.jsonl.
 
 `--coverage` counts the steps of record directories that DIR's plan.jsonl
 covers (`coverage`), and prints the count by phase and why each leaf kind
@@ -192,7 +196,11 @@ def _parser() -> argparse.ArgumentParser:
         metavar=("T", "B"),
         help="a prefill of T tokens over B sequences",
     )
-    p.add_argument("--context", type=int, help="each decode row's tokens")
+    p.add_argument(
+        "--context",
+        type=int,
+        help="each decode row's tokens, or the tokens cached before each prefill row",
+    )
     p.add_argument(
         "--plan",
         action="append",
@@ -358,18 +366,15 @@ class Stub:
         return input_ids.new_zeros((len(input_ids), hidden), dtype=dtype)
 
     def point(self, rule, shape, context, found) -> list[dict]:
-        """Each leaf of `found` timed at `shape`, rows of `context` tokens."""
+        """Each leaf of `found` timed at `shape` on `point_rows`."""
         from atom.utils.forward_context import _forward_kv_cache_context
 
-        if shape.phase == "decode":
-            rows = [[1, context, True]] * shape.seqs
-        else:
-            per, extra = divmod(shape.tokens, shape.seqs)
-            rows = [[per + (i < extra)] * 2 + [False] for i in range(shape.seqs)]
+        pool = self.runner.config.num_kvcache_blocks
+        rows = point_rows(shape, context, pool, rule.block_size)
         view = {"rows": rows, "produces_output": True}
         blocks = sum(-(-row[1] // rule.block_size) for row in rows)
         kv = _forward_kv_cache_context.kv_cache_data
-        room = [self.runner.config.num_kvcache_blocks // blocks]
+        room = [pool // blocks]
         room += [t.k_cache.shape[0] // len(rows) for t in kv.values() if _stateful(t)]
         plans = {
             s: self._plan(op, i, kv, blocks, len(rows)) for s, (op, i) in found.items()
@@ -384,7 +389,7 @@ class Stub:
             names = {p: m[0] for (s, p), m in self.placed[0][1].items() if s == sig}
             print(f"{shape}: {op['op']} over {n} copies {names or ''}", flush=True)
             record = {"shape": str(shape), "context": context, "op": op["op"]}
-            record |= {"leaf": sig, "metadata": names}
+            record |= {"leaf": sig, "metadata": names, "rows": rows}
             try:
                 record |= self._time(op, sig, inst, n) | {"footprint_bytes": n * size}
             except Exception as error:  # noqa: BLE001 - a refusal names what stopped it
@@ -482,6 +487,26 @@ class Stub:
                 raise ValueError(f"no tensor of the model is a weight {_text(spec)}")
             return held[c] if c < len(held) else _clone(held[c % len(held)])
         raise ValueError(f"a {role} tensor argument {_text(spec)} is not built")
+
+
+def point_rows(shape, context, pool: int, block_size: int) -> list[list]:
+    """A point's rows, `[query, context, decodes]` each, longest first: a decode
+    row holds `context` tokens; a prefill row its query tokens, the capture's
+    split, past `context` cached ones. When they need more than the `pool`'s
+    KV blocks, the first keeps its context and each other shares what it
+    leaves, as the rows of a ragged step do."""
+    decode = shape.phase == "decode"
+    per, extra = divmod(shape.tokens, shape.seqs)
+    past = context - 1 if decode else context or 0
+    rows = [
+        [q, q + past, decode] for q in (per + (i < extra) for i in range(shape.seqs))
+    ]
+    blocks = [-(-row[1] // block_size) for row in rows]
+    if sum(blocks) > pool and len(rows) > 1:
+        share = (pool - blocks[0]) // (len(rows) - 1) * block_size
+        for row in rows[1:]:
+            row[1] = min(row[1], max(share, row[0]))
+    return rows
 
 
 def _specs(args, path=""):
@@ -727,6 +752,11 @@ LADDER_STEP = 1.25
 #: The spread of a leaf's cold times across contexts, over the largest, past
 #: which its kind depends on context; a repeat's spread stays within 4%.
 CONTEXT_MOVES = 0.10
+#: How far a decode point's cold time may lie off the line through its two
+#: neighbours', over the larger, before the plan halves the gaps either side:
+#: decode attention steps up and down with context under one kernel name, and
+#: a price read off that line would miss by as much.
+BENDS = 0.05
 
 
 def plan(store, key, config, run, args, command: str, out: Path) -> None:
@@ -737,7 +767,9 @@ def plan(store, key, config, run, args, command: str, out: Path) -> None:
     from atom.compass.runner.overrides import schedulable_ladder
 
     steps = list(population_steps(args.plan))
-    contexts = [c for s, line in steps if s.phase == "decode" for c in _rows(line)]
+    contexts = [
+        c for s, line in steps if s.phase == "decode" for c in _rows(line, s.seqs)
+    ]
     if not contexts:
         raise ValueError("the --plan records hold no decode step to read contexts of")
     rungs = [decode(r) for r in schedulable_ladder(config)]
@@ -820,9 +852,8 @@ def coverage(store, root, config, names, records) -> dict:
     directories `names`: the steps and those covered by phase, and per leaf
     kind the steps it left out by why. A step is covered when each leaf of its
     `op_graph` lies on a point or between two of one kernel (`_bracket`): a
-    decode leaf of a kind that depends on context over its rows' mean to max
-    context (a padded or uneven step's `rowmod(k)` context can lie below the
-    mean), any other decode leaf at its width, and a prefill leaf at its
+    decode leaf of a kind that depends on context over its rows' lowest to
+    highest context (`_rows`), any other decode leaf at its width, and a prefill leaf at its
     tokens, unless its kind depends on context and a row was cached: the
     bench's prefill rows are fresh."""
     from atom.compass.capture import population_steps
@@ -849,7 +880,9 @@ def coverage(store, root, config, names, records) -> dict:
             if fam not in axes:
                 whys[name] = "no measured point"
             elif shape.phase == "decode":
-                whys[name] = _bracket(*axes[fam], *_rows(line)) if moves else ""
+                whys[name] = (
+                    _bracket(*axes[fam], *_rows(line, shape.seqs)) if moves else ""
+                )
             elif cached and moves:
                 whys[name] = "a cached row, measured on fresh rows only"
             else:
@@ -868,10 +901,17 @@ def coverage(store, root, config, names, records) -> dict:
     }
 
 
-def _rows(line) -> tuple[int, int]:
-    """A step's rows' mean and max context."""
+def _rows(line, rung: int) -> tuple[int, int]:
+    """A step's lowest and highest row context: at least 1, the least over
+    `k`, the powers of two up to the rung, of `rowmod(k)` per row of the
+    `rung` a class `i mod k` holds (`k = 1`: the mean over the rung's rows,
+    padding included); and the max."""
+    from atom.compass.backends.step_linear import rowmod
+
     contexts = [row[1] for row in line["rows"]]
-    return sum(contexts) // len(contexts), max(contexts)
+    ks = [1 << i for i in range(rung.bit_length())]
+    lo = min(rowmod(contexts, k) // -(-rung // k) for k in ks)
+    return max(lo, 1), max(contexts)
 
 
 def _ladder(values) -> list:
@@ -954,15 +994,25 @@ def _bracket(ats, kernels, lo, hi) -> str:
 
 
 def _densify(families, tried: set) -> dict:
-    """The point halfway between each two neighbours of a family that launched
-    different kernels and lie more than one apart, unless `tried`."""
+    """The point halfway between each two neighbours of a family more than one
+    apart, unless `tried`, that launched different kernels or, in a decode
+    family, lie either side of a point whose cold time is `BENDS` off the line
+    through theirs."""
     from atom.compass.capture.forward import prefill
 
     want = defaultdict(set)
     for fam, points in families.items():
-        for (a, ka, record), (b, kb, _) in itertools.pairwise(points):
+        pairs = list(itertools.pairwise(points))
+        halve = {i for i, (p, q) in enumerate(pairs) if p[1] != q[1]}
+        if points[0][2]["shape"].startswith("decode"):
+            for i, (p, q, r) in enumerate(zip(points, points[1:], points[2:])):
+                y = [point[2]["cold_ns"] for point in (p, q, r)]
+                line = y[0] + (y[2] - y[0]) * (q[0] - p[0]) / (r[0] - p[0])
+                if abs(y[1] - line) > BENDS * max(y[1], line):
+                    halve |= {i, i + 1}
+        for (a, _, record), (b, _, _) in (pairs[i] for i in sorted(halve)):
             mid = (a + b) // 2
-            if ka == kb or b - a < 2 or (fam, mid) in tried:
+            if b - a < 2 or (fam, mid) in tried:
                 continue
             tried.add((fam, mid))
             shape = _shape(record["shape"])

@@ -21,7 +21,7 @@ from test_parity_record import _unpriced  # noqa: F401  an autouse fixture
 from atom.compass import cli, ir
 from atom.compass.artifacts import ArtifactStore, Kind, machine_spec_digest
 from atom.compass.bench import ops
-from atom.compass.capture.forward import decode
+from atom.compass.capture.forward import decode, prefill
 from atom.compass.capture.graph import Traced, build, to_json
 from atom.compass.spec import MachineSpec
 from atom.compass.spec.fields import PINNED
@@ -385,6 +385,44 @@ def test_a_batch_takes_the_blocks_and_slots_it_is_placed_at(rule):  # noqa: F811
     assert batch.state_slots == [[3], [4]]
     with pytest.raises(ValueError, match="hold 15 KV blocks .* the pool has 14"):
         rule(blocks=14).batch(line, block=10)
+
+
+@pytest.mark.parametrize(
+    "shape, context, rows",
+    [
+        # Four rows of 40 tokens take 12 of the pool's 14 blocks.
+        (decode(4), 40, [[1, 40, True]] * 4),
+        # Four of 100 would take 28: the first keeps 7, three share the rest.
+        (decode(4), 100, [[1, 100, True]] + [[1, 32, True]] * 3),
+        # 51 prefill tokens over two rows, the capture's split, 30 cached before each.
+        (prefill(51, 2), 30, [[26, 56, False], [25, 55, False]]),
+        (prefill(51, 2), None, [[26, 26, False], [25, 25, False]]),
+    ],
+)
+def test_point_rows_turn_ragged_past_the_pool(rule, shape, context, rows):  # noqa: F811
+    got = ops.point_rows(shape, context, 14, 16)
+
+    assert got == rows
+    rule(blocks=14).batch({"rows": got, "produces_output": True})
+
+
+def test_a_point_runs_and_records_the_rows_the_pool_holds(monkeypatch):
+    monkeypatch.setattr(fctx._forward_kv_cache_context, "kv_cache_data", {})
+    runner, views = _Runner(), []
+    placed = SimpleNamespace(
+        block_size=16,
+        batch=lambda view, block, slot: views.append(view["rows"]) or (block, slot),
+    )
+    stub = ops.Stub(runner, 10_000)
+    x = ("self", _t([2, 3], "activation"))
+    found = ops.leaves(_graph(_leaf("aten.neg.default", x), layers=1)["region"])
+
+    with patch.object(runner.model, "forward", stub):
+        [record] = stub.point(placed, decode(2), 600, found)
+
+    # 38 blocks a row, 64 in the pool: the second row takes the 26 left.
+    assert views == [[[1, 600, True], [1, 416, True]]]
+    assert record["rows"] == views[0]
 
 
 @pytest.mark.parametrize(
