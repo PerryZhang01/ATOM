@@ -22,9 +22,17 @@ COMMANDS = {
         "atom.compass.drive.trace_steps",
         "the steps a simulated run schedules, published as a shape_population",
     ),
+    "trace ops": (
+        "atom.compass.capture",
+        "steps traced with no device, an op_graph per shape",
+    ),
     "measure steps": (
         "atom.compass.bench.measure",
         "batches replayed or planned, measured on the bench [GPU]",
+    ),
+    "measure ops": (
+        "atom.compass.bench.ops",
+        "each op_graph leaf timed alone on one device, cold [GPU]",
     ),
     "measure memory": (
         "atom.compass.drive.measure_memory",
@@ -41,8 +49,6 @@ MACHINE = (
 )
 #: Each command that refuses, to why and where its work is.
 REFUSED = {
-    "trace ops": OPS,
-    "measure ops": OPS,
     "fit ops": OPS,
     "trace": "there is no bare trace: use compass trace steps or compass trace ops",
     "plan": (

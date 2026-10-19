@@ -13,12 +13,13 @@ them the same way for every line:
 - Each row is a new request, numbered by `Sequence`'s own counter, so no two
   replays share a request.
 - Row i holds `ceil(context / block_size)` KV blocks, contiguous, from a fresh
-  pool: row 0 starts at block 0 and each row starts where the one before ended.
+  pool: row 0 starts at block 0, or the block `batch` is given, and each row
+  starts where the one before ended.
 - Every token of row i is the filler id `DeferredTokenStream` reports for a
   request numbered i, out of the ids `filler_token_ids` keeps for the model's
   tokenizer, as the simulated runner keeps them.
 - Under a model that keeps per-request state, row i holds state slot i of a
-  fresh pool.
+  fresh pool, or that many past the slot `batch` is given.
 - A prefill line that produces output has every row on its final chunk, one
   that does not has none: a line does not say which of its chunks ends a
   prompt, and ATOM's runner samples every row of a step that produces output.
@@ -70,8 +71,9 @@ class ReplayRule:
             in InputOutputProcessor._per_req_cache_model_types()
         )
 
-    def batch(self, line: dict) -> ScheduledBatch:
-        """The `ScheduledBatch` `line`'s `rows` and `produces_output` state."""
+    def batch(self, line: dict, block: int = 0, slot: int = 0) -> ScheduledBatch:
+        """The `ScheduledBatch` `line`'s `rows` and `produces_output` state, its
+        KV blocks from `block` on and its state slots from `slot` on."""
         rows = line["rows"]
         decode = rows[0][2]
         if any(kind != decode for _, _, kind in rows):
@@ -85,7 +87,7 @@ class ReplayRule:
                 "step, which this rule does not build"
             )
         final = bool(line["produces_output"])
-        seqs, block = {}, 0
+        seqs = {}
         for i, (query, context, _) in enumerate(rows):
             filler = self.fillers[i % len(self.fillers)]
             seq = Sequence(
@@ -99,7 +101,7 @@ class ReplayRule:
             seq.block_table = new_block_table(range(block, block + seq.num_blocks))
             block += seq.num_blocks
             if self.stateful:
-                seq.state_slots = [i]
+                seq.state_slots = [slot + i]
             seqs[seq.id] = seq
         if block > self.num_blocks:
             raise ValueError(

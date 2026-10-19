@@ -134,6 +134,7 @@ DOCUMENT = {
         "cpu": {"cores_physical": 96, "cores_logical": 192},
         "tokenizers": [TOKENIZER],
         "ipc": {"zmq_roundtrip_s": 5.0e-5, "shm_broadcast_s": 2.0e-5},
+        "http_intake": {"fixed_s": 2.0e-3, "per_byte_s": 2.0e-8},
     },
     "device": {
         "name": "MI355X",
@@ -144,7 +145,11 @@ DOCUMENT = {
             "bandwidth_bytes_per_s": 8.0e12,
             "derate": 0.85,
         },
-        "compute": {"bf16_flops": 2.5e15, "fp8_flops": 5.0e15, "derate": 0.70},
+        "compute": {
+            "bf16_flops": 2.5e15,
+            "fp8_flops": 5.0e15,
+            "derate": {"bf16": 0.70, "fp8": 0.70},
+        },
         "software_pinned_to": dict(STACK),
     },
     "interconnect": {

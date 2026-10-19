@@ -43,12 +43,17 @@ def _shift(steps, x):
 
 def _late(steps, x):
     """The last stage of `pp2_record` with its input arriving `x` ns after
-    the head's device end: its first device wait, and everything after, later."""
+    the head's device end: its first device wait, and everything after, later.
+    It waits at its staging gate to its launch, so it posts each receive at
+    its entry."""
     first = copy.deepcopy(steps[0])
     first["t_recv_ns"][1] += x
     for k in ("t_exit_ns", "d_busy_ns", "d_recv_ns"):
         first[k] += x
-    return [first, *_shift(steps[1:], x)]
+    late = [first, *_shift(steps[1:], x)]
+    for s in late:
+        s["t_gate_ns"][1] = s["t_launch_ns"][0]
+    return late
 
 
 def test_the_last_stage_waits_for_the_heads_tensors_on_the_carriers():
@@ -85,11 +90,14 @@ def test_the_script_prices_the_send_on_a_machine_specs_carriers(tmp_path):
     """`MODELS` written in a spec, each zero as 1e-15: the schema takes only
     positive times. The head's third and fourth forwards enter at the late
     stage's exits, which return their tokens, so the last stage's input
-    arrives a further 1 ms later."""
+    arrives a further 1 ms later. The fourth enters 1 ms after them, once the
+    third's tensors are received, which its device waits for."""
     head, last = pp2_record()
     head[2:] = _shift(head[2:], MS)
+    head[3:] = _shift(head[3:], MS)
     last = _late(last, MS)
     last[2:] = _shift(last[2:], MS)
+    last[3:] = _shift(last[3:], MS)
     for name, steps in (("dp0", head), ("pp1.dp0", last)):
         (tmp_path / f"{name}.jsonl").write_text(
             "".join(json.dumps(s) + "\n" for s in steps)
@@ -235,3 +243,15 @@ def test_the_probe_pools_the_records_it_wrote(tmp_path):
     assert pooled["records"] == [
         hashlib.sha256(r.read_bytes()).hexdigest() for r in runs
     ]
+
+
+def test_the_probe_prices_a_late_rendezvous_receive_with_its_threshold_moved():
+    """Posted `LATE` after the send, a rendezvous RCCL receive ends its
+    threshold's bytes sooner than one posted first, and the fit's late error
+    on those samples is nil."""
+    eager, _, _, g, _ = TRUTH["rccl"]
+    samples = _samples(TRUTH)
+    for s in samples:
+        if s["carrier"] == "rccl" and s["late"] and s["bytes"] > eager:
+            s["done"] = s["end"] = s["end"] - eager * g
+    assert probe.fit(samples)["rccl"]["late"] == pytest.approx([0] * 5, abs=1e-15)

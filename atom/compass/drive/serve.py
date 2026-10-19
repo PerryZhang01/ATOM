@@ -5,8 +5,11 @@ command is stopped or the server exits.
 A server handed a run file is simulated, and co-hosts its clock authority. One
 without a run file is real, on the GPUs the command names, which `gpu.quiet`
 checks before the server starts and after it stops. ATOM's arguments pass
-verbatim; the driver assigns the host, both ports and the run file, and
-refuses them, and the clock endpoint flag, among ATOM's arguments.
+verbatim; the driver assigns the host, its ports and the run file, and
+refuses them, and the clock endpoint flag, among ATOM's arguments. Each start
+takes a free `ATOM_DP_MASTER_PORT`: the port keys ATOM's compiled-graph cache,
+and the first start that loads that cache autotunes every graph's kernels
+again, whose configs stay loaded and read in `non_torch`.
 
 The server runs this driver's tree in its own process group, so its engine
 processes stop with it, and writes ``<out>/server.log`` and its step record in
@@ -40,13 +43,14 @@ SERVER = (sys.executable, "-m", "atom.entrypoints.openai.api_server")
 HOST = "127.0.0.1"
 #: Flags ATOM's arguments may not carry, in either spelling ATOM's parser
 #: accepts or any abbreviation argparse expands: the driver assigns the host,
-#: both ports and the run file, and a simulated server co-hosts its clock.
+#: its ports and the run file, and a simulated server co-hosts its clock.
 OWNED = (
     "--host",
     "--server-port",
     "--port",
     "--compass-run",
     "--compass-clock-endpoint",
+    "--data-parallel-master-port",
 )
 #: ATOM's profiler: only a profiled pass may time ops, and no command runs one yet.
 PROFILER = "--torch-profiler-dir"
@@ -90,7 +94,7 @@ def serve(atom_args, out, gpus=(), run=None, extra_env=None) -> None:
     if out.exists() and any(out.iterdir()):
         raise ServeError(f"{out} holds an earlier run's files; one run per directory")
     out.mkdir(parents=True, exist_ok=True)
-    server_port, engine_port, clock_port = _free_ports(3)
+    server_port, engine_port, clock_port, dp_port = _free_ports(4)
     argv = [*SERVER, *KEEP_ALIVE, *atom_args, "--host", HOST]
     argv += ["--server-port", str(server_port), "--port", str(engine_port)]
     ready = {"url": f"http://{HOST}:{server_port}"}
@@ -101,6 +105,7 @@ def serve(atom_args, out, gpus=(), run=None, extra_env=None) -> None:
         filter(None, [str(TREE), env.get("PYTHONPATH")])
     )
     env[parity.ENV] = str(out / STEPS)
+    env["ATOM_DP_MASTER_PORT"] = str(dp_port)
     if run is None:
         env["HIP_VISIBLE_DEVICES"] = hip_visible(gpus)
     else:

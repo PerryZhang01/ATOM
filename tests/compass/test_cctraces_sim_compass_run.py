@@ -95,3 +95,18 @@ def test_a_compass_run_run_file_ends_the_cell_with_its_result_line(tmp_path):
 
     assert done.returncode == 0, done.stdout + done.stderr
     assert done.stdout.splitlines()[-1].startswith("cctraces_sim: rc=0 ")
+
+
+def test_a_cells_server_takes_a_free_dp_master_port(tmp_path, monkeypatch):
+    """The port keys ATOM's compiled-graph cache, and the first start that
+    loads that cache autotunes again, so the cell does not pass the caller's."""
+    port = tmp_path / "port"
+    monkeypatch.setenv("ATOM_DP_MASTER_PORT", "29500")
+    monkeypatch.setitem(
+        globals(),
+        "SERVER",
+        f"import os\nopen({str(port)!r}, 'w').write(os.environ['ATOM_DP_MASTER_PORT'])\n"
+        + SERVER,
+    )
+    test_a_compass_run_run_file_ends_the_cell_with_its_result_line(tmp_path)
+    assert port.read_text() not in ("", "29500")

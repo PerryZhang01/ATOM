@@ -760,16 +760,17 @@ def test_a_stamped_cancel_hangs_its_request_up_at_its_arrival_never_the_socket(r
 
 def _intake_run_file(monkeypatch, tmp_path, intake) -> None:
     """A run file whose machine spec states `intake` as host.http_intake, or
-    neither term for None."""
+    with no machine spec for None."""
     from test_memory_readings import DOCUMENT
 
     from atom.compass import run as compass_run
 
-    machine = copy.deepcopy(DOCUMENT)
+    run = {"bound_s": 600.0}
     if intake is not None:
+        machine = run["machine"] = copy.deepcopy(DOCUMENT)
         machine["host"]["http_intake"] = dict(zip(("fixed_s", "per_byte_s"), intake))
     path = tmp_path / "run.json"
-    path.write_text(json.dumps({"bound_s": 600.0, "machine": machine}))
+    path.write_text(json.dumps(run))
     monkeypatch.setenv(compass_run.ENV, str(path))
 
 
@@ -851,6 +852,35 @@ def test_an_intake_waits_for_the_open_tokenizer_job_so_its_result_is_not_late(
     expected = [(0, 4e-3), (1, 6e-3), (2, 7e-3)]
     assert [s for s, _ in done] == [s for s, _ in expected]
     assert [t for _, t in done] == pytest.approx([arrival + t for _, t in expected])
+
+
+def test_a_tokenizer_result_due_when_an_intake_starts_runs_before_its_charge(
+    run, monkeypatch, tmp_path
+):
+    # Each intake costs 2 ms and each tokenizer job is charged nothing; the
+    # first one's real thread takes 0.3 wall seconds. Job 0 completes at 2 ms,
+    # the instant request 1's intake starts, so its result runs then, before
+    # that intake is charged, not when the intake ends at 4 ms.
+    _intake_run_file(monkeypatch, tmp_path, (2e-3, 1e-9))  # empty bodies
+    entry = SimpleNamespace(encode_fixed_s=0.0, encode_tokens_per_s=1.0, derate=1.0)
+    encode, done = wrap_encode(list, entry), []
+
+    async def app(scope, receive, send):
+        seq = api_server._tracestate_stamp(scope)[1]
+
+        def do_preprocess():
+            time.sleep(0.3 if seq == 0 else 0)
+            encode()
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, do_preprocess)
+        done.append((seq, loop.time()))
+
+    arrival = _burst(run, monkeypatch, 2, app)
+    print(f"\n  tokenizer results at {done}")
+    assert [t for _, t in sorted(done)] == pytest.approx(
+        [arrival + 2e-3, arrival + 4e-3]
+    )
 
 
 @pytest.mark.parametrize("tick", [None, 0.1, 9.0, 20.0], ids=lambda t: f"tick{t}")

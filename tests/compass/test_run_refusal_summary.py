@@ -75,10 +75,12 @@ def seconds(backend, tokens):
     return backend.price(BatchView((RequestShape(tokens, tokens, False),))).seconds
 
 
-def summary(monkeypatch, tmp_path, backend, *prompts, clock_refusals=(), jobs=()):
+def summary(
+    monkeypatch, tmp_path, backend, *prompts, clock_refusals=(), jobs=(), scheduler=None
+):
     """The run summary after one engine's runner priced a prefill of each
     prompt, with the engine's refused clock calls and the frontend's refused
-    executor jobs given."""
+    executor jobs given, and `scheduler` as the engine's scheduler."""
     monkeypatch.setattr(torch.distributed, "all_reduce", None)
     run = {
         "admission_path": "serving",
@@ -101,7 +103,7 @@ def summary(monkeypatch, tmp_path, backend, *prompts, clock_refusals=(), jobs=()
     engine.now = math.inf
     engine.refusals.extend(clock_refusals)
     monkeypatch.setattr(clock, "_installed", engine)
-    compass_run.engine_done(SimpleNamespace(runner_mgr=Worker(r)))
+    compass_run.engine_done(SimpleNamespace(runner_mgr=Worker(r), scheduler=scheduler))
 
     monkeypatch.setattr(compass_run, "_authority", authority)
     frontend = LPRuntime(compass_run.FRONTEND, table, None)
@@ -200,7 +202,7 @@ def test_a_stub_run_reports_all_its_seconds_declared(monkeypatch, tmp_path):
     assert schedule["seconds_by_method"] == by_method(
         declared={"steps": 2, "fraction_of_predicted_seconds": pytest.approx(1.0)}
     )
-    assert out["schema_version"] == compass_run.SUMMARY_SCHEMA_VERSION == 6
+    assert out["schema_version"] == compass_run.SUMMARY_SCHEMA_VERSION == 8
     assert schedule["refusals"]["count"] == 0
     assert schedule["refusals"]["fraction_of_steps"] == 0.0
     assert out["coverage_report"] is False

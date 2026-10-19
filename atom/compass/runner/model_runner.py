@@ -75,12 +75,11 @@ if _UNANSWERED:
     # distributed environment is never destroyed, `self.model` is never
     # dropped, and `torch.cuda.empty_cache()` never runs. Its five KV-tensor
     # deletions are `hasattr`-guarded and find nothing here, because this
-    # runner allocated none. Its `hasattr`-guarded drafter deletion finds
-    # nothing either: `_build_and_load_model` refuses a speculative config
-    # before the base can build a drafter. The loop breaks either way, since
-    # the break is a sibling of the per-runner loop and tests the dispatched
-    # name rather than any reply. Skipping `process_kvconnector_output` means a
-    # KV transfer is silently never started. Both are real failures; neither is a park.
+    # runner allocated none; a drafter it drops is built on meta. The loop
+    # breaks either way, since the break is a sibling of the per-runner loop
+    # and tests the dispatched name rather than any reply. Skipping
+    # `process_kvconnector_output` means a KV transfer is silently never
+    # started. Both are real failures; neither is a park.
     #
     # Two things about this raise itself. The CPU gate cannot execute it:
     # importing this module imports `ModelRunner`, which runs aiter's

@@ -24,7 +24,9 @@ D80).
 
 **Revised 2026-10-18 by the owner's ruling on
 [#1489](https://github.com/jgong5/ATOM/issues/1489):** `trace ops` captures one
-`op_graph` per shape a `shape_population` names; `measure ops` plans its points from it,
+`op_graph` per shape: each decode width and prefill (T, B) it is given, and each step of a
+record directory from `record` or `trace steps --out` (#1539); `measure ops` plans its
+points from a `shape_population`,
 measures every rank of the layout and writes an `op_measurement` per point; `fit ops`
 publishes a `price_list` only (D80).
 
@@ -179,10 +181,12 @@ with the `spec` package and per-machine scripts (`05` D26). A user passes one by
 ```
 compass record                                --out D -- <ATOM args>          [GPU]
 compass trace steps    <backend> --machine M  --out D --store S -- <ATOM args>
-compass trace ops                 (ops half)
+compass trace ops      --model M [--tp N] [--width W]... [--prefill T B]... \
+                       [--population D]... --store S
 compass measure steps  [<batches>...] [--grid <population>... --grid-definition F] \
                        <sample> --sampling P --out D --store S -- <ATOM args> [GPU]
-compass measure ops               (ops half)                                  [GPU]
+compass measure ops    [--width W]... [--prefill T B]... [--context C] --llc-mib M \
+                       --gpu G --out D --store S -- <ATOM args>               [GPU]
 compass measure memory [--beside CMD] --machine M --out D --store S -- <ATOM args> [GPU]
 compass fit steps      --backend step-linear [--form FORM] [--seed SEED] \
                        RECORD... --client-run RECORD EXPORT... --machine M \
@@ -209,7 +213,7 @@ compass run            <backend> --machine M  --out D --store S -- <ATOM args>
 |---|---|---|---|---|
 | `record` | 1c's real runs | GPU | ATOM's arguments; the requests clients send | `--out`: the step record with its cost lines; `run.json` with the engine's bounds as ATOM resolved them; logs |
 | `trace steps` | 0 | none | `run`'s inputs | `--store`: one `shape_population`, keyed by the backend that priced it; `--out`: what `run` writes |
-| `trace ops` | 1a | none | with `--population`, the decode widths and prefill (T, B) a `shape_population` names | `--store`: one `op_graph` per shape (`07` D38, Phase 1a) |
+| `trace ops` | 1a | none | the model at `--tp`; each decode width `--width` names and prefill of T tokens over B sequences `--prefill` names; with `--population`, every step of a record directory from `record` or `trace steps --out`, refusing a `shape_population` key; at least one shape | `--store`: one `op_graph` per shape (`07` D38, Phase 1a) |
 | `measure steps` | 1c, on the bench | GPU | its `<batches>`, and `--grid`'s inputs | `--store`: one `step_measurement` per distinct batch |
 | `measure ops` | 1b, collectives included | GPU, every rank of the layout | an `op_graph`; with `--plan`, the `shape_population` its planner places each leaf's points over (`07` D37); the stated collective entry points (`07` D40) | `--store`: one `op_measurement` per point, cold, with the kernels each leaf launched and its warm-over-cold ratio (`07` D41) |
 | `measure memory` | 2 | GPU | ATOM's arguments; the machine spec | `--store`: one `memory_readings` for the configuration; `--out`: `run.json`, logs, a readable copy |

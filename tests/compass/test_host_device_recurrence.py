@@ -187,7 +187,11 @@ def test_each_cost_line_reproduces_the_charge_of_its_step(
     for batch, line, charge in zip(streak, lines, charged):
         segments = {s: (line[s], 0, 0) for s in HOST_SEGMENTS}
         host.laws = dict.fromkeys(FORWARD_KINDS, segments)
-        assert host.charge(batch, line["device_s"]) == line["charge_s"] == charge
+        assert (
+            host.charge(batch, line["device_s"], line["draft_s"])
+            == line["charge_s"]
+            == charge
+        )
         now += charge
         assert (line["W_launch"], line["skipped"]) == (0.0, ["W_launch"])
         assert line["group_s"] == charge
@@ -271,7 +275,7 @@ def test_each_kind_takes_its_own_law_on_tokens_and_seqs():
         # entry waits for the second's (22), the output for the third's (25)
         (batch(0, 4, 4, True), 3),  # launch 23 to 24; exit 25+2
     ]:
-        clock[0] += host.charge(b, device)
+        clock[0] += host.charge(b, device, 0.0)
         exits.append(clock[0])
     assert exits == pytest.approx([5, 9, 16, 27])
 

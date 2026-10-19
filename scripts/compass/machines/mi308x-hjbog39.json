@@ -77,10 +77,16 @@
       "device.memory.bandwidth_bytes_per_s": {
         "origin": "assumed"
       },
+      "device.memory.bandwidth_curve": {
+        "origin": "assumed"
+      },
       "device.compute.bf16_flops": {
         "origin": "assumed"
       },
       "device.compute.fp8_flops": {
+        "origin": "assumed"
+      },
+      "device.kernel_floor_s": {
         "origin": "assumed"
       },
       "interconnect.intra_node.topology": {
@@ -107,7 +113,10 @@
       "device.memory.derate": {
         "origin": "assumed"
       },
-      "device.compute.derate": {
+      "device.compute.derate.bf16": {
+        "origin": "assumed"
+      },
+      "device.compute.derate.fp8": {
         "origin": "assumed"
       },
       "interconnect.intra_node.derate": {
@@ -123,78 +132,118 @@
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "source_root": "commit:2d1d223be",
-        "record": "sha256:40da90fe439e06efa8aeb8d8b3d5a17a955c507afb6f9aa18401cbbc957739de"
+        "record": "sha256:40da90fe439e06efa8aeb8d8b3d5a17a955c507afb6f9aa18401cbbc957739de",
+        "p10": 0.0023590643143750166,
+        "p90": 0.0026066054400923915
       },
       "host.http_intake.per_byte_s": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
         "source_root": "commit:2d1d223be",
-        "record": "sha256:40da90fe439e06efa8aeb8d8b3d5a17a955c507afb6f9aa18401cbbc957739de"
+        "record": "sha256:40da90fe439e06efa8aeb8d8b3d5a17a955c507afb6f9aa18401cbbc957739de",
+        "p10": 3.576250354791265e-09,
+        "p90": 5.75468059489999e-09
       },
       "interconnect.intra_node.pp.rccl.eager_threshold_bytes": {
         "origin": "probed",
-        "source_root": "commit:93e01fbb4",
-        "record": "sha256:53ef27fd3bca30cd1a58c637debab9ee5b14712acb572bfd0eabeb6807a9eaa0"
+        "source_root": "commit:f61652a37",
+        "record": "sha256:877791cd3ee2a69c25aca30824fdcf45d2e192d37b67b41f76fea040176724c9",
+        "p10": 33554432,
+        "p90": 33554432
       },
       "interconnect.intra_node.pp.rccl.latency_s": {
         "origin": "probed",
-        "source_root": "commit:93e01fbb4",
-        "record": "sha256:53ef27fd3bca30cd1a58c637debab9ee5b14712acb572bfd0eabeb6807a9eaa0"
+        "source_root": "commit:f61652a37",
+        "record": "sha256:877791cd3ee2a69c25aca30824fdcf45d2e192d37b67b41f76fea040176724c9",
+        "p10": 1.551059540361166e-06,
+        "p90": 1.8452992662787437e-06
       },
       "interconnect.intra_node.pp.rccl.overhead_s": {
         "origin": "probed",
-        "source_root": "commit:93e01fbb4",
-        "record": "sha256:53ef27fd3bca30cd1a58c637debab9ee5b14712acb572bfd0eabeb6807a9eaa0"
+        "source_root": "commit:f61652a37",
+        "record": "sha256:877791cd3ee2a69c25aca30824fdcf45d2e192d37b67b41f76fea040176724c9",
+        "p10": 3.775578707541332e-05,
+        "p90": 3.815520707354402e-05
       },
       "interconnect.intra_node.pp.rccl.per_byte_s": {
         "origin": "probed",
-        "source_root": "commit:93e01fbb4",
-        "record": "sha256:53ef27fd3bca30cd1a58c637debab9ee5b14712acb572bfd0eabeb6807a9eaa0"
+        "source_root": "commit:f61652a37",
+        "record": "sha256:877791cd3ee2a69c25aca30824fdcf45d2e192d37b67b41f76fea040176724c9",
+        "p10": 2.0040145304535237e-11,
+        "p90": 2.0241865040412074e-11
       },
       "interconnect.intra_node.pp.rccl.rendezvous_fixed_s": {
         "origin": "probed",
-        "source_root": "commit:93e01fbb4",
-        "record": "sha256:53ef27fd3bca30cd1a58c637debab9ee5b14712acb572bfd0eabeb6807a9eaa0"
+        "source_root": "commit:f61652a37",
+        "record": "sha256:877791cd3ee2a69c25aca30824fdcf45d2e192d37b67b41f76fea040176724c9",
+        "p10": 5.7052271857238044e-05,
+        "p90": 5.7605673286806436e-05
       },
       "interconnect.intra_node.pp.gloo.eager_threshold_bytes": {
         "origin": "probed",
-        "source_root": "commit:93e01fbb4",
-        "record": "sha256:53ef27fd3bca30cd1a58c637debab9ee5b14712acb572bfd0eabeb6807a9eaa0"
+        "source_root": "commit:f61652a37",
+        "record": "sha256:877791cd3ee2a69c25aca30824fdcf45d2e192d37b67b41f76fea040176724c9",
+        "p10": 0,
+        "p90": 0
       },
       "interconnect.intra_node.pp.gloo.latency_s": {
         "origin": "probed",
-        "source_root": "commit:93e01fbb4",
-        "record": "sha256:53ef27fd3bca30cd1a58c637debab9ee5b14712acb572bfd0eabeb6807a9eaa0"
+        "source_root": "commit:f61652a37",
+        "record": "sha256:877791cd3ee2a69c25aca30824fdcf45d2e192d37b67b41f76fea040176724c9",
+        "p10": 6.898597348481417e-06,
+        "p90": 1.1346652172505856e-05
       },
       "interconnect.intra_node.pp.gloo.overhead_s": {
         "origin": "probed",
-        "source_root": "commit:93e01fbb4",
-        "record": "sha256:53ef27fd3bca30cd1a58c637debab9ee5b14712acb572bfd0eabeb6807a9eaa0"
+        "source_root": "commit:f61652a37",
+        "record": "sha256:877791cd3ee2a69c25aca30824fdcf45d2e192d37b67b41f76fea040176724c9",
+        "p10": 1.3180740542832e-05,
+        "p90": 2.1155269091286356e-05
       },
       "interconnect.intra_node.pp.gloo.per_byte_s": {
         "origin": "probed",
-        "source_root": "commit:93e01fbb4",
-        "record": "sha256:53ef27fd3bca30cd1a58c637debab9ee5b14712acb572bfd0eabeb6807a9eaa0"
+        "source_root": "commit:f61652a37",
+        "record": "sha256:877791cd3ee2a69c25aca30824fdcf45d2e192d37b67b41f76fea040176724c9",
+        "p10": 1.1753227517226192e-10,
+        "p90": 1.4222777041488327e-10
       },
       "interconnect.intra_node.pp.gloo.rendezvous_fixed_s": {
         "origin": "probed",
-        "source_root": "commit:93e01fbb4",
-        "record": "sha256:53ef27fd3bca30cd1a58c637debab9ee5b14712acb572bfd0eabeb6807a9eaa0"
+        "source_root": "commit:f61652a37",
+        "record": "sha256:877791cd3ee2a69c25aca30824fdcf45d2e192d37b67b41f76fea040176724c9",
+        "p10": 2.3030740387005117e-05,
+        "p90": 2.5839193858153713e-05
       },
       "interconnect.intra_node.pp.gloo.wake_s": {
         "origin": "probed",
-        "source_root": "commit:93e01fbb4",
-        "record": "sha256:53ef27fd3bca30cd1a58c637debab9ee5b14712acb572bfd0eabeb6807a9eaa0"
+        "source_root": "commit:f61652a37",
+        "record": "sha256:877791cd3ee2a69c25aca30824fdcf45d2e192d37b67b41f76fea040176724c9",
+        "p10": 0.0001359877788747081,
+        "p90": 0.00019833540571732194
       },
       "interconnect.intra_node.pp.gloo.wake_rise_s": {
         "origin": "probed",
-        "source_root": "commit:93e01fbb4",
-        "record": "sha256:53ef27fd3bca30cd1a58c637debab9ee5b14712acb572bfd0eabeb6807a9eaa0"
+        "source_root": "commit:f61652a37",
+        "record": "sha256:877791cd3ee2a69c25aca30824fdcf45d2e192d37b67b41f76fea040176724c9",
+        "p10": 0.38485740280609293,
+        "p90": 0.7250460403446475
       },
       "host.tokenizers[qwen3.8-27b fast]": {
         "origin": "probed",
         "model": "Qwen/Qwen3.8-27B",
-        "source_root": "commit:4f0f1281405dc531a533ff688dff779dd10c45f8"
+        "source_root": "commit:a48f7b084f1e7c6117f4ddb9857028ea95018a36",
+        "p10": {
+          "encode_fixed_s": 1.4300296182846253e-05,
+          "encode_tokens_per_s": 652318.210911059,
+          "decode_fixed_s": 1.8899360935711552e-06,
+          "decode_tokens_per_s": 4190085.065514135
+        },
+        "p90": {
+          "encode_fixed_s": 1.5410055423647967e-05,
+          "encode_tokens_per_s": 663315.728582206,
+          "decode_fixed_s": 1.995909252850623e-06,
+          "decode_tokens_per_s": 4208875.978468032
+        }
       }
     },
     "fragments": [
@@ -205,7 +254,7 @@
       "intake",
       "pp"
     ],
-    "notes": "one Qwen3.8-27B TP1 start at ce625ddd9 | no probe fills these | ptl_enable | one real c=256 first-turn cc-traces burst at 2d1d223be | pp_carriers.py on two GPUs at 93e01fbb4"
+    "notes": "one Qwen3.8-27B TP1 start at ce625ddd9 | no probe fills these | ptl_enable | one real c=256 first-turn cc-traces burst at 2d1d223be | pp_carriers.py on two GPUs at f61652a37"
   },
   "host": {
     "cpu": {
@@ -221,10 +270,10 @@
         "applies_to": [
           "Qwen3_5ForConditionalGeneration"
         ],
-        "encode_fixed_s": 1.5829051167747794e-05,
-        "encode_tokens_per_s": 654139.9908400691,
-        "decode_fixed_s": 1.909574632837341e-06,
-        "decode_tokens_per_s": 4181755.8772593406,
+        "encode_fixed_s": 1.4543261506474403e-05,
+        "encode_tokens_per_s": 658470.12026507,
+        "decode_fixed_s": 1.9234510038697535e-06,
+        "decode_tokens_per_s": 4195780.35883783,
         "derate": 1.0
       }
     ],
@@ -233,8 +282,8 @@
       "shm_broadcast_s": 2e-05
     },
     "http_intake": {
-      "fixed_s": 0.0021464994614327293,
-      "per_byte_s": 1.869416019632594e-08
+      "fixed_s": 0.002669345165336389,
+      "per_byte_s": 5.603337964226679e-09
     }
   },
   "device": {
@@ -245,13 +294,27 @@
     "memory": {
       "capacity_bytes": 206141652992,
       "bandwidth_bytes_per_s": 5300000000000.0,
+      "bandwidth_curve": [
+        [
+          4096,
+          110000000000.0
+        ],
+        [
+          4294967296,
+          4505000000000.0
+        ]
+      ],
       "derate": 0.85
     },
     "compute": {
       "bf16_flops": 344000000000000.0,
       "fp8_flops": 688000000000000.0,
-      "derate": 0.7
+      "derate": {
+        "bf16": 0.7,
+        "fp8": 0.7
+      }
     },
+    "kernel_floor_s": 2e-06,
     "software_pinned_to": {
       "rocm": "7.2.4",
       "aiter": "9205e1059",

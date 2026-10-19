@@ -7,14 +7,10 @@
     "origin": "mixed",
     "origins": {
       "host.cpu.cores_physical": {
-        "origin": "probed",
-        "model": "/models/DeepSeek-V4-Pro",
-        "source_root": "commit:b1fb70c0d3ef77fb91f3c3bffab3b55a9ed07d23"
+        "origin": "probed"
       },
       "host.cpu.cores_logical": {
-        "origin": "probed",
-        "model": "/models/DeepSeek-V4-Pro",
-        "source_root": "commit:b1fb70c0d3ef77fb91f3c3bffab3b55a9ed07d23"
+        "origin": "probed"
       },
       "device.name": {
         "origin": "probed",
@@ -72,6 +68,22 @@
         "source_root": "commit:409bedc98",
         "record": "sha256:02618dade3d07bcaac510da11cf8a279a1fe3ef2fce72d41e88a76f2df7c32c6"
       },
+      "host.http_intake.fixed_s": {
+        "origin": "probed",
+        "model": "/models/DeepSeek-V4-Pro",
+        "source_root": "commit:19c5ab09e",
+        "record": "sha256:2397696f6df3a280660cbc95e7c8db0d61b77fba9986c3d388ccde75f2d5f574",
+        "p10": 0.001966482509138914,
+        "p90": 0.001966482509138914
+      },
+      "host.http_intake.per_byte_s": {
+        "origin": "probed",
+        "model": "/models/DeepSeek-V4-Pro",
+        "source_root": "commit:19c5ab09e",
+        "record": "sha256:2397696f6df3a280660cbc95e7c8db0d61b77fba9986c3d388ccde75f2d5f574",
+        "p10": 5.288974015662166e-09,
+        "p90": 5.288974015662166e-09
+      },
       "device.memory.bandwidth_bytes_per_s": {
         "origin": "datasheet"
       },
@@ -96,6 +108,12 @@
       "host.ipc.shm_broadcast_s": {
         "origin": "assumed"
       },
+      "device.memory.bandwidth_curve": {
+        "origin": "assumed"
+      },
+      "device.kernel_floor_s": {
+        "origin": "assumed"
+      },
       "interconnect.intra_node.topology": {
         "origin": "assumed"
       },
@@ -114,7 +132,13 @@
       "device.memory.derate": {
         "origin": "assumed"
       },
-      "device.compute.derate": {
+      "device.compute.derate.bf16": {
+        "origin": "assumed"
+      },
+      "device.compute.derate.fp8": {
+        "origin": "assumed"
+      },
+      "device.compute.derate.fp4": {
         "origin": "assumed"
       },
       "interconnect.intra_node.derate": {
@@ -129,17 +153,30 @@
       "host.tokenizers[deepseek-v4-pro fast]": {
         "origin": "probed",
         "model": "/models/DeepSeek-V4-Pro",
-        "source_root": "commit:b1fb70c0d3ef77fb91f3c3bffab3b55a9ed07d23"
+        "source_root": "commit:88dfbb914581d743c16855b36f5edab6e9d5b809",
+        "p10": {
+          "encode_fixed_s": 6.274415314860249e-06,
+          "encode_tokens_per_s": 959926.851458146,
+          "decode_fixed_s": 9.622373485698014e-07,
+          "decode_tokens_per_s": 7326077.620210434
+        },
+        "p90": {
+          "encode_fixed_s": 6.75017874063726e-06,
+          "encode_tokens_per_s": 973736.3232658788,
+          "decode_fixed_s": 1.0026383540423067e-06,
+          "decode_tokens_per_s": 7483267.090440603
+        }
       }
     },
     "fragments": [
       "tokenizer",
       "device",
+      "intake",
       "datasheet",
       "assumed",
       "ptl"
     ],
-    "notes": "one DeepSeek-V4-Pro -tp 8 --enable-dp-attention --enable-tbo start at 409bedc98 | MI355X datasheet | no probe fills these | no card has a ptl directory"
+    "notes": "one DeepSeek-V4-Pro -tp 8 --enable-dp-attention --enable-tbo start at 409bedc98 | one real c=256 first-turn cc-traces burst at 19c5ab09e | MI355X datasheet | no probe fills these | no card has a ptl directory"
   },
   "host": {
     "cpu": {
@@ -155,16 +192,20 @@
         "applies_to": [
           "DeepseekV4ForCausalLM"
         ],
-        "encode_fixed_s": 6.460180446920842e-06,
-        "encode_tokens_per_s": 976350.0764833268,
-        "decode_fixed_s": 1.046620708126832e-06,
-        "decode_tokens_per_s": 7347770.259508678,
+        "encode_fixed_s": 6.5194501752822816e-06,
+        "encode_tokens_per_s": 968276.5240179158,
+        "decode_fixed_s": 9.82301925581818e-07,
+        "decode_tokens_per_s": 7412521.531864962,
         "derate": 1.0
       }
     ],
     "ipc": {
       "zmq_roundtrip_s": 5e-05,
       "shm_broadcast_s": 2e-05
+    },
+    "http_intake": {
+      "fixed_s": 0.001966482509138914,
+      "per_byte_s": 5.288974015662166e-09
     }
   },
   "device": {
@@ -175,14 +216,29 @@
     "memory": {
       "capacity_bytes": 309220868096,
       "bandwidth_bytes_per_s": 8000000000000.0,
+      "bandwidth_curve": [
+        [
+          4096,
+          110000000000.0
+        ],
+        [
+          4294967296,
+          6800000000000.0
+        ]
+      ],
       "derate": 0.85
     },
     "compute": {
       "bf16_flops": 2516600000000000.0,
       "fp8_flops": 5033200000000000.0,
       "fp4_flops": 1.00663e+16,
-      "derate": 0.7
+      "derate": {
+        "bf16": 0.7,
+        "fp8": 0.7,
+        "fp4": 0.7
+      }
     },
+    "kernel_floor_s": 2e-06,
     "software_pinned_to": {
       "rocm": "7.2.4",
       "aiter": "9205e1059",

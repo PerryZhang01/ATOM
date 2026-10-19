@@ -71,11 +71,13 @@ def tokenizer_fragment(
     subject: Mapping[str, Any] | None = None,
     source: str = "tokenizer",
     processors: str = PROCESSORS,
+    band: Mapping[str, Any] | None = None,
 ) -> Fragment:
     """A fragment of the entries a caller measured and the processor read here.
 
     `origin` is how those entries were obtained, and it has no default because
-    nothing in this function establishes one; `subject` is what a probe ran on.
+    nothing in this function establishes one; `subject` is what a probe ran on,
+    and `band` the `p10` and `p90` of each rate over its sweeps.
     """
     if not entries:
         raise SpecRefusal(
@@ -91,6 +93,7 @@ def tokenizer_fragment(
     origins = {
         entry_label(entry["id"], entry.get("backend")): {"origin": origin}
         | dict(subject or {})
+        | dict(band or {})
         for entry in entries
     }
     counts = cpu_counts(processors)

@@ -68,11 +68,13 @@ def test_a_later_stage_whose_law_lacks_its_receive_part_is_refused_by_name():
     """The first stage runs no `W_recv`; a later one needs a law for it or a skip."""
     laws = {"prefill": dict.fromkeys(HOST_SEGMENTS, (0, 0, 0))}
     for stage, skip in (((0, 2), ()), ((1, 2), (PP_RECV_SEGMENT,))):
-        HostDeviceRecurrence(laws, skip, lambda: 0.0, stage).charge(prefill(8), 1.0)
+        HostDeviceRecurrence(laws, skip, lambda: 0.0, stage).charge(
+            prefill(8), 1.0, 0.0
+        )
     with pytest.raises(
         CostRefused, match=re.escape("(host: no law for prefill.W_recv)")
     ):
-        HostDeviceRecurrence(laws, (), lambda: 0.0, (1, 2)).charge(prefill(8), 1.0)
+        HostDeviceRecurrence(laws, (), lambda: 0.0, (1, 2)).charge(prefill(8), 1.0, 0.0)
 
 
 def test_a_sender_blocked_on_its_previous_sends_ack_goes_on_its_wake_after_it():

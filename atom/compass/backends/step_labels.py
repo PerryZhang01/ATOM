@@ -11,7 +11,9 @@ A step's device label is its device busy time, `d_busy_ns`, plus for a decode
 step the device work queued since the previous forward's exit, `d_gap_ns`. A
 decode step whose device start precedes its host launch end is launch-exposed
 and cut; a prefill step is never cut, so a host bubble inside it stays in its
-label. The exit of each wait for the previous output's token copy (`t_recv_ns`)
+label. On an MTP record, one with `d_target_ns`, the device label is the
+target's, `d_target_ns` with no gap, and the draft label is the rest of
+`d_busy_ns`. The exit of each wait for the previous output's token copy (`t_recv_ns`)
 bounds the host clock's lead over the device's (that forward had finished by
 then); the tightest of the last `ANCHORS` bounds is the lead. The copy itself
 lands on its own stream after the exit event the bound reads, by 14 to 29 us
@@ -21,18 +23,20 @@ moves a decode step across the launch-exposed cut, so it is left in the bound
 rather than corrected by a host-specific number with no record or law of its
 own to carry it. A record without device windows is refused. A step mixing
 prefill and decode rows is cut.
+A step of an MTP record without `d_target_ns` is cut as `unsplit`: its device
+label would hold a draft the law prices again.
 
 A step's host labels are its segments: `E` from the previous forward's exit,
 cut as idle when the two batches share no request; `W_pre` to the launch, less
 the staging gate's wait; `W_launch`; `W_post` from the launch to the exit, less
-the token copy wait, and a middle chunk has none. With an MTP status wait,
+the token copy and draft copy waits, and a middle chunk has none. With an MTP status wait,
 `W_pre` ends at it and `W_inputs` runs from it to the launch. On a later
 pipeline stage, `W_recv` runs from the launch to the receive of its input.
 
 `write_table` writes a record's labels beside it, `dp<r>.cost.jsonl`, for
 people: a first line `{"version": TABLE_VERSION}`, then per step `step`,
-`d_busy_s`, `d_gap_s`, `launch_exposed`, `idle`, the segments, `label_s`
-and `cut`, the reason its device label was cut; seconds throughout, null where
+`d_busy_s`, `d_gap_s`, `launch_exposed`, `idle`, the segments, `label_s`,
+`draft_s` and `cut`, the reason its device label was cut; seconds throughout, null where
 the step has none.
 """
 
@@ -48,8 +52,8 @@ from atom.compass.backends.shape import BatchView, RequestShape
 
 #: Token copy wait exits whose tightest bound is a step's host clock lead.
 ANCHORS = 32
-#: Why a device label is cut: a launch-exposed decode, or prefill and decode rows mixed.
-CUTS = ("exposed", "mixed")
+#: Why a device label is cut: a launch-exposed decode, mixed rows, no MTP target end.
+CUTS = ("exposed", "mixed", "unsplit")
 HOST_SEGMENTS = ("E", "W_pre", "W_launch", "W_post")
 TABLE_VERSION = 1
 
@@ -59,6 +63,7 @@ class Sample:
     """One real forward, labelled.
 
     `device_s` is its device label, None when cut, and `cut` names why (`CUTS`).
+    `draft_s` is its draft label, None when cut or on a step with no draft.
     `host` holds the segments it has, in seconds: no `W_post` on a middle chunk,
     no `E` on the record's first forward or after an idle engine (`idle`).
     `provenance` holds `source`, `run` (the run's digest), `requests` (the
@@ -74,6 +79,7 @@ class Sample:
     host: dict
     idle: bool
     provenance: dict
+    draft_s: float | None = None
 
 
 def digest(record) -> str:
@@ -142,6 +148,7 @@ def label(record, run: str | None = None) -> tuple[list[Sample], list[dict]]:
             "by its device time"
         )
     exposed = _launch_exposed(lines)
+    mtp = any("d_target_ns" in s for s in steps)
     key = path.with_suffix(".key.json")
     config = json.loads(key.read_text()) if key.exists() else None
     run = run or digest(record)
@@ -161,8 +168,14 @@ def label(record, run: str | None = None) -> tuple[list[Sample], list[dict]]:
             cut = "mixed"
         elif not view.prefill and s["step"] in exposed:
             cut = "exposed"
+        elif mtp and "d_target_ns" not in s:
+            cut = "unsplit"
         gap = 0 if view.prefill else s.get("d_gap_ns", 0)
         device = None if cut else (gap + s["d_busy_ns"]) * 1e-9
+        draft = None
+        if "d_target_ns" in s:  # an MTP record: the target alone, no gap
+            device = None if cut else s["d_target_ns"] * 1e-9
+            draft = (s["d_busy_ns"] - s["d_target_ns"]) * 1e-9
         enter, (l0, l1) = s["t_enter_ns"], s["t_launch_ns"]
         g0, g1 = s.get("t_gate_ns", (l0, l0))
         r0, r1 = s.get("t_recv_ns", (0, 0))
@@ -173,7 +186,8 @@ def label(record, run: str | None = None) -> tuple[list[Sample], list[dict]]:
         if "t_pp_recv_ns" in s:
             host["W_recv"] = s["t_pp_recv_ns"][0] - l0
         if host_kind(view) != "middle":
-            host["W_post"] = s["t_exit_ns"] - l1 - (r1 - r0)
+            d0, d1 = s.get("t_draft_recv_ns", (0, 0))
+            host["W_post"] = s["t_exit_ns"] - l1 - (r1 - r0) - (d1 - d0)
         idle = prev is not None and not _shared(s, prev)
         if prev is not None and not idle:
             host["E"] = enter - prev["t_exit_ns"]
@@ -185,7 +199,17 @@ def label(record, run: str | None = None) -> tuple[list[Sample], list[dict]]:
             "config": config,
         }
         samples.append(
-            Sample(s["step"], s["dp_rank"], view, device, cut, host, idle, provenance)
+            Sample(
+                s["step"],
+                s["dp_rank"],
+                view,
+                device,
+                cut,
+                host,
+                idle,
+                provenance,
+                None if cut else draft,
+            )
         )
         gap_ns = s.get("d_gap_ns")
         table.append(
@@ -197,6 +221,7 @@ def label(record, run: str | None = None) -> tuple[list[Sample], list[dict]]:
                 "idle": idle,
                 **{k: host.get(k) for k in (*HOST_SEGMENTS, "W_inputs")},
                 "label_s": device,
+                "draft_s": draft,
                 "cut": cut,
             }
         )

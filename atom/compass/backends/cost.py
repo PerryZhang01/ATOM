@@ -63,11 +63,15 @@ class CostTerm:
     Terms are flat. A backend that wants a hierarchy spells it in the name --
     `attention.decode` under `attention` -- rather than nesting, because the
     consumers of a breakdown want to group and sum, not to walk a tree.
+
+    `draft` tags a speculative drafter's device work, which runs after the
+    target's; every other term is the target's.
     """
 
     name: str
     seconds: float
     provenance: Provenance
+    draft: bool = False
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -165,6 +169,16 @@ class StepCost:
     def seconds(self) -> float:
         """The total, folded from the terms in their stored order."""
         return fold_seconds(term.seconds for term in _checked(self.terms))
+
+    @property
+    def target_seconds(self) -> float:
+        """The fold of the terms not tagged `draft`."""
+        return fold_seconds(t.seconds for t in _checked(self.terms) if not t.draft)
+
+    @property
+    def draft_seconds(self) -> float:
+        """The fold of the terms tagged `draft`."""
+        return fold_seconds(t.seconds for t in _checked(self.terms) if t.draft)
 
     @property
     def refusals(self) -> tuple[Refusal, ...]:

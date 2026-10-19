@@ -33,7 +33,8 @@ of the same blocks cost the same here, which is a claim about the fabric being
 symmetric that this model cannot check.
 
 Writes on one `Link` move one at a time, in arrival order. A link's first
-write also pays the link's one-off setup, when the spec declares one. Writes on
+write that moves blocks also pays the link's one-off setup, when the spec
+declares one; a zero-block write makes no transfer call and pays none. Writes on
 different links do not contend, even where real ones would share a NIC.
 
 Nothing in this module imports the engine or a tensor library. Reaching it
@@ -142,13 +143,14 @@ class Link:
     after its last byte. Its completion is fixed when it arrives, so two
     holders fed the same arrivals in the same order compute the same times. A
     write alone on the link completes at `a + duration_s(blocks)`, and the
-    link's first write starts `setup_s` after it would otherwise.
+    link's first write with blocks starts `setup_s` after it would otherwise.
     """
 
     def __init__(self, model: TransferModel) -> None:
         self._model = model
         self._last = -math.inf  # the latest arrival
         self._free = -math.inf  # when the link has moved every byte so far
+        self._set_up = False  # whether a write with blocks has paid setup_s
 
     def start(self, a: float, blocks: int) -> float:
         """A write of `blocks` arrives at `a`; when it completes."""
@@ -159,7 +161,8 @@ class Link:
             )
         self._last = a
         start = max(a, self._free)
-        if self._free == -math.inf:
+        if blocks > 0 and not self._set_up:
+            self._set_up = True
             start += self._model.setup_s
         done = start + self._model.duration_s(blocks)
         self._free = start + blocks * self._model.bytes_per_block / (

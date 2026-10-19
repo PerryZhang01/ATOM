@@ -579,8 +579,8 @@ class HttpChannel:
     ``fixed_s + body bytes x per_byte_s`` (`atom.compass.run.http_intake`),
     charged on the loop once its body is read, every open tokenizer station job
     is placed and the callbacks due by then have run (`SimExecutor.placed`), so
-    a burst reaches the app one request at a time. A machine spec that states
-    neither term charges nothing.
+    a burst reaches the app one request at a time. A run file with no machine
+    spec charges nothing.
     """
 
     def __init__(self, app, stamp) -> None:

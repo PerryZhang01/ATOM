@@ -27,7 +27,8 @@ wake_rise_s))`` at block ``b``. OUT is JSON: each
 carrier's fields, the model's error on the arrival in seconds per posting order (min, p10,
 p50, p90, max), every sample, and this file's text. Given RECORDs this script
 wrote, it fits their samples pooled instead of probing, and OUT names their
-sha256 in place of the samples: one probe's wake moves with the run.
+sha256 in place of the samples: one probe's wake moves with the run. Its
+`band` is each field's p10 and p90 over the records, each fitted alone.
 """
 
 import hashlib
@@ -39,7 +40,7 @@ from pathlib import Path
 
 import numpy as np
 
-from atom.compass.runner.pp_send import woken
+from atom.compass.runner.pp_send import CarrierModel, recv_done, woken
 
 LATE, WARM, REPS = 0.05, 3, 20
 BLOCKS = (0.002, 0.01, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0, 5.0)
@@ -108,6 +109,7 @@ def fit(samples: list[dict]) -> dict:
             "per_byte_s": float(g),
             "rendezvous_fixed_s": float(fixed),
         }
+        priced = {c: CarrierModel(**out[c])}
         wake = (0.0, 1.0)
         if c == "gloo" and blocked:
             wake = fit_wake(blocked, fixed + 8 * g)
@@ -116,11 +118,8 @@ def fit(samples: list[dict]) -> dict:
         for late in (False, True):
             m = [med[n, late] for n in sizes]
             model = [
-                (
-                    max(s["post"], o + n * g + lat)
-                    if n in eager
-                    else max(0.0, s["post"]) + fixed + n * g + woken(wake, s["post"])
-                )
+                recv_done(priced, 0.0, s["post"], [(c, n)])[1]
+                + (0.0 if n in eager else woken(wake, s["post"]))
                 for n, s in zip(sizes, m)
             ]
             err = [p - s["end"] for p, s in zip(model, m)]
@@ -231,6 +230,16 @@ def main(out: str, *records: str) -> int:
         read = [Path(p).read_bytes() for p in records]
         samples = [s for b in read for s in json.loads(b)["samples"]]
         about = {"records": [hashlib.sha256(b).hexdigest() for b in read]}
+        # Each field's p10 and p90 over the records, each fitted alone.
+        alone = [fit(json.loads(b)["samples"]) for b in read]
+        about["band"] = {
+            c: {
+                k: [float(np.percentile([a[c][k] for a in alone], q)) for q in (10, 90)]
+                for k, v in alone[0][c].items()
+                if not isinstance(v, list)
+            }
+            for c in SIZES
+        }
     else:
         samples = probe()
         if not samples:

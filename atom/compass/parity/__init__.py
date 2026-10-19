@@ -16,10 +16,12 @@ output's token copy (`t_recv_ns`, only on a forward that reaches it), and with
 a drafter its MTP status (`t_mtp_ns`) and draft copy (`t_draft_recv_ns`). Its device
 window is `d_busy_ns`, from an event recorded at the launch's entry to one
 recorded at the forward's exit (`d_target_ns` to one recorded just after
-`postprocess` records `forward_done_event`), and `d_gap_ns`, from the previous forward's
+`postprocess` records `forward_done_event`, or on a forward that samples
+nothing, before the drafter's `compute_draft_kv`), and `d_gap_ns`, from the previous forward's
 exit event to this launch's entry event, absent on the first line; summed in
 order they lay every forward on one device timeline. A later pipeline stage's
-receive of its input is `t_pp_recv_ns`, its device part `d_recv_ns`. The events are polled,
+receive of its input is `t_pp_recv_ns`, its device part `d_recv_ns`; an idle
+`flush_pp_send` since the last forward that settled a pending send is `t_flush_ns`. The events are polled,
 never waited on, so a line is written once its exit event has completed, and
 `exit` writes the rest. Under `kv` a line carries the lmcache offload loads
 and saves the scheduler handed the worker since the previous line
@@ -78,6 +80,7 @@ TIMESTAMPS = (
     "t_mtp_ns",
     "t_draft_recv_ns",
     "t_pp_recv_ns",
+    "t_flush_ns",
     "d_busy_ns",
     "d_gap_ns",
     "d_target_ns",
@@ -373,6 +376,10 @@ class StepRecording:
             processor.prepare_sampled_ids = functools.partial(
                 self._target_done, sampled
             )
+            draft_kv = self.drafter.compute_draft_kv
+            self.drafter.compute_draft_kv = functools.partial(
+                self._target_done, draft_kv
+            )
         self._recording = True
 
     def forward(self, batch):
@@ -384,6 +391,12 @@ class StepRecording:
         if self._recording:
             record_kv(self, meta)
         return super().process_kvconnector_output(meta)
+
+    def flush_pp_send(self):
+        """ATOM's idle flush, stamped for the next forward when a send is pending."""
+        if getattr(self, "_pp_pending_send", None):
+            return self._stamped("t_flush_ns", super().flush_pp_send)
+        return super().flush_pp_send()
 
     def _stamped(self, key, call, *args):
         """`call(*args)`, stamped under `key` when this forward is recorded."""
@@ -404,7 +417,8 @@ class StepRecording:
 
     def _target_done(self, call, *args):
         """`call(*args)` after a device event where `postprocess` has just
-        recorded `forward_done_event`: the target's end, before the draft."""
+        recorded `forward_done_event`, or where `compute_draft_kv` starts: the
+        target's end, before the draft. The later of the two wins."""
         if getattr(self, "_parity_record", None) is not None:
             self._stamps["target_event"] = self.device_event()
         return call(*args)

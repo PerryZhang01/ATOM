@@ -38,16 +38,39 @@ def test_a_rendezvous_part_is_posted_when_the_part_before_it_ends():
     sent = 2.0**-12 + 8 * 2.0**-20  # the eager size part, sender side
     first = sent + 2.0**-10
     done, end = pp_send.recv_done(MODELS, 0.0, 0.0, RDV)
-    assert done == end == first + 2.0**-8 + 2048 * 2.0**-20
+    # The tensor leaves at `sent`; posted at `first`, its receive finds the
+    # threshold's 1024 bytes, 2**-10 s of them, already moved.
+    assert done == end == sent + 2.0**-8 + 2048 * 2.0**-20
     # Posted late, the receive starts the rendezvous part later.
-    assert pp_send.recv_done(MODELS, 0.0, 1.0, RDV)[1] == 1.0 + 2.0**-8 + 2.0**-9
+    assert (
+        pp_send.recv_done(MODELS, 0.0, 1.0, RDV)[1]
+        == 1.0 - 2.0**-10 + 2.0**-8 + 2.0**-9
+    )
     # Posted before the send, the rendezvous part starts at the send.
     assert (
         pp_send.recv_done(MODELS, 1.0, 0.0, [("rccl", 2048)])
         == (1.0 + 2.0**-8 + 2.0**-9,) * 2
     )
     assert pp_send.recv_done(MODELS, 0.0, 0.0, EAGER) == (sent, first)
-    assert (L_DATA, L_ACK) == (2.0**-10, 2.0**-8)
+    assert (L_DATA, L_ACK) == (2.0**-10, 2.0**-8 - 2.0**-10)
+
+
+def test_a_rendezvous_send_moves_its_threshold_before_a_late_receive_once():
+    """Two tensors, ready at 0: a receive posted at 1.0 finds the first's
+    1024 bytes moved, the second leaving only when the first is done; one
+    posted within those bytes' time ends where one posted at the send does."""
+    pushed, tensors, T = 1024 * 2.0**-20, [("rccl", 2048)] * 2, 2.0**-8 + 2.0**-9
+    assert pp_send.recv_done(MODELS, 0.0, 1.0, tensors) == (1.0 - pushed + 2 * T,) * 2
+    assert pp_send.recv_done(MODELS, 0.0, pushed / 2, tensors)[1] == 2 * T
+
+
+def test_the_ack_lookahead_holds_for_a_receive_posted_after_the_threshold_moved():
+    """A gloo carrier eager to 1 MiB: its smallest rendezvous, posted long
+    after the send, completes a fixed part and one byte after the post."""
+    big = {"gloo": CarrierModel(2**20, 2.0**-10, 0.0, 2.0**-20, 2.0**-8)}
+    l_ack = pp_send.lookaheads(big)[1]
+    done = pp_send.recv_done(big, 0.0, 4.0, [("gloo", 2**20 + 1)])[0]
+    assert done - 4.0 >= l_ack > 0
 
 
 def test_a_lookahead_that_is_not_positive_is_refused_by_name():
@@ -172,7 +195,7 @@ def test_a_stage_waits_for_its_own_ring_and_only_the_last_for_its_device_work():
 
     def charges(stage, n=5):
         host = HostDeviceRecurrence({}, (), lambda: 0.0, stage)
-        return [host.charge(decode, 1.0) for _ in range(n)]
+        return [host.charge(decode, 1.0, 0.0) for _ in range(n)]
 
     # Entry waits for the device work `pp` forwards back, not two.
     assert charges((0, 4)) == [0.0, 0.0, 0.0, 0.0, 1.0]

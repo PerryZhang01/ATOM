@@ -20,9 +20,11 @@ on, because until 2026-09-20 it was not — see "Which tree a script acts on" be
 | `pd_sim.sh` | GPU container | A simulated 1P1D run: the standalone clock authority (`python -m atom.compass.run`), a prefill and a decode API server on the simulated KV connector, and `atomesh` in PD mode between them. `tests/compass/test_pd_slice.py` drives one request through it. Its variables are in its header. |
 | `parity_one_node.sh` | GPU container, two devices (eight for `CONFIG=dsv4-dpa8`) | The scheduling-parity test: one workload (`python -m atom.compass.parity.traffic`) on a real `-tp 2 --enable-dp-attention` server (`CONFIG=tp2-plain`: `-tp 2` alone; `CONFIG=dsv4-dpa8`: DeepSeek-V4-Pro's nightly `-tp 8 --enable-dp-attention --enable-tbo` server) with the step record on, then on a simulated one whose steps each end when the real one's did (`atom/compass/parity/replay.py`; `step_stub` prices their device time into the cost record only), and `python -m atom.compass.parity` over the two records. With `STORE` unset it first runs `compass measure memory` on the real run's GPUs, flags and environment into `OUT_DIR/store`, under `LMCACHE=1` with an lmcache server of its own beside it, and the simulated run reads that store. The last lines are the real run's admission (send to response headers: minimum, median, maximum) and, per DP rank, the steps compared, the steps identical and the first divergence. Its variables are in its header. |
 | `python -m atom.compass.detect.scenario` | either | The acceptance checks every simulated deployment's runs are held to, over the out_dirs of one run file run under different `PYTHONHASHSEED`: each run reached its finish with no refusal, the step tables are byte-identical, and each channel's messages were released to their receiver once each and none behind its clock. With `--record LP=DIR`, an engine LP's TAR rows must equal the timeline a constant step stub implies, computed from the parity record in `DIR` (`pd_sim.sh` writes one per side when `ATOM_COMPASS_PARITY_RECORD` is set). Prints each failure and exits 1. The vertical, DP, PD and PD-DP slices in `tests/compass/` hold their runs to it, with the traffic's outputs too. |
-| `mi308x_spec.py` | GPU container, node 18 or hjbog-srdc-39; any container with `atom` under `--sweep-from` | `python3 scripts/compass/mi308x_spec.py`: rebuild `machines/mi308x-hjbog18.json`, the node-18 MI308X machine spec, by sweeping Qwen3.8-27B's tokenizer on this host and merging it with the device, capacity and stack of one real engine start recorded in the script; with `COMPASS_MACHINE=mi308x-hjbog39`, the same for hjbog-srdc-39 into `machines/mi308x-hjbog39.json`, with the HTTP intake terms one real burst probed there (`INTAKE`), and the PP carriers `pp_carriers.py` fitted there (`PP`, which names the fit's commit and its record's sha256). `--sweep-from DOC` takes the sweep a written document carries instead. Prints `validate`'s verdict and `explain`'s fields grouped by origin; on either host a value no probe fills reads `assumed`. |
+| `mi308x_spec.py` | GPU container, node 18 or hjbog-srdc-39; any container with `atom` under `--sweep-from` | `python3 scripts/compass/mi308x_spec.py`: rebuild `machines/mi308x-hjbog18.json`, the node-18 MI308X machine spec, by sweeping Qwen3.8-27B's tokenizer on this host and merging it with the device, capacity and stack of one real engine start and the HTTP intake terms `http_intake.py` fitted over one real burst (`INTAKE`), each recorded in the script; with `COMPASS_MACHINE=mi308x-hjbog39`, the same for hjbog-srdc-39 into `machines/mi308x-hjbog39.json`, with the PP carriers `pp_carriers.py` fitted there (`PP`, which names the fit's commit and its record's sha256), and on node 18 the attainable peaks `probe_device.py` read (`PEAKS`, which names the probe's commit and its record's sha256). `--sweep-from DOC` takes the sweep a written document carries instead. Prints `validate`'s verdict and `explain`'s fields grouped by origin; on either host a value no probe fills reads `assumed`. |
 | `pp_carriers.py` | GPU container, two devices of one node | `HIP_VISIBLE_DEVICES=a,b torchrun --nproc-per-node 2 scripts/compass/pp_carriers.py OUT`: send one message per size between the two devices over RCCL and gloo, the receive posted first and late, and fit each carrier's eager threshold, overhead, latency, per-byte time and rendezvous fixed part, and how late a gloo sender blocked before the receive is posted goes on (`wake_s`, `wake_rise_s`). Writes OUT, a JSON record of the fit, its error spread, every sample and the script's text. `python3 scripts/compass/pp_carriers.py OUT RECORD...` fits several such records' samples pooled and names each record's sha256 in place of the samples: one probe's wake moves from run to run. `mi308x_spec.py`'s `PP` states a fit and cites its record. Check the two devices are idle before and after. |
-| `mi355x_spec.py` | any container with `atom`; mi355-gpu-45 to re-sweep | `python3 scripts/compass/mi355x_spec.py --sweep-from scripts/compass/machines/mi355x-gpu45.json`: rebuild `machines/mi355x-gpu45.json`, the mi355-gpu-45 MI355X machine spec, from the tokenizer sweep that document carries and the device, capacity, datasheet peaks and assumed values recorded in the script; byte for byte while this script and `mi308x_spec.py` are unchanged. Without `--sweep-from` it re-sweeps DeepSeek-V4-Pro's tokenizer at `/models/DeepSeek-V4-Pro` on mi355-gpu-45, and the sweep refuses its fit above a host load of about 55. Prints `validate`'s verdict and `explain`'s fields grouped by origin. |
+| `probe_device.py` | GPU container, two idle devices of one node | `HIP_VISIBLE_DEVICES=a,b python3 scripts/compass/probe_device.py SPEC OUT`: time the best BF16 and FP8 GEMM rate over a grid of large shapes, a copy sweep from 4 KiB to 4 GiB moved, an empty kernel replayed in a graph, a peer copy and a peer ping-pong between the two devices, and print the fragment they make on the machine file SPEC: each format's derate, the bandwidth curve and `memory.derate`, `kernel_floor_s`, the intra-node link's latency and derate, the banded ones with their p10 and p90. Refuses a device that holds VRAM or work, or whose `ptl_enable` is not SPEC's `device.ptl`. Writes OUT, the record of every sample and the script's text; a spec script's `PEAKS` states the readings and cites its sha256. Check the two devices are idle after. |
+| `http_intake.py` | GPU container, one real server | `HTTP_INTAKE=STAMPS REAL=1 CONCURRENCY=256 SESSIONS=256 AIPERF_EXTRA_ARGS="--trajectory-start-min-ratio 0 --trajectory-start-max-ratio 0" scripts/compass/cctraces_sim.sh RUN_FILE OUT`, aiperf stopped once the first turns are in, then `python3 scripts/compass/http_intake.py fit STAMPS`: the real server runs under the probe, which stamps each request body its event loop reads and each chat template it renders, and the fit prints `host.http_intake` from the burst; a spec script's `INTAKE` states one burst's fit, cites its STAMPS's sha256, and states each term's p10 and p90 over the host's bursts, each fitted alone. Check the GPUs are idle before and after. |
+| `mi355x_spec.py` | any container with `atom`; mi355-gpu-45 to re-sweep | `python3 scripts/compass/mi355x_spec.py --sweep-from scripts/compass/machines/mi355x-gpu45.json`: rebuild `machines/mi355x-gpu45.json`, the mi355-gpu-45 MI355X machine spec, from the tokenizer sweep that document carries and the device, capacity, HTTP intake terms (`INTAKE`), datasheet peaks and assumed values recorded in the script; byte for byte while this script and `mi308x_spec.py` are unchanged. Without `--sweep-from` it re-sweeps DeepSeek-V4-Pro's tokenizer at `/models/DeepSeek-V4-Pro` on mi355-gpu-45. Prints `validate`'s verdict and `explain`'s fields grouped by origin. |
 | `cpu_gate_exclude.txt` | — | Excluded test files in two marked sections: **GENERATED** (`# BEGIN GENERATED`, driver-dependent at *collection* time; never hand-edit — `regen_cpu_gate_exclude.sh` rewrites it wholesale) and **MANUAL** (`# BEGIN MANUAL`, collects cleanly then fails on a driver call or for want of a `.git`, so the regenerator cannot see it). The MANUAL section **is** hand-edited; every entry must carry its observed failure above it. |
 | `gpu_gate_triggers.txt` | — | The source paths that no *running* CPU-gate test names. Generated, not hand-written; matched by `gate_cpu.sh`. A trailing `/` matches a subtree. |
 | `gpu_gate_known_failures.txt` | — | The known-failing GPU node-ids at `gate_gpu.sh`'s `BASE_COMMIT`, verbatim. Its line count and `BASE_FAILED` are two statements of one fact; `gate_gpu.sh` refuses to run if they disagree. |
@@ -723,3 +725,44 @@ which no cache directory above holds.
    CONCURRENCY=<C>`, `SERVER_ARGS="--max-model-len 262144"`, `AIPERF_EXTRA_ARGS` the
    warmup arguments; then `python -m atom.compass.parity
    $R/cell/c<C>/step_linear/steps OUT/steps`.
+
+### The same cell under the step grid
+
+The step grid reuses steps 1 to 4: the calibration records are its residual's
+targets, and the real runs are its coverage check's inputs and its graded side.
+Its points are planned from shape populations rather than records: the planner
+refuses inputs stating two KV block counts, and two real starts of one
+configuration differ by a few blocks (#1349), while every simulated start takes
+its count from the one `memory_readings` entry. A population may serve any
+traces, the graded ones included, since its shapes are all the plan reads. The
+grid definition is a calibration input; `$G` below holds nodes at powers of two
+and no margin:
+
+```json
+{"prefill": {"B": [1, 2, 4, ..., 256], "T": [1, 2, 4, ..., 16384],
+             "c": [0, 1, 2, 4, ..., 131072]},
+ "decode": {"c": [0, 1, 2, 4, ..., 131072]}, "margin": 0}
+```
+
+8. Per concurrency, `compass trace steps --step-linear LAW --host-laws HOST $M $S
+   --out $R/pop/<traces>/c<C> -- $ATOM`, serving one client run as a `run`
+   server's client, of traces 256 to 392 and of traces 0 to 255; its stop
+   publishes a `shape_population`, `POP` below.
+9. `compass measure steps --grid POP... --grid-definition $G --client-run POP
+   $R/pop/<traces>/c<C>/artifacts/client_run.json ... --sampling '{"ignore_eos":
+   true}' --gpu G $S --out $R/grid -- $ATOM`. The deep-context prefill corners
+   take most of its hours. Several GPUs each take a subset of the populations
+   into a store of its own, starts a minute apart; copying each store's
+   `step_measurement` entries into one, and this step again over every
+   population, measures what remains.
+10. `compass fit steps --backend step-grid --grid POP... --grid-definition $G
+    $R/cal/c* --client-run ...`, naming every population and record, `$M $S --out
+    $R/fit-grid`; it prints the bundle's token. A second fit of one definition
+    into one store is refused as an overwrite: refit into a fresh store.
+11. `compass run --step-grid BUNDLE --host-laws HOST --coverage $R/cell/c<C>/real*
+    $M $S --out $R/cell/c<C>/step_grid -- $ATOM`, serving the same client run as
+    step 5. The check counts the real steps the bundle covers, extrapolates past
+    the residual's hull or the KV pool, and leaves to the step roofline; grading
+    takes only a run that ran it.
+12. `python -m atom.compass.validate $R/cell/c<C>`, which reads the bundle from
+    the store the run file names, by key and digest.

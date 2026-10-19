@@ -40,12 +40,18 @@ law without one prices every term unvalidated. A step the law has no vector for
 is refused: prefill when the law has no prefill vector, a decode rung with
 none, a step mixing prefill and decode rows, or one with image tokens.
 
-The law is a mapping, as a run file holds it, `prefill` optional:
+A law fitted on an MTP record holds a draft law of its own form under `draft`.
+Its terms, named `draft.<kind>.<feature>`, are tagged `draft` and priced from the
+same features, on a step that produces no output too: there the draft is the
+pass that fills the drafter's KV over the chunk.
+
+The law is a mapping, as a run file holds it, `prefill` and `draft` optional:
 
     {"provenance": "<what it was fitted on>",
      "machine_spec": "sha256:<hex>",
      "prefill": VECTOR,
-     "decode": {"eager": VECTOR, "1": VECTOR, "2": VECTOR, ...}}
+     "decode": {"eager": VECTOR, "1": VECTOR, "2": VECTOR, ...},
+     "draft": {"provenance": ..., "prefill": VECTOR, "decode": {...}}}
 
     VECTOR = {"coefficients": {<feature>: seconds, ...},
               "hull": HULL,
@@ -150,6 +156,7 @@ class StepLinearLaw:
             )
             for rung, spec in law["decode"].items()
         }
+        self.draft = StepLinearLaw(law["draft"]) if "draft" in law else None
 
 
 class StepLinearBackend(CostBackend):
@@ -180,10 +187,18 @@ class StepLinearBackend(CostBackend):
                 f"a step of {len(prefill)} prefill and {len(decode)} decode rows; "
                 "the law prices a step of one kind",
             )
+        terms = self._terms(self.law, batch_view, "")
+        if self.law.draft is not None:
+            terms += self._terms(self.law.draft, batch_view, "draft ")
+        return StepCost(terms, self.treatments)
+
+    def _terms(self, law: StepLinearLaw, batch_view: BatchView, what: str) -> list:
+        """`law`'s terms for the step, named and tagged as draft when `what` is."""
+        prefill, decode = batch_view.prefill, batch_view.decode
         if prefill:
-            vector, kind = self.law.prefill, "prefill"
+            vector, kind = law.prefill, "prefill"
             if vector is None:
-                raise self._refuse(batch_view, "no prefill vector")
+                raise self._refuse(batch_view, f"no {what}prefill vector")
             counts = (
                 1,
                 sum_tokens(prefill),
@@ -198,38 +213,36 @@ class StepLinearBackend(CostBackend):
                 counts += (batch_view.moe_rows,)
         else:
             rung, kind = batch_view.capture_rung, "decode"
-            vector = self.law.decode.get(rung)
+            vector = law.decode.get(rung)
             if vector is None:
                 raise self._refuse(
                     batch_view,
-                    f"no decode vector for rung {EAGER if rung is None else rung}",
+                    f"no {what}decode vector for rung {EAGER if rung is None else rung}",
                 )
             counts = (1, sum_context(decode), batch_view.graph_padding)
             if vector.rowmod:
                 counts += (rowmod([r.context_tokens for r in decode], vector.rowmod),)
-        detail, source = self.law.fitted_on, SOURCE
+        detail, source = law.fitted_on, SOURCE
         if not vector.hull.contains(counts[1:]):
             source = EXTRAPOLATED
-            detail = f"{detail}; outside the {vector.name} hull"
+            detail = f"{detail}; outside the {what}{vector.name} hull"
         validated = bool(vector.held_out and vector.held_out.contains(counts[1:]))
-        return StepCost(
-            [
-                CostTerm(
-                    f"{kind}.{feature}",
-                    count * coefficient,
-                    Provenance(
-                        Method.ESTIMATED,
-                        f"{coefficient:g} s x {count}; {detail}",
-                        source,
-                        validated=validated,
-                    ),
-                )
-                for feature, count, coefficient in zip(
-                    vector.features, counts, vector.coefficients
-                )
-            ],
-            self.treatments,
-        )
+        return [
+            CostTerm(
+                f"{what.replace(' ', '.')}{kind}.{feature}",
+                count * coefficient,
+                Provenance(
+                    Method.ESTIMATED,
+                    f"{coefficient:g} s x {count}; {detail}",
+                    source,
+                    validated=validated,
+                ),
+                draft=bool(what),
+            )
+            for feature, count, coefficient in zip(
+                vector.features, counts, vector.coefficients
+            )
+        ]
 
     def describe(self) -> str:
         return f"step linear law; {self.law.fitted_on}"

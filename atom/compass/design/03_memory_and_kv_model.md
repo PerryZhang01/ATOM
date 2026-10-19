@@ -161,7 +161,8 @@ probed per request. Whether that is 0.1 ms or 10 ms is unmeasured. Recorded as *
   - The Compass runner reaches none of these: its `forward` and `capture_cudagraph`
     replace ATOM's and run none of `prepare_inputs`, the model, the drafter or a
     capture. Its `_build_and_load_model` also sets the model to an `UnbuiltModel`,
-    whose `forward` refuses, and refuses a speculative config.
+    whose `forward` refuses, and builds a speculative config's drafter on the meta device
+    with no checkpoint read.
 - `BlockManager.hash_block_size = block_size * dcp_world_size`
   (`block_manager.py`) — decode context parallelism changes the hash granularity.
   Out of scope now; noted so it is not discovered later.

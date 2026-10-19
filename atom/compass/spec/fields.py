@@ -4,19 +4,23 @@
 The table is the schema, so a key with no row here is refused wherever it sits.
 
 **A spec-peak number is marked, and its derate is derived from the mark.**
-`closed()` adds a derate to the block of every field marked `peak`, so a peak
-cannot be added without the haircut that makes it achievable.
+`closed()` adds a derate to the block of every field marked `peak`, and one per
+format to `device.compute.derate` for the compute rates, so a peak cannot be
+added without the haircut that makes it achievable. A derate is attainable over
+datasheet; the derate of an optional peak is owed exactly when its peak is
+stated (`Field.of`).
 
 **A checked value is the spec's own.** Every kind returns a copy, so a frozen
 spec's digest cannot move when the caller's document does.
 
 **Types are checked positively.** A count is an `int` that is not a `bool`, a
-quantity is a positive real, a derate is a fraction in (0, 1].
+quantity is a positive real, a derate is a fraction in (0, 1], and a bandwidth
+curve is `[bytes, bytes per second]` points, both rising with the bytes.
 
 Every field is required except the provenance fields `merge` fills in,
-`fp4_flops`, the pipeline send terms, a link's `link_setup_s` (zero when
-absent), the `host.http_intake` pair, the `host_link` pair and `device.ptl`,
-the cards' PTL state (`disabled` when absent). An engine
+`fp4_flops` and its derate, the bandwidth curve, the kernel floor, the pipeline
+send terms, a link's `link_setup_s` (zero when absent), the `host_link` pair
+and `device.ptl`, the cards' PTL state (`disabled` when absent). An engine
 start's memory readings are no field here: `compass measure memory` publishes
 them per configuration, as a `memory_readings` entry.
 
@@ -39,6 +43,7 @@ class Kind(enum.Enum):
     TEXT = "text"
     COUNT = "count"
     BYTES = "bytes"  # a size in bytes, zero included
+    CURVE = "curve"  # [bytes, bytes per second] points, monotone in bytes
     QUANTITY = "quantity"
     DERATE = "derate"
     NAMES = "names"
@@ -58,31 +63,54 @@ SUBJECT = {
     "source_root": Kind.TEXT,
     "record": Kind.TEXT,
 }
+#: A probed number's spread over its probe's records: the p10 and the p90, two
+#: numbers, or for a tokenizer entry two mappings from each rate to one.
+BAND = ("p10", "p90")
 
 
 @dataclass(frozen=True, slots=True)
 class Field:
-    """One field of the schema: where it sits, what it holds, and its role."""
+    """One field of the schema: where it sits, what it holds, and its role.
+    An `exact` field is a reading that does not vary, so it states no band."""
 
     path: str
     kind: Kind
     peak: bool = False
     required: bool = True
+    exact: bool = False
+    #: On the derate of an optional peak, that peak's path.
+    of: str = ""
 
     @property
     def block(self) -> str:
         """The dotted path of the block this field sits in, or the empty string."""
         return self.path.rpartition(".")[0]
 
+    @property
+    def derate(self) -> str:
+        """The path of the derate this spec-peak number obliges: its block's,
+        or for a compute rate its format's, `device.compute.derate.bf16`."""
+        if self.block == "device.compute":
+            leaf = self.path.rpartition(".")[2].removesuffix("_flops")
+            return f"{self.block}.derate.{leaf}"
+        return f"{self.block}.derate" if self.block else "derate"
+
 
 def closed(fields: tuple[Field, ...]) -> tuple[Field, ...]:
     """The declared fields plus the derate each spec-peak number obliges."""
-    derates = dict.fromkeys(
-        f"{field.block}.derate" if field.block else "derate"
-        for field in fields
-        if field.peak
+    derates: dict[str, Field] = {}
+    for field in fields:
+        if field.peak:
+            derates.setdefault(field.derate, field)
+    return fields + tuple(
+        Field(
+            path,
+            Kind.DERATE,
+            required=peak.required,
+            of="" if peak.required else peak.path,
+        )
+        for path, peak in derates.items()
     )
-    return fields + tuple(Field(path, Kind.DERATE) for path in derates)
 
 
 #: The machine spec, one row per field, in the order a document reads.
@@ -102,17 +130,21 @@ FIELDS = (
     Field("host.ipc.zmq_roundtrip_s", Kind.QUANTITY),
     Field("host.ipc.shm_broadcast_s", Kind.QUANTITY),
     # The frontend event loop's time to take in one HTTP request.
-    Field("host.http_intake.fixed_s", Kind.QUANTITY, required=False),
-    Field("host.http_intake.per_byte_s", Kind.QUANTITY, required=False),
+    Field("host.http_intake.fixed_s", Kind.QUANTITY),
+    Field("host.http_intake.per_byte_s", Kind.QUANTITY),
     Field("device.name", Kind.TEXT),
     Field("device.arch", Kind.TEXT),
     Field("device.count_per_node", Kind.COUNT),
     Field("device.ptl", Kind.TEXT, required=False),
-    Field("device.memory.capacity_bytes", Kind.QUANTITY),
+    Field("device.memory.capacity_bytes", Kind.QUANTITY, exact=True),
     Field("device.memory.bandwidth_bytes_per_s", Kind.QUANTITY, peak=True),
+    # Attainable bytes per second by bytes moved, a STREAM copy sweep.
+    Field("device.memory.bandwidth_curve", Kind.CURVE, required=False),
     Field("device.compute.bf16_flops", Kind.QUANTITY, peak=True),
     Field("device.compute.fp8_flops", Kind.QUANTITY, peak=True),
     Field("device.compute.fp4_flops", Kind.QUANTITY, peak=True, required=False),
+    # An empty kernel replayed in a graph: the device's floor on one kernel.
+    Field("device.kernel_floor_s", Kind.QUANTITY, required=False),
     Field("device.software_pinned_to.rocm", Kind.TEXT),
     Field("device.software_pinned_to.aiter", Kind.TEXT),
     Field("device.software_pinned_to.rccl", Kind.TEXT),
@@ -220,14 +252,36 @@ def _origins(value: object, path: str) -> dict:
         if not isinstance(entry, Mapping) or "origin" not in entry:
             _refuse(where, "a mapping holding an `origin`", entry)
         stated = origin(entry["origin"], f"{where}.origin", of_a_field=True)
-        subject = {key: held for key, held in entry.items() if key != "origin"}
-        if subject and stated != "probed":
+        subject = {k: held for k, held in entry.items() if k not in ("origin", *BAND)}
+        if (subject or set(BAND) & set(entry)) and stated != "probed":
             _refuse(where, "a probed field, the only kind with a subject", entry)
         origins[label] = {
             "origin": stated,
             **(_subject(subject, where) if subject else {}),
+            **_band(entry, where),
         }
     return origins
+
+
+def _band(entry: Mapping, where: str) -> dict:
+    """An entry's `BAND`, both ends or neither, each `p10` at most its `p90`."""
+    if not set(BAND) & set(entry):
+        return {}
+    low, high = entry.get("p10"), entry.get("p90")
+    pairs = [(low, high)]
+    if (
+        isinstance(low, Mapping)
+        and isinstance(high, Mapping)
+        and low.keys() == high.keys()
+    ):
+        pairs = [(low[rate], high[rate]) for rate in low]
+    for pair in pairs:
+        number = all(
+            isinstance(e, int | float) and not isinstance(e, bool) for e in pair
+        )
+        if not number or pair[0] > pair[1]:
+            _refuse(where, "a band, a `p10` at most its `p90`", entry)
+    return {end: _detached(entry[end]) for end in BAND}
 
 
 def check(field: Field, value: object, path: str) -> object:
@@ -251,6 +305,29 @@ def check(field: Field, value: object, path: str) -> object:
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             _refuse(path, "a whole number of bytes", value)
         return value
+    if kind is Kind.CURVE:
+        listed = isinstance(value, Sequence) and not isinstance(value, (str, bytes))
+        if not listed or not value:
+            _refuse(path, "a list of [bytes, bytes per second] points", value)
+        points = []
+        for index, point in enumerate(value):
+            where = f"{path}[{index}]"
+            pair = isinstance(point, Sequence) and not isinstance(point, (str, bytes))
+            if not pair or len(point) != 2:
+                _refuse(where, "a [bytes, bytes per second] point", point)
+            size = check(Field(where, Kind.COUNT), point[0], f"{where}[0]")
+            rate = check(Field(where, Kind.QUANTITY), point[1], f"{where}[1]")
+            if points and (size <= points[-1][0] or rate < points[-1][1]):
+                raise SpecRefusal(
+                    Rule.SHAPE,
+                    f"`{path}` goes from {points[-1][1]!r} B/s at "
+                    f"{points[-1][0]} B to {rate!r} B/s at {size} B, which is "
+                    "not monotone in bytes",
+                    "list the points by rising size, each attaining at least "
+                    "the bandwidth of the smaller transfer before it",
+                )
+            points.append([size, rate])
+        return tuple(points)
     if kind is Kind.QUANTITY:
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
             _refuse(path, "a positive number", value)

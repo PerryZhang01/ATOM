@@ -462,8 +462,10 @@ Every member's step end is a round, and so is every member's input pull (owner r
 2026-10-15, #988; revised 2026-10-16, #1267, and 2026-10-18, #1345).
 With host time, one `all_reduce(MAX)` over the DP group, which every forward kind joins, the DP
 dummy included, gives each forward the group's device end on the LP clock, as per-layer
-collectives hold every rank's device until the slowest. Each rank writes it back as its last
-device end, and as its output end on an output forward, and its forward ends at its own
+collectives hold every rank's device until the slowest, and under MTP the latest target
+end beside it. Each rank writes the device end back as its last device end and, on an
+output forward, as its output end, the target end in its place under MTP; its forward ends
+at its own
 release, as a real rank returns at its own launch end. A replay rank's forward ends at its
 own replayed return. With no host time, a rank whose forward
 waits on its device, one with output other than the DP dummy, ends at the group's `max`;
@@ -1395,9 +1397,9 @@ forward is called (the previous forward's exit, or the grant that ended an idle 
 entry      = now + E
 h          = max(entry, R4) + W_pre
 h          = max(h, R1) + W_inputs             # MTP only: R1 waits before launch
-h          = max(h, R7)                        # non-first PP stage: the metadata
-launch_end = h + W_launch
-start      = max(end[n-1], h)
+launch_end = max(h, R7 - W_recv) + W_launch    # non-first PP stage: R7, the metadata,
+                                               # holds the launch after W_recv
+start      = max(end[n-1], h, R7)
 target_end = start + D_target
 end        = max(target_end + D_draft, launch_end)
 exit       = max(launch_end, R1) + W_post      # no MTP: R1 for an output forward
@@ -1452,15 +1454,25 @@ KV transfer keeps its own model (D6).
 Stage 2 builds R1 and R4 ([#825](https://github.com/jgong5/ATOM/issues/825)). R6 and R8
 come with the stage sends ([#468](https://github.com/jgong5/ATOM/issues/468)), R7 with
 [#1200](https://github.com/jgong5/ATOM/issues/1200): a simulated stage loop receives `pp_data`
-at the forward's call, its launch waits for the metadata's arrival and its device start for
+at the forward's call, its launch after `W_recv` waits for the metadata's arrival (#1529) and its device start for
 the tensors', and a non-last stage sends at its launch end (#1324).
 The gate charges a PP record's stages together, step by step, and predicts both waits
 between them that ATOM's stage loops hold outside the recurrence: the head's
 `recv_tokens` before it schedules, released at the last stage's exit of forward `n - pp`
 or of a later output forward holding a request it schedules, and a downstream stage's
 `recv_metadata`, released at the head's call ([#1325](https://github.com/jgong5/ATOM/issues/1325)).
-A simulated run refuses a
-speculative config until [#1090](https://github.com/jgong5/ATOM/issues/1090).
+On a machine spec's carriers it prices each send as `StageSends` does (`15` D91): the
+receive posted at the prepare end plus `W_recv`, the RCCL parts behind the previous
+frame's, the receiver's device end and its own send's hold, and a sender's device start
+behind the send it last settled. The gate infers idle flushes: the head flushes whenever
+it waits for tokens, a later stage once `recv_metadata`'s 100 ms poll times out (#1449,
+#1450, #1457). The record stamps each idle `flush_pp_send` that settles a send, and the
+gate names, per sending stage, the steps where the two disagree (#1532).
+A simulated run prices a speculative step with `D_target` and `D_draft` from the cost
+backend, its terms tagged `draft` making the latter, and R1 holds its launch with MTP
+([#1090](https://github.com/jgong5/ATOM/issues/1090)). Under DP, each forward's
+`target_end` joins the device end's `all_reduce(MAX)` under MTP, and each rank writes the
+group's latest back as its output end. Its accepted drafts are `14` D83's draw.
 
 **What-ifs.** The run-file key `host.skip` zeroes the named segments. Such a run is a
 what-if: never graded, and refused by the graders.
@@ -1468,7 +1480,8 @@ what-if: never graded, and refused by the graders.
 **Measured, not hooked.** The parity recorder, `RecordingModelRunner`
 (`atom/compass/parity/runner.py`), stamps host time around the staging gate, the launch
 and the R1 wait (with MTP also the draft copy wait; on a non-first PP stage also the R7
-receive, and on the last stage its own token read), and records device events at
+receive, and on the last stage its own token read; on a sending stage an idle
+`flush_pp_send` that settles a send), and records device events at
 `run_model` entry, with MTP at the target's end, on a non-first PP stage where the
 received tensors are in, and at the forward's exit, drained with `query()`, never `synchronize()`
 ([#824](https://github.com/jgong5/ATOM/issues/824)). It edits no ATOM file. The

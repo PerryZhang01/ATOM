@@ -238,6 +238,15 @@ def test_a_link_pays_its_setup_on_its_first_write_only():
     assert link.start(9.0, 2) == 9.0 + EXACT.duration_s(2)
 
 
+def test_a_zero_block_write_leaves_the_setup_to_the_first_write_with_blocks():
+    """A write of no blocks makes no transfer call, so it pays the latency
+    alone; the first write that moves blocks still pays the 4 s setup."""
+    with_setup, without = Link(dataclasses.replace(EXACT, setup_s=4.0)), Link(EXACT)
+    assert with_setup.start(0.0, 0) == EXACT.latency_s
+    without.start(0.0, 0)
+    assert with_setup.start(1.0, 1) == without.start(1.0, 1) + 4.0
+
+
 @pytest.mark.parametrize("scope", list(Scope))
 def test_the_setup_is_the_named_links_and_zero_when_absent(geometry, scope):
     document = copy.deepcopy(DOCUMENT)
