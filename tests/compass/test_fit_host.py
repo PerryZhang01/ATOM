@@ -47,7 +47,9 @@ def test_the_host_laws_published_are_fit_hosts_and_a_run_file_carrying_them_runs
     fit(tmp_path, "fit host", a, b, *clients(a, b))
 
     host = member(tmp_path / "store", host_laws_key(key), "params")
-    paths = [d / "steps/dp0.jsonl" for d in (a, b)]
+    # In run digest order, as the command reads them: a least-squares fit's
+    # last bits depend on the order of its samples.
+    paths = sorted((d / "steps/dp0.jsonl" for d in (a, b)), key=digest)
     laws, report = fit_host(label_records(paths)[0])
     assert host == {**laws, "key": {**laws["key"], "machine_spec": DIGEST}}
     assert member(tmp_path / "store", host_laws_key(key), "report") == {
