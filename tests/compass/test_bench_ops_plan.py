@@ -17,7 +17,6 @@ from test_bench_ops import KEY, TREE, _graph, _leaf, _t
 from atom.compass import ir
 from atom.compass.artifacts import ArtifactStore
 from atom.compass.bench import ops
-from atom.compass.capture.forward import decode
 from atom.compass.spec import MachineSpec
 from atom.compass.spec.fields import PINNED
 
@@ -225,28 +224,6 @@ def test_a_decode_step_s_lowest_context_is_over_the_rung_s_rows(rows, rung, lo):
     line = {"rows": [[1, c, True] for c in rows]}
 
     assert ops._rows(line, rung) == (lo, max(rows))
-
-
-def test_a_decode_family_halves_either_side_of_a_point_off_its_neighbours_line():
-    def family(shape, times):
-        return [
-            (at, ("k",), {"shape": shape, "context": at, "cold_ns": ns})
-            for at, ns in times
-        ]
-
-    families = {
-        "line": family("decode B=2", [(1000, 10.0), (2000, 20.0), (3000, 30.0)]),
-        # 26 at 2000 against 20 on the line from 1000 to 3000; 30 at 3000 is on
-        # the line from 2000 to 4000.
-        "bent": family(
-            "decode B=2", [(1000, 10.0), (2000, 26.0), (3000, 30.0), (4000, 34.0)]
-        ),
-        "prefill": family("prefill T=10 B=1", [(10, 1.0), (20, 9.0), (30, 3.0)]),
-    }
-
-    want = ops._densify(families, set())
-
-    assert dict(want) == {(decode(2), 1500): {"bent"}, (decode(2), 2500): {"bent"}}
 
 
 def test_a_ladder_keeps_values_a_step_apart_and_the_largest():

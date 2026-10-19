@@ -55,10 +55,8 @@ highest row context (`_rows`); then each leaf of a kind those show depends on
 context (`_dependent`) over a ladder (`_ladder`) of the steps' row contexts,
 and each prefill family (`_family`) over a ladder of their token counts, chunk
 remainders among them; then the point halfway between two neighbours of a
-family that launched different kernels or, at a decode width, either side of
-a point off the line through theirs (`_densify`), until they are adjacent.
-DIR gets each round's ops.jsonl in `round<n>`, and every point held in
-plan.jsonl.
+family that launched different kernels, until they are adjacent. DIR gets each
+round's ops.jsonl in `round<n>`, and every point held in plan.jsonl.
 
 `--coverage` counts the steps of record directories that DIR's plan.jsonl
 covers (`coverage`), and prints the count by phase and why each leaf kind
@@ -752,11 +750,6 @@ LADDER_STEP = 1.25
 #: The spread of a leaf's cold times across contexts, over the largest, past
 #: which its kind depends on context; a repeat's spread stays within 4%.
 CONTEXT_MOVES = 0.10
-#: How far a decode point's cold time may lie off the line through its two
-#: neighbours', over the larger, before the plan halves the gaps either side:
-#: decode attention steps up and down with context under one kernel name, and
-#: a price read off that line would miss by as much.
-BENDS = 0.05
 
 
 def plan(store, key, config, run, args, command: str, out: Path) -> None:
@@ -853,9 +846,9 @@ def coverage(store, root, config, names, records) -> dict:
     kind the steps it left out by why. A step is covered when each leaf of its
     `op_graph` lies on a point or between two of one kernel (`_bracket`): a
     decode leaf of a kind that depends on context over its rows' lowest to
-    highest context (`_rows`), any other decode leaf at its width, and a prefill leaf at its
-    tokens, unless its kind depends on context and a row was cached: the
-    bench's prefill rows are fresh."""
+    highest context (`_rows`), any other decode leaf at its width, and a
+    prefill leaf at its tokens, unless its kind depends on context and a row
+    was cached: the plan's prefill rows are fresh."""
     from atom.compass.capture import population_steps
 
     steps = list(population_steps(names))
@@ -994,25 +987,15 @@ def _bracket(ats, kernels, lo, hi) -> str:
 
 
 def _densify(families, tried: set) -> dict:
-    """The point halfway between each two neighbours of a family more than one
-    apart, unless `tried`, that launched different kernels or, in a decode
-    family, lie either side of a point whose cold time is `BENDS` off the line
-    through theirs."""
+    """The point halfway between each two neighbours of a family that launched
+    different kernels and lie more than one apart, unless `tried`."""
     from atom.compass.capture.forward import prefill
 
     want = defaultdict(set)
     for fam, points in families.items():
-        pairs = list(itertools.pairwise(points))
-        halve = {i for i, (p, q) in enumerate(pairs) if p[1] != q[1]}
-        if points[0][2]["shape"].startswith("decode"):
-            for i, (p, q, r) in enumerate(zip(points, points[1:], points[2:])):
-                y = [point[2]["cold_ns"] for point in (p, q, r)]
-                line = y[0] + (y[2] - y[0]) * (q[0] - p[0]) / (r[0] - p[0])
-                if abs(y[1] - line) > BENDS * max(y[1], line):
-                    halve |= {i, i + 1}
-        for (a, _, record), (b, _, _) in (pairs[i] for i in sorted(halve)):
+        for (a, ka, record), (b, kb, _) in itertools.pairwise(points):
             mid = (a + b) // 2
-            if b - a < 2 or (fam, mid) in tried:
+            if ka == kb or b - a < 2 or (fam, mid) in tried:
                 continue
             tried.add((fam, mid))
             shape = _shape(record["shape"])
